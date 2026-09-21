@@ -7,6 +7,7 @@ import type { CanonicalGroupBinding, CanonicalGroupRoute, CanonicalRoom } from '
 import type { ShippedGroupAdoption } from './types'
 
 export const $canonicalGroupBindings = atom<Record<string, CanonicalGroupBinding>>({})
+let bindingGeneration = 0
 
 export function bindAdoptedCanonicalGroup(
   group: string,
@@ -34,6 +35,7 @@ export function bindAdoptedCanonicalGroup(
 
   const binding: CanonicalGroupBinding = {
     ...route,
+    bindingGeneration: ++bindingGeneration,
     roomId: room.room_id,
     routeOwner,
     adoptionOwner: {
@@ -63,6 +65,7 @@ export function bindAdoptedCanonicalGroup(
   if (previous && previous !== routeOwner) {
     previous.release()
   }
+
   $canonicalGroupBindings.set({ ...$canonicalGroupBindings.get(), [key]: binding })
 
   return key

@@ -35,6 +35,12 @@ export interface GatewayRouteLease {
   request: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<T>
 }
 
+export interface GatewayRouteState {
+  connectionId: string
+  profile: string
+  state: ConnectionState
+}
+
 export interface GatewayRouteLease {
   readonly connectionId: string
   readonly generation: number
@@ -172,6 +178,7 @@ interface GatewayRegistryState {
   /** Connection-registry generation. Remove/edit/re-add advances it even when
    * the public connection id returns to the same value. */
   routeOwnerGenerations?: Map<string, number>
+  routeStateListeners?: Set<(event: GatewayRouteState) => void>
   activeKey: string
   activationEpoch: number
   secondaries: Map<string, Secondary>
@@ -519,6 +526,25 @@ function reportGatewayState(profile: string, state: ConnectionState): void {
   if (normKey(profile) === g.activeKey) {
     setGatewayState(state)
   }
+
+  const entry = g.secondaries.get(profile)
+  const connectionId = entry?.connectionId ?? (profile === g.primaryProfile ? g.primaryConnectionId : null)
+
+  if (connectionId) {
+    const event = { connectionId, profile: entry?.profile ?? profile, state }
+
+    for (const listener of [...(g.routeStateListeners ?? [])]) {
+      listener(event)
+    }
+  }
+}
+
+/** Observe background sockets without changing the foreground gateway atom. */
+export function onGatewayRouteState(listener: (event: GatewayRouteState) => void): () => void {
+  const listeners = (g.routeStateListeners ??= new Set())
+  listeners.add(listener)
+
+  return () => { listeners.delete(listener) }
 }
 
 export function reportPrimaryGatewayState(state: ConnectionState): void {
@@ -1221,6 +1247,7 @@ export async function acquireGatewayRouteLease(
     if (released) {
       return
     }
+
 
 
     released = true

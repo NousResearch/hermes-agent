@@ -4,6 +4,7 @@ const secondaryGateways: Array<{
   close: ReturnType<typeof vi.fn>
   connect: ReturnType<typeof vi.fn>
   connectionState: string
+  onState: ReturnType<typeof vi.fn>
   request: ReturnType<typeof vi.fn>
 }> = []
 
@@ -48,6 +49,8 @@ vi.mock('@/store/notify-baseline', () => ({ markNativeNotifyBaseline: vi.fn() })
 const {
   $gateway,
   acquireGatewayRouteLease,
+  onGatewayRouteState,
+  retainGatewayForRelay,
   closeSecondaryGateways,
   configureGatewayRegistry,
   ensureGatewayForAgent,
@@ -90,6 +93,39 @@ afterEach(() => {
 })
 
 describe('requestGatewayForProfile', () => {
+  it('observes background reconnect without retaining expired execution leases or moving the foreground', async () => {
+    const primary = makePrimary()
+    setPrimaryGateway(primary as never, 'default')
+    setPrimaryGatewayConnection({ connectionId: 'foreground' })
+    ;(window as unknown as { hermesDesktop: unknown }).hermesDesktop = {
+      getConnectionFor: vi.fn(async () => ({ port: 5151, profile: 'default', sharedRemote: false })),
+      getGatewayWsUrlFor: vi.fn(async () => ({ ok: true, wsUrl: 'ws://background/default' }))
+    }
+    await ensureGatewayForProfile('default')
+    const observed = vi.fn()
+    const unwatch = onGatewayRouteState(observed)
+    const retain = retainGatewayForRelay('background', 'default')
+    const lease = await acquireGatewayRouteLease('background', 'default')
+    const socket = secondaryGateways[0]
+    const notify = socket.onState.mock.calls[0][0]
+    socket.connectionState = 'closed'
+    notify('closed')
+    expect(() => lease.assertCurrent()).toThrow()
+    lease.release()
+    expect(socket.close).not.toHaveBeenCalled()
+    const fresh = await acquireGatewayRouteLease('background', 'default')
+    notify('open')
+    expect(observed).toHaveBeenCalledWith({ connectionId: 'background', profile: 'default', state: 'closed' })
+    expect(observed).toHaveBeenCalledWith({ connectionId: 'background', profile: 'default', state: 'open' })
+    expect(() => lease.assertCurrent()).toThrow()
+    expect(() => fresh.assertCurrent()).not.toThrow()
+    expect(secondaryGateways).toHaveLength(1)
+    expect($gateway.get()).toBe(primary)
+    unwatch()
+    fresh.release()
+    retain()
+  })
+
   it('requests through a pooled profile gateway without changing the active gateway', async () => {
     const primary = makePrimary()
     setPrimaryGateway(primary as never, 'default')

@@ -458,6 +458,7 @@ export default {
       if (typeof window !== 'undefined') {
         unbindConnectionsChanged =
           window.hermesDesktop?.connections?.onChanged?.(payload => {
+            if (payload?.reason === 'saved') { return }
             revokeAdoptedCanonicalGroupsForConnection(payload.connectionId)
 
             if (payload?.reason === 'removed') {

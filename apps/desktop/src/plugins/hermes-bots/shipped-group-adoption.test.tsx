@@ -15,6 +15,7 @@ const runtime = vi.hoisted(() => ({
   handler: async (_route: unknown, _method: string, _params: Record<string, unknown>): Promise<unknown> => ({}),
   profile: 'default',
   routeGeneration: 1,
+  routeListeners: new Set<(event: { connectionId: string; profile: string; state: string }) => void>(),
   routes: [
     { connectionId: 'owner-a', mode: 'local', profile: 'default', targetProfile: 'default' },
     { connectionId: 'remote-b', mode: 'remote', profile: 'default', targetProfile: 'default' }
@@ -27,6 +28,12 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await pluginSdkMock({
     ...original.host,
     activeConnectionId: () => runtime.connectionId,
+    retainProfileSocket: () => () => undefined,
+    onProfileRouteState: (listener: (event: { connectionId: string; profile: string; state: string }) => void) => {
+      runtime.routeListeners.add(listener)
+
+      return () => { runtime.routeListeners.delete(listener) }
+    },
     acquireProfileRoute: async (route: any) => {
       const generation = runtime.routeGeneration
       let released = false
@@ -84,6 +91,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
       if (key === 'group.checkAgain') {
         return 'Check again'
       }
+
       const value = CANONICAL_GROUP_LOCALES.en[key.replace('canonical.', '') as keyof typeof CANONICAL_GROUP_LOCALES.en]
 
       return value ?? key
@@ -361,6 +369,10 @@ function backend({ failAfterFirstCommit = false }: { failAfterFirstCommit?: bool
       return { room: room(), driver_status: { pending_actions: [] } }
     }
 
+    if (method === 'groups.send') {
+      return { event: { event_id: params.event_id, payload: params.payload } }
+    }
+
     if (method === 'groups.log') {
       return { events: events(), cursor: events().length, latest_seq: events().length, has_more: false }
     }
@@ -441,6 +453,7 @@ async function coldHydrate(storage: Map<string, unknown>) {
 }
 
 beforeEach(async () => {
+  runtime.routeListeners.clear()
   runtime.activation += 1
   runtime.authority = 'install:owner-a'
   runtime.connectionId = 'owner-a'
@@ -459,7 +472,7 @@ beforeEach(async () => {
   loaded.adoption.stopShippedGroupAdoption()
   loaded.registry.$canonicalGroupBindings.set({})
   loaded.chat.$groupChats.set({})
-})
+}, 30_000) // Cold SDK transforms can exceed the default hook budget on a loaded runner.
 
 afterEach(async () => {
   cleanup()
@@ -644,9 +657,11 @@ describe('automatic shipped Group Chat adoption', () => {
     const storageApi = scriptedStorage(storage).storage
     const originalSet = storageApi.set.bind(storageApi)
     let releaseAck!: () => void
+
     const ackHeld = new Promise<void>(resolve => {
       releaseAck = resolve
     })
+
     let ackStarted = false
 
     storageApi.set = async (key, value) => {
@@ -845,6 +860,8 @@ describe('automatic shipped Group Chat adoption', () => {
     expect(original?.isCurrent?.()).toBe(false)
     expect(loaded.registry.$canonicalGroupBindings.get().Release).toBeUndefined()
 
+    expect(loaded.registry.$canonicalGroupBindings.get().Renamed?.isCurrent?.()).toBe(true)
+
     loaded.chat.$groupChats.set({
       ...loaded.chat.$groupChats.get(),
       Release: {
@@ -858,6 +875,93 @@ describe('automatic shipped Group Chat adoption', () => {
 
     loaded.adoption.stopShippedGroupAdoption()
     expect(loaded.registry.$canonicalGroupBindings.get()).toEqual({})
+  })
+
+  it.each([false, true])('sends through the live adopted binding and retains a late ACK after route replacement: %s', async expire => {
+    const transport = backend()
+    const handler = runtime.handler
+    let release!: () => void
+    const held = new Promise<void>(resolve => { release = resolve })
+
+    runtime.handler = async (route, method, params) => {
+      const result = await handler(route, method, params)
+
+      if (expire && method === 'groups.send') { await held }
+
+      return result
+    }
+
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    const binding = loaded.registry.$canonicalGroupBindings.get().Release!
+    render(<loaded.workspace.CanonicalGroupWorkspace binding={binding} />)
+    fireEvent.change(await screen.findByRole('textbox'), { target: { value: 'new user work' } })
+    const button = screen.getByRole('button', { name: 'Send' })
+    await waitFor(() => expect((button as HTMLButtonElement).disabled).toBe(false))
+    fireEvent.click(button)
+    await waitFor(() => expect(transport.calls.filter(call => call.method === 'groups.send')).toHaveLength(1))
+    expect(transport.calls.find(call => call.method === 'groups.send')?.params.payload).toMatchObject({ text: 'new user work' })
+    const journal = await import('./canonical-group-send')
+
+    if (expire) {
+      runtime.routeGeneration += 1
+      release()
+      await waitFor(() => expect(binding.isCurrent?.()).toBe(false))
+      const pending = await journal.readCanonicalGroupSend(binding)
+      expect(pending?.params.payload.text).toBe('new user work')
+      expect(pending?.binding).not.toHaveProperty('routeOwner')
+    } else {
+      await waitFor(async () => expect(await journal.readCanonicalGroupSend(binding)).toBeUndefined())
+    }
+  })
+
+  it('keeps an adopted room read-only while its binding is absent, then restores on its background route open', async () => {
+    const transport = backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    const old = loaded.registry.$canonicalGroupBindings.get().Release!
+    loaded.chat.$groupChats.set({ ...loaded.chat.$groupChats.get(), Pending: (await releasedRecord()).Release as ReturnType<typeof loaded.chat.$groupChats.get>[string] })
+    runtime.routeGeneration += 1
+
+    for (const listener of runtime.routeListeners) { listener({ connectionId: 'owner-a', profile: 'default', state: 'closed' }) }
+    expect(old.isCurrent?.()).toBe(false)
+    expect(loaded.registry.$canonicalGroupBindings.get().Release).toBeUndefined()
+    const view = await import('./group-chat-view')
+    render(<view.GroupChatWorkspace group="Release" members={[]} />)
+    expect(screen.queryByRole('textbox')).toBeNull()
+    expect(screen.getByText(CANONICAL_GROUP_LOCALES.en.upgradeChecking)).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Stop' })).toBeNull()
+
+    for (const listener of runtime.routeListeners) { listener({ connectionId: 'owner-a', profile: 'default', state: 'open' }) }
+    await waitFor(() => expect(loaded.registry.$canonicalGroupBindings.get().Release?.isCurrent?.()).toBe(true))
+    expect(transport.imports).toHaveLength(1)
+    expect(loaded.chat.$groupChats.get().Pending.shippedAdoption).toBeUndefined()
+  })
+
+  it.each(['rename', 'disband'])('restores the exact adopted binding after a failed %s', async operation => {
+    backend()
+    const storage = new Map<string, unknown>([['group-chats', await releasedRecord()]])
+    const loaded = await coldHydrate(storage)
+    await loaded.adoption.adoptShippedGroupChats(scriptedStorage(storage).storage)
+    const original = loaded.registry.$canonicalGroupBindings.get().Release!
+    const hosted = await import('./hosted-room-runtime')
+    const view = await import('./group-chat-view')
+
+    if (operation === 'rename') {
+      vi.spyOn(hosted, 'renameHostedGroupChat').mockRejectedValueOnce(new Error('offline'))
+      expect(await view.renameGroupChat('Release', 'Renamed', [])).toBeNull()
+    } else {
+      vi.spyOn(hosted, 'disbandHostedGroupChat').mockResolvedValueOnce(false)
+      await expect(view.disbandGroupChat('Release', [])).rejects.toThrow()
+    }
+
+    expect(original.isCurrent?.()).toBe(false)
+    const restored = loaded.registry.$canonicalGroupBindings.get().Release!
+    expect(restored.isCurrent?.()).toBe(true)
+    expect(restored.roomId).toBe(original.roomId)
+    expect(restored.bindingGeneration).not.toBe(original.bindingGeneration)
   })
 
   it('renders durable retirement as removal pending and retries retire for the exact server member', async () => {

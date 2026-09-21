@@ -3,7 +3,11 @@ import type { CanonicalGroupBinding } from './canonical-groups'
 const STORAGE_KEY = 'hermes.desktop.canonicalGroupSends.v1'
 
 export interface PreparedCanonicalGroupSend {
-  binding: CanonicalGroupBinding
+  binding: Pick<CanonicalGroupBinding, 'connectionId' | 'profile' | 'roomId'> & {
+    authorityGatewayId?: string
+    sourceId?: string
+    requestHash?: string
+  }
   params: {
     room_id: string
     event_id: string
@@ -22,6 +26,7 @@ function journalKey(binding: CanonicalGroupBinding): string {
 
 async function readJournal(): Promise<Record<string, PreparedCanonicalGroupSend>> {
   const native = window.hermesDesktop?.preparedSubmissions
+
   const parsed: unknown = JSON.parse(native
     ? await native.read()
     : window.localStorage.getItem(STORAGE_KEY) || '{}')
@@ -46,8 +51,10 @@ async function update(key: string, entry: PreparedCanonicalGroupSend | null): Pr
 
   // Browser-only fallback guarantees reload recovery, not process-crash safety.
   const journal = await readJournal()
+
   if (entry === null) {delete journal[key]}
   else {journal[key] = entry}
+
   window.localStorage.setItem(STORAGE_KEY, JSON.stringify(journal))
 }
 
@@ -60,6 +67,14 @@ export async function readCanonicalGroupSend(binding: CanonicalGroupBinding): Pr
     throw new Error('Invalid canonical group Send entry')
   }
 
+  if (entry && binding.adoptionOwner && (
+    entry.binding.authorityGatewayId !== binding.adoptionOwner.authorityGatewayId ||
+    entry.binding.sourceId !== binding.adoptionOwner.sourceId ||
+    entry.binding.requestHash !== binding.adoptionOwner.requestHash
+  )) {
+    throw new Error('Pending Send does not match this Group Chat owner; the original intent was retained')
+  }
+
   return entry
 }
 
@@ -70,17 +85,27 @@ export async function prepareCanonicalGroupSend(
   payload: Record<string, unknown>
 ): Promise<PreparedCanonicalGroupSend> {
   const existing = await readCanonicalGroupSend(binding)
+
   if (existing) {return existing}
 
   const eventId = crypto.randomUUID()
+
   const entry: PreparedCanonicalGroupSend = JSON.parse(JSON.stringify({
-    binding,
+    binding: {
+      connectionId: binding.connectionId, profile: binding.profile, roomId: binding.roomId,
+      ...(binding.adoptionOwner ? {
+        authorityGatewayId: binding.adoptionOwner.authorityGatewayId,
+        sourceId: binding.adoptionOwner.sourceId,
+        requestHash: binding.adoptionOwner.requestHash
+      } : {})
+    },
     params: {
       room_id: binding.roomId,
       event_id: eventId,
       payload: { ...payload, thread_id: payload.thread_id ?? eventId }
     }
   }))
+
   await update(journalKey(binding), entry)
 
   return entry
@@ -90,5 +115,6 @@ export async function prepareCanonicalGroupSend(
 // exact event and payload. A delayed ACK cannot retire a newer intent.
 export async function retireCanonicalGroupSend(binding: CanonicalGroupBinding, eventId: string): Promise<void> {
   const entry = await readCanonicalGroupSend(binding)
+
   if (entry?.params.event_id === eventId) {await update(journalKey(binding), null)}
 }

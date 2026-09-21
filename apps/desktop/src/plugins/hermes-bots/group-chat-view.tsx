@@ -125,7 +125,7 @@ import { botsText, useBots } from './i18n'
 import { displayName, slugify } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
-import { selectShippedGroupOwner, shippedGroupOwnerChoices } from './shipped-group-adoption'
+import { restoreShippedGroupBindings, selectShippedGroupOwner, shippedGroupOwnerChoices } from './shipped-group-adoption'
 import type { ShippedGroupOwnerChoice } from './shipped-group-adoption'
 import { shippedGroupAdoptionOwnsExecution } from './types'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
@@ -138,6 +138,16 @@ const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
  *  open. Other group memberships and the members' per-group gateway sessions
  *  ("Group: <roomId>", or legacy "Group: <name>") are intentionally KEPT. */
 export async function disbandGroupChat(group: string, members: RosterRow[]) {
+  try {
+    return await disbandGroupChatOwned(group, members)
+  } finally {
+    const storage = getPluginCtx()?.storage
+
+    if (storage) { await restoreShippedGroupBindings(storage) }
+  }
+}
+
+async function disbandGroupChatOwned(group: string, members: RosterRow[]) {
   revokeCanonicalGroupBinding(group)
 
   // Invalidate any in-flight round-robin FIRST: bump the epoch so a running
@@ -277,7 +287,17 @@ export async function disbandGroupChat(group: string, members: RosterRow[]) {
  *  rename, so even a member whose sid is later lost falls back to the same
  *  "Group: <roomId>" title lookup instead of a fresh "Group: <new name>".
  *  Returns the new name, or null when the target name is taken. */
-export async function renameGroupChat(
+export async function renameGroupChat(...args: Parameters<typeof renameGroupChatOwned>) {
+  try {
+    return await renameGroupChatOwned(...args)
+  } finally {
+    const storage = getPluginCtx()?.storage
+
+    if (storage) { await restoreShippedGroupBindings(storage) }
+  }
+}
+
+async function renameGroupChatOwned(
   oldName: string,
   newName: string,
   members: GroupMember[] | null | undefined,
@@ -410,6 +430,13 @@ export async function renameGroupChat(
   updateGroupChat(next, (r: GroupChatRoom) => r, {
     sync: false
   })
+
+  if (room?.shippedAdoption) {
+    const storage = getPluginCtx()?.storage
+
+    if (storage) { await persistGroupChatRoomsRequired($groupChats.get(), storage) }
+  }
+
   // A rename is one revisioned state transition: the new identity is updated
   // and the old identity is tombstoned together, so cold hydration cannot
   // merge the pre-rename room back into the roster.
@@ -607,6 +634,10 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
     )
   }
 
+  if (rooms[props.group]?.shippedAdoption) {
+    return <GroupExecutionGate {...props} />
+  }
+
   if (groupChatHostedGateway(rooms[props.group])) {
     return <LegacyGroupChatWorkspace {...props} />
   }
@@ -700,6 +731,7 @@ function GroupExecutionGate(props: GroupChatWorkspaceProps) {
     if (!ownerCheckpoint || ownerChoiceBusy) {
       return
     }
+
     const storage = getPluginCtx()?.storage
 
     if (!storage) {

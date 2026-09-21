@@ -120,6 +120,7 @@ function CanonicalRoomView({
   const [checkingGateway, setCheckingGateway] = useState(false)
   const busyRef = useRef(false)
   const alive = useRef(true)
+  const current = () => alive.current && binding.isCurrent?.() !== false
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
   const revision = useRef(0)
 
@@ -177,6 +178,7 @@ function CanonicalRoomView({
       setEvents(log)
       setReadError('')
 
+
     }
   }
 
@@ -184,6 +186,7 @@ function CanonicalRoomView({
     if (!visible) {
       return
     }
+
     let cancelled = false
     let timer: ReturnType<typeof setTimeout>
 
@@ -216,6 +219,7 @@ function CanonicalRoomView({
     if (busyRef.current || !current()) {
       return
     }
+
     busyRef.current = true
     setBusy(true)
     setError('')
@@ -249,17 +253,22 @@ function CanonicalRoomView({
     ) {
       return
     }
+
     void mutate(async () => {
       const exact = pending ?? (await prepareCanonicalGroupSend(binding, { text: draft, attachments }))
 
       if (!current()) {
         return
       }
+
       setPending(exact)
       setDraft(String(exact.params.payload.text ?? ''))
       setAttachments((exact.params.payload.attachments as Attachment[] | undefined) ?? [])
-      await canonicalGroupRequest(exact.binding, 'groups.send', exact.params)
-      await retireCanonicalGroupSend(exact.binding, exact.params.event_id)
+      // The journal owns data, never a socket or a deserialized authority.
+      await canonicalGroupRequest(binding, 'groups.send', exact.params)
+
+      if (!current()) { return }
+      await retireCanonicalGroupSend(binding, exact.params.event_id)
 
       if (current()) {
         setPending(null)
@@ -276,6 +285,7 @@ function CanonicalRoomView({
     if (!continuity?.room.hostedStatus?.checkConnectionId || checkingGateway) {
       return
     }
+
     setCheckingGateway(true)
 
     try {

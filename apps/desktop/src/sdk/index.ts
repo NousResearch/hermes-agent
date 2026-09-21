@@ -53,6 +53,7 @@ import {
   $gateway,
   acquireGatewayRouteLease,
   activeGatewayConnectionId,
+  onGatewayRouteState,
   openGatewayForAgent,
   openGatewayForProfile,
   requestGatewayForAgent,
@@ -1392,6 +1393,8 @@ export const host = {
    *  release. Local routes are exempt (no-op release) so the idle reaper can
    *  still reclaim spawned local backends. Feature-detect on older desktops
    *  (`typeof host.retainProfileSocket === 'function'`). */
+  onProfileRouteState: onGatewayRouteState,
+
   retainProfileSocket: (route: PluginProfileRoute | string): (() => void) => {
     if (typeof route === 'string' || !route) {
       // Bare-profile compatibility overload: local/legacy routing — exempt.

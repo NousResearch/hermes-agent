@@ -4,6 +4,7 @@ import { sha256 } from '@noble/hashes/sha2.js'
 import { bytesToHex, utf8ToBytes } from '@noble/hashes/utils.js'
 
 import {
+  $canonicalGroupBindings,
   bindAdoptedCanonicalGroup,
   revokeAdoptedCanonicalGroupsForConnection,
   revokeCanonicalGroupBinding,
@@ -63,7 +64,82 @@ interface CapabilityResult {
 }
 
 let lifecycleGeneration = 0
-let currentRun: null | { generation: number; promise: Promise<void> } = null
+let currentRun: null | { generation: number; restoreOnly: boolean; promise: Promise<void> } = null
+let recoveryDispose: (() => void) | null = null
+let recoveryRun: Promise<void> | null = null
+
+/** Reuse the existing adopter after the predecessor settles; never revive an
+ * old binding closure or turn a capability-only button into an importer. */
+export function restoreShippedGroupBindings(storage: PluginStorage): Promise<void> {
+  if (!recoveryDispose) { return Promise.resolve() }
+
+  if (recoveryRun) { return recoveryRun }
+  const generation = lifecycleGeneration
+  const predecessor = currentRun?.promise.catch(() => undefined) ?? Promise.resolve()
+
+  const run = predecessor.then(async () => {
+    if (generation !== lifecycleGeneration) { return }
+
+    const missing = Object.entries($groupChats.get()).some(([name, room]) =>
+      !room.tombstone && room.shippedAdoption?.state === 'adopted' &&
+      $canonicalGroupBindings.get()[name]?.isCurrent?.() !== true)
+
+    if (missing) { await adoptShippedGroupChats(storage, true) }
+  }).finally(() => { if (recoveryRun === run) { recoveryRun = null } })
+
+  recoveryRun = run
+
+  return run
+}
+
+function observeAdoptedRoutes(storage: PluginStorage): void {
+  if (recoveryDispose) { return }
+  // Socket retention is not execution authority. It keeps the existing bounded
+  // reconnect loop alive after a dead binding's counted request lease is freed.
+  const retained = new Map<string, () => void>()
+
+  const reconcile = () => {
+    const wanted = new Set<string>()
+
+    for (const room of Object.values($groupChats.get())) {
+      const adoption = room.shippedAdoption
+
+      if (room.tombstone || adoption?.state !== 'adopted' || !adoption.route ||
+          adoption.issue?.kind === 'owner-replaced') { continue }
+
+      const { connectionId, profile } = adoption.route
+      const key = JSON.stringify([connectionId, profile])
+      wanted.add(key)
+
+      if (!retained.has(key)) {
+        retained.set(key, host.retainProfileSocket?.({ connectionId, mode: 'remote', profile, targetProfile: profile }) ?? (() => undefined))
+      }
+    }
+
+    for (const [key, release] of retained) {
+      if (!wanted.has(key)) { retained.delete(key); release() }
+    }
+  }
+
+  const unbind = $groupChats.listen(reconcile)
+
+  const unwatch = host.onProfileRouteState?.(event => {
+    if (!retained.has(JSON.stringify([event.connectionId, event.profile]))) { return }
+    revokeStaleAdoptedCanonicalGroups()
+
+    if (event.state === 'open') { void restoreShippedGroupBindings(storage).catch(() => undefined) }
+  })
+
+  recoveryDispose = () => {
+    unwatch?.()
+    unbind()
+
+    for (const release of retained.values()) { release() }
+    retained.clear()
+  }
+
+  reconcile()
+}
 
 // Group-room authority changes publish synchronously. Retire a stale route
 // lease in that same writer turn, before a mounted continuation can dispatch.
@@ -153,6 +229,7 @@ function historicalMember(
     text(author?.source),
     author?.hostedIdentity?.memberId || ''
   ])
+
   const existing = former.get(signature)
 
   if (existing) {
@@ -677,6 +754,7 @@ export async function selectShippedGroupOwner(
     if (!(await persistCheckpoint(storage, group, room, prepared))) {
       return
     }
+
     routeOwner.assertCurrent()
     adoption = prepared
     const preparedRoute = prepared.route!
@@ -711,6 +789,7 @@ export async function selectShippedGroupOwner(
     if (generation !== lifecycleGeneration) {
       return
     }
+
     const issue = issueForError(error)
     await persistIssue(storage, group, adoption, issue.kind, issue.message)
   } finally {
@@ -758,6 +837,7 @@ async function readCapability(owner: PluginProfileRouteLease): Promise<Capabilit
 
 function issueForError(error: unknown): { kind: ShippedGroupAdoptionIssueKind; message: string } {
   const message = error instanceof Error ? error.message : String(error)
+
   const tagged =
     error && typeof error === 'object' ? (error as { adoptionIssue?: ShippedGroupAdoptionIssueKind }) : null
 
@@ -923,6 +1003,7 @@ async function restoreAdoptedGroup(
   if (!route) {
     return
   }
+
   let routeOwner: PluginProfileRouteLease | null = null
 
   try {
@@ -1051,6 +1132,7 @@ async function importPreparedGroup(
   if (!persisted || !current() || !checkpointMatches($groupChats.get()[group], acknowledged)) {
     return false
   }
+
   routeOwner.assertCurrent()
   bindAdoptedCanonicalGroup(
     group,
@@ -1291,11 +1373,13 @@ async function processGroup(storage: PluginStorage, group: string, generation: n
   }
 }
 
-async function runAdoption(storage: PluginStorage, generation: number): Promise<void> {
+async function runAdoption(storage: PluginStorage, generation: number, restoreOnly = false): Promise<void> {
   for (const group of Object.keys($groupChats.get())) {
     if (generation !== lifecycleGeneration) {
       return
     }
+
+    if (restoreOnly && $groupChats.get()[group]?.shippedAdoption?.state !== 'adopted') { continue }
 
     try {
       await processGroup(storage, group, generation)
@@ -1318,16 +1402,21 @@ async function runAdoption(storage: PluginStorage, generation: number): Promise<
 
 /** Production startup/reconnect entrypoint. Re-entrant launches share one run;
  * a re-enabled lifecycle waits for the retired run before touching storage. */
-export function adoptShippedGroupChats(storage: PluginStorage): Promise<void> {
+export function adoptShippedGroupChats(storage: PluginStorage, restoreOnly = false): Promise<void> {
+  observeAdoptedRoutes(storage)
   const generation = lifecycleGeneration
 
   if (currentRun?.generation === generation) {
+    if (!restoreOnly && currentRun.restoreOnly) {
+      return currentRun.promise.then(() => generation === lifecycleGeneration ? adoptShippedGroupChats(storage) : undefined)
+    }
+
     return currentRun.promise
   }
 
   const predecessor = currentRun?.promise.catch(() => undefined) ?? Promise.resolve()
-  const promise = predecessor.then(() => runAdoption(storage, generation))
-  currentRun = { generation, promise }
+  const promise = predecessor.then(() => runAdoption(storage, generation, restoreOnly))
+  currentRun = { generation, restoreOnly, promise }
   void promise.finally(() => {
     if (currentRun?.promise === promise) {
       currentRun = null
@@ -1339,5 +1428,8 @@ export function adoptShippedGroupChats(storage: PluginStorage): Promise<void> {
 
 export function stopShippedGroupAdoption(): void {
   lifecycleGeneration += 1
+  recoveryDispose?.()
+  recoveryDispose = null
+  recoveryRun = null
   revokeAdoptedCanonicalGroupsForConnection()
 }

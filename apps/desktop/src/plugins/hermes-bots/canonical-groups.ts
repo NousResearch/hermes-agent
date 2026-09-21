@@ -8,6 +8,7 @@ export interface CanonicalGroupRoute {
 }
 
 export interface CanonicalGroupBinding extends CanonicalGroupRoute {
+  bindingGeneration?: number
   adoptionOwner?: {
     authorityGatewayId: string
     lifecycleGeneration: number
@@ -126,6 +127,7 @@ export function captureCanonicalGroupRoute(): CanonicalGroupRoute {
   if (connectionId === null) {
     throw new Error('Canonical groups require an explicit connection')
   }
+
   const route = { connectionId, profile: host.state.profile.get() }
   requireRoute(route)
 
@@ -298,6 +300,7 @@ export async function actCanonicalGroup(
     discard: 'groups.discard',
     approval: 'groups.approve'
   }
+
   const method = Object.hasOwn(methods, action.kind) ? methods[action.kind] : undefined
 
   if (

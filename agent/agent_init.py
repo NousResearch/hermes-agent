@@ -1054,14 +1054,14 @@ def _client_kwargs_from_routed(client, timeout) -> Dict[str, Any]:
 
 
 def _fallback_entries(fallback_model) -> List[Dict[str, Any]]:
-    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``."""
-    if isinstance(fallback_model, dict):
-        fallback_model = [fallback_model]
-    if not isinstance(fallback_model, list):
-        return []
-    return [
-        f for f in fallback_model if isinstance(f, dict) and f.get("provider") and f.get("model")
-    ]
+    """Normalize legacy single-dict ``fallback_model`` / list ``fallback_providers``.
+
+    Delegates to the shared parser (``hermes_cli.fallback_config``) so the agent-side chain and
+    every CLI/gateway/TUI reader accept the same entry shapes — dicts and ``'provider:model'``
+    strings — and warn on (never silently drop) malformed entries (#51560, #117806).
+    """
+    from hermes_cli.fallback_config import _iter_fallback_entries
+    return list(_iter_fallback_entries(fallback_model))
 
 
 def _init_fallback_chain(agent, fallback_model):

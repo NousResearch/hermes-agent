@@ -12,6 +12,22 @@ def _normalized_base_url(value: Any) -> str:
     return value.strip().rstrip("/") if isinstance(value, str) else ""
 
 
+def _parse_string_entry(entry: str) -> dict[str, str] | None:
+    """``"provider:model"`` shorthand → entry dict; None when no provider prefix is present.
+
+    Provider slugs never contain ``:``, so the FIRST colon always separates provider from
+    model — model ids with colons (``qwen/qwen3.6-plus``, ``glm-5.3-flash``) stay intact.
+    """
+    text = str(entry).strip()
+    provider, sep, model = text.partition(":")
+    if not sep:
+        return None
+    provider, model = provider.strip(), model.strip()
+    if not provider or not model:
+        return None
+    return {"provider": provider, "model": model}
+
+
 def resolve_entry_api_key(entry: dict[str, Any] | None) -> str | None:
     """API key for one fallback entry: inline ``api_key``, else ``key_env``.
 
@@ -78,17 +94,38 @@ def _iter_fallback_entries(raw: Any) -> list[dict[str, Any]]:
     candidates = [raw] if isinstance(raw, dict) else raw if isinstance(raw, list) else []
     entries: list[dict[str, Any]] = []
     for entry in candidates:
+        if isinstance(entry, str):
+            parsed = _parse_string_entry(entry)
+            if parsed is not None:
+                entries.append(parsed)
+            else:
+                logger.warning(
+                    "Ignoring malformed fallback entry %r — string entries must look like "
+                    "'provider:model' (e.g. 'openrouter:z-ai/glm-5.3-flash').", entry)
+            continue
         if not isinstance(entry, dict):
+            logger.warning(
+                "Ignoring malformed fallback entry %r — entries must be {provider, model} "
+                "dicts or 'provider:model' strings.", entry)
             continue
         provider = str(entry.get("provider") or "").strip()
         model = str(entry.get("model") or "").strip()
         if not provider or not model:
+            # A dict-shaped entry the user meant to configure: dropping it silently leaves a
+            # chain that looks configured but is empty (#51560, #117806) — fail loud instead.
+            logger.warning(
+                "Ignoring malformed fallback entry %r — missing %s.",
+                entry, "provider" if not provider else "model")
             continue
         normalized = {**entry, "provider": provider, "model": model}
         base_url = _normalized_base_url(entry.get("base_url"))
         if base_url:
             normalized["base_url"] = base_url
         entries.append(normalized)
+    if candidates and not entries:
+        logger.warning(
+            "fallback_providers/fallback_model is configured (%d raw entries) but no entry "
+            "parsed — the effective fallback chain is EMPTY.", len(candidates))
     return entries
 
 

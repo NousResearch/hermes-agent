@@ -37,7 +37,28 @@ fallback_providers:
     model: anthropic/claude-sonnet-4
 ```
 
-Each entry requires both `provider` and `model`. Entries missing either field are ignored.
+Each entry requires both `provider` and `model`. A compact string shorthand is also accepted —
+`'provider:model'` (the first colon separates the two, so model ids containing colons stay intact):
+
+```yaml
+fallback_providers:
+  - openrouter:anthropic/claude-sonnet-4
+```
+
+Entries that cannot be parsed — a dict missing `provider` or `model`, or a string without a
+`provider:model` prefix — are **dropped with a WARNING in the log**, never silently. If every
+entry is dropped, the log states that the effective chain is EMPTY: a chain that looks configured
+but parses to nothing is exactly how a primary outage becomes a dead session instead of a
+failover (#51560).
+
+### `fallback_policy.halt` — refuse fallback activation
+
+Set `fallback_policy.halt: true` to make Hermes **surface the primary failure instead of
+switching providers**. Use this when falling back would silently move spend onto a paid API
+(e.g. a subscription-backed primary whose usage window resets tomorrow, with metered fallback
+keys configured): with `halt` the chain is never walked, a `🛑 fallback_policy.halt is enabled —
+staying on …` diagnostic is emitted, and the primary's error surfaces through the normal
+terminal path. Default is `false` (activate the chain as usual).
 
 When a rate-limit response names its reset time, the primary is benched until exactly then (a provider that says nothing gets the exponential 60 s → 4 h backoff). Optionally, skip the switch when the primary reopens soon:
 

@@ -26,6 +26,13 @@ DEFAULT_CONFIG = {
     # sooner than this many seconds, stay on it (the retry backoff rides out the window) instead
     # of switching the turn to a fallback model.
     "fallback": {"min_switch_reset_seconds": 0},
+    "fallback_policy": {
+        # halt: refuse fallback activation entirely — surface the primary failure instead of
+        # switching providers (e.g. a subscription-backed primary exhausting must not silently
+        # start spending paid fallback API budget). The switch refusal is emitted as a visible
+        # diagnostic either way; nothing about fallback activation is silent.
+        "halt": False,
+    },
     "credential_pool_strategies": {},
     "toolsets": ["hermes-cli"],
     # journal_mode: SQLite journal mode for every Hermes DB. "wal" default; use "delete" on

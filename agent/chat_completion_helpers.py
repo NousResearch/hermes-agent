@@ -2023,10 +2023,30 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
+def _fallback_halt_enabled(agent) -> bool:
+    """True when ``fallback_policy.halt`` is set: surface the primary failure, never switch.
+
+    Fail-open (False) when the config cannot be read — a broken config read must not disable
+    recovery for someone who never asked for a halt.
+    """
+    try:
+        from hermes_cli.config_effective import load_user_config_effective
+        policy = load_user_config_effective().get("fallback_policy")
+    except Exception:
+        return False
+    return bool(isinstance(policy, dict) and policy.get("halt"))
+
+
 def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
+    if _fallback_halt_enabled(agent):
+        old_model, old_provider = agent.model, agent.provider
+        agent._emit_diagnostic_status(
+            f"🛑 fallback_policy.halt is enabled — staying on {old_model} via {old_provider}; "
+            "primary failure follows. Not switching providers (config: fallback_policy.halt).")
+        return False
     from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
     if switch_deferred_by_reset(agent, reason, reset_at):
         return False

@@ -435,3 +435,33 @@ class TestRejectionNeverReachesPersistedHistory:
         api_messages = self._history()
         assert strip_images_for_rejecting_model(agent, api_messages) is False
         assert str(api_messages).count("data:image/png") == 2
+
+
+def test_iteration_summary_strips_images_for_rejecting_model(tmp_path, monkeypatch):
+    """The max-iterations summary hand-builds api_messages and bypasses build_api_request, so
+    it must apply the same per-model strip; history keeps its image."""
+    import copy
+
+    from agent.chat_completion_helpers import _iteration_summary_api_messages
+    from agent.vision_message_prep import _provider_model_key
+    from run_agent import AIAgent
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    agent = AIAgent(api_key="k", base_url="https://api.groq.com/openai/v1", provider="custom", model="m",
+                    quiet_mode=True, skip_context_files=True, skip_memory=True)
+    agent._cached_system_prompt = "SYS"
+    agent._image_rejecting_models.add(_provider_model_key(agent))
+    history = [
+        {"role": "user", "content": [
+            {"type": "text", "text": "look"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+        ]},
+        {"role": "assistant", "content": "ok"},
+    ]
+    before = copy.deepcopy(history)
+
+    out = _iteration_summary_api_messages(agent, history)
+
+    assert "image_url" not in str(out), "summary request must be text-only for a rejecting model"
+    assert any("look" in str(m.get("content")) for m in out if m.get("role") == "user")
+    assert history == before, "the per-call strip must not leak into canonical history"

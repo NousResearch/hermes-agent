@@ -66,6 +66,12 @@ function setup(alreadyRunning = false) {
     calls.push(message)
 
     const promise = new Promise((resolve, reject) => {
+      // Like the real bus: a call addressed to a unique name that has gone away
+      // is answered with an error, not routed to the new owner.
+      if (message.destination?.startsWith(':') && message.destination !== owner) {
+        reject(Object.assign(new Error('no such name'), { dbusName: 'org.freedesktop.DBus.Error.NameHasNoOwner' }))
+        return
+      }
       if (failures.has(message.member ?? '')) {
         reject(Object.assign(new Error('fixture failure'), { dbusName: failures.get(message.member ?? '') }))
         return
@@ -271,6 +277,10 @@ it.skipIf(process.platform !== 'linux')(
     race.raceOwnerReply()
     expect(await race.notify({ tag: 'obsolete-owner', focusSessionId: 'must-not-open' })).toBe(false)
     expect(race.calls.filter(call => call.member === 'Notify')).toHaveLength(0)
+    // A daemon swap is not a daemon failure: the next notification goes to the
+    // new owner right away instead of sitting out the failure cooldown.
+    expect(await race.notify({ tag: 'after-race' })).toBe(true)
+    expect(race.calls.filter(call => call.member === 'Notify')).toHaveLength(1)
     race.connection.emit('close')
 
     const h = setup(true)

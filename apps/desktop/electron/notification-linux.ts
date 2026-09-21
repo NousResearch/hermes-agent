@@ -173,6 +173,9 @@ export function createLinuxNotifications() {
       pending++
       const timer = setTimeout(() => abort.abort(), DELIVERY_TIMEOUT_MS)
       const callOptions = { signal: abort.signal, timeout: DELIVERY_TIMEOUT_MS }
+      // The owner this delivery was addressed to; the catch below reads it to
+      // tell a daemon that failed from a daemon that was replaced under us.
+      let addressed: { state: Connection; generation: number } | undefined
 
       try {
         const state = connect()
@@ -207,6 +210,7 @@ export function createLinuxNotifications() {
         }
 
         const { owner, generation } = destination
+        addressed = { state, generation }
         if (state.generation !== generation) {
           throw new Error('Notification owner changed during lookup')
         }
@@ -295,7 +299,11 @@ export function createLinuxNotifications() {
       } catch {
         // A timeout may still have delivered remotely. Never replay it, and do
         // not discard older healthy notifications' callbacks on this connection.
-        retryAfter = Date.now() + RETRY_COOLDOWN_MS
+        // A failure against an owner that has since been replaced says nothing
+        // about the new daemon, so it earns no cooldown.
+        if (!addressed || addressed.state.generation === addressed.generation) {
+          retryAfter = Date.now() + RETRY_COOLDOWN_MS
+        }
         release()
         notification.emit('failed')
 

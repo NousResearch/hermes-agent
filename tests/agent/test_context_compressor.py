@@ -2378,12 +2378,31 @@ class TestThresholdTokensCap:
     )
     def test_model_ratio_outranks_only_implicit_default_cap(self, cap_is_default, expected):
         """A model-specific ratio is user intent; an explicit absolute cap remains authoritative."""
+        from agent.agent_init import _parse_compression_config
+
+        merged = {
+            "compression": {
+                "threshold": 0.50,
+                "model_thresholds": {"deepseek-flash": 0.30},
+                "threshold_tokens": 256_000,
+            },
+        }
+        user_compression = {"model_thresholds": {"deepseek-flash": 0.30}}
+        if not cap_is_default:
+            user_compression["threshold_tokens"] = 256_000
+        settings = _parse_compression_config(
+            SimpleNamespace(model="deepseek-flash", provider="deepseek", api_mode="chat_completions"),
+            merged,
+            {"compression": user_compression},
+        )
+        assert settings.threshold_tokens_is_default is cap_is_default
+
         comp = ContextCompressor(
             "deepseek-flash",
             threshold_percent=0.50,
             model_thresholds={"deepseek-flash": 0.30},
             threshold_tokens_cap=256_000,
-            threshold_tokens_cap_is_default=cap_is_default,
+            threshold_tokens_cap_is_default=settings.threshold_tokens_is_default,
             config_context_length=1_000_000,
             quiet_mode=True,
         )

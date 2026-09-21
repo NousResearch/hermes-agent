@@ -14,26 +14,19 @@ describe('formatRendererConsoleLine', () => {
     expect(line).toBe('[renderer console:hud] Minified React error #310 (file:///app/index.js:13)')
   })
 
-  it('formats the deprecated positional shape at error level', () => {
-    const line = formatRendererConsoleLine('main', 3, 'boom', 7, 'file:///app/vendor.js')
-
-    expect(line).toBe('[renderer console:main] boom (file:///app/vendor.js:7)')
-  })
-
-  it('drops non-error levels in both shapes', () => {
+  it('drops non-error levels', () => {
     expect(formatRendererConsoleLine('main', { level: 1, message: 'x', sourceUrl: 's', lineNumber: 1 })).toBeNull()
-    expect(formatRendererConsoleLine('main', 2, 'warn', 1, 's')).toBeNull()
   })
 })
 
 describe('attachRendererConsoleCapture', () => {
   it('logs error-level messages and skips the rest', () => {
     const log = vi.fn()
-    let handler: ((...args: unknown[]) => void) | undefined
+    let handler: ((event: { level: number; message: string; sourceUrl: string; lineNumber: number }) => void) | undefined
 
     const win = {
       webContents: {
-        on: (_event: string, listener: (...args: unknown[]) => void) => {
+        on: (_event: string, listener: (...args: any[]) => void) => {
           handler = listener
         }
       }
@@ -41,8 +34,8 @@ describe('attachRendererConsoleCapture', () => {
 
     attachRendererConsoleCapture(win, 'quick-entry', log)
 
-    handler?.({}, { level: 3, message: 'crash', sourceUrl: 'src', lineNumber: 2 })
-    handler?.({}, { level: 0, message: 'debug', sourceUrl: 'src', lineNumber: 3 })
+    handler?.({ level: 3, message: 'crash', sourceUrl: 'src', lineNumber: 2 })
+    handler?.({ level: 0, message: 'debug', sourceUrl: 'src', lineNumber: 3 })
 
     expect(log).toHaveBeenCalledTimes(1)
     expect(log).toHaveBeenCalledWith('[renderer console:quick-entry] crash (src:2)')

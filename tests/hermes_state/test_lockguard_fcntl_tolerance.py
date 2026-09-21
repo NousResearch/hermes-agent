@@ -75,6 +75,17 @@ def test_guard_degrades_to_a_no_op_instead_of_killing_every_importer(monkeypatch
         os.close(fd)
 
 
+@pytest.mark.windows_only
+def test_windows_never_arms_the_guard_even_with_an_importable_fcntl(monkeypatch):
+    # Stock CPython for Windows has no fcntl, so the lookalike is the only way this branch can
+    # see an importable module; the platform gate must decide before the import does.
+    guard = _reimport_with_fcntl(monkeypatch, _windows_fcntl_lookalike())
+
+    assert guard.fcntl is None
+    assert guard.supported() is False
+    assert guard.hold("state.db") == {}
+
+
 def test_a_usable_fcntl_still_arms_the_guard(monkeypatch):
     real_fcntl = pytest.importorskip("fcntl", reason="POSIX-only: nothing to arm on Windows")
 

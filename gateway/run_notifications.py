@@ -44,12 +44,13 @@ def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_
         platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
 
 
-def _delivery_target_key(platform_value: str, chat_id, thread_id) -> tuple:
-    """Dedupe key for one DELIVERED chat, profile-independent.
-
-    Two served profiles can share a single home chat (one Telegram group for the whole host);
-    keyed per profile they would each post their own "Gateway online" notice into it.
-    """
+def _delivery_target_key(platform_value: str, chat_id, thread_id, *, profile: Optional[str] = None) -> tuple:
+    """Dedupe shared chats across profiles, but not Telegram bot-private conversations."""
+    # Telegram private chat IDs identify the user, not the conversation with a particular bot.
+    # Groups have negative IDs and remain one shared destination across served profiles.
+    chat = str(chat_id)
+    if platform_value == "telegram" and chat.isdecimal() and int(chat) > 0:
+        return _served_notice_target_key(profile, platform_value, chat_id, thread_id)
     return _notice_target_key(platform_value, chat_id, thread_id)
 
 
@@ -955,7 +956,7 @@ class GatewayNotificationsMixin:
         targets = list(self._served_home_channel_transports())
         # A chat already notified for ANOTHER profile is not notified again.
         notified_chats = {
-            _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             for profile, platform, _cfg, home, _transport in targets
             if _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id) in skipped
         }
@@ -969,7 +970,7 @@ class GatewayNotificationsMixin:
             target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
             if target in skipped or target in delivered:
                 continue
-            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id)
+            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id, profile=profile)
             if chat in notified_chats:
                 delivered.add(target)
                 continue

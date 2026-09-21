@@ -238,14 +238,36 @@ class TestClassifyApiError:
         assert result.should_rotate_credential is False
 
     def test_403_server_error_type_without_code_stays_auth(self):
-        """A real credential refusal carries no transient code: ``permission_error``
-        keeps the auth verdict and the abort path (fallback, not retry)."""
-        body = {"error": {"message": "Forbidden", "type": "permission_error"}}
+        """``type=server_error`` with no explicit ``error.code`` and no relay wrapper
+        wording is an unverified permission refusal: keep the auth verdict and the
+        abort path (fallback, not retry)."""
+        body = {"error": {"type": "server_error", "message": "Forbidden"}}
         result = classify_api_error(
             MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
         )
         assert result.reason == FailoverReason.auth
         assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_403_server_error_wrapped_billing_stays_billing(self):
+        """A billing refusal that happens to carry ``type=server_error`` needs
+        credential rotation, not a retry loop on the same key."""
+        body = {"error": {"type": "server_error", "message": "Budget limit exceeded (monthly limit)"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.should_rotate_credential is True
+
+    def test_403_server_error_wrapped_waf_block_stays_upstream_blocked(self):
+        """A CDN block page wrapped in ``type=server_error`` takes the WAF fallback
+        path, not a retry on the same route."""
+        body = {"error": {"type": "server_error", "message": "Sorry, you have been blocked"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body), provider="custom"
+        )
+        assert result.reason == FailoverReason.upstream_blocked
+        assert result.should_rotate_credential is False
         assert result.should_fallback is True
 
 

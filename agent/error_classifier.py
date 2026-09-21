@@ -997,16 +997,34 @@ def _off_route_host(c: _Ctx) -> str:
 # Structured codes some gateways put on a 403 that mean "the upstream is down,
 # retry later" — not a credential refusal (#75388). Checked before the auth
 # default so the configured retry budget applies and no credential is benched.
-# ``server_error`` is the same class of wrapper: OpenCode relays stamp it on a
-# 403 when the upstream answer was unparseable, and the same request succeeds
-# seconds later (#117869).
-_403_TRANSIENT_CODES = frozenset({"upstream_unavailable", "server_error"})
+_403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
+# ``server_error`` on a 403 is accepted ONLY when the body carries the relay
+# wrapper this was verified on (OpenCode stamping "Upstream request failed:
+# [...]" when the upstream answer was unparseable, #117869): the code alone is
+# not proof, because ``error.code`` falls back to ``error.type`` and several
+# providers reuse the same word for plain permission refusals.
+_403_SERVER_ERROR_WRAPPER_MARKERS = ("upstream request failed",)
+
+
+def _explicit_error_code_field(body: Any) -> str:
+    """The ``error.code`` field as written, without the ``error.type`` fallback
+    ``_code_from_payload`` applies: a relay stamping a transient upstream
+    failure writes the code explicitly (#117869), while a plain permission
+    refusal often carries only ``type``."""
+    if not isinstance(body, dict):
+        return ""
+    err = body.get("error")
+    if not isinstance(err, dict):
+        return ""
+    code = err.get("code")
+    return code.strip().lower() if isinstance(code, str) else ""
 
 
 def _status_403(c: _Ctx) -> Verdict:
-    if c.code in _403_TRANSIENT_CODES:
-        return _V_OVERLOADED
-    # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
+    # Billing and WAF verdicts stay decisive even when the body also carries a
+    # transient-looking code: a "Budget limit exceeded" or a CDN block page
+    # wrapped in ``type=server_error`` needs rotation or WAF fallback, not a
+    # retry loop on the same credential.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
     if billing:
@@ -1016,6 +1034,12 @@ def _status_403(c: _Ctx) -> Verdict:
     # 403 and on established block/challenge markers; any other 403 stays auth.
     if any(p in c.msg for p in _UPSTREAM_BLOCKED_PATTERNS):
         return _V_UPSTREAM_BLOCKED
+    if c.code in _403_TRANSIENT_CODES:
+        return _V_OVERLOADED
+    if _explicit_error_code_field(c.body) == "server_error" and any(
+        m in c.msg for m in _403_SERVER_ERROR_WRAPPER_MARKERS
+    ):
+        return _V_OVERLOADED
     return _V_AUTH_FALLBACK
 
 

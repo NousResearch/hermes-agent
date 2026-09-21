@@ -4285,12 +4285,13 @@ class GatewayTurnMixin:
             else:
                 response = await self._run_agent_local_turn(
                     disp, turn_ctx, turn_runner, _cleanup_adapter, message_type,
+                    scheduled_heartbeat=scheduled_heartbeat,
                 )
             return response
         finally:
             await turn_runner.finish_native_cot(response)
 
-    async def _run_agent_local_turn(self, disp, turn_ctx, turn_runner, _cleanup_adapter, message_type):
+    async def _run_agent_local_turn(self, disp, turn_ctx, turn_runner, _cleanup_adapter, message_type, scheduled_heartbeat: bool = False):
         source, session_key = turn_ctx.source, turn_ctx.session_key
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
             turn_ctx, turn_runner, source, turn_ctx.event_message_id, disp._native_slack_task_cards,

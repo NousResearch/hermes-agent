@@ -1,16 +1,64 @@
 """Cron job argument normalization, validation and result shaping (re-exported by
 tools/cronjob_tools.py)."""
 
+import contextlib
 import logging
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Union
 
 from cron.jobs import effective_job_state
 
+import hermes_time
+
 # Logger parity with the origin module.
 logger = logging.getLogger("tools.cronjob_tools")
 
+# A one-shot firing within this many minutes is still part of the conversation that created it:
+# with platforms.slack.extra.reply_in_thread at its default true, the whole exchange under a
+# top-level message lives in the thread keyed on that message's own id.
+_THREAD_HORIZON_MINUTES = 60
 
-def _origin_from_env() -> Optional[Dict[str, str]]:
+
+def _first_fire_within_thread_horizon(
+    schedule: Union[str, Dict[str, Any], None],
+) -> bool:
+    """True when the job's first fire is close enough that the creating conversation is still
+    alive when it happens. Only near one-shots qualify; recurring jobs and one-shots beyond the
+    horizon outlive the conversation, which is what the synthetic-drop rule protects."""
+    if not schedule:
+        return False
+    parsed: Optional[Dict[str, Any]]
+    if isinstance(schedule, dict):
+        parsed = schedule
+    else:
+        parsed = None
+        with contextlib.suppress(Exception):
+            from cron.jobs import parse_schedule
+
+            parsed = parse_schedule(schedule)
+    if not isinstance(parsed, dict) or parsed.get("kind") != "once":
+        return False
+    run_at = parsed.get("run_at")
+    if not run_at:
+        return False
+    try:
+        fire_at = datetime.fromisoformat(str(run_at).replace("Z", "+00:00"))
+    except ValueError:
+        return False
+    now = hermes_time.now()
+    if fire_at.tzinfo is None:
+        fire_at = fire_at.replace(tzinfo=now.tzinfo)
+    # Bounded interval: an already-expired run_at gives a negative delta that would
+    # otherwise sail through a bare upper bound — a conversation that is already over
+    # must fail closed to the channel-level drop, while a fire at this instant still
+    # happens inside the live conversation and keeps the thread.
+    delta = fire_at - now
+    return timedelta(0) <= delta <= timedelta(minutes=_THREAD_HORIZON_MINUTES)
+
+
+def _origin_from_env(
+    schedule: Union[str, Dict[str, Any], None] = None,
+) -> Optional[Dict[str, str]]:
     from gateway.session_context import async_delivery_supported, get_session_env
     origin_platform = get_session_env("HERMES_SESSION_PLATFORM")
     origin_chat_id = get_session_env("HERMES_SESSION_CHAT_ID")
@@ -24,14 +72,26 @@ def _origin_from_env() -> Optional[Dict[str, str]]:
     thread_id = get_session_env("HERMES_SESSION_THREAD_ID") or None
     # Slack stamps every TOP-LEVEL message's own id as the session thread (a per-message
     # KEY, not a location); persisting it would pin all future deliveries inside an
-    # ephemeral thread, so thread == creating message id is synthetic and dropped.
+    # ephemeral thread, so thread == creating message id is synthetic and dropped — unless
+    # the job's first fire is within the conversation's remaining lifetime: under the
+    # default reply_in_thread the exchange under a top-level message lives in exactly that
+    # thread, so a near one-shot must deliver back into it.
     if thread_id and origin_platform == "slack":
         message_id = get_session_env("HERMES_SESSION_MESSAGE_ID") or None
         if message_id and str(thread_id) == str(message_id):
-            logger.debug(
-                "Cron origin: dropping synthetic per-message Slack "
-                "thread_id=%s (== creation message id)", thread_id)
-            thread_id = None
+            if _first_fire_within_thread_horizon(schedule):
+                logger.debug(
+                    "Cron origin: keeping synthetic Slack thread_id=%s — first fire is "
+                    "within the conversation horizon",
+                    thread_id,
+                )
+            else:
+                logger.debug(
+                    "Cron origin: dropping synthetic per-message Slack "
+                    "thread_id=%s (== creation message id)",
+                    thread_id,
+                )
+                thread_id = None
     if thread_id:
         logger.debug(
             "Cron origin captured thread_id=%s for %s:%s",

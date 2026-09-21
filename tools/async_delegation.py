@@ -143,6 +143,10 @@ def _persist_dispatch(record: Dict[str, Any]) -> None:
         key: record.get(key)
         for key in ("goal", "goals", "context", "toolsets", "role", "model", "is_batch", "task_indexes", "task_transcripts", *_ROUTING_KEYS)
         if key in record}
+    try:  # where the children's terminals started; lets recovery add a git-state hint
+        task_payload["owner_cwd"] = os.getcwd()
+    except OSError:
+        pass
     with _DB_LOCK, _transaction() as conn:
         conn.execute("""INSERT OR REPLACE INTO async_delegations
                (delegation_id, origin_session, origin_ui_session_id,
@@ -225,7 +229,7 @@ def recover_abandoned_delegations() -> int:
     """Classify records whose owning process disappeared as outcome unknown; children a multi-child unit had already
     recorded (``record_unit_child``) are replayed with their real results."""
     try:
-        from gateway.status import _pid_exists, get_process_start_time
+        from gateway.status import _pid_exists, get_process_start_time, start_time_fingerprints_match
     except Exception:
         return 0
     now, recovered = time.time(), 0
@@ -236,7 +240,9 @@ def recover_abandoned_delegations() -> int:
                FROM async_delegations WHERE state IN ('running','finalizing')""").fetchall()
         for row in rows:
             delegation_id, session_key, origin_ui, parent_id, dispatched_at, pid, started, task_json, origin_sid, result_json, last_state = row
-            if pid and _pid_exists(int(pid)) and (started is None or get_process_start_time(int(pid)) == int(started)):
+            if pid and _pid_exists(int(pid)) and (
+                started is None or start_time_fingerprints_match(started, get_process_start_time(int(pid)) or 0)
+            ):
                 continue
             task = json.loads(task_json or "{}")
             error = "Delegation owner exited before recording a terminal result; outcome unknown."
@@ -246,6 +252,13 @@ def recover_abandoned_delegations() -> int:
                 error = (f"Delegation owner exited before the unit finished; {done}/{len(recovered_results)} child "
                          "results were recorded and are included below, the rest are unknown.")
             diagnostics = {"last_known_status": last_state, "task_transcripts": task.get("task_transcripts") or {}}
+            # Verbatim transcript tails + a git snapshot of the owner's cwd, so the parent can
+            # continue or re-dispatch from the event alone instead of opening files (#116000).
+            from tools.async_delegation_recovery_hints import git_state_hint, transcript_tails
+            if tails := transcript_tails(diagnostics["task_transcripts"]):
+                diagnostics["transcript_tails"] = tails
+            if hint := git_state_hint(task.get("owner_cwd")):
+                diagnostics["git_state_hint"] = hint
             event = {
                 "type": "async_delegation", "delegation_id": delegation_id, "session_key": session_key,
                 "origin_ui_session_id": origin_ui, "origin_session_id": origin_sid or "",

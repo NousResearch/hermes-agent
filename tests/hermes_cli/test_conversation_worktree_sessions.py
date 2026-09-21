@@ -134,7 +134,9 @@ def _build_cli(
     monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setattr(cli_module, "CLI_CONFIG", _enabled_config())
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: db)
+    import hermes_state_registry
+
+    monkeypatch.setattr(hermes_state_registry, "acquire", lambda: db)
     monkeypatch.setattr(cli_module, "_run_state_db_auto_maintenance", lambda _db: None)
     monkeypatch.setattr(cli_module, "_run_checkpoint_auto_maintenance", lambda: None)
     monkeypatch.setattr(
@@ -343,7 +345,9 @@ def test_cmd_chat_resume_replaces_persisted_stable_cwd_end_to_end(
     monkeypatch.setenv("HERMES_SESSION_SOURCE", "cli")
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     monkeypatch.setattr(cli_module, "CLI_CONFIG", _enabled_config())
-    monkeypatch.setattr(hermes_state, "SessionDB", lambda: db)
+    import hermes_state_registry
+
+    monkeypatch.setattr(hermes_state_registry, "acquire", lambda: db)
     monkeypatch.setattr(cli_module, "_run_state_db_auto_maintenance", lambda _db: None)
     monkeypatch.setattr(cli_module, "_run_checkpoint_auto_maintenance", lambda: None)
     monkeypatch.setattr(

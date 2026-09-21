@@ -43,6 +43,16 @@ class CustomProfile(ProviderProfile):
         """
         return OPENAI_COMPAT_WIRE_EFFORTS
 
+    def default_reasoning_config(self, model: str | None = None) -> dict | None:
+        """Unset ``agent.reasoning_effort`` → ``medium``, as on the Nous / OpenRouter profiles.
+
+        Leaving the field off lets the endpoint's own default apply, and for a hosted reasoning
+        model that default can be its ceiling: kimi-k3 behind an OpenAI-compatible relay defaults
+        to ``max`` — 3x the reasoning tokens and ~3x the latency of medium. The agent skips this
+        default for models the catalog marks non-reasoning (``agent.reasoning_params``).
+        """
+        return {"enabled": True, "effort": "medium"}
+
     def build_api_kwargs_extras(
         self, *, reasoning_config: dict | None = None, ollama_num_ctx: int | None = None, **ctx: Any
     ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -53,8 +63,10 @@ class CustomProfile(ProviderProfile):
         # disabled -> top-level reasoning_effort="none" (Ollama's /v1 ignores
         # extra_body.think) plus think=False only on Ollama URLs; enabled+effort ->
         # top-level reasoning_effort clamped to the OpenAI-compat wire (GLM/ARK,
-        # vLLM and SGLang all top out at "max"; "ultra" verbatim 400s); enabled
-        # without effort -> omit so the server default applies. Never emit
+        # vLLM and SGLang all top out at "max"; "ultra" verbatim 400s); None ->
+        # omit so the server default applies (auxiliary calls without an effort, and
+        # the main loop after the route rejected the reasoning field — an unset main
+        # effort arrives here already filled by default_reasoning_config). Never emit
         # think=True (Ollama-only flag).
         ollama_endpoint = _looks_like_ollama_endpoint(ctx.get("base_url"))
         if reasoning_config and isinstance(reasoning_config, dict):

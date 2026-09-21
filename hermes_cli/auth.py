@@ -434,6 +434,15 @@ def is_rate_limited_auth_error(error: Exception) -> bool:
             and error.code == CODEX_RATE_LIMITED_CODE)
 
 
+def primary_failure_wording(error: Exception) -> tuple[str, str]:
+    """``(log_phrase, user_phrase)`` for a primary-provider failure that triggers the fallback
+    chain. A 429/quota AuthError leaves the credentials valid; labelling it "auth failed" sends
+    operators hunting for an expired token (#117482), so it reads as quota at every surface."""
+    if is_rate_limited_auth_error(error):
+        return "rate-limited (429)", "Primary provider quota exhausted"
+    return "auth failed", "Primary auth failed"
+
+
 # Entitlement failures: Nous gets a Portal-aware message; other providers a fixed generic one (or
 # the raw error when no generic text exists for the code).
 _GENERIC_ENTITLEMENT_MESSAGES = {
@@ -1126,7 +1135,19 @@ _VERTEX_PROVIDER_IDS = ("vertex", "google-vertex", "vertex-ai", "gcp-vertex", "v
 
 
 def _env_secret(name: str) -> bool:
-    return has_usable_secret(os.getenv(name, ""))
+    """True when *name* resolves to a usable secret in the active profile scope.
+
+    Must not read raw ``os.getenv``: under ``hermes serve`` / Desktop multiplex the
+    process environ is the *launch* profile, so a DeepSeek key pasted into another
+    profile's ``.env`` would be invisible to ``explicit_only`` Settings → Model
+    until a Bot-chat Refresh ran against that profile's own backend.
+    Same reader as the credential resolver (``get_env_value_prefer_dotenv``: the current
+    HERMES_HOME ``.env`` first, then the scope-checked environ) so the gate and the key that
+    actually authenticates never disagree — an empty ``DEEPSEEK_API_KEY=`` export in the parent
+    shell must not hide a real key in ``.env`` (#77007).
+    """
+    from hermes_cli.config import get_env_value_prefer_dotenv
+    return has_usable_secret(get_env_value_prefer_dotenv(name) or "")
 
 
 def _explicit_env_credentials_present(normalized: str) -> bool:

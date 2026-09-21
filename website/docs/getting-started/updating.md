@@ -210,6 +210,28 @@ Close the listed processes and re-run. If you're sure the concurrent process won
 
 A second, separate guard refuses to touch the venv while any process is running from its Python interpreter (the Desktop app's backend, a gateway, a Python REPL). Those processes keep native extension files (`.pyd`) locked, and a dependency sync that dies partway on an access-denied error strands the install between versions. This guard is **not** bypassed by `--force`; if you're certain the detected holders are false positives, use the explicit `hermes update --force-venv`.
 
+#### Scripted updates: `hermes update --list-venv-holders`
+
+A scheduled `hermes update --yes` that keeps hitting the venv guard (typically because the
+Desktop app relaunches its backend) can ask first instead of looping. `hermes update
+--list-venv-holders` is read-only: it prints the processes the guard would refuse on as a
+JSON list of `{pid, exe, argv, kind}` and exits `0` when the venv is free or `3` when holders
+are present. `kind` is `gateway` (a pausable gateway the updater handles itself), `backend`
+(a `hermes serve` / dashboard backend — the Desktop app's shape), `hermes:<subcommand>` for any
+other Hermes process, or `python` for an unrelated interpreter. Automation can stop exactly
+those PIDs (or quit the Desktop app) and retry; nothing is terminated by the flag itself. The
+guard only exists on Windows, so the list is always `[]` elsewhere.
+
+```
+$ hermes update --list-venv-holders
+[
+  {"pid": 4242, "exe": "C:\\hermes\\venv\\Scripts\\python.exe",
+   "argv": "...python.exe -m hermes_cli.main serve --port 8642", "kind": "backend"}
+]
+$ echo $LASTEXITCODE
+3
+```
+
 Both guards, the Desktop update preflight, and the dependency repair steps look for the environment at `venv` first and then at the uv-default `.venv`, so a source checkout set up with `uv venv` / `uv sync` updates the same way an installer-created `venv` does. When both directories exist, `venv` is the one that gets updated.
 
 #### Windows: the update finishes under the venv Python

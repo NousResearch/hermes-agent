@@ -415,7 +415,12 @@ DANGEROUS_PATTERNS = [
     (r'\bgit\s+push\b.*--forc[a-z]*\b', "git force push (rewrites remote history)"),
     (r'\bgit\s+push\b.*-f\b', "git force push short flag (rewrites remote history)"),
     (r'\bgit\s+clean\s+-[^\s]*f', "git clean with force (deletes untracked files)"),
-    (r'\bgit\s+branch\s+-D\b', "git branch force delete"),
+    # `-D` = `-d --force`: only the capital short flag is force-delete, so the group opts out of
+    # the module-wide re.IGNORECASE and relies on _lower_preserving_flags keeping dash-prefixed
+    # tokens' case in the detection input (every other pattern matches case-insensitively and is
+    # unaffected). The safe merged-only -d / --delete stays ungated by design — git itself refuses
+    # to delete a branch that is not fully merged.
+    (r'\bgit\s+branch\s+(?-i:-D)\b', "git branch force delete"),
     # `-D` = `-d --force`; the long spellings are different tokens, so match delete+force in either order, bounded to
     # one command segment (no `;`/`|`/`&`/newline) so an unrelated later command isn't contaminated.
     (r'\bgit\s+branch\b[^;|&\n]*?(?:-d\b|--delete\b)[^;|&\n]*?(?:-f\b|--force\b)', "git branch force delete (long flags)"),
@@ -467,6 +472,12 @@ for _canonical_key, _legacy_key in [
     _PATTERN_KEY_ALIASES.setdefault(_canonical_key, set()).update({_canonical_key, _legacy_key})
     _PATTERN_KEY_ALIASES.setdefault(_legacy_key, set()).update({_legacy_key, _canonical_key})
 
+# Scoping the force-delete flag to (?-i:-D) changed this pattern's regex-derived legacy key;
+# keep the pre-change spelling resolvable so approvals stored under it still match.
+_old_branch_key = r"git\s+branch\s+-D"
+_PATTERN_KEY_ALIASES.setdefault("git branch force delete", set()).add(_old_branch_key)
+_PATTERN_KEY_ALIASES.setdefault(_old_branch_key, set()).add("git branch force delete")
+
 
 def _approval_key_aliases(pattern_key: str) -> set[str]:
     """All approval keys for this pattern: the description plus the historical regex-derived key
@@ -496,6 +507,15 @@ def _normalize_command_for_detection(command: str) -> str:
     # Collapse $IFS / ${IFS...} (incl. `${IFS:0:1}`) to a space: IFS defaults to whitespace, so `rm${IFS}-rf${IFS}/`
     # runs as `rm -rf /`, and every pattern — incl. the hardline floor — anchors on literal \s between tokens.
     return re.sub(r'\$\{IFS\b[^}]*\}|\$IFS\b', ' ', command)
+
+
+def _lower_preserving_flags(command: str) -> str:
+    """Lowercase a detection variant for the pattern pass while keeping dash-prefixed tokens
+    byte-for-byte, so case-dependent flags keep their distinction. All dangerous patterns are
+    compiled case-insensitively, so preserved flag case is invisible to them except where a
+    pattern explicitly scopes a case-sensitive group. Non-flag tokens (command words, quoted
+    prose, paths) are lowercased exactly as before; separators and whitespace are untouched."""
+    return ''.join(t if t.startswith('-') else t.lower() for t in re.split(r'(\s+)', command))
 
 
 # Shell metacharacters, quotes, and whitespace that terminate a path token.
@@ -1509,12 +1529,14 @@ def detect_dangerous_command(command: str) -> tuple:
     if _is_verification_artifact_cleanup(command):
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
-        command_lower = command_variant.lower()
+        command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
-                    masked_lower = _mask_quoted_prose(command_variant).lower()
+                    masked_lower = _lower_preserving_flags(
+                        _mask_quoted_prose(command_variant)
+                    )
                 if pattern_re.search(masked_lower):
                     return (True, description, description)
             elif pattern_re.search(command_lower):

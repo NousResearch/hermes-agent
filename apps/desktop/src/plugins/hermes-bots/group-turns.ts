@@ -955,7 +955,6 @@ function clearGroupTurnMarker(group: string, member: GroupMember, turn: string) 
 
 async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null | string> {
   const { member, thread, dispatchEpoch, stored, liveRuntime, runtimeIds, before, binding } = context
-  const memberKey = groupMemberKey(member)
   const started = Date.now()
   let deadline = started + GROUP_TURN_TIMEOUT_MS
   // After the terminal frame fires, the gateway still has to flip
@@ -970,19 +969,18 @@ async function pollGroupMemberTurn(context: GroupTurnPollContext): Promise<null 
 
     quickRechecks = signalled ? GROUP_TURN_SETTLE_RECHECKS : Math.max(0, quickRechecks - 1)
 
-    // #91868/#94569: an explicit stop (stopGroupThread) bumped the epoch AND
-    // held this member — the member's session was interrupted, so nothing is
-    // coming; abandon the poll instead of grinding until the deadline. Both
-    // conditions on purpose: an ordinary newer send bumps the epoch WITHOUT
-    // a hold, and that turn must keep polling so finished work can still be
-    // delivered (the #93127 commit check decides its fate, not this loop).
+    // #91868/#94569: an explicit stop stamps the epoch it minted independently
+    // of sticky holds. Abandon any turn dispatched before that stamp instead
+    // of trusting the best-effort interrupt or grinding until the deadline.
+    // Ordinary newer sends bump only `epoch`, so their late work still reaches
+    // the #93127 commit check below.
     if (!binding.isLive()) {
       return null
     }
 
     const roomDuringPoll = $groupChats.get()[context.group] || {}
 
-    if ((roomDuringPoll.epoch || 0) !== dispatchEpoch && (roomDuringPoll.holds || {})[memberKey]) {
+    if ((roomDuringPoll.stoppedEpoch || 0) > dispatchEpoch) {
       clearGroupTurnMarker(context.group, member, context.turn)
 
       return null

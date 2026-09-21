@@ -876,11 +876,21 @@ def _import_db_member(
     other process will see, and a sidecar WAL beside the new file describes the old database —
     nothing fails, the sessions are simply gone (#100960). Route the member through the same
     ``_safe_restore_db`` page copy ``/snapshot restore`` uses, so the live inode is preserved and
-    every open connection converges. A target that does not exist yet has no holders, so it takes
-    the ordinary atomic publish. Raises ``OSError`` when the database could not be replaced
-    safely, so the caller reports a skipped file instead of a silent success.
+    every open connection converges. Raises ``OSError`` when the database could not be
+    replaced safely, so the caller reports a skipped file instead of a silent success.
     """
     if not target.exists():
+        # "Missing" is not "unheld": a gateway or dashboard that had the database open when it
+        # was unlinked still writes the deleted inode (the ``(deleted)`` fingerprint of #90950).
+        # Publishing a fresh inode here re-creates the same split brain the branch below exists
+        # to prevent, so refuse and name the holders instead (#110179).
+        holders = _foreign_db_holder_pids(target)
+        if holders:
+            raise OSError(
+                f"{target.name} was deleted but is still open in PID(s) "
+                f"{', '.join(str(pid) for pid in sorted(holders))}; publishing a new file would "
+                "leave them writing an invisible database. Stop those processes and re-run the import."
+            )
         _extract_member_atomically(zf, member, target, new_file_mode)
         return
     # The database keeps its own mode/ownership: the bytes come from the archive, the file does not.

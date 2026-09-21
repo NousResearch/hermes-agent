@@ -481,6 +481,25 @@ class TestDelegationCleanup:
         monkeypatch.setattr(relay_runtime, "get_runtime", lambda **_kwargs: relay_host)
         monkeypatch.setattr("tools.delegate_tool._get_child_timeout", lambda: 2.0)
 
+        # The parent's cap must not elapse before the worker thread has opened the child's turn, or
+        # the "late result" scenario degrades into "child never started" on a loaded runner. Gate the
+        # settle wait the timeout rides on (``_ChildRun.run`` waits on ``heartbeat.settled``).
+        class _GatedSettle(threading.Event):
+            def wait(self, timeout=None):
+                child_started.wait(timeout=5)
+                return super().wait(timeout)
+
+        import tools.delegate_tool as delegate_tool
+
+        real_start_heartbeat = delegate_tool._start_heartbeat
+
+        def start_gated_heartbeat(*args, **kwargs):
+            heartbeat = real_start_heartbeat(*args, **kwargs)
+            heartbeat.settled = _GatedSettle()
+            return heartbeat
+
+        monkeypatch.setattr(delegate_tool, "_start_heartbeat", start_gated_heartbeat)
+
         def run_conversation(**kwargs):
             lease = relay_runtime.SESSION_COORDINATOR.acquire_conversation(
                 profile_key=relay_runtime.current_profile_key(),

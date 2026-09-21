@@ -193,18 +193,19 @@ def test_cli_provider_fallback_notice_honors_policy(tmp_path, monkeypatch, setti
     from hermes_cli import cli_agent_setup_mixin as m
     out = []
     monkeypatch.setattr(climod, "_cprint", lambda s: out.append(s))
-    _cli_block(m, "from gateway.warning_notifications import render_notification\n                render_notification(\n                    lambda: _cprint(f\"⚠️  Primary auth failed",
-               "self.requested_provider = _fb_provider", {"_fb_provider": "p", "_fb_model": "m"})
+    _cli_block(m, "from gateway.warning_notifications import render_notification\n                render_notification(\n                    lambda: _cprint(f\"⚠️  {_why}",
+               "self.requested_provider = _fb_provider",
+               {"_fb_provider": "p", "_fb_model": "m", "_why": "Primary auth failed"})
     assert (len(out) == 1 and "Primary auth failed" in out[0]) is _visible(setting)
 
 
 @pytest.mark.parametrize("setting", MODES)
 def test_cli_session_store_unavailable_banner_honors_policy(tmp_path, monkeypatch, setting, capsys):
     _policy(tmp_path, monkeypatch, setting)
-    import cli as climod
+    from hermes_cli import cli_init_mixin as m
     from hermes_state_user_copy import describe_storage_failure, storage_failure_details
     from rich.console import Console
-    _cli_block(climod, "failure = describe_storage_failure(e)", "_run_state_db_auto_maintenance(self._session_db)",
+    _cli_block(m, "failure = describe_storage_failure(e)", "_run_state_db_auto_maintenance(self._session_db)",
                {"e": RuntimeError("disk I/O error"), "describe_storage_failure": describe_storage_failure,
                 "storage_failure_details": storage_failure_details, "Console": Console})
     err = capsys.readouterr().err

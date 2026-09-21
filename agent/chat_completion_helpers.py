@@ -1324,16 +1324,26 @@ def _reasoning_config_for_wire(agent):
     """
     cfg = agent.reasoning_config
     ephemeral_off = _consume_ephemeral_reasoning_off(agent)
-    if getattr(agent, "_reasoning_floor_required", False) is True and (
-        ephemeral_off or isinstance(cfg, dict) and (
-            cfg.get("enabled") is False or cfg.get("effort") == "none"
-        )
-    ):
-        from agent.auxiliary_reasoning_floor import floor_reasoning_config
-        return floor_reasoning_config({"enabled": False})
-    if isinstance(cfg, dict) and (
+    if getattr(agent, "_reasoning_effort_rejected", False):
+        # The route rejected the configured reasoning level; resend without
+        # reasoning fields for the rest of this session.
+        agent._wire_reasoning_config = None
+        return None
+    if cfg is None:
+        # Unset effort uses the profile default, so any rejection is tied to
+        # the value that actually went over the wire.
+        from agent.reasoning_params import unset_reasoning_default
+        cfg = unset_reasoning_default(agent)
+
+    disabled = isinstance(cfg, dict) and (
         cfg.get("enabled") is False or cfg.get("effort") == "none"
-    ):
+    )
+    if getattr(agent, "_reasoning_floor_required", False) is True and (ephemeral_off or disabled):
+        from agent.auxiliary_reasoning_floor import floor_reasoning_config
+        floored = floor_reasoning_config({"enabled": False})
+        agent._wire_reasoning_config = floored
+        return floored
+    if disabled:
         # Apply the catalog's mandatory-thinking contract before the route has
         # had a chance to reject a disable. Keep this cache-only: the request
         # builder must never block on a capability fetch.
@@ -1352,26 +1362,26 @@ def _reasoning_config_for_wire(agent):
                 )
                 caps = caps_fn(agent.model, allow_fetch=False)
                 if caps and caps.get("mandatory"):
+                    agent._wire_reasoning_config = None
                     return None
             except Exception:
                 pass
     if getattr(agent, "_reasoning_disable_rejected", False):
-        # The route rejects disables. Resend exactly what the session has
-        # been sending — the user's own config — so the retry lands on the
-        # same provider cache key as every prior request. Only a config that
-        # is itself a disable is dropped (omitted → route default), and that
-        # session has never sent anything else, so nothing warm is lost.
-        if isinstance(cfg, dict) and (
-            cfg.get("enabled") is False or cfg.get("effort") == "none"
-        ):
+        # Keep the sent config stable for prompt caching. A rejected disable is
+        # omitted, except on routes whose mandatory-thinking floor is required.
+        if disabled:
+            if getattr(agent, "_reasoning_floor_required", False):
+                from agent.auxiliary_reasoning_floor import REASONING_FLOOR_EFFORT
+                floored = {**cfg, "enabled": True, "effort": REASONING_FLOOR_EFFORT}
+                agent._wire_reasoning_config = floored
+                return floored
+            agent._wire_reasoning_config = None
             return None
+        agent._wire_reasoning_config = cfg
         return cfg
-    if getattr(agent, "_reasoning_effort_rejected", False) and isinstance(cfg, dict) and cfg.get("enabled") is not False:
-        # Some Responses-compatible routes reject a specific enabled effort. Retry using
-        # the route default rather than projecting the same rejected effort onto the wire.
-        return None
     if ephemeral_off:
         cfg = {**(cfg or {}), "enabled": False, "effort": "none"}
+    agent._wire_reasoning_config = cfg
     return cfg
 
 
@@ -2092,14 +2102,16 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
     if reason == FailoverReason.unsupported_thinking:
         return False
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown
-    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    if switch_deferred_by_reset(agent, reason, reset_at):
+        return False
+    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)

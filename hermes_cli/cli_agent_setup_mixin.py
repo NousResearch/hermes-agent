@@ -251,6 +251,7 @@ class CLIAgentSetupMixin:
         _primary_exc = None
         runtime = None
         _model_at_entry = self.model
+        self._credentials_rate_limited = False
         try:
             # target_model: the ladder's model-keyed rungs (Zen/Go api_mode, Copilot/Nous
             # api_mode) must see the model this CLI will actually send, not config's `default`,
@@ -266,6 +267,8 @@ class CLIAgentSetupMixin:
             if runtime is not None:
                 _primary_exc = None
         if runtime is None:
+            from hermes_cli.auth import is_rate_limited_auth_error
+            self._credentials_rate_limited = bool(_primary_exc) and is_rate_limited_auth_error(_primary_exc)
             message = format_runtime_provider_error(_primary_exc) if _primary_exc else "Provider resolution failed."
             if getattr(self, "tool_progress_mode", "full") == "off":
                 print(message, file=sys.stderr)  # quiet/stream-json: stdout is machine-readable
@@ -375,7 +378,7 @@ class CLIAgentSetupMixin:
         order and switch the CLI's requested_provider/model to the first that resolves.
         None when the error is not auth-related or no fallback resolves."""
         from cli import _cprint, logger
-        from hermes_cli.auth import AuthError
+        from hermes_cli.auth import AuthError, primary_failure_wording
         from hermes_cli.runtime_provider import resolve_runtime_provider
         if not isinstance(primary_exc, AuthError):
             return None
@@ -396,12 +399,13 @@ class CLIAgentSetupMixin:
                 if _fb_api_key:
                     _fb_kwargs["explicit_api_key"] = _fb_api_key
                 runtime = resolve_runtime_provider(**_fb_kwargs)
+                _why_log, _why = primary_failure_wording(primary_exc)  # #117482: quota is not auth
                 logger.warning(
-                    "Primary provider auth failed (%s). Falling through to fallback: %s/%s",
-                    primary_exc, _fb_provider, _fb_model)
+                    "Primary provider %s (%s). Falling through to fallback: %s/%s",
+                    _why_log, primary_exc, _fb_provider, _fb_model)
                 from gateway.warning_notifications import render_notification
                 render_notification(
-                    lambda: _cprint(f"⚠️  Primary auth failed — switching to fallback: {_fb_provider} / {_fb_model}"),
+                    lambda: _cprint(f"⚠️  {_why} — switching to fallback: {_fb_provider} / {_fb_model}"),
                     platform="cli")
                 self.requested_provider = _fb_provider
                 self.model = _fb_model

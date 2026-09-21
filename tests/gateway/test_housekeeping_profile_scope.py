@@ -101,6 +101,33 @@ def test_multiplexed_sync_ticks_run_once_per_profile_in_its_own_scope(two_homes,
     assert get_hermes_home() == a
 
 
+def test_multiplexed_auto_archive_tick_sweeps_every_served_profile_store(two_homes, monkeypatch):
+    """The auto-archive sweep reaches each served profile's OWN state.db.
+
+    ``acquire()`` resolves through ``get_hermes_home()``, so an unscoped tick archived the
+    launch profile's store only — and `hermes serve`/the dashboard defer to the gateway for
+    every profile it owns, so a served secondary would have had no archiver at all.
+    """
+    from agent.secret_scope import set_multiplex_active
+    from hermes_state import SessionDB
+
+    a, b = two_homes
+    swept: list = []
+    monkeypatch.setattr(
+        SessionDB, "maybe_auto_archive", lambda self, **kw: swept.append(Path(self.db_path)))
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda *args, **kwargs: {"sessions": {"auto_archive": True, "min_interval_hours": 0}})
+
+    set_multiplex_active(True)
+    try:
+        _run_60_ticks(SimpleNamespace(config=SimpleNamespace(multiplex_profiles=True)))
+    finally:
+        set_multiplex_active(False)
+
+    assert swept == [a / "state.db", b / "state.db"]
+
+
 def test_single_profile_sync_ticks_run_once_against_the_process_home(two_homes, monkeypatch):
     """Control: a single-profile gateway (multiplex off) still runs each chore exactly once against
     the process home — the named profile directory on disk is not visited."""

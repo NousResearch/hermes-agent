@@ -1691,6 +1691,55 @@ def _scope_context_length_to_default_runtime(
     return _config_context_length
 
 
+def set_config_context_length(agent, value: Optional[int]) -> None:
+    """Store the durable ``model.context_length`` pin on EVERY cached copy of it.
+
+    The pin is read from config exactly once, at construction, then cached twice: on
+    ``agent._config_context_length`` (switch/fallback resolution plus every display and ``/usage``
+    surface) and on ``context_compressor._config_context_length`` (the compressor's own
+    re-resolution). Live paths that updated only one copy left the other stale, so a session could
+    report a pinned ceiling while compressing against a different window (#116467).
+    """
+    agent._config_context_length = value
+    _compressor = getattr(agent, "context_compressor", None)
+    if _compressor is not None:
+        _compressor._config_context_length = value
+
+
+def config_context_length_for_runtime(agent, config=None) -> Optional[int]:
+    """Re-read the durable ``model.context_length`` pin for ``agent``'s CURRENT runtime, or ``None``.
+
+    Single re-derivation point for the cached pin: construction resolves it once, and every live path
+    that re-resolves a runtime used to clear the cached copy without re-reading the config — so a
+    model/provider switch or a Desktop config round-trip silently dropped a ceiling the user still had
+    on disk, and resolution fell through to probing / catalog metadata / the 256K fallback (#116467).
+
+    Reuses construction's own scoping (``_scope_context_length_to_default_runtime``): the pin describes
+    the configured default route, so an unrelated runtime never inherits it.
+    """
+    try:
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        _agent_cfg = config if isinstance(config, dict) else load_config()
+        if not isinstance(_agent_cfg, dict):
+            return None
+        _model_section = _agent_cfg.get("model", {})
+        if not isinstance(_model_section, dict):
+            return None
+        _pin = _model_section.get("context_length")
+        if _pin is None or isinstance(_pin, bool):
+            return None
+        _pin = int(_pin)
+        if _pin <= 0:
+            return None
+        return _scope_context_length_to_default_runtime(
+            agent, _agent_cfg, _model_section, get_compatible_custom_providers(_agent_cfg),
+            _pin, str(getattr(agent, "base_url", "") or ""),
+        )
+    except Exception:
+        logger.debug("Could not re-read model.context_length for the current runtime", exc_info=True)
+        return None
+
+
 _CTX_LEN_REQUIREMENT = "must be a positive integer (e.g. 256000, not '256K')"
 
 

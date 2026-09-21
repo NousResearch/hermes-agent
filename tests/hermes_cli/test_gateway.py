@@ -15,6 +15,19 @@ import hermes_cli.gateway as gateway
 _BREAKAWAY_MARKER = "_HERMES_GATEWAY_BREAKAWAY"
 
 
+@pytest.fixture(autouse=True)
+def inert_task_scheduler_probe():
+    """Tests that fake ``is_windows()`` send the reaper through ``_windows_scheduled_task_state``,
+    which spawns ``pwsh`` whenever one is on PATH (GitHub's ubuntu runners ship it). On a loaded
+    runner that spawn outlives its 10 s timeout and ``subprocess.run`` kills it through the test's
+    globally patched ``os.kill`` — a foreign PID lands in ``killed_pids``. Tests of the probe itself
+    call ``.undo()`` on this fixture to reach the real function."""
+    mp = pytest.MonkeyPatch()
+    mp.setattr(gateway, "_windows_scheduled_task_state", lambda name: None)
+    yield mp
+    mp.undo()
+
+
 def _install_fake_gateway_run(monkeypatch, start_gateway):
     module = ModuleType("gateway.run")
     module.start_gateway = start_gateway
@@ -1211,8 +1224,11 @@ class TestWindowsScheduledTaskSupervisorGuard:
         assert marked_pids == [orphan_pid]
         assert killed_pids == []
 
-    def test_windows_scheduled_task_running_returns_false_off_windows(self, monkeypatch):
+    def test_windows_scheduled_task_running_returns_false_off_windows(
+        self, monkeypatch, inert_task_scheduler_probe
+    ):
         """The state helper is inert on POSIX (no subprocess spawned)."""
+        inert_task_scheduler_probe.undo()  # exercise the real probe, not the module-wide stand-in
         monkeypatch.setattr(gateway, "is_windows", lambda: False)
 
         def _boom_run(*_a, **_k):

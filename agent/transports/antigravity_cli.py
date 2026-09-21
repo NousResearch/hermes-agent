@@ -308,7 +308,10 @@ class AntigravityClient:
         effective_request_timeout = self.request_timeout if request_timeout is None else request_timeout
         argv = [
             self.executable, "--input-format", "stream-json", "--output-format", "stream-json",
-            "--print-timeout", f"{max(1, int(effective_request_timeout + 5))}s",
+            # Hermes enforces a protocol-inactivity timeout below.  Agy's own
+            # print timeout is absolute, so mapping the inactivity budget to it
+            # would kill healthy long-running turns that continue streaming.
+            "--print-timeout", "0s",
         ]
         if self._dangerously_skip_permissions:
             argv.append("--dangerously-skip-permissions")
@@ -385,7 +388,7 @@ class AntigravityClient:
             result_event: dict[str, Any] | None = None
             started = time.monotonic()
             first_deadline = started + (self.startup_timeout if startup_timeout is None else startup_timeout)
-            final_deadline = started + effective_request_timeout
+            inactivity_deadline = started + effective_request_timeout
             callback = event_callback or on_event
             while result_event is None:
                 if cancel_event is not None and cancel_event.is_set():
@@ -395,10 +398,14 @@ class AntigravityClient:
                 if not events and now >= first_deadline:
                     self.cancel()
                     raise AntigravityStartupTimeout("agy did not emit an initial stream event before startup timeout")
-                if now >= final_deadline:
+                if now >= inactivity_deadline:
                     self.cancel()
-                    raise AntigravityRequestTimeout("agy turn did not finish before request timeout")
-                wait_for = min(final_deadline - now, (first_deadline - now) if not events else final_deadline - now, 0.1)
+                    raise AntigravityRequestTimeout("agy turn stopped emitting protocol events before request timeout")
+                wait_for = min(
+                    inactivity_deadline - now,
+                    (first_deadline - now) if not events else inactivity_deadline - now,
+                    0.1,
+                )
                 try:
                     item = event_queue.get(timeout=max(0.001, wait_for))
                 except queue.Empty:
@@ -408,6 +415,7 @@ class AntigravityClient:
                 if item is None:
                     break
                 events.append(item)
+                inactivity_deadline = time.monotonic() + effective_request_timeout
                 self._write_debug("stdout", item)
                 if callback is not None:
                     callback(item)

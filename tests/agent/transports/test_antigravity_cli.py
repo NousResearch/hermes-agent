@@ -36,6 +36,11 @@ if os.environ.get("FAKE_AGY_SLEEP"):
 received = [json.loads(line) for line in sys.stdin if line.strip()]
 assert received == [{"event": "user", "message": {"role": "user", "content": "hello"}}] or received == [{"event": "user", "message": {"role": "user", "content": "again"}}]
 print(json.dumps({"event": "init", "conversation_id": "conv-new"}), flush=True)
+if os.environ.get("FAKE_AGY_STREAM_SECONDS"):
+    deadline = time.monotonic() + float(os.environ["FAKE_AGY_STREAM_SECONDS"])
+    while time.monotonic() < deadline:
+        time.sleep(0.02)
+        print(json.dumps({"event": "step_update", "step_update": {"step_index": 1, "state": "ACTIVE", "step_type": "tool"}}), flush=True)
 for item in received:
     print(json.dumps({"event": "step_update", "step_update": {"step_index": 1, "state": "DONE", "step_type": "agent_response", "text_delta": item["message"]["content"]}}), flush=True)
 print(json.dumps({"event": "tool_denied", "tool": "shell", "reason": "policy"}), flush=True)
@@ -163,3 +168,17 @@ def test_client_reports_request_timeout_as_typed_error(tmp_path, monkeypatch):
     monkeypatch.setenv("FAKE_AGY_SLEEP", "1")
     with pytest.raises(AntigravityRequestTimeout):
         AntigravityClient(config_path=str(binary), known_locations=(), request_timeout=0.05).run_turn("hello")
+
+
+def test_client_request_timeout_measures_protocol_inactivity(tmp_path, monkeypatch):
+    from agent.transports.antigravity_cli import AntigravityClient
+
+    binary = _fake_agy(tmp_path)
+    monkeypatch.setenv("FAKE_AGY_STREAM_SECONDS", "0.12")
+
+    result = AntigravityClient(
+        config_path=str(binary), known_locations=(), request_timeout=0.05,
+    ).run_turn("hello")
+
+    assert result.text == "done"
+    assert result.argv[result.argv.index("--print-timeout") + 1] == "0s"

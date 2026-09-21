@@ -802,7 +802,10 @@ def _recover_auth_failure(agent, pool, *, status_code, has_retried_429, error_co
     return True, has_retried_429
 
 
-def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, credential_id, rotate_and_swap):
+def _recover_rate_limit(
+    pool, *, has_retried_429, error_context, api_key_hint, credential_id,
+    model, base_url, rotate_and_swap,
+):
     # Already-exhausted credential: rotate immediately. Avoids the "cancel-between-429s" trap where
     # the local has_retried_429 resets per prompt and retries forever.
     current_entry = None
@@ -834,10 +837,11 @@ def _recover_rate_limit(pool, *, has_retried_429, error_context, api_key_hint, c
             reset_at is not None
             and reset_at - time.time() >= _QUOTA_END_RESET_HORIZON_SECONDS
         )
-        quota_end_with_alternative = has_long_reset_horizon and current_entry is not None and any(
-            entry is not current_entry
-            and getattr(entry, "last_status", None) not in {STATUS_EXHAUSTED, STATUS_DEAD}
-            for entry in pool.entries()
+        quota_end_with_alternative = has_long_reset_horizon and pool.has_usable_alternative(
+            credential_id=credential_id,
+            api_key_hint=api_key_hint,
+            model=model,
+            base_url=base_url,
         )
     if not has_retried_429 and not usage_limit_reached and not quota_end_with_alternative:
         return False, True
@@ -960,6 +964,7 @@ def recover_with_credential_pool(
         return _recover_rate_limit(
             pool, has_retried_429=has_retried_429, error_context=error_context,
             api_key_hint=api_key_hint, credential_id=credential_id, rotate_and_swap=_rotate_and_swap,
+            model=getattr(agent, "model", None), base_url=getattr(agent, "base_url", None),
         )
     if effective_reason == FailoverReason.model_entitlement:
         # The pool benches (credential, model) only and hands back the next entry that is not

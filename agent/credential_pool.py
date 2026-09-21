@@ -843,6 +843,30 @@ class CredentialPool(CredentialPoolAdminMixin, CredentialPoolModelCooldownMixin)
             available, _pending = self._available_entries(model=model)
             return bool(available)
 
+    def has_usable_alternative(
+        self,
+        *,
+        credential_id: Optional[str] = None,
+        api_key_hint: Optional[str] = None,
+        model: Optional[str] = None,
+        base_url: Optional[str] = None,
+    ) -> bool:
+        """Whether rotation can select a different credential for this route."""
+        with self._lock:
+            current = self._identify_failed_entry(credential_id, api_key_hint)
+            if current is None:
+                current = self._current_unlocked()
+            if current is None:
+                return False
+            available, _pending = self._available_entries(model=model)
+            current_key = current.runtime_api_key
+            return any(
+                candidate.id != current.id
+                and (not current_key or candidate.runtime_api_key != current_key)
+                and credential_pool_entry_serves_endpoint(candidate, base_url)
+                for candidate in available
+            )
+
     def next_available_at(self, *, model: Optional[str] = None) -> Optional[float]:
         """Earliest epoch time (seconds) any entry re-enters rotation.
 

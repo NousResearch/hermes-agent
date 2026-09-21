@@ -185,6 +185,7 @@ class TestPoolRotationCycle:
             return None
 
         pool.mark_exhausted_and_rotate = MagicMock(side_effect=rotate)
+        pool.has_usable_alternative.return_value = pool_entries > 1
         agent._credential_pool = pool
         agent._swap_credential = MagicMock()
         agent.log_prefix = ""
@@ -250,6 +251,54 @@ class TestPoolRotationCycle:
             assert recovered is False
             assert has_retried is True
             pool.mark_exhausted_and_rotate.assert_not_called()
+
+    def test_long_reset_ignores_non_selectable_pool_rows(self):
+        """Duplicate keys and route-ineligible rows are not rotation alternatives."""
+        from agent.agent_runtime_helpers import recover_with_credential_pool
+        from agent.credential_pool import CredentialPool, PooledCredential, STATUS_OK
+
+        model = "test-model"
+        active_base_url = "https://active.example/v1"
+        candidate_shapes = (
+            {"access_token": "shared-key", "base_url": active_base_url},
+            {"access_token": "other-key", "base_url": "https://other.example/v1"},
+            {
+                "access_token": "other-key",
+                "base_url": active_base_url,
+                "model_cooldowns": {model: time.time() + 600},
+            },
+        )
+        for candidate_shape in candidate_shapes:
+            current = PooledCredential.from_dict("openrouter", {
+                "id": "current", "label": "current", "priority": 0,
+                "source": "manual", "access_token": "shared-key",
+                "base_url": active_base_url, "last_status": STATUS_OK,
+            })
+            candidate = PooledCredential.from_dict("openrouter", {
+                "id": "candidate", "label": "candidate", "priority": 1,
+                "source": "manual", "last_status": STATUS_OK, **candidate_shape,
+            })
+            pool = CredentialPool("openrouter", [current, candidate])
+            agent = SimpleNamespace(
+                provider="openrouter",
+                model=model,
+                base_url=active_base_url,
+                api_key=current.runtime_api_key,
+                _credential_pool_entry_id=current.id,
+                _credential_pool=pool,
+                _swap_credential=MagicMock(),
+            )
+
+            recovered, has_retried = recover_with_credential_pool(
+                agent,
+                status_code=429,
+                has_retried_429=False,
+                error_context={"reason": "rate_limit_error", "reset_at": time.time() + 600},
+            )
+
+            assert (recovered, has_retried) == (False, True)
+            assert {entry.last_status for entry in pool.entries()} == {STATUS_OK}
+            agent._swap_credential.assert_not_called()
 
     def test_second_429_rotates_to_next(self):
         """Second consecutive 429 should rotate to next credential."""

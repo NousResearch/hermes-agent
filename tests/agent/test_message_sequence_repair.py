@@ -1539,20 +1539,21 @@ def test_sanitize_drops_bridged_result_whose_call_frame_was_pruned():
 from agent.context_compressor import _DB_PERSISTED_MARKER
 
 
-def test_repair_user_merge_pops_persist_marker_on_stamped_survivor():
-    """Two adjacent stamped user rows (an interrupted turn's flushed prompt plus
-    the next turn's prompt) merge in place; the survivor must lose its marker so
-    the merged text reaches session.db instead of the pre-merge row."""
+def test_repair_preserves_adjacent_stamped_user_boundaries():
+    """Adjacent user rows are canonical source boundaries, not a malformed
+    sequence: repair must leave both stamped rows intact and marked, so the
+    flush scan still identity-matches each durable row (#63298)."""
     agent = _bare_agent()
     stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
-    messages = [stamped, {"role": "user", "content": "second"}]
+    second = {"role": "user", "content": "second", _DB_PERSISTED_MARKER: True}
+    messages = [stamped, second]
 
     repairs = AIAgent._repair_message_sequence(agent, messages)
 
-    assert repairs == 1
-    assert len(messages) == 1
-    assert messages[0]["content"] == "first\n\nsecond"
-    assert _DB_PERSISTED_MARKER not in messages[0]
+    assert repairs == 0
+    assert messages == [stamped, second]
+    assert messages[0] is stamped and messages[1] is second
+    assert messages[0][_DB_PERSISTED_MARKER] and messages[1][_DB_PERSISTED_MARKER]
 
 
 def test_repair_assistant_merge_pops_persist_marker_on_content_rewrite():
@@ -1602,13 +1603,17 @@ def test_repair_cursor_invalidates_scan_prefix_when_stamped_dict_dirtied():
     """``repair_message_sequence_with_cursor`` must clear the bounded flush-scan
     snapshot when a repair popped a marker inside it, per the marker contract."""
     agent = _bare_agent()
-    stamped = {"role": "user", "content": "first", _DB_PERSISTED_MARKER: True}
-    messages = [stamped, {"role": "user", "content": "second"}]
-    agent._last_flushed_db_idx = 2
+    stamped = {"role": "assistant", "content": "first reply", _DB_PERSISTED_MARKER: True}
+    messages = [
+        {"role": "user", "content": "Q"},
+        stamped,
+        {"role": "assistant", "content": "second reply"},
+    ]
+    agent._last_flushed_db_idx = 3
     agent._db_flush_scan_prefix = messages[:]
 
     repairs = repair_message_sequence_with_cursor(agent, messages)
 
     assert repairs == 1
-    assert _DB_PERSISTED_MARKER not in messages[0]
+    assert _DB_PERSISTED_MARKER not in messages[1]
     assert agent._db_flush_scan_prefix is None

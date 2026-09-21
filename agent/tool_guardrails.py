@@ -89,6 +89,7 @@ RESEARCH_BUDGET_EXHAUSTED = "RESEARCH_BUDGET_EXHAUSTED"
 RESEARCH_COLLECTION_STATE = "COLLECT"
 RESEARCH_SYNTHESIS_STATE = "SYNTHESIZE_REQUIRED"
 RESEARCH_TERMINAL_STATE = "TERMINAL"
+RESEARCH_BUDGET_ENV = "HERMES_KANBAN_RESEARCH_BUDGET"
 RESEARCH_COLLECTION_TOOL_NAMES = frozenset({
     "web_search", "web_extract",
     "browser_navigate", "browser_snapshot", "browser_click", "browser_type",
@@ -98,6 +99,62 @@ RESEARCH_COLLECTION_TOOL_NAMES = frozenset({
     "browser_vault_save_login", "browser_vault_enter_code", "browser_extract",
 })
 _RESEARCH_EXTRACT_TOOL_NAMES = frozenset({"web_extract", "browser_extract"})
+
+_RESEARCH_BUDGET_INT_FIELDS = frozenset({"web_search_max", "browser_extract_max"})
+_RESEARCH_BUDGET_FLOAT_FIELDS = frozenset({
+    "collection_deadline_seconds", "synthesis_reserve_seconds",
+})
+_RESEARCH_BUDGET_FIELDS = (
+    _RESEARCH_BUDGET_INT_FIELDS
+    | _RESEARCH_BUDGET_FLOAT_FIELDS
+    | {"collection_tools"}
+)
+
+
+def normalize_research_budget(value: Mapping[str, Any] | None) -> dict[str, Any] | None:
+    """Validate the typed Kanban research-budget payload.
+
+    Profile YAML keeps the forgiving ``from_mapping`` behavior for backwards
+    compatibility. A task override is a persisted/runtime boundary, however,
+    so unknown fields and malformed values are rejected instead of silently
+    widening the worker's collection policy.
+    """
+    if value is None:
+        return None
+    if not isinstance(value, Mapping):
+        raise ValueError("research_budget must be a JSON object")
+    unknown = set(value) - _RESEARCH_BUDGET_FIELDS
+    if unknown:
+        names = ", ".join(sorted(repr(name) for name in unknown))
+        raise ValueError(f"research_budget has unknown field(s): {names}")
+
+    normalized: dict[str, Any] = {}
+    for name, raw in value.items():
+        if raw is None:
+            normalized[name] = None
+            continue
+        if name in _RESEARCH_BUDGET_INT_FIELDS:
+            if isinstance(raw, bool) or not isinstance(raw, int) or raw <= 0:
+                raise ValueError(f"research_budget.{name} must be a positive integer")
+            normalized[name] = raw
+            continue
+        if name in _RESEARCH_BUDGET_FLOAT_FIELDS:
+            if isinstance(raw, bool) or not isinstance(raw, (int, float)):
+                raise ValueError(f"research_budget.{name} must be a positive number")
+            if not math.isfinite(float(raw)) or raw <= 0:
+                raise ValueError(f"research_budget.{name} must be a finite positive number")
+            normalized[name] = raw
+            continue
+        if name == "collection_tools":
+            if not isinstance(raw, (list, tuple)):
+                raise ValueError("research_budget.collection_tools must be an array")
+            names = list(raw)
+            if any(not isinstance(tool, str) or tool not in RESEARCH_COLLECTION_TOOL_NAMES for tool in names):
+                raise ValueError("research_budget.collection_tools contains an unknown tool")
+            if len(set(names)) != len(names):
+                raise ValueError("research_budget.collection_tools must not contain duplicates")
+            normalized[name] = names
+    return normalized
 
 
 def _optional_positive_int(value: Any) -> int | None:

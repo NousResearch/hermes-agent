@@ -3029,6 +3029,20 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     if task.tenant:
         env["HERMES_TENANT"] = task.tenant
     env["HERMES_KANBAN_TASK"] = task.id
+    # The task policy is an explicit per-worker override; never inherit a
+    # stale value from the dispatcher's own environment when the field is
+    # absent. Task rows are validated on load, but keep this boundary fail
+    # closed for tests or callers that construct a Task object directly.
+    from agent.tool_guardrails import RESEARCH_BUDGET_ENV, normalize_research_budget
+    env.pop(RESEARCH_BUDGET_ENV, None)
+    task_policy = getattr(task, "research_budget", None)
+    if task_policy is not None:
+        try:
+            policy = normalize_research_budget(task_policy)
+        except (TypeError, ValueError) as exc:
+            _kb._log.warning("Skipping invalid research_budget for task %s: %s", task.id, exc)
+        else:
+            env[RESEARCH_BUDGET_ENV] = json.dumps(policy, separators=(",", ":"))
     env["HERMES_KANBAN_WORKSPACE"] = workspace
     # Tag the session `kanban` so session-browsing surfaces filter it out by
     # source instead of rendering one sidebar row per attempt.

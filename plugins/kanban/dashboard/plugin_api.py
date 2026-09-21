@@ -388,6 +388,7 @@ class CreateTaskBody(BaseModel):
     model_override: Optional[str] = None
     provider_override: Optional[str] = None
     reasoning_effort: Optional[str] = None  # none|minimal|…|ultra; None inherits the profile's level
+    research_budget: Optional[dict[str, Any]] = None
     project_id: Optional[str] = None  # None inherits the board's scoped project (if any)
 
 

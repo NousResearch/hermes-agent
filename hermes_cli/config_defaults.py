@@ -525,9 +525,8 @@ DEFAULT_CONFIG = {
             "max_web_searches": 50,   # web_search calls per turn
             "max_subagents": 50,      # subagents spawned per turn
         },
-        # Optional task-scoped research collection budget. Null keeps the feature off;
-        # when any limit is configured, exhaustion transitions to synthesis-required
-        # without disabling terminal/file/Kanban tools.
+        # Profile-level research collection budget. A dispatcher-spawned Kanban
+        # task may provide a typed per-task override at worker startup.
         "research_budget": {
             "web_search_max": None,
             "browser_extract_max": None,

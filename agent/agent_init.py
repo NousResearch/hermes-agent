@@ -9,6 +9,7 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 
 from __future__ import annotations
 
+import json
 import logging
 import os
 import re
@@ -34,7 +35,8 @@ from agent.process_bootstrap import _install_safe_stdio
 from agent.subdirectory_hints import SubdirectoryHintTracker
 from agent.think_scrubber import StreamingThinkScrubber
 from agent.tool_guardrails import (
-    ToolCallGuardrailConfig, ToolCallGuardrailController
+    RESEARCH_BUDGET_ENV, ToolCallGuardrailConfig, ToolCallGuardrailController,
+    normalize_research_budget,
 )
 from hermes_cli.config import cfg_get
 from hermes_cli.route_identity import normalize_route_base_url
@@ -1156,7 +1158,30 @@ def _init_session_state(agent, session_id, session_db, parent_session_id, reason
     agent._todo_store = TodoStore()
 
 
+def _apply_task_research_budget_override(_agent_cfg):
+    """Return guardrail config with the dispatcher policy, without mutating profile config."""
+    raw = os.environ.get(RESEARCH_BUDGET_ENV)
+    if raw is None:
+        return _agent_cfg
+    try:
+        override = normalize_research_budget(json.loads(raw))
+    except (TypeError, ValueError, json.JSONDecodeError) as exc:
+        # A malformed task envelope must not widen collection by accident.
+        # Keep the profile's own validated policy and let the dispatcher/DB
+        # remain the source of truth for the task field.
+        _ra().logger.warning("Ignoring invalid Kanban research budget override: %s", exc)
+        return _agent_cfg
+    if not override or not any(value is not None for value in override.values()):
+        return _agent_cfg
+    guardrails = dict(_agent_cfg.get("tool_loop_guardrails") or {})
+    guardrails["research_budget"] = override
+    effective_cfg = dict(_agent_cfg)
+    effective_cfg["tool_loop_guardrails"] = guardrails
+    return effective_cfg
+
+
 def _apply_display_config(agent, _agent_cfg, platform):
+    _guardrail_cfg = _apply_task_research_budget_override(_agent_cfg)
     # show_commentary: Codex phase=commentary → interim path (true) or reasoning channel.
     agent.show_commentary = bool(_cfg_dict(_agent_cfg, "display").get("show_commentary", True))
 
@@ -1186,7 +1211,7 @@ def _apply_display_config(agent, _agent_cfg, platform):
     try:
         agent._tool_guardrails = ToolCallGuardrailController(
             ToolCallGuardrailConfig.from_mapping(
-                _agent_cfg.get("tool_loop_guardrails", {}), platform=platform,
+                _guardrail_cfg.get("tool_loop_guardrails", {}), platform=platform,
             )
         )
     except Exception as _tlg_err:

@@ -127,6 +127,12 @@ def normalize_reasoning_effort(effort: Optional[str]) -> Optional[str]:
     raise ValueError(f"reasoning_effort must be one of {allowed}, got {effort!r}")
 
 
+def normalize_research_budget(value: Optional[dict[str, Any]]) -> Optional[dict[str, Any]]:
+    """Validate a persisted task research-budget object at the Kanban boundary."""
+    from agent.tool_guardrails import normalize_research_budget as _normalize
+    return _normalize(value)
+
+
 KNOWN_TOOLSET_NAMES = frozenset(name.casefold() for name in get_toolset_names())
 _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
@@ -727,21 +733,33 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    research_budget: Optional[dict[str, Any]] = None
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
         g = lambda col, default=None: _lossy_text(_row_get(row, col, default))  # noqa: E731
         parsed = _json_or(g("skills"))
         skills_value = [str(s) for s in parsed if s] if isinstance(parsed, list) else None
+        raw_research_budget = g("research_budget")
+        try:
+            from agent.tool_guardrails import normalize_research_budget
+            research_budget = normalize_research_budget(_json_or(raw_research_budget))
+        except (TypeError, ValueError) as exc:
+            # A hand-edited/legacy row must never widen a worker's collection
+            # policy. Treat the malformed override as absent and keep the
+            # profile's validated policy in force.
+            _log.warning("Ignoring invalid research_budget for task %s: %s", g("id", "?"), exc)
+            research_budget = None
         return cls(
             **{col: _lossy_text(row[col]) for col in _TASK_REQUIRED_COLUMNS},
-            **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS},
+            **{col: g(col) for col in _TASK_OPTIONAL_COLUMNS if col != "research_budget"},
             **{col: g(col) or None for col in _TASK_EMPTY_IS_NULL_COLUMNS},
             # Pre-migration fallbacks (spawn_failures / last_spawn_error) are only
             # reachable on a DB never opened since the rename migration landed.
             consecutive_failures=g("consecutive_failures", g("spawn_failures", 0)),
             last_failure_error=g("last_failure_error", g("last_spawn_error")),
             skills=skills_value,
+            research_budget=research_budget,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
         )
@@ -756,7 +774,7 @@ _TASK_REQUIRED_COLUMNS = (
 _TASK_OPTIONAL_COLUMNS = (
     "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
-    "current_step_key", "max_retries", "session_id", "completion_contract",
+    "current_step_key", "max_retries", "session_id", "completion_contract", "research_budget",
 )
 # Text columns where "" is stored/read as "not set".
 _TASK_EMPTY_IS_NULL_COLUMNS = (
@@ -901,6 +919,9 @@ CREATE TABLE IF NOT EXISTS tasks (
     last_failure_error   TEXT,
     max_runtime_seconds  INTEGER,
     last_heartbeat_at    INTEGER,
+    -- Typed JSON object overriding the profile's research collection budget
+    -- for this task's worker run. NULL inherits the profile policy.
+    research_budget      TEXT,
     -- Pointer into task_runs for the currently-active run (NULL if no
     -- run is in-flight). Denormalised for cheap reads.
     current_run_id       INTEGER,
@@ -1250,6 +1271,7 @@ def create_task(
     max_runtime_seconds: Optional[int] = None, skills: Optional[Iterable[str]] = None,
     max_retries: Optional[int] = None, model_override: Optional[str] = None,
     provider_override: Optional[str] = None, reasoning_effort: Optional[str] = None,
+    research_budget: Optional[dict[str, Any]] = None,
     goal_mode: bool = False, goal_max_turns: Optional[int] = None, initial_status: str = "running",
     session_id: Optional[str] = None, board: Optional[str] = None, project_id: Optional[str] = None,
     project_source_task_id: Optional[str] = None,
@@ -1273,10 +1295,12 @@ def create_task(
     """
     from hermes_cli.kanban_db_graph import initial_task_state, inherit_creator_origin
     from hermes_cli.kanban_pr_acceptance import validate_contract
+    from agent.tool_guardrails import normalize_research_budget
 
     completion_contract = validate_contract(completion_contract)
     model_override, provider_override = _validate_model_override(model_override, provider_override)
     reasoning_effort = normalize_reasoning_effort(reasoning_effort)
+    research_budget = normalize_research_budget(research_budget)
     assignee = _canonical_assignee(assignee)
     if not title or not title.strip():
         raise ValueError("title is required")
@@ -1352,16 +1376,18 @@ def create_task(
                         created_by, created_at, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         max_runtime_seconds,
+                        research_budget,
                         skills, max_retries, model_override, provider_override,
                         reasoning_effort,
                         goal_mode, goal_max_turns, session_id, completion_contract
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     (
                         task_id, title.strip(), body, assignee, task_status, priority,
                         created_by, now, workspace_kind, workspace_path,
                         branch_name, project_id, tenant, idempotency_key,
                         _opt_int(max_runtime_seconds),
+                        json.dumps(research_budget, separators=(",", ":")) if research_budget is not None else None,
                         json.dumps(skills_list) if skills_list is not None else None,
                         _opt_int(max_retries), model_override, provider_override, reasoning_effort,
                         1 if goal_mode else 0, _opt_int(goal_max_turns), session_id, completion_contract,
@@ -1384,6 +1410,7 @@ def create_task(
                         "branch_name": branch_name,
                         "project_id": project_id,
                         "skills": list(skills_list) if skills_list else None,
+                        "research_budget": research_budget,
                         "goal_mode": bool(goal_mode) or None,
                         "model_override": model_override,
                         "provider_override": provider_override,

@@ -573,7 +573,7 @@ hermes secrets bitwarden <subcommand>
 hermes secrets bw <subcommand>          # short alias
 ```
 
-`set` prompts without echo and never accepts the value as a command argument, keeping it out of shell history and process listings. For automation, `--stdin` requires redirected input. It removes only the redirected input's final line terminator; any other leading or trailing whitespace remains part of the secret. `list` prints names only, and `delete` removes the named credential from the active profile. Local values use the existing profile-scoped `.env` credential lifecycle; they do not enter a chat or LLM context.
+`set` prompts without echo and never accepts the value as a command argument, keeping it out of shell history and process listings. For automation, `--stdin` requires redirected input. It removes all trailing CR and LF characters; any other leading or trailing whitespace remains part of the secret. `list` prints names only, and `delete` removes the named credential from the active profile. Local values use the existing profile-scoped `.env` credential lifecycle; they do not enter a chat or LLM context.
 
 The provider subcommands pull API keys from an external secret manager at process startup instead of storing them in `~/.hermes/.env`. See the full guides for [Bitwarden](../user-guide/secrets/bitwarden.md) and [1Password](../user-guide/secrets/onepassword.md).
 

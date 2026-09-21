@@ -16948,7 +16948,7 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
         },
     )
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
-    save_credential = Mock()
+    save_credential = Mock(return_value={"ok": True})
     monkeypatch.setattr(
         "hermes_cli.credential_lifecycle.save_provider_env_credential",
         save_credential,
@@ -16983,6 +16983,37 @@ def test_model_save_key_uses_credential_lifecycle_and_picker_context(monkeypatch
     )
 
 
+def test_model_save_key_reports_credential_write_refusal(monkeypatch):
+    env_var = "TEST_PROVIDER_API_KEY"
+    monkeypatch.setattr(
+        "hermes_cli.auth.PROVIDER_REGISTRY",
+        {
+            "test-provider": types.SimpleNamespace(
+                name="Test Provider",
+                auth_type="api_key",
+                api_key_env_vars=(env_var,),
+            )
+        },
+    )
+    monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        Mock(return_value={"ok": False}),
+    )
+    build_payload = Mock()
+    monkeypatch.setattr("hermes_cli.inventory.build_models_payload", build_payload)
+    monkeypatch.setenv(env_var, "managed-value")
+
+    resp = server._methods["model.save_key"](
+        104,
+        {"slug": "test-provider", "api_key": "replacement-value"},
+    )
+
+    assert resp["error"]["code"] == 4006
+    assert os.environ[env_var] == "managed-value"
+    build_payload.assert_not_called()
+
+
 def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkeypatch):
     """The gated picker's own chat waits on ``setup.status``, which answers from the boot record:
     a key saved for the launch profile must flip a ``False`` record (+ ``setup.ready``) at once;
@@ -16992,7 +17023,10 @@ def test_model_save_key_reconciles_the_launch_profiles_stale_setup_record(monkey
     monkeypatch.setattr("hermes_cli.auth.PROVIDER_REGISTRY", {"test-provider": types.SimpleNamespace(
         name="Test Provider", auth_type="api_key", api_key_env_vars=("TEST_PROVIDER_API_KEY",))})
     monkeypatch.setattr("hermes_cli.config.is_managed", lambda: False)
-    monkeypatch.setattr("hermes_cli.credential_lifecycle.save_provider_env_credential", Mock())
+    monkeypatch.setattr(
+        "hermes_cli.credential_lifecycle.save_provider_env_credential",
+        Mock(return_value={"ok": True}),
+    )
     monkeypatch.setattr("hermes_cli.inventory.build_models_payload", Mock(return_value={"providers": []}))
     monkeypatch.setenv("TEST_PROVIDER_API_KEY", "previous-value")  # save_key exports the new key
     monkeypatch.setattr(fb, "_inventory_other_providers", lambda: True)

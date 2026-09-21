@@ -82,12 +82,10 @@ def cmd_list(_args) -> int:
 
 def cmd_delete(args) -> int:
     """Delete through the shared lifecycle so provider pools and credential mirrors are pruned."""
-    from hermes_cli.config import validate_env_var_name_for_write
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
 
     name = args.name
     try:
-        validate_env_var_name_for_write(name)
         result = remove_provider_env_credential(name)
     except (RuntimeError, ValueError) as exc:
         return _error(str(exc))

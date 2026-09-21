@@ -365,8 +365,9 @@ def _(rid, params: dict) -> dict:
     # the previous key (model.api_key, custom_providers[*].api_key) is rotated in the same action (#62269).
     env_var = pconfig.api_key_env_vars[0]
     from hermes_cli.credential_lifecycle import save_provider_env_credential  # also rotates stale config.yaml mirrors
-    save_provider_env_credential(env_var, api_key)
-    os.environ[env_var] = api_key  # so the refreshed inventory sees it
+    result = save_provider_env_credential(env_var, api_key)
+    if not result.get("ok"):
+        return _err(rid, 4006, "credential is managed and cannot be changed")
     # The launch profile's boot record may still say "nothing configured"; the gated picker's
     # own chat waits on setup.status, so the fresh key must move the record (+ setup.ready).
     if not params.get("profile"):

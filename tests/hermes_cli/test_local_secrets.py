@@ -119,6 +119,21 @@ def test_set_rejects_redirected_multiline_value_without_disclosure(
     assert not (tmp_path / ".env").exists()
 
 
+def test_stdin_strips_trailing_line_terminators_but_preserves_spaces(
+        tmp_path, monkeypatch):
+    from hermes_cli.config import invalidate_env_cache, load_env
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    monkeypatch.setattr("sys.stdin", io.StringIO("space-sensitive  \r\n\n"))
+
+    args = _parser().parse_args(
+        ["secrets", "set", "REVIEW_SECRET", "--stdin"])
+    assert args.func(args) == 0
+    invalidate_env_cache()
+    assert load_env()["REVIEW_SECRET"] == "space-sensitive  "
+
+
 def test_stdin_list_and_delete_keep_values_out_of_output(tmp_path, monkeypatch, capsys):
     parser = _parser()
     monkeypatch.setenv("HERMES_HOME", str(tmp_path))
@@ -175,3 +190,19 @@ def test_delete_managed_secret_refuses_before_lifecycle_side_effects(
     assert auth_path.read_text(encoding="utf-8") == auth_text
     assert config_path.read_text(encoding="utf-8") == config_text
     assert not (tmp_path / ".env").exists()
+
+
+def test_delete_allows_cleanup_of_write_denylisted_names(tmp_path, monkeypatch, capsys):
+    from hermes_cli.config import invalidate_env_cache
+
+    env_path = tmp_path / ".env"
+    env_path.write_text("LD_PRELOAD=dangerous-value\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(tmp_path / "managed"))
+    invalidate_env_cache()
+
+    args = _parser().parse_args(["secrets", "delete", "LD_PRELOAD"])
+    assert args.func(args) == 0
+    output = capsys.readouterr()
+    assert "dangerous-value" not in output.out + output.err
+    assert "LD_PRELOAD" not in env_path.read_text(encoding="utf-8")

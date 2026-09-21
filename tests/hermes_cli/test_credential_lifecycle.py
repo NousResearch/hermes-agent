@@ -143,6 +143,31 @@ def test_update_rotates_config_yaml_model_mirror(hermes_home):
     assert load_env()["OPENAI_API_KEY"] == new
 
 
+def test_put_api_env_reports_managed_write_refusal(hermes_home, tmp_path, monkeypatch):
+    from hermes_cli import managed_scope
+
+    managed = tmp_path / "managed"
+    managed.mkdir()
+    managed.joinpath(".env").write_text(
+        "OPENAI_API_KEY=managed-value\n", encoding="utf-8"
+    )
+    monkeypatch.setenv("HERMES_MANAGED_DIR", str(managed))
+    managed_scope.invalidate_managed_cache()
+
+    resp = client.put(
+        "/api/env",
+        json={"key": "OPENAI_API_KEY", "value": "replacement-value"},
+        headers=HEADERS,
+    )
+
+    assert resp.status_code == 409
+    assert "managed" in resp.json()["detail"].lower()
+    assert not hermes_home.joinpath(".env").exists()
+    assert managed.joinpath(".env").read_text(encoding="utf-8") == (
+        "OPENAI_API_KEY=managed-value\n"
+    )
+
+
 
 
 # ---------------------------------------------------------------------------

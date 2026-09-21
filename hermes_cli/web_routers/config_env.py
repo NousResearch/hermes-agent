@@ -292,9 +292,12 @@ async def set_env_var(body: EnvVarUpdate, profile: Optional[str] = None):
     with _env_write_errors("PUT /api/env failed", http_passthrough=False):
         from hermes_cli.credential_lifecycle import save_provider_env_credential
 
-        return await scoped_to_thread(
+        result = await scoped_to_thread(
             body.profile or profile, lambda: save_provider_env_credential(body.key, body.value)
         )
+    if not result.get("ok"):
+        raise HTTPException(status_code=409, detail="Credential is managed and cannot be changed")
+    return result
 
 
 # Live credential probes keyed by env var: (url, auth) where auth is "bearer"

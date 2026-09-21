@@ -12,7 +12,7 @@ import tempfile
 import threading
 import time
 from contextlib import AbstractContextManager
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
@@ -54,11 +54,11 @@ class MergeStateStillComputingError(GitHubClientError):
 
 
 MAX_FEEDBACK_BODY_CHARS = 16_384
-# Bounded above the current single-operator backlog (329 open LunaBot PRs as
-# of 2026-09-06). The discovery-cap check must fail closed rather than silently
-# operate on a truncated page, so keep the ceiling finite while leaving room
-# for the burst of PRs produced by the burndown workflow.
-MAX_DISCOVERED_PULL_REQUESTS = 500
+# Historical mode must cover LunaBot's long-lived merged-PR backlog, not just
+# the current open backlog. The discovery-cap check still fails closed rather
+# than silently operating on a truncated page; the finite ceiling protects the
+# request budget if a repository is unexpectedly much larger.
+MAX_DISCOVERED_PULL_REQUESTS = 5_000
 _REPOSITORY = re.compile(r"^[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+$")
 _SHA = re.compile(r"^[0-9a-fA-F]{40}$")
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -455,6 +455,10 @@ class ReviewThread:
     comment_id: str
     head_sha: str
     is_resolved: bool
+    body: str = ""
+    path: str | None = None
+    line: int | None = None
+    author_login: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -490,6 +494,12 @@ class GitHubClient:
         "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){"
         "pullRequest(number:$number){headRefOid reviewThreads(first:100){nodes{id isResolved "
         "comments(first:100){nodes{databaseId} pageInfo{hasNextPage}}} "
+        "pageInfo{hasNextPage}}}}}"
+    )
+    HISTORICAL_THREADS_QUERY = (
+        "query($owner:String!,$name:String!,$number:Int!){repository(owner:$owner,name:$name){"
+        "pullRequest(number:$number){headRefOid reviewThreads(first:100){nodes{id isResolved "
+        "comments(first:100){nodes{databaseId}} pageInfo{hasNextPage}} "
         "pageInfo{hasNextPage}}}}}"
     )
     RESOLVE_REVIEW_THREAD_MUTATION = (
@@ -622,6 +632,49 @@ class GitHubClient:
                 "GitHub owned pull request query reached its coverage cap"
             )
         return tuple(_listed_pull_request(repository, row) for row in payload)
+
+    def list_merged_pull_requests(
+        self, repository: str, owner_login: str
+    ) -> tuple[PullRequest, ...]:
+        """List only owned PRs with a confirmed merge commit.
+
+        This is deliberately separate from ``list_open_pull_requests`` so the
+        ordinary scanner cannot accidentally expand into closed PR history.
+        ``mergedAt`` and ``mergeCommit.oid`` are both required as a fail-closed
+        guard because GitHub represents closed-but-unmerged PRs as CLOSED too.
+        """
+        payload = self._json(
+            [
+                "gh",
+                "pr",
+                "list",
+                "--repo",
+                repository,
+                "--state",
+                "merged",
+                "--author",
+                owner_login,
+                "--limit",
+                str(MAX_DISCOVERED_PULL_REQUESTS),
+                "--json",
+                "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels,mergedAt,mergeCommit",
+            ]
+        )
+        if not isinstance(payload, list) or any(not isinstance(row, dict) for row in payload):
+            raise GitHubClientError("GitHub merged pull request list was not a list of objects")
+        if len(payload) >= MAX_DISCOVERED_PULL_REQUESTS:
+            raise GitHubClientError("GitHub merged pull request query reached its coverage cap")
+        merged: list[PullRequest] = []
+        for row in payload:
+            merge_commit = row.get("mergeCommit")
+            if not row.get("mergedAt") or not isinstance(merge_commit, dict):
+                continue
+            oid = merge_commit.get("oid")
+            if not isinstance(oid, str) or not _SHA.fullmatch(oid):
+                continue
+            pull = _listed_pull_request(repository, row)
+            merged.append(replace(pull, state="MERGED"))
+        return tuple(merged)
 
     def viewer_login(self) -> str:
         """Return the exact login owning this client's explicit credential."""
@@ -964,6 +1017,15 @@ class GitHubClient:
                 f"number={number}",
             ]
         )
+        if isinstance(payload, dict) and payload.get("errors"):
+            errors = payload["errors"]
+            if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                message = errors[0].get("message")
+                if isinstance(message, str):
+                    raise GitHubClientError(
+                        f"GitHub historical review query failed: {message}"
+                    )
+            raise GitHubClientError("GitHub historical review query returned errors")
         try:
             pull = payload["data"]["repository"]["pullRequest"]
             decision = pull["reviewDecision"]
@@ -994,6 +1056,117 @@ class GitHubClient:
             review_decision=decision,
             unresolved_thread_count=sum(not node["isResolved"] for node in nodes),
         )
+
+    def list_unresolved_review_threads(
+        self, repository: str, number: int
+    ) -> tuple[ReviewThread, ...]:
+        """Return exact unresolved thread/comment identities for a PR."""
+        repository = _validated_repository(repository)
+        number = _positive_number(number)
+        owner, name = repository.split("/", 1)
+        payload = self._json(
+            [
+                "gh", "api", "graphql", "-f",
+                "query=" + self.HISTORICAL_THREADS_QUERY,
+                "-F", f"owner={owner}", "-F", f"name={name}", "-F", f"number={number}",
+            ]
+        )
+        try:
+            pull = payload["data"]["repository"]["pullRequest"]
+            head_sha = _validated_sha(pull["headRefOid"])
+            threads = pull["reviewThreads"]
+            if threads["pageInfo"]["hasNextPage"] or not isinstance(threads["nodes"], list):
+                raise TypeError("historical review-thread coverage is incomplete")
+            result: list[ReviewThread] = []
+            for node in threads["nodes"]:
+                comments = node["comments"]
+                if comments["pageInfo"]["hasNextPage"] or not comments["nodes"]:
+                    raise TypeError("historical review-comment coverage is incomplete")
+                if not isinstance(node["isResolved"], bool):
+                    raise TypeError("historical review-thread state is invalid")
+                if node["isResolved"]:
+                    continue
+                comment_ids = [str(item["databaseId"]) for item in comments["nodes"]]
+                if not comment_ids:
+                    raise TypeError("historical review thread has no comment identity")
+                result.append(ReviewThread(str(node["id"]), comment_ids[0], head_sha, False))
+            return tuple(result)
+        except (KeyError, TypeError, ValueError) as error:
+            raise GitHubClientError("GitHub historical review threads were unavailable") from error
+
+    def list_unresolved_review_threads_batch(
+        self, repository: str, numbers: tuple[int, ...]
+    ) -> dict[int, tuple[ReviewThread, ...]]:
+        """Read exact unresolved thread identities for bounded PR batches."""
+        repository = _validated_repository(repository)
+        if not numbers or len(numbers) > 25:
+            raise ValueError("historical review-thread batch must contain 1 to 25 PRs")
+        validated_numbers = tuple(_positive_number(number) for number in numbers)
+        if len(set(validated_numbers)) != len(validated_numbers):
+            raise ValueError("historical review-thread batch contains duplicate PRs")
+        owner, name = repository.split("/", 1)
+        thread_fields = (
+            "headRefOid reviewThreads(first:100){nodes{id isResolved "
+            "comments(first:100){nodes{databaseId body path line originalLine "
+            "author{login} createdAt} pageInfo{hasNextPage}}} "
+            "pageInfo{hasNextPage}}"
+        )
+        aliases = " ".join(
+            f"p{index}:pullRequest(number:{number}){{{thread_fields}}}"
+            for index, number in enumerate(validated_numbers)
+        )
+        payload = self._json(
+            [
+                "gh", "api", "graphql", "-f",
+                "query="
+                + f'query{{repository(owner:"{owner}",name:"{name}"){{{aliases}}}}}',
+            ]
+        )
+        if isinstance(payload, dict) and payload.get("errors"):
+            errors = payload["errors"]
+            if isinstance(errors, list) and errors and isinstance(errors[0], dict):
+                message = errors[0].get("message")
+                if isinstance(message, str):
+                    raise GitHubClientError(
+                        f"GitHub historical review query failed: {message}"
+                    )
+            raise GitHubClientError("GitHub historical review query returned errors")
+        try:
+            repositories = payload["data"]["repository"]
+            result: dict[int, tuple[ReviewThread, ...]] = {}
+            for index, number in enumerate(validated_numbers):
+                pull = repositories[f"p{index}"]
+                head_sha = _validated_sha(pull["headRefOid"])
+                threads = pull["reviewThreads"]
+                if threads["pageInfo"]["hasNextPage"] or not isinstance(
+                    threads["nodes"], list
+                ):
+                    raise TypeError("historical review-thread coverage is incomplete")
+                unresolved: list[ReviewThread] = []
+                for node in threads["nodes"]:
+                    comments = node["comments"]
+                    if comments["pageInfo"]["hasNextPage"] or not comments["nodes"]:
+                        raise TypeError("historical review-comment coverage is incomplete")
+                    if not isinstance(node["isResolved"], bool):
+                        raise TypeError("historical review-thread state is invalid")
+                    if not node["isResolved"]:
+                        unresolved.append(
+                            ReviewThread(
+                                str(node["id"]),
+                                str(comments["nodes"][0]["databaseId"]),
+                                head_sha,
+                                False,
+                                str(comments["nodes"][0].get("body", "")),
+                                comments["nodes"][0].get("path"),
+                                comments["nodes"][0].get("line")
+                                or comments["nodes"][0].get("originalLine"),
+                                (comments["nodes"][0].get("author") or {}).get("login"),
+                            )
+                        )
+                result[number] = tuple(unresolved)
+            return result
+        except (KeyError, TypeError, ValueError) as error:
+            raise GitHubClientError("GitHub historical review threads were unavailable") from error
 
     def get_check_state(
         self,

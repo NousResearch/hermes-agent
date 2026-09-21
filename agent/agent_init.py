@@ -9,6 +9,7 @@ Symbols that tests patch on ``run_agent.*`` (``OpenAI``, ``get_tool_definitions`
 
 from __future__ import annotations
 
+import copy
 import logging
 import os
 import re
@@ -2424,6 +2425,16 @@ def init_agent(
         _agent_cfg = _load_agent_config()
     except Exception:
         _agent_cfg = {}
+
+    _agent_section = _agent_cfg.get("agent", {}) if isinstance(_agent_cfg, dict) else {}
+    if not isinstance(_agent_section, dict):
+        _agent_section = {}
+    agent._guarded_prompt_config = {
+        "agent": {
+            key: copy.deepcopy(_agent_section.get(key))
+            for key in ("coding_context", "coding_instructions", "guarded_prompt_mode")
+        }
+    }
 
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)

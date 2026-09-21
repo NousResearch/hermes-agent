@@ -22,6 +22,12 @@ from hermes_cli import kanban_db_connect as kanban_db
 CandidateRequestStatus = Literal["candidate", "duplicate", "cooldown", "rejected"]
 _LIFECYCLE_NONTERMINAL = frozenset({"candidate", "benchmarked", "verified", "staged", "active"})
 _LIFECYCLE_TERMINAL = frozenset({"rejected", "expired", "revoked"})
+_ALLOWED_LIFECYCLE_TRANSITIONS = {
+    "candidate": "benchmarked",
+    "benchmarked": "verified",
+    "verified": "staged",
+    "staged": "active",
+}
 _DEFAULT_COOLDOWN_SECONDS = 3_600
 _MAX_SOURCE_KEY_CHARS = 512
 _MAX_PROFILE_ID_CHARS = 96
@@ -93,6 +99,18 @@ class CandidateProfileRequest:
     status: CandidateRequestStatus
     profile_id: None
     reason: str
+
+
+@dataclass(frozen=True, slots=True)
+class CandidateLifecycleSnapshot:
+    """The immutable scope and newest append-only state for one candidate."""
+
+    candidate_id: str
+    request_hash: str
+    signature_hash: str
+    permissions_hash: str
+    policy_digest: str
+    lifecycle_status: str
 
 
 
@@ -318,6 +336,108 @@ class CandidateProfileRequests:
             reason="local no-match queued for bounded inert candidate review",
         )
 
+
+    def lifecycle_snapshot(self, candidate_id: str) -> CandidateLifecycleSnapshot | None:
+        """Read a candidate's latest append-only lifecycle state."""
+        if not isinstance(candidate_id, str) or not candidate_id:
+            raise ValueError("candidate_id must be a non-empty string")
+        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
+            original = conn.execute(
+                """
+                SELECT request_id, request_hash, signature_hash, permissions_hash, policy_digest
+                FROM candidate_profile_requests WHERE request_id = ?
+                """,
+                (candidate_id,),
+            ).fetchone()
+            if original is None:
+                return None
+            latest = conn.execute(
+                """
+                SELECT lifecycle_status FROM candidate_profile_requests
+                WHERE request_hash = ? ORDER BY id DESC LIMIT 1
+                """,
+                (original["request_hash"],),
+            ).fetchone()
+        if latest is None:
+            return None
+        return CandidateLifecycleSnapshot(
+            candidate_id=original["request_id"],
+            request_hash=original["request_hash"],
+            signature_hash=original["signature_hash"],
+            permissions_hash=original["permissions_hash"],
+            policy_digest=original["policy_digest"],
+            lifecycle_status=latest["lifecycle_status"],
+        )
+
+    def append_lifecycle_transition(
+        self,
+        candidate_id: str,
+        *,
+        expected_status: str,
+        next_status: str,
+        reason_code: str,
+        receipt_hash: str,
+    ) -> CandidateLifecycleSnapshot | None:
+        """Append one monotonic lifecycle observation; never update candidate rows."""
+        if _ALLOWED_LIFECYCLE_TRANSITIONS.get(expected_status) != next_status:
+            raise ValueError("candidate lifecycle transition is not permitted")
+        if not isinstance(reason_code, str) or not _REASON_CODE_RE.fullmatch(reason_code):
+            raise ValueError("reason_code must be a bounded canonical code")
+        if not isinstance(receipt_hash, str) or not _OPAQUE_REFERENCE_RE.fullmatch(receipt_hash):
+            raise ValueError("receipt_hash must be a SHA-256 hex digest")
+
+        with kanban_db.connect_closing(self._db_path, board=self._board) as conn:
+            with kanban_db.write_txn(conn):
+                original = conn.execute(
+                    """
+                    SELECT request_id, request_hash, signature_hash, permissions_hash,
+                           source_key_hash, policy_digest, evidence_ref_hashes_json,
+                           generation_id, requested_profile_id
+                    FROM candidate_profile_requests WHERE request_id = ?
+                    """,
+                    (candidate_id,),
+                ).fetchone()
+                if original is None:
+                    return None
+                latest = conn.execute(
+                    """
+                    SELECT lifecycle_status FROM candidate_profile_requests
+                    WHERE request_hash = ? ORDER BY id DESC LIMIT 1
+                    """,
+                    (original["request_hash"],),
+                ).fetchone()
+                if latest is None or latest["lifecycle_status"] != expected_status:
+                    return None
+
+                transition_id = (
+                    f"cpr_{original['request_hash'][:24]}_"
+                    f"{_hash((candidate_id, expected_status, next_status, receipt_hash))[:8]}"
+                )
+                conn.execute(
+                    """
+                    INSERT INTO candidate_profile_requests (
+                        request_id, generation_id, request_hash, signature_hash, permissions_hash,
+                        source_key_hash, requested_profile_id, policy_digest,
+                        evidence_ref_hashes_json, lifecycle_status, reason_code, cooldown_until,
+                        created_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL, ?)
+                    """,
+                    (
+                        transition_id,
+                        original["generation_id"],
+                        original["request_hash"],
+                        original["signature_hash"],
+                        original["permissions_hash"],
+                        original["source_key_hash"],
+                        original["requested_profile_id"],
+                        original["policy_digest"],
+                        original["evidence_ref_hashes_json"],
+                        next_status,
+                        reason_code,
+                        int(self._clock()),
+                    ),
+                )
+        return self.lifecycle_snapshot(candidate_id)
 
 
 

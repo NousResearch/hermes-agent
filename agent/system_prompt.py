@@ -45,9 +45,7 @@ GUARDED_EXECUTION_CONTRACT = (
     "- Make the requested change through tools, then verify it with the relevant "
     "command and report its real result. Do not claim completion from a plan or guess.\n"
     "- Batch independent read-only calls. Serialize dependent edits. Respect tool "
-    "permissions and confirmations for side effects.\n"
-    "- All listed skills remain available. Load a relevant skill with skill_view; "
-    "use tool discovery when a needed capability is not visible."
+    "permissions and confirmations for side effects."
 )
 
 
@@ -67,9 +65,18 @@ def _guarded_prompt_flags(agent: Any) -> Tuple[bool, bool]:
         try:
             from agent.coding_context import guarded_prompt_enabled
 
+            fallback_routes = tuple(
+                (route.get("provider"), route.get("model"))
+                if isinstance(route, dict) else (None, None)
+                for route in (getattr(agent, "_fallback_chain", None) or ())
+            )
             guarded = guarded_prompt_enabled(
-                platform=agent.platform, cwd=resolve_context_cwd(),
-                provider=agent.provider, model=agent.model,
+                platform=agent.platform,
+                cwd=resolve_context_cwd(),
+                provider=getattr(agent, "requested_provider", None) or agent.provider,
+                model=agent.model,
+                config=getattr(agent, "_guarded_prompt_config", None),
+                fallback_routes=fallback_routes,
             )
         except Exception:
             guarded = False
@@ -353,7 +360,11 @@ def _skills_prompt(agent: Any, *, guarded: bool = False) -> str:
     avail_toolsets = {model_tools.get_toolset_for_tool(tool_name) for tool_name in agent.valid_tool_names} - {None, ""}
     try:
         from agent.coding_context import coding_compact_skill_categories
-        _compact_cats = coding_compact_skill_categories(platform=agent.platform, cwd=resolve_context_cwd())
+        _compact_cats = coding_compact_skill_categories(
+            platform=agent.platform,
+            cwd=resolve_context_cwd(),
+            config=getattr(agent, "_guarded_prompt_config", None),
+        )
     except Exception:
         _compact_cats = frozenset()
     return _pb.build_skills_system_prompt(available_tools=agent.valid_tool_names, available_toolsets=avail_toolsets,
@@ -583,6 +594,17 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
+def _guarded_execution_contract(agent: Any) -> str:
+    """Add skill guidance only when the matching tool is in the session schema."""
+    contract = GUARDED_EXECUTION_CONTRACT
+    if "skill_view" in (getattr(agent, "valid_tool_names", None) or set()):
+        return (
+            f"{contract}\n- All listed skills remain available. Load a relevant skill "
+            "with skill_view; use tool discovery when a needed capability is not visible."
+        )
+    return f"{contract}\n- Use tool discovery when a needed capability is not visible."
+
+
 def _guidance_parts(agent: Any, *, guarded: bool = False) -> List[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key.
 
@@ -594,7 +616,7 @@ def _guidance_parts(agent: Any, *, guarded: bool = False) -> List[str]:
     """
     parts: List[str] = []
     if guarded:
-        parts.append(GUARDED_EXECUTION_CONTRACT)
+        parts.append(_guarded_execution_contract(agent))
     if agent.valid_tool_names:
         parts += [
             text for flag, text in (
@@ -636,7 +658,9 @@ def _alibaba_identity_part(agent: Any) -> List[str]:
     ]
 
 
-def _coding_parts(agent: Any, *, remote_kanban: bool = False) -> Tuple[List[str], List[str], List[str]]:
+def _coding_parts(
+    agent: Any, *, remote_kanban: bool = False, guarded: bool = False
+) -> Tuple[List[str], List[str], List[str]]:
     """``(prefix, workspace, trailing)`` coding-posture blocks; all empty
     without tools or when probing fails (it must never block prompt build).
 
@@ -659,8 +683,16 @@ def _coding_parts(agent: Any, *, remote_kanban: bool = False) -> Tuple[List[str]
         pinned = getattr(agent, "_frozen_workspace_snapshot", None)
         # "" is a real pinned value (no workspace here) — only a cwd mismatch re-probes.
         replay = pinned[1] if pinned is not None and pinned[0] == cwd_key else None
-        parts = coding_system_prompt_parts(platform=agent.platform, cwd=cwd, model=agent.model,
-                                           valid_tool_names=agent.valid_tool_names, workspace_block=replay)
+        parts = coding_system_prompt_parts(
+            platform=agent.platform,
+            cwd=cwd,
+            config=getattr(agent, "_guarded_prompt_config", None),
+            model=agent.model,
+            valid_tool_names=agent.valid_tool_names,
+            workspace_block=replay,
+        )
+        if guarded:
+            parts = ([], parts[1], parts[2])
         if replay is None:
             agent._frozen_workspace_snapshot = (cwd_key, parts[1][0] if parts[1] else "")
         return parts
@@ -753,7 +785,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     # host environment details are suppressed rather than path-scrubbed.
     environment_hints = "" if _remote_kanban_prompt else _pb.build_environment_hints()
     coding_prefix_parts, coding_workspace_parts, coding_trailing_parts = _coding_parts(
-        agent, remote_kanban=_remote_kanban_prompt)
+        agent, remote_kanban=_remote_kanban_prompt, guarded=_guarded_prompt)
     stable_parts.extend(coding_prefix_parts)
     post_workspace_parts = _post_workspace_parts(agent, remote_kanban=_remote_kanban_prompt)
     # ── Context tier (project/worktree-dependent, may change between sessions) ──

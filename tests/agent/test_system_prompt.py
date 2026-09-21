@@ -210,6 +210,7 @@ def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
         TASK_COMPLETION_GUIDANCE,
         TOOL_USE_ENFORCEMENT_GUIDANCE,
     )
+    from agent.coding_context import CODING_AGENT_GUIDANCE
     from agent.system_prompt import GUARDED_EXECUTION_CONTRACT
 
     agent = _make_agent(
@@ -229,6 +230,7 @@ def test_guarded_prompt_replaces_verbose_coaching_and_compacts_skills():
         stable = _stable_prompt(agent)
 
     assert GUARDED_EXECUTION_CONTRACT in stable
+    assert CODING_AGENT_GUIDANCE not in stable
     assert "worktree" in GUARDED_EXECUTION_CONTRACT.lower()
     assert "verify" in GUARDED_EXECUTION_CONTRACT.lower()
     assert TASK_COMPLETION_GUIDANCE in stable
@@ -250,6 +252,52 @@ def test_guarded_prompt_keeps_kanban_worker_lifecycle_guidance():
         stable = _stable_prompt(agent)
 
     assert "KANBAN_WORKER_LIFECYCLE" in stable
+
+
+def test_guarded_prompt_uses_requested_route_and_allows_only_listed_fallbacks(
+    monkeypatch, tmp_path
+):
+    from agent.system_prompt import _guarded_prompt_flags
+
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    (tmp_path / "pyproject.toml").write_text("[project]\nname = 'workspace'\n")
+    agent = _make_agent(
+        valid_tool_names=["read_file"],
+        platform="desktop",
+        provider="custom",
+        requested_provider="ollama-launch",
+        model="hermes-qwen3-fast",
+        _fallback_chain=[{"provider": "openrouter", "model": "safe-fallback"}],
+    )
+    agent._guarded_prompt_config = {
+        "agent": {
+            "coding_context": "focus",
+            "coding_instructions": "Keep user instructions stable.",
+            "guarded_prompt_mode": {
+                "enabled": True,
+                "routes": [
+                    {"provider": "ollama-launch", "model": "hermes-qwen3-fast"},
+                    {"provider": "openrouter", "model": "safe-fallback"},
+                ],
+            },
+        }
+    }
+    with (
+        patch("agent.system_prompt.resolve_context_cwd", return_value=tmp_path),
+        patch("hermes_cli.config.load_config_readonly", side_effect=AssertionError("ambient config read")),
+    ):
+        assert _guarded_prompt_flags(agent) == (False, True)
+
+        agent._guarded_prompt_config["agent"]["guarded_prompt_mode"]["routes"].pop()
+        assert _guarded_prompt_flags(agent) == (False, False)
+
+
+def test_guarded_prompt_omits_skill_view_guidance_when_tool_is_unavailable():
+    agent = _make_agent(valid_tool_names=["read_file"], platform="desktop")
+    with patch("agent.coding_context.guarded_prompt_enabled", return_value=True):
+        stable = _stable_prompt(agent)
+
+    assert "skill_view" not in stable
 
 
 def test_remote_kanban_worker_forces_compact_path_neutral_prompt(monkeypatch):

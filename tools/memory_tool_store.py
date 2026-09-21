@@ -33,6 +33,20 @@ def _error(message: str, **extra) -> Dict[str, Any]:
     return {"success": False, "error": message, **extra}
 
 
+def _partial_anchor_message(label: str, matched: str) -> str:
+    """#117952 approval-replay fail-closed error text: a staged ``replace`` anchored on
+    a substring of a longer entry would replace the WHOLE entry, silently deleting the
+    unmatched remainder. Only the /memory approve replay path enables the check; direct
+    calls keep the documented whole-entry replacement contract."""
+    return (
+        f"{label} anchors on a substring of a longer entry, so applying it would "
+        f"replace the ENTIRE {len(matched)}-char entry with just the op text and "
+        "silently delete the unmatched remainder. Discard this pending write and "
+        "either re-stage it with old_text set to the FULL entry text (and the "
+        "complete new entry in content), or swap the substring in place with the "
+        "patch tool.")
+
+
 def _drift_error(path: Path, bak_path: str) -> Dict[str, Any]:
     """External drift: the file wouldn't round-trip, so flushing would discard content."""
     return _error((
@@ -269,8 +283,11 @@ class MemoryStore:
         # content) but still refuse a failed read — add rewrites the WHOLE file.
         return self._mutate(target, _add, skip_drift=True)
 
-    def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+    def replace(self, target: str, old_text: str, new_content: str, *,
+                reject_partial_anchor: bool = False) -> Dict[str, Any]:
+        """Find entry containing old_text substring, replace it with new_content.
+        With ``reject_partial_anchor`` (approval replay only), an old_text that is a
+        substring of a longer entry fails closed instead of truncating it."""
         new_content = new_content.strip()
         if not old_text.strip():
             return _error("old_text cannot be empty.")
@@ -278,7 +295,8 @@ class MemoryStore:
             return _error("new_content cannot be empty. Use 'remove' to delete entries.")
         if scan_error := _scan_memory_content(new_content):
             return _error(scan_error)
-        return self._edit(target, old_text.strip(), new_content)
+        return self._edit(target, old_text.strip(), new_content,
+                          reject_partial_anchor=reject_partial_anchor)
 
     def remove(self, target: str, old_text: str) -> Dict[str, Any]:
         """Remove the entry containing old_text substring."""
@@ -286,8 +304,13 @@ class MemoryStore:
             return _error("old_text cannot be empty.")
         return self._edit(target, old_text.strip(), None)
 
-    def _edit(self, target: str, old_text: str, new_content: Optional[str]) -> Dict[str, Any]:
-        """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*."""
+    def _edit(self, target: str, old_text: str, new_content: Optional[str], *,
+              reject_partial_anchor: bool = False) -> Dict[str, Any]:
+        """Locked replace (``new_content`` set) or remove (None) of the entry matching *old_text*.
+        The partial-anchor check (approval replay only) runs INSIDE the locked mutation, on the
+        reloaded disk snapshot the apply step itself uses — judging the live in-memory list
+        before ``_mutate`` would let a concurrent writer swap the entry between check and write
+        (#117952 review)."""
         def _apply(entries, limit):
             idx, ambiguous = _find_unique_match(entries, old_text)
             if ambiguous:
@@ -297,6 +320,8 @@ class MemoryStore:
                 return self._consolidation_failure(_error(
                     f"No entry matched '{old_text}'. Check current_entries below and retry with the exact text "
                     f"of the entry you want to {'replace' if new_content else 'remove'}.", current_entries=entries))
+            if reject_partial_anchor and new_content is not None and entries[idx] != old_text:
+                return _error(_partial_anchor_message("This write", entries[idx]))
             replaced = entries[:idx] + ([] if new_content is None else [new_content]) + entries[idx + 1:]
             if new_content is None:
                 return replaced, "Entry removed."
@@ -332,11 +357,16 @@ class MemoryStore:
         working[idx:idx + 1] = [content] if act == "replace" else []
         return None
 
-    def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
+    def apply_batch(self, target: str, operations: List[Dict[str, Any]], *,
+                    reject_partial_anchor: bool = False) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
         can free space and add entries. All-or-nothing: any malformed / unmatched op or
         an over-limit result writes NOTHING and returns the first failure. Aborts do not
-        echo ``current_entries`` — the store is unchanged and the model already has it."""
+        echo ``current_entries`` — the store is unchanged and the model already has it.
+        With ``reject_partial_anchor`` (approval replay only), each replace op is checked
+        against the SAME evolving working list it is about to apply against, so an earlier
+        op that creates (or resolves) a partial anchor is judged on its result, not on a
+        pre-batch snapshot (#117952 review)."""
         if not operations:
             return _error("operations list is empty.")
         ops = [op or {} for op in operations]
@@ -350,6 +380,13 @@ class MemoryStore:
             working = list(entries)  # only committed if the whole batch validates
             for i, op in enumerate(ops):
                 act = op.get("action")
+                if reject_partial_anchor and act == "replace":
+                    old = (op.get("old_text") or "").strip()
+                    if old:
+                        idx, ambiguous = _find_unique_match(working, old)
+                        if not ambiguous and idx is not None and working[idx] != old:
+                            return _error(_partial_anchor_message(f"Operation {i + 1}", working[idx])
+                                          + " No operations were applied (batch is all-or-nothing).")
                 msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
                                            (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:

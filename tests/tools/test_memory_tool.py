@@ -976,6 +976,58 @@ class TestApprovePartialAnchorFailsClosed:
         assert result["success"] is True
         assert store._entries_for("memory") == ["new one"]
 
+    def test_staged_batch_prior_op_creating_partial_anchor_rejected(self, store):
+        # Sequential gap (review on #117972): op 1 creates the longer entry that the
+        # partial anchor in op 2 matches. Judged against the evolving working list
+        # inside the batch, not a preflight snapshot, so the batch fails closed and
+        # the unmatched prefix/suffix cannot be silently dropped.
+        result = apply_memory_pending(
+            {"action": "batch", "target": "memory", "operations": [
+                {"action": "add", "content": "prefix target suffix"},
+                {"action": "replace", "old_text": "target", "content": "new"},
+            ]},
+            store,
+        )
+        assert result["success"] is False
+        assert "Operation 2" in result["error"]
+        assert "ENTIRE" in result["error"]
+        assert store._entries_for("memory") == []
+
+    def test_staged_batch_prior_op_resolving_partial_anchor_allowed(self, store):
+        # The inverse: op 1 rewrites the longer entry down to the exact text op 2
+        # replaces, so op 2 is a full-entry replace of op 1's result — the batch must
+        # not be rejected against the pre-batch snapshot.
+        store.add("memory", "prefix target suffix")
+        result = apply_memory_pending(
+            {"action": "batch", "target": "memory", "operations": [
+                {"action": "replace", "old_text": "prefix target suffix", "content": "target"},
+                {"action": "replace", "old_text": "target", "content": "new"},
+            ]},
+            store,
+        )
+        assert result["success"] is True
+        assert store._entries_for("memory") == ["new"]
+
+    def test_stale_store_reloads_disk_and_rejects_partial_anchor(self, store):
+        # Concurrent-writer gap (review on #117972): the approving store's in-memory
+        # view still holds the exact entry, but another store has meanwhile replaced
+        # it on disk with a longer entry. The guard must judge the locked reload inside
+        # _mutate, so approval fails closed instead of truncating the on-disk entry.
+        store.add("memory", "target")
+        other = MemoryStore(memory_char_limit=500, user_char_limit=300)
+        other.load_from_disk()
+        assert other.replace("memory", "target", "prefix target suffix")["success"] is True
+        assert store._entries_for("memory") == ["target"]  # approving store is now stale
+        result = apply_memory_pending(
+            {"action": "replace", "target": "memory", "old_text": "target", "content": "new"},
+            store,
+        )
+        assert result["success"] is False
+        assert "This write" in result["error"]
+        assert "ENTIRE" in result["error"]
+        # The longer on-disk entry survives untouched (live view shows the reload).
+        assert store._entries_for("memory") == ["prefix target suffix"]
+
     def test_staged_remove_partial_anchor_still_applies(self, store):
         store.add("memory", "stale detail here")
         result = apply_memory_pending(

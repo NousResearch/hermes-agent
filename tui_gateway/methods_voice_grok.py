@@ -29,6 +29,18 @@ from .method_ctx import HandlerRegistry, bind_module
 _registry = HandlerRegistry()
 method = _registry.method
 
+# Emitter inventory for the wire-completeness oracle (tests/tui_gateway/contracts/
+# test_generated.py imports this, the _CHANGE_WATCHES/_CHILD_DELTA_EVENTS precedent):
+# the bridge emits through the _sink/_routed indirection below, whose call shape the
+# literal scan cannot see, so the four names are declared here once. The _sink
+# whitelist below drops anything else, so a new event name fails this way loudly.
+GROK_LIVE_EVENTS = frozenset({
+    "voice.grok.audio",
+    "voice.grok.transcript",
+    "voice.grok.state",
+    "voice.grok.delegation",
+})
+
 # One live xAI session per Hermes session; wake-word mic-lease owners per session (SPEC §6).
 _grok_bridges_lock = threading.Lock()
 _grok_bridges: dict = {}        # session_id -> GrokLiveBridge
@@ -47,10 +59,9 @@ def _grok_emit_for(session_id: str, transport=None):
     voice conversation: ``write_json``'s full path (replay stamping + session-transport
     routing) when the id is a live Hermes session — existing-chat behavior, byte-identical —
     else the caller transport captured at start / refreshed by the latest upstream chunk,
-    never stdio, which was the fresh-draft silent failure. The literal calls double as the
-    emitter inventory the contract-completeness scan (tests/tui_gateway/contracts/
-    test_generated.py) discovers — and whitelist the sink so the bridge can never emit an
-    undeclared event name."""
+    never stdio, which was the fresh-draft silent failure. The emitted names are declared
+    once in ``GROK_LIVE_EVENTS`` (module level) for the contract-completeness scan — the
+    ``_sink`` whitelist below drops anything undeclared, so the two cannot drift apart."""
     def _routed(session_id: str, event: str, payload: dict) -> None:
         """Full write_json path when the id is a live Hermes session (replay stamping +
         session-transport routing — existing-chat behavior, byte-identical); else the

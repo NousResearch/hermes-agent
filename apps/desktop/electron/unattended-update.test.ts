@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest'
 
 import {
-  DEFAULT_UNATTENDED_SCHEDULE,
   armScheduledUpdate,
   decideScheduledAttempt,
+  DEFAULT_UNATTENDED_SCHEDULE,
   isWithinScheduledWindow,
   localTimeOf,
   msUntilNext,
@@ -20,11 +20,14 @@ function at(hour: number, minute: number, second = 0, ms = 0): Date {
 }
 
 describe('parseUnattendedSchedule (fail-closed)', () => {
-  it('defaults to DISABLED', () => {
+  it('defaults to DISABLED at 02:00 — the canonical quiet-hours slot the Windows scheduled task fires on', () => {
     expect(parseUnattendedSchedule(undefined)).toEqual(DEFAULT_UNATTENDED_SCHEDULE)
     expect(parseUnattendedSchedule(null)).toEqual(DEFAULT_UNATTENDED_SCHEDULE)
     expect(parseUnattendedSchedule('garbage')).toEqual(DEFAULT_UNATTENDED_SCHEDULE)
     expect(parseUnattendedSchedule(42)).toEqual(DEFAULT_UNATTENDED_SCHEDULE)
+    // The 02:00 default is CONTRACT with electron/scheduled-task.ts: the
+    // per-user Windows scheduled task registers /st from this same schedule.
+    expect(DEFAULT_UNATTENDED_SCHEDULE).toEqual({ enabled: false, hour: 2, minute: 0 })
   })
 
   it('only true enables; truthy non-boolean never enables', () => {

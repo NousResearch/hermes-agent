@@ -879,6 +879,11 @@ export const ar = defineLocale({
       unattendedMinuteLabel: 'الدقيقة',
       unattendedWindowsOnly: 'متاح فقط في إصدار ويندوز لسطح المكتب.',
       unattendedSaved: 'تم حفظ الجدول',
+      unattendedTaskInstalled: clock =>
+        `تم تثبيت مهمة مجدولة في Windows — سيتم التحديث في ${clock} حتى عندما يكون Hermes مغلقا.`,
+      unattendedTaskAbsent: 'لم يتم تثبيت مهمة مجدولة — تعمل التحديثات التلقائية فقط أثناء فتح التطبيق.',
+      unattendedTaskForeign: 'برنامج آخر يملك اسم هذه المهمة المجدولة — لن يتم المساس بها.',
+      unattendedTaskError: 'تعذر إدارة المهمة المجدولة في Windows.',
       branchCommit: (branch, commit) => `${branch} عند ${commit}`,
       never: 'أبدا',
       justNow: 'الآن',

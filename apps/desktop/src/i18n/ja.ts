@@ -960,6 +960,11 @@ export const ja = defineLocale({
       unattendedMinuteLabel: '分',
       unattendedWindowsOnly: 'Windows デスクトップ版でのみ利用できます。',
       unattendedSaved: 'スケジュールを保存しました',
+      unattendedTaskInstalled: clock =>
+        `Windows スケジュールタスクをインストールしました — Hermes が閉じていても ${clock} に更新が実行されます。`,
+      unattendedTaskAbsent: 'Windows スケジュールタスクは未インストールです — 自動更新はアプリ起動中のみ実行されます。',
+      unattendedTaskForeign: '別のプログラムがこのスケジュールタスク名を保持しています — 変更されません。',
+      unattendedTaskError: 'Windows スケジュールタスクを管理できませんでした。',
       branchCommit: (branch, commit) => `ブランチ ${branch} · コミット ${commit}`,
       never: '未確認',
       justNow: 'たった今',

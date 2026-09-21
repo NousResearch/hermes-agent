@@ -998,6 +998,11 @@ export const zhHant = defineLocale({
       unattendedMinuteLabel: '分',
       unattendedWindowsOnly: '僅 Windows 桌面版可用。',
       unattendedSaved: '計畫已儲存',
+      unattendedTaskInstalled: clock =>
+        `已安裝 Windows 排定工作 — 即使 Hermes 已關閉，也會在 ${clock} 自動更新。`,
+      unattendedTaskAbsent: '未安裝 Windows 排定工作 — 自動更新僅在應用程式開啟時執行。',
+      unattendedTaskForeign: '該排定工作名稱已被其他程式占用 — 不會被改動。',
+      unattendedTaskError: '無法管理 Windows 排定工作。',
       branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
       never: '從未',
       justNow: '剛剛',

@@ -25,6 +25,22 @@
 #     [-RelaunchExe <path>] Hermes.exe to start when done (omit = no relaunch)
 #     [-NoUi]               headless (tests); default shows a progress window
 #     [-NoMarkerCleanup]    leave .hermes-update-in-progress in place (tests)
+#     [-Unattended]         Task Scheduler mode: the "app is CLOSED" runway.
+#
+# UNATTENDED MODE (-Unattended, invoked by the per-user HermesDesktopUnattendedUpdate
+# scheduled task — see apps/desktop/electron/scheduled-task.ts):
+#   * SELF-GUARD: exits 0 BEFORE touching anything when a Hermes.exe process is
+#     already running OR a live update marker exists — the open app's own
+#     timer owns the slot then, and an in-flight update must never be
+#     double-driven. Only a genuinely closed Desktop lets the update proceed.
+#   * QUIET: pairs with -NoUi so nothing flashes at 02:00; the relaunched
+#     Desktop surfaces .hermes-update-result.json on boot.
+#   * COOLDOWN STAMP: writes HERMES_HOME\.hermes-unattended-last-run (unix ms)
+#     when it actually runs the update, so the relaunched Desktop treats this
+#     slot as "recently ran" and never double-fires within the cooldown window.
+#   * MAKES NO CHOICES ITSELF: -DesktopPid 0 (app is closed — nothing to wait
+#     out), branch pinned by the Desktop at registration, relaunch to the same
+#     exe that registered the task. Never an arbitrary command.
 #
 # SAFETY POSTURE: both preflight gates FAIL CLOSED. A Desktop that never
 # exits, or a venv shim that never unlocks, aborts the hand-off without
@@ -52,7 +68,8 @@ param(
     [switch]$SelfTestUi,
     [switch]$SelfTestPipeDrain,
     [switch]$SelfTestMarker,
-    [switch]$SelfTestWorkingDirectory
+    [switch]$SelfTestWorkingDirectory,
+    [switch]$Unattended
 )
 
 if (-not $SelfTestUi -and -not $SelfTestPipeDrain -and -not $InstallRoot) {
@@ -1225,12 +1242,12 @@ if ($SelfTestUi) {
     Publish-UiProgress "Testing quiet update"
     Start-Sleep -Seconds $hold
     if ($env:HERMES_SELFTEST_FAIL) {
-        Show-ErrorFinale "self-test error state"
-    } else {
-        Close-ProgressWindow
+            Show-ErrorFinale "self-test error state"
+        } else {
+            Close-ProgressWindow
+        }
+        exit 0
     }
-    exit 0
-}
 
 # -SelfTestPipeDrain: prove Invoke-HermesStep survives a leaked pipe ------
 # The #90455 deadlock needs no update, no checkout and no Hermes install to
@@ -1435,11 +1452,35 @@ exit 3
     exit 0
 }
 
-try {
-    New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
-    Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
-    Show-ProgressWindow
-    Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
+    # ── Unattended mode self-guard ──────────────────────────────────────────────
+    # Runs BEFORE the try/finally below so a skip exits cleanly: the finally owns
+    # the result/marker/relaunch machinery and must not fire when we deliberately
+    # did nothing. Skipping (exit 0 here) leaves no result file, no marker change,
+    # and no relaunch — the open app or the in-flight update already owns the tree.
+    if ($Unattended) {
+        New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+        $desktopRunning = @(Get-Process -Name "Hermes" -ErrorAction SilentlyContinue).Count -gt 0
+        $markerLive = $false
+        if (Test-Path -LiteralPath $MarkerPath) {
+            $ownerLine = (Get-Content -LiteralPath $MarkerPath -TotalCount 1 -ErrorAction SilentlyContinue)
+            if ("$ownerLine".Trim() -match '^\d+$' -and [int]"$ownerLine".Trim() -gt 0) {
+                if (Get-Process -Id ([int]"$ownerLine".Trim()) -ErrorAction SilentlyContinue) {
+                    $markerLive = $true
+                }
+            }
+        }
+        if ($desktopRunning -or $markerLive) {
+            Write-HandoffLog ("unattended: skipped (desktop running={0}, update-in-progress={1}) — the open app or an in-flight update owns the tree" -f $desktopRunning, $markerLive)
+            exit 0
+        }
+        Write-HandoffLog "unattended: desktop closed and no update in progress — proceeding"
+    }
+
+    try {
+        New-Item -ItemType Directory -Path $LogDir -Force -ErrorAction SilentlyContinue | Out-Null
+        Remove-Item -LiteralPath $ResultPath -Force -ErrorAction SilentlyContinue
+        Show-ProgressWindow
+        Write-HandoffLog "hand-off start: root=$InstallRoot branch=$Branch desktopPid=$DesktopPid pid=$PID"
 
     # -- 0. Claim the update marker with OUR pid ---------------------------
     try {
@@ -1626,6 +1667,22 @@ try {
     }
     Write-HandoffLog ("running: python " + ($updateArgs -join " "))
     Publish-UiProgress "Updating code and dependencies"
+
+    # Unattended mode: persist the attempt BEFORE running so a relaunched
+    # Desktop (or any boot inside the cooldown window) treats this slot as
+    # recently-ran and can never double-fire the same night. Unix ms, same
+    # units as electron/main.ts readScheduledLastRun.
+    if ($Unattended) {
+        try {
+            [System.IO.File]::WriteAllText(
+                (Join-Path $HermesHome ".hermes-unattended-last-run"),
+                "$([DateTimeOffset]::UtcNow.ToUnixTimeMilliseconds())`n")
+            Write-HandoffLog "unattended: wrote cooldown stamp .hermes-unattended-last-run"
+        } catch {
+            Write-HandoffLog "WARNING: could not write unattended cooldown stamp: $($_.Exception.Message)"
+        }
+    }
+
     $res = Invoke-HermesStep $pythonExe $updateArgs "update"
     Write-HandoffLog "hermes update exit code: $($res.Code)"
 

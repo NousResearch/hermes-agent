@@ -30,8 +30,11 @@
  *     writes `.hermes-update-result.json`; the Desktop itself does no
  *     relaunch work and this module none at all.
  *   * Least privilege — everything runs as the same unprivileged user that
- *     launched the Desktop; there is no elevation, no Task Scheduler, and no
- *     service registration.
+ *     launched the Desktop: no elevation, no SYSTEM account. On Windows the
+ *     local opt-in ALSO registers ONE per-user, non-elevated Task Scheduler
+ *     task (electron/scheduled-task.ts) that covers the "app is CLOSED" half
+ *     of the runway — it runs only the repo-owned updater hand-off, requires
+ *     no stored credentials, and is removed when the opt-in is disabled.
  *
  * Scheduling model (deliberately minimal and safe): the timer is armed for the
  * NEXT occurrence of the chosen local time. If the app is running then, it
@@ -72,7 +75,9 @@ export interface LocalTime {
 
 export const DEFAULT_UNATTENDED_SCHEDULE: UnattendedSchedule = {
   enabled: false,
-  hour: 3,
+  // 02:00 local — the canonical quiet-hours slot the Windows scheduled task
+  // (electron/scheduled-task.ts) and the in-app timer both fire on.
+  hour: 2,
   minute: 0
 }
 

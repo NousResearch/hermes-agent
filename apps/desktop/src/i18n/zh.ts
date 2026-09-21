@@ -1208,6 +1208,11 @@ export const zh = defineLocale({
       unattendedMinuteLabel: '分',
       unattendedWindowsOnly: '仅 Windows 桌面版可用。',
       unattendedSaved: '计划已保存',
+      unattendedTaskInstalled: clock =>
+        `已安装 Windows 计划任务 — 即使 Hermes 关闭，也会在 ${clock} 自动更新。`,
+      unattendedTaskAbsent: '未安装 Windows 计划任务 — 自动更新仅在应用打开时运行。',
+      unattendedTaskForeign: '该计划任务名称已被其他程序占用 — 不会被改动。',
+      unattendedTaskError: '无法管理 Windows 计划任务。',
       branchCommit: (branch, commit) => `分支 ${branch} · 提交 ${commit}`,
       never: '从未',
       justNow: '刚刚',

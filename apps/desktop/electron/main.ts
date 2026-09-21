@@ -397,7 +397,7 @@ import {
 } from './remote-liveness'
 import { resolveRemoteOauthTicket, rosterSourceEnumerationTimeoutMs } from './remote-oauth-ticket'
 import {
-  attachRemoteRequestHeaderListener,
+attachRemoteRequestHeaderListener,
   collectRemoteHeaderSources,
   createRegistryGatewayWsUrlHandler,
   createRemoteWsHeaderStore,
@@ -418,6 +418,14 @@ import {
 } from './secret-storage-policy'
 import { describeGitSpawnFailure, GIT_UNUSABLE, selectRunnableBinary } from './select-runnable-binary'
 import {
+  buildScheduledTaskSpec,
+  classifyTaskState,
+  parseTaskActionFromXml,
+  UNATTENDED_TASK_NAME,
+  UNATTENDED_TASK_STAMP_FILENAME
+} from './scheduled-task'
+import type { ScheduledTaskSpec, UnattendedTaskState } from './scheduled-task'
+import {
   buildInstanceWindowUrl,
   buildSessionWindowUrl,
   chatWindowWebPreferences,
@@ -436,7 +444,7 @@ import { createStreamThrottle } from './stream-throttle'
 import { registerTerminalIpc } from './terminal-ipc'
 import { nativeOverlayWidth as computeNativeOverlayWidth, titleBarOverlayOptions } from './titlebar-overlay-width'
 import {
-  backgroundMaterialFor,
+backgroundMaterialFor,
   defaultTranslucencyState,
   glassActive,
   glassSupportedOn,
@@ -448,6 +456,11 @@ import {
   windowOpacityFor,
   windowOpacityOptions
 } from './translucency'
+import {
+  armScheduledUpdate,
+  decideScheduledAttempt,
+  parseUnattendedSchedule
+} from './unattended-update'
 import {
   branchTipApiUrl,
   cacheIsFresh,
@@ -463,11 +476,6 @@ import { updateCheckAgent } from './update-api-proxy'
 import { waitForUpdateClearance } from './update-gate'
 import { readLiveUpdateMarker, updateHandoffConflict, writeUpdateMarker } from './update-marker'
 import { isOfficialSshRemote, OFFICIAL_REPO_HTTPS_URL } from './update-remote'
-import {
-  armScheduledUpdate,
-  decideScheduledAttempt,
-  parseUnattendedSchedule
-} from './unattended-update'
 import {
   collectRelaunchArgs,
   describeUpdaterHandoffFailure,
@@ -3185,10 +3193,38 @@ function writeUnattendedSchedule(schedule) {
   writeUpdatesConfigRaw({ unattended: parseUnattendedSchedule(schedule) })
 }
 
+// The stamp is written by scripts/desktop-update/windows.ps1 in -Unattended
+// mode when the SCHEDULED TASK actually ran an update while the app was
+// closed. Reading it here makes the relaunched Desktop treat that run as
+// "recently ran" and never double-fire the same nightly slot.
+function readUnattendedTaskStamp(): number | null {
+  try {
+    const raw = fs.readFileSync(path.join(HERMES_HOME, UNATTENDED_TASK_STAMP_FILENAME), 'utf8').trim()
+    const ms = Number(raw)
+
+    return Number.isFinite(ms) && ms > 0 ? ms : null
+  } catch {
+    return null
+  }
+}
+
+// Most recent of: the in-app attempt timestamp (persisted BEFORE hand-off,
+// covers both closed-window attempts and failures) and the task's completion
+// stamp (covers runs that happened entirely outside this process).
 function readScheduledLastRun(): number | null {
   const value = readUpdatesConfigRaw().unattendedLastRunAt
+  const fromConfig = typeof value === 'number' && Number.isFinite(value) ? value : null
+  const fromTask = readUnattendedTaskStamp()
 
-  return typeof value === 'number' && Number.isFinite(value) ? value : null
+  if (fromConfig === null) {
+    return fromTask
+  }
+
+  if (fromTask === null) {
+    return fromConfig
+  }
+
+  return Math.max(fromConfig, fromTask)
 }
 
 function writeScheduledLastRun(ms: number): void {
@@ -3231,6 +3267,7 @@ function readUnattendedSchedule() {
 async function runScheduledUpdateIfDue(): Promise<boolean> {
   if (!IS_WINDOWS) {
     rememberLog('[updates] unattended: disabled — this build is not a Windows Desktop')
+
     return false
   }
 
@@ -3238,6 +3275,7 @@ async function runScheduledUpdateIfDue(): Promise<boolean> {
 
   if (!schedule.enabled) {
     rememberLog(`[updates] unattended: off (default); not attempting`)
+
     return false
   }
 
@@ -3252,11 +3290,13 @@ async function runScheduledUpdateIfDue(): Promise<boolean> {
 
   if (!decision.shouldRun) {
     rememberLog(`[updates] unattended: skip (${decision.reason}) at local ${new Date().toLocaleTimeString()}`)
+
     return false
   }
 
   if (updateInFlight) {
     rememberLog('[updates] unattended: skip — an update is already in flight upstream')
+
     return false
   }
 
@@ -3264,6 +3304,7 @@ async function runScheduledUpdateIfDue(): Promise<boolean> {
 
   if (conflict) {
     rememberLog(`[updates] unattended: skip — update lock held (${conflict.message})`)
+
     return false
   }
 
@@ -3272,6 +3313,7 @@ async function runScheduledUpdateIfDue(): Promise<boolean> {
 
   if (!hasOwnUpdater) {
     rememberLog(`[updates] unattended: skip — no local Hermes updater at ${updateRoot}`)
+
     return false
   }
 
@@ -3310,6 +3352,7 @@ function armUnattendedUpdateScheduler(): void {
 
   if (!schedule.enabled) {
     rememberLog('[updates] unattended: default OFF — scheduler not armed')
+
     return
   }
 
@@ -3322,6 +3365,208 @@ function armUnattendedUpdateScheduler(): void {
   rememberLog(
     `[updates] unattended: armed for ${schedule.hour}:${String(schedule.minute).padStart(2, '0')} local time (next attempt ≈${delayMin} min out)`
   )
+}
+
+// ── Unattended Windows Task Scheduler task — the "app is CLOSED" runway ────
+// The in-app timer above only fires while the app is running. To update a
+// closed Desktop, the same local opt-in creates ONE per-user, least-privilege
+// scheduled task (see electron/scheduled-task.ts for the pure spec core):
+//
+//   * runs ONLY the repo-owned updater hand-off (windows.ps1 -Unattended, or
+//     the staged hermes-setup.exe fallback) — never an arbitrary command or a
+//     run-time-chosen branch; branch/root/exe are pinned at registration from
+//     THIS install and validated against the injection allowlist;
+//   * no /ru:/rp: the task belongs to the current user, runs only while the
+//     user is logged on, with an interactive non-elevated token; /rl LIMITED;
+//   * the task action is deterministic and verified on read-back — a task
+//     under our name whose action is neither an exact match nor our fixed
+//     shape is NEVER overwritten or deleted (foreign);
+//   * disable uninstalls the exact named task; enable re-registers /f.
+//
+// Safety hand-off: windows.ps1 in -Unattended mode exits 0 WITHOUT touching
+// the tree when a Desktop process (or a live update marker) is present — the
+// open app's own timer owns the slot then, so the task fires only when the
+// app is genuinely closed, then relaunches it when the update lands. The
+// script also writes a completion stamp (.hermes-unattended-last-run) that
+// readScheduledLastRun honours, so the relaunched app never double-runs the
+// same nightly slot.
+
+const SCHTASKS_TIMEOUT_MS = 15_000
+
+function runSchtasks(args: readonly string[]): Promise<{ code: number; stdout: string; stderr: string }> {
+  return new Promise(resolve => {
+    let child
+
+    try {
+      child = spawn('schtasks.exe', [...args], { windowsHide: true })
+    } catch (error: any) {
+      resolve({ code: -1, stdout: '', stderr: `spawn failed: ${error?.message || error}` })
+
+      return
+    }
+
+    let stdout = ''
+    let stderr = ''
+
+    child.stdout.on('data', chunk => {
+      stdout += String(chunk)
+    })
+    child.stderr.on('data', chunk => {
+      stderr += String(chunk)
+    })
+
+    const timer = setTimeout(() => {
+      child.kill()
+      resolve({ code: -1, stdout, stderr: `${stderr.trim()} schtasks timed out`.trim() })
+    }, SCHTASKS_TIMEOUT_MS)
+
+    child.once('error', error => {
+      clearTimeout(timer)
+      resolve({ code: -1, stdout, stderr: error?.message || String(error) })
+    })
+    child.once('exit', code => {
+      clearTimeout(timer)
+      resolve({ code: code ?? -1, stdout, stderr })
+    })
+  })
+}
+
+// Build the task spec from THIS install's live values. `requireUpdater`
+// additionally demands a real, present Hermes updater (repo script or staged
+// binary) — registration must never point at a hand-off that isn't there,
+// while query/ownership checks still compare against the current paths.
+function buildUnattendedTaskSpec(requireUpdater: boolean): ScheduledTaskSpec | null {
+  if (!IS_WINDOWS) {
+    return null
+  }
+
+  const updateRoot = resolveUpdateRoot()
+  const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
+  const updaterBinary = resolveUpdaterBinary()
+
+  if (requireUpdater && !scriptHandoff && !updaterBinary) {
+    rememberLog(`[updates] unattended task: no Hermes updater at ${updateRoot}; not registering`)
+
+    return null
+  }
+
+  const { branch } = readDesktopUpdateConfig()
+  const schedule = readUnattendedSchedule()
+
+  try {
+    return buildScheduledTaskSpec({
+      // Prefer the repo-owned script (same policy as applyUpdates: the staged
+      // binary is frozen; the script refreshes itself with each update).
+      scriptPath: scriptHandoff ? scriptHandoff.scriptPath : undefined,
+      updaterBinaryPath: !scriptHandoff && updaterBinary ? updaterBinary : undefined,
+      installRoot: updateRoot,
+      relaunchExe: process.execPath,
+      branch: branch || 'main',
+      hour: schedule.hour,
+      minute: schedule.minute
+    })
+  } catch (error: any) {
+    rememberLog(`[updates] unattended task: spec refused (fail closed) — ${error?.message || error}`)
+
+    return null
+  }
+}
+
+// Read-only snapshot of the exact named task (schtasks /query /xml), without
+// creating, deleting, or rewriting anything.
+async function queryUnattendedTaskState(): Promise<UnattendedTaskState> {
+  const spec = buildUnattendedTaskSpec(false)
+
+  if (!spec) {
+    return { kind: 'unsupported', message: 'scheduled task is Windows-only and this install has no usable updater paths' }
+  }
+
+  const { code, stdout } = await runSchtasks(spec.schtasksQueryArgs)
+
+  if (code !== 0) {
+    // schtasks reports "does not exist" via a non-zero exit — that IS absent.
+    return { kind: 'absent' }
+  }
+
+  return classifyTaskState(parseTaskActionFromXml(stdout), spec)
+}
+
+// Bring the scheduled task in line with the CURRENT local opt-in:
+//   enabled  → (re)register the exact named task at the schedule time,
+//              but NEVER overwrite a foreign task holding our name.
+//   disabled → uninstall the exact named task — only after verifying it is
+//              ours (installed/stale); a foreign task is left untouched.
+// Windows-only; every other platform is 'unsupported'. Fail-closed: any
+// schtasks error or unsafe spec leaves the OS untouched and reports 'error'.
+async function reconcileUnattendedScheduledTask(): Promise<UnattendedTaskState> {
+  if (!IS_WINDOWS) {
+    return { kind: 'unsupported' }
+  }
+
+  const schedule = readUnattendedSchedule()
+
+  if (!schedule.enabled) {
+    rememberLog('[updates] unattended task: schedule disabled — removing the exact named task if it is ours')
+
+    const existing = await queryUnattendedTaskState()
+
+    if (existing.kind === 'absent' || existing.kind === 'foreign' || existing.kind === 'unsupported') {
+      // absent: nothing to remove. foreign: NOT ours — never touch it.
+      // unsupported: no spec to prove ownership — never touch it.
+      return existing
+    }
+
+    const spec = buildUnattendedTaskSpec(false)
+
+    if (!spec) {
+      return existing
+    }
+
+    const res = await runSchtasks(spec.schtasksDeleteArgs)
+
+    if (res.code === 0) {
+      rememberLog(`[updates] unattended task: uninstalled ${UNATTENDED_TASK_NAME}`)
+
+      return { kind: 'absent' }
+    }
+
+    rememberLog(`[updates] unattended task: delete failed (${res.code}) — ${res.stderr.trim() || res.stdout.trim()}`)
+
+    return { kind: 'error', message: res.stderr.trim() || `schtasks /delete failed (${res.code})` }
+  }
+
+  const spec = buildUnattendedTaskSpec(true)
+
+  if (!spec) {
+    return { kind: 'unsupported', message: 'no local Hermes updater to schedule' }
+  }
+
+  const existing = await queryUnattendedTaskState()
+
+  if (existing.kind === 'foreign') {
+    rememberLog(
+      `[updates] unattended task: ${UNATTENDED_TASK_NAME} already exists with a foreign action — leaving it untouched`
+    )
+
+    return existing
+  }
+
+  const res = await runSchtasks(spec.schtasksArgs)
+
+  if (res.code === 0) {
+    rememberLog(
+      `[updates] unattended task: registered ${UNATTENDED_TASK_NAME} (/sc daily /st ${spec.startClock} /rl LIMITED) — ` +
+        `updates will run with the app closed via ${spec.handoff} hand-off`
+    )
+
+    return { kind: 'installed' }
+  }
+
+  rememberLog(
+    `[updates] unattended task: create failed (${res.code}) — ${res.stderr.trim() || res.stdout.trim() || 'no output'}`
+  )
+
+  return { kind: 'error', message: res.stderr.trim() || `schtasks /create failed (${res.code})` }
 }
 
 // ─── Main-window geometry persistence (window-state.json) ──────────────────
@@ -18245,13 +18490,22 @@ ipcMain.handle('hermes:updates:branch:set', async (_event, name) => {
 // writes through this native IPC (it has no filesystem/shell access), and the
 // value is hand-validated here: invalid input FEEDS parseUnattendedSchedule(),
 // which fails closed to `enabled:false`. See electron/unattended-update.ts.
-ipcMain.handle('hermes:updates:schedule:get', () => readUnattendedSchedule())
+//
+// Both channels also report the state of the Windows scheduled task that
+// backs the "update with the app closed" runway — the SAME toggle creates
+// (enable) and removes (disable) the exact named task on Windows.
+ipcMain.handle('hermes:updates:schedule:get', async () => ({
+  schedule: readUnattendedSchedule(),
+  task: await queryUnattendedTaskState()
+}))
 
-ipcMain.handle('hermes:updates:schedule:set', (_event, payload) => {
+ipcMain.handle('hermes:updates:schedule:set', async (_event, payload) => {
   const schedule = parseUnattendedSchedule(payload)
   writeUnattendedSchedule(schedule)
   armUnattendedUpdateScheduler() // apply the toggle/src immediately
-  return schedule
+  const task = await reconcileUnattendedScheduledTask() // create/remove the scheduled task
+
+  return { schedule, task }
 })
 
 // Resolve the canonical Hermes version (the one `release.py` bumps in
@@ -18892,6 +19146,10 @@ app.whenReady().then(() => {
   // are no-ops when the schedule is OFF (the default) or on non-Windows builds.
   armUnattendedUpdateScheduler()
   void runScheduledUpdateIfDue()
+  // Reconcile the scheduled task against the persisted opt-in on every boot:
+  // idempotent re-register when enabled (self-heals a deleted task), exact
+  // uninstall when disabled. Fire-and-forget — never blocks window creation.
+  void reconcileUnattendedScheduledTask()
 
   // Win/Linux cold start: the launching hermes:// URL is in our own argv.
   const _coldStartLink = _extractDeepLink(process.argv)

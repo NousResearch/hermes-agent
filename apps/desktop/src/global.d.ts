@@ -591,8 +591,8 @@ declare global {
         apply: (opts?: DesktopUpdateApplyOptions) => Promise<DesktopUpdateApplyResult>
         getBranch: () => Promise<{ branch: string }>
         setBranch: (name: string) => Promise<{ branch: string }>
-        getSchedule: () => Promise<DesktopUnattendedSchedule>
-        setSchedule: (schedule: DesktopUnattendedScheduleInput) => Promise<DesktopUnattendedSchedule>
+        getSchedule: () => Promise<DesktopUnattendedScheduleState>
+        setSchedule: (schedule: DesktopUnattendedScheduleInput) => Promise<DesktopUnattendedScheduleState>
         onProgress: (callback: (payload: DesktopUpdateProgress) => void) => () => void
       }
       uninstall: {
@@ -773,6 +773,21 @@ export interface DesktopUnattendedSchedule {
   hour: number
   /** 0-59, local minute within that hour. */
   minute: number
+}
+
+/** State of the per-user Windows scheduled task that backs the "app is
+ *  CLOSED" half of the unattended runway (see electron/scheduled-task.ts).
+ *  Reported read-only to the renderer; the main process is the only actor. */
+export interface DesktopUnattendedTaskState {
+  kind: 'installed' | 'stale' | 'absent' | 'foreign' | 'unsupported' | 'error'
+  message?: string
+}
+
+/** What schedule:get/set return: the validated schedule plus the live state of
+ *  the exact named scheduled task (created on enable / removed on disable). */
+export interface DesktopUnattendedScheduleState {
+  schedule: DesktopUnattendedSchedule
+  task: DesktopUnattendedTaskState
 }
 
 /** Renderer → main payload; identical fields, validated in the main process. */

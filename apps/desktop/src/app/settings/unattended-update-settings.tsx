@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 
 import { Switch } from '@/components/ui/switch'
+import type { DesktopUnattendedTaskState } from '@/global'
 import { useI18n } from '@/i18n'
 import { CheckCircle2, Loader2 } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -9,6 +10,10 @@ import { getUnattendedSchedule, setUnattendedSchedule } from '@/store/updates'
 const HOURS = Array.from({ length: 24 }, (_, i) => String(i).padStart(2, '0'))
 const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'))
 
+function formatClock(hour: number, minute: number): string {
+  return `${String(hour).padStart(2, '0')}:${String(minute).padStart(2, '0')}`
+}
+
 /**
  * Scheduled (unattended) Windows self-update — LOCAL opt-in only.
  *
@@ -16,14 +21,21 @@ const MINUTES = Array.from({ length: 60 }, (_, i) => String(i).padStart(2, '0'))
  * schedule is read/written exclusively through native IPC to the main process,
  * persisted only in the local userData `updates.json`, and defaults to OFF.
  * Remote/backend agents see nothing here and cannot toggle it.
+ *
+ * On the Windows desktop build the SAME toggle also create/removes ONE
+ * per-user, least-privilege Windows Task Scheduler task (electron/main.ts
+ * reconcile → electron/scheduled-task.ts): enabling the schedule registers the
+ * exact named task so updates can also run at the chosen local time while the
+ * app is CLOSED; disabling uninstalls it. Its live state is surfaced below.
  */
 export function UnattendedUpdateSettings() {
   const { t } = useI18n()
   const a = t.settings.about
 
   const [enabled, setEnabled] = useState(false)
-  const [hour, setHour] = useState(3)
+  const [hour, setHour] = useState(2)
   const [minute, setMinute] = useState(0)
+  const [task, setTask] = useState<DesktopUnattendedTaskState | null>(null)
   const [loaded, setLoaded] = useState(false)
   const [saving, setSaving] = useState(false)
   const [saved, setSaved] = useState(false)
@@ -32,14 +44,15 @@ export function UnattendedUpdateSettings() {
     let cancelled = false
 
     void getUnattendedSchedule()
-      .then(schedule => {
+      .then(state => {
         if (cancelled) {
           return
         }
 
-        setEnabled(schedule.enabled)
-        setHour(schedule.hour)
-        setMinute(schedule.minute)
+        setEnabled(state.schedule.enabled)
+        setHour(state.schedule.hour)
+        setMinute(state.schedule.minute)
+        setTask(state.task)
       })
       .catch(() => undefined)
       .finally(() => {
@@ -57,10 +70,11 @@ export function UnattendedUpdateSettings() {
     setSaving(true)
 
     try {
-      const confirmed = await setUnattendedSchedule(next)
-      setEnabled(confirmed.enabled)
-      setHour(confirmed.hour)
-      setMinute(confirmed.minute)
+      const state = await setUnattendedSchedule(next)
+      setEnabled(state.schedule.enabled)
+      setHour(state.schedule.hour)
+      setMinute(state.schedule.minute)
+      setTask(state.task)
       setSaved(true)
       window.setTimeout(() => setSaved(false), 2500)
     } catch {
@@ -69,6 +83,34 @@ export function UnattendedUpdateSettings() {
       setSaving(false)
     }
   }
+
+  const taskLine = (() => {
+    if (!task) {
+      return null
+    }
+
+    switch (task.kind) {
+      case 'installed':
+
+      case 'stale':
+        return {
+          tone: 'ok',
+          text: a.unattendedTaskInstalled(formatClock(hour, minute))
+        }
+
+      case 'absent':
+        return { tone: 'muted', text: a.unattendedTaskAbsent }
+
+      case 'foreign':
+        return { tone: 'warn', text: a.unattendedTaskForeign }
+
+      case 'error':
+        return { tone: 'warn', text: task.message || a.unattendedTaskError }
+
+      case 'unsupported':
+        return null
+    }
+  })()
 
   return (
     <div className="rounded-xl border border-border/70 bg-muted/20 px-4 py-3 text-sm">
@@ -137,6 +179,18 @@ export function UnattendedUpdateSettings() {
                 </span>
               )}
             </div>
+          )}
+          {taskLine && (
+            <p
+              className={cn(
+                'mt-1 w-full text-xs',
+                taskLine.tone === 'ok' && 'text-emerald-600 dark:text-emerald-400',
+                taskLine.tone === 'muted' && 'text-muted-foreground',
+                taskLine.tone === 'warn' && 'text-amber-600 dark:text-amber-400'
+              )}
+            >
+              {taskLine.text}
+            </p>
           )}
         </div>
       )}

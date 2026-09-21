@@ -814,6 +814,10 @@ export interface Translations {
       unattendedMinuteLabel: string
       unattendedWindowsOnly: string
       unattendedSaved: string
+      unattendedTaskInstalled: (clock: string) => string
+      unattendedTaskAbsent: string
+      unattendedTaskForeign: string
+      unattendedTaskError: string
       branchCommit: (branch: string, commit: string) => string
       never: string
       justNow: string

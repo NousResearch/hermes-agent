@@ -6,8 +6,8 @@
 import { atom } from 'nanostores'
 
 import type {
-  DesktopUnattendedSchedule,
   DesktopUnattendedScheduleInput,
+  DesktopUnattendedScheduleState,
   DesktopUpdateApplyOptions,
   DesktopUpdateApplyResult,
   DesktopUpdateBlocker,
@@ -79,14 +79,16 @@ export const resetUpdateApplyState = () => {
 
 // Local, unattended self-update schedule. Never reaches a backend: it is set
 // and read through native IPC, persisted only in the user's local `updates.json`,
-// and default OFF. Used by the Settings UI (local Desktop only).
-export async function getUnattendedSchedule(): Promise<DesktopUnattendedSchedule> {
+// and default OFF. Used by the Settings UI (local Desktop only). The returned
+// state also carries the status of the Windows scheduled task that the SAME
+// opt-in creates (enable) / removes (disable) for the app-closed runway.
+export async function getUnattendedSchedule(): Promise<DesktopUnattendedScheduleState> {
   return window.hermesDesktop.updates.getSchedule()
 }
 
 export async function setUnattendedSchedule(
   schedule: DesktopUnattendedScheduleInput
-): Promise<DesktopUnattendedSchedule> {
+): Promise<DesktopUnattendedScheduleState> {
   return window.hermesDesktop.updates.setSchedule(schedule)
 }
 

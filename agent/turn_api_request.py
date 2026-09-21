@@ -114,6 +114,9 @@ def build_api_request(
             tools_for_api=tools_for_api,
         )
     )
+    # A model that rejected image content gets text only; history keeps the images.
+    from agent.message_sanitization import strip_images_for_rejecting_model
+    strip_images_for_rejecting_model(agent, api_messages)
     if tools_for_api == agent.tools:
         api_kwargs = agent._build_api_kwargs(api_messages)
     else:

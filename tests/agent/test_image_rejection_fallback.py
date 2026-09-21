@@ -297,3 +297,85 @@ class TestStripImagesDropsStaleApiContent:
 
         assert msgs[0]["api_content"] == "no images here<injected ctx>"
         assert "api_content" not in msgs[1]
+
+
+class TestRejectionNeverReachesPersistedHistory:
+    """A rejection says what the CURRENT model accepts, not what the conversation holds.
+
+    The recovery used to strip images from the canonical ``messages`` and force a full flush,
+    which deleted every image — and every image-only message — from state.db for good; a later
+    switch to a vision model found them gone. Same failure class as the ASCII strip in #117802.
+    The strip now happens on the send path only.
+    """
+
+    class _Err(Exception):
+        status_code = 400
+        body = "This model does not support images."
+
+    @staticmethod
+    def _agent(provider="text-only-provider", model="text-model"):
+        from types import SimpleNamespace
+
+        return SimpleNamespace(
+            provider=provider, model=model, _vision_supported=True, _force_ascii_payload=False,
+            _image_rejecting_model=None, _db_flush_scan_prefix=7, log_prefix="",
+            _vprint=lambda *a, **k: None,
+        )
+
+    @staticmethod
+    def _history():
+        return [
+            {"role": "user", "content": [
+                {"type": "text", "text": "what is in this?"},
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
+            ]},
+            {"role": "user", "content": [
+                {"type": "image_url", "image_url": {"url": "data:image/png;base64,BBBB"}},
+            ]},
+        ]
+
+    def _recover(self, agent, messages, api_messages):
+        from agent.turn_recovery import recover_before_classification
+
+        return recover_before_classification(
+            agent, self._Err(), messages=messages, api_messages=api_messages,
+            api_kwargs={}, active_system_prompt="sys",
+        )
+
+    def test_canonical_history_keeps_its_images(self):
+        import copy
+
+        agent, history = self._agent(), self._history()
+        before = copy.deepcopy(history)
+        wire = copy.deepcopy(history)
+
+        retry, _ = self._recover(agent, history, wire)
+
+        assert retry is True
+        assert history == before, "the recovery rewrote persisted history"
+        assert agent._db_flush_scan_prefix == 7, "the recovery forced a history rewrite"
+        # The in-flight request still goes out text-only.
+        assert "image_url" not in str(wire)
+
+    def test_later_requests_to_the_same_model_stay_text_only(self):
+        """build_api_request strips each attempt's copy — in Hermes's own message format, before
+        provider conversion, so every provider shape (incl. Bedrock's type-less blocks) is covered."""
+        from agent.message_sanitization import strip_images_for_rejecting_model
+
+        agent = self._agent()
+        self._recover(agent, self._history(), [])
+
+        api_messages = self._history()
+        assert strip_images_for_rejecting_model(agent, api_messages) is True
+        assert "image_url" not in str(api_messages)
+
+    def test_a_model_that_accepts_images_gets_them_again(self):
+        from agent.message_sanitization import strip_images_for_rejecting_model
+
+        agent = self._agent()
+        self._recover(agent, self._history(), [])
+
+        agent.provider, agent.model = "vision-provider", "vision-model"
+        api_messages = self._history()
+        assert strip_images_for_rejecting_model(agent, api_messages) is False
+        assert str(api_messages).count("data:image/png") == 2

@@ -232,15 +232,18 @@ def recover_before_classification(
     _status_ok = _err_status is None or (400 <= int(_err_status) < 500)
     if getattr(agent, "_vision_supported", True) and _looks_like_image_content_rejection(_err_body) and _status_ok:
         agent._vision_supported = False
-        _imgs_removed = _strip_images_from_messages(messages)
-        if _imgs_removed:
-            agent._db_flush_scan_prefix = None
+        # Send-path only. A rejection says what THIS model accepts, not what the conversation
+        # holds: stripping ``messages`` (canonical history) and forcing a flush deleted every
+        # image — and every image-only message — from state.db for good, so a later switch to a
+        # vision model found them gone. Same failure as the ASCII strip in #117802. Record the
+        # model; build_api_request strips images from each request to it instead.
+        agent._image_rejecting_model = (getattr(agent, "provider", None), getattr(agent, "model", None))
         if isinstance(api_messages, list):
             _strip_images_from_messages(api_messages)
         _vlines(
             agent,
-            "⚠️  Server rejected image content — switching to text-only mode for this session"
-            + (". Stripped images from history and retrying." if _imgs_removed else "."),
+            "⚠️  Server rejected image content — sending text only to this model; "
+            "images stay in the session history.",
         )
         return True, active_system_prompt
 

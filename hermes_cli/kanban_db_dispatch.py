@@ -2579,12 +2579,13 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     The dispatcher runs detached from any turn, so nothing binds a profile for it: ``load_config``,
     the toolset probes' ``get_secret`` reads and ``build_subprocess_env``'s passthrough resolution
     all fall back to the LAUNCH profile's ambient ``os.environ`` / ``TERMINAL_*``. Binding was
-    previously conditional on ``is_multiplex_active()`` and skipped the terminal scope entirely, so
-    a worker for profile B inherited whatever TERMINAL_* the host process happened to carry.
+    previously conditional on ``is_multiplex_active()``, so on a single-profile host a worker for
+    profile B was built entirely from the dispatcher's own environment.
 
     ``bind_home=False`` for the spawn-env build: which variables may cross into a child is the
-    DISPATCHER's ``terminal.env_passthrough`` policy (#109494) — only their VALUES come from the
-    assignee's scope. Toolset resolution does bind the home, as it always has.
+    DISPATCHER's ``terminal.env_passthrough`` policy (#109494, read through the home override) —
+    only their VALUES come from the assignee's scope, so that branch binds the secret scope alone.
+    Toolset resolution binds the home and the terminal policy, as it always has.
 
     The secret mapping is never widened: a profile that is not this process's own home gets its own
     ``.env`` + external sources ONLY, while the launch home keeps its established
@@ -2602,11 +2603,12 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     secret_token = set_secret_scope(
         launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home))
     terminal_token = install_profile_terminal_scope(
-        home, env_overlay=launch_terminal_env() if is_launch_home else None)
+        home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
     try:
         yield
     finally:
-        reset_terminal_scope(terminal_token)
+        if terminal_token is not None:
+            reset_terminal_scope(terminal_token)
         reset_secret_scope(secret_token)
         if home_token is not None:
             reset_hermes_home_override(home_token)
@@ -2773,7 +2775,7 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
     profile_arg = normalize_profile_name(task.assignee)
 
     from agent.secret_scope import is_multiplex_active
-    from tools.environments.local import build_subprocess_env, strip_launch_profile_env
+    from tools.environments.local import _is_routed_home, build_subprocess_env, strip_launch_profile_env
 
     try:
         profile_home = resolve_profile_env(profile_arg)
@@ -2782,15 +2784,18 @@ def _default_spawn(task: Task, workspace: str, *, board: Optional[str] = None) -
         # HERMES_PROFILE (set below) instead.
         profile_home = None
 
-    multiplex_active = is_multiplex_active()
-    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through
-    # get_secret(), and its TERMINAL_* reads go through the terminal scope. Unscoped, both read the
-    # LAUNCH profile's ambient environment for a worker spawned on B's behalf — so bind B's secret
-    # + terminal scope, not just secrets and not only under multiplex.
+    # Scrub for a ROUTED home, not only under multiplex: the authority test is "does this worker act
+    # for another profile", exactly as served_profile_child_env decides it (tools/environments/local.py).
+    # Gating on the gateway-wide flag left B's worker inheriting the dispatcher's own OPENAI_API_KEY and
+    # systemd-injected tokens on every single-profile host.
+    routed = bool(profile_home) and _is_routed_home(profile_home)
+    # build_subprocess_env's secret scrub resolves terminal.env_passthrough vars through get_secret(),
+    # which without a bound scope reads the LAUNCH profile's ambient environment for a worker spawned
+    # on B's behalf (and raises under multiplex) — so bind B's secret scope around the build.
     with (_worker_profile_scope(profile_home, bind_home=False) if profile_home
           else contextlib.nullcontext()):
         env = build_subprocess_env(
-            scrub_secrets=multiplex_active,
+            scrub_secrets=is_multiplex_active() or routed,
             inherit_profile_home=True,
         )
     # The dispatcher is detached from every conversation; its worker must never

@@ -1,0 +1,26 @@
+name: hermes-iroh-interconnect
+repo: https://github.com/rahlquist/hermes-iroh-interconnect
+sha: 2be791757df00b2228c16aafd9ca5e69b3c219c4
+description: Authenticated Hermes agent-to-agent tasks and optional file transfer over Iroh QUIC.
+maintainer: Richard Ahlquist
+tier: community
+category: tools
+docs_url: https://github.com/rahlquist/hermes-iroh-interconnect
+version: "0.3.0"
+platforms:
+  - linux
+  - macos
+capabilities:
+  provides_tools:
+    - iroh_peer_status
+    - iroh_peer_list
+    - iroh_peer_pair
+    - iroh_peer_make_ticket
+    - iroh_send_file
+    - iroh_fetch_file
+    - iroh_transfer_status
+    - iroh_peer_call
+    - iroh_peer_settings
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

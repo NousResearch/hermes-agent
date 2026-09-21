@@ -29,6 +29,8 @@ import hermes_cli.update_cmd_fleet as update_cmd_fleet
 import hermes_cli.update_cmd_deps as update_cmd_deps
 from hermes_cli.update_receipt import COMMAND_BOUNDARY_STOP_REASON
 from hermes_constants import get_hermes_home
+import hermes_cli.update_host_obligation as host_obligation
+from gateway import host_rendezvous
 
 
 def _make_head_moved_side_effect(pre_sha="abc123", post_sha="def456"):
@@ -156,21 +158,21 @@ def _update_args():
 # ---------------------------------------------------------------------------
 
 
-def test_marker_round_trip_under_hermes_home():
-    path = update_cmd._fleet_restart_pending_marker_path()
-    assert path.parent == get_hermes_home()
-    assert path.name == "fleet_restart_pending"
+def test_obligation_round_trip_is_host_scoped():
+    """The obligation is one record per HOST (beside the host rendezvous record), not per home."""
+    path = host_obligation.host_obligation_path()
+    assert path.parent == host_rendezvous.host_state_dir()
     assert not path.exists()
 
     update_cmd._write_fleet_restart_pending_marker(expected_sha="abc123")
-    assert path.is_file()
-    body = path.read_text(encoding="utf-8")
-    assert "started=" in body
-    assert "pid=" in body
-    assert "expected_sha=abc123" in body
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+    record = json.loads(path.read_text(encoding="utf-8"))
+    assert record["expected_sha"] == "abc123"
+    assert record["pid"] and record["started"]
+    assert not (get_hermes_home() / "fleet_restart_pending").exists()
 
     update_cmd._clear_fleet_restart_pending_marker()
-    assert not path.exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
 
 def test_pending_needed_when_marker_exists():
@@ -362,6 +364,29 @@ def test_run_pending_restart_true_when_no_gateways(monkeypatch, capsys):
     assert "Pending fleet restart completed" in capsys.readouterr().out
 
 
+def test_run_pending_restart_skips_gateways_already_on_checkout_code(monkeypatch, capsys):
+    """A gateway the update itself cold-started seconds earlier is already current on the checkout
+    SHA: the catch-up must not stop it (the Windows stop/start pair then printed "No gateway was
+    running" plus a second spawn, #117051) and must report nothing to restart."""
+    sha = "c" * 40
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda **k: [48096])
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda: [{"profile": "default", "pid": 48096, "code_sha": sha, "state": "current"}],
+    )
+    stopped = []
+    monkeypatch.setattr("hermes_cli.gateway.kill_gateway_processes", lambda **k: stopped.append(k))
+    monkeypatch.setattr("hermes_cli.gateway_windows.restart", lambda: stopped.append("windows-restart"))
+    monkeypatch.setattr("hermes_cli.gateway_windows.is_installed", lambda: True)
+    monkeypatch.setattr(update_cmd_fleet, "_restart_macos_launchd_gateways", lambda *a, **k: None)
+    monkeypatch.setattr(update_cmd_fleet, "_systemd_gateway_unit_listings", lambda: [])
+
+    assert update_cmd._run_pending_fleet_restart() is True
+    assert stopped == []
+    assert "nothing to restart" in capsys.readouterr().out
+
+
 # ---------------------------------------------------------------------------
 # cmd_update integration (mocked git / restart)
 # ---------------------------------------------------------------------------
@@ -378,14 +403,14 @@ def test_marker_written_after_pull_cleared_after_successful_restart(
 
     def _spy(*, expected_sha="", runtimes=None):
         orig(expected_sha=expected_sha, runtimes=runtimes)
-        wrote.append(update_cmd._fleet_restart_pending_marker_path().is_file())
+        wrote.append(update_cmd_fleet._fleet_restart_obligation_armed())
 
     monkeypatch.setattr(update_cmd, "_write_fleet_restart_pending_marker", _spy)
 
     hermes_main.cmd_update(args)
 
     assert wrote == [True], "marker must exist immediately after HEAD advances"
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
     out = capsys.readouterr().out
     assert "✓ Code updated!" in out
 
@@ -537,7 +562,7 @@ def test_clean_update_defers_desktop_owned_serve_and_clears_marker(
     assert "pid 6161" in out and "pre-update code" in out
     assert "relaunch the Desktop app" in out
     assert "Planned runtimes the restart phase never touched" not in out
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
     latest = get_hermes_home() / "logs" / "update_receipts" / "latest.json"
     receipt = json.loads(latest.read_text(encoding="utf-8"))
@@ -560,9 +585,9 @@ def test_interrupt_between_pull_and_restart_leaves_marker(
     with pytest.raises(KeyboardInterrupt):
         hermes_main.cmd_update(args)
 
-    marker = update_cmd._fleet_restart_pending_marker_path()
-    assert marker.is_file()
-    assert "expected_sha=def456" in marker.read_text(encoding="utf-8")
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+    record = json.loads(host_obligation.host_obligation_path().read_text(encoding="utf-8"))
+    assert record["expected_sha"] == "def456"
 
 
 def test_already_up_to_date_runs_pending_restart_when_marker_present(
@@ -589,7 +614,7 @@ def test_already_up_to_date_runs_pending_restart_when_marker_present(
     hermes_main.cmd_update(args)
 
     assert seen["ran"] is True
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
     out = capsys.readouterr().out
     assert "did not restart running gateways" in out
 
@@ -716,7 +741,7 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert capsys.readouterr().err == ""
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
 
 def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypatch, capsys):
@@ -763,10 +788,68 @@ def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypat
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert capsys.readouterr().err == ""
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
     # The same live multiplexer coverage also discharges the receipt fallback
     # after an operator has already removed the marker.
     assert update_cmd._pending_fleet_restart_needed() is False
+
+
+@pytest.mark.parametrize("supervisor", ["desktop", "launchd"])
+def test_startup_warn_discharged_when_inventory_holds_supervised_serve(monkeypatch, capsys, supervisor):
+    """A supervised serve/dashboard row in the marker's inventory is its supervisor's to
+    restart (#115090 for receipts, #111494 for the Desktop backend) — it must not make the
+    gateway warning permanently undischargeable once every gateway serves the pulled SHA.
+
+    Only ``desktop`` and ``launchd`` are parametrized: those are the two supervisor values the
+    inventory writer can actually put on a serve/dashboard row (``update_inventory``'s ledger
+    pass emits exactly launchd, desktop or manual-serve). The systemd/windows-service/service
+    members of ``_SUPERVISOR_OWNED_SERVE_BACKENDS`` only ever appear on gateway rows.
+    """
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "supervisor": "systemd"},
+            {"kind": "serve", "profile": "default", "pid": 6161, "supervisor": supervisor,
+             "detail": {"create_time": 1000.0}},
+        ],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_startup_warn_kept_when_inventory_holds_unclassified_serve(monkeypatch, capsys):
+    """Fail-closed stays: a serve row no supervisor owns is still unsettled evidence."""
+    disk_sha = "e" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=disk_sha,
+        runtimes=[
+            {"kind": "gateway", "profile": "default", "pid": 42, "supervisor": "systemd"},
+            {"kind": "serve", "profile": "default", "pid": 6161, "supervisor": "manual"},
+        ],
+    )
+    _patch_marker_sha(monkeypatch, disk_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": disk_sha, "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
 
 
 @pytest.mark.parametrize(
@@ -789,7 +872,7 @@ def test_startup_warn_kept_without_positive_evidence(monkeypatch, capsys, disk_s
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert "did not restart running gateways" in capsys.readouterr().err
-    assert update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
 
 
 def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys):
@@ -823,7 +906,7 @@ def test_startup_warn_kept_when_receipt_owed_gateway_is_down(monkeypatch, capsys
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert "did not restart running gateways" in capsys.readouterr().err
-    assert update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
 
 
 def test_startup_warn_silent_when_failed_receipt_already_restarted_fleet(monkeypatch, capsys):
@@ -913,7 +996,7 @@ def test_startup_warn_silent_when_completed_update_fleet_restarted_onto_moved_ch
 def test_startup_warn_discharged_when_inventory_less_marker_fleet_current(monkeypatch, capsys):
     disk_sha = "e" * 40
     update_cmd._write_fleet_restart_pending_marker(expected_sha=disk_sha)
-    assert "inventory=" not in update_cmd._fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    assert "inventory" not in host_obligation.read_host_obligation()
     _patch_marker_sha(monkeypatch, disk_sha)
     monkeypatch.setattr(
         "hermes_cli.update_receipt.collect_fleet_versions",
@@ -925,7 +1008,7 @@ def test_startup_warn_discharged_when_inventory_less_marker_fleet_current(monkey
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert capsys.readouterr().err == ""
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
 
 def test_startup_warn_kept_when_inventory_less_marker_fleet_stale(monkeypatch, capsys):
@@ -942,7 +1025,7 @@ def test_startup_warn_kept_when_inventory_less_marker_fleet_stale(monkeypatch, c
     update_cmd._warn_pending_fleet_restart_on_startup()
 
     assert "did not restart running gateways" in capsys.readouterr().err
-    assert update_cmd._fleet_restart_pending_marker_path().exists()
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
 
 # ── Empty-inventory marker: a pull that recorded no gateway owes nothing (#115311) ──
 
@@ -961,7 +1044,7 @@ def test_empty_inventory_does_not_arm_marker():
     (Desktop-hosted) install every later update would otherwise hit the unbeatable
     'Fleet restart incomplete' exit 1 (#115311)."""
     update_cmd._write_fleet_restart_pending_marker(expected_sha="e" * 40, runtimes=[])
-    assert not update_cmd._fleet_restart_pending_marker_path().exists()
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
 
 def test_pending_fleet_restart_cleared_instead_of_exit_1(monkeypatch, tmp_path):
@@ -988,3 +1071,47 @@ def test_pending_fleet_restart_cleared_instead_of_exit_1(monkeypatch, tmp_path):
 
     assert seen["ran"] is False
     assert not marker.exists()
+
+
+def test_catchup_settles_failed_receipt_from_live_fleet_instead_of_exit_1(monkeypatch, capsys):
+    """A failed receipt whose plan rows carry pre-pull SHAs and an unidentifiable profile can never
+    be matched to a live gateway, so every up-to-date `hermes update` ran the restart, printed
+    "completed" then "incomplete", exited 1 and wrote another failed receipt — even after a manual
+    `hermes gateway restart` put the fleet on the checkout code (#117051). With every live row
+    current at the checkout SHA, the catch-up settles the receipt from that matrix and exits 0."""
+    sha = "d" * 40
+    monkeypatch.setattr(update_cmd, "_current_checkout_sha", lambda: sha)
+    monkeypatch.setattr(update_cmd_fleet, "_current_checkout_sha", lambda: sha)
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True)
+    latest = receipt_dir / "latest.json"
+    latest.write_text(
+        json.dumps(
+            {
+                "outcome": "failed",
+                "exit_code": 1,
+                "stop_reason": "sys.exit(1)",
+                "gateway_restart": {},
+                "fleet": [],
+                "plan": {
+                    "expected_sha": sha,
+                    "runtimes": [{"kind": "gateway", "profile": "unknown", "pid": 42, "code_sha": "0" * 40}],
+                },
+            }
+        ),
+        encoding="utf-8",
+    )
+    live = [{"profile": "default", "pid": 48096, "code_sha": sha, "state": "current"}]
+    monkeypatch.setattr("hermes_cli.update_receipt.collect_fleet_versions", lambda **k: list(live))
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", lambda: True)
+    assert update_cmd._pending_fleet_restart_needed() is True
+
+    update_cmd._apply_pending_fleet_restart_catchup()
+
+    out = capsys.readouterr().out
+    assert "incomplete" not in out and "still off the checkout code" not in out
+    settled = json.loads(latest.read_text(encoding="utf-8"))
+    assert settled["fleet"] == live
+    assert settled["gateway_restart"]["incomplete"] is False
+    assert update_cmd._pending_fleet_restart_needed() is False
+    assert update_cmd_fleet._update_owes_fleet_restart() is False

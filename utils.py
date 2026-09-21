@@ -225,6 +225,41 @@ def fsync_directory(path: Union[str, Path]) -> None:
         os.close(fd)
 
 
+def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> None:
+    """``shutil.rmtree`` that can also delete read-only trees.
+
+    ``shutil.rmtree`` stops at the first entry it cannot unlink.  Git marks
+    loose object files read-only on Windows (``WinError 5``), and package
+    installs (Nix store, deb/rpm) are copied ``r--r--r--`` into ``0555``
+    directories on POSIX, where unlinking needs a writable *parent*.  Clear the
+    write bit on the failing path and on its parent, then retry the exact
+    operation that failed.  Only ``PermissionError`` is retried: every other
+    failure keeps ``shutil.rmtree``'s semantics (and ``ignore_errors``).
+    """
+
+    def _on_error(func, fpath, exc_info):
+        # ``onerror`` (3.11) passes ``exc_info``, ``onexc`` (3.12+) the exception.
+        exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+        if not isinstance(exc, PermissionError):
+            raise exc
+        for candidate in (os.path.dirname(fpath), fpath):
+            if candidate:
+                with suppress(OSError):
+                    os.chmod(candidate, os.stat(candidate).st_mode | stat.S_IWUSR | stat.S_IXUSR)
+        func(fpath)
+
+    try:
+        try:
+            shutil.rmtree(path, onexc=_on_error)
+        except TypeError:  # ``onexc`` is 3.12+; 3.11 only knows ``onerror``
+            shutil.rmtree(path, onerror=_on_error)
+    except OSError:
+        # ``ignore_errors`` still gets the read-only recovery; it only swallows
+        # whatever is left after the retry.
+        if not ignore_errors:
+            raise
+
+
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
                   preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.
@@ -237,8 +272,9 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
     gets what ``open(path, "w")`` would have given it (process umask) — the callers this replaced
     wrote at umask, and silently tightening every fresh cache/state file to 0600 breaks shared
     volume mounts; an existing target with no *mode* keeps mkstemp's bits, as before. *fsync_dir*
-    also fsyncs the parent so the rename itself is durable. The temp file is removed on any
-    failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still clean up.
+    also fsyncs the resolved target's parent so the rename itself is durable. The temp file is
+    removed on any failure — ``BaseException`` on purpose, so KeyboardInterrupt / SystemExit still
+    clean up.
     """
     # A profile delete leaves a tombstone beside its removed home.  Background
     # writers may retain that home in a context variable, so a plain mkdir here
@@ -257,9 +293,10 @@ def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mo
             write(f)
             f.flush()
             os.fsync(f.fileno())
-        _restore_file_metadata(Path(atomic_replace(tmp_path, path)), original_owner, mode)  # symlink-preserving
+        replaced = Path(atomic_replace(tmp_path, path))  # symlink-preserving actual destination
+        _restore_file_metadata(replaced, original_owner, mode)
         if fsync_dir:
-            fsync_directory(path.parent)
+            fsync_directory(replaced.parent)
     except BaseException:
         with suppress(OSError):
             os.unlink(tmp_path)

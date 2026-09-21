@@ -216,10 +216,13 @@ def _job_running_in_this_process(job_id: str) -> bool:
     "the claiming tick died" from "the run is alive but slow" — a run stalled on network I/O (or a laptop
     that slept mid-run) legitimately outlives the TTL. The in-process ticker and the run share this process,
     so the scheduler's running set settles the common single-gateway case without any claim-age guesswork.
+
+    Home-scoped: one process ticks every profile, so the host-wide union of bare job ids would let
+    profile A's running ``daily-brief`` keep profile B's stale one-shot alive forever.
     """
     try:
-        from cron.scheduler import get_running_job_ids
-        return job_id in get_running_job_ids()
+        from cron.scheduler import is_job_running
+        return is_job_running(job_id)
     except Exception:
         logger.warning(
             "Cron running-set liveness check failed for job %r; keeping the "
@@ -1561,27 +1564,24 @@ def _normalize_workdir(workdir: Optional[str]) -> Optional[str]:
     return str(resolved)
 
 
-def _resolve_default_model_snapshot() -> Optional[str]:
-    """Default model resolved as the ticker's ``run_job`` does, so unpinned jobs can snapshot it and
-    keep running on it after a later swap. ``None`` on missing config or failure ("no snapshot")."""
-    try:
-        from hermes_cli.config_effective import load_user_config_effective
+def _main_model_pin() -> Tuple[Optional[str], Optional[str]]:
+    """``(provider, model)`` the main agent runs on right now (``model.default`` + the provider it
+    resolves to), for ``pinned=True`` jobs: the lock is a plain per-job pin, so the scheduler needs
+    no second precedence axis. ``(None, None)`` when nothing is configured (the job stays unpinned)."""
+    from hermes_cli.config_effective import load_user_config_effective
 
-        cfg_path = get_hermes_home() / "config.yaml"
-        if not cfg_path.exists():
-            return None
-        cfg = load_user_config_effective(cfg_path)
-        cron_cfg = cfg.get("cron") or {}
-        if isinstance(cron_cfg, dict):
-            cron_model = cron_cfg.get("model")
-            if isinstance(cron_model, str) and cron_model.strip():
-                return cron_model.strip()
-        model_cfg = cfg.get("model") or {}
-        if isinstance(model_cfg, dict):
-            model_cfg = model_cfg.get("default") or model_cfg.get("model")
-        return model_cfg.strip() or None if isinstance(model_cfg, str) else None
-    except Exception:
-        return None
+    cfg_path = get_hermes_home() / "config.yaml"
+    cfg = load_user_config_effective(cfg_path) if cfg_path.exists() else {}
+    model_cfg = cfg.get("model") or {}
+    model = model_cfg.get("default") or model_cfg.get("model") if isinstance(model_cfg, dict) else model_cfg
+    model = _normalize_job_optional_text(model)
+    if not model:
+        return None, None
+    provider = None
+    with contextlib.suppress(Exception):
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+        provider = _normalize_job_optional_text(resolve_runtime_provider(requested=None).get("provider"))
+    return (provider.lower() if provider else None), model
 
 
 def _normalize_job_optional_text(
@@ -1661,50 +1661,6 @@ _UPDATE_FIELD_NORMALIZERS: Dict[str, Callable[[Any], Any]] = {
 }
 
 
-def _compute_provider_model_snapshots(
-    *, provider: Any, model: Any, base_url: Any, no_agent: Any,
-) -> Tuple[Optional[str], Optional[str]]:
-    """Snapshot unpinned provider/model resolution: the scheduler runs the job on this snapshot after
-    a later global switch instead of silently changing spend. Pinned axes and no-agent jobs carry no
-    snapshot."""
-    normalized_provider = _normalize_job_optional_text(provider)
-    normalized_model = _normalize_job_optional_text(model)
-    normalized_base_url = _normalize_base_url(base_url)
-    if bool(no_agent):
-        return None, None
-
-    provider_snapshot: Optional[str] = None
-    model_snapshot: Optional[str] = None
-    if normalized_provider is None:
-        with contextlib.suppress(Exception):
-            from hermes_cli.runtime_provider import resolve_runtime_provider
-
-            runtime_kwargs = {"requested": None}
-            # Delegate all rate-limit / 5xx retry to hermes's outer conversation loop, which honors
-            # Retry-After. The SDK default (max_retries=2) uses its own 1-2s backoff that ignores
-            # Retry-After and double-retries inside our loop — burning request slots against a bucket that
-            # won't refill for minutes. (#26293)
-            if normalized_base_url:
-                runtime_kwargs["explicit_base_url"] = normalized_base_url
-            snap = resolve_runtime_provider(**runtime_kwargs)
-            provider_snapshot = str(snap.get("provider") or "").strip().lower() or None
-    if normalized_model is None:
-        with contextlib.suppress(Exception):
-            model_snapshot = _resolve_default_model_snapshot() or None
-    return provider_snapshot, model_snapshot
-
-
-def _normalized_inference_axes(
-    job: Dict[str, Any],
-) -> Tuple[Optional[str], Optional[str], Optional[str], bool]:
-    """Return the stored inference-routing fields in their semantic form."""
-    return (
-        _normalize_job_optional_text(job.get("provider")),
-        _normalize_job_optional_text(job.get("model")), _normalize_base_url(job.get("base_url")),
-        bool(job.get("no_agent")),
-    )
-
-
 def _validate_job_mode_invariants(
     monitor_script: Optional[str],
     monitor_url: Optional[str],
@@ -1771,6 +1727,7 @@ def create_job(
     failure_deliver: Optional[str] = None,
     paused: bool = False,
     paused_reason: Optional[str] = None,
+    pinned: bool = False,
 ) -> Dict[str, Any]:
     """Create a new cron job and return the stored record.
 
@@ -1819,8 +1776,8 @@ def create_job(
         or "cron job"
     )
     name = name or label_source[:50].strip()
-    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
-        provider=f["provider"], model=f["model"], base_url=f["base_url"], no_agent=f["no_agent"])
+    if pinned and not f["model"]:
+        f["provider"], f["model"] = _main_model_pin()
     next_run_at = _next_run_or_reject_past_oneshot(parsed_schedule, name, schedule, "")
 
     job = {
@@ -1831,8 +1788,6 @@ def create_job(
         "skill": normalized_skills[0] if normalized_skills else None,
         "model": f["model"],
         "provider": f["provider"],
-        "provider_snapshot": provider_snapshot,
-        "model_snapshot": model_snapshot,
         "base_url": f["base_url"],
         "script": f["script"],
         "no_agent": f["no_agent"],
@@ -1944,6 +1899,22 @@ def _reject_terminal_activation(job: Dict[str, Any], updated: Dict[str, Any], jo
             "through update_job; use cron resume --run-now or --at.")
 
 
+def _apply_pin_update(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
+    """``pinned`` is not stored; it rewrites the per-job pin. ``True`` with no explicit model locks
+    the main agent's current provider+model onto the job, ``False`` releases both so the job follows
+    the main model again (an explicit ``model`` in the same update wins over either)."""
+    if "pinned" not in updates:
+        return
+    pinned = bool(updates.pop("pinned"))
+    if "model" in updates:
+        return
+    if pinned:
+        if not _normalize_job_optional_text(job.get("model")):
+            updates["provider"], updates["model"] = _main_model_pin()
+    else:
+        updates["provider"], updates["model"] = None, None
+
+
 def _normalize_job_updates(job: Dict[str, Any], updates: Dict[str, Any]) -> None:
     """Normalize updates in place like create_job; invalid values raise BEFORE the merge. ``repeat``
     accepts the stored dict or a bare value (coerced, completed counter preserved)."""
@@ -2035,7 +2006,7 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
     def apply(jobs, i, job):
         _rederive_repeat_for_schedule_change(job, updates)
         _normalize_job_updates(job, updates)
-        previous_inference_axes = _normalized_inference_axes(job)
+        _apply_pin_update(job, updates)
         updated = _apply_skill_fields({**job, **updates})
         _reject_terminal_activation(job, updated, job_id)
         # Re-check on the MERGED record; scoped to changed fields so legacy records keep loading.
@@ -2047,10 +2018,6 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
                 _normalize_job_optional_text(updated.get("script")))
         if any(k in updates for k in _PAYLOAD_FIELDS) and job_payload_is_empty(updated):
             raise ValueError(EMPTY_PAYLOAD_ERROR)
-        inference_fields_changed = bool(
-            {"provider", "model", "base_url", "no_agent"}.intersection(updates)
-        ) and _normalized_inference_axes(updated) != previous_inference_axes
-
         if "schedule" in updates:
             _apply_schedule_update(updated, updates, job_id)
             # next_run_at now follows the new schedule; a stale quota_hold_until would only shield
@@ -2062,13 +2029,6 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
             # An explicit schedule/lifecycle rewrite supersedes any occurrence the dispatcher
             # left unclaimed — pause/resume/edit must not resurrect a slot from before the edit.
             updated.pop("pending_slot", None)
-        if inference_fields_changed:
-            snapshots = _compute_provider_model_snapshots(
-                provider=updated.get("provider"),
-                model=updated.get("model"),
-                base_url=updated.get("base_url"),
-                no_agent=updated.get("no_agent"))
-            updated["provider_snapshot"], updated["model_snapshot"] = snapshots
         _fill_missing_next_run(updated)
         _reject_terminal_activation(job, updated, job_id)
         jobs[i] = updated
@@ -2076,78 +2036,6 @@ def update_job(job_id: str, updates: Dict[str, Any]) -> Optional[Dict[str, Any]]
         return _normalize_job_record(updated)
 
     return _with_job(job_id, apply)
-
-
-def resnapshot_job(job_id: str) -> Optional[Dict[str, Any]]:
-    """Refresh provider/model snapshots for a job's UNPINNED axes to the
-    current global resolution.
-
-    This is the "adopt the current global default" companion to pinning
-    (#44585). Where pinning a job (``provider=... model=...``) makes it stop
-    tracking the global default forever, ``resnapshot_job`` re-captures the
-    current resolution so an unpinned job follows the user's deliberately
-    changed default — while remaining unpinned and tracking future changes.
-
-    Semantics:
-      - Pinned axes (job has an explicit provider/model) keep their snapshot
-        None and are left untouched.
-      - no_agent script jobs carry no snapshot and are left untouched.
-      - If the current resolution fails, the previous snapshot is left in
-        place (fail-open, matching create_job semantics).
-
-    Makes no inference call — it only recomputes the snapshot string from
-    config. Returns the normalized updated job, or None if not found.
-    """
-    job = resolve_job_ref(job_id)
-    if not job:
-        return None
-    provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
-        provider=job.get("provider"),
-        model=job.get("model"),
-        base_url=job.get("base_url"),
-        no_agent=job.get("no_agent"),
-    )
-    jobs = load_jobs()
-    for i, stored in enumerate(jobs):
-        if stored["id"] != job["id"]:
-            continue
-        jobs[i]["provider_snapshot"] = provider_snapshot
-        jobs[i]["model_snapshot"] = model_snapshot
-        save_jobs(jobs)
-        return _normalize_job_record(jobs[i])
-    return None
-
-
-def resnapshot_all_unpinned() -> List[Dict[str, Any]]:
-    """Refresh provider/model snapshots for every job that has any unpinned
-    axis, adopting the current global resolution for each.
-
-    Skips no_agent jobs and jobs pinned on all inference axes (nothing
-    unpinned to refresh). Equivalent to calling ``resnapshot_job`` for each
-    eligible job. Returns the list of updated jobs.
-    """
-    updated: List[Dict[str, Any]] = []
-    jobs = load_jobs()
-    changed = False
-    for job in jobs:
-        if bool(job.get("no_agent")):
-            continue
-        if job.get("provider") and job.get("model"):
-            # Pinned on every axis — nothing unpinned to refresh.
-            continue
-        provider_snapshot, model_snapshot = _compute_provider_model_snapshots(
-            provider=job.get("provider"),
-            model=job.get("model"),
-            base_url=job.get("base_url"),
-            no_agent=job.get("no_agent"),
-        )
-        job["provider_snapshot"] = provider_snapshot
-        job["model_snapshot"] = model_snapshot
-        changed = True
-        updated.append(_normalize_job_record(job))
-    if changed:
-        save_jobs(jobs)
-    return updated
 
 
 def pause_job(job_id: str, reason: Optional[str] = None) -> Optional[Dict[str, Any]]:

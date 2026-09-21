@@ -206,7 +206,9 @@ _REFERENCE_SYSTEM_PROMPT = (
     "systems exist and reason about them from the context given rather than "
     "asking for access.\n\n"
     "Respond with your advice directly — no preamble, no disclaimers about "
-    "tools or access. Your response is private guidance handed to the "
+    "tools or access. Advise in prose: never emit a tool call or a JSON "
+    "tool-call object, because the aggregator replays what looks like one. "
+    "Your response is private guidance handed to the "
     "aggregator, not an answer shown to the user. NEVER claim to have executed "
     "anything."
 )
@@ -635,12 +637,36 @@ def _render_tool_calls(tool_calls: Any) -> str:
     return "\n".join(lines)
 
 
+# Cached guidance (user_turn / off-cadence every_n fanout) is reused on later iterations of the
+# same turn, where it predates the tool results the acting model now sees. Without this line the
+# block reads as fresh instruction and an advisor's suggested tool call gets replayed after it
+# already ran.
+_STALE_GUIDANCE_NOTE = (
+    "This guidance was produced earlier in this turn, before the tool results below it. "
+    "Check the transcript before acting on it: a step it suggests may already have run, and "
+    "repeating a completed tool call is never the next step.\n"
+)
+
+
 _ADVISORY_INSTRUCTION = (
     "[The conversation above is the current state of the task. Give your "
     "most intelligent judgement: what is going on, what should happen next, "
     "what risks or mistakes you see, and how the acting agent should "
     "proceed.]"
 )
+
+
+def _tool_activity_since_last_user(messages: list[dict[str, Any]]) -> bool:
+    """Whether the acting model has already called tools since the last real user turn.
+    Guidance cached from the start of the turn predates those results, so replaying a
+    tool call it suggests can repeat work the transcript already shows as done."""
+    for msg in reversed(messages):
+        role = msg.get("role")
+        if role == "user":
+            return False
+        if role == "tool" or (role == "assistant" and msg.get("tool_calls")):
+            return True
+    return False
 
 
 def _reference_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
@@ -1266,6 +1292,7 @@ class MoAChatCompletions:
 
     def _build_guidance(
         self, reference_outputs: list[tuple[str, str, Any]], aggregator: dict[str, Any], degraded_reference_policy: str,
+        stale: bool = False,
     ) -> str | None:
         """Render the reference block attached to the aggregator prompt (None = nothing)."""
         agg_refs, degraded, all_failed = _guidance_inputs(
@@ -1296,7 +1323,8 @@ class MoAChatCompletions:
                 f"{header}"
                 f"References: {', '.join(label for label, _, _ in agg_refs)}\n\n"
                 "Use the reference responses below as private context. You are the aggregator and acting model: "
-                "answer the user directly or call tools as needed.\n\n"
+                "answer the user directly or call tools as needed.\n"
+                f"{_STALE_GUIDANCE_NOTE if stale else ''}\n"
                 f"{_join_reference_outputs(agg_refs, degraded)}"
             )
         return None
@@ -1327,7 +1355,8 @@ class MoAChatCompletions:
 
         ref_messages = _reference_messages(messages)
         cache_key = self._fanout_cache_key(preset, ref_messages, reference_models)
-        if cache_key == self._ref_cache_key and self._ref_cache_outputs:
+        cache_hit = bool(cache_key == self._ref_cache_key and self._ref_cache_outputs)
+        if cache_hit:
             # HIT: already ran and accounted. Do NOT zero pending totals (a late
             # interrupted reference may have deposited) and no trace (not a new turn).
             reference_outputs = list(self._ref_cache_outputs)
@@ -1336,7 +1365,10 @@ class MoAChatCompletions:
             reference_outputs = self._run_fanout(preset, ref_messages, reference_models, aggregator, aggregator_temperature, cache_key)
 
         agg_messages = [dict(m) for m in messages]
-        guidance = self._build_guidance(reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"))
+        guidance = self._build_guidance(
+            reference_outputs, aggregator, str(preset.get("degraded_reference_policy") or "loud"),
+            stale=cache_hit and _tool_activity_since_last_user(messages),
+        )
         if guidance:
             _attach_reference_guidance(agg_messages, guidance)
 

@@ -22,7 +22,7 @@ from hermes_cli.web_server_gateway import _strip_session_list_rows
 from hermes_cli.web_server_sessions import _maybe_auto_archive_for_profile, _session_latest_descendant
 from hermes_cli.web_models import (
     BulkDeleteSessions, SessionImport, SessionOwnerBackfill, SessionPrune, SessionRename)
-from hermes_cli.web_routers._common import log as _log, http_failure
+from hermes_cli.web_routers._common import log as _log, destructive_profile, http_failure
 from hermes_state import is_malformed_db_error
 from hermes_state_errors import is_transient_sqlite_error
 
@@ -357,9 +357,13 @@ async def search_sessions(
                 seen[root] = payload
 
             def hit_payload(row: dict, snippet: str, role, session_started) -> dict:
+                # `last_active` rides only on id-match rows (sessions table); FTS
+                # hits have no row recency and leave it null so the desktop can
+                # fall back to session_started instead of inventing one.
                 return {
                     "snippet": snippet, "role": role, "source": row.get("source"),
-                    "model": row.get("model"), "session_started": session_started}
+                    "model": row.get("model"), "session_started": session_started,
+                    "last_active": row.get("last_active")}
 
             # Direct ID matches first (pasted ids never appear in message text).
             for row in db.search_sessions_by_id(
@@ -405,8 +409,9 @@ async def bulk_delete_sessions_endpoint(body: BulkDeleteSessions):
     # Hard cap so a runaway selection can't lock the writer for long.
     if len(body.ids) > 500:
         raise HTTPException(status_code=400, detail="ids must contain at most 500 entries")
+    profile = destructive_profile(body.profile, "POST /api/sessions/bulk-delete")
     deleted = await asyncio.to_thread(
-        _with_db, body.profile, lambda db: db.delete_sessions(body.ids), read_only=False)
+        _with_db, profile, lambda db: db.delete_sessions(body.ids), read_only=False)
     return {"ok": True, "deleted": deleted}
 
 
@@ -454,7 +459,8 @@ async def delete_empty_sessions_endpoint(profile: Optional[str] = None):
     parents are orphaned, not cascade-deleted. See #95868.
     """
     deleted = await asyncio.to_thread(
-        _with_db, profile, lambda db: db.delete_empty_sessions(), read_only=False)
+        _with_db, destructive_profile(profile, "DELETE /api/sessions/empty"),
+        lambda db: db.delete_empty_sessions(), read_only=False)
     return {"ok": True, "deleted": deleted}
 
 
@@ -756,6 +762,11 @@ async def export_session_endpoint(session_id: str, profile: Optional[str] = None
 @manage_router.post("/api/sessions/prune")
 async def prune_sessions_endpoint(body: SessionPrune):
     """Delete ended sessions matching filters without blocking the event loop."""
+    if not body.dry_run:
+        # Same destructive rule as the rest of the family; a dry run deletes nothing, so it
+        # keeps working unnamed (it is the preview the confirm dialog reads).
+        body = body.model_copy(update={
+            "profile": destructive_profile(body.profile, "POST /api/sessions/prune")})
     return await asyncio.to_thread(_prune_sessions, body)
 
 

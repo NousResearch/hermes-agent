@@ -42,7 +42,7 @@ from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import (
     _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
-    sanitize_outbound_kwargs,
+    sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
 from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
@@ -1276,6 +1276,11 @@ def _reasoning_config_for_wire(agent):
         # the route default — as the auxiliary ladder does; resending would 400 identically.
         agent._wire_reasoning_config = None
         return None
+    if cfg is None:
+        # Unset effort: the profile's default (custom/OpenAI-compatible: medium) rather than the
+        # route's own, recorded below as what went out so a rejection of it lands in the branch above.
+        from agent.reasoning_params import unset_reasoning_default
+        cfg = unset_reasoning_default(agent)
     if getattr(agent, "_reasoning_disable_rejected", False):
         # The route rejects disables. Resend exactly what the session has
         # been sending — the user's own config — so the retry lands on the
@@ -1676,6 +1681,11 @@ def build_assistant_message(agent, assistant_message, finish_reason: str) -> dic
                     and has_replayable_native_compaction_checkpoint(agent, [msg])
                 ):
                     note_checkpoint()
+                    # The response priced the pre-checkpoint input, not the next
+                    # compacted request. A matching durable prefix is now stale.
+                    from agent.usage_anchor import set_usage_anchor
+
+                    set_usage_anchor(agent, None)
 
     if assistant_tool_calls:
         msg["tool_calls"] = [_assistant_tool_call_dict(agent, tc, i) for i, tc in enumerate(assistant_tool_calls)]
@@ -1992,12 +2002,14 @@ def _buffer_fallback_notice(agent, notice: str) -> None:
         agent._pending_fallback_notice = [str(pending), notice] if pending else [notice]
 
 
-def try_activate_fallback(agent, reason: "FailoverReason | None" = None) -> bool:
+def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_at=None) -> bool:
     """Switch to the next fallback model/provider in the chain; False when exhausted. Swaps client,
     model slug and provider in place so the retry loop continues on the new backend; client
     construction goes through resolve_provider_client (no duplicated provider→key mappings)."""
-    from agent.fallback_cooldown import _arm_rate_limit_cooldown
-    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason)
+    from agent.fallback_cooldown import _arm_rate_limit_cooldown, switch_deferred_by_reset
+    if switch_deferred_by_reset(agent, reason, reset_at):
+        return False
+    cooldown_seconds = _arm_rate_limit_cooldown(agent, reason, reset_at=reset_at)
     while True:
         if agent._fallback_index >= len(agent._fallback_chain):
             return _fallback_chain_exhausted(agent, reason)
@@ -2173,6 +2185,12 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     # Same send-path vision eviction as the main loop (#89296).
     from agent.context_compressor import evict_stale_outbound_tool_images
     evict_stale_outbound_tool_images(api_messages)
+    # Same per-model image strip as turn_api_request.build_api_request: this path builds
+    # api_messages by hand and calls _build_api_kwargs directly, so a model recorded in
+    # agent._image_rejecting_models would otherwise get images here → 4xx → no summary.
+    # Safe on the shallow row copies: the strip rebinds the row's ``content``, never the
+    # nested list shared with history.
+    strip_images_for_rejecting_model(agent, api_messages)
     # Thinking-only assistant turns 400 on Anthropic-family providers; _thinking_prefill must
     # survive until here so the drop pass recognizes stubs after reasoning is stripped.
     api_messages = agent._drop_thinking_only_and_merge_users(api_messages)

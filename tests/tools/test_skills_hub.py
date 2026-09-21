@@ -388,6 +388,92 @@ class TestFindSkillInRepoTree:
         assert result is None
 
 
+class TestRepoRootSkillLayout:
+    """Regression for #115028: skills.sh repos whose SKILL.md sits at the repo ROOT (no skill
+    directory, e.g. orzcls/win-disk-cleaner) are listed by search but could not be resolved by
+    inspect/install — the discovery root scan skipped non-directory entries by construction and
+    no identifier form expressed "the skill directory IS the repo root"."""
+
+    IDENTIFIER = "skills-sh/orzcls/win-disk-cleaner/win-disk-cleaner"
+    REPO = "orzcls/win-disk-cleaner"
+    SKILL_MD = (
+        "---\nname: win-disk-cleaner\ndescription: Clean a Windows disk safely.\n---\n\n"
+        "# Win Disk Cleaner\n\nSee references/free_tools.md\n"
+    )
+    ROOT_TREE = [
+        {"path": "LICENSE", "type": "blob"},
+        {"path": "README.md", "type": "blob"},
+        {"path": "SKILL.md", "type": "blob"},
+        {"path": "references/free_tools.md", "type": "blob"},
+    ]
+
+    def _source(self):
+        auth = MagicMock(spec=GitHubAuth)
+        auth.get_headers.return_value = {"Accept": "application/vnd.github.v3+json"}
+        return SkillsShSource(auth=auth)
+
+    def _github_stub(self, tree):
+        """Minimal GitHub API: repo info, one git tree, and root-level file contents only —
+        every candidate ``<repo>/<base>/<skill>/SKILL.md`` path 404s, as in the real repo."""
+        def _side_effect(url, **kwargs):
+            resp = MagicMock()
+            resp.status_code = 404
+            if url.rstrip("/").endswith(self.REPO):
+                resp.status_code, resp.json = 200, (lambda: {"default_branch": "main"})
+            elif "/git/trees/main" in url:
+                resp.status_code = 200
+                resp.json = lambda: {"sha": "b" * 40, "truncated": False, "tree": tree}
+            elif url.endswith("/contents/SKILL.md"):
+                resp.status_code, resp.content = 200, self.SKILL_MD.encode()
+            elif url.endswith("/contents/references/free_tools.md"):
+                resp.status_code, resp.content = 200, b"# Free tools\n"
+            elif url.endswith("/contents/LICENSE") or url.endswith("/contents/README.md"):
+                # Every blob in the pinned tree must fetch, or the bundle is "incomplete" and
+                # deliberately left unpinned (empty revision) for the next update check to fill.
+                resp.status_code, resp.content = 200, b"root-level file\n"
+            return resp
+        return _side_effect
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_inspect_resolves_skill_md_at_repo_root(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        meta = self._source().inspect(self.IDENTIFIER)
+
+        assert meta is not None
+        assert meta.name == "win-disk-cleaner"
+        assert meta.repo == self.REPO
+        assert meta.identifier == self.IDENTIFIER
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_fetch_resolves_and_names_bundle_for_repo_root_skill(self, mock_get, _mock_read_cache, _mock_write_cache):
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE)
+
+        bundle = self._source().fetch(self.IDENTIFIER)
+
+        assert bundle is not None
+        # Repo-root skill has no directory to name itself after; fall back to the repo name.
+        assert bundle.name == "win-disk-cleaner"
+        assert bundle.files["SKILL.md"] == self.SKILL_MD
+        # Support files sit directly under the repo root, so the root is the skill directory.
+        assert bundle.files["references/free_tools.md"] == b"# Free tools\n"
+        assert bundle.identifier == self.IDENTIFIER
+        assert bundle.metadata["source_url"] == f"https://github.com/{self.REPO}/tree/{'b' * 40}"
+
+    @patch("tools.skills_hub._write_index_cache")
+    @patch("tools.skills_hub._read_index_cache", return_value=None)
+    @patch("tools.skills_hub.httpx.get")
+    def test_root_layout_does_not_resolve_as_a_multi_skill_repo(self, mock_get, _mock_read_cache, _mock_write_cache):
+        """A repo with a root SKILL.md AND another skill dir is not a root-layout single skill."""
+        mock_get.side_effect = self._github_stub(self.ROOT_TREE + [{"path": "skills/other/SKILL.md", "type": "blob"}])
+
+        assert self._source().inspect(self.IDENTIFIER) is None
+
+
 class TestWellKnownSkillSource:
     @pytest.fixture(autouse=True)
     def _allow_public_skill_fetches(self, monkeypatch):
@@ -1226,6 +1312,77 @@ class TestQuarantineBundleBinaryAssets:
 
         assert (q_path / "SKILL.md").read_text(encoding="utf-8").startswith("---")
         assert (q_path / "assets" / "neutts-cli" / "samples" / "jo.wav").read_bytes() == b"RIFF\x00\x01fakewav"
+
+    def test_quarantine_bundle_writes_text_files_without_newline_translation(self, tmp_path, monkeypatch):
+        """Text members must land on disk byte-for-byte as the bundle carries them.
+
+        Path.write_text(newline=None) translates "\\n" to os.linesep on Windows, so a
+        CRLF copy became the installed content while bundle_content_hash re-encodes
+        the str as LF — every hub skill then reported update_available forever (#117181).
+        """
+        import pathlib
+
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        def windows_text_mode_write_text(self, data, encoding=None, errors=None, newline=None):
+            # Emulate the platform translation newline=None performs on Windows;
+            # newline="" is the documented opt-out quarantine must rely on.
+            if newline != "":
+                data = data.replace("\n", "\r\n")
+            self.write_bytes(data.encode(encoding or "utf-8"))
+
+        monkeypatch.setattr(pathlib.Path, "write_text", windows_text_mode_write_text)
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="crlfskill",
+                files={
+                    "SKILL.md": "---\nname: crlfskill\n---\n\nBody line one.\nBody line two.\n",
+                    "assets/binary.bin": b"\x00\x01raw",
+                },
+                source="official",
+                identifier="official/mlops/models/crlfskill",
+                trust_level="builtin",
+            )
+
+            q_path = quarantine_bundle(bundle)
+
+        assert (q_path / "SKILL.md").read_bytes() == bundle.files["SKILL.md"].encode("utf-8")
+        assert content_hash(q_path) == bundle_content_hash(bundle)
+
+    @pytest.mark.windows_only
+    def test_quarantine_bundle_hash_matches_bundle_on_windows(self, tmp_path):
+        """Real Windows text mode: the quarantined SKILL.md hashes like the fetched bundle (#117181)."""
+        import tools.skills_hub as hub
+        from tools.skills_guard import content_hash
+
+        hub_dir = tmp_path / "skills" / ".hub"
+        with patch.object(hub, "SKILLS_DIR", tmp_path / "skills"), \
+             patch.object(hub, "HUB_DIR", hub_dir), \
+             patch.object(hub, "LOCK_FILE", hub_dir / "lock.json"), \
+             patch.object(hub, "QUARANTINE_DIR", hub_dir / "quarantine"), \
+             patch.object(hub, "AUDIT_LOG", hub_dir / "audit.log"), \
+             patch.object(hub, "TAPS_FILE", hub_dir / "taps.json"), \
+             patch.object(hub, "INDEX_CACHE_DIR", hub_dir / "index-cache"):
+            bundle = SkillBundle(
+                name="crlfskill",
+                files={"SKILL.md": "---\nname: crlfskill\n---\n\nBody line one.\nBody line two.\n"},
+                source="official",
+                identifier="official/mlops/models/crlfskill",
+                trust_level="builtin",
+            )
+            q_path = quarantine_bundle(bundle)
+
+        assert b"\r\n" not in (q_path / "SKILL.md").read_bytes()
+        assert content_hash(q_path) == bundle_content_hash(bundle)
 
     def test_quarantine_bundle_rejects_traversal_file_paths(self, tmp_path):
         import tools.skills_hub as hub

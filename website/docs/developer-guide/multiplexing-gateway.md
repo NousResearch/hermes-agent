@@ -54,6 +54,34 @@ is documented as a known limitation at the end of this document.
   a plain module global, not a contextvar: it describes the deployment mode,
   not a per-task value. Its only job is to arm the fail-closed behavior in
   `get_secret()`.
+- The dashboard/Desktop backend (`hermes serve`) has no such flag, so
+  `hermes_cli/web_server.py::start_server` calls
+  `tui_gateway.launch_profile_policy.activate_multi_profile_hosting_eagerly()`
+  as its LAST boot step: the host arms the guard when the machine has more than
+  one servable profile home, instead of waiting for the first
+  `?profile=<other>` request. Activation is one-way, and anything the backend
+  had already done by then (idle-reaper transcript flushes, hosted rooms, cron)
+  was never re-scoped. It runs last because activation also freezes
+  `os.environ` as the launch profile's credentials, and that snapshot is the
+  only source for launch keys with no `.env` to rebuild from (systemd
+  `Environment=`, `op run`, Compose) — a key injected or rotated after the
+  freeze is invisible for the process lifetime. A genuinely single-profile
+  host never activates; `gateway.multiplex_profiles: false` is retired and
+  deliberately NOT consulted here (honouring it would serve a second profile
+  with the launch profile's credentials); an unreadable `profiles/` directory
+  fails closed (it activates) and logs a WARNING.
+- With the guard armed the **launch profile is a tenant too**: a body with no
+  routed profile binds `launch_profile_scope_if_multiplexed()` rather than
+  running unscoped on ambient `os.environ`. Note the precedence inside that
+  scope: the launch home's **`.env` wins over the frozen env**, so activation is
+  not purely stricter for the launch tenant — for a key set in BOTH
+  `os.environ` and `<launch home>/.env`, an unscoped read returned the ambient
+  value before activation and returns the `.env` value after. Env-only keys are
+  unaffected.
+- A body whose routed profile name no longer resolves (deleted or renamed
+  mid-run) binds **nothing**: its credential reads raise `UnscopedSecretError`
+  instead of falling back to the launch profile's. "Whose is this?" with no
+  answer is a fail-closed condition, never a borrow.
 
 ## Scope composition
 
@@ -110,6 +138,13 @@ B's turns and into every subprocess spawned with `env=dict(os.environ)`.
 - A small allowlist (`HERMES_HOME`, `HERMES_PROFILE`, proxy settings,
   `API_SERVER_*` listener settings — but deliberately not `API_SERVER_KEY`)
   stays global because those describe the process, not a profile.
+- Cloud SDK *default credential chains* are ambient by construction
+  (`google.auth.default()`, `DefaultAzureCredential`, `boto3.Session()` with
+  no keys): every source they walk — process env, CLI caches, instance
+  metadata — is the launch context's identity. Under multiplexing a served
+  profile without a complete credential of its own is **refused** by the
+  Vertex, Entra ID and Bedrock adapters rather than minting that identity
+  against its own `base_url`; standalone runs keep the chain.
 
 Because the per-turn `.env` reload is a no-op under multiplexing, rotated
 credentials are picked up through the profile scope on the next turn — never

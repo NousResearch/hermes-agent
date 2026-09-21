@@ -896,10 +896,15 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        # A dispatcher-spawned worker completes a card it holds a run on: bind the
+        # run id like the dispatcher does, or the ownership CAS refuses (#116239).
+        assert kb.claim_task(conn, tid) is not None
+        run_id = kb._current_run_id(conn, tid)
     finally:
         conn.close()
 
     import os
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
         kt._handle_complete({

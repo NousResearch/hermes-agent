@@ -13,6 +13,14 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
   true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
+
+Note: any room with <=2 joined members is auto-classified as a DM (see
+``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name —
+clients auto-name DMs like "Alice & Bot", so name alone can't be trusted. A DM-classified room
+therefore bypasses MATRIX_ALLOWED_ROOMS, MATRIX_FREE_RESPONSE_ROOMS, and MATRIX_REQUIRE_MENTION,
+and follows MATRIX_DM_AUTO_THREAD / MATRIX_DM_MENTION_THREADS instead of MATRIX_AUTO_THREAD /
+MATRIX_SESSION_SCOPE. To make a deliberately-created 2-person room behave like a regular room,
+add a third member so it has >2 joined members.
 """
 
 from __future__ import annotations
@@ -1595,9 +1603,16 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def send_voice(
         self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
-        metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Upload audio as an MSC3245 voice message. Voice bubbles need Ogg/Opus but callers pass any
-        format (e.g. TTS output), so transcode here — best-effort: without ffmpeg the original is sent."""
+        metadata: Optional[Dict[str, Any]] = None, is_voice: Optional[bool] = None) -> SendResult:
+        """Upload audio. The base media dispatch calls this with ``is_voice``: True for a voice-tagged
+        attachment → MSC3245 voice bubble; False for an audio-ext MEDIA attachment → plain ``m.audio``
+        in the original format. Voice bubbles need Ogg/Opus but callers pass any format (e.g. TTS
+        output), so transcode there — best-effort: without ffmpeg the original is sent. Callers that
+        don't pass the flag (``play_audio``) keep the voice-bubble behavior this method was written
+        for (#116776: the dispatch always passes ``is_voice``, and rejecting it dropped the file)."""
+        if is_voice is False:
+            return await self._send_local_file(
+                chat_id, audio_path, "m.audio", caption, reply_to, metadata=metadata, is_voice=False)
         converted_path: Optional[str] = None
         if not str(audio_path).lower().endswith((".ogg", ".oga", ".opus")):
             # 48k (not the 32k default): Element renders voice bubbles at a higher quality tier.

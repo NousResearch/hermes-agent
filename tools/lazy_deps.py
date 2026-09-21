@@ -185,7 +185,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.acp": ("agent-client-protocol==0.9.0",),
     "tool.dashboard": (
         "fastapi==0.133.1",
-        "uvicorn[standard]==0.41.0",
+        "uvicorn==0.41.0",
         "starlette==1.3.1",
         "python-multipart==0.0.32",  # FastAPI UploadFile/Form streaming uploads
     ),

@@ -688,6 +688,8 @@ def test_startup_warn_silent_when_nothing_pending(capsys):
         (["hermes", "gateway", "--accept-hooks"], False),
         (["hermes_cli/main.py", "gateway", "run", "--replace"], False),
         (["hermes", "serve", "--host", "127.0.0.1"], False),
+        (["hermes", "--reas", "low", "serve"], False),
+        (["hermes", "--mod", "x", "serve"], False),
         (["hermes", "dashboard", "--host", "0.0.0.0", "--port", "9119"], False),
         (["hermes", "dashboard", "--host", "register"], False),
         (["hermes", "serve", "--hos", "127.0.0.1"], False),

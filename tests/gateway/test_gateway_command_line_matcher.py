@@ -27,6 +27,8 @@ ACCEPT = [
     "hermes-gateway.exe",
     "hermes gateway",          # bare `hermes gateway` defaults to run
     "hermes gateway --accept-hooks",  # parent flag preserves the default run
+    "hermes gateway --accept",  # argparse accepts an unambiguous long-option prefix
+    "hermes gateway --accept run",
     "hermes gateway run",
     # profile selector AFTER the `gateway` token (argv is profile-position
     # agnostic — _apply_profile_override strips --profile/-p anywhere)

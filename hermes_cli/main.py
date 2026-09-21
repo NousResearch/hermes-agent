@@ -2731,20 +2731,28 @@ def _first_positional_argv_index() -> int | None:
     Not a full argparse simulation: an unknown ``--foo bar`` may classify
     ``bar`` as positional, which at worst forces a one-time plugin discovery.
     """
-    from hermes_cli._parser import top_level_value_flag_sets
+    from hermes_cli._parser import build_top_level_parser
 
-    required_value_flags, optional_value_flags = top_level_value_flag_sets()
-    value_flags = required_value_flags | optional_value_flags
+    parser = build_top_level_parser()[0]
     argv = sys.argv[1:]
     i = 0
     while i < len(argv):
         tok = argv[i]
         if tok == "--":  # everything after is positional
             return i + 2 if i + 1 < len(argv) else None
+        option_tuples = parser._get_option_tuples(tok) if tok.startswith("-") else []
         if not tok.startswith("-"):
             return i + 1
-        # ``--flag=value`` is a single token; a known value flag consumes the next.
-        i += 2 if ("=" not in tok and tok in value_flags and i + 1 < len(argv)) else 1
+        if len(option_tuples) != 1:
+            # Unknown/ambiguous options are left to the real parser. Treat the
+            # token itself as an option, not a command or its value.
+            i += 1
+            continue
+        action, _option_string, explicit_arg = option_tuples[0]
+        if action.nargs == 0 or explicit_arg is not None:
+            i += 1
+        else:
+            i += 2 if i + 1 < len(argv) else 1
     return None
 
 

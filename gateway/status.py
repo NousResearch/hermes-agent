@@ -363,7 +363,10 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
             # lifecycle verb. With no verb, `hermes gateway` defaults to run;
             # unknown/help flags must not be mistaken for a live gateway.
             return next(
-                (part for part in filtered[i + 1:] if part != "--accept-hooks"),
+                (
+                    part for part in filtered[i + 1:]
+                    if not (part.startswith("--a") and "--accept-hooks".startswith(part))
+                ),
                 "run",
             )
     return None

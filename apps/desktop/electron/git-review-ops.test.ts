@@ -94,7 +94,9 @@ test('reviewList reports an untracked directory without recursively listing its 
   )
 })
 
-test('reviewList caps the file payload returned to the renderer', async () => {
+// Creates a 200+-file repo and shells out to real git; the default 5s
+// timeout misreports contention on a fully loaded Windows CI host.
+test('reviewList caps the file payload returned to the renderer', { timeout: 60_000 }, async () => {
   const dir = makeRepo()
 
   for (let i = 0; i < REVIEW_FILE_CAP + 10; i++) {

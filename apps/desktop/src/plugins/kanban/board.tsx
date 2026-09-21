@@ -213,18 +213,8 @@ function CardFooter({ arc, task }: { arc: ArcState | null; task: KanbanTask }) {
           </span>
         </Tip>
       )}
-<<<<<<< HEAD
       <div className="ml-auto flex min-w-0 shrink items-center gap-2">
         {typeof task.priority === 'number' && task.priority > 0 && <PriorityGlyph priority={task.priority} />}
-=======
-      <div className="ms-auto flex min-w-0 shrink items-center gap-2">
-        {typeof task.priority === 'number' && task.priority > 0 && (
-          <span className="inline-flex items-center gap-0.5 text-amber-500">
-            <Codicon name="arrow-up" size="0.7rem" />
-            {task.priority}
-          </span>
-        )}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         {task.progress && task.progress.total > 0 && (
           <Meta icon="checklist">
             {task.progress.done}/{task.progress.total}
@@ -464,7 +454,7 @@ function Column({
         <span className="text-[0.625rem] tabular-nums text-(--ui-text-quaternary)">{column.tasks.length}</span>
         <button
           aria-label={k.collapse(label)}
-          className="ms-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
+          className="ml-auto grid size-5 place-items-center rounded text-(--ui-text-tertiary) opacity-0 transition-opacity hover:bg-(--chrome-action-hover) hover:text-foreground focus-visible:opacity-100 group-hover/col:opacity-100"
           onClick={onToggle}
           type="button"
         >
@@ -797,7 +787,7 @@ function NewTaskDialog({
           {error && <span className="text-[0.75rem] text-destructive">{error}</span>}
         </div>
         <DialogFooter>
-          <div className="me-auto flex items-center gap-1 text-[0.75rem] text-(--ui-text-tertiary)">
+          <div className="mr-auto flex items-center gap-1 text-[0.75rem] text-(--ui-text-tertiary)">
             {estimate?.ok ? (
               <>
                 <Tip label={estimate.rationale || k.roughEstimate}>
@@ -898,7 +888,7 @@ function FilterMenu({
   const active = Boolean(assignee || tenant || archived)
   const lanesByProfile = useValue($lanesByProfile)
 
-  const check = (on: boolean) => (on ? <Codicon className="ms-auto" name="check" size="0.8rem" /> : null)
+  const check = (on: boolean) => (on ? <Codicon className="ml-auto" name="check" size="0.8rem" /> : null)
 
   return (
     <DropdownMenu>
@@ -1357,7 +1347,7 @@ export function KanbanBoardPage() {
           />
         )}
         <SearchField aria-label={k.filterCards} onChange={setSearch} placeholder={k.filterCards} value={search} />
-        <div className="ms-auto flex items-center gap-1">
+        <div className="ml-auto flex items-center gap-1">
           <Tip label={k.orchestrationSettings}>
             <Button
               aria-label={k.orchestrationSettings}

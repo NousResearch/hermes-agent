@@ -289,14 +289,10 @@ function DropdownMenuItem({
   return (
     <DropdownMenuPrimitive.Item
       className={cn(
-<<<<<<< HEAD
         menuItemClass,
         menuItemFocusClass,
         searchHoverClass,
         "data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:ps-7 data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive dark:data-[variant=destructive]:focus:bg-destructive/20 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary) data-[variant=destructive]:*:[svg]:text-destructive!",
-=======
-        "relative flex items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[disabled]:pointer-events-none data-[disabled]:opacity-50 data-[inset]:ps-7 data-[variant=destructive]:text-destructive data-[variant=destructive]:focus:bg-destructive/10 data-[variant=destructive]:focus:text-destructive dark:data-[variant=destructive]:focus:bg-destructive/20 [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary) data-[variant=destructive]:*:[svg]:text-destructive!",
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         className
       )}
       data-inset={inset}
@@ -331,7 +327,7 @@ function DropdownMenuCheckboxItem({
       {...hoverProps}
     >
       {children}
-      <DropdownMenuPrimitive.ItemIndicator className="ms-auto flex items-center ps-2 text-foreground">
+      <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center ps-2 text-foreground">
         <Codicon name="check" size="0.75rem" />
       </DropdownMenuPrimitive.ItemIndicator>
     </DropdownMenuPrimitive.CheckboxItem>
@@ -363,7 +359,7 @@ function DropdownMenuRadioItem({
       {...hoverProps}
     >
       {children}
-      <DropdownMenuPrimitive.ItemIndicator className="ms-auto flex items-center ps-2 text-foreground">
+      <DropdownMenuPrimitive.ItemIndicator className="ml-auto flex items-center ps-2 text-foreground">
         <Codicon name="check" size="0.75rem" />
       </DropdownMenuPrimitive.ItemIndicator>
     </DropdownMenuPrimitive.RadioItem>
@@ -379,11 +375,7 @@ function DropdownMenuLabel({
 }) {
   return (
     <DropdownMenuPrimitive.Label
-<<<<<<< HEAD
       className={cn(menuLabelClass, 'data-[inset]:ps-7', className)}
-=======
-      className={cn('px-2 py-1 text-xs font-medium text-(--ui-text-tertiary) data-[inset]:ps-7', className)}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
       data-inset={inset}
       data-slot="dropdown-menu-label"
       {...props}
@@ -404,7 +396,7 @@ function DropdownMenuSeparator({ className, ...props }: React.ComponentProps<typ
 function DropdownMenuShortcut({ className, ...props }: React.ComponentProps<'span'>) {
   return (
     <span
-      className={cn('ms-auto text-xs tracking-widest text-muted-foreground', className)}
+      className={cn('ml-auto text-xs tracking-widest text-muted-foreground', className)}
       data-slot="dropdown-menu-shortcut"
       {...props}
     />
@@ -463,12 +455,8 @@ function DropdownMenuSubTrigger({
   return (
     <DropdownMenuPrimitive.SubTrigger
       className={cn(
-<<<<<<< HEAD
         searchHoverClass,
         "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[inset]:ps-7 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary)",
-=======
-        "flex cursor-pointer items-center gap-2 rounded-md px-2 py-1 text-xs outline-hidden select-none focus:bg-(--ui-control-active-background) focus:text-foreground data-[inset]:ps-7 data-[state=open]:bg-(--ui-control-active-background) data-[state=open]:text-foreground [&_svg]:pointer-events-none [&_svg]:shrink-0 [&_svg:not([class*='size-'])]:size-3.5 [&_svg:not([class*='text-'])]:text-(--ui-text-tertiary)",
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         className
       )}
       data-inset={inset}
@@ -477,7 +465,7 @@ function DropdownMenuSubTrigger({
       {...hoverProps}
     >
       {children}
-      {!hideChevron && <Codicon className="ms-auto text-(--ui-text-tertiary)" name="chevron-right" size="1rem" />}
+      {!hideChevron && <Codicon className="ml-auto text-(--ui-text-tertiary)" name="chevron-right" size="1rem" />}
     </DropdownMenuPrimitive.SubTrigger>
   )
 }

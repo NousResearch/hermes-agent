@@ -297,23 +297,14 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
 
   if (supported === false) {
     return (
-<<<<<<< HEAD
       <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
         {b.tools.needsSetup(requires.join(', '))}
-=======
-      <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">
-        {'needs setup (' + requires.join(', ') + ') \u2014 restart the gateway to enable in-app setup'}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
       </span>
     )
   }
 
   if (phase === 'done') {
-<<<<<<< HEAD
     return <span className="ms-1.5 text-[0.65rem] text-(--ui-success)">{b.tools.setUpDone}</span>
-=======
-    return <span className="ms-1.5 text-[0.65rem] text-(--ui-success)">set up ✓</span>
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
   }
 
   if (phase === 'keys') {
@@ -347,30 +338,17 @@ export function McpSetupButton({ profile, entry, onDone, ensureProfile }: McpSet
   }
 
   if (phase === 'oauth') {
-<<<<<<< HEAD
     return <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{message || b.tools.authorizing}</span>
   }
 
   if (phase === 'busy') {
     return <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{b.tools.working}</span>
-=======
-    return <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">{message || 'Authorizing\u2026'}</span>
-  }
-
-  if (phase === 'busy') {
-    return <span className="ms-1.5 text-[0.65rem] text-(--ui-text-quaternary)">Working…</span>
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
   }
 
   if (phase === 'error') {
     return (
-<<<<<<< HEAD
       <span className="ms-1.5 text-[0.65rem] text-(--ui-danger,#f87171)">
         {(message || b.tools.setupFailed) + ' '}
-=======
-      <span className="ms-1.5 text-[0.65rem] text-(--ui-danger,#f87171)">
-        {(message || 'Setup failed') + ' '}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         <Button className="underline" onClick={() => setPhase('idle')} size="inline" variant="link">
           {t.common.retry}
         </Button>

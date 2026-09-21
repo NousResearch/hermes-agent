@@ -195,13 +195,8 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
                     type="button"
                     variant="ghost"
                   >
-<<<<<<< HEAD
                     <Codicon className="me-1 text-[0.8rem]" name={locked ? 'unlock' : 'lock'} />
                     {locked ? b.editor.unlock : b.editor.lockFace}
-=======
-                    <Codicon className="me-1 text-[0.8rem]" name={locked ? 'unlock' : 'lock'} />
-                    {locked ? 'Unlock' : 'Lock face'}
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
                   </Button>
                 </div>
                 <div className="text-center text-[0.65rem] text-(--ui-text-quaternary)">
@@ -287,13 +282,8 @@ export function AvatarPicker({ shape, color, image, onShape, onColor, onImage, g
       ) : null}
       {tab === 'upload' ? (
         <Button className="w-full justify-center" onClick={upload} type="button" variant="secondary">
-<<<<<<< HEAD
           <Codicon className="me-1 text-[0.8rem]" name="device-camera" />
           {b.editor.chooseImage}
-=======
-          <Codicon className="me-1 text-[0.8rem]" name="device-camera" />
-          Choose an image…
->>>>>>> 60293b5b507 (refactor(desktop): migrate physical padding/margin classes to logical ps/pe/ms/me; add CI guard)
         </Button>
       ) : null}
       {tab === 'pet' ? <PetTab image={image} onImage={onImage} /> : null}

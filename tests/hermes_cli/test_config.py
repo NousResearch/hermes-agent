@@ -146,6 +146,57 @@ class TestLoadConfigDefaults:
             assert "max_turns" not in config
 
 
+class TestProfileConfigInheritance:
+    def test_named_profile_inherits_default_config_and_keeps_its_overrides(self, tmp_path):
+        """Named profiles may store only deltas; their own values still win at every depth."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text(
+            "model:\n  default: default/model\n  provider: default-provider\n"
+            "terminal:\n  timeout: 90\n",
+            encoding="utf-8",
+        )
+        (profile / "config.yaml").write_text(
+            "model:\n  default: work/model\nterminal:\n  backend: docker\n",
+            encoding="utf-8",
+        )
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+
+        assert loaded["model"] == {"default": "work/model", "provider": "default-provider"}
+        assert loaded["terminal"]["backend"] == "docker"
+        assert loaded["terminal"]["timeout"] == 90
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(profile)}):
+            save_config(loaded)
+
+        persisted = yaml.safe_load((profile / "config.yaml").read_text(encoding="utf-8"))
+        assert persisted["model"] == {"default": "work/model"}
+        assert persisted["terminal"] == {"backend": "docker"}
+
+    def test_default_profile_does_not_inherit_from_a_named_profile(self, tmp_path):
+        """The root profile remains the inheritance root, never a consumer of sibling settings."""
+        root = tmp_path / "hermes"
+        profile = root / "profiles" / "work"
+        profile.mkdir(parents=True)
+        (root / "config.yaml").write_text("display:\n  skin: default-skin\n", encoding="utf-8")
+        (profile / "config.yaml").write_text("display:\n  personality: pirate\n", encoding="utf-8")
+
+        with patch.dict(os.environ, {"HERMES_HOME": str(root)}):
+            from hermes_cli import config as cfg_mod
+
+            cfg_mod._LOAD_CONFIG_CACHE.clear()
+            loaded = load_config()
+
+        assert loaded["display"]["skin"] == "default-skin"
+        assert loaded["display"].get("personality") != "pirate"
+
+
 class TestLoadConfigParseFailure:
     """A YAML parse failure must NOT silently fall back to defaults.
 

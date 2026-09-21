@@ -80,6 +80,32 @@ def test_effective_is_user_plus_managed_plus_env_with_no_defaults(homes):
     assert "agent" in DEFAULT_CONFIG  # would be present if defaults had been merged
 
 
+def test_effective_named_profile_inherits_default_raw_config(homes):
+    """Defaults-free readers see the same named-profile inheritance as load_config()."""
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    profile = home / "profiles" / "work"
+    profile.mkdir(parents=True)
+    _write(home / "config.yaml", """
+        model:
+          default: default/model
+        display:
+          skin: default-skin
+        """)
+    _write(profile / "config.yaml", """
+        model:
+          provider: work-provider
+        """)
+
+    effective = load_user_config_effective(profile / "config.yaml")
+
+    assert effective == {
+        "model": {"default": "default/model", "provider": "work-provider"},
+        "display": {"skin": "default-skin"},
+    }
+
+
 def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):
     """A torn mid-edit write must not silently drop user overrides: the fail-open path serves the last
     successfully parsed user file through the same pipeline; ``fail_closed`` surfaces the error to

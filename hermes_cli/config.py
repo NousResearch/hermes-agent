@@ -231,7 +231,7 @@ _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
-# path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
+# path -> (user signature, managed signature, inherited-default signature, merged, env snapshot).
 # load_config() returns a deepcopy of the cached value while the signature matches (skips
 # safe_load + merge + normalize + expand, ~13 ms). Writers use atomic_yaml_write (fresh inode
 # -> new mtime_ns) so no explicit invalidation is needed. The managed-file signature is folded
@@ -2160,10 +2160,35 @@ def apply_terminal_config_to_env(
     return target
 
 
+def _profile_default_config_path(config_path: Path) -> Optional[Path]:
+    """Return the root profile config for a named profile, never for the root itself."""
+    profile_home = config_path.parent
+    profiles_dir = profile_home.parent
+    if config_path.name != "config.yaml" or profiles_dir.name != "profiles":
+        return None
+    return profiles_dir.parent / "config.yaml"
+
+
+def _read_profile_default_raw(config_path: Path) -> Dict[str, Any]:
+    """Read a named profile's inheritance base; broken YAML is never partially inherited."""
+    default_path = _profile_default_config_path(config_path)
+    if default_path is None:
+        return {}
+    try:
+        with open(default_path, encoding="utf-8") as f:
+            data = fast_safe_load(f) or {}
+    except FileNotFoundError:
+        return {}
+    except Exception as exc:
+        _warn_config_parse_failure(default_path, exc)
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
 def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[Tuple[int, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
+    Managed and inherited-default signatures are folded in ((0, 0, 0, 0) = none), so editing
+    either invalidates the merged result. ``cache_sig`` is None only when neither file exists."""
     try:
         st = config_path.stat()
         user_sig: Optional[Tuple[int, int, int, int]] = file_signature(st)
@@ -2175,9 +2200,15 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
+    default_path = _profile_default_config_path(config_path)
+    try:
+        dst = default_path.stat() if default_path else None
+        default_sig = file_signature(dst) if dst else (0, 0, 0, 0)
+    except OSError:
+        default_sig = (0, 0, 0, 0)
+    if user_sig is None and managed_sig == (0, 0, 0, 0) and default_sig == (0, 0, 0, 0):
         return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
+    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig, *default_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
@@ -2244,17 +2275,18 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
+        cache_len = len(cache_sig) if cache_sig is not None else 0
+        if cached is not None and cache_sig is not None and cached[:cache_len] == cache_sig:
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
             # Without this, a load_config() that ran before load_hermes_dotenv() pins unexpanded literals
             # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
-            env_snapshot = cached[9] if len(cached) > 9 else {}
+            env_snapshot = cached[cache_len + 1] if len(cached) > cache_len + 1 else {}
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[8]) if want_deepcopy else cached[8]
+                return copy.deepcopy(cached[cache_len]) if want_deepcopy else cached[cache_len]
 
-        config = copy.deepcopy(DEFAULT_CONFIG)
+        config = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), _read_profile_default_raw(config_path))
 
         if user_sig is not None:
             try:
@@ -2405,7 +2437,10 @@ def save_config(
         if strip_defaults:
             # ``_strip_default_values`` always preserves ``_config_version`` itself.
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
-            normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
+            persistence_defaults = _deep_merge(
+                copy.deepcopy(DEFAULT_CONFIG), _read_profile_default_raw(config_path))
+            normalized = _strip_default_values(
+                normalized, persistence_defaults, preserve_keys=effective_preserve_keys)
 
         atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
         _secure_file(config_path)

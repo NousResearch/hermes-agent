@@ -159,3 +159,39 @@ class TestTailBudgetProportionality:
         comp = _make(128_000)
         assert comp.tail_mode == "lean"
         assert LEAN_TAIL_FLOOR_TOKENS <= comp.tail_token_budget <= LEAN_TAIL_CAP_TOKENS
+
+    def test_tail_budget_never_exceeds_window_share(self):
+        """The lean 10K floor is 61% of a 16K window and 122% of an 8K one: on a local 27B the
+        "protected" tail was the whole request and compaction reclaimed nothing. Whatever the
+        formula, the verbatim tail stays within ``TAIL_MAX_CONTEXT_FRACTION`` of the window."""
+        from agent.context_compressor import LEAN_TAIL_FLOOR_TOKENS, TAIL_MAX_CONTEXT_FRACTION
+
+        for ctx in (8_192, 16_384, 32_768):
+            comp = _make(ctx)
+            assert comp.tail_token_budget <= ctx * TAIL_MAX_CONTEXT_FRACTION, ctx
+            assert comp.tail_token_budget > 0, ctx
+        # Big windows are untouched: the lean clamp still binds.
+        assert _make(131_072).tail_token_budget == LEAN_TAIL_FLOOR_TOKENS
+
+    def test_small_window_compress_leaves_a_real_middle(self):
+        """End to end through the boundary walk: on an 8K window a tool-heavy transcript must yield a
+        compressible middle that is most of the transcript, and the retained tail must stay near the
+        window share (one atomic tool group of overrun is allowed for the required anchors)."""
+        from agent.context_compressor import TAIL_MAX_CONTEXT_FRACTION, _estimate_msg_budget_tokens
+
+        ctx = 8_192
+        comp = _make(ctx)
+        msgs: list = [{"role": "system", "content": "sys"}]
+        for i in range(12):
+            msgs.append({"role": "user", "content": f"step {i}"})
+            msgs.append({
+                "role": "assistant", "content": "",
+                "tool_calls": [{"id": f"c{i}", "type": "function", "function": {"name": "terminal", "arguments": "{}"}}],
+            })
+            msgs.append({"role": "tool", "tool_call_id": f"c{i}", "content": "x" * 4_000})
+            msgs.append({"role": "assistant", "content": f"done {i}"})
+        start, end = comp._compress_window(msgs)
+        tail_tokens = sum(_estimate_msg_budget_tokens(m) for m in msgs[end:])
+        one_turn = sum(_estimate_msg_budget_tokens(m) for m in msgs[-4:])
+        assert tail_tokens <= ctx * TAIL_MAX_CONTEXT_FRACTION + one_turn
+        assert end - start >= (len(msgs) - start) // 2, (start, end, len(msgs))

@@ -37,6 +37,7 @@ export function onboardingRecommendations(
     const terms = [entry.name, ...(entry.suggest?.keywords ?? []), ...(entry.suggest?.applications ?? [])]
       .map(words)
       .filter(Boolean)
+
     const preferred = terms.some(term => selected.has(term))
     const topical = terms.some(term => subject.includes(` ${term} `))
     const detectedApps = entry.detected_apps ?? []

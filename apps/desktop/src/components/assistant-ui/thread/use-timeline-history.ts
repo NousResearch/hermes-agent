@@ -51,7 +51,6 @@ export function useTimelineHistory() {
         setFailed(key)
       }
       // Owner is represented by key; do not restart on object identity alone.
-      // eslint-disable-next-line react-hooks/exhaustive-deps
     },
     [key, storedId, runtimeId, view]
   )
@@ -89,6 +88,7 @@ export function useTimelineHistory() {
   // chronological), page it forward once per new prompt — no timer; an
   // incomplete index still pages on demand.
   const last = value?.entries.at(-1)?.rowId
+
   const stale =
     value?.complete === true && newestPromptRowId !== undefined && (last === undefined || last < newestPromptRowId)
 

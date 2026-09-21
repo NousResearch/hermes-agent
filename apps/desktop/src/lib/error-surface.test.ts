@@ -149,6 +149,7 @@ describe('error copy never names a hidden Retry', () => {
       provider: 'openai',
       retryable: false
     }
+
     expect(errorRecoveryPlan(surface).retry).toBe(true)
   })
 
@@ -159,6 +160,7 @@ describe('error copy never names a hidden Retry', () => {
       provider: 'custom',
       retryable: false
     })!
+
     const { body, title } = errorCardText(thread, surface)
     expect(title).toBe(en.assistant.thread.errorCodes.upstream_blocked.title)
     expect(body).toMatch(/firewall/i)
@@ -203,8 +205,10 @@ describe('free-tier refusals', () => {
   it('every free-tier code has copy and the copy never blames the free model', () => {
     for (const code of ERROR_CODE_KEYS.filter(key => key.startsWith('free_tier_'))) {
       const copy = en.assistant.thread.errorCodes[code]
+
       const text =
         `${typeof copy.title === 'string' ? copy.title : ''} ${typeof copy.body === 'string' ? copy.body : ''}`.toLowerCase()
+
       expect(text).not.toMatch(/free (service|model|tier) is (off|switched off|unavailable|down)/)
       expect(text).not.toMatch(/anonymous|guest|credential|token|rate limit/)
     }

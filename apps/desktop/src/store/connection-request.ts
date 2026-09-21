@@ -14,6 +14,8 @@ import { atom, computed } from 'nanostores'
 import type { SetupField } from '@/components/ui/setup-field-list'
 
 import { $gateway } from './gateway'
+import { ambientRequestFor } from './session-gone-latch'
+import { requestForOwnedSession } from './session-states'
 
 /** The backend sends ``prompt`` as null when the catalog entry has none; the form takes an absent one. */
 const envFields = (fields: ConnectionTargetEnvField[] | null | undefined): SetupField[] =>
@@ -312,7 +314,17 @@ export async function respondToConnectionRequest(
     return false
   }
 
-  await $gateway.get()?.request('connection.respond', {
+  const gateway = $gateway.get()
+
+  if (!gateway) {
+    return true
+  }
+
+  // Route through the session's actual owner connection, not the ambient primary: a card for a
+  // session on a secondary/registered connection (multi-profile, Bot Mode, the unified Sessions
+  // list) must land `connection.respond` on the backend that holds the operation, the same way
+  // `reissue()` on this card already dials `requestGatewayForAgent` by owner (#91684/#94640).
+  await requestForOwnedSession(request.sessionId, ambientRequestFor(gateway), 'connection.respond', {
     op_id: request.opId,
     result: outcome,
     session_id: request.sessionId

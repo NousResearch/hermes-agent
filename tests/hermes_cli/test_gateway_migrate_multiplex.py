@@ -373,6 +373,38 @@ def test_update_hook_still_migrates_same_user_same_scope_profiles_under_the_defa
     assert _config_flag(fleet.root) is True and ("ops", "uninstall") in fleet.ops
 
 
+def test_update_hook_folds_a_unit_less_default_when_every_secondary_shares_one_manager(fleet, capsys, monkeypatch):
+    """The #118097 fleet: the default profile never had a gateway unit, every secondary runs under the
+    SAME manager (all launchd, one macOS user). That is one service domain, and the manager the plan
+    elects as the target (``target_service_kind``) is the reference the guard must agree with — not the
+    default's empty unit list, which turned every such fleet into "blockers" instead of a fold.
+    Controls: a default unit under another manager, and two managers among the secondaries, still refuse."""
+    from hermes_cli.gateway_migrate_guards import auto_migration_blockers
+    monkeypatch.setattr(gm, "_gateway_identity", lambda home, pid, service: (1000, home), raising=False)
+    fleet.services.update({"coder": ("launchd", False), "ops": ("launchd", False)})
+    assert "default" not in fleet.services
+    plan = gm.build_migration_plan()
+    assert plan.target_service_kind() == ("launchd", False)
+    assert auto_migration_blockers(plan) == []
+
+    gm.maybe_auto_migrate_after_update()
+    out = capsys.readouterr().out
+    assert "serves 3 profiles" in out and _config_flag(fleet.root) is True
+    assert ("coder", "uninstall") in fleet.ops and ("ops", "uninstall") in fleet.ops
+    assert ("default", "install") in fleet.ops and fleet.services == {"default": ("launchd", False)}
+
+    # Control 1: the default HAS a unit under another manager -> still a different service domain.
+    fleet.services.update({"default": ("systemd", False), "coder": ("launchd", False), "ops": ("launchd", False)})
+    fleet.pids.update({"coder": 4101, "ops": 4102})
+    blockers = auto_migration_blockers(gm.build_migration_plan())
+    assert blockers and all("different service domain" in b for b in blockers)
+    # Control 2: unit-less default, secondaries under two managers -> the non-elected one refuses.
+    fleet.services.pop("default")
+    fleet.services.update({"coder": ("launchd", False), "ops": ("systemd", False)})
+    blockers = auto_migration_blockers(gm.build_migration_plan())
+    assert len(blockers) == 1 and "'ops'" in blockers[0] and "different service domain" in blockers[0]
+
+
 def test_auto_multiplex_migration_false_opts_out_of_the_update_hook_but_not_the_explicit_command(fleet, capsys):
     """``gateway.auto_multiplex_migration: false`` is a durable opt-out: an otherwise-eligible fleet is
     left alone by ``hermes update`` (no output, no ops, no flag flip), while the operator typing

@@ -2047,7 +2047,9 @@ def _current_profile_name() -> str:
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
-DESKTOP_BACKEND_CONTRACT = 7
+# v8 session.branch accepts ``up_to_row_id`` (ordinal cut at a durable ``messages.id``); a v7 backend rejects
+# the parameter outright, so the desktop must be aligned with a v8 backend to branch from a specific message.
+DESKTOP_BACKEND_CONTRACT = 8
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:

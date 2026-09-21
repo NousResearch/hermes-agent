@@ -105,7 +105,10 @@ function isUpdateToastSnoozed(): boolean {
 // v7: requires JSON-RPC server->client requests for every blocking prompt
 //     (approval/clarify/sudo/secret/vault/MCP setup); a v6 backend's
 //     `<kind>.request` notifications would never render a card.
-export const REQUIRED_BACKEND_CONTRACT = 7
+// v8: requires `session.branch` to accept `up_to_row_id` (the durable row-id
+//     cut); a v7 backend rejects the parameter, so branching from a specific
+//     message fails against it — align before using it.
+export const REQUIRED_BACKEND_CONTRACT = 8
 const SKEW_TOAST_ID = 'backend-contract-skew'
 // The contract check runs on every session.resume (applyRuntimeInfo), so
 // without a snooze the warning re-popped on every thread the user opened, even

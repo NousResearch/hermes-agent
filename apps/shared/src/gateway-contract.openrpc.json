@@ -24281,6 +24281,18 @@
             ],
             "default": null,
             "title": "Count"
+          },
+          "up_to_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Up To Row Id"
           }
         },
         "required": [

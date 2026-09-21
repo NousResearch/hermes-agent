@@ -581,6 +581,13 @@ def _set_priority(conn, task_id: str, priority: int, board: Optional[str]) -> No
     kanban_db.edit_task(conn, task_id, priority=int(priority), board=board)
 
 
+def _validate_override_payload(p) -> None:
+    """Reject invalid model/provider pairs before any PATCH or bulk mutation."""
+    model = None if p.clear_model_override else p.model_override
+    with _map_errors(400, ValueError):
+        kanban_db._validate_model_override(model, p.provider_override)
+
+
 def _apply_model_override(conn, task_id: str, p) -> bool:
     """Raises ValueError/RuntimeError from kanban_db for the caller to map."""
     new_model = None if p.clear_model_override else (p.model_override or "").strip() or None
@@ -654,6 +661,7 @@ def _patch_title_body(conn, task_id: str, payload: UpdateTaskBody, board: Option
 
 @router.patch("/tasks/{task_id}")
 def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Query(None)):
+    _validate_override_payload(payload)
     with _board_conn(board) as (board, conn):
         _require_task(conn, task_id)
         # For a combined assignee+review patch, request_review must capture the
@@ -820,6 +828,7 @@ def _bulk_apply_one(conn, tid: str, payload: BulkTaskBody, board: Optional[str],
 def bulk_update(payload: BulkTaskBody, board: Optional[str] = Query(None)):
     """Apply the same patch to every id. Independent iteration — per-task
     failures don't abort siblings; returns per-id outcome for partials."""
+    _validate_override_payload(payload)
     ids = [i for i in (payload.ids or []) if i]
     if not ids:
         raise HTTPException(status_code=400, detail="ids is required")

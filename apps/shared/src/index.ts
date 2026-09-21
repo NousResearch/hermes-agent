@@ -140,6 +140,7 @@ export {
   type ThemePresetName,
   type ThemePresetPalette
 } from './theme-presets'
+export { createStreamTpsCounter, type StreamTpsCounter } from './stream-tps'
 export {
   backgroundMaterialFor,
   clampIntensity,

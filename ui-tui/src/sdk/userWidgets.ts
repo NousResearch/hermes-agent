@@ -14,6 +14,9 @@ import { GridAreas, WidgetGrid } from '../components/widgetGrid.js'
 import { gauge, hbars, sparkline, sparkRows } from '../lib/charts.js'
 import { recordParentLifecycle } from '../lib/parentLog.js'
 
+import { $uiState } from '../app/uiStore.js'
+import type { Usage } from '@hermes/shared/gateway-events'
+
 import { openWidget, updateWidget } from './host.js'
 import { defineWidgetApp, listWidgetApps, removeWidgetApp } from './registry.js'
 import { isCtrl } from './types.js'
@@ -31,6 +34,21 @@ import { isCtrl } from './types.js'
  * never takes the TUI down.
  */
 
+/**
+ * Live session usage — the same `usage` snapshot the status bar renders.
+ * Widgets have no resolvable import path into the bundle, so this is the
+ * one sanctioned bridge to the counters. `getUiUsage()` is the non-hook
+ * selector (testable / usable from `init`); `useUiUsage()` is the reactive
+ * hook for render — called once per render, returns the latest snapshot.
+ */
+export function getUiUsage(): Usage {
+  return $uiState.get().usage
+}
+
+export function useUiUsage(): Usage {
+  return React.useSyncExternalStore(onStoreChange => $uiState.subscribe(onStoreChange), getUiUsage, getUiUsage)
+}
+
 /** Everything a user widget may touch, passed INTO its register() — user
  *  files have no resolvable import path to the bundle. */
 export const widgetSdk = {
@@ -46,6 +64,7 @@ export const widgetSdk = {
   WidgetGrid,
   defineWidgetApp,
   gauge,
+  getUiUsage,
   h: React.createElement,
   hbars,
   isCtrl,
@@ -53,7 +72,8 @@ export const widgetSdk = {
   sparkRows,
   sparkline,
   updateWidget,
-  useShimmerPhase
+  useShimmerPhase,
+  useUiUsage
 } as const
 
 export type WidgetSdk = typeof widgetSdk

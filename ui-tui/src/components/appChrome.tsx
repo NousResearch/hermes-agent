@@ -313,6 +313,7 @@ export interface StatusBarSegments {
   latency: boolean
   subagents: boolean
   tps: boolean
+  tokens: boolean
   voice: boolean
 }
 
@@ -329,7 +330,8 @@ export function statusBarSegments(cols: number): StatusBarSegments {
     subagents: w >= 92,
     cacheHit: w >= 96,
     latency: w >= 104,
-    tps: w >= 110
+    tps: w >= 110,
+    tokens: w >= 110
   }
 }
 
@@ -547,6 +549,25 @@ export function StatusRule({
   const bar = !segs.compactCtx && usage.context_max && ok('context_pct') ? ctxBar(pct) : ''
   const modelText = modelLabel(model, modelReasoningEffort, modelFast, modelReasoningEffortWire)
 
+  // Token counters (session input + output). Self-hides when both zero.
+  const inputText = (usage.input ?? 0) > 0 ? `↑ ${compactNumber(usage.input ?? 0)}` : ''
+  const outputText = (usage.output ?? 0) > 0 ? `↓ ${compactNumber(usage.output ?? 0)}` : ''
+  const tokenText = [inputText, outputText].filter(Boolean).join(' ') || ''
+  // Streaming throughput (client-calculated t/s), falling back to the server
+  // session average when no live stream is active. Self-hides when undefined/0.
+  const streamTps = (usage as { stream_tps?: number }).stream_tps
+  const tpsText =
+    streamTps != null && streamTps > 0
+      ? `↓ ${streamTps} t/s`
+      : typeof usage.avg_tps === 'number'
+        ? `↑ ${Math.round(usage.avg_tps)} t/s`
+        : ''
+  // Token + streaming-TPS segments are pinned (like model/context), so they
+  // don't consume the tail budget — but they still respect the terminal-width
+  // breakpoint (segs) and the user's status_bar field visibility (ok), the
+  // same gates as every other segment.
+  const showTokens = segs.tokens && ok('tokens') && !!tokenText
+  const showStreamTps = segs.tps && ok('tps') && !!tpsText
   // Battery read-out — the first (pinned) status-bar element when enabled.
   const showBattery = !!battery && battery.available && battery.percent != null && ok('battery')
   const batteryText = showBattery ? batteryLabel(battery!) : ''
@@ -582,7 +603,9 @@ export function StatusRule({
     slotWidth +
     stringWidth(' │ ') +
     stringWidth(modelText) +
-    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0)
+    (ctxLabel ? stringWidth(' │ ') + stringWidth(ctxLabel) : 0) +
+    (showTokens ? stringWidth(' │ ') + stringWidth(tokenText) : 0) +
+    (showStreamTps ? stringWidth(' │ ') + stringWidth(tpsText) : 0)
 
   const rightLabel = sessionTitle && ok('title') ? ` ${sessionTitle} ` : cwdLabel
   const { leftWidth, rightWidth, separatorWidth } = statusRuleWidths(cols, rightLabel, essentialWidth)
@@ -636,8 +659,6 @@ export function StatusRule({
   const showCacheHit = segs.cacheHit && ok('cache_hit') && !!cacheHitText && fits(SEP + stringWidth(cacheHitText))
   const latencyText = typeof usage.avg_latency_s === 'number' ? `◷ ${usage.avg_latency_s.toFixed(1)}s` : ''
   const showLatency = segs.latency && ok('latency') && !!latencyText && fits(SEP + stringWidth(latencyText))
-  const tpsText = typeof usage.avg_tps === 'number' ? `↑ ${Math.round(usage.avg_tps)} t/s` : ''
-  const showTps = segs.tps && ok('tps') && !!tpsText && fits(SEP + stringWidth(tpsText))
 
   const showVoice = segs.voice && ok('voice') && !!voiceLabel && fits(SEP + stringWidth(voiceLabel))
   const showSessionCount = !!sessionCountText && fits(SEP + stringWidth(sessionCountText))
@@ -734,6 +755,18 @@ export function StatusRule({
               {ctxLabel}
             </Text>
           ) : null}
+          {showTokens ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {tokenText}
+            </Text>
+          ) : null}
+          {showStreamTps ? (
+            <Text color={t.color.muted} wrap="truncate-end">
+              {' │ '}
+              {tpsText}
+            </Text>
+          ) : null}
         </Box>
         {showFocus ? (
           <Box flexDirection="row" flexShrink={0}>
@@ -788,12 +821,6 @@ export function StatusRule({
           <Text color={t.color.muted} wrap="truncate-end">
             {' │ '}
             {latencyText}
-          </Text>
-        ) : null}
-        {showTps ? (
-          <Text color={t.color.muted} wrap="truncate-end">
-            {' │ '}
-            {tpsText}
           </Text>
         ) : null}
         {showVoice ? (

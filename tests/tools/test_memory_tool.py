@@ -193,6 +193,46 @@ class TestMemoryStoreReplace:
         assert "Python 3.12 project" in store.memory_entries
         assert "Python 3.11 project" not in store.memory_entries
 
+    def test_replace_whole_entry_contract(self, store):
+        """Regression for #117952 / #59184: replace commits content as the COMPLETE
+        new entry (old_text only locates it), and the response surfaces the full text
+        that was overwritten so a whole-entry write is never silent."""
+        entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
+        store.add("memory", entry)
+        result = store.replace("memory", "RULE B: ci per HEAD.", "RULE B: CI is per-head.")
+        assert result["success"] is True
+        assert store.memory_entries == ["RULE B: CI is per-head."]
+        assert result["replaced_entry"] == entry
+
+    def test_replace_same_across_single_batch_and_approval_replay(self, store):
+        """The three dispatch surfaces (store.replace, apply_batch, apply_memory_pending
+        write-approval replay) must agree on the final entry for the same op (#117952)."""
+        from tools.memory_tool import apply_memory_pending
+        entry = "alpha fact. beta fact. gamma fact."
+
+        s1 = store
+        s1.add("memory", entry)
+        assert s1.replace("memory", "beta fact.", "beta fact, updated.")["success"] is True
+        single = s1.memory_entries[0]
+
+        s2 = store.__class__(memory_char_limit=500)
+        s2.add("memory", entry)
+        batch_result = s2.apply_batch("memory", [{"action": "replace", "old_text": "beta fact.",
+                                                  "content": "beta fact, updated."}])
+        assert batch_result["success"] is True
+        assert batch_result["replaced_entries"] == {0: entry}
+        batch = s2.memory_entries[0]
+
+        s3 = store.__class__(memory_char_limit=500)
+        s3.add("memory", entry)
+        payload = {"action": "batch", "target": "memory",
+                   "operations": [{"action": "replace", "old_text": "beta fact.",
+                                   "content": "beta fact, updated."}]}
+        assert apply_memory_pending(payload, s3)["success"] is True
+        replay = s3.memory_entries[0]
+
+        assert single == batch == replay == "beta fact, updated."
+
 
     def test_replace_ambiguous_match(self, store):
         store.add("memory", "server A runs nginx")

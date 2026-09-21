@@ -69,6 +69,14 @@ def _find_unique_match(entries: List[str], old_text: str) -> Tuple[Optional[int]
     return (matches[0] if matches else None), False
 
 
+# Optional third value of an _edit _apply closure: (payload field name, extractor).
+# Surfaced in the success response so an entry-level replace shows the full text it
+# overwrote — a whole-entry write is never silent about the loss (#117952).
+_REPLACED_ENTRY = ("replaced_entry", lambda result: result[2] if len(result) > 2 else None)
+# Batch twin: op index -> full entry text that op's replace overwrote, same reason.
+_BATCH_REPLACED_ENTRIES = ("replaced_entries", lambda result: result[2] if len(result) > 2 else None)
+
+
 class MemoryStore:
     """Bounded curated memory with file persistence; one instance per AIAgent.
     ``_system_prompt_snapshot`` is frozen at load time (prefix-cache stable);
@@ -226,13 +234,16 @@ class MemoryStore:
         return self._consolidation_failure(
             _error(message + " No operations were applied (batch is all-or-nothing).", usage=self._usage(target)))
 
-    def _mutate(self, target: str, mutate, *, skip_drift: bool = False) -> Dict[str, Any]:
+    def _mutate(self, target: str, mutate, *, skip_drift: bool = False,
+                extra: Optional[Tuple[str, Any]] = None) -> Dict[str, Any]:
         """Lock, re-read from disk, run ``mutate(entries, limit)`` -> ``(new_entries, message)``
         or an error dict, then persist and return the success response. The reload aborts
         on an existing-but-unreadable file (even append-only ``add`` rewrites the whole
         file) and, unless *skip_drift*, on external drift (flushing would discard
         un-roundtrippable content). Drift check and parse use the SAME raw snapshot —
-        a failed second read used to count as "no drift"."""
+        a failed second read used to count as "no drift". When *extra* is passed, the
+        closure may return a third value; it is extracted and added to the success
+        payload under the named field."""
         path = self._path_for(target)
         with self._file_lock(path):
             raw, read_ok = self._read_raw_checked(path)
@@ -250,7 +261,12 @@ class MemoryStore:
 
             mkdir_under_hermes_home(path.parent)
             self._write_file(path, result[0])
-            return self._success_response(target, result[1])
+            response = self._success_response(target, result[1])
+            if extra is not None:
+                name, extract = extra
+                if (value := extract(result)) is not None:
+                    response[name] = value
+            return response
 
     def add(self, target: str, content: str) -> Dict[str, Any]:
         """Append a new entry. Returns error if it would exceed the char limit."""
@@ -275,7 +291,9 @@ class MemoryStore:
         return self._mutate(target, _add, skip_drift=True)
 
     def replace(self, target: str, old_text: str, new_content: str) -> Dict[str, Any]:
-        """Find entry containing old_text substring, replace it with new_content."""
+        """Find the entry containing old_text (whole-entry exact match first) and
+        replace the WHOLE entry with new_content — old_text only locates the entry;
+        the matched span is not spliced into it."""
         new_content = new_content.strip()
         if not old_text.strip():
             return _error("old_text cannot be empty.")
@@ -311,31 +329,35 @@ class MemoryStore:
                     f"Replacement would put memory at {new_total:,}/{limit:,} chars. Shorten the new content, "
                     f"or 'remove' other stale or less important entries to make room (see current_entries "
                     f"below), then retry — all in this turn."))
-            return replaced, "Entry replaced."
-        return self._mutate(target, _apply)
+            return replaced, "Entry replaced.", entries[idx]
+        return self._mutate(target, _apply, extra=_REPLACED_ENTRY)
 
     @staticmethod
-    def _apply_batch_op(working: List[str], act: str, content: str, old_text: str, pos: str) -> Optional[str]:
-        """Apply one batch op to *working* in place; return an error message or None."""
+    def _apply_batch_op(working: List[str], act: str, content: str, old_text: str,
+                        pos: str) -> Tuple[Optional[str], Optional[str]]:
+        """Apply one batch op to *working* in place; return ``(error message, replaced
+        entry text)`` — the second value is the full entry a 'replace' overwrote, so
+        the caller can surface it (#117952); both are None-typed on non-replace paths."""
         if act == "add":
             if not content:
-                return f"{pos}: content is required."
+                return f"{pos}: content is required.", None
             if content not in working:  # idempotent -- skip duplicate, don't fail the batch
                 working.append(content)
-            return None
+            return None, None
         if act not in ("replace", "remove"):
-            return f"{pos}: unknown action. Use add, replace, or remove."
+            return f"{pos}: unknown action. Use add, replace, or remove.", None
         if not old_text:
-            return f"{pos}: old_text is required."
+            return f"{pos}: old_text is required.", None
         if act == "replace" and not content:
-            return f"{pos}: content is required (use action='remove' to delete)."
+            return f"{pos}: content is required (use action='remove' to delete).", None
         idx, ambiguous = _find_unique_match(working, old_text)
         if ambiguous:
-            return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific."
+            return f"{pos}: '{old_text}' matched multiple distinct entries -- be more specific.", None
         if idx is None:
-            return f"{pos}: no entry matched '{old_text}'."
+            return f"{pos}: no entry matched '{old_text}'.", None
+        replaced_text = working[idx] if act == "replace" else None
         working[idx:idx + 1] = [content] if act == "replace" else []
-        return None
+        return None, replaced_text
 
     def apply_batch(self, target: str, operations: List[Dict[str, Any]]) -> Dict[str, Any]:
         """Apply add/replace/remove ops atomically against the FINAL budget, so one call
@@ -353,12 +375,16 @@ class MemoryStore:
 
         def _apply(entries, limit):
             working = list(entries)  # only committed if the whole batch validates
+            replaced = {}  # op index -> full entry text its replace overwrote (#117952)
             for i, op in enumerate(ops):
                 act = op.get("action")
-                msg = self._apply_batch_op(working, act, (op.get("content") or op.get("new_text") or "").strip(),
-                                           (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
+                msg, replaced_text = self._apply_batch_op(
+                    working, act, (op.get("content") or op.get("new_text") or "").strip(),
+                    (op.get("old_text") or "").strip(), f"Operation {i + 1} ({act or 'unknown'})")
                 if msg:
                     return self._batch_failure(target, msg)
+                if replaced_text is not None:
+                    replaced[i] = replaced_text
             if entries and not working:
                 # #103419: a consolidation batch that removes the last entry would
                 # commit an empty file as a normal successful write. Refuse; single
@@ -375,8 +401,8 @@ class MemoryStore:
                     f"After applying all {len(operations)} operations, memory would be at "
                     f"{new_total:,}/{limit:,} chars -- over the limit. Remove or shorten more "
                     f"entries in the same batch, then retry."))
-            return working, f"Applied {len(operations)} operation(s)."
-        return self._mutate(target, _apply)
+            return working, f"Applied {len(operations)} operation(s).", replaced
+        return self._mutate(target, _apply, extra=_BATCH_REPLACED_ENTRIES)
 
     def format_for_system_prompt(self, target: str) -> Optional[str]:
         """Frozen load-time snapshot (NOT live state — mid-session writes don't touch

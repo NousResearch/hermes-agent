@@ -19,7 +19,7 @@
  *   node bridge.js --port 3000 --session ~/.hermes/whatsapp/session
  */
 
-import { makeWASocket, useMultiFileAuthState, DisconnectReason, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
+import { makeWASocket, useMultiFileAuthState, fetchLatestBaileysVersion, downloadMediaMessage, getAggregateVotesInPollMessage, decryptPollVote, getKeyAuthor, jidNormalizedUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import { Boom } from '@hapi/boom';
 import pino from 'pino';
@@ -50,6 +50,8 @@ import {
   normalizeWhatsAppId,
   pollCreationMessageFromPayload,
   pollUpdateForAggregation,
+  terminalDisconnectReason,
+  writeBridgeExit,
 } from './bridge_helpers.js';
 
 // Parse CLI args
@@ -423,10 +425,17 @@ async function startSocket() {
       const reason = new Boom(lastDisconnect?.error)?.output?.statusCode;
       connectionState = 'disconnected';
 
-      if (reason === DisconnectReason.loggedOut) {
-        emitPairEvent({ event: 'error', error: 'logged_out', reason });
+      // loggedOut (401) is terminal: WhatsApp sends the same code when the
+      // linked device is removed from the phone, so reconnecting cannot
+      // succeed. Record the reason beside the session so the gateway stops
+      // respawning instead of retrying dead credentials forever (#80088).
+      const terminal = terminalDisconnectReason(reason);
+      if (terminal) {
+        writeBridgeExit(SESSION_DIR, { reason: terminal, statusCode: reason }, { log: console.log });
+        emitPairEvent({ event: 'error', error: terminal, reason });
         if (!PAIR_JSON) {
-          console.log('❌ Logged out. Delete session and restart to re-authenticate.');
+          console.log('❌ The WhatsApp session was ended from the phone (logged out, or the linked device was removed).');
+          console.log('   Re-pair with `hermes whatsapp`, then restart the gateway.');
         }
         process.exit(1);
       } else {

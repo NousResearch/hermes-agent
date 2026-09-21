@@ -7,9 +7,10 @@ a stalled summary stream, so without a ``future.done()`` guard the host re-waite
 future at ~2k iterations/sec until the idle budget burned (or forever, for the ceiling-less
 commit wait). #117261 / #63892.
 
-Budgets here are tiny so the red-on-base run FAILS fast instead of hanging; the commit-wait test
-carries ``pytest.mark.timeout`` (pytest-timeout is a project dev dependency) because on base
-that loop never returns.
+Budgets here are tiny so the red-on-base run FAILS fast instead of hanging. The commit-wait
+loop has no ceiling, so on base it never returns; the runner's per-file timeout
+(``scripts/run_tests.sh``, ``HERMES_TEST_FILE_TIMEOUT``) is what bounds that hang —
+pytest-timeout is not a project dependency, so a ``pytest.mark.timeout`` marker would be inert.
 """
 
 import concurrent.futures
@@ -51,7 +52,6 @@ def test_compression_wait_returns_promptly_when_worker_dies():
         assert _join_cancelled_worker(future, 0.5) is True
 
 
-@pytest.mark.timeout(10)
 def test_in_flight_commit_surfaces_worker_timeout_instead_of_looping():
     """_await_in_flight_commit has no ceiling on this path — pre-fix a dead worker spun forever."""
     with concurrent.futures.ThreadPoolExecutor(max_workers=1) as pool:

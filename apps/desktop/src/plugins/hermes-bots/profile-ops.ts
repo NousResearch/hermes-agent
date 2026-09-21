@@ -33,7 +33,7 @@ import {
   ROSTER_KEY,
   saveBotMeta
 } from './data'
-import { botConnectionRoute, botRouteKey, requestForBot } from './routing'
+import { botConnectionRoute, requestForBot } from './routing'
 import { getPluginCtx } from './shared'
 import type { RosterRow } from './types'
 
@@ -300,33 +300,69 @@ export function mergeServerMeta(roster: RosterRow[], fetchedAt = 0) {
   }
 }
 
-/** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
- *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
-export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
-  await ensureBotMetadata(bot)
+/** Is `name` taken FOR THIS BOT — that is, on the bot's own connection?
+ *  `duplicateBot` mints into that connection, so a name that is free here but
+ *  taken on another connection is still free for this operation. The dialog's
+ *  own check must use the same scope, or it refuses a name the operation would
+ *  have accepted. A row whose owning connection is gone has no scope: everything
+ *  matches, which is the conservative reading. */
+export function duplicateNameTaken(bot: RosterRow, roster: RosterRow[], name: string): boolean {
+  let connectionId: null | string = null
+
+  try {
+    connectionId = botConnectionRoute(bot)?.connectionId || null
+  } catch {
+    connectionId = null
+  }
+
+  return roster.some(row => row.name === name && (!connectionId || botMetaKey(row)?.startsWith(`${connectionId}::`)))
+}
+
+/** The name a duplicate gets: "<base>-2", "-3", … — the first free slot on the
+ *  bot's own connection. Truncate the BASE, never the suffix: slicing the joined
+ *  string chops the "-2" off a max-length name, so every candidate collapses back
+ *  to the base and collides with it forever (#19).
+ *
+ *  Shared with the dialog's prefill, so the field shows the name the operation
+ *  would actually mint — including the length and the connection scope. */
+export function nextDuplicateName(bot: RosterRow, roster: RosterRow[]): null | string {
   const base = bot.name
-  const ownerRoute = botConnectionRoute(bot)
-  const ownerKey = ownerRoute ? botRouteKey(ownerRoute) : null
-  let name = null
 
   for (let n = 2; n < 100; n++) {
-    // Truncate the BASE, never the suffix — slicing the joined string chops
-    // the "-2" off a max-length name and the candidate collides with the
-    // base forever (#19).
     const suffix = `-${n}`
     const candidate = base.slice(0, 64 - suffix.length) + suffix
 
-    if (
-      !roster.some(
-        // A truthy ownerKey is minted from ownerRoute, so the route is present
-        // on every path that reads it — a correlation TS can't follow.
-        b => b.name === candidate && (!ownerKey || botMetaKey(b)?.startsWith(`${ownerRoute!.connectionId}::`))
-      )
-    ) {
-      name = candidate
-
-      break
+    if (!duplicateNameTaken(bot, roster, candidate)) {
+      return candidate
     }
+  }
+
+  return null
+}
+
+/** Clone a bot: profile (config/skills/SOUL/memory via clone_from) + look.
+ *  Name is "<base>-2", "-3", … — first free slot against the live roster. */
+export async function duplicateBot(bot: RosterRow, roster: RosterRow[], opts: { name?: string } = {}) {
+  await ensureBotMetadata(bot)
+  const ownerRoute = botConnectionRoute(bot)
+  const wanted = opts.name?.trim().slice(0, 64)
+  let name = null
+
+  // A caller-provided name wins when it is free on the roster; a collision is
+  // reported to the caller instead of silently falling back, so the dialog can
+  // keep its own field red rather than minting a name the user did not ask for.
+  if (wanted) {
+    if (duplicateNameTaken(bot, roster, wanted)) {
+      throw new Error(`The name "${wanted}" is already taken.`)
+    }
+
+    name = wanted
+  }
+
+  if (!name) {
+    // Same helper the dialog prefills with — one rule for the truncation (#19)
+    // and one for the connection scope, so the field and the operation agree.
+    name = nextDuplicateName(bot, roster)
   }
 
   if (!name) {
@@ -335,7 +371,7 @@ export async function duplicateBot(bot: RosterRow, roster: RosterRow[]) {
 
   await requestForBot(bot, 'profiles.create', {
     name,
-    clone_from: base,
+    clone_from: bot.name,
     description: bot.description || ''
   })
 

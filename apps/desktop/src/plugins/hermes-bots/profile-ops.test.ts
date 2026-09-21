@@ -12,7 +12,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { $botMeta } from './data'
-import { duplicateBot } from './profile-ops'
+import { duplicateBot, duplicateNameTaken, nextDuplicateName } from './profile-ops'
 import type { RosterRow } from './types'
 
 const { ensureBotMetadataMock, faceOnlyMock, hostMock, storageMock } = vi.hoisted(() => ({
@@ -114,6 +114,19 @@ describe('duplicating a bot', () => {
     const roster = ['ops', 'ops-2', 'ops-3'].map(name => ({ name }) as RosterRow)
 
     expect(await duplicateBot({ name: 'ops' } as RosterRow, roster)).toBe('ops-4')
+  })
+
+  it('uses a caller-chosen name and refuses a taken one instead of re-suffixing', async () => {
+    const roster = ['ops', 'ops-2'].map(name => ({ name }) as RosterRow)
+
+    // A free chosen name wins verbatim — no suffix is appended to it.
+    expect(await duplicateBot({ name: 'ops' } as RosterRow, roster, { name: 'night-crew' })).toBe('night-crew')
+
+    // A taken chosen name is an error the dialog can surface, never a silent
+    // fallback to an auto-suffix the user did not ask for.
+    await expect(duplicateBot({ name: 'ops' } as RosterRow, roster, { name: 'ops-2' })).rejects.toThrow(
+      /already taken/
+    )
   })
 
   it('truncates the BASE so a max-length name still gets a distinct suffix (#19)', async () => {
@@ -236,5 +249,39 @@ describe('roster avatar sync (#102978)', () => {
     expect(hostMock.request).toHaveBeenCalledTimes(1)
     // The raster is a notice-only copy of the live face, never parked on the roster.
     expect($botMeta.get()['local::secretary']?.image).toBeUndefined()
+  })
+})
+
+describe('duplicate naming', () => {
+  it('truncates the BASE, never the suffix (#19)', () => {
+    const base = 'b'.repeat(64)
+    const name = nextDuplicateName({ name: base } as RosterRow, [{ name: base } as RosterRow])
+
+    // Slicing the joined string would chop the "-2" off a max-length name, so
+    // every candidate collapses back onto the base and collides with it forever.
+    expect(name).toBe(`${'b'.repeat(62)}-2`)
+    expect(name!.length).toBeLessThanOrEqual(64)
+  })
+
+  it('judges a name against the bot connection, not the whole roster', () => {
+    // A bot on another connection: the operation mints into ITS connection, so a
+    // name taken on a different one is free here — and the dialog must agree.
+    const bot = { connectionId: 'remote-a', name: 'researcher', remoteSource: true } as RosterRow
+    const elsewhere = { connectionId: 'remote-b', name: 'researcher-2', remoteSource: true } as RosterRow
+    const sameConnection = { connectionId: 'remote-a', name: 'researcher-2', remoteSource: true } as RosterRow
+
+    expect(duplicateNameTaken(bot, [elsewhere], 'researcher-2')).toBe(false)
+    expect(nextDuplicateName(bot, [elsewhere])).toBe('researcher-2')
+
+    // Taken on the bot's OWN connection, refused.
+    expect(duplicateNameTaken(bot, [sameConnection], 'researcher-2')).toBe(true)
+  })
+
+  it('stays name-wide for a local bot, matching the operation', () => {
+    // A local bot has no owner route, so `duplicateBot` treats any row with that
+    // name as taken. The dialog must not be stricter than the thing it previews.
+    const bot = { name: 'researcher' } as RosterRow
+
+    expect(duplicateNameTaken(bot, [{ name: 'researcher-2' } as RosterRow], 'researcher-2')).toBe(true)
   })
 })

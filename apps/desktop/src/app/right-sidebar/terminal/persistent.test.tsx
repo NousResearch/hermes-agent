@@ -366,6 +366,42 @@ describe('PersistentTerminal rect tracking', () => {
     expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).toBe(workspace)
   })
 
+  it('re-arms a stale off toggle once the slot is measured visible', () => {
+    // The stranded state from the report: the persisted layout unfolds the
+    // terminal zone (a preset, a stored tree, a tab click path that skipped
+    // the toggle) while `terminalTakeover` stayed false — the pane rendered
+    // an empty body forever because the workspace mounts only behind the
+    // latched flag. A measured, non-hidden slot must reconcile the flag;
+    // the first measure runs synchronously in the layout effect.
+    const raf = installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+
+    mount.render(<Harness />)
+
+    expect($terminalTakeover.get()).toBe(true)
+    expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).not.toBeNull()
+
+    act(() => {
+      raf.runNext()
+    })
+
+    expect($terminalTakeover.get()).toBe(true)
+  })
+
+  it('keeps an explicit off toggle while the slot sits in a hidden pane', () => {
+    const raf = installRaf()
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockReturnValue(rect(10, 20, 200, 100))
+
+    mount.render(<HiddenPaneHarness hidden />)
+
+    act(() => {
+      raf.runNext()
+    })
+
+    expect($terminalTakeover.get()).toBe(false)
+    expect(mount.container!.querySelector('[data-testid="terminal-workspace"]')).toBeNull()
+  })
+
   it('hides the overlay on a tab switch that happens while the window is unfocused', () => {
     // The trap: the terminal is a tab in the main zone and the user clicks
     // another tab without the window being focused (or right as it blurs).

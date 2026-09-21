@@ -8,6 +8,7 @@ covered by a separate live test gated on `codex --version`.
 from __future__ import annotations
 
 import sys
+import threading
 
 import pytest
 
@@ -211,6 +212,7 @@ while True:
         client = mod.CodexAppServerClient.__new__(mod.CodexAppServerClient)
         client._proc = proc
         client._closed = False
+        client._pending, client._pending_lock = {}, threading.Lock()
         client.close(timeout=0.01)
 
         assert killed == [4242]

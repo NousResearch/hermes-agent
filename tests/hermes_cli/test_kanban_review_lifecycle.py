@@ -766,6 +766,7 @@ def test_review_dispatch_honors_global_and_per_profile_caps(
         assert kb.complete_task(
             conn,
             running_id,
+            result="done",
             expected_run_id=running.current_run_id,
         )
         global_dry_run = kbd.dispatch_once(
@@ -921,6 +922,37 @@ def test_review_handoff_without_live_run_attributes_run_to_implementer(kanban_ho
         assert (run["outcome"], run["profile"]) == ("review_requested", "worker")
         assert run["step_key"] == kb.get_task(conn, tid).current_step_key
         assert _events(conn, tid, kind="review_requested")[0][1]["implementer"] == "worker"
+
+
+def test_review_handoff_of_card_assigned_to_its_reviewer_records_no_implementer(
+    kanban_home: Path,
+) -> None:
+    """A card created already assigned to its reviewer has no implementer to
+    record. Stamping the assignee made the payload read
+    ``implementer == reviewer``, and ``request_changes`` routes on that field —
+    so a rejection went back to the profile that wrote the findings. With no
+    live run and nothing but the reviewer on the row, the honest provenance is
+    *none*, and the rejection must refuse rather than misroute."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="already applied", assignee="reviewer-a")
+        assert kb.request_review(
+            conn, tid, summary="review this", reviewer="reviewer-a",
+        ) is True
+
+        ev = _events(conn, tid, kind="review_requested")[0][1]
+        assert ev["reviewer"] == "reviewer-a"
+        assert ev["implementer"] is None
+        run = conn.execute(
+            "SELECT profile, outcome FROM task_runs WHERE task_id = ? "
+            "ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()
+        assert (run["outcome"], run["profile"]) == ("review_requested", None)
+
+        claimed = kb.claim_review_task(conn, tid, claimer="reviewer-a")
+        assert claimed is not None
+        ok, reason = kb.request_changes(conn, tid, reason="found 3 issues")
+        assert ok is False
+        assert "implementer provenance" in (reason or "")
 
 
 def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Path) -> None:

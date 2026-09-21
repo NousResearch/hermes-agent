@@ -60,7 +60,7 @@ import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
-import { ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
+import { ComposerScopeProvider, ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
@@ -73,7 +73,7 @@ import { useRuntimeMessageRepository } from './runtime-repository'
 import { ScrollToBottomButton } from './scroll-to-bottom-button'
 import { useSessionView } from './session-view'
 import { SessionActionsMenu } from './sidebar/session-actions-menu'
-import { routedSessionIsLoading, threadLoadingState } from './thread-loading'
+import { composerStaysMounted, routedSessionIsLoading, threadLoadingState } from './thread-loading'
 import {
   backfillOlderTranscriptPage,
   mergeOlderTranscriptPage,
@@ -261,6 +261,20 @@ export function ChatRuntimeBoundary({
     ? { connectionId: ownerConnection, profile: ownerProfile }
     : undefined, [ownerConnection, ownerProfile])
 
+  // A Bot chat opened IN PLACE in the main pane (openStoredBotChat) keeps the
+  // active profile, so the ambient scope carries no owner. Publish the session
+  // owner hint's (connection, profile) here so voice playback speaks with the
+  // Bot's own voice; a tile's scope already names its owner and is kept as is.
+  const parentScope = useComposerScope()
+
+  const composerScope = useMemo(
+    () =>
+      parentScope.profile || !ownerProfile
+        ? parentScope
+        : { ...parentScope, connectionId: ownerConnection || undefined, profile: ownerProfile },
+    [ownerConnection, ownerProfile, parentScope]
+  )
+
   const history = useHistoryWindow({
     scopeKey: JSON.stringify([runtimeId, storedId, tailProfile, connectionId, activeProfile, suppressMessages]),
     storedId,
@@ -320,8 +334,9 @@ export function ChatRuntimeBoundary({
 
   const expandWindow = useCallback(
     async (beforePrepend?: () => void) => {
-      // A historical page is not the live tail: never backfill into its store.
-      if (history.page) {return false}
+      // A historical page is not the live tail: its older neighbours come from
+      // the prompt range the rail already draws, never from store backfill.
+      if (history.page) {return history.revealOlder(beforePrepend)}
 
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
@@ -367,12 +382,14 @@ export function ChatRuntimeBoundary({
 
       return true
     },
-    [runtimeId, storedId, tailProfile, view, history.page]
+    [runtimeId, storedId, tailProfile, view, history.page, history.revealOlder]
   )
 
-  // Page navigation stays on the timeline while inspecting history; the
-  // existing prepend action is specifically a live-tail operation.
-  const olderAvailable = !history.page && (windowed || restBackfillAvailable)
+  // An open history page carries its own reach: its first prompt is the anchor,
+  // and the around window reports whether rows precede it. Reading that as
+  // "nothing earlier" (the live-tail flags) retired every way back — the rail
+  // still names older marks, so the entry point must stay live here too.
+  const olderAvailable = history.page ? history.page.olderAvailable : windowed || restBackfillAvailable
   const isHistorical = Boolean(history.page)
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
@@ -390,15 +407,26 @@ export function ChatRuntimeBoundary({
       // Submission is handled explicitly by ChatBar.
       // Keeping this no-op avoids duplicate prompt.submit calls.
     },
-    onEdit: isHistorical ? undefined : onEdit,
+    // Editing stays AVAILABLE on a history page. `isDisabled` above blocks
+    // submit/reload/branch and keeps the page static, but the rail jump is
+    // the only way into that page and it has no in-thread exit — so dropping
+    // `onEdit` left the inline composer unopenable after ANY far rail jump
+    // (the throw "Runtime does not support editing", infectious downward,
+    // healed only by the floating jump button's returnToLatest). `editMessage`
+    // already resolves its target against the live session store
+    // (use-prompt-actions), never the display page, so the edit is correct;
+    // sending one rewinds the live transcript and drops the page.
+    onEdit,
     onCancel: isHistorical ? undefined : async () => onCancel(),
     onReload: isHistorical ? undefined : onReload
   })
 
   return (
-    <TranscriptWindowProvider value={transcriptWindow}>
-      <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
-    </TranscriptWindowProvider>
+    <ComposerScopeProvider value={composerScope}>
+      <TranscriptWindowProvider value={transcriptWindow}>
+        <AssistantRuntimeProvider runtime={runtime}>{children}</AssistantRuntimeProvider>
+      </TranscriptWindowProvider>
+    </ComposerScopeProvider>
   )
 }
 
@@ -613,7 +641,25 @@ const ChatViewContent = memo(function ChatViewContent({
   // Hide the composer in the exhausted error state too: there's no live runtime
   // to send to until a retry rebinds one. Watch windows are pure spectators of a
   // subagent run driven elsewhere — no composer, transcript is read-only.
-  const showChatBar = !loadingSession && !resumeExhausted && !isWatchWindow()
+  //
+  // Once this route has rendered with its composer, a later transient loader
+  // (periodic list/status refresh, hydrate through an empty frame) must not
+  // unmount it again — see composerStaysMounted (#117375).
+  const settledRoutedSessionRef = useRef<null | string>(null)
+
+  if (!loadingSession && isRoutedSessionView) {
+    settledRoutedSessionRef.current = routedSessionId
+  } else if (!isRoutedSessionView) {
+    settledRoutedSessionRef.current = null
+  }
+
+  const showChatBar = composerStaysMounted({
+    hideComposer: resumeExhausted || isWatchWindow(),
+    loadingSession,
+    routedSessionId,
+    settledRoutedSessionId: settledRoutedSessionRef.current
+  })
+
   const threadKey = selectedSessionId || activeSessionId || (isRoutedSessionView ? location.pathname : 'new')
 
   const modelOptionsQuery = useQuery<ModelOptionsResult>({

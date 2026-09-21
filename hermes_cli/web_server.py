@@ -52,7 +52,7 @@ except ImportError:
     except Exception:
         raise SystemExit(
             "Web UI requires fastapi and uvicorn.\n"
-            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn[standard]'"
+            f"Install with: {sys.executable} -m pip install 'fastapi' 'uvicorn'"
         )
 
 WEB_DIST = Path(os.environ["HERMES_WEB_DIST"]) if "HERMES_WEB_DIST" in os.environ else Path(__file__).parent / "web_dist"
@@ -1418,6 +1418,9 @@ def start_server(
     # host_header_middleware validates Host against this (DNS rebinding,
     # GHSA-ppp5-vxwm-4cf7).
     app.state.bound_host = host
+    # The SPA bootstrap reads this so profile-less deep links (/chat?resume=<id>) inherit the
+    # launcher's preselected profile instead of silently running in the launch scope (#73085).
+    app.state.initial_profile = str(initial_profile or "")
 
     config, server = _build_uvicorn_server(host, port, ssh_isolated=bool(ssh_session_token))
 
@@ -1597,7 +1600,6 @@ _PLUGIN_COMPAT_LAZY = {
     'apply_whatsapp_onboarding': ('hermes_cli.web_routers.messaging', 'apply_whatsapp_onboarding'),
     'approve_pairing': ('hermes_cli.web_routers.ops', 'approve_pairing'),
     'auth_mcp_server': ('hermes_cli.web_routers.mcp', 'auth_mcp_server'),
-    'build_cron_model_impact': ('hermes_cli.config', 'build_cron_model_impact'),
     'bulk_delete_sessions_endpoint': ('hermes_cli.web_routers.sessions', 'bulk_delete_sessions_endpoint'),
     'cancel_oauth_session': ('hermes_cli.web_routers.oauth', 'cancel_oauth_session'),
     'cancel_telegram_onboarding': ('hermes_cli.web_routers.messaging', 'cancel_telegram_onboarding'),
@@ -1786,7 +1788,6 @@ _PLUGIN_COMPAT_LAZY = {
     'replace_mcp_servers': ('hermes_cli.web_routers.mcp', 'replace_mcp_servers'),
     'rescan_dashboard_plugins': ('hermes_cli.web_routers.dashboard_ui', 'rescan_dashboard_plugins'),
     'reset_memory': ('hermes_cli.web_routers.ops', 'reset_memory'),
-    'resolve_cron_model_drift_defaults': ('hermes_cli.config', 'resolve_cron_model_drift_defaults'),
     'resolve_gateway_liveness': ('gateway.status', 'resolve_gateway_liveness'),
     'restart_gateway': ('hermes_cli.web_routers.actions', 'restart_gateway'),
     'resume_cron_job': ('hermes_cli.web_routers.cron', 'resume_cron_job'),

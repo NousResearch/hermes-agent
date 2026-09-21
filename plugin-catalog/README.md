@@ -44,6 +44,16 @@ meaningful:
    appear as warnings in the CI log and the reviewer reads them before merging.
    In exchange, installs at the pinned SHA accept `caution` without a prompt
    (`dangerous` still blocks). Review the warnings; do not merge past them.
+8. **Desktop plugins stay inside the SDK surface.** A `desktop/plugin.js` runs
+   in the Desktop renderer with the app's full authority (the loader isolates
+   errors, not capabilities), so a listed one may only use the plugin SDK:
+   no prototype patching (`X.prototype.y =`, `Object.defineProperty(...prototype`),
+   no `eval`/`new Function`, no `import()` of anything but `@hermes/plugin-sdk`
+   / `react` (app bundle chunks, blob or http URLs included), no script-tag
+   injection, no reaching into the app's internal stores. `hermes plugins
+   validate` refuses these at admission (`desktop surface` check); a plugin
+   that needs a capability the SDK lacks asks for an SDK hook instead of
+   patching around it.
 
 ## Entry schema
 

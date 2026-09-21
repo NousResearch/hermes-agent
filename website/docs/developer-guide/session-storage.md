@@ -151,7 +151,8 @@ Abridged — see `SCHEMA_SQL` in `hermes_state_common.py` (applied by `hermes_st
 (which also includes gateway routing metadata such as `session_key`, `chat_id`,
 `chat_type`, `thread_id`, `display_name`, `origin_json`, `expiry_finalized`,
 workspace fields `cwd` / `git_branch` / `git_repo_root`, handoff and
-compression-failure fields, `profile_name`, `rewind_count`, `archived`, and
+compression-failure fields, `profile_name`, `transport_profile` (the multiplex
+bot that received the lane, nullable), `rewind_count`, `archived`, and
 `pinned`):
 
 ```sql
@@ -194,6 +195,14 @@ CREATE UNIQUE INDEX IF NOT EXISTS idx_sessions_title_unique
     ON sessions(title) WHERE title IS NOT NULL;
 ```
 
+`user_id` is the principal on the other end of the session: messaging adapters
+store the platform sender id, and `desktop` / dashboard sessions opened through
+an authenticated `hermes serve` (OAuth or the basic username/password provider)
+store the login as `<provider>:<user id>` (for example `basic:alice`). Sessions
+with nobody behind them — anonymous loopback use, `subagent`, `cron`, `kanban`
+— keep it empty. The value is set when the row is created and never inferred
+later.
+
 ### Messages Table
 
 Abridged — the full schema also includes `effect_disposition`,
@@ -227,6 +236,7 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_id ON messages(session_id, id);
 Notes:
 - `tool_calls` is stored as a JSON string (serialized list of tool call objects)
 - `reasoning_details`, `codex_reasoning_items`, and `codex_message_items` are stored as JSON strings
+- `reasoning_details` is always kept in history; on the chat-completions wire it is replayed only to OpenRouter and the Nous Portal (every other chat-completions route gets a copy without it, since strict schemas reject the field)
 - Desktop history hydration retains assistant sidecars in both REST and JSON-RPC (`session.resume`, `session.activate`, `session.history`) projections, including rows with reasoning and tool calls. REST may return the SQLite JSON string while RPC returns decoded items; Desktop accepts both. A final Responses reply may live only in `codex_message_items` while `content` is empty. Canonical content still takes precedence, and analysis/commentary items are not promoted to reply text.
 - `reasoning` stores the raw reasoning text for providers that expose it
 - A reasoning-only clean stop (empty `content`, `finish_reason=stop`, reasoning present) is answered with the reasoning text, but the assistant row is never written with that text as `content`: `content` stays empty, the text lives in `reasoning`/`reasoning_content`, and `api_content` carries it so the next request replays the answer byte-identically. History surfaces therefore show it as reasoning, not as a reply.
@@ -290,7 +300,9 @@ Multiple hermes processes (gateway + CLI sessions + worktree agents) share one
 `state.db`. The `SessionDB` class handles write contention with:
 
 - **Short SQLite timeout** (1 second) instead of the default 30s
-- **Application-level retry** with random jitter (20-150ms, up to 15 retries)
+- **Time-budgeted application-level retry** with random jitter (20-150ms for the
+  first 2s, then 250ms-1s): 20s for routine writes, 60s for transcript writes
+  (their failure aborts the turn), 0.5s for observation-only activity writes
 - **BEGIN IMMEDIATE** transactions to surface lock contention at transaction start
 - **Periodic WAL checkpoints** every 50 successful writes (PASSIVE mode)
 
@@ -298,11 +310,22 @@ This avoids the "convoy effect" where SQLite's deterministic internal backoff
 causes all competing writers to retry at the same intervals.
 
 ```
-_WRITE_MAX_RETRIES = 15
-_WRITE_RETRY_MIN_S = 0.020   # 20ms
-_WRITE_RETRY_MAX_S = 0.150   # 150ms
+_WRITE_PATIENCE_S, _TRANSCRIPT_WRITE_PATIENCE_S, _ACTIVITY_WRITE_PATIENCE_S = 20.0, 60.0, 0.5
+_WRITE_RETRY_MIN_S, _WRITE_RETRY_MAX_S = 0.020, 0.150
+_WRITE_RETRY_SLOW_MIN_S, _WRITE_RETRY_SLOW_MAX_S = 0.250, 1.000
 _CHECKPOINT_EVERY_N_WRITES = 50
 ```
+
+When a writer exhausts its budget the turn ends with
+`session_persistence_failed:locked` and, on Linux, `hermes_state_lockowners`
+logs a WARNING naming the process that held the lock at that moment
+(`PID 594094 (hermes --worktree --yolo) holds WAL write lock on state.db-shm`),
+read from `/proc/locks` — SQLite's byte-range `fcntl` locks encode the lock kind
+in their offset (`state.db-shm` byte 120 = WAL write, 121 = checkpoint,
+123-127 = read slots; the 1 GiB pending-byte page on `state.db` = rollback-journal
+PENDING/RESERVED/SHARED). The open-descriptor scan cannot make this distinction
+because every Hermes process has the DB open. Look for that line in
+`~/.hermes/logs/errors.log` next to the `database is locked` failure.
 
 
 ## Common Operations
@@ -313,7 +336,7 @@ _CHECKPOINT_EVERY_N_WRITES = 50
 from hermes_state import SessionDB
 
 db = SessionDB()                           # Default: ~/.hermes/state.db
-db = SessionDB(db_path=Path("/tmp/test.db"))  # Custom path
+db = SessionDB(db_path=Path("~/.hermes/cache/scratch/test.db").expanduser())  # Custom path
 ```
 
 ### Create and Manage Sessions

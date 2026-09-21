@@ -72,7 +72,7 @@ _PRUNE_FILTERS = (
     ("min_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) >= ?")),
     ("max_tool_calls", "notnone", _one("COALESCE(s.tool_call_count, 0) <= ?")),
 )
-_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned"}
+_PRUNE_FILTER_NAMES = frozenset(name for name, _, _ in _PRUNE_FILTERS) | {"archived", "include_pinned", "lineage_tips_only"}
 
 
 class SessionMaintenanceMixin:
@@ -176,15 +176,20 @@ class SessionMaintenanceMixin:
 
     @staticmethod
     def _prune_filter_where(*, archived: Optional[bool] = None, include_pinned: bool = False,
-                            **filters) -> Tuple[str, list]:
+                            lineage_tips_only: bool = False, **filters) -> Tuple[str, list]:
         """Shared WHERE clause for bulk prune/archive selection (alias ``s``): ``_PRUNE_FILTERS``
         AND together, only ended sessions are ever candidates, ``archived`` is tri-state
-        (None = both), ``*_like`` are case-insensitive substrings, the rest exact."""
+        (None = both), ``*_like`` are case-insensitive substrings, the rest exact.
+        ``lineage_tips_only`` (bulk archive) drops compression ancestors: they are archived with
+        their tip, never on their own age — matching an old ancestor would fan out over the lineage
+        and hide its OPEN, recently active tip (#115489)."""
         unknown = set(filters) - _PRUNE_FILTER_NAMES
         if unknown:
             raise TypeError("SessionMaintenanceMixin._prune_filter_where() got an unexpected "
                             f"keyword argument {sorted(unknown)[0]!r}")
         clauses = ["s.ended_at IS NOT NULL"]
+        if lineage_tips_only:
+            clauses.append("COALESCE(s.end_reason, '') <> 'compression'")
         params: list = []
         for name, applies, build in _PRUNE_FILTERS:
             value = filters.get(name)
@@ -203,6 +208,10 @@ class SessionMaintenanceMixin:
         """Translate the legacy age window into the shared activity filter, then build WHERE."""
         if (older_than_days is not None and filters.get("last_active_before") is None
                 and filters.get("started_before") is None):
+            if older_than_days < 0:
+                raise ValueError(
+                    f"older_than_days must be >= 0, got {older_than_days!r}: a negative "
+                    "retention builds a future cutoff that matches every ended session.")
             filters["last_active_before"] = time.time() - (older_than_days * 86400)
         return self._prune_filter_where(source=source, **filters)
 
@@ -339,13 +348,15 @@ class SessionMaintenanceMixin:
         VACUUM reads every page and commits the result back, turning contained damage into an
         amplified one (#105670). Same guard ``_execute_write`` applies to every write."""
         self._raise_if_db_corrupt()
-        self._raise_if_db_replaced()
         optimized = 0
         try:
             optimized = self.optimize_fts()  # manages its own lock
         except Exception as exc:
             logger.warning("FTS optimize before VACUUM failed: %s", exc)
         with self._lock:
+            self._raise_if_db_replaced()
+            if self._conn is None:
+                self._reopen_after_close_locked(context="write")
             # PASSIVE, not TRUNCATE: a manual `hermes sessions vacuum` runs in a transient CLI
             # process; a TRUNCATE reset here would race a live gateway writer.
             self._try_checkpoint("PASSIVE", "WAL checkpoint (PASSIVE) before VACUUM failed: %s")
@@ -382,6 +393,15 @@ class SessionMaintenanceMixin:
         """
         from hermes_state_repair import _release_auto_maintenance_lock, _try_acquire_auto_maintenance_lock
         result: Dict[str, Any] = {"skipped": False, "pruned": 0, "closed": 0, "vacuumed": False}
+        if retention_days is None or retention_days < 0:
+            # A negative retention would build a future cutoff and match every ended
+            # session; auto_prune=false is the disable switch, not a negative bound.
+            logger.warning(
+                "state.db auto-maintenance skipped: sessions.retention_days=%r is outside the allowed "
+                "range (a whole number of days >= 0); set sessions.auto_prune: false to disable pruning",
+                retention_days)
+            result["skipped"] = True
+            return result
         maintenance_lock = _try_acquire_auto_maintenance_lock(self.db_path)
         if maintenance_lock is None:
             result["skipped"] = True

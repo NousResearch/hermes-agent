@@ -107,7 +107,8 @@ _CAMEL_ALIASES: Dict[str, str] = {
     "apiKeyEnv": "key_env",  # OpenClaw-compatible + docs variant
     "defaultModel": "default_model",
     "contextLength": "context_length",
-    "rateLimitDelay": "rate_limit_delay"}
+    "rateLimitDelay": "rate_limit_delay",
+    "sessionAffinityHeader": "session_affinity_header"}
 
 
 _KNOWN_PROVIDER_KEYS = {
@@ -118,7 +119,7 @@ _KNOWN_PROVIDER_KEYS = {
     "api_mode", "transport", "model", "default_model", "models", "models_discovered",
     "context_length", "rate_limit_delay", "request_timeout_seconds", "stale_timeout_seconds",
     "discover_models", "extra_body", "extra_headers", "capabilities", "ssl_ca_cert", "ssl_verify",
-    "catalog_provider"}
+    "catalog_provider", "session_affinity_header"}
 
 
 def _pick_provider_base_url(entry: Dict[str, Any], provider_key: str) -> str:
@@ -266,6 +267,7 @@ def _normalize_custom_provider_entry(
 
     # Per-provider extra HTTP headers may carry credentials — never log them downstream.
     _put("extra_headers", normalize_extra_headers(entry.get("extra_headers")))
+    _put("session_affinity_header", _stripped("session_affinity_header"))
     _put("ssl_ca_cert", _stripped("ssl_ca_cert"))
 
     ssl_verify = entry.get("ssl_verify")
@@ -288,7 +290,7 @@ def _custom_provider_entry_to_provider_config(
     for field in (
         "name", "api_key", "key_env", "key_cmd", "models", "models_discovered", "context_length",
         "rate_limit_delay", "discover_models", "extra_body", "extra_headers",
-        "ssl_ca_cert", "ssl_verify", "catalog_provider"):
+        "session_affinity_header", "ssl_ca_cert", "ssl_verify", "catalog_provider"):
         if field in normalized:
             provider_entry[field] = normalized[field]
     if "model" in normalized:
@@ -324,7 +326,14 @@ def get_compatible_custom_providers(
 
     custom_providers = config.get("custom_providers")
     if custom_providers is not None and not isinstance(custom_providers, list):
-        return []
+        # A malformed legacy value (a string written by an old `config set`) used to empty the
+        # whole view silently — Desktop showed "Custom Endpoints 0" while valid v12+ `providers:`
+        # entries still existed. Skip only the legacy list, and say so.
+        logger.warning(
+            "custom_providers is a %s, expected a list — skipping legacy entries; "
+            "'providers:' entries are still used. Move provider configs to the 'providers:' section.",
+            type(custom_providers).__name__)
+        custom_providers = []
     candidates = [_normalize_custom_provider_entry(e) for e in (custom_providers or [])]
     candidates += providers_dict_to_custom_providers(config.get("providers"))
 
@@ -378,6 +387,25 @@ def _entries_for_route(
         entry_url = normalize_route_base_url(entry.get("base_url"))
         if entry_url and entry_url == target_url:
             yield entry
+
+
+def get_custom_provider_api_mode(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None,
+) -> str:
+    """Canonical ``api_mode`` of the first custom entry serving *base_url*, or ``""``.
+
+    Route identity is the URL, not the host: a Codex proxy on ``127.0.0.1`` declares its wire
+    protocol here and nowhere else, so metadata lookups keyed on the transport read it from the
+    entry instead of guessing from the hostname (#116191).
+    """
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        for field in ("api_mode", "transport"):
+            value = entry.get(field)
+            if isinstance(value, str) and value.strip():
+                return _canonical_api_mode(value)
+    return ""
 
 
 def _route_model_cfg(entry: Dict[str, Any], model: str) -> Optional[Dict[str, Any]]:
@@ -481,6 +509,22 @@ def apply_custom_provider_extra_headers_to_client_kwargs(
     client_kwargs["default_headers"] = merged
 
 
+def get_custom_provider_session_affinity_header(
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> str:
+    """Header NAME declared as ``session_affinity_header`` on the route-matching entry, else "".
+
+    Opt-in per provider (default off): Hermes never ships a session identifier to an endpoint
+    that did not ask for one (#86241).
+    """
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        header = entry.get("session_affinity_header")
+        if isinstance(header, str) and header.strip():
+            return header.strip()
+    return ""
+
+
 def get_custom_provider_context_length(
     model: str,
     base_url: str,
@@ -491,12 +535,14 @@ def get_custom_provider_context_length(
     Before this helper existed, the lookup was duplicated in ``run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
     """
-    from hermes_cli.config import get_compatible_custom_providers
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
     if not model or not base_url:
         return None
     if custom_providers is None:
         try:
-            custom_providers = get_compatible_custom_providers(config)
+            # Step 0c now runs for every route with a base_url; the read-only loader skips the
+            # per-call deepcopy load_config() pays (same pattern as get_custom_provider_model_capability).
+            custom_providers = get_compatible_custom_providers(load_config_readonly() if config is None else config)
         except Exception:
             if config is None:
                 return None

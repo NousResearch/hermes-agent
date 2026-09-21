@@ -63,7 +63,7 @@ def _make_runner(adapter=None):
     runner.hooks.loaded_hooks = []
     runner._session_db = None
     runner._get_or_create_gateway_honcho = lambda session_key: (None, None)
-    runner._adapter_for_source = lambda source: adapter
+    runner._delivery_adapter_for = lambda source: adapter
     runner._thread_metadata_for_source = lambda source, anchor=None: {}
     runner._reply_anchor_for_event = lambda event: None
     return runner

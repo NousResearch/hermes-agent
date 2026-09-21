@@ -75,7 +75,10 @@ zero outside a kanban task (footprint ladder rung 3).
 Isolation: **board** is the hard boundary — workers get `HERMES_KANBAN_BOARD` pinned in their env and
 cannot see other boards; **tenant** is a soft namespace within a board (workspace-path + memory-key
 isolation, one fleet serving several businesses). After `kanban.failure_limit` consecutive
-non-success attempts on a task (default 2) the dispatcher auto-blocks it to stop spin loops.
+non-success attempts on a task (default 2) the dispatcher auto-blocks it to stop spin loops; a
+worker exit of `KANBAN_TERMINAL_PROVIDER_EXIT_CODE` (78 — credential revoked, model gone; the
+worker's own `failure_reason` classification via `cli._TERMINAL_PROVIDER_REASONS`) trips it on
+the first attempt, sticky, because no retry can heal it (#114587).
 Process-identity note: `kanban --preserve-cache` contains "serve" — never classify processes by argv
 substring (root). Worker liveness is `(worker_pid, worker_started_at)` — the start-time fingerprint
 (`gateway.status.get_process_start_time`) recorded at claim time — never bare PID existence, or a

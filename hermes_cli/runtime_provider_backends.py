@@ -10,6 +10,7 @@ import os
 import re
 from typing import Any, Dict, Optional
 
+from agent.azure_identity_adapter import is_token_provider
 from agent.secret_scope import get_secret_str
 from hermes_constants import OPENROUTER_BASE_URL
 from utils import base_url_host_matches
@@ -69,7 +70,10 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
     ``.env``/env or a per-request Entra ID token, trailing ``/v1`` stripped for Anthropic-style
     endpoints (the Anthropic SDK appends /v1/messages itself)."""
     rp = _rp()
-    explicit_api_key = str(explicit_api_key or "").strip()
+    # Aux ``provider: auto`` forwards the main runtime's api_key — under entra_id that is the token
+    # provider callable; str() would turn it into a function repr sent as a static key (401, #72421).
+    forwarded_token_provider = explicit_api_key if is_token_provider(explicit_api_key) else None
+    explicit_api_key = "" if forwarded_token_provider else str(explicit_api_key or "").strip()
     explicit_base_url_clean = str(explicit_base_url or "").strip().rstrip("/")
     cfg_base_url, cfg_api_mode, cfg_auth_mode, cfg_entra = "", "chat_completions", "api_key", {}
     if rp._cfg_provider(model_cfg) == "azure-foundry":
@@ -97,9 +101,8 @@ def _resolve_azure_foundry_runtime(*, requested_provider: str, model_cfg: Dict[s
             api_key, source, auth_mode, entra = explicit_api_key, "explicit", "api_key", {}
         else:
             scope = str(cfg_entra.get("scope") or "").strip()
-            api_key, source, auth_mode, entra = _azure_entra_credentials(cfg_entra), "entra_id", "entra_id", (
-                {"scope": scope} if scope else {}
-            )
+            api_key = forwarded_token_provider or _azure_entra_credentials(cfg_entra)
+            source, auth_mode, entra = "entra_id", "entra_id", ({"scope": scope} if scope else {})
         return rp._runtime("azure-foundry", cfg_api_mode, base_url, api_key, auth_mode=auth_mode, entra=entra, source=source,
                            requested_provider=requested_provider)
     return rp._runtime("azure-foundry", cfg_api_mode, base_url, _azure_foundry_api_key(rp, explicit_api_key),
@@ -155,7 +158,11 @@ def _resolve_openrouter_runtime(
     if is_openrouter_context:
         candidates = [explicit_api_key, get_secret_str("OPENROUTER_API_KEY"), get_secret_str("OPENAI_API_KEY")]
     else:
+        # ``model.api_key`` and ``model.key_env`` back a trusted config base_url only; the key_env
+        # rung is what a bare ``provider: custom`` block relies on (#67453).
+        from hermes_cli.runtime_provider_custom import _model_cfg_key_env_for
         candidates = [explicit_api_key, (cfg_api_key if use_config_base_url else ""),
+                      (_model_cfg_key_env_for(model_cfg, base_url) if use_config_base_url else ""),
                       *rp._host_gated_env_key_candidates(base_url, ollama=True)]
     api_key = next((str(c or "").strip() for c in candidates if rp.has_usable_secret(c)), "")
     source = "explicit" if (explicit_api_key or explicit_base_url) else "env/config"

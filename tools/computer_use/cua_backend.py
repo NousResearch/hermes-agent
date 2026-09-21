@@ -142,6 +142,19 @@ def _run_driver(driver_cmd: str, *args: str, timeout: float, swallow: Any = ()) 
     return _run_quiet([driver_cmd, *args], timeout=timeout, swallow=swallow, encoding="utf-8",
                       errors="replace", creationflags=windows_hide_flags(), env=sanitized_cua_driver_env())
 
+def cua_daemon_listening(driver_cmd: str, socket_path: Optional[str] = None, *, timeout: float = 3.0) -> Optional[bool]:
+    """Socket-level liveness of a ``cua-driver serve`` daemon: ``cua-driver status`` connects to the daemon
+    socket (the driver's default, or ``socket_path``) and exits 0 only when a daemon answers. False when the
+    CLI reports the daemon is not running, None when the probe itself failed (unknown). Never raises.
+    The binary-level runtime contract (``manifest``) cannot see this — a dead daemon looks healthy there (#114748)."""
+    args = ("status", "--socket", socket_path) if socket_path else ("status",)
+    proc = _run_driver(driver_cmd, *args, timeout=timeout, swallow=(OSError, subprocess.SubprocessError))
+    if proc is None:
+        return None
+    if proc.returncode == 0:
+        return True
+    return False if "not running" in f"{proc.stdout}\n{proc.stderr}".lower() else None
+
 def _linux_session_locked() -> Optional[bool]:
     """Is the graphical session locked? (Linux; best-effort.) A locked KDE/GNOME session freezes renderers and
     half-disables the AX tree, so discovery legitimately returns nothing — which otherwise reads as a driver bug.

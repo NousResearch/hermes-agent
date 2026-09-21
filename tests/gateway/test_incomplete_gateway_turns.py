@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock
 
 import pytest
 
+from agent.turn_failure_copy import FAILED_TURN_NOTICE
 import gateway.run as gateway_run
 from gateway.config import GatewayConfig, Platform, PlatformConfig
 from gateway.platforms.base import BasePlatformAdapter, SendResult
@@ -152,7 +153,7 @@ async def test_incomplete_codex_turn_closes_transcript_without_slack_delivery(mo
     assert transcript_roles == ["session_meta", "user", "assistant"]
     assert runner.session_store.append_to_transcript.call_args_list[1].args[1]["content"] == "hello"
     boundary = runner.session_store.append_to_transcript.call_args_list[2].args[1]["content"]
-    assert boundary == runner._FAILED_TURN_NOTICE
+    assert boundary == FAILED_TURN_NOTICE
     assert adapter.processing_hooks == [
         ("start", "m-1"),
         ("complete", "m-1", ProcessingOutcome.SUCCESS),

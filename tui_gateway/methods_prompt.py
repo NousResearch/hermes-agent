@@ -418,9 +418,9 @@ def _truncate_history_for_submit(rid, sid, session, params, requested_rebind_ids
                     "turn so memory and DB stay aligned: %s",
                     sid, ordinal, exc, exc_info=True)
                 return _err(rid, 5008, f"failed to persist history truncation: {exc}"), {}
-            # Survivors were re-inserted as NEW rows: surface the fresh ids so the client
-            # rebinds its cached rowIds (else a second rewind refuses with 4018).  None
-            # entries: the client must drop its cached id for that turn.
+            # Surface the survivors' live ids so the client rebinds its cached rowIds
+            # (a strict-prefix cut keeps them unchanged since #82956; a divergent
+            # rewrite mints new rows).  None entries: the client must drop that turn's id.
             if requested_rebind_ids is None:
                 fields["survivor_user_row_ids"] = [
                     _message_row_id(truncated[i]) for i in _history_user_indices(truncated)]
@@ -487,8 +487,10 @@ def _persist_session_row_for_submit(rid, session, text=None, display_kind=None):
     return error
 
 
-def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author=None,
-                           voice_context=None):
+def _run_after_agent_ready(
+    rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author=None,
+    voice_context=None
+):
     """Turn thread body: patient wait for a deferred build (a slow build must not eat the
     accepted in-flight message), then run."""
     # The wait delivers the prompt when the still-running build completes, honors a cancel promptly, notices
@@ -517,7 +519,7 @@ def _run_after_agent_ready(rid, sid, session, text, display_kind, hosted_termina
                 else "Session no longer running before the agent was ready")})
             return
     _run_prompt_submit(
-        rid, sid, session, text, display_kind=display_kind,
+        rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata,
         terminal_callback=hosted_terminal_callback, turn_author=turn_author, voice_context=voice_context)
 
 
@@ -569,6 +571,12 @@ def _(rid, params: dict) -> dict:
     # Off-screen sends (widget intents) type the row so no client renders a bubble;
     # whitelisted to "hidden" — this RPC must not mint kinds.
     display_kind = "hidden" if params.get("display_kind") == "hidden" else None
+    title_preview = params.get("title_preview")
+    display_metadata = (
+        {"title_preview": title_preview[:1000]}
+        if isinstance(title_preview, str) and title_preview.strip()
+        else None
+    )
     if (stopped := _typed_stop_phrase_response(rid, text)) is not None:
         return stopped
     if params.get("interrupted"):
@@ -625,13 +633,13 @@ def _(rid, params: dict) -> dict:
     if internal_hosted_submit and turn_isolation:
         return _err(rid, 4121, "hosted room turns do not support isolated compute workers yet")
     # Re-bind to the current transport: streaming must stay on the active websocket even
-    # if a disconnect/fallback moved the session to stdio.
+    # if a disconnect/fallback moved the session to stdio. Through _rebind_live_transport so a
+    # socket that already closed cannot cancel the orphan reap without coming back (#116464).
     with _session_resume_lock:
         if (refusal := _reattach_refusal(rid, sid, session)) is not None:
             return refusal
         if (t := current_transport()) is not None:
-            _attach_session_transport(session, t)
-            _cancel_ws_orphan_reap(sid)
+            _rebind_live_transport(sid, session, t)
     # Claim the turn against a possibly-running session (busy/queued reply, else fall
     # through once ``running`` is observed False).  The provider interrupt happens after
     # history_lock is released (a non-interruptible tool may hold it); if the old turn
@@ -644,6 +652,14 @@ def _(rid, params: dict) -> dict:
             if internal_hosted_submit:
                 return _err(rid, 4091, "hosted room member session is busy")
             busy_transport = t or session.get("transport")
+        if has_truncation:
+            # A rewind/edit/restore/regenerate must land as a truncation, never as a
+            # steered correction or a plain follow-up queued to run after the live
+            # turn — either would silently drop the history cut the user asked for.
+            # Signal busy so the caller's own interrupt-then-retry loop (already
+            # built for exactly this race — see desktop's `runRewindSubmit`) waits
+            # for `running` to clear and resubmits with the truncation intact.
+            return _err(rid, 4009, "session busy")
         busy_response = _handle_busy_submit(
             rid, sid, session, text, busy_transport, queued=bool(params.get("queued")), turn_author=turn_author,
             voice_context=turn_voice_context)
@@ -662,7 +678,7 @@ def _(rid, params: dict) -> dict:
             logger.debug("isolated compute turns carry no author yet; the turn from %s runs unattributed",
                          turn_author.get("id"))
         isolated_response = _submit_prompt_to_compute_host(
-            rid, sid, session, text, display_kind=display_kind)
+            rid, sid, session, text, display_kind=display_kind, display_metadata=display_metadata)
         if not isolated_response.get("error"):
             # The truncation already happened inline above (memory + DB).
             isolated_response["result"].update(survivor_fields)
@@ -685,7 +701,8 @@ def _(rid, params: dict) -> dict:
         _start_agent_build(sid, session)
     run_thread = threading.Thread(
         target=lambda: _run_after_agent_ready(
-            rid, sid, session, text, display_kind, hosted_terminal_callback, turn_author, turn_voice_context),
+            rid, sid, session, text, display_kind, display_metadata, hosted_terminal_callback, turn_author,
+            turn_voice_context),
         daemon=True)
     # Handle lets session.interrupt tell a live turn from a stuck `running` flag.
     session["_run_thread"] = run_thread

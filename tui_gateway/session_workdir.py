@@ -234,11 +234,13 @@ def _workdir_row_model_config(session: dict) -> tuple[str, dict]:
     # Same ``_branched_from`` marker the TUI /branch uses (list_sessions_rich + sidebar nesting).
     if parent_session_id := session.get("parent_session_id"):
         model_config["_branched_from"] = parent_session_id
-    # Bot-Mode canonical chats / room plumbing are plugin-owned scratch conversations whose runtime must ALWAYS follow
-    # the member profile's CURRENT config, never the provider pinned at first write (see _stored_session_runtime_overrides).
+    # Room plumbing always follows the member profile. Canonical Bot Chats do too until the composer records an
+    # explicit chat-scoped pick plus the profile model it diverged from (see _stored_session_runtime_overrides).
     for flag in ("room_plumbing", "follow_profile_config"):
         if session.get(flag):
             model_config[flag] = True
+    if isinstance(composer_profile := session.get("composer_override_profile"), dict):
+        model_config["composer_override_profile"] = composer_profile
     return row_model, model_config
 
 
@@ -273,6 +275,11 @@ def _ensure_session_db_row(session: dict) -> bool:
             db.create_session(
                 key, source=_session_source(session), model=row_model, model_config=model_config or None,
                 parent_session_id=session.get("parent_session_id") or None, cwd=_persisted_session_cwd(session),
+                # The login this session was opened under, in the same ``<provider>:<id>`` form the agent is
+                # built with — the row is the only place the identity reaches the store, and the upsert can't
+                # add it later (user_id is set at insert). None (no password provider, legacy token, stdio)
+                # leaves the column empty exactly as before.
+                user_id=_session_auth_user_id(session),
                 # Self-describing rows: aggregators merging several profile DBs can't rely on which file a row came
                 # from; a NULL is only repaired by the one-shot backfill.
                 # Stamp the launch profile explicitly instead of leaving NULL — NULL is exactly what the
@@ -283,7 +290,8 @@ def _ensure_session_db_row(session: dict) -> bool:
             # Born hidden (session.create hidden=true, or set_hidden before the row existed): apply the deferred intent.
             if session.get("pending_hidden"):
                 try:
-                    db.set_session_hidden(key, True)
+                    if db.set_session_hidden(key, True):
+                        session.pop("pending_hidden", None)
                 except Exception:
                     logger.debug("failed to apply pending hidden flag", exc_info=True)
         except Exception as exc:

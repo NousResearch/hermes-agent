@@ -515,8 +515,15 @@ def bounded_probe_run(
     machines (#87134); the git probes hit it first (#68609 / #66037).
     """
     _popen_kwargs: dict = {"creationflags": windows_hide_flags()} if IS_WINDOWS else {"process_group": 0}
+    job = None
     try:
-        proc = subprocess.Popen(
+        # Windows: contain the probe in a Job Object. `taskkill /T` walks LIVE parent pids, and a
+        # Cygwin/MSYS `exec` lets the forked stub exit once the new image runs, so a Git Bash grandchild
+        # (`sleep`, `cat`) has a dead parent and survives the tree-kill holding our pipes (#73403, proven
+        # on windows-latest). KILL_ON_JOB_CLOSE reaches it regardless of ancestry.
+        from hermes_cli.local_runtime.processes import spawn_server
+
+        proc, job = spawn_server(
             list(argv), stdout=subprocess.PIPE, stderr=subprocess.PIPE, stdin=subprocess.DEVNULL,
             text=True, encoding="utf-8", errors=errors,
             env=dict(env) if env is not None else None, cwd=cwd, **_popen_kwargs)
@@ -529,13 +536,25 @@ def bounded_probe_run(
     except Exception:
         # Timeout OR any other communicate() failure (torn-down pipe, decode error): tree-kill and
         # drain bounded — leaving it running would leak the suspended-descendant class this guards.
+        _close_job(job)
         kill_process_tree(proc)
         try:
             proc.communicate(timeout=1)
         except Exception:
             pass
         return None
+    # The probe exited on its own; anything it left behind (`&` jobs) goes with the job.
+    _close_job(job)
     return subprocess.CompletedProcess(list(argv), proc.returncode, stdout, stderr)
+
+
+def _close_job(job) -> None:
+    if job is None:
+        return
+    try:
+        job.close()
+    except Exception:
+        pass
 
 
 def bounded_git_probe(argv: Sequence[str], *, timeout: float) -> str:

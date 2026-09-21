@@ -158,6 +158,8 @@ turn lease at that point; `on_gateway_turn_settled` subsequently receives
 release. The gateway observer schedules asynchronous reconciliation on its existing
 loop; it must not synchronously wait for that loop. Hook delivery is a reconciliation
 opportunity, not an erasure receipt: pending writers must still pass the API's checks.
+Hook lookup and scheduled work use the owning profile. A standalone gateway
+re-enters its launch profile even when a hosted profile's context is present.
 
 The caller must also reconcile known source-linked descendants, source files,
 curated notes, summaries, JSON/JSONL transcripts, request dumps and backups. This

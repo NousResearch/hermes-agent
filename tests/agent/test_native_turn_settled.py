@@ -133,6 +133,7 @@ def test_settled_hooks_select_owning_profile_and_scheduled_work_keeps_that_scope
     home = tmp_path / ".hermes"
     secondary = home / "profiles" / "secondary"
     secondary.mkdir(parents=True)
+    (secondary / "config.yaml").write_text("{}\n")
     monkeypatch.setattr(Path, "home", lambda: tmp_path)
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setattr("agent.turn_liveness.resolve_turn_liveness_settings", lambda _: (None, 1))

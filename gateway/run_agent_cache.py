@@ -449,17 +449,21 @@ class GatewayAgentCacheMixin:
         if released:
             try:
                 from hermes_cli.lifecycle import has_hook, invoke_hook
-                scope = nullcontext()
+                from gateway.run import _profile_runtime_scope
                 store = getattr(self, "session_store", None)
                 if store is not None and getattr(store.config, "multiplex_profiles", False):
                     # Inbound finally runs after the agent worker's profile scope exits.
                     # Resolve the owner before hook lookup; scheduled tasks inherit this scope.
-                    from gateway.run import _profile_runtime_scope
                     profile = store._named_profile_for_key(session_key)
                     home = store._profile_home_for_key(session_key) if profile else store._routing_home
                     if home is None:
                         raise ValueError("Settled turn's owning profile is unavailable")
                     scope = _profile_runtime_scope(home, hydrate_secrets=False)
+                else:
+                    from hermes_constants import get_process_hermes_home
+                    from tui_gateway.launch_profile_policy import launch_secret_scope
+                    home = get_process_hermes_home()
+                    scope = _profile_runtime_scope(home, prepared_secret_scope=launch_secret_scope(home))
                 with scope:
                     if has_hook("on_gateway_turn_settled"):
                         invoke_hook(

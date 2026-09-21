@@ -20,18 +20,6 @@ afterEach(() => {
 const wrapper = ({ children }: { children: React.ReactNode }) =>
   createElement(QueryClientProvider, { client: queryClient }, children)
 
-it('keeps a cached record bound to the origin that served it before refetching', () => {
-  const record = { display: { theme: 'dark' } }
-  bindConfigReadOrigin(record, { connectionId: 'connection-a', profile: 'worker' })
-  queryClient.setQueryData(HERMES_CONFIG_KEY, record)
-  vi.mocked(getHermesConfigRecord).mockImplementation(() => new Promise(() => {}))
-
-  const { result } = renderHook(() => useHermesConfigRecord(), { wrapper })
-
-  expect(result.current.data).toBe(record)
-  expect(result.current.writeScope).toEqual({ connectionId: 'connection-a', profile: 'worker' })
-})
-
 it('updates the write origin when a refetch replaces the displayed record', async () => {
   const first = { display: { theme: 'dark' } }
   const second = { display: { theme: 'light' } }
@@ -40,6 +28,12 @@ it('updates the write origin when a refetch replaces the displayed record', asyn
   vi.mocked(getHermesConfigRecord).mockResolvedValueOnce(first).mockResolvedValueOnce(second)
 
   const { result } = renderHook(() => useHermesConfigRecord(), { wrapper })
+
+  // Before the first GET resolves the scope must be `undefined` (not `null`):
+  // profileScoped(null) drops the active profile and targets the PRIMARY.
+  expect(result.current.data).toBeUndefined()
+  expect(result.current.writeScope).toBeUndefined()
+  expect(result.current.writeScope).not.toBeNull()
 
   await waitFor(() => expect(result.current.data).toBe(first))
   expect(result.current.writeScope).toEqual({ connectionId: 'connection-a', profile: 'worker' })

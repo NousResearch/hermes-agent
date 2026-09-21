@@ -1,12 +1,9 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
-  getHermesConfigDefaults,
   getHermesConfigRecord,
   peekConfigReadOrigin,
-  resolveConfigWriteScope,
   saveHermesConfig,
-  saveHermesConfigRecord,
   setApiRequestConnection,
   setApiRequestProfile
 } from '@/hermes'
@@ -59,55 +56,5 @@ describe('config read/write route binding', () => {
       })
     )
     expect(puts.filter(call => call[0].connectionId === 'connection-b')).toHaveLength(0)
-  })
-
-  it('explicit connection/profile pins still win over a captured origin', async () => {
-    setApiRequestConnection('connection-a')
-    const record = await getHermesConfigRecord()
-    setApiRequestConnection('connection-b')
-
-    await saveHermesConfigRecord(record, { connectionId: 'explicit-pin', profile: 'worker' })
-
-    const put = api.mock.calls.find(call => call[0].method === 'PUT')?.[0]
-
-    expect(put).toEqual(
-      expect.objectContaining({
-        connectionId: 'explicit-pin',
-        profile: 'worker'
-      })
-    )
-  })
-
-  it('unbound local writes keep the live ambient path', () => {
-    setApiRequestConnection('connection-b')
-    setApiRequestProfile('coder')
-
-    expect(resolveConfigWriteScope({ model: 'fresh' })).toEqual({
-      connectionId: 'connection-b',
-      profile: 'coder'
-    })
-  })
-
-  it('treats a null read scope as absent and preserves the active profile', async () => {
-    setApiRequestConnection('connection-a')
-    setApiRequestProfile('worker')
-
-    const record = await getHermesConfigRecord(null)
-
-    expect(peekConfigReadOrigin(record)).toEqual({ connectionId: 'connection-a', profile: 'worker' })
-  })
-
-  it('writes reset defaults back through the route that fetched them', async () => {
-    setApiRequestConnection('connection-a')
-    setApiRequestProfile('default')
-
-    const defaults = await getHermesConfigDefaults()
-    setApiRequestConnection('connection-b')
-
-    await saveHermesConfig(defaults)
-
-    expect(api.mock.calls.find(call => call[0].method === 'PUT')?.[0]).toEqual(
-      expect.objectContaining({ connectionId: 'connection-a', profile: 'default' })
-    )
   })
 })

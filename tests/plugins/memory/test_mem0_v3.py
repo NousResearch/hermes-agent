@@ -146,6 +146,15 @@ class TestMem0V3Internal:
         assert call[2]["agent_id"] == "hermes"
         assert call[2]["infer"] is True
 
+    def test_sync_turn_infer_opt_out(self, monkeypatch):
+        backend = FakeBackend()
+        provider = self._make_provider(monkeypatch, backend)
+        provider._sync_infer = False
+        provider.sync_turn("user said", "assistant replied", session_id="s1")
+        provider._sync_thread.join(timeout=2)
+        assert len(backend.captured) == 1
+        assert backend.captured[0][2]["infer"] is False
+
 
 class TestSyncTurnTruncation:
     """sync_turn must cap messages before ingestion so small-context embedding

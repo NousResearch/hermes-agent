@@ -12,7 +12,7 @@ import re
 import time
 import uuid
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Sequence, Tuple, Union
 
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
@@ -3243,8 +3243,8 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             args = args[:self._TOOL_ARGS_HEAD] + "..."
         return f"  {fn.get('name', '?')}({args})"
 
-    def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
-        """Serialize turns into labeled, redacted text for the summarizer."""
+    def _serialize_records_for_summary(self, turns: List[Dict[str, Any]]) -> List[str]:
+        """Serialize turns into a list of labeled, redacted records for the summarizer."""
         # Lazy import: agent_runtime_helpers pulls heavy transitive imports.
         from agent.agent_runtime_helpers import strip_think_blocks
         parts = []
@@ -3261,12 +3261,16 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             if len(content) > self._CONTENT_MAX:
                 content = content[:self._CONTENT_HEAD] + "\n...[truncated]...\n" + content[-self._CONTENT_TAIL:]
             if role == "tool":
-                parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content}")
+                parts.append(f"[TOOL RESULT {msg.get('tool_call_id', '')}]: {content.rstrip(chr(10))}")
                 continue
             if role == "assistant" and msg.get("tool_calls", []):
                 content += "\n[Tool calls:\n" + "\n".join(map(self._render_tool_call_for_summary, msg["tool_calls"])) + "\n]"
-            parts.append(f"[{role.upper()}]: {content}")
-        return "\n\n".join(parts)
+            parts.append(f"[{role.upper()}]: {content.rstrip(chr(10))}")
+        return parts
+
+    def _serialize_for_summary(self, turns: List[Dict[str, Any]]) -> str:
+        """Serialize turns into labeled, redacted text for the summarizer."""
+        return "\n\n".join(self._serialize_records_for_summary(turns))
 
     def _fallback_anchors(self, turns_to_summarize: List[Dict[str, Any]]) -> Dict[str, list[str]]:
         """Locally extractable anchors: user asks, actions, files, blockers, last dropped turns."""
@@ -3486,16 +3490,19 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         return res
 
     @classmethod
-    def _sample_summary_input(cls, content: str) -> str:
+    def _sample_summary_records(cls, records: Sequence[str]) -> str:
         """Sample complete serialized records while retaining the character bound."""
-        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return content
+        if not records:
+            return ""
 
-        records = content.split("\n\n")
         separator = "\n\n"
-        marker_template = "\n\n...[{elided:,} chars elided — recover via session_search]...\n\n"
+        total_len = sum(len(r) for r in records) + len(separator) * (len(records) - 1)
+        if total_len <= cls._SUMMARY_INPUT_MAX_CHARS:
+            return separator.join(records)
+
         n = max(1, min(cls._SAMPLED_INPUT_SLICES, len(records)))
-        marker_len = len(marker_template.format(elided=len(content)))
+        marker_template = "\n\n...[{elided:,} chars elided — recover via session_search]...\n\n"
+        marker_len = len(marker_template.format(elided=total_len))
         budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (n - 1), 1)
         target = max(1, budget // n)
 
@@ -3507,8 +3514,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         selected: list[tuple[int, int]] = []
         for index, start in enumerate(starts):
             if index == len(starts) - 1:
-                start = max(0, len(records) - 1)
+                # Anchor the last slice to the newest record at the end of the history.
                 end = len(records)
+                start = end - 1
+                size = len(display_records[start])
+                while start > 0 and size + len(separator) + len(display_records[start - 1]) <= target:
+                    start -= 1
+                    size += len(separator) + len(display_records[start])
             else:
                 end = start
                 size = 0
@@ -3527,12 +3539,14 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             cursor = 0
             for s, e in slices:
                 if s > cursor:
-                    elided = sum(map(len, records[cursor:s])) + len(separator) * (s - cursor)
+                    sep_count = (s - cursor) if cursor == 0 else (s - cursor + 1)
+                    elided = sum(len(records[i]) for i in range(cursor, s)) + len(separator) * sep_count
                     parts.append(marker_template.format(elided=elided))
                 parts.append(separator.join(display_records[s:e]))
                 cursor = e
             if cursor < len(records):
-                elided = sum(map(len, records[cursor:])) + len(separator) * (len(records) - cursor - 1)
+                sep_count = len(records) - cursor
+                elided = sum(len(records[i]) for i in range(cursor, len(records))) + len(separator) * sep_count
                 parts.append(marker_template.format(elided=elided))
             return "".join(parts)
 
@@ -3557,6 +3571,29 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     break
             result = _render(selected)
         return result
+
+    @classmethod
+    def _sample_summary_input(
+        cls,
+        content: Union[str, Sequence[str]],
+        records: Optional[Sequence[str]] = None,
+    ) -> str:
+        """Sample complete serialized records while retaining the character bound.
+
+        Accepts either a sequence of serialized records (preserving record boundaries structurally)
+        or a flat string for backward compatibility.
+        """
+        if records is not None:
+            return cls._sample_summary_records(records)
+        if not isinstance(content, str):
+            return cls._sample_summary_records(content)
+        if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
+            return content
+        # Discard empty trailing fragments so an empty pseudo-record cannot become the tail anchor.
+        records_list = [r for r in content.split("\n\n") if r.strip()]
+        if not records_list:
+            return content[:cls._SUMMARY_INPUT_MAX_CHARS]
+        return cls._sample_summary_records(records_list)
 
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None
@@ -3695,8 +3732,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             _collect_ghosted_skill_names(turns_to_summarize) + _extract_pruned_skill_names(self._previous_summary or "")
         ))[:_MAX_PRUNED_SKILL_MARKERS]
         # Lean mode even-samples oversized input (one bounded request, never a second).
-        bound = self._sample_summary_input if getattr(self, "tail_mode", "lean") == "lean" else self._bound_summary_input
-        content_to_summarize = bound(self._serialize_for_summary(turns_to_summarize))
+        if getattr(self, "tail_mode", "lean") == "lean":
+            records = self._serialize_records_for_summary(turns_to_summarize)
+            content_to_summarize = self._sample_summary_records(records)
+        else:
+            content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
         has_user_turn = getattr(self, "_summary_has_user_turn", None)
         if has_user_turn is None:
             has_user_turn = self._transcript_has_real_user_turn(turns_to_summarize)

@@ -712,6 +712,32 @@ def test_pinned_apply_rechecks_clean_tree_after_fetch_before_movement(tmp_path, 
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
 
 
+def test_pinned_apply_rechecks_clean_tree_after_protocol_before_merge(tmp_path, monkeypatch):
+    from hermes_cli import update_target
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    source = fixture["source"]
+    install = fixture["install"]
+    assert isinstance(source, Path) and isinstance(install, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+    request = _git_request(fixture, commit_b, str(fixture["a"]))
+    original_run_git = update_target._run_git
+
+    def inject_after_protocol(root, *args, **kwargs):
+        result = original_run_git(root, *args, **kwargs)
+        if args[:2] == ("show", f"{commit_b}:hermes_cli/update_rollout_protocol.json"):
+            (install / "race.txt").write_text("concurrent edit\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(update_target, "_run_git", inject_after_protocol)
+    with pytest.raises(PinnedTargetRefused, match="dirty-checkout"):
+        apply_pinned_target(install, request)
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
+    assert (install / "race.txt").read_text(encoding="utf-8") == "concurrent edit\n"
+
+
 def test_pinned_apply_refuses_current_sha_identity_and_branch_admission(tmp_path):
     from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
 

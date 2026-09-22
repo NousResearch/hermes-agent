@@ -175,6 +175,13 @@ skills:
   ledger: false
 ```
 
+The file is also size-bounded: once it grows past `skills.ledger_max_bytes` (default 5 MB), the next mutation first rewrites it through the unchanged-file dedup (exactly what `hermes curator ledger --compact` does) and, if genuinely-divergent entries still exceed the cap, drops the oldest ones — the newest entry and any malformed lines always survive, and the sweep frees blobs nothing references anymore. Set it to `0` to keep the ledger append-only forever.
+
+```yaml
+skills:
+  ledger_max_bytes: 5242880   # 0 = never auto-maintain
+```
+
 ## Archive TTL purge
 
 Archived skills are kept forever by default. If you want `~/.hermes/skills/.archive/` bounded, set a TTL and purge explicitly — purging never runs automatically, and every purged skill is captured into the ledger (with blobs) first, so even a purge leaves an auditable, recoverable trail:

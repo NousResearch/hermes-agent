@@ -1458,6 +1458,10 @@ DEFAULT_CONFIG = {
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
         # See #79686.
         "ledger": True,
+        # Size cap for that ledger: once the file grows past this, the next append rewrites it
+        # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
+        # the ledger append-only forever, the previous behaviour).
+        "ledger_max_bytes": 5 * 1024 * 1024,
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks

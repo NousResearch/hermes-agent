@@ -96,6 +96,21 @@ def ledger_enabled() -> bool:
         return True
 
 
+def _max_ledger_bytes() -> int:
+    """Config ``skills.ledger_max_bytes`` (default 5 MB, 0 disables): above it the
+    next append triggers the maintenance sweep instead of growing the file forever."""
+    try:
+        from hermes_cli.config import cfg_get, load_config
+        return int(
+            cfg_get(
+                load_config(), "skills", "ledger_max_bytes", default=5 * 1024 * 1024
+            )
+        )
+    except Exception as e:  # pragma: no cover — best-effort config read
+        logger.debug("skill_ledger: config read failed (%s); defaulting to 5 MB", e)
+        return 5 * 1024 * 1024
+
+
 def _rel_posix(path: Path | str, root: Path) -> Optional[str]:
     """POSIX path of ``path`` relative to ``root`` (both normalized), or None when outside."""
     try:
@@ -290,10 +305,62 @@ def append_entry(
         path.parent.mkdir(parents=True, exist_ok=True)
         with open(path, "a", encoding="utf-8") as fh:
             fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        _maintain_size()
         return entry["id"]
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
         return None
+
+
+def _maintain_size() -> None:
+    """Keep the ledger bounded: once it crosses ``skills.ledger_max_bytes`` run the
+    delta-dedup rewrite, and if genuinely-divergent entries still exceed the cap,
+    drop the oldest ones until it fits. Best-effort telemetry, never a gate: any
+    failure is logged and the just-appended entry stays on disk."""
+    max_bytes = _max_ledger_bytes()
+    if max_bytes <= 0:
+        return
+    try:
+        if ledger_path().stat().st_size <= max_bytes:
+            return
+        _, _, size_after = compact_ledger()
+        if size_after > max_bytes:
+            _trim_oldest(max_bytes)
+        gc_blobs()
+    except Exception as e:
+        logger.warning(
+            "skill_ledger: maintenance sweep failed (%s) — ledger left as-is", e
+        )
+
+
+def _trim_oldest(max_bytes: int) -> None:
+    """Rewrite the ledger without its oldest parsed entries until it is at most
+    *max_bytes*; the newest entry always survives, malformed lines are kept verbatim."""
+    path = ledger_path()
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except OSError:
+        return
+    newest_json = None
+    for line in reversed(lines):
+        if line.strip():
+            newest_json = line
+            break
+    kept: List[str] = []
+    size = 2  # trailing newline + rounding slack
+    for line in reversed(lines):
+        addition = len(line.encode("utf-8")) + 1
+        if kept and size + addition > max_bytes:
+            break
+        kept.append(line)
+        size += addition
+    kept.reverse()
+    data = ("\n".join(kept) + "\n").encode("utf-8") if kept else b""
+    if newest_json is not None and newest_json not in kept:
+        data = (newest_json + "\n").encode("utf-8")
+    tmp = path.with_name(path.name + ".trim.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 def compact_ledger() -> Tuple[int, int, int]:

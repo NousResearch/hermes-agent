@@ -600,3 +600,107 @@ def test_backup_fill_ignores_tar_path_traversal(ledger_env):
     )
     # Malicious members are not.
     assert not any(p.endswith("evil.md") or p.endswith("outside.md") for p in paths)
+import json
+from pathlib import Path
+
+import pytest
+
+
+def _append_padded(skill_ledger, action: str, pad: str, n: int = 1) -> None:
+    """Append *n* entries padded with evidence text so the ledger file grows fast."""
+    for _ in range(n):
+        skill_ledger.append_entry(action, "my-skill", before=[], after=[], evidence={"pad": pad})
+
+
+def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
+    """Crossing skills.ledger_max_bytes rewrites the ledger through the delta
+    dedup: identical before/after manifests shrink to nothing while ids and
+    entry order survive."""
+    from tools import skill_ledger
+
+    import hermes_cli.config as _cfg
+
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
+        "skills": {"ledger_max_bytes": 8192}})
+
+    for i in range(3):  # pre-delta-style entries: identical fat manifests on both sides
+        fat = [{"path": f"my-skill/f{i}j{j}.md", "sha256": "a" * 64} for j in range(40)]
+        skill_ledger.append_entry("patch", "my-skill", before=fat, after=list(fat))
+
+    # the maintenance sweep fired mid-append: the file stays under the cap
+    assert skill_ledger.ledger_path().stat().st_size <= 8192
+    rows = skill_ledger.list_entries()
+    assert len(rows) == 3, "dedup alone must reach the cap — nothing trimmed"
+    assert all(r["before"] == [] and r["after"] == [] for r in rows), (
+        "identical manifests must be dropped by compaction"
+    )
+
+
+def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
+    """When compaction alone cannot reach the cap (every entry genuinely
+    differs), the oldest entries are dropped until it fits — newest entries
+    survive, malformed lines are kept verbatim."""
+    from tools import skill_ledger
+
+    import hermes_cli.config as _cfg
+
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
+        "skills": {"ledger_max_bytes": 8192}})
+
+    newest_id = None
+    for i in range(5):
+        before = [{"path": f"my-skill/old{i}.md", "sha256": f"{i}" * 64}]
+        after = [{"path": f"my-skill/new{i}.md", "sha256": f"{i + 1}" * 64}]
+        newest_id = skill_ledger.append_entry(
+            "edit", "my-skill", before=before, after=after,
+            evidence={"pad": "y" * 2048})
+    with open(skill_ledger.ledger_path(), "a", encoding="utf-8") as fh:
+        fh.write("{not json at all\n")
+
+    skill_ledger._maintain_size()
+
+    rows = skill_ledger.list_entries()
+    assert len(rows) < 5, "oldest entries must be trimmed when compaction is not enough"
+    assert rows[0]["id"] == newest_id, "the newest entry always survives"
+    # malformed lines are never parsed away — they stay in the file verbatim
+    raw = skill_ledger.ledger_path().read_text(encoding="utf-8")
+    assert "{not json at all" in raw
+    assert skill_ledger.ledger_path().stat().st_size <= 8192
+
+
+def test_disabled_threshold_never_touches_the_file(ledger_env, monkeypatch):
+    """ledger_max_bytes: 0 keeps the append-only contract: no
+    rewrite ever happens, however large the file is."""
+    from tools import skill_ledger
+
+    import hermes_cli.config as _cfg
+
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
+        "skills": {"ledger": True, "ledger_max_bytes": 0}})
+
+    _append_padded(skill_ledger, "patch", "z" * 4096, n=4)
+    raw = skill_ledger.ledger_path().read_text(encoding="utf-8")
+
+    skill_ledger._maintain_size()
+
+    assert skill_ledger.ledger_path().read_text(encoding="utf-8") == raw
+
+
+def test_maintenance_failure_never_blocks_append(ledger_env, monkeypatch):
+    """Telemetry contract: a broken maintenance sweep logs and leaves the
+    appended entries on disk."""
+    from tools import skill_ledger
+
+    import hermes_cli.config as _cfg
+
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
+        "skills": {"ledger_max_bytes": 8192}})
+
+    def _boom(*a, **k):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(skill_ledger, "compact_ledger", _boom)
+    # appends past the threshold hit the broken sweep and must survive it
+    _append_padded(skill_ledger, "patch", "w" * 4096, n=6)
+
+    assert len(skill_ledger.list_entries()) == 6

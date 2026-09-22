@@ -318,7 +318,11 @@ export function ConnectorsTab({ gateway, profile }: ConnectorsTabProps) {
           const outcome = await remover.disconnect(account.connection_id)
 
           if (!outcome.ok) {
-            throw new Error(readableError(outcome.error, copy.page.writeFailed).message)
+            throw new Error(
+              outcome.error.reason === 'ACCOUNTS_UNAVAILABLE'
+                ? copy.page.disconnectRefused
+                : readableError(outcome.error, copy.page.writeFailed).message
+            )
           }
 
           setOpenKey(null)

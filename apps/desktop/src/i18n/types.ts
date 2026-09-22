@@ -180,6 +180,7 @@ export interface Translations {
       writeFailed: string
       refreshFailed: string
       disconnectNoAccount: string
+      disconnectRefused: string
     }
     add: {
       action: string

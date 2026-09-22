@@ -436,6 +436,20 @@ export class Node {
   _cGen = -1
   _cN = 0
   _cWr = 0
+  _rSubtreeLayoutGen = -1
+  _rValid = false
+  _rLeft = NaN
+  _rTop = NaN
+  _rWidth = NaN
+  _rHeight = NaN
+  _rRoundedLeft = NaN
+  _rRoundedTop = NaN
+  _rRoundedWidth = NaN
+  _rRoundedHeight = NaN
+  _rParentAbsLeft = NaN
+  _rParentAbsTop = NaN
+  _rScale = NaN
+  _rIsText = false
   constructor(config?: Config) {
     this.style = defaultStyle()
     this.layout = {
@@ -509,6 +523,7 @@ export class Node {
     this._cN = 0
     this._cWr = 0
     this._fbBasis = NaN
+    this._rValid = false
   }
   markDirty(): void {
     this.isDirty_ = true
@@ -533,26 +548,26 @@ export class Node {
     this.markDirty()
   }
   getComputedLeft(): number {
-    return this.layout.left
+    return this._rValid ? this._rRoundedLeft : this.layout.left
   }
   getComputedTop(): number {
-    return this.layout.top
+    return this._rValid ? this._rRoundedTop : this.layout.top
   }
   getComputedWidth(): number {
-    return this.layout.width
+    return this._rValid ? this._rRoundedWidth : this.layout.width
   }
   getComputedHeight(): number {
-    return this.layout.height
+    return this._rValid ? this._rRoundedHeight : this.layout.height
   }
   getComputedRight(): number {
     const p = this.parent
 
-    return p ? p.layout.width - this.layout.left - this.layout.width : 0
+    return p ? p.getComputedWidth() - this.getComputedLeft() - this.getComputedWidth() : 0
   }
   getComputedBottom(): number {
     const p = this.parent
 
-    return p ? p.layout.height - this.layout.top - this.layout.height : 0
+    return p ? p.getComputedHeight() - this.getComputedTop() - this.getComputedHeight() : 0
   }
   getComputedLayout(): {
     left: number
@@ -563,12 +578,12 @@ export class Node {
     height: number
   } {
     return {
-      left: this.layout.left,
-      top: this.layout.top,
+      left: this.getComputedLeft(),
+      top: this.getComputedTop(),
       right: this.getComputedRight(),
       bottom: this.getComputedBottom(),
-      width: this.layout.width,
-      height: this.layout.height
+      width: this.getComputedWidth(),
+      height: this.getComputedHeight()
     }
   }
   getComputedBorder(edge: Edge): number {
@@ -842,6 +857,8 @@ export class Node {
     _yogaNodesVisited = 0
     _yogaMeasureCalls = 0
     _yogaCacheHits = 0
+    _yogaRoundedNodes = 0
+    _yogaRoundSkips = 0
     _generation++
     const w = ownerWidth === undefined ? NaN : ownerWidth
     const h = ownerHeight === undefined ? NaN : ownerHeight
@@ -924,18 +941,24 @@ let _yogaNodesVisited = 0
 let _yogaMeasureCalls = 0
 let _yogaCacheHits = 0
 let _yogaLiveNodes = 0
+let _yogaRoundedNodes = 0
+let _yogaRoundSkips = 0
 
 export function getYogaCounters(): {
   visited: number
   measured: number
   cacheHits: number
   live: number
+  rounded: number
+  roundSkips: number
 } {
   return {
     visited: _yogaNodesVisited,
     measured: _yogaMeasureCalls,
     cacheHits: _yogaCacheHits,
-    live: _yogaLiveNodes
+    live: _yogaLiveNodes,
+    rounded: _yogaRoundedNodes,
+    roundSkips: _yogaRoundSkips
   }
 }
 
@@ -1017,6 +1040,15 @@ function layoutNode(
       _yogaCacheHits++
 
       return
+    }
+  }
+
+  if (performLayout) {
+    let ancestor: Node | null = node
+
+    while (ancestor && ancestor._rSubtreeLayoutGen !== _generation) {
+      ancestor._rSubtreeLayoutGen = _generation
+      ancestor = ancestor.parent
     }
   }
 
@@ -2191,28 +2223,63 @@ function collectLayoutChildren(node: Node, flow: Node[], abs: Node[]): void {
 }
 
 function roundLayout(node: Node, scale: number, absLeft: number, absTop: number): void {
-  if (scale === 0) {
+  const l = node.layout
+  const isText = node.measureFunc !== null
+
+  if (
+    node._rValid &&
+    node._rSubtreeLayoutGen !== _generation &&
+    sameFloat(node._rParentAbsLeft, absLeft) &&
+    sameFloat(node._rParentAbsTop, absTop) &&
+    sameFloat(node._rScale, scale) &&
+    node._rIsText === isText &&
+    sameFloat(node._rLeft, l.left) &&
+    sameFloat(node._rTop, l.top) &&
+    sameFloat(node._rWidth, l.width) &&
+    sameFloat(node._rHeight, l.height)
+  ) {
+    _yogaRoundSkips++
+
     return
   }
 
-  const l = node.layout
+  _yogaRoundedNodes++
+
   const nodeLeft = l.left
   const nodeTop = l.top
   const nodeWidth = l.width
   const nodeHeight = l.height
   const absNodeLeft = absLeft + nodeLeft
   const absNodeTop = absTop + nodeTop
-  const isText = node.measureFunc !== null
-  l.left = roundValue(nodeLeft, scale, false, isText)
-  l.top = roundValue(nodeTop, scale, false, isText)
-  const absRight = absNodeLeft + nodeWidth
-  const absBottom = absNodeTop + nodeHeight
-  const hasFracW = !isWholeNumber(nodeWidth * scale)
-  const hasFracH = !isWholeNumber(nodeHeight * scale)
-  l.width =
-    roundValue(absRight, scale, isText && hasFracW, isText && !hasFracW) - roundValue(absNodeLeft, scale, false, isText)
-  l.height =
-    roundValue(absBottom, scale, isText && hasFracH, isText && !hasFracH) - roundValue(absNodeTop, scale, false, isText)
+  node._rValid = true
+  node._rLeft = nodeLeft
+  node._rTop = nodeTop
+  node._rWidth = nodeWidth
+  node._rHeight = nodeHeight
+  node._rParentAbsLeft = absLeft
+  node._rParentAbsTop = absTop
+  node._rScale = scale
+  node._rIsText = isText
+
+  if (scale === 0) {
+    node._rRoundedLeft = nodeLeft
+    node._rRoundedTop = nodeTop
+    node._rRoundedWidth = nodeWidth
+    node._rRoundedHeight = nodeHeight
+  } else {
+    node._rRoundedLeft = roundValue(nodeLeft, scale, false, isText)
+    node._rRoundedTop = roundValue(nodeTop, scale, false, isText)
+    const absRight = absNodeLeft + nodeWidth
+    const absBottom = absNodeTop + nodeHeight
+    const hasFracW = !isWholeNumber(nodeWidth * scale)
+    const hasFracH = !isWholeNumber(nodeHeight * scale)
+    node._rRoundedWidth =
+      roundValue(absRight, scale, isText && hasFracW, isText && !hasFracW) -
+      roundValue(absNodeLeft, scale, false, isText)
+    node._rRoundedHeight =
+      roundValue(absBottom, scale, isText && hasFracH, isText && !hasFracH) -
+      roundValue(absNodeTop, scale, false, isText)
+  }
 
   for (const c of node.children) {
     roundLayout(c, scale, absNodeLeft, absNodeTop)

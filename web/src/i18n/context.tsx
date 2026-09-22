@@ -1,3 +1,4 @@
+import { applyDocumentLocale, LOCALE_ENDONYMS } from "@hermes/shared/i18n";
 import { createContext, useContext, useState, useCallback, useEffect, type ReactNode } from "react";
 import type { Locale, Translations } from "./types";
 import { en } from "./en";
@@ -40,9 +41,7 @@ const TRANSLATIONS: Record<Locale, Translations> = {
   ar,
 };
 
-// Locales whose script flows right-to-left. Consumed by the provider to set the
-// document direction so Tailwind's logical utilities (ms-/me-, ps-/pe-) flip.
-const RTL_LOCALES = new Set<Locale>(["ar"]);
+const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
 
 // Display metadata for the language picker — endonym (native name) so users
 // recognize their language even if they don't speak the current UI language.
@@ -74,7 +73,6 @@ export const LOCALE_META: Record<Locale, { name: string }> = {
   ar: { name: "العربية" },
 };
 
-const SUPPORTED_LOCALES = Object.keys(TRANSLATIONS) as Locale[];
 const STORAGE_KEY = "hermes-locale";
 
 function isLocale(value: string): value is Locale {
@@ -116,9 +114,7 @@ export function I18nProvider({ children }: { children: ReactNode }) {
   }, []);
 
   useEffect(() => {
-    if (typeof document === "undefined") return;
-    document.documentElement.lang = locale;
-    document.documentElement.dir = RTL_LOCALES.has(locale) ? "rtl" : "ltr";
+    applyDocumentLocale(locale);
   }, [locale]);
 
   const value: I18nContextValue = {

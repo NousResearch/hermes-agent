@@ -299,7 +299,12 @@ export async function installAgentPlugin(
       gatewayReloaded: Boolean(result.gateway_reloaded)
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e), deferredMcpServers: [], gatewayReloaded: false }
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+      deferredMcpServers: [],
+      gatewayReloaded: false
+    }
   }
 }
 

@@ -9,6 +9,7 @@ import pwd
 import subprocess
 import sys
 import tempfile
+import time
 
 ROOT = Path('/opt/hermes')
 CONFIG = Path('/etc/hermes-sprites/environment.json')
@@ -62,11 +63,10 @@ def configure() -> None:
 
 
 def run(service: str, profile: str = 'default') -> None:
-    if Path('/etc/hermes-sprites-state/stopped').exists():
+    while Path('/etc/hermes-sprites-state/stopped').exists():
         # A cold boot also starts Services. Exiting would cause a restart loop.
-        import threading
-        threading.Event().wait()
-        return
+        # An explicit NAS start clears the fence, including for parked Services.
+        time.sleep(1)
     env = environment()
     executable = str(ROOT / '.venv/bin/hermes')
     commands = {

@@ -1,4 +1,5 @@
 import asyncio
+import time
 from types import SimpleNamespace
 from unittest.mock import Mock
 
@@ -34,6 +35,12 @@ async def test_idle_release_fences_renewals_and_wake_reacquires(monkeypatch, tmp
                 await asyncio.sleep(0.01)
         await hold.renew()
         assert [c.args[0] for c in api.call_args_list] == ['PUT', 'DELETE']
+        # A suspend or wall-clock correction alone must not re-open the relay.
+        await asyncio.sleep(1.05)
+        monkeypatch.setattr(time, 'time', lambda: 10**12)
+        await asyncio.sleep(1.05)
+        assert not sleeper.done()
+        assert hold.dormant
         marker.touch()
         await asyncio.wait_for(sleeper, 5)
         assert [c.args[0] for c in api.call_args_list] == ['PUT', 'DELETE', 'PUT']

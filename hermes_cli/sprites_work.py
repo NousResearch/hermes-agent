@@ -54,11 +54,13 @@ def active_work(*, admitted=False):
         stopped.set()
         if thread.ident is not None:
             thread.join(timeout=16)
-        # Join before delete prevents an in-flight renewal resurrecting the hold.
-        try:
-            sprites_api.request('DELETE', path)
-        except (OSError, RuntimeError):
-            log.warning('Sprites work lease release failed; it will expire')
+        # A slow in-flight renewal can outlive join's bound. Let that finite lease
+        # expire rather than deleting it only for the late response to renew it.
+        if not thread.is_alive():
+            try:
+                sprites_api.request('DELETE', path)
+            except (OSError, RuntimeError):
+                log.warning('Sprites work lease release failed; it will expire')
 
 
 def run_tracked(reader, session, *args):

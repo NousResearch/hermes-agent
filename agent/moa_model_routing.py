@@ -93,9 +93,7 @@ class MoARequiredSlotDenied(MoARoutingBlocked):
     (``routing_role`` set) is REQUIRED BY DEFAULT -- the caller (``agent.moa_loop``) MUST
     propagate this as a hard failure of the whole MoA attempt: never swallow it into a labelled
     ``[failed: ...]`` note that quietly degrades into aggregator-only/empty synthesis, and never
-    let it fall through to an unmanaged continuation. A slot may opt OUT of this only via an
-    explicit ``routing_requirements: {"required": false}`` (a genuinely optional managed slot);
-    absence of the field, or ``required: true``, both mean required."""
+    let it fall through to an unmanaged continuation. Enforced slots cannot opt out."""
 
     def __init__(self, slot_id: str, role: str, reason: str, detail: str = ""):
         self.slot_id = slot_id
@@ -110,9 +108,7 @@ def is_moa_slot_required(slot: dict) -> bool:
     output fails that review attempt" and "No silent optional-reference or aggregator-only
     mode" are unconditional for the managed cohort -- a denied managed reference or aggregator
     must raise, not degrade to a labelled ``[failed: ...]`` note that lets the turn quietly
-    complete as if the gate had passed. The ONLY way to keep a managed slot genuinely optional is
-    an explicit, operator-supplied ``routing_requirements: {"required": false}`` -- never a
-    default, and never inferred from a task/model-proposed classification.
+    complete as if the gate had passed. Fixed and shadow slots remain advisory.
     """
     if not isinstance(slot, dict):
         return False
@@ -120,9 +116,6 @@ def is_moa_slot_required(slot: dict) -> bool:
     if not (isinstance(role, str) and role.strip()):
         return False
     if str(slot.get("routing_mode") or "enforced").strip().lower() == "shadow":
-        return False
-    requirements = slot.get("routing_requirements")
-    if isinstance(requirements, dict) and requirements.get("required") is False:
         return False
     return True
 
@@ -439,32 +432,30 @@ def resolve_moa_slot_route(
 
         hermes_home = get_hermes_home()
     policy_id = policy_id_override or DEFAULT_MOA_POLICY_ID
-    requirements = _build_requirements(
-        slot, requirements_intake, role=role, execution_id=execution_id, attempt_id=attempt_id, slot_id=slot_id,
-    )
-    # Diversity narrows eligibility; it is not implementation provenance and
-    # must not manufacture a verified manifest for a missing review intake.
-    requirements["cohort_excluded_makers"] = list(cohort_excluded_makers)
     try:
+        requirements = _build_requirements(
+            slot, requirements_intake, role=role, execution_id=execution_id, attempt_id=attempt_id, slot_id=slot_id,
+        )
+        requirements["cohort_excluded_makers"] = list(cohort_excluded_makers)
         decision_kwargs = resolve_route(hermes_home, policy_id, requirements, now=int(time.time()))
-    except RoutingBlocked as exc:
+        if mode == "shadow":
+            from agent.model_selection_store import append_outcome, get_receipt
+
+            shadow_decision = get_receipt(hermes_home, decision_kwargs["receipt_id"])
+            append_outcome(hermes_home, decision_kwargs["receipt_id"], "routing_shadow", {
+                "execution_kind": "moa", "execution_id": execution_id, "slot_id": slot_id,
+                "recommended_route_id": shadow_decision["selected"]["route_id"] if shadow_decision else None,
+            })
+            return {
+                "routing_mode": "shadow", "routing_home": hermes_home,
+                "receipt_id": decision_kwargs["receipt_id"],
+            }
+    except Exception as exc:
         if mode != "shadow":
             raise
         return {
             "routing_mode": "shadow", "routing_home": hermes_home,
-            "shadow_error": exc.reason,
-        }
-    if mode == "shadow":
-        from agent.model_selection_store import append_outcome, get_receipt
-
-        shadow_decision = get_receipt(hermes_home, decision_kwargs["receipt_id"])
-        append_outcome(hermes_home, decision_kwargs["receipt_id"], "routing_shadow", {
-            "execution_kind": "moa", "execution_id": execution_id, "slot_id": slot_id,
-            "recommended_route_id": shadow_decision["selected"]["route_id"] if shadow_decision else None,
-        })
-        return {
-            "routing_mode": "shadow", "routing_home": hermes_home,
-            "receipt_id": decision_kwargs["receipt_id"],
+            "shadow_error": exc.reason if isinstance(exc, RoutingBlocked) else "observation_failed",
         }
     decision_kwargs["routing_mode"] = "enforced"
     decision_kwargs["routing_home"] = hermes_home

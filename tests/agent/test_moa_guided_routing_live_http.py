@@ -347,11 +347,10 @@ def test_required_aggregator_denial_hard_fails_no_synthesis(routed_home, monkeyp
     assert len(handler.requests) == 0, "a denied REQUIRED aggregator must never reach any endpoint"
 
 
-def test_explicit_optional_managed_slot_still_degrades_gracefully(routed_home, monkeypatch):
-    """ONLY an explicit ``routing_requirements: {"required": false}`` opt-out keeps the
-    pre-existing partial/quorum degrade behavior (labelled note, turn completes) for a managed
-    slot -- absence of the field means required (tested above), this is the sole escape hatch."""
-    from agent.moa_loop import _run_reference
+@pytest.mark.parametrize("denied_slot", ["reference", "aggregator"])
+def test_managed_cohort_rejects_optional_escape_before_legacy_contact(routed_home, monkeypatch, denied_slot):
+    from agent.moa_loop import aggregate_moa_context
+    from agent.model_selection_types import RoutingBlocked
 
     hermes_home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
     _patch_custom_provider(monkeypatch, url)
@@ -360,9 +359,37 @@ def test_explicit_optional_managed_slot_still_degrades_gracefully(routed_home, m
         "provider": "custom", "model": "test-model", "routing_role": "moareference",
         "routing_requirements": {"required": False},
     }
-    label, text, acct = _run_reference(
-        slot, [{"role": "user", "content": "This must never run."}],
-        execution_id="test-turn", slot_id="reference-0",
-    )
-    assert text.startswith("[failed:"), text
+    with pytest.raises((RoutingBlocked, ValueError)):
+        aggregate_moa_context(
+            user_prompt="This must never run.",
+            api_messages=[{"role": "user", "content": "This must never run."}],
+            reference_models=[slot] if denied_slot == "reference" else [],
+            aggregator=slot if denied_slot == "aggregator" else {"provider": "custom", "model": "legacy"},
+        )
     assert len(handler.requests) == 0
+
+
+@pytest.mark.parametrize("fault", ["provenance", "store", "outcome"])
+def test_shadow_cohort_observation_failure_does_not_cancel_legacy(routed_home, monkeypatch, fault):
+    from pathlib import Path
+    import sqlite3
+    from agent.moa_loop import aggregate_moa_context
+    import agent.model_selection_store as store
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    if fault == "store":
+        database = Path(home) / "model_routing.db"
+        database.rename(database.with_suffix(".saved"))
+        database.mkdir()
+    elif fault == "outcome":
+        def fail(*args, **kwargs):
+            raise sqlite3.OperationalError("private storage failure")
+        monkeypatch.setattr(store, "append_outcome", fail)
+    slot = {"provider": "custom", "model": "legacy-reference", "routing_mode": "shadow",
+            "routing_role": "reviewquality" if fault == "provenance" else "moareference",
+            "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
+    aggregate_moa_context(user_prompt="legacy", api_messages=[{"role": "user", "content": "legacy"}],
+                          reference_models=[slot], aggregator={"provider": "custom", "model": "legacy-aggregator"})
+    assert [request["model"] for request in handler.requests] == ["legacy-reference", "legacy-aggregator"]

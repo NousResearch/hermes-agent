@@ -70,6 +70,45 @@ def _receipt_files(home):
     return sorted(directory.glob("*.json"))
 
 
+def _pinned_intent(target="a" * 40, prior="b" * 40, branch="main"):
+    return {
+        "target": target,
+        "install_id": "1" * 32,
+        "correlation_id": "c" * 32,
+        "prior_sha": prior,
+        "branch": branch,
+    }
+
+
+@pytest.mark.parametrize("outcome", ["success", "partial"])
+def test_pinned_terminal_success_requires_exact_post_swap_proof(receipt_home, outcome):
+    """Pinned terminal success is impossible without target/install proof."""
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+
+    path = ur.finalize_update_receipt(outcome)
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["outcome"] == "failed"
+    assert "post-swap-proof-missing" in payload["failure_reasons"]
+
+
+def test_pinned_post_swap_proof_must_match_immutable_intent(receipt_home):
+    """Caller-supplied proof cannot certify a different target or install."""
+    intent = _pinned_intent()
+    ur.begin_update_receipt(intent=intent)
+    ur.record_pinned_post_swap(
+        post_sha="d" * 40, post_install_id="2" * 32, verified=True
+    )
+
+    path = ur.finalize_update_receipt("success")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["outcome"] == "failed"
+    assert payload["pinned_post_verified"] is False
+    assert "post-swap-proof-mismatch" in payload["failure_reasons"]
+
+
 def test_receipt_home_is_production_persistence_target(receipt_home):
     """An empty-directory assertion must inspect the writer's actual target."""
     assert ur._receipt_dir().resolve() == (

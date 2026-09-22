@@ -6,7 +6,8 @@ main -> update_cmd -> update_cmd_*; ``_m()`` resolves ``hermes_cli.main`` at cal
 """
 
 import logging
-from contextlib import suppress
+from contextlib import redirect_stderr, redirect_stdout, suppress
+import io
 import os
 import shlex
 import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules resolve it here)
@@ -1424,7 +1425,7 @@ def _sibling_snapshots_module():
 def _cmd_pinned_update_impl(args, gateway_mode: bool):
     """Apply one admitted target, then hand its immutable intent to the new tree."""
     from hermes_cli.update_receipt import (
-        begin_update_receipt, finalize_update_receipt, record_failure, record_step,
+        begin_update_receipt, finalize_update_receipt, record_refusal, record_step,
     )
 
     request = args.target_request
@@ -1444,7 +1445,7 @@ def _cmd_pinned_update_impl(args, gateway_mode: bool):
         )
     except TargetAdmissionError as exc:
         record_step("pinned_admission", False, exc.reason)
-        record_failure(exc.reason)
+        record_refusal(exc.reason)
         finalize_update_receipt("refused", stop_reason=exc.reason)
         if gateway_mode:
             _write_gateway_update_exit_code(False)
@@ -1502,8 +1503,12 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     detached = bool(payload.get("_handoff_detached"))
     if token and code is not None:
         token["resume_needed"] = False
-    handoff_path = Path(payload.get("_handoff_path", "")) if payload.get("_handoff_path") else None
-    child_did_not_consume = bool(handoff_path and handoff_path.exists())
+    correlation_id = payload.get("correlation_id") or (payload.get("pinned_intent") or {}).get("correlation_id")
+    from hermes_cli.update_receipt import read_finalized_receipt, read_handoff_ack
+    ack = read_handoff_ack(payload.get("_handoff_ack_path"), correlation_id=correlation_id)
+    finalized = None if ack else read_finalized_receipt(correlation_id) if pinned else None
+    child_outcome = (ack or finalized or {}).get("outcome")
+    child_did_not_consume = not bool(ack or finalized)
     if code is None or (pinned and code != 0 and child_did_not_consume):
         if payload["receipt"]:
             resume_update_receipt(payload["receipt"])
@@ -1517,7 +1522,7 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
         if pinned:
             _finalize_receipt("failed", 'Update receipt finalize (pinned handoff) failed: %s')
         code = 1
-    elif pinned and code == 0 and child_did_not_consume and not detached:
+    elif pinned and not detached and child_did_not_consume:
         if payload["receipt"]:
             resume_update_receipt(payload["receipt"])
         with suppress(Exception):
@@ -1525,6 +1530,13 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
             record_failure("post-swap-child-did-not-consume-handoff")
         _finalize_receipt("failed", 'Update receipt finalize (pinned handoff) failed: %s')
         code = 1
+    elif pinned and child_outcome in {"failed", "refused"}:
+        # The child already persisted the terminal receipt. Relay its truthful failure
+        # without re-adopting or finalizing the detached receipt a second time.
+        code = 2 if child_outcome == "refused" else 1
+    with suppress(OSError):
+        if payload.get("_handoff_ack_path"):
+            Path(payload["_handoff_ack_path"]).unlink()
     sys.exit(code)
 
 
@@ -1547,10 +1559,14 @@ def _run_post_swap_phase(args, gateway_mode: bool) -> None:
             "prior_sha": pinned_intent["prior_sha"],
         }:
             raise ValueError("post-swap argv intent mismatch")
+    if payload.get("receipt"):
+        resume_update_receipt(
+            payload["receipt"], handoff_ack_path=payload.get("_handoff_ack_path")
+        )
+    # Keep the hand-off file until the receipt is adopted. If the child dies
+    # before adoption, the parent can safely resume the still-detached receipt.
     with suppress(OSError):
         Path(args.post_swap).unlink()
-    if payload.get("receipt"):
-        resume_update_receipt(payload["receipt"])
     _execute_post_swap(payload, args, gateway_mode)
 
 
@@ -1632,6 +1648,38 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
         raise
 
 
+def _run_pinned_dependency_sync(
+    git_cmd, branch, pre_pull_sha, active_lazy_features, active_tool_dependencies,
+    _windows_gateway_resume,
+) -> None:
+    """Run dependency maintenance fail-closed for a pinned update.
+
+    The historical helper deliberately turns optional dependency failures into warnings for
+    ordinary updates. A pinned receipt cannot claim success after one of those warnings, so
+    capture only this phase's output, replay it unchanged, and make any warning terminal.
+    """
+    output = io.StringIO()
+    try:
+        with redirect_stdout(output), redirect_stderr(output):
+            _sync_python_dependencies_after_pull(
+                git_cmd, branch, pre_pull_sha,
+                active_lazy_features=active_lazy_features,
+                active_tool_dependencies=active_tool_dependencies,
+                _windows_gateway_resume=_windows_gateway_resume,
+            )
+    except BaseException:
+        print(output.getvalue(), end="")
+        raise
+    rendered = output.getvalue()
+    print(rendered, end="")
+    failure_markers = (
+        "⚠", "failed to restore", "failed to refresh", "dependencies failed",
+        "not re-applied", "migration skipped", "DISABLED:",
+    )
+    if any(marker in rendered for marker in failure_markers):
+        raise RuntimeError("pinned dependency sync reported failure")
+
+
 def _finish_pulled_update(
     git_cmd, branch, pre_pull_sha, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
@@ -1646,10 +1694,15 @@ def _finish_pulled_update(
 
         # .[all], falling back to base + extras individually so one broken extra doesn't strip
         # the rest; the ownership preflight refuses first on foreign-owned (sudo-pip) venv files.
-        _sync_python_dependencies_after_pull(
-            git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
-            active_tool_dependencies=opts.active_tool_dependencies,
-            _windows_gateway_resume=_windows_gateway_resume)
+        if pinned:
+            _run_pinned_dependency_sync(
+                git_cmd, branch, pre_pull_sha, opts.active_lazy_features,
+                opts.active_tool_dependencies, _windows_gateway_resume)
+        else:
+            _sync_python_dependencies_after_pull(
+                git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
+                active_tool_dependencies=opts.active_tool_dependencies,
+                _windows_gateway_resume=_windows_gateway_resume)
     except Exception as exc:
         record_failure(f"dependency-failure: {type(exc).__name__}")
         raise

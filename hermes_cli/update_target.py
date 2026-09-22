@@ -268,6 +268,11 @@ def apply_pinned_target(
     # A fetch cannot authorize a concurrent working-tree change.
     if _git_value(root, "rev-parse", "HEAD") != request.current_sha:
         raise TargetAdmissionError("current-sha-mismatch")
+    status = _run_git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    if status.returncode != 0:
+        _refuse("checkout-unverifiable", status)
+    if status.stdout.strip():
+        raise TargetAdmissionError("dirty-checkout")
 
     authorized_ref = f"origin/{current_branch}"
     if _run_git(root, "merge-base", "--is-ancestor", request.current_sha, authorized_ref).returncode != 0:

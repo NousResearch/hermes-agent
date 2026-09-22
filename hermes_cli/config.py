@@ -3924,26 +3924,37 @@ _inject_profile_env_vars()
 
 
 def _platform_plugin_manifests():
-    """Yield ``(dir_name, manifest_dict)`` for every bundled ``plugins/platforms/*/plugin.y(a)ml``."""
-    platforms_dir = get_project_root() / "plugins" / "platforms"
-    if not platforms_dir.is_dir():
-        return
-    for child in platforms_dir.iterdir():
-        manifest_path = next(
-            (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
-        if manifest_path is None:
+    """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest: bundled
+    ``plugins/platforms/*``, the user's ``<HERMES_HOME>/plugins/platforms/*`` category dir, and flat
+    user installs ``<HERMES_HOME>/plugins/*`` that declare ``kind: platform`` (#46600)."""
+    user_plugins = get_hermes_home() / "plugins"
+    roots = (
+        (get_project_root() / "plugins" / "platforms", False),
+        (user_plugins / "platforms", False),
+        (user_plugins, True),  # flat layout: only manifests that say they are platforms
+    )
+    for root, require_kind in roots:
+        if not root.is_dir():
             continue
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = fast_safe_load(f) or {}
-        except Exception:
-            continue
-        yield child.name, manifest
+        for child in root.iterdir():
+            manifest_path = next(
+                (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
+            if manifest_path is None:
+                continue
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = fast_safe_load(f) or {}
+            except Exception:
+                continue
+            if not isinstance(manifest, dict) or (require_kind and manifest.get("kind") != "platform"):
+                continue
+            yield child.name, manifest
 
 
 def _inject_platform_plugin_env_vars() -> None:
-    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests so Teams / IRC / Google
-    Chat etc. are configurable in ``hermes config`` UI without the core knowing they exist.
+    """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed) so
+    Teams / IRC / Google Chat and third-party platforms are configurable in the ``hermes config`` /
+    Desktop Gateway form without the core knowing they exist.
 
     ``requires_env`` / ``optional_env`` entries are a bare name or a dict with ``name`` plus
     optional ``description``/``url``/``password``/``prompt``/``category``. Failures are swallowed

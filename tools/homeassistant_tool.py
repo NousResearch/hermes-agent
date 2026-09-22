@@ -6,10 +6,11 @@ Auth is a Long-Lived Access Token (``HASS_TOKEN``); the instance URL comes from
 """
 
 import asyncio
+import fnmatch
 import json
 import logging
 import re
-from typing import Any, Dict, Optional
+from typing import Any, Dict, Optional, Tuple
 
 from agent.secret_scope import get_secret
 from tools.registry import registry, tool_error
@@ -64,27 +65,193 @@ async def _api_json(method: str, path: str, timeout: float, payload: Any = None)
             return await resp.json()
 
 
-# ── async helpers (called from sync handlers via _run_async) ─────────────────
-def _filter_and_summarize(states: list, domain: Optional[str] = None, area: Optional[str] = None) -> Dict:
-    """Filter raw HA states by domain/area (area matches friendly_name or area attr) and compact them."""
+# ── ha_list_entities filtering ───────────────────────────────────────────────
+# A domain+area query can still return dozens of entities — the issue's example
+# ("sensor" in "Attic") returns 72 entities / ~9 KB when the caller wanted a few
+# temperature readings. Every filter below is optional and case-insensitive, so
+# the original domain/area calls keep working unchanged.
+
+
+def _attr_value(state: dict, name: str) -> Any:
+    """Read one attribute, tolerating states without an ``attributes`` dict."""
+    attributes = state.get("attributes")
+    return (attributes or {}).get(name) if isinstance(attributes, dict) else None
+
+
+def _token_list(value: Any) -> list:
+    """Split a filter value into lowercased, comma-separated, non-empty tokens."""
+    if value is None:
+        return []
+    return [token.strip().lower() for token in str(value).split(",") if token.strip()]
+
+
+def _matches_entity_id(entity_id: str, pattern: str) -> bool:
+    """True when ``entity_id`` matches one user-supplied pattern.
+
+    Accepts an exact id (``sensor.attic_temperature``), a partial object id
+    (``sensor.attic`` or ``attic`` also match ``sensor.attic_temperature``), or
+    a glob (``sensor.attic_temperature_*``).
+    """
+    candidate = str(entity_id or "").strip().lower()
+    wanted = str(pattern or "").strip().lower()
+    if not wanted:
+        return True
+    if not candidate:
+        return False
+    if any(ch in wanted for ch in "*?["):
+        return fnmatch.fnmatchcase(candidate, wanted)
+    if candidate == wanted:
+        return True
+    domain, _, object_id = candidate.partition(".")
+    if "." in wanted:
+        wanted_domain, _, wanted_object = wanted.partition(".")
+    else:
+        wanted_domain, wanted_object = "", wanted
+    if wanted_domain and wanted_domain != domain:
+        return False
+    return object_id == wanted_object or object_id.startswith(f"{wanted_object}_")
+
+
+def _area_slug(area: str) -> str:
+    """Normalize an area name for slug matching: ``"Living Room"`` -> ``"living_room"``."""
+    return re.sub(r"[^a-z0-9]+", "_", str(area or "").strip().lower()).strip("_")
+
+
+def _matches_area(state: dict, area_lower: str) -> bool:
+    """True when a state belongs to ``area_lower``.
+
+    Matches the friendly name, the entity's ``area`` attribute, and — because
+    area names are often absent from friendly names (``sensor.attic_co2`` is
+    called "CO2 Level") — the area slug inside the entity_id.
+    """
+    friendly = str(_attr_value(state, "friendly_name") or "").lower()
+    attribute_area = str(_attr_value(state, "area") or "").lower()
+    if area_lower in friendly or area_lower in attribute_area:
+        return True
+    slug = _area_slug(area_lower)
+    return bool(slug) and slug in str(state.get("entity_id") or "").lower()
+
+
+def _matches_state_value(value: Any, wanted: list) -> bool:
+    """True when a state string equals one token, or matches one glob token."""
+    candidate = str(value or "").strip().lower()
+    for token in wanted:
+        if candidate == token:
+            return True
+        if any(ch in token for ch in "*?[") and fnmatch.fnmatchcase(candidate, token):
+            return True
+    return False
+
+
+def _summarize_state(state: dict) -> Dict[str, Any]:
+    """Compact one entity for the model.
+
+    ``device_class``/``unit_of_measurement`` are included when present so the
+    model can interpret (and use) the first result without a follow-up
+    ``ha_get_state`` call; they are omitted otherwise to keep results small.
+    """
+    entity: Dict[str, Any] = {
+        "entity_id": state.get("entity_id", ""),
+        "state": state.get("state", ""),
+        "friendly_name": _attr_value(state, "friendly_name") or ""}
+    device_class = _attr_value(state, "device_class")
+    if device_class:
+        entity["device_class"] = device_class
+    unit = _attr_value(state, "unit_of_measurement")
+    if unit:
+        entity["unit_of_measurement"] = unit
+    return entity
+
+
+def _filter_and_summarize(
+    states: list,
+    domain: Optional[str] = None,
+    area: Optional[str] = None,
+    device_class: Optional[str] = None,
+    name: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    state: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict:
+    """Filter raw HA states by the optional filters and compact the survivors.
+
+    ``device_class``/``state``/``entity_id`` accept comma-separated lists
+    (any-of). ``limit`` caps the returned entities *after* filtering and adds
+    ``total_matched``/``truncated`` so the caller knows the result was cut.
+    """
     if domain:
-        states = [s for s in states if s.get("entity_id", "").startswith(f"{domain}.")]
-    if area:
-        area_lower = area.lower()
+        prefix = f"{str(domain).strip().lower()}."
+        states = [s for s in states if str(s.get("entity_id") or "").lower().startswith(prefix)]
+    entity_id_tokens = _token_list(entity_id)
+    if entity_id_tokens:
         states = [
             s for s in states
-            if area_lower in (s.get("attributes", {}).get("friendly_name", "") or "").lower()
-            or area_lower in (s.get("attributes", {}).get("area", "") or "").lower()]
-    entities = [
-        {
-            "entity_id": s["entity_id"], "state": s["state"],
-            "friendly_name": s.get("attributes", {}).get("friendly_name", "")}
-        for s in states]
-    return {"count": len(entities), "entities": entities}
+            if any(_matches_entity_id(s.get("entity_id", ""), token) for token in entity_id_tokens)]
+    device_class_tokens = _token_list(device_class)
+    if device_class_tokens:
+        states = [
+            s for s in states
+            if str(_attr_value(s, "device_class") or "").strip().lower() in device_class_tokens]
+    state_tokens = _token_list(state)
+    if state_tokens:
+        states = [s for s in states if _matches_state_value(s.get("state"), state_tokens)]
+    if name:
+        needle = str(name).strip().lower()
+        states = [
+            s for s in states
+            if needle in str(_attr_value(s, "friendly_name") or "").lower()]
+    if area:
+        area_lower = str(area).strip().lower()
+        states = [s for s in states if _matches_area(s, area_lower)]
+
+    matched = len(states)
+    truncated = False
+    if limit is not None and matched > limit:
+        states = states[:limit]
+        truncated = True
+    entities = [_summarize_state(s) for s in states]
+    result: Dict[str, Any] = {"count": len(entities), "entities": entities}
+    if limit is not None:
+        result["total_matched"] = matched
+        result["truncated"] = truncated
+    return result
 
 
-async def _async_list_entities(domain: Optional[str] = None, area: Optional[str] = None) -> Dict[str, Any]:
-    return _filter_and_summarize(await _api_json("GET", "/api/states", 15), domain, area)
+def _parse_list_limit(value: Any) -> Tuple[Optional[int], Optional[str]]:
+    """Validate the optional ``limit`` filter; returns ``(limit, error_message)``."""
+    if value is None:
+        return None, None
+    if isinstance(value, bool):
+        return None, f"Invalid limit: expected a positive integer, got {value!r}"
+    if isinstance(value, str):
+        text = value.strip()
+        if not text.lstrip("+").isdigit():
+            return None, f"Invalid limit: expected a positive integer, got {value!r}"
+        numeric = int(text)
+    elif isinstance(value, int):
+        numeric = value
+    elif isinstance(value, float) and float(value).is_integer():
+        numeric = int(value)
+    else:
+        return None, f"Invalid limit: expected a positive integer, got {type(value).__name__}"
+    if numeric < 1:
+        return None, f"Invalid limit: must be >= 1, got {numeric}"
+    return numeric, None
+
+
+async def _async_list_entities(
+    domain: Optional[str] = None,
+    area: Optional[str] = None,
+    device_class: Optional[str] = None,
+    name: Optional[str] = None,
+    entity_id: Optional[str] = None,
+    state: Optional[str] = None,
+    limit: Optional[int] = None,
+) -> Dict[str, Any]:
+    return _filter_and_summarize(
+        await _api_json("GET", "/api/states", 15),
+        domain=domain, area=area, device_class=device_class, name=name,
+        entity_id=entity_id, state=state, limit=limit)
 
 
 async def _async_get_state(entity_id: str) -> Dict[str, Any]:
@@ -170,6 +337,38 @@ def _handle_get_state(args: dict, **kw) -> str:
     return _dispatch(_async_get_state(entity_id), "ha_get_state", f"Failed to get state for {entity_id}")
 
 
+# Filters that are plain case-insensitive strings; anything else (dict/list) is
+# a caller bug that would silently do nothing, so it is rejected instead.
+_LIST_TEXT_FILTERS = ("domain", "area", "device_class", "name", "search", "entity_id", "state")
+
+
+def _handle_list_entities(args: dict, **kw) -> str:
+    """Validate the optional ha_list_entities filters, then list the matches."""
+    filters: Dict[str, Any] = {}
+    for key in _LIST_TEXT_FILTERS:
+        value = args.get(key)
+        if value is None:
+            continue
+        if isinstance(value, bool) or not isinstance(value, (str, int, float)):
+            return tool_error(f"Invalid {key} filter: expected a string, got {type(value).__name__}")
+        text = str(value).strip()
+        if text:
+            filters[key] = text
+    limit, error = _parse_list_limit(args.get("limit"))
+    if error:
+        return tool_error(error)
+    return _dispatch(
+        _async_list_entities(
+            domain=filters.get("domain"),
+            area=filters.get("area"),
+            device_class=filters.get("device_class"),
+            name=filters.get("name") or filters.get("search"),
+            entity_id=filters.get("entity_id"),
+            state=filters.get("state"),
+            limit=limit),
+        "ha_list_entities", "Failed to list entities")
+
+
 def _handle_call_service(args: dict, **kw) -> str:
     domain = args.get("domain", "")
     service = args.get("service", "")
@@ -207,9 +406,12 @@ def _check_ha_available() -> bool:
 HA_LIST_ENTITIES_SCHEMA = {
     "name": "ha_list_entities",
     "description": (
-        "List Home Assistant entities. Optionally filter by domain "
-        "(light, switch, climate, sensor, binary_sensor, cover, fan, etc.) "
-        "or by area name (living room, kitchen, bedroom, etc.)."
+        "List Home Assistant entities, optionally filtered by domain "
+        "(light, switch, climate, sensor, binary_sensor, cover, fan, etc.), area name "
+        "(living room, kitchen, bedroom, etc.), device_class (temperature, humidity, motion, "
+        "battery, ...), a friendly-name substring, entity_id, or state. Combine filters and "
+        "set limit to keep the result small; when a limit is applied the response also "
+        "reports total_matched/truncated."
     ),
     "parameters": {
         "type": "object",
@@ -225,8 +427,47 @@ HA_LIST_ENTITIES_SCHEMA = {
             "area": {
                 "type": "string",
                 "description": (
-                    "Area/room name to filter by (e.g. 'living room', 'kitchen'). "
-                    "Matches against entity friendly names. Omit to list all."
+                    "Area/room name to filter by (e.g. 'living room', 'kitchen', 'attic'). "
+                    "Matches against the entity's friendly name, its area attribute, and the "
+                    "area slug in its entity_id. Omit to list all."
+                ),
+            },
+            "device_class": {
+                "type": "string",
+                "description": (
+                    "Only entities with this device_class attribute (e.g. 'temperature', "
+                    "'humidity', 'motion', 'battery'). Comma-separate for several "
+                    "(e.g. 'temperature,humidity')."
+                ),
+            },
+            "name": {
+                "type": "string",
+                "description": (
+                    "Case-insensitive substring matched against the entity friendly name "
+                    "(e.g. 'attic temperature'). Narrow it down when a domain/area query "
+                    "returns too many entities."
+                ),
+            },
+            "entity_id": {
+                "type": "string",
+                "description": (
+                    "Entity ID to match (e.g. 'sensor.attic_temperature'). A partial id "
+                    "('sensor.attic') and '*' globs ('sensor.attic_*') are accepted; "
+                    "comma-separate for several."
+                ),
+            },
+            "state": {
+                "type": "string",
+                "description": (
+                    "Only entities currently in this state (e.g. 'on', 'off', 'open', "
+                    "'unavailable'). Comma-separate for several (e.g. 'on,open')."
+                ),
+            },
+            "limit": {
+                "type": "integer",
+                "description": (
+                    "Maximum number of entities to return after filtering (e.g. 5). "
+                    "Omit to return every match."
                 ),
             },
         },
@@ -325,9 +566,7 @@ HA_CALL_SERVICE_SCHEMA = {
 
 
 for _schema, _handler in (
-    (HA_LIST_ENTITIES_SCHEMA, lambda args, **kw: _dispatch(
-        _async_list_entities(domain=args.get("domain"), area=args.get("area")),
-        "ha_list_entities", "Failed to list entities")),
+    (HA_LIST_ENTITIES_SCHEMA, _handle_list_entities),
     (HA_GET_STATE_SCHEMA, _handle_get_state),
     (HA_LIST_SERVICES_SCHEMA, lambda args, **kw: _dispatch(
         _async_list_services(domain=args.get("domain")), "ha_list_services", "Failed to list services")),

@@ -222,6 +222,31 @@ async def test_send_image_reports_thumbnail_preparation_failure(tmp_path, monkey
     adapter._send_items.assert_not_awaited()
 
 
+@pytest.mark.asyncio
+async def test_send_image_prepares_the_image_off_the_event_loop(tmp_path, monkeypatch):
+    """Pillow re-encoding / ImageMagick runs must not stall every other adapter on the loop."""
+    import threading
+
+    adapter = _adapter_with_ws()
+    image_path = tmp_path / "photo.webp"
+    image_path.write_bytes(b"webp")
+    seen = {}
+
+    def _record(file_path):
+        seen["thread"] = threading.get_ident()
+        return str(tmp_path / "photo.png"), "thumb"
+
+    monkeypatch.setattr(adapter, "_prepare_image", _record)
+    adapter._send_items = AsyncMock(return_value=_simplex.SendResult(success=True))
+
+    result = await adapter.send_image_file("contact-42", str(image_path))
+
+    assert result.success is True
+    assert seen["thread"] != threading.get_ident()
+    items = adapter._send_items.await_args.args[1]
+    assert items[0]["filePath"] == str(tmp_path / "photo.png")
+
+
 # ---------------------------------------------------------------------------
 # 7b. Channel directory enumeration (list_channels)
 # ---------------------------------------------------------------------------

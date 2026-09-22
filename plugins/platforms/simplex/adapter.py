@@ -537,7 +537,8 @@ class SimplexAdapter(BasePlatformAdapter):
         if not file_path or not Path(file_path).exists():
             return SendResult(success=False, error="Image file not found")
         try:
-            png_path, thumb_uri = self._prepare_image(file_path)
+            # Pillow decode/re-encode or two ImageMagick runs (30 s timeout each): keep them off the loop.
+            png_path, thumb_uri = await asyncio.to_thread(self._prepare_image, file_path)
         except Exception as exc:
             logger.warning("SimpleX: failed to prepare image: %s", exc)
             return SendResult(success=False, error=f"Failed to prepare image: {exc}")

@@ -474,6 +474,80 @@ def test_direct_runtime_records_without_enabling_a_plugin(direct_runtime, tmp_pa
     }
 
 
+def test_direct_runtime_records_content_free_computer_use_phases(direct_runtime):
+    base = {
+        "session_id": "phase-session",
+        "task_id": "phase-task",
+        "turn_id": "phase-turn",
+        "platform": "cli",
+    }
+    lifecycle.invoke_hook("on_session_start", **base)
+    # No request id: this starts the task without adding an unrelated model span.
+    lifecycle.invoke_hook("pre_llm_call", **base)
+
+    runtime = relay_shared_metrics._get_runtime()
+    assert runtime is not None
+    event = {
+        **base,
+        "tool_call_id": "private-tool-call",
+        "action": "capture",
+        "phase": "capture",
+        "outcome": "unknown",
+        "backend_kind": "cua",
+        "backend_cache_hit": "unknown",
+        "backend_rebound": "unknown",
+        "capture_mode": "som",
+        "target_changed": False,
+        "element_count": 12,
+        "image_bytes": 0,
+        "aux_vision_used": False,
+        "app": "private-app",
+        "prompt": "private-prompt",
+    }
+    span = runtime.start_computer_use_phase(event)
+    assert span is not None
+    runtime.finish_computer_use_phase(span, {**event, "outcome": "success"})
+
+    lifecycle.invoke_hook(
+        "on_session_end",
+        **base,
+        completed=True,
+        failed=False,
+        interrupted=False,
+        turn_exit_reason="text_response(stop)",
+    )
+    lifecycle.finalize_session(session_id=base["session_id"])
+
+    phase_starts = [
+        event for event in direct_runtime.events
+        if event[0] == "scope.push" and event[1] == "hermes.computer_use.capture"
+    ]
+    assert len(phase_starts) == 1
+    assert phase_starts[0][3]["input"] == {
+        "action": "capture",
+        "phase": "capture",
+        "outcome": "unknown",
+        "backend_kind": "cua",
+        "backend_cache_hit": "unknown",
+        "backend_rebound": "unknown",
+        "capture_mode": "som",
+        "target_state": "unchanged",
+        "element_count_bucket": "gte_11",
+        "image_size_bucket": "none",
+        "aux_vision": "not_used",
+    }
+    phase_finishes = [
+        event for event in direct_runtime.events
+        if event[0] == "scope.pop" and event[1] == span.handle
+    ]
+    assert len(phase_finishes) == 1
+    assert phase_finishes[0][2]["output"]["outcome"] == "success"
+    assert "private" not in json.dumps((phase_starts, phase_finishes))
+    assert not any(
+        event[0] == "scope.pop.rejected" for event in direct_runtime.events
+    )
+
+
 def test_real_binding_drives_lifecycle_aggregation_export_and_snapshot(
     real_binding_runtime,
     tmp_path,

@@ -60,6 +60,24 @@ TOOL_CATEGORIES = frozenset({
     "home_automation", "mcp", "media", "memory", "other", "planning", "project", "scheduler",
     "skill", "terminal", "unknown", "web",
 })
+COMPUTER_USE_PHASE_SCOPE = "hermes.computer_use"
+COMPUTER_USE_ACTIONS = frozenset({
+    "capture", "click", "double_click", "right_click", "middle_click", "drag", "scroll", "type", "key",
+    "set_value", "focus_app", "wait", "list_apps", "list_windows", "unknown",
+})
+COMPUTER_USE_PHASES = frozenset({
+    "admission", "approval_wait", "backend_resolve", "backend_start", "dispatch_lock_wait", "input",
+    "capture", "backend_call", "backend_rebind", "capture_persist", "element_processing", "aux_vision",
+    "response_shape", "total",
+})
+COMPUTER_USE_OUTCOMES = frozenset({"blocked", "failed", "success", "unavailable", "unknown"})
+COMPUTER_USE_BACKENDS = frozenset({"cua", "noop", "other", "unknown"})
+COMPUTER_USE_BACKEND_CACHE_STATES = frozenset({"hit", "miss", "unknown"})
+COMPUTER_USE_BACKEND_REBIND_STATES = frozenset({"rebound", "not_rebound", "unknown"})
+COMPUTER_USE_CAPTURE_MODES = frozenset({"ax", "som", "vision", "unknown"})
+COMPUTER_USE_TARGET_STATES = frozenset({"changed", "unchanged", "unknown"})
+COMPUTER_USE_AUX_STATES = frozenset({"used", "not_used", "unknown"})
+COMPUTER_USE_IMAGE_SIZE_BUCKETS = frozenset({"none", "lt_64kb", "64kb_to_256kb", "256kb_to_1mb", "gte_1mb", "unknown"})
 TOOL_OUTCOMES = frozenset({"blocked", "cancelled", "failed", "success", "timed_out", "unknown"})
 TOOL_APPROVAL_OUTCOMES = frozenset({"approved", "cancelled", "denied", "not_required", "timed_out", "unknown"})
 TOOL_APPROVAL_ATTRIBUTIONS = frozenset({"tool_call", "unattributed"})
@@ -502,6 +520,66 @@ def duration_bucket(duration_ms: int) -> str:
 def count_bucket(count: int) -> str:
     """Bucket a non-negative per-task count into a fixed range."""
     return _bucket(max(0, int(count)), _COUNT_THRESHOLDS, "gte_11")
+
+
+def _computer_use_state(value: Any, allowed: frozenset[str]) -> str:
+    return _allowlisted(_norm(value), allowed)
+
+
+def _computer_use_bool_state(
+    value: Any, *, true_value: str, false_value: str, allowed: frozenset[str]
+) -> str:
+    state = true_value if value is True else false_value if value is False else "unknown"
+    return _allowlisted(state, allowed)
+
+
+def _computer_use_count_bucket(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return "unknown"
+    return count_bucket(value)
+
+
+def _computer_use_image_size_bucket(value: Any) -> str:
+    if isinstance(value, bool) or not isinstance(value, int) or value < 0:
+        return "unknown"
+    if value == 0:
+        bucket = "none"
+    elif value < 64 * 1024:
+        bucket = "lt_64kb"
+    elif value < 256 * 1024:
+        bucket = "64kb_to_256kb"
+    elif value < 1024 * 1024:
+        bucket = "256kb_to_1mb"
+    else:
+        bucket = "gte_1mb"
+    return _allowlisted(bucket, COMPUTER_USE_IMAGE_SIZE_BUCKETS)
+
+
+def computer_use_phase_fields(kwargs: dict[str, Any]) -> dict[str, str]:
+    """Build the closed, content-free dimensions for one computer-use phase span."""
+    return {
+        "action": _computer_use_state(kwargs.get("action"), COMPUTER_USE_ACTIONS),
+        "phase": _computer_use_state(kwargs.get("phase"), COMPUTER_USE_PHASES),
+        "outcome": _computer_use_state(kwargs.get("outcome"), COMPUTER_USE_OUTCOMES),
+        "backend_kind": _computer_use_state(kwargs.get("backend_kind"), COMPUTER_USE_BACKENDS),
+        "backend_cache_hit": _computer_use_state(
+            kwargs.get("backend_cache_hit"), COMPUTER_USE_BACKEND_CACHE_STATES
+        ),
+        "backend_rebound": _computer_use_state(
+            kwargs.get("backend_rebound"), COMPUTER_USE_BACKEND_REBIND_STATES
+        ),
+        "capture_mode": _computer_use_state(kwargs.get("capture_mode"), COMPUTER_USE_CAPTURE_MODES),
+        "target_state": _computer_use_bool_state(
+            kwargs.get("target_changed"), true_value="changed", false_value="unchanged",
+            allowed=COMPUTER_USE_TARGET_STATES,
+        ),
+        "element_count_bucket": _computer_use_count_bucket(kwargs.get("element_count")),
+        "image_size_bucket": _computer_use_image_size_bucket(kwargs.get("image_bytes")),
+        "aux_vision": _computer_use_bool_state(
+            kwargs.get("aux_vision_used"), true_value="used", false_value="not_used",
+            allowed=COMPUTER_USE_AUX_STATES,
+        ),
+    }
 
 
 _TOOL_CATEGORY_EXACT = {

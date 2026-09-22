@@ -44,7 +44,10 @@ from agent.message_sanitization import (
     _sanitize_surrogates, _repair_tool_call_arguments, normalize_finish_reason as _normalize_finish_reason,
     sanitize_outbound_kwargs, strip_images_for_rejecting_model,
 )
-from agent.reasoning_summaries import append_streamed_reasoning_detail, separate_glued_reasoning_blocks
+from agent.reasoning_summaries import (
+    append_streamed_reasoning_detail, separate_glued_reasoning_blocks,
+    streamed_reasoning_detail_text,
+)
 from agent.stream_single_writer import claim_stream_writer, stream_writer_is_current
 from tools.terminal_tool_lifecycle import is_persistent_env
 from utils import base_url_host_matches, base_url_hostname, env_float, env_int
@@ -3069,7 +3072,6 @@ class _StreamingCall(StreamingWaitMonitor):
                 reasoning_text = separate_glued_reasoning_blocks(
                     reasoning_parts[-1] if reasoning_parts else "", reasoning_text)
                 reasoning_parts.append(reasoning_text)
-                self._emit_reasoning(reasoning_text)
             # Structured reasoning_details deltas carry the provider's replay data; the
             # non-streaming path already keeps them, so dropping them here lost
             # reasoning continuity on nearly every turn. Pydantic parks unknown fields
@@ -3077,8 +3079,16 @@ class _StreamingCall(StreamingWaitMonitor):
             rd_delta = getattr(delta, "reasoning_details", None)
             if rd_delta is None and isinstance(getattr(delta, "model_extra", None), dict):
                 rd_delta = delta.model_extra.get("reasoning_details")
+            detail_text_parts = []
             for rd in rd_delta if isinstance(rd_delta, (list, tuple)) else ():
+                detail_text_parts.append(streamed_reasoning_detail_text(rd))
                 append_streamed_reasoning_detail(reasoning_details, rd)
+            # Details may carry the full text while ordinary reasoning is only
+            # a sparse fragment or a mirror. Deliver one representation per
+            # chunk, without rewriting either persisted/replayed field.
+            display_reasoning = "".join(detail_text_parts) or reasoning_text
+            if display_reasoning:
+                self._emit_reasoning(display_reasoning)
             # Not routed to the live display: the transport promotes a sole-payload
             # refusal to content + ``content_filter`` and the loop surfaces it terminally.
             delta_refusal = getattr(delta, "refusal", None)

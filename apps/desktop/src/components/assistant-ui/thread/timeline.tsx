@@ -24,6 +24,7 @@ import { useTranscriptWindow } from './transcript-window'
 import { useTimelineHistory } from './use-timeline-history'
 
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
+const TURN_PAIR = '[data-slot="aui_turn-pair"]'
 
 type TimelineGeometry = {
   index: number
@@ -48,6 +49,83 @@ export const cacheTimelineGeometry = (
 
     return { index, top: turn.getBoundingClientRect().top - viewportRect.top + viewport.scrollTop }
   }).filter((geometry): geometry is TimelineGeometry => geometry !== null)
+}
+
+/** Keep cached offsets current without measuring every scroll frame. */
+export const watchTimelineGeometry = (
+  viewport: HTMLElement,
+  indexes: ReadonlyMap<string, number>,
+  onGeometry: (geometry: TimelineGeometry[]) => void
+) => {
+  let wasFollowing = false
+  const observedTurns = new Set<Element>()
+  const rowResizeObserver = new ResizeObserver(refreshGeometry)
+  const contentResizeObserver = new ResizeObserver(refreshGeometry)
+  const content = viewport.querySelector('[data-slot="aui_thread-content"]')
+
+  const observeTurns = () => {
+    const turns = new Set(viewport.querySelectorAll(TURN_PAIR))
+
+    for (const turn of observedTurns) {
+      if (!turns.has(turn)) {
+        rowResizeObserver.unobserve(turn)
+        observedTurns.delete(turn)
+      }
+    }
+
+    for (const turn of turns) {
+      if (!observedTurns.has(turn)) {
+        observedTurns.add(turn)
+        rowResizeObserver.observe(turn)
+      }
+    }
+  }
+
+  function refreshGeometry() {
+    if (viewport.dataset.following === 'true') {
+      wasFollowing = true
+
+      return
+    }
+
+    wasFollowing = false
+    observeTurns()
+    onGeometry(cacheTimelineGeometry(viewport, indexes))
+  }
+
+  const mutationObserver = new MutationObserver(() => {
+    observeTurns()
+    refreshGeometry()
+  })
+
+  if (content) {
+    mutationObserver.observe(content, {
+      attributes: true,
+      attributeFilter: ['data-message-id'],
+      childList: true,
+      subtree: true
+    })
+    contentResizeObserver.observe(content)
+  }
+
+  contentResizeObserver.observe(viewport)
+  refreshGeometry()
+
+  return {
+    disconnect: () => {
+      mutationObserver.disconnect()
+      contentResizeObserver.disconnect()
+      rowResizeObserver.disconnect()
+    },
+    noteFollowing: () => {
+      wasFollowing = true
+    },
+    refreshAfterFollowing: () => {
+      if (wasFollowing && viewport.dataset.following !== 'true') {
+        refreshGeometry()
+      }
+    }
+  }
 }
 
 /** Resolve the active item from cached document-relative offsets during scroll. */
@@ -290,17 +368,20 @@ const ActiveThreadTimeline: FC = () => {
 
     let frame = 0
     const indexes = new Map(railEntries.map((entry, index) => [entry.id, index]))
-    let geometry = cacheTimelineGeometry(viewport, indexes)
+    let geometry: TimelineGeometry[] = []
+    let geometryWatcher: ReturnType<typeof watchTimelineGeometry> | undefined
 
     const compute = () => {
       frame = 0
 
       if (viewport.dataset.following === 'true' && !history.isHistorical) {
+        geometryWatcher?.noteFollowing()
         setActiveIndex(Math.max(0, railEntries.length - 1))
 
         return
       }
 
+      geometryWatcher?.refreshAfterFollowing()
       setActiveIndex(activeTimelineIndex(geometry, viewport.scrollTop))
     }
 
@@ -310,21 +391,10 @@ const ActiveThreadTimeline: FC = () => {
       }
     }
 
-    const refreshGeometry = () => {
-      geometry = cacheTimelineGeometry(viewport, indexes)
+    geometryWatcher = watchTimelineGeometry(viewport, indexes, nextGeometry => {
+      geometry = nextGeometry
       schedule()
-    }
-
-    const observer = new MutationObserver(refreshGeometry)
-    const content = viewport.querySelector('[data-slot="aui_thread-content"]')
-    const resizeObserver = new ResizeObserver(refreshGeometry)
-
-    if (content) {
-      observer.observe(content, { childList: true })
-      resizeObserver.observe(content)
-    }
-
-    resizeObserver.observe(viewport)
+    })
 
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('wheel', cancelJump, { passive: true })
@@ -332,8 +402,7 @@ const ActiveThreadTimeline: FC = () => {
 
     return () => {
       cancelAnimationFrame(frame)
-      observer.disconnect()
-      resizeObserver.disconnect()
+      geometryWatcher?.disconnect()
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('wheel', cancelJump)
     }

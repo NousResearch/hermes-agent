@@ -1,6 +1,7 @@
 """Tests for agent.redact -- secret masking in logs and output."""
 
 import ast
+import json
 import logging
 import time
 
@@ -331,6 +332,23 @@ class TestJsonFields:
         text = '{"name": "John", "model": "gpt-4"}'
         result = redact_sensitive_text(text)
         assert result == text
+
+
+    def test_embedded_escaped_json_prefixless_token_masked(self):
+        # JSON nested inside a JSON string value (serialized tool-call arguments):
+        # the inner quotes are backslash-escaped, which hid the field from this
+        # pass, and a prefix-less opaque token has no other pattern to catch it.
+        secret = "AQ.opaque46chartokenwithnovendorprefixshape"
+        text = json.dumps({"content": json.dumps({"api_key": secret})})
+        result = redact_sensitive_text(text, force=True)
+        assert secret not in result
+        # The enclosing JSON stays parseable and the mask survives the unescape.
+        assert "AQ.opaque46" not in json.loads(json.loads(result)["content"])["api_key"]
+
+
+    def test_embedded_escaped_json_non_secret_unchanged(self):
+        text = json.dumps({"content": json.dumps({"model": "gpt-4"})})
+        assert redact_sensitive_text(text, force=True) == text
 
 
 class TestPythonReprFields:

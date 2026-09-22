@@ -11,6 +11,8 @@ Honcho, Hindsight, ...) is covered without touching each backend.
 See: agent.memory_manager.MemoryManager.sync_all / _redact_rows_for_provider.
 """
 
+import json
+
 from agent import memory_manager
 from agent.memory_manager import MemoryManager
 from agent.memory_provider import MemoryProvider
@@ -184,6 +186,34 @@ class TestRowLeafRedaction:
         assert _SK_SECRET not in forwarded[0]["tool_calls"][0]["function"]["arguments"]
         assert "notes.txt" in forwarded[0]["tool_calls"][0]["function"]["arguments"]
         assert _SK_SECRET in rows[0]["tool_calls"][0]["function"]["arguments"]
+
+    def test_tool_call_arguments_embedded_prefixless_token_scrubbed(self):
+        # #115109 review follow-up: a prefix-less opaque token inside an
+        # escaped-JSON body (json.dumps nesting) hid from the JSON-field pass
+        # before it learned to tolerate backslash-escaped quotes.
+        secret = "AQ.opaque46chartokenwithnovendorprefixshape"
+        row = {
+            "role": "assistant",
+            "content": None,
+            "tool_calls": [
+                {
+                    "id": "call_2",
+                    "function": {
+                        "name": "http_request",
+                        "arguments": json.dumps(
+                            {"body": json.dumps({"api_key": secret})}
+                        ),
+                    },
+                }
+            ],
+        }
+        mgr, provider = _manager_with_recorder()
+        mgr.sync_all("question", "answer", messages=[row])
+        mgr.flush_pending(timeout=5.0)
+        ((_, _, forwarded),) = provider.synced
+        forwarded_args = forwarded[0]["tool_calls"][0]["function"]["arguments"]
+        assert secret not in forwarded_args
+        assert secret in row["tool_calls"][0]["function"]["arguments"]
 
     def test_block_list_content_text_scrubbed(self):
         mgr, provider = _manager_with_recorder()

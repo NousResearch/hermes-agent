@@ -406,9 +406,18 @@ def _should_redact_assignment(key: str, value: str, *, check_keyword: bool) -> b
             or _looks_like_opaque_credential(value))
 
 
-# JSON field patterns: "apiKey": "value", "token": "value", etc.
+# JSON field patterns: "apiKey": "value", "token": "value", etc. The quotes may be
+# backslash-escaped when the JSON is itself embedded in another string's value —
+# serialized tool-call arguments carry exactly that shape (``{"content": "{\"api_key\":
+# \"AQ.…\"}"}``), and a prefix-less opaque token has no other pattern to catch it, so
+# the key and value quotes each tolerate one leading backslash. Group 2 records the
+# value-quote escape style so the replacement re-emits it (dropping it would corrupt
+# the enclosing JSON). The value body is lazy and admits escape pairs: it stops at
+# the FIRST closable quote — the embedded value's own ``\"`` — instead of running on
+# to a later bare quote and swallowing the enclosing delimiters with it.
 _JSON_KEY_NAMES = r"(?:api_?[Kk]ey|token|secret|password|access_token|refresh_token|auth_token|bearer|secret_value|raw_secret|secret_input|key_material)"
-_JSON_FIELD_RE = re.compile(rf'("{_JSON_KEY_NAMES}")\s*:\s*"([^"]+)"', re.IGNORECASE)
+_JSON_FIELD_RE = re.compile(
+    rf'(\\?"{_JSON_KEY_NAMES}\\?")\s*:\s*(\\?)"((?:[^"\\]|\\.)+?)\\?"', re.IGNORECASE)
 
 # Python ``repr`` uses single-quoted mapping fields, so opaque credentials in
 # tracebacks and pytest failure introspection bypass the double-quoted JSON rule
@@ -809,8 +818,10 @@ def _redact_assignments(text: str, *, mask_nonreusable: bool = False) -> str:
             text = _CFG_ANCHORED_RE.sub(_redact_env, text)
 
     if ":" in text and '"' in text:
+        # g[1] is the value-quote escape style (empty or a backslash): re-emitting it
+        # on both sides of the mask keeps embedded-JSON text re-parseable.
         text = _JSON_FIELD_RE.sub(
-            _assignment_sub(lambda g: f'{g[0]}: "{mask(g[1])}"', check_keyword=False), text)
+            _assignment_sub(lambda g: f'{g[0]}: {g[1]}"{mask(g[2])}{g[1]}"', check_keyword=False), text)
 
     # Python mapping repr fields ({'API_KEY': '…'}): single-quoted, so the JSON rule
     # above never sees them — the traceback / pytest-introspection leak shape.

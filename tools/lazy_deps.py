@@ -528,6 +528,15 @@ def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
 
 
+def _uv_policy_cwd() -> Optional[str]:
+    """Directory uv must run from so the checkout's ``[tool.uv]`` policy (``exclude-newer`` quarantine and its
+    per-package exceptions) applies: uv reads it from the *current directory's* project only, so a lazy or
+    plugin install launched from ``$HOME``, a gateway service or the Desktop backend was never quarantined.
+    ``None`` (inherit cwd) when this is not a source checkout."""
+    root = Path(__file__).resolve().parent.parent
+    return str(root) if (root / "pyproject.toml").is_file() else None
+
+
 def _uv_binary() -> Optional[str]:
     """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
     downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
@@ -599,7 +608,8 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
                 if pip_index_url:
                     uv_env["UV_INDEX_URL"] = pip_index_url
             try:
-                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs], timeout=timeout, env=uv_env)
+                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs],
+                                   timeout=timeout, env=uv_env, cwd=_uv_policy_cwd())
                 if r.returncode != 0:
                     logger.debug("uv pip install failed: %s", r.stderr)
                 # A uv resolver failure is authoritative: falling through to pip would discard uv

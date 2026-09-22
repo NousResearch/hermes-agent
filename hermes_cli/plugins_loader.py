@@ -64,6 +64,13 @@ def _plugin_home_scope(home: Path):
         reset_hermes_home_override(token)
 
 
+def _load_error_text(exc: BaseException) -> str:
+    """Human-readable load failure; ``sys.exit(0)`` has an empty ``str()`` so name the class and code."""
+    if isinstance(exc, SystemExit):
+        return f"SystemExit({exc.code!r}) raised during import/register()"
+    return str(exc)
+
+
 def _dist_installed(req: str) -> Optional[bool]:
     """Best-effort presence probe on a requirement's distribution name; ``None`` when unprobeable."""
     dist = re.split(r"[<>=!~\[;\s]", req, maxsplit=1)[0].strip()
@@ -199,7 +206,7 @@ class PluginLoaderMixin:
                 "Deferred platform '%s': pre-registered %d client tool(s) %s", lookup_key, len(registered),
                 registered,
             )
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
             # Tools registered before the raise are live: credit them or `hermes plugins list` under-reports
             # (and _load_plugin's later diff would miss them too). Never break discovery (the platform stays
             # deferred), but a broken tools.py IS the symptom, so warn — and say where it failed first.
@@ -314,15 +321,17 @@ class PluginLoaderMixin:
                 from hermes_cli.plugins_ledger import _hook_source_of
 
                 self._drop_fallback_hooks(_hook_source_of(manifest.name, module))
-        except Exception as exc:
+        except (Exception, SystemExit) as exc:
+            # SystemExit too: a plugin module with an unguarded ``main()``/``sys.exit()`` must not take the
+            # whole process (and every other plugin's registry) down with it; KeyboardInterrupt still propagates.
             owned = [r for r in self._registration_order if r.plugin_key == plugin_key]
             self._dispose_registrations(owned)
             self._forget_registrations(owned)
-            loaded.error = str(exc)
+            loaded.error = _load_error_text(exc)
             # register() may have subscribed before raising; a failed plugin must leave no callable reachable
             # from later event dispatch.
             self._remove_plugin_subscriptions(plugin_key)
-            logger.warning("Failed to load plugin '%s': %s", manifest.name, exc, exc_info=_PLUGINS_DEBUG)
+            logger.warning("Failed to load plugin '%s': %s", manifest.name, _load_error_text(exc), exc_info=_PLUGINS_DEBUG)
         # The failure path swept this plugin's whole ledger (not just the registration_start slice), so
         # discovery-time pre-registrations are gone too.
         # There is no live tool left to credit — attribution and the registry agree at zero. Only the
@@ -400,9 +409,9 @@ class PluginLoaderMixin:
                     continue
                 self._portable_mcp_servers[internal_name] = dict(config)
             loaded.enabled = True
-        except Exception as exc:
-            loaded.error = str(exc)
-            logger.warning("Failed to load Agent Plugin '%s': %s", lookup_key, exc)
+        except (Exception, SystemExit) as exc:
+            loaded.error = _load_error_text(exc)
+            logger.warning("Failed to load Agent Plugin '%s': %s", lookup_key, loaded.error)
         self._plugins[lookup_key] = loaded
 
     def _directory_module_name(self, manifest: PluginManifest) -> str:

@@ -10,7 +10,7 @@ import importlib.metadata
 import logging
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, List, Optional, Set
+from typing import Any, Dict, List, Optional, Set
 
 from hermes_constants import get_hermes_home
 from hermes_cli.config import cfg_get
@@ -165,6 +165,32 @@ def collect_directory_manifests() -> List[PluginManifest]:
     else:
         logger.debug("Project plugins disabled (set HERMES_ENABLE_PROJECT_PLUGINS=1 to enable)")
     return manifests
+
+
+def resolve_manifest_winners(manifests: List[PluginManifest]) -> Dict[str, PluginManifest]:
+    """Later sources win on key collision (project > user > bundled): a same-named copy under
+    ``~/.hermes/plugins/<name>`` is the documented way to override a bundled plugin, and is logged. A flat
+    user/project manifest that claims a bundled key from a *differently named* directory is an impostor, not
+    an override (``impostor_dir/plugin.yaml`` with ``name: kanban``): it is skipped with a warning so
+    ``hermes plugins enable kanban`` never activates unrelated code under the bundled name."""
+    winners: Dict[str, PluginManifest] = {}
+    for manifest in manifests:
+        key = manifest_key(manifest)
+        shadowed = winners.get(key)
+        if shadowed is not None and shadowed.source == "bundled" and manifest.source in {"user", "project"}:
+            own_dir = Path(manifest.path).name if manifest.path else ""
+            bundled_dir = Path(shadowed.path).name if shadowed.path else ""
+            if own_dir and bundled_dir and own_dir != bundled_dir:
+                logger.warning(
+                    "Ignoring %s plugin at %s: its manifest name '%s' is a bundled plugin's key but the "
+                    "directory is named '%s'; rename the directory to '%s' to override the bundled plugin",
+                    manifest.source, manifest.path, key, own_dir, bundled_dir,
+                )
+                continue
+            logger.info("Plugin '%s' at %s (%s) shadows the bundled copy at %s", key, manifest.path,
+                        manifest.source, shadowed.path)
+        winners[key] = manifest
+    return winners
 
 
 @dataclass(frozen=True)

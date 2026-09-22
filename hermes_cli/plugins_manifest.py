@@ -375,22 +375,35 @@ _VERSION_COMPARATOR_RE = re.compile(r"^\s*(>=|<=|==|!=|>|<)\s*(.+?)\s*$")
 
 
 def running_hermes_version() -> str:
-    """Installed ``hermes-agent`` distribution version, else ``hermes_cli.__version__`` (source checkout)."""
+    """Version of the Hermes code that is running: ``hermes_cli.__version__``. Distribution metadata is only
+    a fallback — on an editable/source install it is frozen at ``pip install -e`` time and drifts from the
+    checkout after every ``git pull`` (dist said 0.21.0 while the code was 0.21.4), so gating on it skipped
+    plugins that required exactly the release the user was running."""
     try:
-        return importlib.metadata.version("hermes-agent")
-    except Exception:
         from hermes_cli import __version__
-        return __version__
+        if __version__:
+            return str(__version__)
+    except Exception:
+        pass
+    return importlib.metadata.version("hermes-agent")
+
+
+_VERSION_SEGMENT_RE = re.compile(r"^\d+")
 
 
 def _version_tuple(v: str) -> Optional[tuple]:
-    """``v1.2.3-rc1`` → ``(1, 2, 3)``; ``None`` when a segment is non-numeric."""
+    """``v1.2.3-rc1`` / ``1.2.3rc1`` / ``1.2.3.post1`` → ``(1, 2, 3)``; ``None`` when a segment has no
+    leading digits. PEP 440 pre/post/dev suffixes glued to a segment (``0rc1``) are dropped so an rc
+    *target* still gates and an rc *running* version does not disable every gate."""
     parts = re.split(r"[-+]", str(v).strip().lstrip("v"), 1)[0].split(".")
     parts += ["0"] * (3 - len(parts))
-    try:
-        return tuple(int(x) for x in parts[:3])
-    except ValueError:
-        return None
+    out = []
+    for x in parts[:3]:
+        m = _VERSION_SEGMENT_RE.match(x.strip())
+        if m is None:
+            return None
+        out.append(int(m.group(0)))
+    return tuple(out)
 
 
 def version_satisfies(spec: str, current: str) -> bool:

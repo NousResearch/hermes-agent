@@ -12,7 +12,7 @@ from pathlib import Path
 GUARDED_FILES = [
     "tools/environments/local.py",
     "tools/process_registry.py",
-    "tools/code_execution_tool.py",
+    "tools/code_kernel.py",  # execute_code's child Popen lives in the session kernel
     "gateway/platforms/whatsapp.py",
 ]
 

@@ -29,7 +29,11 @@ describe('Slot contribution render boundary', () => {
       const [count, setCount] = useState(10)
       const [suffix] = useState('ready')
 
-      return <button onClick={() => setCount(value => value + 1)}>reloaded:{count}:{suffix}</button>
+      return (
+        <button onClick={() => setCount(value => value + 1)}>
+          reloaded:{count}:{suffix}
+        </button>
+      )
     }
 
     render(<Slot area={area} />)

@@ -78,12 +78,19 @@ def test_bounded_git_probe_fast_path_spawn_contract_windows(monkeypatch):
     helper caches from the real platform at import. ``windows_hide_flags`` is
     still stubbed so the expected value is a fixed constant rather than
     whatever bundle the helper currently returns.
+
+    The seam is the Job-Object container (``local_runtime.processes.spawn_server``),
+    which is what the probe hands its spawn contract to on Windows; the container
+    itself adds CREATE_SUSPENDED and assigns the real process handle, which a fake
+    Popen cannot provide.
     """
     from hermes_cli import _subprocess_compat
+    from hermes_cli.local_runtime import processes
 
     spawns = []
+    fake_popen = _make_fake_popen(spawns, stdout="main\n")
     monkeypatch.setattr(_subprocess_compat, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(_subprocess_compat.subprocess, "Popen", _make_fake_popen(spawns, stdout="main\n"))
+    monkeypatch.setattr(processes, "spawn_server", lambda cmd, **kw: (fake_popen(cmd, **kw), None))
 
     out = _subprocess_compat.bounded_git_probe(
         ["git", "-C", "C:/repo", "branch", "--show-current"], timeout=1.5
@@ -165,12 +172,18 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
 
     captured = []
 
-    def fake_run(cmd, **kwargs):
+    class FakeProc:
+        returncode = 0
+
+        def communicate(self, input=None, timeout=None):
+            return "{}", ""
+
+    def fake_popen(cmd, **kwargs):
         captured.append((cmd, kwargs))
-        return SimpleNamespace(returncode=0, stdout="{}", stderr="")
+        return FakeProc()
 
     monkeypatch.setattr(shell_hooks, "windows_hide_flags", lambda: _CREATE_NO_WINDOW)
-    monkeypatch.setattr(shell_hooks.subprocess, "run", fake_run)
+    monkeypatch.setattr(shell_hooks.subprocess, "Popen", fake_popen)
 
     result = shell_hooks._spawn(
         shell_hooks.ShellHookSpec(event="post_tool_call", command="hook-bin --flag"),
@@ -179,15 +192,42 @@ def test_shell_hooks_hide_hook_command_windows(monkeypatch):
 
     assert result["returncode"] == 0
     assert captured[0][1]["creationflags"] == _CREATE_NO_WINDOW
+    # The POSIX-only process_group kwarg must NOT reach a Windows spawn.
+    assert "process_group" not in captured[0][1]
 
 
+def test_agent_browser_npx_warmup_hides_npx_window(monkeypatch):
+    """warm_agent_browser_npx_cache spawns via subprocess.Popen (not .run,
+    since the T3 security-hardening rewrite added process-tree containment
+    via Popen + communicate()) — the console-hiding flag must still survive
+    that rewrite. On Windows the real implementation now ORs in
+    CREATE_NEW_PROCESS_GROUP alongside windows_hide_flags()'s bits (for
+    _kill_process_tree's taskkill /T to have a coherent tree to kill), so
+    this checks the CREATE_NO_WINDOW bit is present rather than exact
+    equality with the whole creationflags value."""
+    from tools import browser_tool_install
 
+    captured = []
 
+    class _FakePopen:
+        def __init__(self, cmd, **kwargs):
+            captured.append((cmd, kwargs))
+            self.returncode = 0
 
+        def communicate(self, timeout=None):
+            return ("1.2.3\n", "")
 
+    monkeypatch.setattr(
+        browser_tool_install.shutil, "which",
+        lambda name, path=None: "/usr/bin/npx",
+    )
+    monkeypatch.setattr("tools.browser_tool_install.node_tool_runnable", lambda p: True)
+    monkeypatch.setattr("tools.browser_tool_install.windows_hide_flags", lambda: _CREATE_NO_WINDOW)
+    monkeypatch.setattr(browser_tool_install.subprocess, "Popen", _FakePopen)
 
-
-
+    assert browser_tool_install.warm_agent_browser_npx_cache() is True
+    assert captured[0][0][0] == "/usr/bin/npx"
+    assert captured[0][1]["creationflags"] & _CREATE_NO_WINDOW == _CREATE_NO_WINDOW
 
 
 
@@ -327,8 +367,9 @@ def test_env_probe_run_hides_console_window(monkeypatch):
     rc, out, err = env_probe._run(["python3", "--version"], timeout=1.0)
 
     assert rc == 0
-    assert len(captured) == 1, captured
-    cmd, kwargs = captured[0]
+    spawns = _spawns(captured, "python3", "--version")
+    assert len(spawns) == 1, captured
+    cmd, kwargs = spawns[0]
     assert cmd == ["python3", "--version"]
     assert kwargs["creationflags"] == _CREATE_NO_WINDOW
     # The temp-file capture contract (#67964) must survive: stdout/stderr are

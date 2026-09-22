@@ -3,6 +3,7 @@ import { Component, type ErrorInfo, type ReactNode } from 'react'
 import { Button } from '@/components/ui/button'
 import { ErrorState } from '@/components/ui/error-state'
 import { useI18n } from '@/i18n'
+import { requestSendDiagnostics } from '@/store/send-diagnostics'
 
 export interface ErrorBoundaryFallbackProps {
   error: Error
@@ -50,8 +51,24 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
   }
 
   componentDidCatch(error: Error, info: ErrorInfo) {
-    const tag = this.props.label ? `[error-boundary:${this.props.label}]` : '[error-boundary]'
+    const label = this.props.label ?? ''
+    const tag = label ? `[error-boundary:${label}]` : '[error-boundary]'
     console.error(tag, error, info.componentStack)
+
+    // Persist to desktop.log via Electron (#79428): console.error only reaches
+    // the main process for windows with a console hook, is minified, and loses
+    // the component stack. This survives the window and names the component.
+    try {
+      window.hermesDesktop?.reportRendererError?.({
+        label: new URLSearchParams(window.location.search).get('win') ?? 'main',
+        boundary: label || 'unlabeled',
+        message: error.message,
+        componentStack: info.componentStack ?? ''
+      })
+    } catch {
+      // Logging must never take the boundary down with it.
+    }
+
     this.props.onError?.(error, info)
 
     if (this.props.label === 'root' && isTransientAssistantUiLookupError(error) && this.takeAutoRecoveryAttempt()) {
@@ -127,10 +144,27 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
   const { t } = useI18n()
 
   return (
-    <div className="fixed inset-0 z-(--z-crash) grid place-items-center bg-(--ui-chat-surface-background) p-6">
+    <div
+      className="fixed inset-0 z-(--z-crash) grid place-items-center bg-(--ui-chat-surface-background) p-6"
+      // Masks a crashed app — must stay filled under window glass. Contract:
+      // `[data-glass-opaque]` in styles.css.
+      data-glass-opaque=""
+    >
       <ErrorState
         className="w-full max-w-[28rem]"
-        description={error.message || t.errors.boundaryDesc}
+        description={
+          <>
+            {t.errors.boundaryDesc}
+            {error.message ? (
+              <details className="mt-2 text-left text-xs text-muted-foreground">
+                <summary className="cursor-pointer select-none text-center">{t.errors.boundaryDetails}</summary>
+                <pre className="mt-1 max-h-32 overflow-auto whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem]">
+                  {error.message}
+                </pre>
+              </details>
+            ) : null}
+          </>
+        }
         title={t.errors.boundaryTitle}
       >
         <Button className="font-semibold" onClick={reset} size="lg">
@@ -141,6 +175,9 @@ function RootErrorFallback({ error, reset }: ErrorBoundaryFallbackProps) {
         </Button>
         <Button onClick={() => void window.hermesDesktop?.revealLogs()?.catch(() => undefined)} variant="text">
           {t.errors.openLogs}
+        </Button>
+        <Button onClick={() => requestSendDiagnostics(error.stack || error.message)} variant="text">
+          {t.errors.sendDiagnostics}
         </Button>
       </ErrorState>
     </div>

@@ -29,6 +29,18 @@ from hermes_cli.models import (
 
 
 class TestMergeHelper:
+    def test_deepseek_picker_ignores_models_dev_retired_ids(self):
+        """Native DeepSeek is curated-only: models.dev still indexes the retired ``deepseek-v4-flash*``
+        ids, so the registry union must not re-add them or reorder the picker (#117516)."""
+        with patch(
+            "agent.models_dev.list_agentic_models",
+            return_value=["deepseek-v4-flash-vision-exp", "deepseek-v4-flash", "deepseek-flash", "deepseek-v4-pro"],
+        ), patch("hermes_cli.models._PROVIDER_CATALOG_FETCHERS", {}), \
+                patch("hermes_cli.models._profile_live_catalog", return_value=None):
+            out = provider_model_ids("deepseek")
+
+        assert out == ["deepseek-flash", "deepseek-v4-pro"]
+
     def test_merge_empty_mdev_returns_curated(self):
         """When models.dev returns nothing, curated list is preserved verbatim."""
         with patch("agent.models_dev.list_agentic_models", return_value=[]):
@@ -125,7 +137,7 @@ class TestProviderModelIdsPreferred:
             return None
 
         with (
-            patch("hermes_cli.main._prompt_api_key", return_value=("sk-kimi-test", False)),
+            patch("hermes_cli.main_provider_setup._prompt_api_key", return_value=("sk-kimi-test", False)),
             patch("hermes_cli.auth._prompt_model_selection", side_effect=fake_select),
             patch("hermes_cli.config.get_env_value", return_value=""),
             patch("hermes_cli.config.save_env_value"),

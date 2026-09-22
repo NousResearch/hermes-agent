@@ -6,7 +6,7 @@
  * backend, no core edits.
  *
  * Ships OFF by default (`defaultEnabled: false`): it inventories in
- * Settings ▸ Plugins and registers nothing until the user flips the switch.
+ * Capabilities ▸ Plugins and registers nothing until the user flips the switch.
  */
 
 import './kanban.css'
@@ -30,7 +30,7 @@ import {
   useValue
 } from '@hermes/plugin-sdk'
 
-import { $boardSlug, bindApi, boardKey, fetchBoard } from './api'
+import { $boardSlug, bindApi, boardKey, fetchBoard, useKanbanScope } from './api'
 import { KanbanBoardPage } from './board'
 import { KANBAN_LOCALES } from './i18n'
 import { $newTaskLane, useKanban } from './ui'
@@ -40,12 +40,13 @@ import { $newTaskLane, useKanban } from './ui'
 // the page); hidden when nothing is in flight (or unloaded).
 function KanbanCount() {
   const k = useKanban()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
 
   // Socket-invalidated like the page (same cache); slow socketless heartbeat.
   const { data: board } = useQuery({
     queryFn: () => fetchBoard(false),
-    queryKey: boardKey(slug, false),
+    queryKey: boardKey(scope, slug, false),
     refetchInterval: 60_000
   })
 
@@ -84,7 +85,7 @@ const plugin: HermesPlugin = {
   defaultEnabled: false,
   register(ctx) {
     ctx.i18n.register(KANBAN_LOCALES)
-    ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket))
+    ctx.onDispose(bindApi(ctx.rest, ctx.storage, ctx.socket, { os: ctx.os, t: ctx.i18n.t }))
 
     // The plugin command pattern: ONE action id (`kanban.newTask`) wired into
     // two areas — a keybind (dispatch + rebindable panel row) and a palette row

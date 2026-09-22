@@ -54,6 +54,8 @@ def _make_adapter():
     adapter._bridge_process = None
     adapter._reply_prefix = None
     adapter._send_read_receipts = False
+    adapter._dm_policy = adapter._group_policy = "pairing"
+    adapter._allow_from = adapter._group_allow_from = set()
     adapter._running = False
     adapter._message_handler = None
     adapter._fatal_error_code = None
@@ -216,6 +218,9 @@ class TestConnectCleanup:
             result = await adapter.connect()
 
         assert result is False
+        assert adapter.fatal_error_code == "whatsapp_npm_install_failed"
+        assert adapter.fatal_error_retryable is False
+        assert "npm install failed" in (adapter.fatal_error_message or "")
         mock_release.assert_called_once_with("whatsapp-session", str(adapter._session_path))
         assert adapter._platform_lock_identity is None
 
@@ -334,7 +339,9 @@ class TestKillPortProcess:
                 return mock_taskkill
             return MagicMock()
 
-        with patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run:
+        with patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run, \
+             patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=True):
             _kill_port_process(3000)
 
         # netstat called
@@ -345,6 +352,31 @@ class TestKillPortProcess:
         assert any(
             call.args[0] == ["taskkill", "/PID", "12345", "/F"]
             for call in mock_run.call_args_list
+        )
+
+    @pytest.mark.windows_only
+    def test_windows_refuses_taskkill_on_non_bridge_pid(self):
+        """#89614 class: the netstat-scanned PID is a bare number — if the
+        live process is not a node bridge, taskkill must never fire."""
+        from plugins.platforms.whatsapp.adapter import _kill_port_process
+
+        netstat_output = (
+            "  Proto  Local Address          Foreign Address        State           PID\n"
+            "  TCP    0.0.0.0:3000           0.0.0.0:0              LISTENING       12345\n"
+        )
+
+        def run_side_effect(cmd, **kwargs):
+            if cmd[0] == "netstat":
+                return MagicMock(stdout=netstat_output)
+            return MagicMock()
+
+        with patch("plugins.platforms.whatsapp.adapter.subprocess.run", side_effect=run_side_effect) as mock_run, \
+             patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=False):
+            _kill_port_process(3000)
+
+        assert not any(
+            call.args[0][0] == "taskkill" for call in mock_run.call_args_list
         )
 
 
@@ -365,12 +397,30 @@ class TestKillPortProcess:
         kills = []
         with patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
                    return_value=[55555]) as mock_listeners, \
+             patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=True), \
              patch("plugins.platforms.whatsapp.adapter.os.kill",
                    side_effect=lambda pid, sig: kills.append((pid, sig))):
             wa._kill_port_process(3000)
 
         mock_listeners.assert_called_once_with(3000)
         assert kills == [(55555, signal.SIGTERM)]
+
+    @pytest.mark.linux_only
+    def test_non_bridge_listener_is_never_killed(self):
+        """#89614 class: a listener that is not a node bridge is refused."""
+        from plugins.platforms.whatsapp import adapter as wa
+
+        kills = []
+        with patch("plugins.platforms.whatsapp.adapter._listener_pids_on_port",
+                   return_value=[55555]), \
+             patch("plugins.platforms.whatsapp.adapter._pid_looks_like_node_bridge",
+                   return_value=False), \
+             patch("plugins.platforms.whatsapp.adapter.os.kill",
+                   side_effect=lambda pid, sig: kills.append((pid, sig))):
+            wa._kill_port_process(3000)
+
+        assert kills == []
 
 
 # ---------------------------------------------------------------------------
@@ -464,11 +514,11 @@ class TestNoCredsPreflight:
         adapter.config = MagicMock()
         adapter._bridge_port = 19877
         bridge = tmp_path / "bridge.js"
-        bridge.write_text("// stub")
+        bridge.write_text("// stub", encoding="utf-8")
         adapter._bridge_script = str(bridge)
         session_dir = tmp_path / "session"
         session_dir.mkdir()
-        (session_dir / "creds.json").write_text("{}")
+        (session_dir / "creds.json").write_text("{}", encoding="utf-8")
         adapter._session_path = session_dir
         adapter._bridge_log_fh = None
         adapter._fatal_error_code = None

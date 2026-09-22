@@ -1,8 +1,6 @@
 from __future__ import annotations
 
-import logging
 
-import pytest
 
 
 
@@ -34,23 +32,23 @@ def test_otlp_attrs_redact_strings_and_never_export_profile():
         "event": "gateway_health",
         "name": "gateway.lifecycle",
         "profile": "user@example.com",
-        "exit_reason": "Bearer top-secret-token for user@example.com",
+        "exit_reason": "Bearer top-secret-token-0123456789 for user@example.com",
     })
 
     assert "hermes.profile" not in attrs
-    assert "top-secret-token" not in str(attrs)
+    assert "top-secret-token-0123456789" not in str(attrs)
     assert "user@example.com" not in str(attrs)
 
 
 def test_resource_attributes_are_allowlisted_and_sanitized():
-    from agent.monitoring.gateway_health_export import _safe_resource_attributes
+    from agent.monitoring.otlp_exporter import _safe_resource_attributes
 
     attrs = _safe_resource_attributes({
         "service.name": "hermes-gateway",
         "service.instance.id": "install-1",
         "deployment.environment.name": "staging",
         "user.email": "user@example.com",
-        "authorization": "Bearer top-secret-token",
+        "authorization": "Bearer top-secret-token-0123456789",
         "custom.request.id": "unbounded",
     })
 
@@ -75,13 +73,13 @@ def test_diagnostic_log_attributes_are_allowlisted_redacted_and_profile_free():
         "name": "platform.fatal",
         "subsystem": "platform.slack",
         "profile": "user@example.com",
-        "error_code": "Bearer top-secret-token",
+        "error_code": "Bearer top-secret-token-0123456789",
         "custom": "must-not-egress",
     })
 
     assert "hermes.profile" not in attrs
     assert "hermes.custom" not in attrs
-    assert "top-secret-token" not in str(attrs)
+    assert "top-secret-token-0123456789" not in str(attrs)
 
 
 

@@ -1,6 +1,7 @@
 import type * as React from 'react'
 
 import type { ChatMessage } from '@/lib/chat-messages'
+import type { Tiered } from '@/store/interface-mode'
 import type { SessionMessage, UsageStats } from '@/types/hermes'
 
 export interface ContextSuggestion {
@@ -66,6 +67,10 @@ export interface SessionCompressResponse {
     usage?: Partial<UsageStats>
   }
   messages?: SessionMessage[]
+  /** Set with `status: 'pending'` when the gateway's compute-host wait expired
+   *  while compression is still running; the transcript refreshes from the
+   *  pushed session.info / `compacted` status edge (#97948). */
+  message?: string
   removed?: number
   status?: string
   summary?: {
@@ -118,49 +123,10 @@ export interface HandoffFailResponse {
   state?: string
 }
 
-export interface ExecCommandDispatchResponse {
-  type: 'exec' | 'plugin'
-  output?: string
-}
+export type SidebarNavId =
+  'artifacts' | 'capabilities' | 'command-center' | 'cron' | 'messaging' | 'new-session' | 'settings'
 
-export interface AliasCommandDispatchResponse {
-  type: 'alias'
-  target: string
-}
-
-export interface SkillCommandDispatchResponse {
-  type: 'skill'
-  name: string
-  message?: string
-  /** The invocation the UI renders (`/work fix the leak`). `message` is the
-   *  expanded skill body — model-facing scaffolding no surface may show. */
-  display?: string
-}
-
-export interface SendCommandDispatchResponse {
-  type: 'send'
-  message: string
-  notice?: string
-  /** Set for a skill-bundle send: see SkillCommandDispatchResponse.display. */
-  display?: string
-}
-
-export interface PrefillCommandDispatchResponse {
-  type: 'prefill'
-  message: string
-  notice?: string
-}
-
-export type CommandDispatchResponse =
-  | ExecCommandDispatchResponse
-  | AliasCommandDispatchResponse
-  | SkillCommandDispatchResponse
-  | SendCommandDispatchResponse
-  | PrefillCommandDispatchResponse
-
-export type SidebarNavId = 'artifacts' | 'command-center' | 'messaging' | 'new-session' | 'settings' | 'skills'
-
-export interface SidebarNavItem {
+export interface SidebarNavItem extends Tiered {
   /** Built-in view id, or a contributed row's namespaced contribution id. */
   id: SidebarNavId | (string & {})
   label: string
@@ -171,14 +137,28 @@ export interface SidebarNavItem {
   keybindActionId?: string
 }
 
+export interface PersistedDisplayTranscriptProvenance {
+  source: 'persisted-display'
+  connectionId: string
+  profile: string
+  storedSessionId: string
+  lineageRootId: string | null
+  coverage: 'latest-page'
+}
+
 export interface ClientSessionState {
   storedSessionId: string | null
+  transcriptAuthorityEpoch?: number
+  transcriptProvenance?: PersistedDisplayTranscriptProvenance
   messages: ChatMessage[]
   branch: string
   cwd: string
   model: string
   provider: string
   reasoningEffort: string
+  /** Gateway-reported wire level for `reasoningEffort`; '' until the backend
+   *  has stamped the current pick (so a clamp is never inferred client-side). */
+  reasoningEffortWire?: string
   serviceTier: string
   fast: boolean
   yolo: boolean
@@ -203,8 +183,15 @@ export interface ClientSessionState {
   /** Epoch ms the current turn started, or null when idle. Per-session so a
    *  background turn's elapsed timer keeps counting while another session is
    *  focused, and switching sessions doesn't zero a still-running turn's clock.
+   *  Seeded optimistically at submit (before the backend accepts), so it is a
+   *  CLOCK, not proof the turn is live — gate on turnLive for that.
    *  The global $turnStartedAt mirrors whichever session is currently viewed. */
   turnStartedAt: number | null
+  /** The backend has confirmed this turn is running (message.start, a
+   *  running=true session.info edge, or resuming onto an in-flight turn).
+   *  False while a submit is only optimistically armed — the discriminator the
+   *  no-payload settle gate needs now that turnStartedAt is seeded at send. */
+  turnLive: boolean
   /** Cumulative token usage, updated per completed turn. Per-session twin of
    *  the primary-only $currentUsage — the statusbar reads it for a focused
    *  tile's context count. Null until the first turn reports. */

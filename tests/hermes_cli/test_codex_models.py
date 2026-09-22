@@ -35,6 +35,16 @@ def test_curated_codex_fallback_excludes_chatgpt_rejected_pro_slugs(monkeypatch)
     assert CHATGPT_REJECTED_CODEX_PRO_SLUGS.isdisjoint(model_ids)
 
 
+def test_picker_offers_gpt_6_luna_when_the_account_has_astra(monkeypatch):
+    """Some Codex `/models` responses omit Luna 6 even though its Codex route accepts it."""
+    monkeypatch.setattr(
+        "hermes_cli.codex_models._fetch_models_from_api",
+        lambda access_token: ["gpt-6-astra"],
+    )
+
+    assert "gpt-6-luna" in get_codex_model_ids(access_token="codex-access-token")
+
+
 def test_picker_synthesizes_900k_variants_for_verified_slugs():
     """Every live-verified large-context slug gets an explicit ``-900k``
     picker variant directly after its base entry; slugs that genuinely

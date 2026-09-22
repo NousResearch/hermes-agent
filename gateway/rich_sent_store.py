@@ -11,6 +11,7 @@ inbound. Best-effort and dependency-free: every operation swallows errors and de
 
 from __future__ import annotations
 
+import asyncio
 import json
 import os
 import time
@@ -65,6 +66,17 @@ def record_media(chat_id, message_id, media: list[tuple[str, str]]) -> None:
     if not media or message_id is None or chat_id is None:
         return
     _update(chat_id, message_id, {"m": [[str(p), str(mt or "")] for p, mt in media if p]})
+
+
+async def record_async(chat_id, message_id, text: Optional[str]) -> None:
+    """``record`` for coroutine callers: the read-modify-write + ``os.replace``
+    runs on a worker thread so the event loop is not stalled by the filesystem."""
+    await asyncio.to_thread(record, chat_id, message_id, text)
+
+
+async def record_media_async(chat_id, message_id, media: list[tuple[str, str]]) -> None:
+    """``record_media`` for coroutine callers; see ``record_async``."""
+    await asyncio.to_thread(record_media, chat_id, message_id, media)
 
 
 def _entry(chat_id, message_id) -> dict:

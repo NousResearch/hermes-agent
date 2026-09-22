@@ -383,6 +383,7 @@ export const zh = defineLocale({
       'view.toggleStatusbar': '切换状态栏',
       'view.toggleTabStrip': '切换标签',
       'view.toggleProfileRail': '切换配置档案栏',
+      'view.toggleSimpleMode': '切换简洁模式',
       'view.showFiles': '显示文件浏览器',
       'view.showBrowser': '打开浏览器',
       'view.showTerminal': '显示终端',
@@ -4033,6 +4034,20 @@ export const zh = defineLocale({
       commentTitle: n => `批注 ${n}`,
       saveComment: '保存',
       cancelComment: '取消批注'
+    }
+  },
+
+  interfaceMode: {
+    title: '界面模式',
+    hint: '只改变显示的内容，不改变 Hermes 的能力。',
+    sessionNote: '由简洁模式设定。此处的更改仅在本次会话内生效；切换到高级模式即可保留为你的设置。',
+    simple: {
+      label: '简洁',
+      description: '用于与 Hermes 对话。只有侧边栏和聊天；没有终端、文件或差异面板。'
+    },
+    advanced: {
+      label: '高级',
+      description: '面向开发者。终端、文件、差异、状态栏和布局，按你的设置显示。'
     }
   },
 

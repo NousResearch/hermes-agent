@@ -3650,6 +3650,14 @@ export interface Translations {
     }
   }
 
+  interfaceMode: {
+    title: string
+    hint: string
+    sessionNote: string
+    simple: { label: string; description: string }
+    advanced: { label: string; description: string }
+  }
+
   zones: {
     showTabStrip: string
     hideTabStrip: string

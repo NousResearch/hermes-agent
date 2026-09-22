@@ -3980,23 +3980,55 @@ def schedule_task(
 
 # --- Worker context builder (what a spawned worker sees) ---
 
-def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
+# Worker-context renderings a caller can ask for (#95561). ``full`` is the default
+# and renders exactly what it always has.
+KANBAN_CONTEXT_MODES = ("full", "compact", "minimal")
+
+# What each trimmed mode leaves out — rendered as one note line so the model sees
+# that a smaller handoff was its own choice and can escalate to ``full``.
+_CTX_MODE_OMITTED: dict[str, str] = {
+    "compact": "prior attempts and recent work by the assignee",
+    "minimal": "body, attachments, prior attempts, recent work by the assignee, and the comment thread",
+}
+
+
+def build_worker_context(conn: sqlite3.Connection, task_id: str, mode: str = "full") -> str:
     """Everything a worker should read about its task: header, body,
     attachments, prior attempts, done-parent handoffs, the assignee's recent
     work, comments. Lists are tail-capped and fields char-capped
-    (``_CTX_MAX_*``) so the prompt stays bounded on pathological boards."""
+    (``_CTX_MAX_*``) so the prompt stays bounded on pathological boards.
+
+    ``mode`` selects how much of that to render: ``full`` (default — the
+    complete handoff), ``compact`` (body and parent handoffs, without the
+    prior-attempt or recent-work history), or ``minimal`` (header and parent
+    handoff summaries only). An unknown mode raises instead of falling back to
+    ``full`` — falling back would spend exactly the tokens the caller asked to
+    avoid.
+    """
+    if mode not in KANBAN_CONTEXT_MODES:
+        raise ValueError(
+            f"unknown worker-context mode {mode!r}: expected one of {', '.join(KANBAN_CONTEXT_MODES)}")
     task = get_task(conn, task_id)
     if not task:
         raise ValueError(f"unknown task {task_id}")
     # One clock reading so every relative age in this rendering agrees.
     now = int(time.time())
     lines: list[str] = []
-    _ctx_header(lines, task)
-    _ctx_attachments(lines, list_attachments(conn, task_id))
-    _ctx_prior_attempts(lines, conn, task_id, now)
+    _ctx_header(lines, task, include_body=mode != "minimal")
+    if mode != "full":
+        lines.append(
+            f"_Context mode `{mode}`: omitted {_CTX_MODE_OMITTED[mode]}. "
+            f"Request `context=\"full\"` for the complete handoff._")
+        lines.append("")
+    if mode != "minimal":
+        _ctx_attachments(lines, list_attachments(conn, task_id))
+    if mode == "full":
+        _ctx_prior_attempts(lines, conn, task_id, now)
     _ctx_parent_results(lines, conn, task_id, now)
-    _ctx_role_history(lines, conn, task, now)
-    _ctx_comments(lines, list_comments(conn, task_id), now)
+    if mode == "full":
+        _ctx_role_history(lines, conn, task, now)
+    if mode != "minimal":
+        _ctx_comments(lines, list_comments(conn, task_id), now)
     return "\n".join(lines).rstrip() + "\n"
 
 
@@ -4037,7 +4069,7 @@ def _ctx_tail(items: list, cap: int, noun: str) -> tuple[list, Optional[str]]:
     )
 
 
-def _ctx_header(lines: list[str], task: Task) -> None:
+def _ctx_header(lines: list[str], task: Task, *, include_body: bool = True) -> None:
     lines.append(f"# Kanban task {task.id}: {task.title}")
     lines.append("")
     lines.append(f"Assignee: {task.assignee or '(unassigned)'}")
@@ -4056,7 +4088,7 @@ def _ctx_header(lines: list[str], task: Task) -> None:
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
     lines.append("")
-    if task.body and task.body.strip():
+    if include_body and task.body and task.body.strip():
         lines.append("## Body")
         lines.append(_ctx_cap(task.body, _CTX_MAX_BODY_BYTES))
         lines.append("")

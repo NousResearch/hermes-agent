@@ -188,6 +188,23 @@ def _require_task_id(args: dict) -> str:
     return tid
 
 
+def _context_mode_arg(args: dict) -> str:
+    """``kanban_show``'s optional ``context`` arg; defaults to ``full``.
+
+    Validated here (not only in the schema enum) so a hand-written or
+    non-schema caller gets a tool error instead of a silent no-op trim.
+    """
+    from hermes_cli import kanban_db as kb
+
+    raw = args.get("context")
+    if raw is None or raw == "":
+        return "full"
+    mode = str(raw).strip().lower()
+    _check(mode in kb.KANBAN_CONTEXT_MODES,
+           f"context must be one of {', '.join(kb.KANBAN_CONTEXT_MODES)}")
+    return mode
+
+
 def _own_task_env(task_id: str, var: str) -> Optional[str]:
     """``$var`` only when this worker is scoped to ``task_id``; else None."""
     return os.environ.get(var) if os.environ.get("HERMES_KANBAN_TASK") == task_id else None
@@ -601,12 +618,20 @@ def inject_new_comments_from_env(agent: Any) -> bool:
 
 @_kanban_handler("kanban_show")
 def _handle_show(args: dict, **kw) -> str:
-    """Full task state: row, parents, children, comments, runs, last 50 events."""
+    """Full task state: row, parents, children, comments, runs, last 50 events.
+
+    ``context`` picks a trimmed handoff (see ``build_worker_context``): the
+    rendered ``worker_context`` is shortened *and* the structured logs it
+    duplicates are dropped, since the whole response is what the caller pays
+    for when a downstream worker re-orients.
+    """
     tid = _require_task_id(args)
+    mode = _context_mode_arg(args)
     with _board(args.get("board")) as (kb, conn):
         task = _existing_task(kb, conn, tid)
-        return json.dumps({
-            "task": _fields(task, _TASK_FIELDS),
+        task_fields = _fields(task, _TASK_FIELDS)
+        payload: dict[str, Any] = {
+            "task": task_fields,
             "parents": kb.parent_ids(conn, tid),
             # Non-terminal parents; on a running card this means the dependency
             # gate is not holding it and kanban_complete will refuse.
@@ -618,7 +643,17 @@ def _handle_show(args: dict, **kw) -> str:
             "events": [_fields(e, _EVENT_FIELDS) for e in kb.list_events(conn, tid)[-50:]],
             "runs": [_fields(r, _RUN_FIELDS) for r in kb.list_runs(conn, tid)],
             # Same string build_worker_context hands the dispatcher at spawn time.
-            "worker_context": kb.build_worker_context(conn, tid)})
+            "worker_context": kb.build_worker_context(conn, tid, mode=mode)}
+        if mode != "full":
+            payload["context_mode"] = mode
+            # The event log and the run history are orchestration/attempt detail the
+            # trimmed handoff already summarises — dropping them is where the saving is.
+            del payload["events"]
+            del payload["runs"]
+        if mode == "minimal":
+            del payload["comments"]
+            task_fields.pop("body", None)
+        return json.dumps(payload)
 
 
 @_kanban_handler("kanban_list")

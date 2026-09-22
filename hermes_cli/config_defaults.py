@@ -1454,7 +1454,8 @@ DEFAULT_CONFIG = {
         "write_approval": False,
         # Audit ledger: every skill mutation appends to ~/.hermes/skills/.curator_ledger.jsonl with
         # before/after hashes (blobs under ~/.hermes/.curator_backups/blobs/); powers `hermes
-        # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
+        # curator ledger` / `rollback <entry-id>`. The recent window is size-bounded; failures
+        # never block the mutation.
         # See #79686.
         "ledger": True,
     },

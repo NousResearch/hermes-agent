@@ -153,12 +153,14 @@ The same subcommands are available as the `/curator` slash command inside a runn
 
 ## Audit ledger and single-edit rollback
 
-Whole-run snapshots answer "undo everything the last curator pass did" — but sometimes you want to know *who changed what* and undo exactly one mutation. Every skill mutation — curator auto-transitions, agent `skill_manage` calls, and your own CLI archive/restore/purge — appends one entry to the append-only JSONL ledger at `~/.hermes/skills/.curator_ledger.jsonl`:
+Whole-run snapshots answer "undo everything the last curator pass did" — but sometimes you want to know *who changed what* and undo exactly one mutation. Every skill mutation — curator auto-transitions, agent `skill_manage` calls, and your own CLI archive/restore/purge — appends one entry to the JSONL ledger at `~/.hermes/skills/.curator_ledger.jsonl`:
 
 - **actor** — `curator` (background review fork / auto-transitions), `agent` (foreground agent tool calls), or `user` (CLI commands)
 - **action** — `create`, `edit`, `patch`, `delete`, `write_file`, `remove_file`, `archive`, `restore`, `purge`, `rollback`
 - **evidence** — delete intent (`absorbed_into` for consolidations, empty for prunes, and whether the recoverable-archive path handled it), triggering session id when available
 - **before/after** — per-file `{path, sha256}` manifests. File contents are stored content-addressed (deduped by hash) under `~/.hermes/.curator_backups/blobs/`, so a hundred entries touching the same unchanged file cost one blob.
+
+The ledger retains a recent size-bounded audit window: after it crosses 5 MiB, Hermes atomically trims the oldest complete entries back to 4 MiB. Recent entry IDs remain available for single-edit rollback while long-running profiles no longer accumulate ledger data indefinitely.
 
 ```bash
 hermes curator ledger                  # newest 20 entries

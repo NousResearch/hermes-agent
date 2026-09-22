@@ -72,6 +72,26 @@ def test_compact_rewrites_legacy_full_manifests_in_place(ledger_home):
     assert "not json" in path.read_text(encoding="utf-8")
 
 
+def test_append_trims_ledger_to_recent_complete_entries(ledger_home, monkeypatch):
+    from tools import skill_ledger
+
+    monkeypatch.setattr(skill_ledger, "_LEDGER_MAX_BYTES", 1_200)
+    monkeypatch.setattr(skill_ledger, "_LEDGER_TRIM_BYTES", 700)
+    ids = [
+        skill_ledger.append_entry(
+            "patch", f"skill-{i}", evidence={"detail": str(i) * 180}
+        )
+        for i in range(12)
+    ]
+
+    path = skill_ledger.ledger_path()
+    rows = skill_ledger.list_entries()
+    assert path.stat().st_size <= skill_ledger._LEDGER_MAX_BYTES
+    assert rows[0]["id"] == ids[-1]
+    assert ids[0] not in {row["id"] for row in rows}
+    assert all(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+
+
 def test_gc_blobs_removes_only_unreferenced(ledger_home):
     """The blob store was write-only (#107539): after compaction, blobs no entry references are
     deleted; every referenced blob survives so any entry can still roll back."""

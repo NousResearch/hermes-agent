@@ -12,13 +12,13 @@ from __future__ import annotations
 
 import contextvars
 import hashlib
-from contextlib import suppress
 import json
 import logging
 import os
 import re
 import tarfile
 import uuid
+from contextlib import contextmanager, suppress
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Tuple
@@ -36,6 +36,11 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
 _NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
+# Keep a useful recent audit window without letting nightly curator activity grow the
+# append-only file forever.  Trimming to a lower watermark amortizes the rewrite; the
+# newest entry is always retained even if one unusually large mutation exceeds it.
+_LEDGER_MAX_BYTES = 5 * 1024 * 1024
+_LEDGER_TRIM_BYTES = 4 * 1024 * 1024
 # Transient/regeneratable local artifacts that must never be swept into a
 # snapshot, no matter how deep they sit under the skill dir — a stray venv or
 # node_modules turns a multi-KB ledger capture into gigabytes of blobs (#107539).
@@ -84,6 +89,48 @@ def ledger_path() -> Path:
 
 def blobs_dir() -> Path:
     return get_hermes_home() / ".curator_backups" / "blobs"
+
+
+@contextmanager
+def _ledger_lock():
+    """Serialize append/rewrite operations across processes for the active profile."""
+    path = _skills_dir() / ".locks" / "curator_ledger.lock"
+    path.parent.mkdir(parents=True, exist_ok=True)
+    with open(path, "a+b") as fh:
+        if os.name == "nt":
+            import msvcrt
+            fh.seek(0)
+            msvcrt.locking(fh.fileno(), msvcrt.LK_LOCK, 1)
+        else:
+            import fcntl
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        try:
+            yield
+        finally:
+            with suppress(Exception):
+                if os.name == "nt":
+                    fh.seek(0)
+                    msvcrt.locking(fh.fileno(), msvcrt.LK_UNLCK, 1)
+                else:
+                    fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+
+
+def _trim_ledger_if_needed(path: Path) -> None:
+    """Atomically retain the newest complete JSONL rows at the trim watermark."""
+    if path.stat().st_size <= _LEDGER_MAX_BYTES:
+        return
+    lines = path.read_bytes().splitlines(keepends=True)
+    kept: List[bytes] = []
+    size = 0
+    for line in reversed(lines):
+        if kept and size + len(line) > _LEDGER_TRIM_BYTES:
+            break
+        kept.append(line)
+        size += len(line)
+    data = b"".join(reversed(kept))
+    tmp = path.with_name(path.name + ".trim.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
 
 
 def ledger_enabled() -> bool:
@@ -288,8 +335,11 @@ def append_entry(
             "before": before or [], "after": after or []}
         path = ledger_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        encoded = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
+        with _ledger_lock():
+            with open(path, "ab") as fh:
+                fh.write(encoded)
+            _trim_ledger_if_needed(path)
         return entry["id"]
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
@@ -302,28 +352,29 @@ def compact_ledger() -> Tuple[int, int, int]:
     new file replaces the old only once fully written. Malformed lines are kept verbatim. Follow with
     ``gc_blobs()``: dropped references leave blobs nothing can restore."""
     path = ledger_path()
-    try:
-        raw = path.read_bytes()
-    except OSError:
-        return 0, 0, 0
-    out, kept = [], 0
-    for line in raw.decode("utf-8").splitlines():
-        if not line.strip():
-            continue
+    with _ledger_lock():
         try:
-            row = json.loads(line)
-        except json.JSONDecodeError:
+            raw = path.read_bytes()
+        except OSError:
+            return 0, 0, 0
+        out, kept = [], 0
+        for line in raw.decode("utf-8").splitlines():
+            if not line.strip():
+                continue
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                out.append(line)
+                continue
+            if isinstance(row, dict) and row.get("action") != "pre-rollback":
+                row["before"], row["after"] = _delta(row.get("before") or [], row.get("after") or [])
+                line = json.dumps(row, ensure_ascii=False)
             out.append(line)
-            continue
-        if isinstance(row, dict) and row.get("action") != "pre-rollback":
-            row["before"], row["after"] = _delta(row.get("before") or [], row.get("after") or [])
-            line = json.dumps(row, ensure_ascii=False)
-        out.append(line)
-        kept += 1
-    data = ("\n".join(out) + "\n").encode("utf-8") if out else b""
-    tmp = path.with_name(path.name + ".compact.tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+            kept += 1
+        data = ("\n".join(out) + "\n").encode("utf-8") if out else b""
+        tmp = path.with_name(path.name + ".compact.tmp")
+        tmp.write_bytes(data)
+        os.replace(tmp, path)
     return kept, len(raw), len(data)
 
 

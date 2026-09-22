@@ -1,0 +1,45 @@
+"""Deterministic handoff from Task Orchestrator to repair profiles."""
+
+from __future__ import annotations
+
+from typing import Optional
+
+
+# Ordered from narrowest scope to broadest so a PR audit is not swallowed by
+# the generic cron or maintenance rules.
+_REPAIR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
+    # Match the actual work type before incidental evidence quoted in a card's
+    # instructions.  PR feedback cards often contain phrases such as
+    # "not a hermes command" as fail-closed guidance; those phrases must not
+    # divert them to maintenance instead of the fixed PR-feedback worker.
+    (("local pr ci", "audit pr", "audit this pull request"), "pr-local-ci-auditor"),
+    # Maintenance conditions take priority over generic PR-feedback routing: a card
+    # with "GitHub PR feedback" in the title but "usage limits" in the body failed
+    # because of quota exhaustion, not a PR-feedback logic error.
+    (("usage limits", "untrusted receipt", "missing hermes_cli", "audit-pr unavailable", "inspect-pr unavailable", "audit_deferred"), "hermes-maintenance-steward"),
+    (("github pr feedback", "complete-feedback", "inspect-pr"), "pr-repair-steward"),
+    (("federated runner", "federation", "federated"), "federation-steward"),
+    (("pytest suite", "test suite", "test coverage"), "test-contract-steward"),
+    (("content discovery", "useful content", "community discovery"), "nerdy-content-scout"),
+    (("synthesize gaps", "route bounded children", "synthesis"), "synthesizer"),
+    (("market data", "authority freshness", "stale market"), "market-data-authority-auditor"),
+    (("upstream pr", "upstream issue", "nousresearch", "upstream/main"), "hermes-upstream-auditor"),
+    (("live-trading", "paper-safety", "paper-safety", "broker safety"), "paper-safety-guardian"),
+    (("alpaca", "broker credential", "broker validation"), "coding-expert"),
+    (("dashboard.secret", "state.db", "retired-wal", "gateway restart"), "hermes-maintenance-steward"),
+    (("cron", "scheduled job", "cron job"), "hermes-maintenance-steward"),
+    (("rnd-", "resolve rnd", "adversarial-fuzz", "dependency skew", "fuzz test", "permutation"), "rnd-adversarial-tester"),
+)
+
+
+def repair_profile_for_task(title: Optional[str], body: Optional[str]) -> Optional[str]:
+    """Return the specialist profile for known repair scopes.
+
+    Matching is intentionally conservative: an unknown task stays in triage
+    for explicit scope rather than letting the orchestrator perform work.
+    """
+    text = f"{title or ''}\n{body or ''}".casefold()
+    for needles, profile in _REPAIR_RULES:
+        if any(needle in text for needle in needles):
+            return profile
+    return None

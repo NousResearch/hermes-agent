@@ -73,6 +73,11 @@ class _DispatcherSettings:
 
 def _resolve_dispatcher_settings(kanban_cfg: dict, kb: Any) -> _DispatcherSettings:
     """Parse and log the dispatcher settings in their established order."""
+    # Profile gateways may carry only model routing settings.  Dispatcher
+    # capacity is host-wide, so inherit the installation-root policy before
+    # resolving caps; otherwise a named profile can become an uncapped second
+    # dispatcher when its profile config omits ``kanban.max_in_progress``.
+    kanban_cfg = _kbd().shared_kanban_config(kanban_cfg)
     try:
         interval = float(kanban_cfg.get("dispatch_interval_seconds", 60) or 60)
     except (ValueError, TypeError):
@@ -213,9 +218,12 @@ class _KanbanDispatcher:
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
         guard = kwargs.pop("priority_runtime_guard")
-        kwargs["max_in_progress"] = _kbd().resolve_max_in_progress(
-            self.settings.max_in_progress, priority_runtime_guard=guard,
+        kwargs["max_in_progress"] = _kbd().resolve_global_max_in_progress(
+            self.settings.max_in_progress,
         )
+        # The protected runtime cap applies to local inference only. Cloud
+        # workers must continue to use the normal host concurrency budget.
+        kwargs["local_model_cap"] = _kbd().resolve_priority_runtime_local_cap(guard)
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).

@@ -1163,7 +1163,9 @@ def test_named_profile_action_isolates_parent_env_and_loads_target_env(monkeypat
         "BLUEBUBBLES_PASSWORD": None,
         "NTFY_TOPIC": None,
         "NTFY_TOKEN": None,
-        "ZAI_API_KEY": None,
+        # ZAI_API_KEY is a model-provider credential declared by a provider plugin;
+        # _shared_model_provider_secrets intentionally seeds it from the root .env.
+        "ZAI_API_KEY": "default-zai",
         "A2A_AUTH_MINI": None,
         "EXTERNAL_PROFILE_AUTH": None,
     }

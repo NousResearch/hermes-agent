@@ -52,6 +52,28 @@ def test_exact_runtime_snapshot_lowers_configured_performance_cap(tmp_path):
         complete=True,
     )
 
+
+def test_global_dispatch_budget_ignores_active_priority_guard(tmp_path):
+    root = tmp_path / "private-project"
+    root.mkdir()
+
+    assert dispatcher.resolve_global_max_in_progress(8) == 8
+
+
+def test_priority_guard_cap_is_reserved_for_local_models(tmp_path):
+    root = tmp_path / "private-project"
+    root.mkdir()
+    scan = priority.ProcessScan(
+        snapshots=(
+            priority.ProcessSnapshot(pid=42, argv=("python3", "main.py"), cwd=str(root)),
+        ),
+        complete=True,
+    )
+
+    assert dispatcher.resolve_priority_runtime_local_cap(
+        _guard(root, protected_cap=2), process_scan=scan,
+    ) == 2
+
     assert (
         dispatcher.resolve_max_in_progress(
             8,

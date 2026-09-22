@@ -1,8 +1,10 @@
 """Profile-scoped credential resolution for multi-profile gateway multiplexing.
 
-The multiplexing gateway serves many profiles from one process; each profile's
-``.env`` keys **cannot** be unioned into ``os.environ`` (profile A's keys would
-leak into profile B's turns and subprocesses). This module is a fail-closed,
+The multiplexing gateway serves many profiles from one process; platform and
+service ``.env`` keys **cannot** be unioned into ``os.environ`` (profile A's keys
+would leak into profile B's turns and subprocesses). Cloud model-provider keys
+are the deliberate installation-wide exception and are copied into each routed
+scope from the root store. This module is a fail-closed,
 context-local secret scope: ``set_secret_scope(mapping)`` installs the active
 profile's secrets for the current task (a contextvar, so it propagates into the
 agent's worker thread via ``copy_context()``); ``get_secret(name)`` reads from
@@ -239,6 +241,80 @@ _ENV_FILE_CACHE: "OrderedDict[str, Tuple[tuple, Dict[str, str]]]" = OrderedDict(
 _ENV_FILE_CACHE_LOCK = threading.Lock()
 _ENV_FILE_CACHE_MAX = 64  # one entry per profile home in practice
 
+# Model-provider credentials are installation-wide resources.  A multiplexed Hermes
+# gateway may serve dozens of named profiles, but those profiles should not need a
+# duplicate copy of every cloud-model key in their private ``.env`` files.  Keep this
+# allowlist derived from the provider registry (plus the legacy OpenAI rows that are
+# owned by ``hermes_cli.auth`` rather than a provider plugin); platform, relay and
+# arbitrary service credentials stay profile-scoped.
+_MODEL_PROVIDER_SECRET_FALLBACKS = frozenset({
+    "OPENAI_API_KEY", "OPENAI_BASE_URL", "OPENROUTER_API_KEY", "OPENROUTER_BASE_URL",
+    "LM_API_KEY", "LM_BASE_URL",
+})
+_MODEL_PROVIDER_SECRET_NAMES: frozenset[str] | None = None
+_MODEL_PROVIDER_SECRET_NAMES_LOCK = threading.Lock()
+
+
+def _model_provider_secret_names() -> frozenset[str]:
+    """Return env names that may be shared from the installation root.
+
+    Provider plugins are discovered lazily, so discovery failures must not prevent a
+    profile from booting.  The fallback covers the built-in auth rows that predate
+    provider plugins; all plugin-declared API keys and base-URL overrides are added
+    when discovery is available.
+    """
+    global _MODEL_PROVIDER_SECRET_NAMES
+    cached = _MODEL_PROVIDER_SECRET_NAMES
+    if cached is not None:
+        return cached
+    names = set(_MODEL_PROVIDER_SECRET_FALLBACKS)
+    try:
+        from providers import list_providers
+
+        for profile in list_providers():
+            names.update(str(name).strip() for name in getattr(profile, "env_vars", ()) if str(name).strip())
+    except Exception:
+        # Secret scope construction is on every profile turn; a plugin import must
+        # never take the whole gateway down or widen the shared-secret boundary.
+        pass
+    result = frozenset(names)
+    with _MODEL_PROVIDER_SECRET_NAMES_LOCK:
+        if _MODEL_PROVIDER_SECRET_NAMES is None:
+            _MODEL_PROVIDER_SECRET_NAMES = result
+        return _MODEL_PROVIDER_SECRET_NAMES
+
+
+def _shared_model_provider_secrets(hermes_home: Path) -> Dict[str, str]:
+    """Load provider credentials from the installation root for named profiles only.
+
+    The root ``.env`` remains the single shared credential store.  A profile's own
+    ``.env`` is layered afterwards by :func:`build_profile_secret_scope`, so an
+    explicit per-profile key still wins without copying or mutating any file.
+    """
+    try:
+        from hermes_constants import get_default_hermes_root, hermes_home_key, named_profile_home
+
+        if named_profile_home(hermes_home) is None:
+            return {}
+        root = get_default_hermes_root()
+        if hermes_home_key(root) == hermes_home_key(hermes_home):
+            return {}
+        allowed = _model_provider_secret_names()
+        shared = {key: value for key, value in load_env_file(root / ".env").items() if key in allowed}
+        try:
+            from hermes_cli.env_loader import get_secret_source_values
+
+            shared.update(
+                (key, value)
+                for key, value in get_secret_source_values(root).items()
+                if key in allowed
+            )
+        except Exception:
+            pass
+        return shared
+    except Exception:
+        return {}
+
 
 def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
     """Drop one path from the ``load_env_file()`` memo, or all of them."""
@@ -317,10 +393,17 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
 
 
 def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
-    """Build a profile's secret mapping from ``<home>/.env`` plus its external
-    secret sources. Global vars are NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` — so the scope holds only profile secrets."""
-    secrets = load_env_file(Path(hermes_home) / ".env")
+    """Build a profile's secret mapping from shared model keys and its own secrets.
+
+    Named profiles inherit only model-provider credentials from the installation
+    root; their platform, relay, and arbitrary service credentials remain private.
+    The profile's own ``.env`` and external secret source are layered afterwards,
+    so an explicit profile key wins. Global vars are NOT copied in — ``get_secret``
+    reads those from ``os.environ`` — so the scope still contains only credentials
+    that are authorized for this profile.
+    """
+    secrets = _shared_model_provider_secrets(Path(hermes_home))
+    secrets.update(load_env_file(Path(hermes_home) / ".env"))
     try:
         from hermes_cli.env_loader import get_secret_source_values
         external_secrets = get_secret_source_values(Path(hermes_home))

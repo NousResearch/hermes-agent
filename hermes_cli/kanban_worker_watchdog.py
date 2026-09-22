@@ -78,6 +78,7 @@ class WatchdogTickResult:
     """Task IDs changed or requiring an operator during one scan."""
 
     blocked: list[str] = field(default_factory=list)
+    deferred: list[str] = field(default_factory=list)
     restarted: list[str] = field(default_factory=list)
     needs_operator: list[str] = field(default_factory=list)
 
@@ -308,7 +309,7 @@ def _reconcile_repairs(conn, result: WatchdogTickResult) -> None:
     from hermes_cli import kanban_db as kb
 
     rows = conn.execute(
-        "SELECT id FROM tasks WHERE status = 'blocked' "
+        "SELECT id FROM tasks WHERE status = 'todo' "
         "AND EXISTS (SELECT 1 FROM task_events e "
         "            WHERE e.task_id = tasks.id "
         "              AND e.kind = 'watchdog_repair_created')"
@@ -338,7 +339,11 @@ def _reconcile_repairs(conn, result: WatchdogTickResult) -> None:
             result.needs_operator.append(task_id)
             continue
         if repair.status == "done":
-            if kb.unblock_task(conn, task_id):
+            kb.promote_task(
+                conn, task_id, actor="worker-health-watchdog",
+                reason=f"repair task {repair_id} completed", force=True,
+            )
+            if (current := kb.get_task(conn, task_id)) is not None and current.status == "ready":
                 _record_event(
                     conn,
                     task_id,
@@ -454,7 +459,7 @@ def run_watchdog_tick(
             f"({finding.count} repeated signals; fingerprint "
             f"{finding.fingerprint})"
         )
-        if not kb.suspend_task_for_watchdog(
+        if not kb.defer_task_for_watchdog(
             conn,
             task.id,
             expected_run_id=task.current_run_id,
@@ -464,7 +469,7 @@ def run_watchdog_tick(
         ):
             result.needs_operator.append(task.id)
             continue
-        result.blocked.append(task.id)
+        result.deferred.append(task.id)
 
         if attempt_count >= max(0, config.max_recovery_attempts):
             _record_event(

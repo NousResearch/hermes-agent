@@ -83,10 +83,9 @@ def test_fresh_process_sweep_books_the_logged_exit_code(kanban_home, rc, event, 
             assert run["outcome"] == "rate_limited"
 
 
-def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
-    """The third consecutive clean exit trips the violation budget and ``recompute_ready``
-    must not promote the card back the same tick (``consecutive_failures`` is still below
-    ``failure_limit``); ``unblock_task`` lifts the hold."""
+def test_violation_budget_trip_routes_to_intake(kanban_home):
+    """The third consecutive clean exit trips the violation budget; the task is
+    routed to the intake router for repair rather than left stranded as ``blocked``."""
     with kbc.connect() as conn:
         tid = kb.create_task(conn, title="loop", assignee="a")
         for i in range(kbd._PROTOCOL_VIOLATION_FAILURE_LIMIT):
@@ -94,13 +93,9 @@ def test_violation_budget_trip_holds_until_operator_unblock(kanban_home):
             kbd.detect_crashed_workers(conn)
             kb.recompute_ready(conn, failure_limit=10)
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
+        assert task.status in ("ready", "triage")
+        assert task.assignee == "task-intake-router"
         assert task.consecutive_failures < 10
-
-        kb.unblock_task(conn, tid)
-        assert kb.get_task(conn, tid).status == "ready"
-        kb.recompute_ready(conn, failure_limit=10)
-        assert kb.get_task(conn, tid).status == "ready"
 
 
 def test_plain_budget_trip_still_auto_recovers(kanban_home):

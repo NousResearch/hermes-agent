@@ -299,6 +299,35 @@ def _fleet_covered_gateways(fleet: list) -> set[tuple[str, str]] | None:
     return covered
 
 
+def _inventoryless_marker_allows_empty_fleet() -> bool:
+    """Whether the latest receipt can safely explain an empty gateway probe.
+
+    An old inventory-less marker must not borrow gateway ownership from a
+    receipt.  It may, however, use a receipt only to reject a manual or
+    unclassified runtime: those need their own handoff and an empty gateway
+    matrix cannot establish that they are safe.  No runtime record, or only
+    Desktop/supervisor-owned serve records, describes a host that owes no
+    gateway restart.
+    """
+    from hermes_cli.update_receipt import read_latest_receipt
+
+    receipt = read_latest_receipt() or {}
+    if not isinstance(receipt, dict):
+        return False
+    plan = receipt.get("plan") or {}
+    runtimes = plan.get("runtimes") if isinstance(plan, dict) else None
+    if runtimes is None:
+        return True
+    if not isinstance(runtimes, list):
+        return False
+    return all(
+        isinstance(runtime, dict)
+        and runtime.get("kind") in ("serve", "dashboard")
+        and runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
+        for runtime in runtimes
+    )
+
+
 def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: set[tuple[str, str]] | None, *, accept_states: tuple = ("current",)) -> bool:
     """Require a successor at the expected SHA for every owed gateway identity."""
     if not expected_sha:
@@ -399,7 +428,23 @@ def _marker_only_restart_obsolete() -> bool:
         logger.debug("Fleet probe failed; keeping fleet-restart-pending marker: %s", exc)
         return False
     if not fleet:
-        return False  # Absence cannot prove recovery of the recorded inventory.
+        # An inventory-less marker has no recorded gateway to recover.  When its
+        # target is still this checkout, an empty gateway probe is the expected
+        # steady state for Desktop-supervised serve-only installs, rather than
+        # evidence of a missing restart.  Do not extend this exception to an
+        # older marker: a later checkout must still leave it pending.
+        if (
+            owed is None
+            and checkout_sha == expected_sha
+            and _inventoryless_marker_allows_empty_fleet()
+        ):
+            _clear_fleet_restart_pending_marker()
+            logger.debug(
+                "Fleet-restart-pending marker discharged: no gateway fleet at %s",
+                expected_sha[:10],
+            )
+            return True
+        return False  # Absence cannot prove recovery of a recorded inventory.
     covered = _fleet_covered_gateways(fleet)
     if covered is None:
         return False  # unidentified runtime: the matrix cannot vouch for it

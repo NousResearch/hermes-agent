@@ -9,6 +9,7 @@ from hermes_constants import get_hermes_home
 import hermes_cli.update_host_obligation as host_obligation
 
 MANUAL = {"kind": "serve", "profile": "work", "pid": 900, "supervisor": "manual-serve", "restart_via": "respawn-argv", "code_sha": "old", "detail": {"create_time": 1000.0}}
+DESKTOP = {"kind": "serve", "profile": "desktop", "pid": 901, "supervisor": "desktop", "code_sha": "new"}
 CURRENT = {"profile": "alpha", "state": "current", "code_sha": "new"}
 GATEWAY = {"kind": "gateway", "profile": "alpha", "code_sha": "old"}
 
@@ -20,7 +21,10 @@ CASES = [
     ("unknown-successor", {"outcome": "failed", "plan": {"runtimes": [GATEWAY]}}, None, [dict(CURRENT, state="unknown")], True),
     ("marker-no-sha", {}, "", [CURRENT], True),
     ("checkout-moved", {}, "old", [CURRENT], True),
-    ("marker-empty-no-receipt", {}, "new", [], True),
+    # A Desktop-supervised serve-only host has no gateway rows to reconcile.  An
+    # inventory-less marker at the current checkout must not keep failing later
+    # updates merely because the gateway probe is empty (#118742).
+    ("desktop-only-empty-fleet", {"plan": {"runtimes": [DESKTOP]}}, "new", [], False),
     ("markerless-stamped-manual", {"outcome": "partial", "plan": {"runtimes": [MANUAL]}}, None, [], False),
     ("old-manual-new-marker", {"outcome": "success", "post_update": {"sha": "old"}, "plan": {"runtimes": [MANUAL]}, "fleet": []}, "new", [], True),
     ("same-sha-not-ownership", {"outcome": "success", "post_update": {"sha": "new"}, "plan": {"runtimes": [MANUAL]}, "fleet": []}, "new", [], True),

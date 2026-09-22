@@ -2708,8 +2708,8 @@ class FeishuAdapter(BasePlatformAdapter):
 
     async def _download_remote_document(self, file_url: str, *, default_ext: str, preferred_name: str) -> tuple[str, str]:
         from gateway.platforms.base import _ssrf_redirect_guard
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        if not is_safe_url(file_url):
+        from tools.url_safety import create_ssrf_safe_async_client, async_is_safe_url
+        if not await async_is_safe_url(file_url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {file_url[:80]}")
         async with create_ssrf_safe_async_client(
             timeout=30.0, follow_redirects=True, event_hooks={"response": [_ssrf_redirect_guard]},

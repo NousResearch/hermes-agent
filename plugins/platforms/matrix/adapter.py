@@ -1494,8 +1494,8 @@ class MatrixAdapter(BasePlatformAdapter):
     async def send_image(
         self, chat_id: str, image_url: str, caption: Optional[str] = None, reply_to: Optional[str] = None,
         metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(image_url):
+        from tools.url_safety import async_is_safe_url
+        if not await async_is_safe_url(image_url):
             logger.warning("Matrix: blocked unsafe image URL (SSRF protection)")
             return await super().send_image(chat_id, image_url, caption, reply_to, metadata=metadata)
         try:
@@ -1509,8 +1509,8 @@ class MatrixAdapter(BasePlatformAdapter):
 
     async def _download_external_media_with_cap(self, url: str) -> tuple[bytes, str, str]:
         """Download external media while enforcing redirect safety and size caps."""
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(url):
+        from tools.url_safety import async_is_safe_url
+        if not await async_is_safe_url(url):
             raise ValueError("blocked unsafe media URL")
 
         async def _read_capped(resp, chunks, content_type) -> tuple[bytes, str]:
@@ -1548,7 +1548,7 @@ class MatrixAdapter(BasePlatformAdapter):
                             # Re-validate EVERY hop: a public URL can 302 toward loopback/metadata endpoints,
                             # and checking only the final URL is too late (the hop already connected).
                             fetch_url = urljoin(fetch_url, location)
-                            if not is_safe_url(fetch_url):
+                            if not await async_is_safe_url(fetch_url):
                                 raise ValueError("blocked unsafe redirect URL")
                             continue
                         resp.raise_for_status()

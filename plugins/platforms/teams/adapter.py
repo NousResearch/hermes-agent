@@ -464,9 +464,9 @@ class TeamsAdapter(BasePlatformAdapter):
     async def _fetch_attachment_bytes(self, url: str, timeout: float = 30.0) -> bytes:
         """Download attachment bytes with SSRF protection. Connector URLs get the bot's bearer token;
         redirects and body size go through the shared guards (as the cache_*_from_url helpers)."""
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+        from tools.url_safety import create_ssrf_safe_async_client, async_is_safe_url
         from gateway.platforms.base import _ssrf_redirect_guard, _read_httpx_body_with_limit
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             raise ValueError("Blocked unsafe attachment URL (SSRF protection)")
         headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)"}
         if _is_botframework_attachment_url(url):

@@ -208,7 +208,10 @@ class TestDiscordMultiImage:
             ClientTimeout=lambda **kwargs: kwargs,
         )
         monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
-        monkeypatch.setattr(discord_adapter, "is_safe_url", lambda url: True)
+        async def _allow_url(url):
+            return True
+
+        monkeypatch.setattr(discord_adapter, "async_is_safe_url", _allow_url)
 
         mock_channel = MagicMock()
         mock_channel.send = AsyncMock(return_value=MagicMock(id=1))
@@ -255,11 +258,10 @@ class TestDiscordMultiImage:
             ClientTimeout=lambda **kwargs: kwargs,
         )
         monkeypatch.setitem(sys.modules, "aiohttp", fake_aiohttp)
-        monkeypatch.setattr(
-            discord_adapter,
-            "is_safe_url",
-            lambda url: not str(url).startswith("http://169.254.169.254"),
-        )
+        async def _url_is_safe(url):
+            return not str(url).startswith("http://169.254.169.254/")
+
+        monkeypatch.setattr(discord_adapter, "async_is_safe_url", _url_is_safe)
         adapter._is_forum_parent = MagicMock(return_value=False)
         mock_channel = MagicMock()
         mock_channel.send = AsyncMock(return_value=MagicMock(id=1))

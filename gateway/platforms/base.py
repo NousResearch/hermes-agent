@@ -482,9 +482,9 @@ def safe_url_for_log(url: str, max_len: int = 80) -> str:
 async def _ssrf_redirect_guard(response):
     """Re-validate each redirect target (a public URL 302-ing to http://169.254.169.254/ would
     bypass the pre-flight is_safe_url()). Async because httpx awaits response event hooks."""
-    from tools.url_safety import is_safe_url, redirect_target_from_response
+    from tools.url_safety import async_is_safe_url, redirect_target_from_response
     redirect_url = redirect_target_from_response(response)
-    if redirect_url and not is_safe_url(redirect_url):
+    if redirect_url and not await async_is_safe_url(redirect_url):
         raise ValueError(f"Blocked redirect to private/internal address: {safe_url_for_log(redirect_url)}")
 
 
@@ -602,9 +602,9 @@ async def _cache_media_from_url(url: str, ext: str, retries: int, *, media_type:
                                 cache_fn, log_label: str) -> str:
     """Shared downloader behind ``cache_*_from_url``: SSRF-checked (pre-flight + per-redirect;
     raises ValueError), size-capped, linear-backoff retries on timeouts / 429 / 5xx."""
-    from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
+    from tools.url_safety import create_ssrf_safe_async_client, async_is_safe_url
     import httpx
-    if not is_safe_url(url):
+    if not await async_is_safe_url(url):
         raise ValueError(f"Blocked unsafe URL (SSRF protection): {safe_url_for_log(url)}")
     headers = {"User-Agent": "Mozilla/5.0 (compatible; HermesAgent/1.0)", "Accept": accept}
     async with create_ssrf_safe_async_client(

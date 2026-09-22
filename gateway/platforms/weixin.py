@@ -1116,8 +1116,8 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         return await self._send_file_result(chat_id, audio_path, caption or self.warning_text("[voice message as attachment]"), "send_voice", force_file_attachment=True)
 
     async def _download_remote_media(self, url: str) -> str:
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(url):
+        from tools.url_safety import async_is_safe_url
+        if not await async_is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL (SSRF protection): {url}")
         assert self._send_session is not None
         data = await _download_bytes(self._send_session, url=url, timeout_seconds=30)

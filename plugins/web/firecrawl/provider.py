@@ -15,7 +15,7 @@ import httpx
 from plugins.web._common import BaseWebSearchProvider, keyless_extract, keyless_search, lazy_ensure, search_fail, search_ok, setup_schema
 from tools import managed_tool_gateway as _gateway
 from tools import tool_backend_helpers as _backend_helpers
-from tools.url_safety import is_safe_url
+from tools.url_safety import async_is_safe_url
 # Module-level (cheap import) so tests can monkeypatch the policy gate on this module.
 from tools.website_policy import check_website_access
 
@@ -261,7 +261,7 @@ async def _scrape_one(url: str, formats: List[str], format: Optional[str]) -> Di
         if not isinstance(metadata, dict):
             metadata = metadata.model_dump() if hasattr(metadata, "model_dump") else getattr(metadata, "__dict__", {})
         title, final_url = metadata.get("title", ""), metadata.get("sourceURL", url)
-        if not is_safe_url(final_url):
+        if not await async_is_safe_url(final_url):
             logger.info("Blocked redirected web_extract for unsafe final URL: %s", final_url)
             return _error_entry(final_url, _UNSAFE_REDIRECT_MSG, title=title, raw=True)
         if final_blocked := check_website_access(final_url):

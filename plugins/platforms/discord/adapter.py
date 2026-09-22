@@ -270,7 +270,7 @@ from gateway.platforms.base import (
     _prefix_within_utf16_limit, utf16_len, validate_inbound_media_size,
 )
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
-from tools.url_safety import is_safe_url
+from tools.url_safety import async_is_safe_url
 from gateway.platforms._shared import (
     decode_json_list_literal as _decode_json_list_literal, env_is_connected as _env_is_connected,
     extra_or_secret as _extra_or_secret, platform_gate_env as _scoped_gate_env, send_error,
@@ -287,7 +287,7 @@ async def _read_url_image_with_redirect_guard(
     """Read an image URL while re-checking every redirect target for SSRF."""
     current_url = url
     for _ in range(_DISCORD_IMAGE_MAX_REDIRECTS + 1):
-        if not is_safe_url(current_url):
+        if not await async_is_safe_url(current_url):
             raise ValueError("Blocked unsafe image URL redirect")
         async with session.get(
             current_url, timeout=timeout, allow_redirects=False, **request_kwargs,
@@ -300,7 +300,7 @@ async def _read_url_image_with_redirect_guard(
                 if not location:
                     return status, b"", headers
                 next_url = urljoin(current_url, str(location))
-                if not is_safe_url(next_url):
+                if not await async_is_safe_url(next_url):
                     raise ValueError("Blocked redirect to private/internal address")
                 current_url = next_url
                 continue
@@ -5788,7 +5788,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         raw_bytes = await self._read_attachment_bytes(att, media_type="document")
         if raw_bytes is not None:
             return raw_bytes
-        if not is_safe_url(att.url):
+        if not await async_is_safe_url(att.url):
             raise ValueError(f"Blocked unsafe attachment URL (SSRF protection): {att.url}")
         import aiohttp
         from gateway.platforms.base import resolve_proxy_url, proxy_kwargs_for_aiohttp

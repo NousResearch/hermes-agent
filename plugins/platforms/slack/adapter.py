@@ -2836,7 +2836,7 @@ class SlackAdapter(BasePlatformAdapter):
         chat_id = await self._dm_target(chat_id, metadata)
         try:
             from urllib.parse import unquote as _unquote
-            from tools.url_safety import create_ssrf_safe_async_client, is_safe_url as _is_safe_url
+            from tools.url_safety import create_ssrf_safe_async_client, async_is_safe_url as _is_safe_url
         except Exception:
             return await super().send_multiple_images(chat_id, images, metadata, human_delay)
         thread_ts = self._resolve_thread_ts(None, metadata)
@@ -2871,7 +2871,7 @@ class SlackAdapter(BasePlatformAdapter):
 
     @staticmethod
     async def _collect_image_uploads(
-        chunk: List[Tuple[str, str]], unquote_fn, is_safe_url_fn, client_factory
+        chunk: List[Tuple[str, str]], unquote_fn, async_is_safe_url_fn, client_factory
     ) -> Tuple[List[Dict[str, Any]], List[str]]:
         """``files_upload_v2`` entries for one batch: ``file://`` by path, remote via the SSRF-safe
         client (unsafe/failed skipped). Returns ``(file_uploads, alt_texts)``."""
@@ -2891,7 +2891,7 @@ class SlackAdapter(BasePlatformAdapter):
                     file_uploads.append(
                         {"file": local_path, "filename": os.path.basename(local_path)})
                     continue
-                if not is_safe_url_fn(image_url):
+                if not await async_is_safe_url_fn(image_url):
                     logger.warning("[Slack] Blocked unsafe image URL in batch")
                     continue
                 try:
@@ -3322,8 +3322,8 @@ class SlackAdapter(BasePlatformAdapter):
         """Send an image to Slack by uploading the URL as a file."""
         if not self._app:
             return SendResult(success=False, error="Not connected")
-        from tools.url_safety import create_ssrf_safe_async_client, is_safe_url
-        if not is_safe_url(image_url):
+        from tools.url_safety import create_ssrf_safe_async_client, async_is_safe_url
+        if not await async_is_safe_url(image_url):
             logger.warning("[Slack] Blocked unsafe image URL (SSRF protection)")
             return await super().send_image(
                 chat_id, image_url, caption, reply_to, metadata=metadata)
@@ -3333,7 +3333,7 @@ class SlackAdapter(BasePlatformAdapter):
                 """Re-check redirect targets so public URLs cannot bounce into private IPs."""
                 from tools.url_safety import redirect_target_from_response
                 redirect_url = redirect_target_from_response(response)
-                if redirect_url and not is_safe_url(redirect_url):
+                if redirect_url and not await async_is_safe_url(redirect_url):
                     raise ValueError("Blocked redirect to private/internal address")
 
             # Download the image first
@@ -6097,9 +6097,9 @@ class SlackAdapter(BasePlatformAdapter):
         re-validated; an HTML body (sign-in page) is rejected so bogus bytes are never cached."""
         import httpx
         from tools.url_safety import (
-            create_ssrf_safe_async_client, is_safe_url, redirect_target_from_response,
+            create_ssrf_safe_async_client, async_is_safe_url, redirect_target_from_response,
         )
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             raise ValueError(
                 f"Blocked unsafe Slack file URL (SSRF protection): {safe_url_for_log(url)}")
         if not self._is_slack_cdn_url(url):
@@ -6124,7 +6124,7 @@ class SlackAdapter(BasePlatformAdapter):
                         target = redirect_target_from_response(response)
                         if not target:
                             break  # raise_for_status reports the malformed redirect.
-                        if not is_safe_url(target):
+                        if not await async_is_safe_url(target):
                             raise ValueError(
                                 "Blocked unsafe Slack file redirect (SSRF protection): "
                                 f"{safe_url_for_log(target)}")

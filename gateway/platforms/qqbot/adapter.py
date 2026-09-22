@@ -973,9 +973,9 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
 
     async def _download_and_cache(self, url: str, content_type: str, original_name: str = "") -> Optional[str]:
         """Download a URL and cache it locally (``original_name`` falls back to the URL basename)."""
-        from tools.url_safety import is_safe_url
+        from tools.url_safety import async_is_safe_url
 
-        if not is_safe_url(url):
+        if not await async_is_safe_url(url):
             raise ValueError(f"Blocked unsafe URL: {url[:80]}")
         if not self._http_client:
             return None
@@ -1027,8 +1027,8 @@ class QQAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             download_url = f"https:{voice_wav_url}" if voice_wav_url.startswith("//") else voice_wav_url
             logger.debug("[%s] STT: using voice_wav_url (pre-converted WAV)", self._log_tag)
 
-        from tools.url_safety import is_safe_url
-        if not is_safe_url(download_url):
+        from tools.url_safety import async_is_safe_url
+        if not await async_is_safe_url(download_url):
             logger.warning("[QQ] STT blocked unsafe URL: %s", download_url[:80])
             return None
 

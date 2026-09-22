@@ -21,6 +21,7 @@ Use when dispatching or supervising delegated subagents.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `orchestration`, `delegation`, `monitoring`, `verification`, `safety` |
+| Related skills | [`dynamic-workflow`](../../optional/autonomous-ai-agents/autonomous-ai-agents-dynamic-workflow.md), [`subagent-driven-development`](../../optional/software-development/software-development-subagent-driven-development.md), [`hermes-agent`](../../bundled/autonomous-ai-agents/autonomous-ai-agents-hermes-agent.md) |
 
 ## Reference: full SKILL.md
 
@@ -33,6 +34,8 @@ The following is the complete skill definition that Hermes loads when this skill
 Supervise delegated work as a lifecycle: **authorize → dispatch → monitor → steer or stop → verify → hand off**. Delegation is not complete when a child reports success; the parent must verify the resulting state before relying on it or reporting completion.
 
 This skill is capability-aware. Use the orchestration and inspection tools exposed by the current Hermes surface. Do not assume that every surface provides live child control, transcript access, process control, or durable scheduling.
+
+This skill supervises delegated work; it does not prescribe a fan-out topology or an implementation method. Use `dynamic-workflow` for scale-out execution shapes, `subagent-driven-development` for plan-to-implementation loops, and `hermes-agent` for Hermes runtime details. Those skills may be used under this supervision lifecycle, but none is required.
 
 ## Operating principles
 

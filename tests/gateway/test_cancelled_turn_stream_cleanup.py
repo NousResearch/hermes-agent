@@ -91,7 +91,7 @@ class _TurnFixture(GatewayTurnMixin):
         self.started.set()
         return SimpleNamespace(executor_task=self.worker_future, agent_timeout=None)
 
-    def _adapter_for_source(self, source):
+    def _delivery_adapter_for(self, source):
         return None
 
     def _release_running_agent_state(self, key, *, run_generation):

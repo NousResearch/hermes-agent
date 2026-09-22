@@ -293,6 +293,33 @@ def test_prompt_dialog_with_response_text(chrome_cdp, supervisor_registry):
     assert result["ok"] is True
 
 
+def test_browser_cdp_same_origin_iframe_not_routed_to_top(chrome_cdp, supervisor_registry):
+    """A same-origin/srcdoc iframe has no dedicated CDP session. The emitting
+    session on Page.frame* events is the PARENT's; stamping it onto the frame
+    made browser_cdp(frame_id=...) take the OOPIF path and evaluate in the top
+    page's context while reporting the iframe's frame_id. The call must fail
+    closed with the not-an-OOPIF error instead."""
+    from tools.browser_cdp_tool import browser_cdp
+
+    cdp_url, _port = chrome_cdp
+    supervisor = supervisor_registry.get_or_start(task_id="pytest-iframe", cdp_url=cdp_url)
+    _fire_on_page(cdp_url, "/* navigate so frame events fire */ void 0")
+    time.sleep(1.0)
+
+    tree = supervisor.snapshot().frame_tree
+    iframe = next((f for f in (tree.get("children") or []) if f.get("frame_id")), None)
+    assert iframe, "no iframe in frame_tree"
+    assert iframe.get("is_oopif") is False
+    assert "session_id" not in iframe
+
+    out = json.loads(browser_cdp(
+        method="Runtime.evaluate",
+        params={"expression": "location.href", "returnByValue": True},
+        frame_id=iframe["frame_id"], task_id="pytest-iframe"))
+    assert "error" in out
+    assert "not an out-of-process iframe" in out["error"]
+
+
 def test_browser_dialog_tool_end_to_end(chrome_cdp, supervisor_registry):
     """Full agent-path check: fire an alert, call the tool handler directly."""
     from tools.browser_dialog_tool import browser_dialog

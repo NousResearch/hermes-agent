@@ -95,7 +95,7 @@ class TestProviderModelsSWR:
     ):
         import hermes_cli.models as mod
 
-        def jwt(account_id, subject, nonce):
+        def jwt(account_id, subject, nonce, exp=None):
             def segment(value):
                 raw = json.dumps(value, separators=(",", ":")).encode()
                 return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
@@ -104,6 +104,7 @@ class TestProviderModelsSWR:
                 "sub": subject,
                 "nonce": nonce,
                 "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
+                **({"exp": exp} if exp is not None else {}),
             }
             return f"{segment({'alg': 'none'})}.{segment(claims)}.sig"
 
@@ -144,6 +145,15 @@ class TestProviderModelsSWR:
 
         mod.update_provider_cache_entry("openai-codex", astra_models)
         write_auth(jwt("account-b", "user-b", "new-account"), 0, 4_000_000_000)
+        with patch.object(mod, "_spawn_swr_refresh") as spawn:
+            assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
+        spawn.assert_called_once_with("openai-codex")
+
+        # An expired token only ever yields the static fallback (no Astra); the refresh to a live
+        # token for the same principal must bust that row instead of serving it for the whole TTL.
+        write_auth(jwt("account-b", "user-b", "stale", exp=time.time() - 60), 0, 5_000_000_000)
+        mod.update_provider_cache_entry("openai-codex", ["gpt-5.6-sol"])
+        write_auth(jwt("account-b", "user-b", "fresh", exp=time.time() + 3600), 0, 6_000_000_000)
         with patch.object(mod, "_spawn_swr_refresh") as spawn:
             assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
         spawn.assert_called_once_with("openai-codex")

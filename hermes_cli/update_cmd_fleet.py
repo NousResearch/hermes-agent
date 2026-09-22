@@ -7,6 +7,7 @@ imported lazily inside each function (no import cycle; test patches stay effecti
 
 import json
 import logging
+import re
 from contextlib import suppress
 import os
 import subprocess
@@ -1287,6 +1288,42 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
     return cmd
 
 
+def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
+    """A unit whose restart policy predates ``RestartPreventExitStatus=78`` crash-loops on the PERMANENT
+    exit: a ``Restart=on-failure`` system unit restarted ~180x on a host-attach refusal while the
+    regenerated user units parked (#118282). The gateway rewrites its USER unit at boot; a SYSTEM unit
+    lives in /etc, so rewrite it here when we are root, else name the repair."""
+    from hermes_cli.gateway import (
+        _SYSTEM_UNIT_DIR, GATEWAY_FATAL_CONFIG_EXIT_CODE, get_service_name,
+        refresh_systemd_unit_if_needed, user_systemd_unit_dir,
+    )
+    system = scope == "system"
+    unit_path = (_SYSTEM_UNIT_DIR if system else user_systemd_unit_dir()) / f"{svc_name}.service"
+    try:
+        parked = re.search(rf"^RestartPreventExitStatus=.*\b{GATEWAY_FATAL_CONFIG_EXIT_CODE}\b", unit_path.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return
+    if parked:
+        return
+    if system and not _needs_sudo(scope) and svc_name == get_service_name():
+        # The refresh adopts the unit's HERMES_HOME into os.environ (sudo strips it); the rest of the
+        # update keeps running for the invoking profile.
+        launch_home = os.environ.get("HERMES_HOME")
+        try:
+            refresh_systemd_unit_if_needed(system=True)
+        finally:
+            if launch_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = launch_home
+        return
+    print(
+        f"  ⚠ {svc_name} lacks RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}: a permanent refusal "
+        f"(exit {GATEWAY_FATAL_CONFIG_EXIT_CODE}) would crash-loop it instead of parking.\n"
+        f"    Repair: {'sudo ' if system else ''}hermes gateway install{' --system' if system else ''}"
+    )
+
+
 def _restart_one_systemd_gateway_unit(
     svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
     restarted_services: list, failed_or_stale_units: list,
@@ -1298,6 +1335,7 @@ def _restart_one_systemd_gateway_unit(
     check = _systemctl(scope_cmd + ["is-active", svc_name], timeout=5)
     if check.stdout.strip() != "active":
         return
+    _repair_unit_without_fatal_exit_park(svc_name, scope)
 
     # None ⇒ no non-interactive privilege path; avoid manage-units verbs
     # entirely or polkit prompts inside the captured subprocess.

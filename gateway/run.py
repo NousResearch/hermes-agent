@@ -4901,8 +4901,9 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
     the trailing wildcard pass — the only one that stops the shared loop — never ran.
 
     The worker runs in a FRESH context, not ``copy_context()``: the caller may sit inside a served
-    profile's scope, and ``launch_profile_scope_if_multiplexed`` documents "no HERMES_HOME override"
-    — inheriting one made the wildcard pass resolve the live home to that profile.
+    profile's scope, and the trailing wildcard pass must run under the launch profile's own scope
+    (``launch_profile_scope_if_multiplexed`` binds the launch home) — inheriting the caller's made it
+    resolve the live home to that profile.
 
     See #82874.
     """

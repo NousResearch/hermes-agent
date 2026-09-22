@@ -1,0 +1,3049 @@
+$ root and profile state.db artifacts
+/Users/mikedemott/.hermes/state.db|167579648 bytes|2026-09-22T05:21:06-0700
+/Users/mikedemott/.hermes/state.db.auto-maintenance.lock|0 bytes|2026-09-02T21:38:13-0700
+/Users/mikedemott/.hermes/state.db.broken-20260913-220357|678445056 bytes|2026-09-13T21:52:44-0700
+/Users/mikedemott/.hermes/state.db.fts_rebuild.lock|0 bytes|2026-09-21T11:39:46-0700
+/Users/mikedemott/.hermes/state.db.pre-recover-20260914-045200.bak|995635200 bytes|2026-09-13T21:49:29-0700
+/Users/mikedemott/.hermes/state.db.pre-update-emergency-2026-09-01T17-35-44-945Z.bak|417173504 bytes|2026-09-01T10:35:45-0700
+/Users/mikedemott/.hermes/state.db.pre-update-emergency-2026-09-06T23-33-16-921Z.bak|418295808 bytes|2026-09-06T16:33:17-0700
+/Users/mikedemott/.hermes/state.db.pre-update-emergency-2026-09-09T06-50-29-233Z.bak|464490496 bytes|2026-09-08T23:50:29-0700
+/Users/mikedemott/.hermes/state.db.recovered.fts_rebuild.lock|0 bytes|2026-09-13T21:52:05-0700
+/Users/mikedemott/.hermes/state.db.recovered.quarantine.lock|0 bytes|2026-09-13T21:52:05-0700
+/Users/mikedemott/.hermes/state.db.recovered.recovery.json|12238 bytes|2026-09-13T21:52:48-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260915-070028-17293|192 bytes|2026-09-15T00:00:28-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260915-171731-3859|192 bytes|2026-09-15T10:17:31-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260915-190043-2966|192 bytes|2026-09-15T12:00:43-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260916-035814-96379|192 bytes|2026-09-15T20:58:14-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260916-065641-53401|192 bytes|2026-09-15T23:56:41-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260916-065703-60505|192 bytes|2026-09-15T23:57:03-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260916-074104-66131|192 bytes|2026-09-16T00:41:04-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260916-150303-1037|192 bytes|2026-09-16T08:03:03-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260916-150308-4129|192 bytes|2026-09-16T08:03:08-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060239-77797|192 bytes|2026-09-16T23:02:39-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060758-28756|192 bytes|2026-09-16T23:07:58-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060758-29392|192 bytes|2026-09-16T23:07:58-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060759-29394|192 bytes|2026-09-16T23:07:59-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060759-29729|192 bytes|2026-09-16T23:07:59-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060800-29387|192 bytes|2026-09-16T23:08:00-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060812-28758|192 bytes|2026-09-16T23:08:12-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29721|192 bytes|2026-09-16T23:08:46-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29725|192 bytes|2026-09-16T23:08:46-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29727|192 bytes|2026-09-16T23:08:46-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29764|192 bytes|2026-09-16T23:08:46-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29768|192 bytes|2026-09-16T23:08:46-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29770|192 bytes|2026-09-16T23:08:46-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-29762|192 bytes|2026-09-16T23:08:47-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-29766|192 bytes|2026-09-16T23:08:47-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30476|192 bytes|2026-09-16T23:08:47-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30480|192 bytes|2026-09-16T23:08:47-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30485|192 bytes|2026-09-16T23:08:47-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060848-30482|192 bytes|2026-09-16T23:08:48-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060850-30478|192 bytes|2026-09-16T23:08:50-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060852-28760|192 bytes|2026-09-16T23:08:52-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060852-30487|192 bytes|2026-09-16T23:08:52-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060854-29389|192 bytes|2026-09-16T23:08:54-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-062139-62782|192 bytes|2026-09-16T23:21:39-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-062158-75040|192 bytes|2026-09-16T23:21:58-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-062351-76718|192 bytes|2026-09-16T23:23:51-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-122247-97964|192 bytes|2026-09-17T05:22:47-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260917-170056-72060|192 bytes|2026-09-17T10:00:56-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260918-002406-78527|192 bytes|2026-09-17T17:24:06-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260918-080619-84322|192 bytes|2026-09-18T01:06:20-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260918-191930-99621|192 bytes|2026-09-18T12:19:30-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260918-191934-36145|192 bytes|2026-09-18T12:19:34-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260919-014940-95659|192 bytes|2026-09-18T18:49:40-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260919-015014-93035|192 bytes|2026-09-18T18:50:14-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260921-181214-56240|192 bytes|2026-09-21T11:12:14-0700
+/Users/mikedemott/.hermes/state.db.retired-wal-20260921-190507-11354|192 bytes|2026-09-21T12:05:07-0700
+/Users/mikedemott/.hermes/profiles/acceptance-gate-verifier/state.db|3125248 bytes|2026-09-21T12:20:27-0700
+/Users/mikedemott/.hermes/profiles/acceptance-gate-verifier/state.db-shm|32768 bytes|2026-09-22T03:53:10-0700
+/Users/mikedemott/.hermes/profiles/acceptance-gate-verifier/state.db-wal|1067112 bytes|2026-09-21T17:40:31-0700
+/Users/mikedemott/.hermes/profiles/acceptance-gate-verifier/state.db.auto-maintenance.lock|0 bytes|2026-09-21T17:32:28-0700
+/Users/mikedemott/.hermes/profiles/acceptance-gate-verifier/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:27-0700
+/Users/mikedemott/.hermes/profiles/acquisition-worker/state.db|274432 bytes|2026-09-21T12:20:28-0700
+/Users/mikedemott/.hermes/profiles/acquisition-worker/state.db-shm|32768 bytes|2026-09-22T03:53:11-0700
+/Users/mikedemott/.hermes/profiles/acquisition-worker/state.db-wal|0 bytes|2026-09-21T12:20:31-0700
+/Users/mikedemott/.hermes/profiles/acquisition-worker/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:14-0700
+/Users/mikedemott/.hermes/profiles/architecture-steward/state.db|4403200 bytes|2026-09-21T18:40:03-0700
+/Users/mikedemott/.hermes/profiles/architecture-steward/state.db-shm|32768 bytes|2026-09-22T03:53:11-0700
+/Users/mikedemott/.hermes/profiles/architecture-steward/state.db-wal|2327832 bytes|2026-09-21T18:40:29-0700
+/Users/mikedemott/.hermes/profiles/architecture-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:32:19-0700
+/Users/mikedemott/.hermes/profiles/architecture-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-20T18:17:15-0700
+/Users/mikedemott/.hermes/profiles/archivist/state.db|364544 bytes|2026-09-21T21:25:03-0700
+/Users/mikedemott/.hermes/profiles/archivist/state.db-shm|32768 bytes|2026-09-22T03:53:11-0700
+/Users/mikedemott/.hermes/profiles/archivist/state.db-wal|922912 bytes|2026-09-21T21:25:09-0700
+/Users/mikedemott/.hermes/profiles/archivist/state.db.auto-maintenance.lock|0 bytes|2026-09-21T21:23:01-0700
+/Users/mikedemott/.hermes/profiles/archivist/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:15-0700
+/Users/mikedemott/.hermes/profiles/arts-director/state.db|2662400 bytes|2026-09-21T21:33:08-0700
+/Users/mikedemott/.hermes/profiles/arts-director/state.db-shm|32768 bytes|2026-09-22T03:53:11-0700
+/Users/mikedemott/.hermes/profiles/arts-director/state.db-wal|3003512 bytes|2026-09-21T21:36:42-0700
+/Users/mikedemott/.hermes/profiles/arts-director/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:03:48-0700
+/Users/mikedemott/.hermes/profiles/arts-director/state.db.fts_rebuild.lock|0 bytes|2026-09-20T17:17:04-0700
+/Users/mikedemott/.hermes/profiles/burndown-patch-steward/state.db|33792000 bytes|2026-09-21T12:20:36-0700
+/Users/mikedemott/.hermes/profiles/burndown-patch-steward/state.db-shm|32768 bytes|2026-09-22T03:53:11-0700
+/Users/mikedemott/.hermes/profiles/burndown-patch-steward/state.db-wal|0 bytes|2026-09-21T12:20:38-0700
+/Users/mikedemott/.hermes/profiles/burndown-patch-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-18T18:03:29-0700
+/Users/mikedemott/.hermes/profiles/burndown-patch-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:36-0700
+/Users/mikedemott/.hermes/profiles/capability-planner/state.db|344064 bytes|2026-09-21T17:28:13-0700
+/Users/mikedemott/.hermes/profiles/capability-planner/state.db-shm|32768 bytes|2026-09-22T03:53:11-0700
+/Users/mikedemott/.hermes/profiles/capability-planner/state.db-wal|894072 bytes|2026-09-21T17:28:31-0700
+/Users/mikedemott/.hermes/profiles/capability-planner/state.db.auto-maintenance.lock|0 bytes|2026-09-21T17:25:42-0700
+/Users/mikedemott/.hermes/profiles/capability-planner/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:18-0700
+/Users/mikedemott/.hermes/profiles/cataloger/state.db|274432 bytes|2026-09-21T12:20:39-0700
+/Users/mikedemott/.hermes/profiles/cataloger/state.db-shm|32768 bytes|2026-09-22T03:53:11-0700
+/Users/mikedemott/.hermes/profiles/cataloger/state.db-wal|1091832 bytes|2026-09-21T21:24:23-0700
+/Users/mikedemott/.hermes/profiles/cataloger/state.db.auto-maintenance.lock|0 bytes|2026-09-21T21:24:03-0700
+/Users/mikedemott/.hermes/profiles/cataloger/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:19-0700
+/Users/mikedemott/.hermes/profiles/ci-frontend-fixer/state.db|5926912 bytes|2026-09-21T12:20:40-0700
+/Users/mikedemott/.hermes/profiles/ci-frontend-fixer/state.db-shm|32768 bytes|2026-09-22T03:53:12-0700
+/Users/mikedemott/.hermes/profiles/ci-frontend-fixer/state.db-wal|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/ci-frontend-fixer/state.db.auto-maintenance.lock|0 bytes|2026-09-03T04:45:45-0700
+/Users/mikedemott/.hermes/profiles/ci-frontend-fixer/state.db.fts_rebuild.lock|0 bytes|2026-09-20T14:35:07-0700
+/Users/mikedemott/.hermes/profiles/ci-general-fixer/state.db|8744960 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/ci-general-fixer/state.db-shm|32768 bytes|2026-09-22T03:53:12-0700
+/Users/mikedemott/.hermes/profiles/ci-general-fixer/state.db-wal|1161872 bytes|2026-09-22T02:14:09-0700
+/Users/mikedemott/.hermes/profiles/ci-general-fixer/state.db.auto-maintenance.lock|0 bytes|2026-09-02T22:51:13-0700
+/Users/mikedemott/.hermes/profiles/ci-general-fixer/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/ci-hygiene-fixer/state.db|36077568 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/ci-hygiene-fixer/state.db-shm|32768 bytes|2026-09-22T03:53:12-0700
+/Users/mikedemott/.hermes/profiles/ci-hygiene-fixer/state.db-wal|4445512 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/ci-hygiene-fixer/state.db.auto-maintenance.lock|0 bytes|2026-09-06T09:21:14-0700
+/Users/mikedemott/.hermes/profiles/ci-hygiene-fixer/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/ci-repair-steward/state.db|274432 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/ci-repair-steward/state.db-shm|32768 bytes|2026-09-22T03:53:12-0700
+/Users/mikedemott/.hermes/profiles/ci-repair-steward/state.db-wal|12392 bytes|2026-09-21T12:33:16-0700
+/Users/mikedemott/.hermes/profiles/ci-repair-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:22-0700
+/Users/mikedemott/.hermes/profiles/ci-static-fixer/state.db|57700352 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/ci-static-fixer/state.db-shm|32768 bytes|2026-09-22T03:53:12-0700
+/Users/mikedemott/.hermes/profiles/ci-static-fixer/state.db-wal|0 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/ci-static-fixer/state.db.auto-maintenance.lock|0 bytes|2026-09-04T20:32:00-0700
+/Users/mikedemott/.hermes/profiles/ci-static-fixer/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/ci-test-fixer/state.db|20357120 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/ci-test-fixer/state.db-shm|32768 bytes|2026-09-22T03:53:12-0700
+/Users/mikedemott/.hermes/profiles/ci-test-fixer/state.db-wal|0 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/ci-test-fixer/state.db.auto-maintenance.lock|0 bytes|2026-09-03T00:12:20-0700
+/Users/mikedemott/.hermes/profiles/ci-test-fixer/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/citation-verifier/state.db|274432 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/citation-verifier/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/citation-verifier/state.db-wal|0 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/citation-verifier/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:24-0700
+/Users/mikedemott/.hermes/profiles/coding-expert/state.db|46473216 bytes|2026-09-21T20:26:21-0700
+/Users/mikedemott/.hermes/profiles/coding-expert/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/coding-expert/state.db-wal|0 bytes|2026-09-21T20:26:26-0700
+/Users/mikedemott/.hermes/profiles/coding-expert/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:55:42-0700
+/Users/mikedemott/.hermes/profiles/coding-expert/state.db.fts_rebuild.lock|0 bytes|2026-09-21T02:05:32-0700
+/Users/mikedemott/.hermes/profiles/community-scout/state.db|274432 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/community-scout/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/community-scout/state.db-wal|0 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/community-scout/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:24-0700
+/Users/mikedemott/.hermes/profiles/concept-artist/state.db|790528 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/concept-artist/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/concept-artist/state.db-wal|0 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/concept-artist/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:04:11-0700
+/Users/mikedemott/.hermes/profiles/concept-artist/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/content-classifier/state.db|274432 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/content-classifier/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/content-classifier/state.db-wal|0 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/content-classifier/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:24-0700
+/Users/mikedemott/.hermes/profiles/copilot-learning-steward/state.db|421888 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/copilot-learning-steward/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/copilot-learning-steward/state.db-wal|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/copilot-learning-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/data-authority-patch-steward/state.db|56041472 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/data-authority-patch-steward/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/data-authority-patch-steward/state.db-wal|0 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/data-authority-patch-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-03T00:15:46-0700
+/Users/mikedemott/.hermes/profiles/data-authority-patch-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db|4902912 bytes|2026-09-22T02:07:24-0700
+/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db-wal|2377272 bytes|2026-09-22T02:10:18-0700
+/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db.auto-maintenance.lock|0 bytes|2026-09-14T17:31:06-0700
+/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:11:25-0700
+/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db.retired-wal-20260915-004644-39454|192 bytes|2026-09-14T17:46:44-0700
+/Users/mikedemott/.hermes/profiles/digest-editor/state.db|274432 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/digest-editor/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/digest-editor/state.db-wal|0 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/digest-editor/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:25-0700
+/Users/mikedemott/.hermes/profiles/discovery-broker/state.db|274432 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/discovery-broker/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/discovery-broker/state.db-wal|0 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/discovery-broker/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:25-0700
+/Users/mikedemott/.hermes/profiles/editor/state.db|274432 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/editor/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/editor/state.db-wal|0 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/editor/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:25-0700
+/Users/mikedemott/.hermes/profiles/experimentalist/state.db|1130496 bytes|2026-09-21T23:02:38-0700
+/Users/mikedemott/.hermes/profiles/experimentalist/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/experimentalist/state.db-wal|2220712 bytes|2026-09-21T23:02:38-0700
+/Users/mikedemott/.hermes/profiles/experimentalist/state.db.auto-maintenance.lock|0 bytes|2026-09-05T19:20:55-0700
+/Users/mikedemott/.hermes/profiles/experimentalist/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:11:37-0700
+/Users/mikedemott/.hermes/profiles/federation-steward/state.db|4300800 bytes|2026-09-22T04:10:52-0700
+/Users/mikedemott/.hermes/profiles/federation-steward/state.db-shm|32768 bytes|2026-09-22T04:10:52-0700
+/Users/mikedemott/.hermes/profiles/federation-steward/state.db-wal|1928192 bytes|2026-09-22T04:11:05-0700
+/Users/mikedemott/.hermes/profiles/federation-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-18T18:03:15-0700
+/Users/mikedemott/.hermes/profiles/federation-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:00:00-0700
+/Users/mikedemott/.hermes/profiles/hermes-issue-scout/state.db|6987776 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/hermes-issue-scout/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/hermes-issue-scout/state.db-wal|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/hermes-issue-scout/state.db.auto-maintenance.lock|0 bytes|2026-09-17T01:08:21-0700
+/Users/mikedemott/.hermes/profiles/hermes-issue-scout/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db|95047680 bytes|2026-09-22T02:12:36-0700
+/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db-wal|5594992 bytes|2026-09-22T02:12:49-0700
+/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-03T22:07:14-0700
+/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T03:40:20-0700
+/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.retired-wal-20260915-200735-54743|192 bytes|2026-09-15T13:07:35-0700
+/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.retired-wal-20260919-013344-33158|192 bytes|2026-09-18T18:33:44-0700
+/Users/mikedemott/.hermes/profiles/hermes-pr-feedback/state.db|475136 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/hermes-pr-feedback/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/hermes-pr-feedback/state.db-wal|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/hermes-pr-feedback/state.db.auto-maintenance.lock|0 bytes|2026-09-17T00:50:19-0700
+/Users/mikedemott/.hermes/profiles/hermes-pr-feedback/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/hermes-upstream-auditor/state.db|7553024 bytes|2026-09-22T00:35:56-0700
+/Users/mikedemott/.hermes/profiles/hermes-upstream-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/hermes-upstream-auditor/state.db-wal|2228952 bytes|2026-09-22T00:36:08-0700
+/Users/mikedemott/.hermes/profiles/hermes-upstream-auditor/state.db.auto-maintenance.lock|0 bytes|2026-09-03T12:13:17-0700
+/Users/mikedemott/.hermes/profiles/hermes-upstream-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:00:12-0700
+/Users/mikedemott/.hermes/profiles/hermes-white-knight/state.db|1163264 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/hermes-white-knight/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/hermes-white-knight/state.db-wal|0 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/hermes-white-knight/state.db.auto-maintenance.lock|0 bytes|2026-09-15T06:22:18-0700
+/Users/mikedemott/.hermes/profiles/hermes-white-knight/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/hermesdevelopment/state.db|274432 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/hermesdevelopment/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/hermesdevelopment/state.db-wal|0 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/hermesdevelopment/state.db.fts_rebuild.lock|0 bytes|2026-09-05T23:41:46-0700
+/Users/mikedemott/.hermes/profiles/hermesdevelopment/state.db.quarantine.lock|0 bytes|2026-09-05T23:41:46-0700
+/Users/mikedemott/.hermes/profiles/image-generator/state.db|368640 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/image-generator/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/image-generator/state.db-wal|0 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/image-generator/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:44-0700
+/Users/mikedemott/.hermes/profiles/independent-auditor/state.db|598016 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/independent-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/independent-auditor/state.db-wal|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/independent-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:26-0700
+/Users/mikedemott/.hermes/profiles/intake-router/state.db|761856 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/intake-router/state.db-shm|32768 bytes|2026-09-22T03:53:13-0700
+/Users/mikedemott/.hermes/profiles/intake-router/state.db-wal|873472 bytes|2026-09-21T17:22:24-0700
+/Users/mikedemott/.hermes/profiles/intake-router/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:03:40-0700
+/Users/mikedemott/.hermes/profiles/intake-router/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:18:48-0700
+/Users/mikedemott/.hermes/profiles/librarian/state.db|1540096 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/librarian/state.db-shm|32768 bytes|2026-09-22T03:53:14-0700
+/Users/mikedemott/.hermes/profiles/librarian/state.db-wal|1211312 bytes|2026-09-21T17:22:52-0700
+/Users/mikedemott/.hermes/profiles/librarian/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:17:26-0700
+/Users/mikedemott/.hermes/profiles/librarian/state.db.fts_rebuild.lock|0 bytes|2026-09-20T17:17:05-0700
+/Users/mikedemott/.hermes/profiles/luna-auditor/state.db|4558848 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/luna-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:14-0700
+/Users/mikedemott/.hermes/profiles/luna-auditor/state.db-wal|0 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/luna-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-fixer/state.db|1224704 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-fixer/state.db-shm|32768 bytes|2026-09-22T03:53:14-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-fixer/state.db-wal|0 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-fixer/state.db.auto-maintenance.lock|0 bytes|2026-09-15T03:15:29-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-fixer/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-reporter/state.db|274432 bytes|2026-09-21T12:20:45-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-reporter/state.db-shm|32768 bytes|2026-09-22T03:53:14-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-reporter/state.db-wal|0 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/lunabot-issue-reporter/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:27-0700
+/Users/mikedemott/.hermes/profiles/lunabot-research-lab-director/state.db|28012544 bytes|2026-09-22T04:13:57-0700
+/Users/mikedemott/.hermes/profiles/lunabot-research-lab-director/state.db-shm|32768 bytes|2026-09-22T04:11:56-0700
+/Users/mikedemott/.hermes/profiles/lunabot-research-lab-director/state.db-wal|4313672 bytes|2026-09-22T04:13:58-0700
+/Users/mikedemott/.hermes/profiles/lunabot-research-lab-director/state.db.auto-maintenance.lock|0 bytes|2026-09-02T22:11:51-0700
+/Users/mikedemott/.hermes/profiles/lunabot-research-lab-director/state.db.fts_rebuild.lock|0 bytes|2026-09-20T00:11:23-0700
+/Users/mikedemott/.hermes/profiles/market-data-authority-auditor/state.db|3420160 bytes|2026-09-21T18:14:05-0700
+/Users/mikedemott/.hermes/profiles/market-data-authority-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:14-0700
+/Users/mikedemott/.hermes/profiles/market-data-authority-auditor/state.db-wal|2846952 bytes|2026-09-21T18:14:47-0700
+/Users/mikedemott/.hermes/profiles/market-data-authority-auditor/state.db.auto-maintenance.lock|0 bytes|2026-09-17T01:31:28-0700
+/Users/mikedemott/.hermes/profiles/market-data-authority-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:46-0700
+/Users/mikedemott/.hermes/profiles/media-renderer/state.db|274432 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/media-renderer/state.db-shm|32768 bytes|2026-09-22T03:53:14-0700
+/Users/mikedemott/.hermes/profiles/media-renderer/state.db-wal|0 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/media-renderer/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:29-0700
+/Users/mikedemott/.hermes/profiles/memory-curator/state.db|491520 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/memory-curator/state.db-shm|32768 bytes|2026-09-22T03:53:15-0700
+/Users/mikedemott/.hermes/profiles/memory-curator/state.db-wal|0 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/memory-curator/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:57:51-0700
+/Users/mikedemott/.hermes/profiles/memory-curator/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/memory-intake/state.db|2142208 bytes|2026-09-21T20:18:24-0700
+/Users/mikedemott/.hermes/profiles/memory-intake/state.db-shm|32768 bytes|2026-09-22T03:53:15-0700
+/Users/mikedemott/.hermes/profiles/memory-intake/state.db-wal|2682152 bytes|2026-09-21T20:18:34-0700
+/Users/mikedemott/.hermes/profiles/memory-intake/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:57:24-0700
+/Users/mikedemott/.hermes/profiles/memory-intake/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:28:06-0700
+/Users/mikedemott/.hermes/profiles/memory-validator/state.db|274432 bytes|2026-09-21T12:20:47-0700
+/Users/mikedemott/.hermes/profiles/memory-validator/state.db-shm|32768 bytes|2026-09-22T03:53:15-0700
+/Users/mikedemott/.hermes/profiles/memory-validator/state.db-wal|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/memory-validator/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:31-0700
+/Users/mikedemott/.hermes/profiles/mission-control-ux-auditor/state.db|274432 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/mission-control-ux-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:15-0700
+/Users/mikedemott/.hermes/profiles/mission-control-ux-auditor/state.db-wal|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/mission-control-ux-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:32-0700
+/Users/mikedemott/.hermes/profiles/nerdy-content-scout/state.db|1744896 bytes|2026-09-21T19:23:30-0700
+/Users/mikedemott/.hermes/profiles/nerdy-content-scout/state.db-shm|32768 bytes|2026-09-22T03:53:15-0700
+/Users/mikedemott/.hermes/profiles/nerdy-content-scout/state.db-wal|593312 bytes|2026-09-21T19:24:53-0700
+/Users/mikedemott/.hermes/profiles/nerdy-content-scout/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:32:42-0700
+/Users/mikedemott/.hermes/profiles/nerdy-content-scout/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:21:18-0700
+/Users/mikedemott/.hermes/profiles/observatory/state.db|3543040 bytes|2026-09-21T19:18:36-0700
+/Users/mikedemott/.hermes/profiles/observatory/state.db-shm|32768 bytes|2026-09-22T03:53:15-0700
+/Users/mikedemott/.hermes/profiles/observatory/state.db-wal|2785152 bytes|2026-09-21T19:19:28-0700
+/Users/mikedemott/.hermes/profiles/observatory/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:32:38-0700
+/Users/mikedemott/.hermes/profiles/observatory/state.db.fts_rebuild.lock|0 bytes|2026-09-20T18:29:22-0700
+/Users/mikedemott/.hermes/profiles/operations-steward/state.db|274432 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/operations-steward/state.db-shm|32768 bytes|2026-09-22T03:53:15-0700
+/Users/mikedemott/.hermes/profiles/operations-steward/state.db-wal|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/operations-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:32-0700
+/Users/mikedemott/.hermes/profiles/paper-ingester/state.db|389120 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/paper-ingester/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/paper-ingester/state.db-wal|0 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/paper-ingester/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:33:39-0700
+/Users/mikedemott/.hermes/profiles/paper-ingester/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/paper-safety-guardian/state.db|24584192 bytes|2026-09-21T22:50:15-0700
+/Users/mikedemott/.hermes/profiles/paper-safety-guardian/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/paper-safety-guardian/state.db-wal|4326032 bytes|2026-09-21T22:54:40-0700
+/Users/mikedemott/.hermes/profiles/paper-safety-guardian/state.db.auto-maintenance.lock|0 bytes|2026-09-03T18:45:18-0700
+/Users/mikedemott/.hermes/profiles/paper-safety-guardian/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:00:12-0700
+/Users/mikedemott/.hermes/profiles/pathologist/state.db|929792 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/pathologist/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/pathologist/state.db-wal|1091832 bytes|2026-09-21T17:58:13-0700
+/Users/mikedemott/.hermes/profiles/pathologist/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:36:29-0700
+/Users/mikedemott/.hermes/profiles/pathologist/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:48-0700
+/Users/mikedemott/.hermes/profiles/performance-lab/state.db|274432 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/performance-lab/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/performance-lab/state.db-wal|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/performance-lab/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:34-0700
+/Users/mikedemott/.hermes/profiles/performance-patch-steward/state.db|7061504 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/performance-patch-steward/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/performance-patch-steward/state.db-wal|0 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/performance-patch-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-03T22:14:28-0700
+/Users/mikedemott/.hermes/profiles/performance-patch-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/performance-sentinel/state.db|1462272 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/performance-sentinel/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/performance-sentinel/state.db-wal|0 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/performance-sentinel/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/post-merge-verifier/state.db|274432 bytes|2026-09-21T12:20:49-0700
+/Users/mikedemott/.hermes/profiles/post-merge-verifier/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/post-merge-verifier/state.db-wal|0 bytes|2026-09-21T12:20:54-0700
+/Users/mikedemott/.hermes/profiles/post-merge-verifier/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:34-0700
+/Users/mikedemott/.hermes/profiles/pr-local-ci-auditor/state.db|181436416 bytes|2026-09-22T02:44:54-0700
+/Users/mikedemott/.hermes/profiles/pr-local-ci-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/pr-local-ci-auditor/state.db-wal|7687952 bytes|2026-09-22T02:46:36-0700
+/Users/mikedemott/.hermes/profiles/pr-local-ci-auditor/state.db.auto-maintenance.lock|0 bytes|2026-09-02T23:05:30-0700
+/Users/mikedemott/.hermes/profiles/pr-local-ci-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/pr-merge-maintainer/state.db|6373376 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/pr-merge-maintainer/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/pr-merge-maintainer/state.db-wal|168952 bytes|2026-09-21T12:32:50-0700
+/Users/mikedemott/.hermes/profiles/pr-merge-maintainer/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/pr-repair-steward/state.db|756609024 bytes|2026-09-22T02:44:11-0700
+/Users/mikedemott/.hermes/profiles/pr-repair-steward/state.db-shm|32768 bytes|2026-09-22T03:53:16-0700
+/Users/mikedemott/.hermes/profiles/pr-repair-steward/state.db-wal|6616752 bytes|2026-09-22T02:46:21-0700
+/Users/mikedemott/.hermes/profiles/pr-repair-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-03T22:08:23-0700
+/Users/mikedemott/.hermes/profiles/pr-repair-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:21:04-0700
+/Users/mikedemott/.hermes/profiles/prior-art-scout/state.db|561152 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/prior-art-scout/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/prior-art-scout/state.db-wal|0 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/prior-art-scout/state.db.auto-maintenance.lock|0 bytes|2026-09-15T03:18:16-0700
+/Users/mikedemott/.hermes/profiles/prior-art-scout/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/publication-curator/state.db|274432 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/publication-curator/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/publication-curator/state.db-wal|0 bytes|2026-09-21T12:20:54-0700
+/Users/mikedemott/.hermes/profiles/publication-curator/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:36-0700
+/Users/mikedemott/.hermes/profiles/red-team/state.db|274432 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/red-team/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/red-team/state.db-wal|0 bytes|2026-09-21T12:20:54-0700
+/Users/mikedemott/.hermes/profiles/red-team/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:36-0700
+/Users/mikedemott/.hermes/profiles/release-maintenance-steward/state.db|974848 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/release-maintenance-steward/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/release-maintenance-steward/state.db-wal|0 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/release-maintenance-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/release-steward/state.db|274432 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/release-steward/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/release-steward/state.db-wal|0 bytes|2026-09-21T12:20:54-0700
+/Users/mikedemott/.hermes/profiles/release-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:37-0700
+/Users/mikedemott/.hermes/profiles/replicator/state.db|274432 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/replicator/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/replicator/state.db-wal|32992 bytes|2026-09-21T12:27:50-0700
+/Users/mikedemott/.hermes/profiles/replicator/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:37-0700
+/Users/mikedemott/.hermes/profiles/research-experiment-runner/state.db|8351744 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/research-experiment-runner/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/research-experiment-runner/state.db-wal|0 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/research-experiment-runner/state.db.auto-maintenance.lock|0 bytes|2026-09-04T20:11:49-0700
+/Users/mikedemott/.hermes/profiles/research-experiment-runner/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/research-promotion-maintainer/state.db|7360512 bytes|2026-09-21T12:33:14-0700
+/Users/mikedemott/.hermes/profiles/research-promotion-maintainer/state.db-shm|32768 bytes|2026-09-22T03:53:20-0700
+/Users/mikedemott/.hermes/profiles/research-promotion-maintainer/state.db-wal|37112 bytes|2026-09-21T12:33:14-0700
+/Users/mikedemott/.hermes/profiles/research-promotion-maintainer/state.db.auto-maintenance.lock|0 bytes|2026-09-03T09:37:50-0700
+/Users/mikedemott/.hermes/profiles/research-promotion-maintainer/state.db.fts_rebuild.lock|0 bytes|2026-09-20T09:37:34-0700
+/Users/mikedemott/.hermes/profiles/research-scout/state.db|15663104 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/research-scout/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/research-scout/state.db-wal|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/research-scout/state.db.auto-maintenance.lock|0 bytes|2026-09-04T20:11:47-0700
+/Users/mikedemott/.hermes/profiles/research-scout/state.db.fts_rebuild.lock|0 bytes|2026-09-20T18:10:35-0700
+/Users/mikedemott/.hermes/profiles/researcher-a/state.db|14356480 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/researcher-a/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/researcher-a/state.db-wal|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/researcher-a/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/resource-scheduler/state.db|274432 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/resource-scheduler/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/resource-scheduler/state.db-wal|0 bytes|2026-09-21T12:20:55-0700
+/Users/mikedemott/.hermes/profiles/resource-scheduler/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:38-0700
+/Users/mikedemott/.hermes/profiles/retrieval-librarian/state.db|274432 bytes|2026-09-21T12:20:50-0700
+/Users/mikedemott/.hermes/profiles/retrieval-librarian/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/retrieval-librarian/state.db-wal|0 bytes|2026-09-21T12:20:55-0700
+/Users/mikedemott/.hermes/profiles/retrieval-librarian/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:38-0700
+/Users/mikedemott/.hermes/profiles/revenue-artifact-auditor/state.db|3317760 bytes|2026-09-21T20:18:19-0700
+/Users/mikedemott/.hermes/profiles/revenue-artifact-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-artifact-auditor/state.db-wal|2480272 bytes|2026-09-21T20:18:39-0700
+/Users/mikedemott/.hermes/profiles/revenue-artifact-auditor/state.db.auto-maintenance.lock|0 bytes|2026-09-05T13:57:23-0700
+/Users/mikedemott/.hermes/profiles/revenue-artifact-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:51-0700
+/Users/mikedemott/.hermes/profiles/revenue-artifact-auditor/state.db.quarantine.lock|0 bytes|2026-09-05T13:57:23-0700
+/Users/mikedemott/.hermes/profiles/revenue-compliance-guardian/state.db|274432 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-compliance-guardian/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-compliance-guardian/state.db-wal|28872 bytes|2026-09-21T12:37:24-0700
+/Users/mikedemott/.hermes/profiles/revenue-compliance-guardian/state.db.fts_rebuild.lock|0 bytes|2026-09-05T15:00:36-0700
+/Users/mikedemott/.hermes/profiles/revenue-compliance-guardian/state.db.quarantine.lock|0 bytes|2026-09-05T15:00:36-0700
+/Users/mikedemott/.hermes/profiles/revenue-lab-steward/state.db|933888 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-lab-steward/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-lab-steward/state.db-wal|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-lab-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-05T14:28:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-lab-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-lab-steward/state.db.quarantine.lock|0 bytes|2026-09-05T14:28:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-outcome-analyst/state.db|274432 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-outcome-analyst/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-outcome-analyst/state.db-wal|0 bytes|2026-09-21T12:20:56-0700
+/Users/mikedemott/.hermes/profiles/revenue-outcome-analyst/state.db.fts_rebuild.lock|0 bytes|2026-09-05T15:01:25-0700
+/Users/mikedemott/.hermes/profiles/revenue-outcome-analyst/state.db.quarantine.lock|0 bytes|2026-09-05T15:01:25-0700
+/Users/mikedemott/.hermes/profiles/revenue-routing-analyst/state.db|2285568 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-routing-analyst/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-routing-analyst/state.db-wal|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-routing-analyst/state.db.auto-maintenance.lock|0 bytes|2026-09-05T14:09:39-0700
+/Users/mikedemott/.hermes/profiles/revenue-routing-analyst/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-routing-analyst/state.db.quarantine.lock|0 bytes|2026-09-05T14:09:38-0700
+/Users/mikedemott/.hermes/profiles/revenue-scout/state.db|274432 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/revenue-scout/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/revenue-scout/state.db-wal|0 bytes|2026-09-21T12:20:56-0700
+/Users/mikedemott/.hermes/profiles/revenue-scout/state.db.fts_rebuild.lock|0 bytes|2026-09-05T16:02:09-0700
+/Users/mikedemott/.hermes/profiles/revenue-scout/state.db.quarantine.lock|0 bytes|2026-09-05T16:02:09-0700
+/Users/mikedemott/.hermes/profiles/review-verification-steward/state.db|187203584 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/review-verification-steward/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/review-verification-steward/state.db-wal|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/review-verification-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-04T13:07:42-0700
+/Users/mikedemott/.hermes/profiles/review-verification-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-20T12:45:21-0700
+/Users/mikedemott/.hermes/profiles/rnd-adversarial-tester/state.db|389120 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/rnd-adversarial-tester/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/rnd-adversarial-tester/state.db-wal|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/rnd-adversarial-tester/state.db.auto-maintenance.lock|0 bytes|2026-09-14T19:51:49-0700
+/Users/mikedemott/.hermes/profiles/rnd-adversarial-tester/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:05:24-0700
+/Users/mikedemott/.hermes/profiles/rnd-adversarial-tester/state.db.quarantine.lock|0 bytes|2026-09-14T19:51:49-0700
+/Users/mikedemott/.hermes/profiles/route-execution-boundary-auditor/state.db|8945664 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/route-execution-boundary-auditor/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/route-execution-boundary-auditor/state.db-wal|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/route-execution-boundary-auditor/state.db.auto-maintenance.lock|0 bytes|2026-09-06T06:12:34-0700
+/Users/mikedemott/.hermes/profiles/route-execution-boundary-auditor/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/runtime-correctness-steward/state.db|171708416 bytes|2026-09-21T12:20:57-0700
+/Users/mikedemott/.hermes/profiles/runtime-correctness-steward/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/runtime-correctness-steward/state.db-wal|0 bytes|2026-09-21T16:51:42-0700
+/Users/mikedemott/.hermes/profiles/runtime-correctness-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-06T00:40:40-0700
+/Users/mikedemott/.hermes/profiles/runtime-correctness-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:56-0700
+/Users/mikedemott/.hermes/profiles/safety-guardian/state.db|274432 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/safety-guardian/state.db-shm|32768 bytes|2026-09-22T03:53:21-0700
+/Users/mikedemott/.hermes/profiles/safety-guardian/state.db-wal|0 bytes|2026-09-21T12:20:57-0700
+/Users/mikedemott/.hermes/profiles/safety-guardian/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:39-0700
+/Users/mikedemott/.hermes/profiles/sandbox/state.db|1187840 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/sandbox/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/sandbox/state.db-wal|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/sandbox/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:52-0700
+/Users/mikedemott/.hermes/profiles/scientific-validator/state.db|327680 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/scientific-validator/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/scientific-validator/state.db-wal|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/scientific-validator/state.db.auto-maintenance.lock|0 bytes|2026-09-15T03:18:26-0700
+/Users/mikedemott/.hermes/profiles/scientific-validator/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/scientist/state.db|274432 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/scientist/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/scientist/state.db-wal|0 bytes|2026-09-21T12:20:58-0700
+/Users/mikedemott/.hermes/profiles/scientist/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:39-0700
+/Users/mikedemott/.hermes/profiles/source-verifier/state.db|274432 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/source-verifier/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/source-verifier/state.db-wal|0 bytes|2026-09-21T12:20:58-0700
+/Users/mikedemott/.hermes/profiles/source-verifier/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:39-0700
+/Users/mikedemott/.hermes/profiles/storyboarder/state.db|450560 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/storyboarder/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/storyboarder/state.db-wal|53592 bytes|2026-09-21T12:43:37-0700
+/Users/mikedemott/.hermes/profiles/storyboarder/state.db.auto-maintenance.lock|0 bytes|2026-09-17T05:39:33-0700
+/Users/mikedemott/.hermes/profiles/storyboarder/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/structural-ratchet-steward/state.db|39768064 bytes|2026-09-21T12:33:31-0700
+/Users/mikedemott/.hermes/profiles/structural-ratchet-steward/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/structural-ratchet-steward/state.db-wal|49472 bytes|2026-09-21T12:42:31-0700
+/Users/mikedemott/.hermes/profiles/structural-ratchet-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-02T22:51:08-0700
+/Users/mikedemott/.hermes/profiles/structural-ratchet-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:54-0700
+/Users/mikedemott/.hermes/profiles/synthesizer/state.db|274432 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/synthesizer/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/synthesizer/state.db-wal|0 bytes|2026-09-21T12:20:58-0700
+/Users/mikedemott/.hermes/profiles/synthesizer/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:40-0700
+/Users/mikedemott/.hermes/profiles/task-intake-router/state.db|8622080 bytes|2026-09-22T02:13:10-0700
+/Users/mikedemott/.hermes/profiles/task-intake-router/state.db-shm|32768 bytes|2026-09-22T05:21:33-0700
+/Users/mikedemott/.hermes/profiles/task-intake-router/state.db-wal|0 bytes|2026-09-22T05:21:33-0700
+/Users/mikedemott/.hermes/profiles/task-intake-router/state.db.auto-maintenance.lock|0 bytes|2026-09-04T14:41:17-0700
+/Users/mikedemott/.hermes/profiles/task-intake-router/state.db.fts_rebuild.lock|0 bytes|2026-09-20T12:02:54-0700
+/Users/mikedemott/.hermes/profiles/task-orchestrator/state.db|187957248 bytes|2026-09-22T04:00:16-0700
+/Users/mikedemott/.hermes/profiles/task-orchestrator/state.db.auto-maintenance.lock|0 bytes|2026-09-02T22:51:08-0700
+/Users/mikedemott/.hermes/profiles/task-orchestrator/state.db.fts_rebuild.lock|0 bytes|2026-09-20T19:19:01-0700
+/Users/mikedemott/.hermes/profiles/test-contract-steward/state.db|24731648 bytes|2026-09-22T02:07:18-0700
+/Users/mikedemott/.hermes/profiles/test-contract-steward/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/test-contract-steward/state.db-wal|3790432 bytes|2026-09-22T02:20:05-0700
+/Users/mikedemott/.hermes/profiles/test-contract-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-05T14:17:59-0700
+/Users/mikedemott/.hermes/profiles/test-contract-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:54-0700
+/Users/mikedemott/.hermes/profiles/transcript-ingester/state.db|274432 bytes|2026-09-21T12:20:53-0700
+/Users/mikedemott/.hermes/profiles/transcript-ingester/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/transcript-ingester/state.db-wal|0 bytes|2026-09-21T12:20:58-0700
+/Users/mikedemott/.hermes/profiles/transcript-ingester/state.db.fts_rebuild.lock|0 bytes|2026-09-02T21:38:40-0700
+/Users/mikedemott/.hermes/profiles/visual-reviewer/state.db|1241088 bytes|2026-09-21T17:48:52-0700
+/Users/mikedemott/.hermes/profiles/visual-reviewer/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/visual-reviewer/state.db-wal|1957032 bytes|2026-09-21T17:49:15-0700
+/Users/mikedemott/.hermes/profiles/visual-reviewer/state.db.auto-maintenance.lock|0 bytes|2026-09-05T14:13:53-0700
+/Users/mikedemott/.hermes/profiles/visual-reviewer/state.db.fts_rebuild.lock|0 bytes|2026-09-20T14:33:52-0700
+/Users/mikedemott/.hermes/profiles/worktree-change-governance-steward/state.db|10596352 bytes|2026-09-21T19:04:11-0700
+/Users/mikedemott/.hermes/profiles/worktree-change-governance-steward/state.db-shm|32768 bytes|2026-09-22T03:53:22-0700
+/Users/mikedemott/.hermes/profiles/worktree-change-governance-steward/state.db-wal|3077672 bytes|2026-09-21T19:05:16-0700
+/Users/mikedemott/.hermes/profiles/worktree-change-governance-steward/state.db.auto-maintenance.lock|0 bytes|2026-09-03T12:21:37-0700
+/Users/mikedemott/.hermes/profiles/worktree-change-governance-steward/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:54-0700
+/Users/mikedemott/.hermes/profiles/writer/state.db|3907584 bytes|2026-09-21T18:07:32-0700
+/Users/mikedemott/.hermes/profiles/writer/state.db-shm|32768 bytes|2026-09-22T03:53:23-0700
+/Users/mikedemott/.hermes/profiles/writer/state.db-wal|2430832 bytes|2026-09-21T18:07:44-0700
+/Users/mikedemott/.hermes/profiles/writer/state.db.auto-maintenance.lock|0 bytes|2026-09-21T18:07:05-0700
+/Users/mikedemott/.hermes/profiles/writer/state.db.fts_rebuild.lock|0 bytes|2026-09-21T12:20:53-0700
+$ retired artifact manifests
+/Users/mikedemott/.hermes/state.db.retired-wal-20260915-070028-17293|192 bytes|2026-09-15T00:00:28-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260915-070028-17293/manifest.json
+{
+  "captured_at": "2026-09-15T07:00:28Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 1812,
+      "page_count": 299225,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 1812
+    },
+    "identity": [
+      16777231,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1225625600
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777231,
+      463743695
+    ],
+    "-wal": [
+      16777231,
+      463722725
+    ]
+  },
+  "pid": 17293,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777231,
+      463497200
+    ],
+    "sha256": "d4400497ca08c3f02b8bed856c053c326f9b51ab90b9c41551a77c05595a62f8"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 12351792,
+    "file": "state.db-wal",
+    "identity": [
+      16777231,
+      463497199
+    ],
+    "sha256": "d61e4acfc39c7b6d5f1a6e6d5b0f1032e9a66ca597245d466f6790a0540315fa"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260915-171731-3859|192 bytes|2026-09-15T10:17:31-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260915-171731-3859/manifest.json
+{
+  "captured_at": "2026-09-15T17:17:31Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2088,
+      "page_count": 328730,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2088
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1346478080
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      466710570
+    ]
+  },
+  "pid": 3859,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      465018193
+    ],
+    "sha256": "aae7c0c002579e48ade8e78aa79bf5aa83dbce5b427b11629b7a681d7af5f255"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 67108864,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      465018192
+    ],
+    "sha256": "29d2805989745822726adbb5c3ada7202f35b4856ca775e4fb8ce06fdf648fbb"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260915-190043-2966|192 bytes|2026-09-15T12:00:43-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260915-190043-2966/manifest.json
+{
+  "captured_at": "2026-09-15T19:00:43Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2090,
+      "page_count": 330000,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2090
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1351680000
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      466717157
+    ],
+    "-wal": [
+      16777235,
+      466714254
+    ]
+  },
+  "pid": 2966,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      465018193
+    ],
+    "sha256": "aae7c0c002579e48ade8e78aa79bf5aa83dbce5b427b11629b7a681d7af5f255"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 67108864,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      465018192
+    ],
+    "sha256": "29d2805989745822726adbb5c3ada7202f35b4856ca775e4fb8ce06fdf648fbb"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260916-035814-96379|192 bytes|2026-09-15T20:58:14-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260916-035814-96379/manifest.json
+{
+  "captured_at": "2026-09-16T03:58:14Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2090,
+      "page_count": 331653,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2090
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1358450688
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      467943541
+    ]
+  },
+  "pid": 96379,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      466717157
+    ],
+    "sha256": "6f6435d208ab9bdf11643ab898eb1860d9cdeacb5729842ab472e414c0311665"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 12392,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      466714254
+    ],
+    "sha256": "4da12a73fc157fe959106bebb8b23ebe48f9d963dd68e33b32dc80a533f63e80"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260916-065641-53401|192 bytes|2026-09-15T23:56:41-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260916-065641-53401/manifest.json
+{
+  "captured_at": "2026-09-16T06:56:41Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2091,
+      "page_count": 333235,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2091
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1364930560
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      468269506
+    ]
+  },
+  "pid": 53401,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      468005529
+    ],
+    "sha256": "6858ca8400c291253286057fd93e447f2ea8fa5e0d6be761e5c7b7b42068cbfe"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "close",
+  "version": 1,
+  "wal": {
+    "bytes": 11074592,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      468005528
+    ],
+    "sha256": "e404660306160de9938be6d089a02e241c33d129db1e6002d5b9028b7fc512aa"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260916-065703-60505|192 bytes|2026-09-15T23:57:03-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260916-065703-60505/manifest.json
+{
+  "captured_at": "2026-09-16T06:57:03Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2091,
+      "page_count": 333235,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2091
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1364930560
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      468269781
+    ],
+    "-wal": [
+      16777235,
+      468269780
+    ]
+  },
+  "pid": 60505,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      468005529
+    ],
+    "sha256": "6858ca8400c291253286057fd93e447f2ea8fa5e0d6be761e5c7b7b42068cbfe"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 11074592,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      468005528
+    ],
+    "sha256": "e404660306160de9938be6d089a02e241c33d129db1e6002d5b9028b7fc512aa"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260916-074104-66131|192 bytes|2026-09-16T00:41:04-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260916-074104-66131/manifest.json
+{
+  "captured_at": "2026-09-16T07:41:04Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2092,
+      "page_count": 333235,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2092
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1364930560
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      468399796
+    ]
+  },
+  "pid": 66131,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      468269781
+    ],
+    "sha256": "617a8e4698af45994970b831241fdf0d1a6cb713f0d2830ff0f749048b979f64"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 4223032,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      468269780
+    ],
+    "sha256": "26a916275000ed14c1e87706798556940f530aaa08a9f50bd2fc5d277ff17a5f"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260916-150303-1037|192 bytes|2026-09-16T08:03:03-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260916-150303-1037/manifest.json
+{
+  "captured_at": "2026-09-16T15:03:03Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2147,
+      "page_count": 335259,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2147
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1373220864
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      469344383
+    ],
+    "-wal": [
+      16777235,
+      469344382
+    ]
+  },
+  "pid": 1037,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      468490884
+    ],
+    "sha256": "b462b641f9613e3280aa77992129ff01ffe32ec9cf3475f8c0385b1124eb3da8"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 22050272,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      468490883
+    ],
+    "sha256": "334f3cbd6595d2690760e965d92146a265084c0df913ecd0fa8507457e0f2b09"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260916-150308-4129|192 bytes|2026-09-16T08:03:08-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260916-150308-4129/manifest.json
+{
+  "captured_at": "2026-09-16T15:03:08Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2147,
+      "page_count": 335259,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2147
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1373220864
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      469344383
+    ],
+    "-wal": [
+      16777235,
+      469344382
+    ]
+  },
+  "pid": 4129,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      468490884
+    ],
+    "sha256": "b462b641f9613e3280aa77992129ff01ffe32ec9cf3475f8c0385b1124eb3da8"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 22050272,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      468490883
+    ],
+    "sha256": "334f3cbd6595d2690760e965d92146a265084c0df913ecd0fa8507457e0f2b09"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060239-77797|192 bytes|2026-09-16T23:02:39-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060239-77797/manifest.json
+{
+  "captured_at": "2026-09-17T06:02:39Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2154,
+      "page_count": 354171,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2154
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1450684416
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      471326341
+    ]
+  },
+  "pid": 77797,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      469408272
+    ],
+    "sha256": "a674fd21d5c71399813c6123a4c0d5bba5bbd687efffa005c123ebf1c365ac66"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 21222152,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      469344956
+    ],
+    "sha256": "c2073cdf39d154bee2694eac0b84fc16ff031fa65155d133833262bd9beccbd5"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060758-28756|192 bytes|2026-09-16T23:07:58-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060758-28756/manifest.json
+{
+  "captured_at": "2026-09-17T06:07:58Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2158,
+      "page_count": 354171,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2158
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1450684416
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 28756,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471335747
+    ],
+    "sha256": "e0af125c445b0315171126492c6c894d32e421b4fba1fa011837f5525243a849"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 193672,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471335746
+    ],
+    "sha256": "c648f5355d977d00991e69b9623f596c30d756c0b874e17d7ed7042ed4bb8ecc"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060758-29392|192 bytes|2026-09-16T23:07:58-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060758-29392/manifest.json
+{
+  "captured_at": "2026-09-17T06:07:58Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2158,
+      "page_count": 354171,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2158
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1450684416
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29392,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471335747
+    ],
+    "sha256": "e0af125c445b0315171126492c6c894d32e421b4fba1fa011837f5525243a849"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 193672,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471335746
+    ],
+    "sha256": "c648f5355d977d00991e69b9623f596c30d756c0b874e17d7ed7042ed4bb8ecc"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060759-29394|192 bytes|2026-09-16T23:07:59-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060759-29394/manifest.json
+{
+  "captured_at": "2026-09-17T06:07:59Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2158,
+      "page_count": 354171,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2158
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1450684416
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29394,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471335747
+    ],
+    "sha256": "e0af125c445b0315171126492c6c894d32e421b4fba1fa011837f5525243a849"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 193672,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471335746
+    ],
+    "sha256": "c648f5355d977d00991e69b9623f596c30d756c0b874e17d7ed7042ed4bb8ecc"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060759-29729|192 bytes|2026-09-16T23:07:59-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060759-29729/manifest.json
+{
+  "captured_at": "2026-09-17T06:07:59Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2158,
+      "page_count": 354171,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2158
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1450684416
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29729,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471335747
+    ],
+    "sha256": "e0af125c445b0315171126492c6c894d32e421b4fba1fa011837f5525243a849"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 193672,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471335746
+    ],
+    "sha256": "c648f5355d977d00991e69b9623f596c30d756c0b874e17d7ed7042ed4bb8ecc"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060800-29387|192 bytes|2026-09-16T23:08:00-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060800-29387/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:00Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2158,
+      "page_count": 354171,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2158
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1450684416
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      471336107
+    ],
+    "-wal": [
+      16777235,
+      471336106
+    ]
+  },
+  "pid": 29387,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471335747
+    ],
+    "sha256": "e0af125c445b0315171126492c6c894d32e421b4fba1fa011837f5525243a849"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 193672,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471335746
+    ],
+    "sha256": "c648f5355d977d00991e69b9623f596c30d756c0b874e17d7ed7042ed4bb8ecc"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060812-28758|192 bytes|2026-09-16T23:08:12-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060812-28758/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:12Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2174,
+      "page_count": 354216,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2174
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1450868736
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      471336107
+    ],
+    "-wal": [
+      16777235,
+      471336106
+    ]
+  },
+  "pid": 28758,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471335747
+    ],
+    "sha256": "e0af125c445b0315171126492c6c894d32e421b4fba1fa011837f5525243a849"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 193672,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471335746
+    ],
+    "sha256": "c648f5355d977d00991e69b9623f596c30d756c0b874e17d7ed7042ed4bb8ecc"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29721|192 bytes|2026-09-16T23:08:46-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29721/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:46Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29721,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29725|192 bytes|2026-09-16T23:08:46-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29725/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:46Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29725,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29727|192 bytes|2026-09-16T23:08:46-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29727/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:46Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29727,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29764|192 bytes|2026-09-16T23:08:46-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29764/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:46Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29764,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29768|192 bytes|2026-09-16T23:08:46-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29768/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:46Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29768,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29770|192 bytes|2026-09-16T23:08:46-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060846-29770/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:46Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29770,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-29762|192 bytes|2026-09-16T23:08:47-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-29762/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:47Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29762,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-29766|192 bytes|2026-09-16T23:08:47-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-29766/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:47Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 29766,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30476|192 bytes|2026-09-16T23:08:47-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30476/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:47Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 30476,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30480|192 bytes|2026-09-16T23:08:47-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30480/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:47Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 30480,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30485|192 bytes|2026-09-16T23:08:47-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060847-30485/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:47Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 30485,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060848-30482|192 bytes|2026-09-16T23:08:48-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060848-30482/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:48Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 30482,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060850-30478|192 bytes|2026-09-16T23:08:50-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060850-30478/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:50Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 30478,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060852-28760|192 bytes|2026-09-16T23:08:52-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060852-28760/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:52Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      471339126
+    ]
+  },
+  "pid": 28760,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060852-30487|192 bytes|2026-09-16T23:08:52-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060852-30487/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:52Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 30487,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-060854-29389|192 bytes|2026-09-16T23:08:54-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-060854-29389/manifest.json
+{
+  "captured_at": "2026-09-17T06:08:54Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2238,
+      "page_count": 354407,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2238
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1451651072
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      471339126
+    ]
+  },
+  "pid": 29389,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471336107
+    ],
+    "sha256": "65ac172ee7dee22675020a9c8725c1d84904c5f7fce388161af9360637a2885b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 3963472,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471336106
+    ],
+    "sha256": "51a2369bf97b50f3a64646219795b68a02504f1cb20b2e1b3e5a841376fea4bd"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-062139-62782|192 bytes|2026-09-16T23:21:39-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-062139-62782/manifest.json
+{
+  "captured_at": "2026-09-17T06:21:39Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2240,
+      "page_count": 355170,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2240
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1454776320
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      471364981
+    ],
+    "-wal": [
+      16777235,
+      471364709
+    ]
+  },
+  "pid": 62782,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471357014
+    ],
+    "sha256": "c309eed2a2dcc24322cde5ccfe4be62cb21c3505af60c6c8573420b7f02e3e68"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 4157112,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471357013
+    ],
+    "sha256": "3b94a84770be20ceae27701713dea4ed1606e66362f03a384db9d2659a96b286"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-062158-75040|192 bytes|2026-09-16T23:21:58-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-062158-75040/manifest.json
+{
+  "captured_at": "2026-09-17T06:21:58Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2241,
+      "page_count": 355170,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2241
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1454776320
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      471365659
+    ],
+    "-wal": [
+      16777235,
+      471365658
+    ]
+  },
+  "pid": 75040,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471364981
+    ],
+    "sha256": "a0d83047d1459f22d3fdcbec37f42d944cbf4f059d0fd5a32bc5e2bbd017d829"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 2237192,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471364709
+    ],
+    "sha256": "2cea1859dadcc99d916d936c96b99e2ea2f0c31b03aa9761c6c8b24f26779eb7"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-062351-76718|192 bytes|2026-09-16T23:23:51-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-062351-76718/manifest.json
+{
+  "captured_at": "2026-09-17T06:23:51Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2242,
+      "page_count": 355170,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2242
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1454776320
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      471368585
+    ]
+  },
+  "pid": 76718,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      471365659
+    ],
+    "sha256": "9c5b53070b21177e4281635b6698bb557805d26eb36d7ba4b1d79a4bee1a8d5f"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 2904632,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      471365658
+    ],
+    "sha256": "ad217a4d6f86b864af545d674aa1daad942da550a9a459a1812c37723995ba01"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-122247-97964|192 bytes|2026-09-17T05:22:47-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-122247-97964/manifest.json
+{
+  "captured_at": "2026-09-17T12:22:47Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2335,
+      "page_count": 370712,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2335
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1518436352
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      472808989
+    ],
+    "-wal": [
+      16777235,
+      472808988
+    ]
+  },
+  "pid": 97964,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      472203059
+    ],
+    "sha256": "2c072d973c18aa3824073b92aa90bf8c62dae43796f5c0d08ca068b571da9dca"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 9945712,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      472203058
+    ],
+    "sha256": "71128a62cb540becaaf1e499cce0cca2ae096885e5403f86b0f263c41cec82c0"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260917-170056-72060|192 bytes|2026-09-17T10:00:56-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260917-170056-72060/manifest.json
+{
+  "captured_at": "2026-09-17T17:00:56Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2382,
+      "page_count": 375831,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2382
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1539403776
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      473295742
+    ],
+    "-wal": [
+      16777235,
+      473291681
+    ]
+  },
+  "pid": 72060,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      473289379
+    ],
+    "sha256": "b6f26f9a1f3a18e1f22145247f180351a69b9f1c5cfbfdbdb2bd7bd7fb1a9e98"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 4152,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      473289378
+    ],
+    "sha256": "7a3fa8406b10b81ab15e09664306313552a34aa088decacf45163d16e07b7f1c"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260918-002406-78527|192 bytes|2026-09-17T17:24:06-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260918-002406-78527/manifest.json
+{
+  "captured_at": "2026-09-18T00:24:06Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2400,
+      "page_count": 389493,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2400
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1595363328
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-wal": [
+      16777235,
+      474919786
+    ]
+  },
+  "pid": 78527,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      473295742
+    ],
+    "sha256": "bb62ee3659a37b62fa6bc07f5a962ffa74c9ea6f8028cff0a83f9f4acdc5adc3"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 23175032,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      473291681
+    ],
+    "sha256": "97ef720a80578749bf4dbbbff9dd2cdbabce063dc4b9d8e365b0adc3c9b37d0d"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260918-080619-84322|192 bytes|2026-09-18T01:06:20-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260918-080619-84322/manifest.json
+{
+  "captured_at": "2026-09-18T08:06:19Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2401,
+      "page_count": 392628,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2401
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1608204288
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      478350341
+    ],
+    "-wal": [
+      16777235,
+      478350340
+    ]
+  },
+  "pid": 84322,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      474945694
+    ],
+    "sha256": "fa7a6067ed4bc8939b59f98b39aacdee6048fb9aecf57c5892eb6182080f7854"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 12392992,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      474919786
+    ],
+    "sha256": "a573f22715a4acf2cbf6bf1e9f5a0a6dcddc26a3591076ddef6261b0587a1130"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260918-191930-99621|192 bytes|2026-09-18T12:19:30-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260918-191930-99621/manifest.json
+{
+  "captured_at": "2026-09-18T19:19:30Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2552,
+      "page_count": 413983,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2552
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1695674368
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 99621,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 65536,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      478350341
+    ],
+    "sha256": "a058b2902a923c4ed02c4cd737604642bcf9e32b277a2e8c5814d9d64c7e5c93"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "close",
+  "version": 1,
+  "wal": {
+    "bytes": 19693632,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      478350340
+    ],
+    "sha256": "8c320d3bc030111fbe5847db6270f4262b40e0c3cfc5ed0eabd75767a1282ba9"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260918-191934-36145|192 bytes|2026-09-18T12:19:34-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260918-191934-36145/manifest.json
+{
+  "captured_at": "2026-09-18T19:19:34Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2552,
+      "page_count": 413983,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2552
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1695674368
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 36145,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 65536,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      478350341
+    ],
+    "sha256": "a058b2902a923c4ed02c4cd737604642bcf9e32b277a2e8c5814d9d64c7e5c93"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 19693632,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      478350340
+    ],
+    "sha256": "8c320d3bc030111fbe5847db6270f4262b40e0c3cfc5ed0eabd75767a1282ba9"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260919-014940-95659|192 bytes|2026-09-18T18:49:40-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260919-014940-95659/manifest.json
+{
+  "captured_at": "2026-09-19T01:49:40Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2694,
+      "page_count": 428087,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2694
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1753444352
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      482310740
+    ],
+    "-wal": [
+      16777235,
+      482310708
+    ]
+  },
+  "pid": 95659,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      481184302
+    ],
+    "sha256": "35efd001f7d43ee45408a50c33d30d9371228a5849041f6aee8c591ff196a8ca"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 24361592,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      481184301
+    ],
+    "sha256": "056c6bd018b7839c64d85b8591e006956aaae721ac4b8c68c4d7121f36089a3d"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260919-015014-93035|192 bytes|2026-09-18T18:50:14-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260919-015014-93035/manifest.json
+{
+  "captured_at": "2026-09-19T01:50:14Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2694,
+      "page_count": 428087,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2694
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1753444352
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      482310740
+    ],
+    "-wal": [
+      16777235,
+      482310708
+    ]
+  },
+  "pid": 93035,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      481184302
+    ],
+    "sha256": "35efd001f7d43ee45408a50c33d30d9371228a5849041f6aee8c591ff196a8ca"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 24361592,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      481184301
+    ],
+    "sha256": "056c6bd018b7839c64d85b8591e006956aaae721ac4b8c68c4d7121f36089a3d"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260921-181214-56240|192 bytes|2026-09-21T11:12:14-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260921-181214-56240/manifest.json
+{
+  "captured_at": "2026-09-21T18:12:14Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2836,
+      "page_count": 542993,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2836
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 2224099328
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {
+    "-shm": [
+      16777235,
+      524463463
+    ],
+    "-wal": [
+      16777235,
+      524463462
+    ]
+  },
+  "pid": 56240,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      517201870
+    ],
+    "sha256": "e5eca5ddb513cf719aad6151f8bc0a49d5b0a72b8d12aa9e01f3e36696ca94e2"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 5331312,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      517201869
+    ],
+    "sha256": "844950981e7cb82b56045406cee25531514f3b6b4a2b27d03ad6438b2bde0332"
+  }
+}/Users/mikedemott/.hermes/state.db.retired-wal-20260921-190507-11354|192 bytes|2026-09-21T12:05:07-0700
+--- /Users/mikedemott/.hermes/state.db.retired-wal-20260921-190507-11354/manifest.json
+{
+  "captured_at": "2026-09-21T19:05:07Z",
+  "database": "/Users/mikedemott/.hermes/state.db",
+  "main": {
+    "bytes": 100,
+    "file": "state.db.header",
+    "header": {
+      "application_id": 1540766306,
+      "change_counter": 2840,
+      "page_count": 379082,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 2840
+    },
+    "identity": [
+      16777235,
+      460318798
+    ],
+    "mode": "header_only",
+    "size": 1552719872
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 11354,
+  "python": "3.11.16",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      525314232
+    ],
+    "sha256": "c67d04bd17770622d30bcd4c1208661c2a9e7d2a23f3bb161da9fd80ef992da3"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 4124152,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      525314231
+    ],
+    "sha256": "8635e00dd3065a9a5c308ea5f2e1d9cd290fe54b844a8fe178be08b2590467f4"
+  }
+}/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db.retired-wal-20260915-004644-39454|192 bytes|2026-09-14T17:46:44-0700
+--- /Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db.retired-wal-20260915-004644-39454/manifest.json
+{
+  "captured_at": "2026-09-15T00:46:44Z",
+  "database": "/Users/mikedemott/.hermes/profiles/dependency-tooling-health-sentinel/state.db",
+  "main": {
+    "bytes": 4349952,
+    "file": "state.db",
+    "header": {
+      "application_id": 262129546,
+      "change_counter": 77,
+      "page_count": 1062,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 77
+    },
+    "identity": [
+      16777231,
+      246318100
+    ],
+    "mode": "copied",
+    "sha256": "d08a528c068d317f7dcbebba3424656eceb6fc8813bed8c51f492e04af5ab34d",
+    "size": 4349952
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 39454,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777231,
+      452632323
+    ],
+    "sha256": "04fbabd774223a93cf0dc89bf89c95c1f350c3e14c0065edcaa9eb55800ac81b"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 4157112,
+    "file": "state.db-wal",
+    "identity": [
+      16777231,
+      452632322
+    ],
+    "sha256": "2b92733c4dbd3fd8b6bb2228b1e28d01799f6b1bbd0d5ac7e8c817b44cf2a869"
+  }
+}/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.retired-wal-20260915-200735-54743|192 bytes|2026-09-15T13:07:35-0700
+--- /Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.retired-wal-20260915-200735-54743/manifest.json
+{
+  "captured_at": "2026-09-15T20:07:35Z",
+  "database": "/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db",
+  "main": {
+    "bytes": 76849152,
+    "file": "state.db",
+    "header": {
+      "application_id": 645526431,
+      "change_counter": 1647,
+      "page_count": 18762,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 1647
+    },
+    "identity": [
+      16777235,
+      282908766
+    ],
+    "mode": "copied",
+    "sha256": "d207df1b521fe96202edc8d33707cdba81603a442e6ff25b48c1635023f54019",
+    "size": 76849152
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 54743,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      452632365
+    ],
+    "sha256": "b9bc5b163a65dd18070166568e688e67e8cfa46a12b7ee61c59439cf73e8f7e4"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 4185952,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      452632364
+    ],
+    "sha256": "050635922c5e72f1ebd4a67867f01548f463c15edd4bac9038758f634a80fb2c"
+  }
+}/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.retired-wal-20260919-013344-33158|192 bytes|2026-09-18T18:33:44-0700
+--- /Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db.retired-wal-20260919-013344-33158/manifest.json
+{
+  "captured_at": "2026-09-19T01:33:44Z",
+  "database": "/Users/mikedemott/.hermes/profiles/hermes-maintenance-steward/state.db",
+  "main": {
+    "bytes": 78581760,
+    "file": "state.db",
+    "header": {
+      "application_id": 645526431,
+      "change_counter": 1776,
+      "page_count": 19185,
+      "page_size": 4096,
+      "user_version": 0,
+      "valid": true,
+      "version_valid_for": 1776
+    },
+    "identity": [
+      16777235,
+      282908766
+    ],
+    "mode": "copied",
+    "sha256": "765725380dace56cc49309f7a040fd41a41ab9d5f2c6da4b83dd0d9897aebe89",
+    "size": 78581760
+  },
+  "note": "Frames in the captured WAL were committed by the retired generation. Whether they belong on top of the main file now at the path is an operator decision; inspect the copied image with `hermes sessions recover --inspect-only` first.",
+  "path_generation_at_capture": {},
+  "pid": 33158,
+  "python": "3.13.15",
+  "shm": {
+    "bytes": 32768,
+    "file": "state.db-shm",
+    "identity": [
+      16777235,
+      467136864
+    ],
+    "sha256": "9f0c27a98847c586c1c9bf3995dc5df04fda51b109b026a9e00e283a8e46eb01"
+  },
+  "sqlite": "3.53.1",
+  "trigger": "halt",
+  "version": 1,
+  "wal": {
+    "bytes": 2781032,
+    "file": "state.db-wal",
+    "identity": [
+      16777235,
+      467136863
+    ],
+    "sha256": "1c46eeadc43f13d8228581c1adb0130a5d6784bbdd7d1e04946a16dcc3468d5e"
+  }
+}

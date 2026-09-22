@@ -1,0 +1,688 @@
+$ hermes --version-local
+Hermes Agent v0.21.3 (2026.9.14) · upstream a65cc35b · local 5d95f46b (+14 carried commits)
+Install directory: /Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922
+Install method: git
+Python: 3.13.15
+OpenAI SDK: 2.24.0
+$ hermes cron list
+cron/executions.db: could not verify the on-disk journal mode (database is locked / busy); not issuing a journal-mode set-pragma while another connection may hold the file (it could unlink the -wal/-shm sidecars that connection still uses). Leaving the file untouched; this connection inherits the on-disk mode. This message fires once per process per database.
+
+┌─────────────────────────────────────────────────────────────────────────┐
+│                         Scheduled Jobs                                  │
+└─────────────────────────────────────────────────────────────────────────┘
+
+  47d6cd983073 [active]
+    Name:      LunaBot worktree governance
+    Schedule:  0 19 * * 1-5
+    Repeat:    ∞
+    Next run:  2026-09-22T19:00:00-07:00
+    Deliver:   local
+    Script:    enqueue-worktree-governance.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-21T19:00:08.586554-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T19:00:00-07:00)
+
+  1d6533dea107 [active]
+    Name:      LunaBot paper-safety posture
+    Schedule:  45 18 * * 1-5
+    Repeat:    ∞
+    Next run:  2026-09-22T18:45:00-07:00
+    Deliver:   local
+    Script:    enqueue-paper-safety-posture.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-21T18:45:08.829097-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T18:45:00-07:00)
+
+  e9236ab46359 [active]
+    Name:      LunaBot dependency and tooling health
+    Schedule:  0 20 * * 1
+    Repeat:    ∞
+    Next run:  2026-09-28T20:00:00-07:00
+    Deliver:   local
+    Script:    enqueue-dependency-tooling-health.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-21T20:00:21.900560-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T20:00:00-07:00)
+
+  9d5a1505798b [active]
+    Name:      HRL deterministic safety checks
+    Schedule:  */15 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T05:30:00-07:00
+    Deliver:   local
+    Script:    hrl14-frequent_deterministic_checks.py
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/HermesRevenueLab
+    Last run:  2026-09-22T05:15:18.224319-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T05:15:00-07:00)
+
+  2db015b642e4 [active]
+    Name:      HRL lightweight opportunity normalization
+    Schedule:  30 18 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T18:30:00-07:00
+    Deliver:   local
+    Script:    hrl14-lightweight_opportunity_normalization.py
+    Workdir:   /Users/mikedemott/HermesRevenueLab
+    Last run:  2026-09-21T18:34:07.900009-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T18:30:00-07:00)
+
+  1f1d20ec0b67 [active]
+    Name:      Shared agent learning sync
+    Schedule:  0 3 * * *
+    Repeat:    ∞
+    Next run:  2026-09-23T03:00:00-07:00
+    Deliver:   local
+    Script:    sync_agent_learning_daily.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Last run:  2026-09-22T03:00:53.225232-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T03:00:00-07:00)
+
+  e3753541e2fa [active]
+    Name:      LunaBot GitHub PR feedback
+    Schedule:  0,30 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T05:30:00-07:00
+    Deliver:   local
+    Script:    github-pr-feedback-scan-lunabot.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-22T05:01:59.352549-07:00  error: Script exited with code 1
+stdout:
+{"status": "invalid_configuration"}  (179 failures in a row)
+    Dispatch:  on time (scheduled 2026-09-22T05:00:00-07:00)
+
+  9692a1604876 [paused]
+    Name:      Kanban strict-paper concurrency guard
+    Schedule:  */1 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-14T19:11:00-07:00
+    Deliver:   local
+    Script:    kanban_runtime_concurrency_guard.py
+    Mode:      no-agent (script stdout delivered directly)
+    Last run:  2026-09-14T19:10:51.456893-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-14T19:10:00-07:00)
+
+  482c250c9086 [active]
+    Name:      Hermes profile and workflow health
+    Schedule:  30 20 * * 2
+    Repeat:    ∞
+    Next run:  2026-09-22T20:30:00-07:00
+    Deliver:   local
+    Script:    enqueue-profile-workflow-health.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+    Last run:  2026-09-15T23:57:40.122655-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-15T20:30:00-07:00)
+
+  b2deb5dc78b7 [active]
+    Name:      LunaBot research lab intake
+    Schedule:  11 */2 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:11:00-07:00
+    Deliver:   local
+    Script:    enqueue-research-lab.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-22T04:11:33.505384-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T04:11:00-07:00)
+
+  4754bb0bd539 [active]
+    Name:      Hermes White Knight issue intake
+    Schedule:  17 */6 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:17:00-07:00
+    Deliver:   local
+    Script:    enqueue-white-knight.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+    Last run:  2026-09-22T00:34:20.132848-07:00  ok
+    Dispatch:  ⚠ late: scheduled 2026-09-22T00:17:00-07:00, ran 2026-09-22T00:34:17.622590-07:00 (17m late)
+
+  c344048965c9 [active]
+    Name:      Research Lab promotion review
+    Schedule:  37 9 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T09:37:00-07:00
+    Deliver:   local
+    Script:    enqueue-research-promotion-review.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-21T09:37:05.487826-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T09:37:00-07:00)
+
+  941383ee12cd [paused]
+    Name:      Luna iPhone signing renewal
+    Schedule:  every 8640m
+    Repeat:    ∞
+    Next run:  2026-09-08T20:54:24.218016-07:00
+    Deliver:   local
+    Script:    luna-companion-refresh.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-08-27T21:06:51.836554-07:00  ok
+
+  65815c8e867e [paused]
+    Name:      Hermes iPhone signing renewal
+    Schedule:  every 8640m
+    Repeat:    ∞
+    Next run:  2026-09-08T21:29:41.942563-07:00
+    Deliver:   local
+    Script:    hermes-companion-refresh.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/HermesCompanion
+    Last run:  2026-09-02T21:29:41.942563-07:00  error: Script exited with code 1
+stdout:
+{
+  "started_at": "2026-09-03T04:29:20.625331+00:00",
+  "status": "needs_attention",
+  "before_expires_at": "2026-09-04T04:15:30+00:00",
+  "renewal_verified": false,
+  "log_path": "/Users/mikedemott/HermesCompanion/BuildEvidence/phone-refresh-20260903T042920Z-acdd1ab2.log",
+  "cached_profiles_backed_up": 1,
+  "installer_exit_code": 1,
+  "launch_attempted": false,
+  "message": "Refresh could not complete. Connect the saved iPhone and check Xcode Apple-account access, then retry. No app data or pairing state was deleted.",
+  "finished_at": "2026-09-03T04:29:41.553716+00:00",
+  "receipt_path": "/Users/mikedemott/HermesCompanion/BuildEvidence/phone-refresh-20260903T042920Z-acdd1ab2.json"
+}
+    Dispatch:  ⚠ late: scheduled 2026-09-02T21:15:39.711724-07:00, ran 2026-09-02T21:29:20.151850-07:00 (13m late)
+
+  a0f646ee7160 [active]
+    Name:      LunaBot worktree cleanup
+    Schedule:  0 */6 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:20:00-07:00
+    Deliver:   local
+    Script:    worktree-cleanup-lunabot.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-22T00:34:20.343441-07:00  ok
+    Dispatch:  ⚠ late: scheduled 2026-09-22T00:20:00-07:00, ran 2026-09-22T00:34:17.622590-07:00 (14m late)
+
+  5143a736175c [active]
+    Name:      Research agent capability feedstock
+    Schedule:  0 9 * * 1
+    Repeat:    ∞
+    Next run:  2026-09-28T08:00:00-07:00
+    Deliver:   local
+    Script:    enqueue-agent-capability-feedstock.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+    Last run:  2026-09-21T08:00:49.067013-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T08:00:00-07:00)
+
+  9ef5ab8c34ff [active]
+    Name:      Federation department discovery and librarian intake
+    Schedule:  17 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:17:00-07:00
+    Deliver:   local
+    Script:    federation-discovery.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+    Last run:  2026-09-22T05:17:17.236353-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T05:17:00-07:00)
+
+  2047820efb33 [active]
+    Name:      Incremental library Vault catalogue
+    Schedule:  7,37 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T05:37:00-07:00
+    Deliver:   local
+    Script:    library-vault-catalog.py
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/LunaBot
+    Last run:  2026-09-22T05:07:14.027402-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T05:07:00-07:00)
+
+  def3474fce41 [active]
+    Name:      Hermes-agent GitHub PR feedback
+    Schedule:  15,45 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T05:45:00-07:00
+    Deliver:   local
+    Script:    github-pr-feedback-scan-hermes-agent.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+    Last run:  2026-09-22T05:15:21.792597-07:00  error: Script exited with code 1
+stdout:
+{"status": "invalid_configuration"}
+{"status": "invalid_configuration"}  (180 failures in a row)
+    Dispatch:  on time (scheduled 2026-09-22T05:15:00-07:00)
+
+  35f6826b9d32 [active]
+    Name:      Hermes-agent worktree cleanup
+    Schedule:  30 */6 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:30:00-07:00
+    Deliver:   local
+    Script:    worktree-cleanup-hermes-agent.sh
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+    Last run:  2026-09-22T00:34:21.297164-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T00:30:00-07:00)
+
+  lunar-city-art-brief-review [active]
+    Name:      Lunar City: Review & Refresh Creative Brief
+    Schedule:  0 9 * * 1
+    Repeat:    ∞
+    Next run:  2026-09-28T09:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T09:24:59.577094-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T09:00:00-07:00)
+
+  lunar-city-asset-audit [active]
+    Name:      Lunar City: Asset Pipeline Health Check
+    Schedule:  0 9 * * 3
+    Repeat:    ∞
+    Next run:  2026-09-23T09:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-17T00:20:34.795162-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-16T09:00:00-07:00)
+
+  capability-gap-scan [active]
+    Name:      Federation: Capability Gap Scan
+    Schedule:  0 8 * * 2
+    Repeat:    ∞
+    Next run:  2026-09-22T08:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-15T08:34:16.198172-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-15T08:00:00-07:00)
+
+  lunar-city-concept-iteration [active]
+    Name:      Lunar City: Concept Iteration Sprint
+    Schedule:  0 14 * * 1-5
+    Repeat:    ∞
+    Next run:  2026-09-22T14:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T14:14:33.397288-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T14:00:00-07:00)
+
+  federation-map-refresh [active]
+    Name:      Federation: Refresh Ownership Map
+    Schedule:  0 6 * * 1
+    Repeat:    ∞
+    Next run:  2026-09-28T06:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T06:06:45.337759-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T06:00:00-07:00)
+
+  federation-cross-dept-sync [active]
+    Name:      Federation: Cross-Department Sync Pulse
+    Schedule:  0 7 * * 1,4
+    Repeat:    ∞
+    Next run:  2026-09-24T07:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T07:05:51.504368-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T07:00:00-07:00)
+
+  hermes-upstream-issue-scout [active]
+    Name:      Hermes: Upstream Issue Relevance Scan
+    Schedule:  0 6 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T06:09:54.960342-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T06:00:00-07:00)
+
+  hermes-upstream-sync [active]
+    Name:      Hermes: Upstream Sync & Local Repair Scan
+    Schedule:  0 1 * * *
+    Repeat:    ∞
+    Next run:  2026-09-23T01:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T01:48:30.415458-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T01:00:00-07:00)
+
+  hermes-dependency-health [active]
+    Name:      Hermes: Dependency & Tooling Health Check
+    Schedule:  0 5 * * 0
+    Repeat:    ∞
+    Next run:  2026-09-27T05:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T16:20:28.905090-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-20T05:00:00-07:00)
+
+  hermes-pr-feedback-monitor [active]
+    Name:      Hermes: Upstream PR Feedback Observer
+    Schedule:  0 */8 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T08:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T16:09:48.366384-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T00:00:00-07:00)
+
+  hermes-upstream-landscape-audit [active]
+    Name:      Hermes: Upstream PR & Issue Landscape Audit
+    Schedule:  0 7 * * 1
+    Repeat:    ∞
+    Next run:  2026-09-28T07:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T07:14:51.736021-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T07:00:00-07:00)
+
+  hermes-white-knight-repair [active]
+    Name:      Hermes: White Knight Upstream Repair Push
+    Schedule:  0 8 * * 3
+    Repeat:    ∞
+    Next run:  2026-09-23T08:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-17T01:08:28.354396-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-16T08:00:00-07:00)
+
+  lunar-city-asset-generation [active]
+    Name:      Lunar City: Generate Missing Visual Assets
+    Schedule:  0 11 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T11:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T11:12:16.841886-07:00  error: RuntimeError: ⚠️ No reply: the turn was stopped because a live Hermes process held a retired state.db-wal generation after its pathname was deleted or replaced. Stop the gateway, dashboard, and cron writers; do not overwrite the current state.db or delete its sidecars. Check the logs for whether Hermes captured the retired generation, then read the adjacent state.db.retired-wal-*/manifest.json. If manifest.main.mode is `copied`, inspect that artifact with `hermes sessions recover --source <state.db.retired-wal-*/state.db> --inspect-only` before deciding whether its committed frames belong on the current database. A `header_only` artifact is forensic and does not contain a copied state.db to inspect. Unwritten messages were diverted to sessions/<session_id>.jsonl and, on the gateway, pending_messages/pending-*.json.
+    Dispatch:  on time (scheduled 2026-09-21T11:00:00-07:00)
+
+  federation-handoff-audit [active]
+    Name:      Federation: Handoff Evidence Audit
+    Schedule:  30 9 * * 3
+    Repeat:    ∞
+    Next run:  2026-09-23T09:30:00-07:00
+    Deliver:   local
+    Last run:  2026-09-16T22:53:50.712961-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-16T09:30:00-07:00)
+
+  intake-queue-triage [active]
+    Name:      Federation: Intake Queue Triage
+    Schedule:  0 */6 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-22T03:46:06.740350-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T00:00:00-07:00)
+
+  lunabot-paper-safety-audit [active]
+    Name:      LunaBot: Paper-Safety & Authority Audit
+    Schedule:  0 2 * * 1,4
+    Repeat:    ∞
+    Next run:  2026-09-24T02:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T02:06:14.410435-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T02:00:00-07:00)cron.provider 'nous' not found; using built-in ticker
+
+
+  lunabot-repair-pulse [active]
+    Name:      LunaBot: Repair Pulse for Assigned Issues
+    Schedule:  0 5 */2 * *
+    Repeat:    ∞
+    Next run:  2026-09-23T05:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T05:02:34.420736-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T05:00:00-07:00)
+
+  lunabot-failure-scan [active]
+    Name:      LunaBot: Scan Worker Failures for Issue Creation
+    Schedule:  0 */4 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T08:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T21:40:31.321056-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T04:00:00-07:00)
+
+  lunabot-research-cycle [active]
+    Name:      LunaBot: Research Lab Directed Study Cycle
+    Schedule:  0 10 * * 2,4
+    Repeat:    ∞
+    Next run:  2026-09-22T10:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-17T10:01:05.291000-07:00  error: RuntimeError: ⚠️ No reply: the turn was stopped because a live Hermes process held a retired state.db-wal generation after its pathname was deleted or replaced. Stop the gateway, dashboard, and cron writers; do not overwrite the current state.db or delete its sidecars. Check the logs for whether Hermes captured the retired generation, then read the adjacent state.db.retired-wal-*/manifest.json. If manifest.main.mode is `copied`, inspect that artifact with `hermes sessions recover --source <state.db.retired-wal-*/state.db> --inspect-only` before deciding whether its committed frames belong on the current database. A `header_only` artifact is forensic and does not contain a copied state.db to inspect. Unwritten messages were diverted to sessions/<session_id>.jsonl and, on the gateway, pending_messages/pending-*.json.
+    Dispatch:  on time (scheduled 2026-09-17T10:00:00-07:00)
+
+  lunar-city-media-render [active]
+    Name:      Lunar City: Render Animated Media Clips
+    Schedule:  0 10 * * 6
+    Repeat:    ∞
+    Next run:  2026-09-26T10:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-19T10:00:43.338737-07:00  error: database disk image is malformed
+    Dispatch:  on time (scheduled 2026-09-19T10:00:00-07:00)
+
+  research-experiment-execution [active]
+    Name:      Research: Execute Directed Diagnostic Experiment
+    Schedule:  0 10 * * 0
+    Repeat:    ∞
+    Next run:  2026-09-27T10:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-20T10:00:37.154027-07:00  error: database disk image is malformed
+    Dispatch:  on time (scheduled 2026-09-20T10:00:00-07:00)
+
+  research-promotion-gate [active]
+    Name:      Research: Promotion Gate for Validated Findings
+    Schedule:  0 11 * * 4
+    Repeat:    ∞
+    Next run:  2026-09-24T11:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-17T11:00:20.667530-07:00  error: RuntimeError: ⚠️ No reply: the turn was stopped because a live Hermes process held a retired state.db-wal generation after its pathname was deleted or replaced. Stop the gateway, dashboard, and cron writers; do not overwrite the current state.db or delete its sidecars. Check the logs for whether Hermes captured the retired generation, then read the adjacent state.db.retired-wal-*/manifest.json. If manifest.main.mode is `copied`, inspect that artifact with `hermes sessions recover --source <state.db.retired-wal-*/state.db> --inspect-only` before deciding whether its committed frames belong on the current database. A `header_only` artifact is forensic and does not contain a copied state.db to inspect. Unwritten messages were diverted to sessions/<session_id>.jsonl and, on the gateway, pending_messages/pending-*.json.
+    Dispatch:  on time (scheduled 2026-09-17T11:00:00-07:00)
+
+  research-scout-scan [active]
+    Name:      Research: Evidence-Backed Scout Scan
+    Schedule:  0 9 * * 1,3,5
+    Repeat:    ∞
+    Next run:  2026-09-23T09:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T09:05:00.959419-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T09:00:00-07:00)
+
+  resource-budget-rebalance [active]
+    Name:      Federation: Model Budget Rebalance
+    Schedule:  0 4 * * 0,3
+    Repeat:    ∞
+    Next run:  2026-09-23T04:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-22T04:10:58.257846-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-20T04:00:00-07:00)
+
+  rnd-adversarial-fuzz [active]
+    Name:      R&D: Adversarial Fuzz Test in Sandbox
+    Schedule:  0 2 * * 0
+    Repeat:    ∞
+    Next run:  2026-09-27T02:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-20T02:00:35.636293-07:00  error: database disk image is malformed  (4 failures in a row)
+    Dispatch:  on time (scheduled 2026-09-20T02:00:00-07:00)
+
+  rnd-dependency-stress [active]
+    Name:      R&D: Dependency Stress & Version Skew Test
+    Schedule:  0 4 * * 6
+    Repeat:    ∞
+    Next run:  2026-09-26T04:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-19T04:00:42.077024-07:00  error: database disk image is malformed
+    Dispatch:  on time (scheduled 2026-09-19T04:00:00-07:00)
+
+  rnd-config-permutation [active]
+    Name:      R&D: Config Permutation Stress Test
+    Schedule:  0 13 * * 0
+    Repeat:    ∞
+    Next run:  2026-09-27T13:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-20T13:40:02.334272-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-20T13:00:00-07:00)
+
+  safety-policy-scan [active]
+    Name:      Federation: Safety & Paper-Trading Gate Scan
+    Schedule:  30 3 * * *
+    Repeat:    ∞
+    Next run:  2026-09-23T03:30:00-07:00
+    Deliver:   local
+    Last run:  2026-09-22T03:34:41.466064-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T03:30:00-07:00)
+
+  lunar-city-storyboard-sync [active]
+    Name:      Lunar City: Storyboard Continuity Sync
+    Schedule:  0 10 * * 1
+    Repeat:    ∞
+    Next run:  2026-09-28T10:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T10:15:14.194125-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-21T10:00:00-07:00)
+
+  intake-fast-triage [completed]
+    Name:      Control: Fast Intake Triage
+    Schedule:  0 */3 * * *
+    Repeat:    ∞
+    Next run:  None
+    Deliver:   local
+    Last run:  2026-09-14T16:57:55.257897-07:00  ok
+
+  task-graph-health-pulse [active]
+    Name:      Control: Task Graph Health Pulse
+    Schedule:  40 */6 * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T06:40:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T19:22:03.970249-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T00:40:00-07:00)
+
+  lunar-city-visual-qa [active]
+    Name:      Lunar City: Visual Quality & Accessibility Gate
+    Schedule:  0 14 * * 0
+    Repeat:    ∞
+    Next run:  2026-09-27T14:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-20T14:18:43.888426-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-20T14:00:00-07:00)
+
+  worktree-integrity-scan [active]
+    Name:      Control: Worktree & Change Governance Scan
+    Schedule:  0 4 * * *
+    Repeat:    ∞
+    Next run:  2026-09-23T04:00:00-07:00
+    Deliver:   local
+    Last run:  2026-09-21T04:08:15.463154-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T04:00:00-07:00)
+
+  649fe8ed77dc [active]
+    Name:      cron-health-monitor
+    Schedule:  */30 * * * *
+    Repeat:    ∞
+    Next run:  2026-09-22T05:30:00-07:00
+    Deliver:   local
+    Script:    cron-health-monitor.py
+    Mode:      no-agent (script stdout delivered directly)
+    Workdir:   /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+    Last run:  2026-09-22T05:01:59.382930-07:00  ok
+    Dispatch:  on time (scheduled 2026-09-22T05:00:00-07:00)
+
+  ⚠  Scheduler is not ready: no gateway or no fresh profile heartbeat.
+     If no gateway is running: hermes gateway install
+                    sudo hermes gateway install --system  # Linux servers
+     Check status:  hermes cron status
+$ hermes cron doctor
+cron/executions.db: could not verify the on-disk journal mode (database is locked / busy); not issuing a journal-mode set-pragma while another connection may hold the file (it could unlink the -wal/-shm sidecars that connection still uses). Leaving the file untouched; this connection inherits the on-disk mode. This message fires once per process per database.
+Cron doctor found 18 issue(s) across 16 job(s):
+
+  e3753541e2fa LunaBot GitHub PR feedback
+    - last run failed: Script exited with code 1
+stdout:
+{"status": "invalid_configuration"}
+  482c250c9086 Hermes profile and workflow health
+    - workdir not found: /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+  4754bb0bd539 Hermes White Knight issue intake
+    - last fire was late (scheduled 2026-09-22T00:17:00-07:00, 17m late). This warning clears at the next on-time fire.
+    - workdir not found: /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+  a0f646ee7160 LunaBot worktree cleanup
+    - last fire was late (scheduled 2026-09-22T00:20:00-07:00, 14m late). This warning clears at the next on-time fire.
+  5143a736175c Research agent capability feedstock
+    - workdir not found: /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+  9ef5ab8c34ff Federation department discovery and librarian intake
+    - workdir not found: /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+  def3474fce41 Hermes-agent GitHub PR feedback
+    - last run failed: Script exited with code 1
+stdout:
+{"status": "invalid_configuration"}
+{"status": "invalid_configuration"}
+    - workdir not found: /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+  35f6826b9d32 Hermes-agent worktree cleanup
+    - workdir not found: /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+  lunar-city-asset-generation Lunar City: Generate Missing Visual Assets
+    - last run failed: RuntimeError: ⚠️ No reply: the turn was stopped because a live Hermes process held a retired state.db-wal generation after its pathname was deleted or replaced. Stop the gateway, dashboard, and cron writers; do not overwrite the current state.db or delete its sidecars. Check the logs for whether Hermes captured the retired generation, then read the adjacent state.db.retired-wal-*/manifest.json. If manifest.main.mode is `copied`, inspect that artifact with `hermes sessions recover --source <state.db.retired-wal-*/state.db> --inspect-only` before deciding whether its committed frames belong on the current database. A `header_only` artifact is forensic and does not contain a copied state.db to inspect. Unwritten messages were diverted to sessions/<session_id>.jsonl and, on the gateway, pending_messages/pending-*.json.
+  lunabot-research-cycle LunaBot: Research Lab Directed Study Cycle
+    - last run failed: RuntimeError: ⚠️ No reply: the turn was stopped because a live Hermes process held a retired state.db-wal generation after its pathname was deleted or replaced. Stop the gateway, dashboard, and cron writers; do not overwrite the current state.db or delete its sidecars. Check the logs for whether Hermes captured the retired generation, then read the adjacent state.db.retired-wal-*/manifest.json. If manifest.main.mode is `copied`, inspect that artifact with `hermes sessions recover --source <state.db.retired-wal-*/state.db> --inspect-only` before deciding whether its committed frames belong on the current database. A `header_only` artifact is forensic and does not contain a copied state.db to inspect. Unwritten messages were diverted to sessions/<session_id>.jsonl and, on the gateway, pending_messages/pending-*.json.
+  lunar-city-media-render Lunar City: Render Animated Media Clips
+    - last run failed: database disk image is malformed
+  research-experiment-execution Research: Execute Directed Diagnostic Experiment
+    - last run failed: database disk image is malformed
+  research-promotion-gate Research: Promotion Gate for Validated Findings
+    - last run failed: RuntimeError: ⚠️ No reply: the turn was stopped because a live Hermes process held a retired state.db-wal generation after its pathname was deleted or replaced. Stop the gateway, dashboard, and cron writers; do not overwrite the current state.db or delete its sidecars. Check the logs for whether Hermes captured the retired generation, then read the adjacent state.db.retired-wal-*/manifest.json. If manifest.main.mode is `copied`, inspect that artifact with `hermes sessions recover --source <state.db.retired-wal-*/state.db> --inspect-only` before deciding whether its committed frames belong on the current database. A `header_only` artifact is forensic and does not contain a copied state.db to inspect. Unwritten messages were diverted to sessions/<session_id>.jsonl and, on the gateway, pending_messages/pending-*.json.
+  rnd-adversarial-fuzz R&D: Adversarial Fuzz Test in Sandbox
+    - last run failed: database disk image is malformed
+  rnd-dependency-stress R&D: Dependency Stress & Version Skew Test
+    - last run failed: database disk image is malformed
+  649fe8ed77dc cron-health-monitor
+    - workdir not found: /Users/mikedemott/.codex/worktrees/hermes-update-20260902-bot-integration-sparse
+
+Review the findings above, then run `hermes cron doctor` again.
+$ hermes cron incidents
+cron/executions.db: could not verify the on-disk journal mode (database is locked / busy); not issuing a journal-mode set-pragma while another connection may hold the file (it could unlink the -wal/-shm sidecars that connection still uses). Leaving the file untouched; this connection inherits the on-disk mode. This message fires once per process per database.
+Traceback (most recent call last):
+  File "/Users/mikedemott/.local/bin/hermes", line 6, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/main.py", line 3614, in main
+    rc = args.func(args)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/main.py", line 1900, in _cmd
+    result = getattr(importlib.import_module(module), attr)(args)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/cron.py", line 913, in cron_command
+    return handler(args)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/cron.py", line 894, in <lambda>
+    "incidents": lambda a: cron_incidents(a),
+                           ~~~~~~~~~~~~~~^^^
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/cron.py", line 348, in cron_incidents
+    incidents = list_incidents(state=state)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/cron/incidents.py", line 264, in list_incidents
+    with _transaction() as conn:
+         ~~~~~~~~~~~~^^
+  File "/Users/mikedemott/.local/share/uv/python/cpython-3.13-macos-aarch64-none/lib/python3.13/contextlib.py", line 141, in __enter__
+    return next(self.gen)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/cron/incidents.py", line 105, in _transaction
+    with _lock, transaction(_connect()) as conn:
+                            ~~~~~~~~^^
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/cron/incidents.py", line 67, in _connect
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/sqlite_util.py", line 61, in open_db
+    conn.execute("PRAGMA synchronous=FULL")
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: unable to open database file
+$ hermes cron runs --limit 500
+cron/executions.db: could not verify the on-disk journal mode (database is locked / busy); not issuing a journal-mode set-pragma while another connection may hold the file (it could unlink the -wal/-shm sidecars that connection still uses). Leaving the file untouched; this connection inherits the on-disk mode. This message fires once per process per database.
+Traceback (most recent call last):
+  File "/Users/mikedemott/.local/bin/hermes", line 6, in <module>
+    sys.exit(main())
+             ~~~~^^
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/main.py", line 3614, in main
+    rc = args.func(args)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/main.py", line 1900, in _cmd
+    result = getattr(importlib.import_module(module), attr)(args)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/cron.py", line 913, in cron_command
+    return handler(args)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/cron.py", line 893, in <lambda>
+    "runs": lambda a: cron_runs(getattr(a, "job_id", None), getattr(a, "limit", 20)) or 0,
+                      ~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/cron.py", line 313, in cron_runs
+    records = list_executions(job_id=job_id, limit=limit)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/cron/executions.py", line 400, in list_executions
+    with _transaction() as conn:
+         ~~~~~~~~~~~~^^
+  File "/Users/mikedemott/.local/share/uv/python/cpython-3.13-macos-aarch64-none/lib/python3.13/contextlib.py", line 141, in __enter__
+    return next(self.gen)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/cron/executions.py", line 100, in _transaction
+    with _lock, transaction(_connect()) as conn:
+                            ~~~~~~~~^^
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/cron/executions.py", line 49, in _connect
+    return open_db(path, db_label="cron/executions.db", synchronous_full=True, initialize=_initialize_schema)
+  File "/Users/mikedemott/.codex/worktrees/hermes-fork-main-20260922/hermes_cli/sqlite_util.py", line 61, in open_db
+    conn.execute("PRAGMA synchronous=FULL")
+    ~~~~~~~~~~~~^^^^^^^^^^^^^^^^^^^^^^^^^^^
+sqlite3.OperationalError: unable to open database file

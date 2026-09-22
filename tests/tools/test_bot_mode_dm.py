@@ -760,6 +760,34 @@ def test_local_turn_reemits_empty_stdout_for_a_bare_silence_marker(tmp_path, cap
     assert capsys.readouterr().out.strip() == prose
 
 
+def test_live_owner_refusal_preserves_verbatim_body(tmp_path, capsys, monkeypatch):
+    """A refused turn never ran, so the recipient never saw the text and the sender's own
+    next turn is only a self-summary. The body must survive the runner's unlink, or verbatim
+    content (quoted replacement prose, code) is unrecoverable and gets paraphrased on resend."""
+    monkeypatch.setattr(bot_mode_dm, "_dm_dir", lambda: tmp_path / "parked")
+    (tmp_path / "parked").mkdir()
+    verbatim = 'Remplacez par : "Ces taux s\'empilent sur votre rabais de base."'
+    dm_file = tmp_path / "message.txt"
+    dm_file.write_text(verbatim, encoding="utf-8")
+    child = tmp_path / "owned.py"
+    child.write_text(
+        "import sys\n"
+        "print('hermes-refusal-reason: SESSION_NOT_OWNED', file=sys.stderr)\n"
+        "raise SystemExit(1)\n",
+        encoding="utf-8",
+    )
+
+    returncode = bot_mode_dm._run_delivery(
+        [sys.executable, str(child), "-p", "ops"], str(dm_file), stdin_file=False
+    )
+
+    assert returncode == 1
+    payload = json.loads(capsys.readouterr().out)
+    parked = Path(payload["undelivered_body_path"])
+    assert parked.read_text(encoding="utf-8") == verbatim
+    assert not dm_file.exists()
+
+
 def test_query_file_delivery_closes_stdin_for_initial_attempt_and_retry(
     tmp_path, monkeypatch
 ):

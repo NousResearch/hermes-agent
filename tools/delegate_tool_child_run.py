@@ -853,8 +853,15 @@ class _ChildRun:
 
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
-            from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+            from agent.delegation_context import (
+                capture_self_scope_identity, delegated_child_context, delegated_self_scope_grant,
+            )
+            import contextlib
+
+            identity = capture_self_scope_identity()
+            grant = (delegated_self_scope_grant(*identity) if identity is not None
+                     else contextlib.nullcontext())
+            with delegated_child_context(str(getattr(child, "session_id", "") or "")), grant:
                 return child.run_conversation(
                     user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
                 )

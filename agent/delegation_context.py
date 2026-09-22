@@ -17,6 +17,12 @@ _DELEGATED_CHILD_CONTEXT: ContextVar[bool] = ContextVar("hermes_delegated_child_
 # so delegate_task-specific behaviour (subprocess env scrubbing, its error strings) is unchanged.
 _NON_DISPATCHER_OWNED_CONTEXT: ContextVar[bool] = ContextVar("hermes_non_dispatcher_owned_context", default=False)
 
+# ``(task_id, claim_lock)`` a child may self-report against — captured FROM THE PARENT at the
+# moment of delegation, never read out of the child's own environment. See
+# :func:`delegated_self_scope_grant`.
+_SELF_SCOPE_GRANT: ContextVar["tuple[str, str | None] | None"] = ContextVar(
+    "hermes_delegated_self_scope_grant", default=None)
+
 DELEGATED_CHILD_ENV_MARKER = "HERMES_DELEGATED_CHILD_CONTEXT"
 
 KANBAN_ENV_KEYS: tuple[str, ...] = (
@@ -140,6 +146,69 @@ def kanban_path_is_fenced(path: "os.PathLike[str] | str") -> bool:
     except ValueError:
         return False
     return True
+
+
+def is_delegated_child_in_process_context() -> bool:
+    """True when THIS context is an in-process ``delegate_task`` child.
+
+    ContextVar-only: never true for a spawned descendant that merely carries the
+    ``HERMES_DELEGATED_CHILD_CONTEXT`` env marker. The mutation gate uses this to
+    separate the blanket in-process deny (parent's own board) from the path-scoped
+    fence that governs exec'd descendants.
+    """
+    return bool(_DELEGATED_CHILD_CONTEXT.get())
+
+
+@contextmanager
+def delegated_self_scope_grant(task_id: str | None, claim_lock: str | None = None) -> Iterator[None]:
+    """Hand a child the ONE task id it may self-report against (comment/attach).
+
+    The identity is captured by the PARENT — the dispatcher-owned worker that
+    still holds ``HERMES_KANBAN_TASK`` and its claim lock — and handed down as
+    context, never re-read from the child's own environment. ``scrub_kanban_env``
+    strips ``HERMES_KANBAN_TASK`` from every child env by construction, so an
+    env-keyed carve-out could only ever fire on an id the child supplied itself,
+    which is precisely the prompt-injection vector the ownership gate exists to
+    stop. A grant is in-process only: it does not cross ``scrub_kanban_env``, so
+    a subprocess descendant of the child stays fully fenced.
+    """
+    tid = (task_id or "").strip()
+    token = _SELF_SCOPE_GRANT.set((tid, (claim_lock or "").strip() or None) if tid else None)
+    try:
+        yield
+    finally:
+        _SELF_SCOPE_GRANT.reset(token)
+
+
+def self_scope_grant() -> tuple[str, str | None] | None:
+    """``(task_id, claim_lock)`` this context may self-report against, else None.
+
+    Fails closed in a subprocess: the grant is a ContextVar, so it is absent in
+    any spawned descendant even though the env marker survives.
+    """
+    return _SELF_SCOPE_GRANT.get()
+
+
+def capture_self_scope_identity() -> tuple[str, str | None] | None:
+    """Read the dispatcher-issued identity of the CURRENT process, in the parent's frame.
+
+    Call this BEFORE entering ``delegated_child_context`` — it is only truthful
+    while the caller is still the dispatcher-owned worker. Returns ``None`` for a
+    delegated child, an in-process cron run, or a plain session, so a child that
+    delegates further hands its grandchild nothing.
+    """
+    if not is_dispatcher_owned_worker_context():
+        return None
+    task_id = (os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    if not task_id:
+        return None
+    return task_id, (os.environ.get("HERMES_KANBAN_CLAIM_LOCK") or "").strip() or None
+
+
+def is_self_scoped_write(task_id: str | None) -> bool:
+    """True when ``task_id`` is exactly the dispatcher-provided grant for this context."""
+    grant = _SELF_SCOPE_GRANT.get()
+    return bool(grant and task_id and str(task_id).strip() == grant[0])
 
 
 @overload

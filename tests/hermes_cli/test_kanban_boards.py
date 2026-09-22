@@ -257,31 +257,25 @@ class TestWorkerSpawnEnv:
             return FakeProc()
 
         monkeypatch.setattr(subprocess, "Popen", fake_popen)
+        # Hermetic w.r.t. the dispatcher's own INVOCATION_ID, and faithful
+        # to real dispatch: only a claimed task (which carries a run id) is
+        # ever spawned, so create + claim on the board instead of
+        # hand-building an unclaimed Task with no run id.
+        monkeypatch.delenv("INVOCATION_ID", raising=False)
         kb.create_board("spawntest")
 
-        task = kb.Task(
-            id="t_abc",
-            title="worker test",
-            body=None,
-            assignee="teknium",
-            status="ready",
-            priority=0,
-            created_by="user",
-            created_at=0,
-            started_at=None,
-            completed_at=None,
-            workspace_kind="scratch",
-            workspace_path=None,
-            claim_lock=None,
-            claim_expires=None,
-            tenant=None,
-        )
+        with kbc.connect(board="spawntest") as conn:
+            tid = kb.create_task(
+                conn, title="worker test", assignee="teknium",
+            )
+            task = kb.claim_task(conn, tid)
+        assert task is not None and task.current_run_id is not None
 
         kbd._default_spawn(task, str(fresh_home / "ws"), board="spawntest")
 
         env = captured["env"]
         assert env["HERMES_KANBAN_BOARD"] == "spawntest"
-        assert env["HERMES_KANBAN_TASK"] == "t_abc"
+        assert env["HERMES_KANBAN_TASK"] == tid
         # DB path should match the per-board DB, not the legacy default.
         expected_db = fresh_home / "kanban" / "boards" / "spawntest" / "kanban.db"
         assert env["HERMES_KANBAN_DB"] == str(expected_db)

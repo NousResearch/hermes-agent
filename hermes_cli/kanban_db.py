@@ -132,18 +132,46 @@ _IS_WINDOWS = sys.platform == "win32"
 KANBAN_ATTACHMENT_MAX_BYTES = 25 * 1024 * 1024  # one cap for dashboard, tools and CLI
 
 
-def _assert_not_delegated_child_mutation(path: "str | Path | None" = None) -> None:
+def _assert_not_delegated_child_mutation(
+    *, path: "str | Path | None" = None, self_scoped_task: Optional[str] = None
+) -> None:
     """Reject Kanban mutations from ``delegate_task`` child contexts.
 
     The tool/CLI fast-fail guards are UX, not a trust boundary (a child can shell
     out or import this module); the invariant lives here so every ``write_txn``
     user and board-metadata mutator fails closed before touching durable state.
-    *path* is the board DB / metadata root being mutated; ``None`` means the
-    lineage's own board (``kanban_home()``).
-    """
-    from agent.delegation_context import kanban_path_is_fenced
+    *path* is the board DB / metadata root being mutated; it defaults to the
+    lineage's own board (``kanban_home()``) when ``None``.
 
-    if kanban_path_is_fenced(kanban_home() if path is None else path):
+    ``self_scoped_task`` is the ONE carve-out, and the sole exception to BOTH
+    the path fence and the blanket in-process deny: a child may self-report
+    (comment, attach) on exactly the granted id — the task the
+    DISPATCHER-OWNED PARENT handed it via
+    ``agent.delegation_context.delegated_self_scope_grant`` — on the only two
+    sanctioned write paths. The id is never read
+    from the child's own environment — ``scrub_kanban_env`` strips
+    ``HERMES_KANBAN_TASK`` by construction, so an env-keyed carve-out could only
+    fire on an id the child supplied itself. The grant is a ContextVar, so a
+    subprocess descendant (grandchild) of the child holds no grant and stays
+    fully fenced even though the delegated-child env marker survives the exec.
+    """
+    try:
+        from agent.delegation_context import (
+            is_delegated_child_in_process_context, is_self_scoped_write, kanban_path_is_fenced,
+        )
+        from hermes_cli.kanban_db import kanban_home
+
+        in_process = is_delegated_child_in_process_context()
+        self_scoped = bool(self_scoped_task) and is_self_scoped_write(self_scoped_task)
+        fenced = kanban_path_is_fenced(kanban_home() if path is None else path)
+    except Exception:
+        # Fail closed: without the real context, a present env marker denies all.
+        in_process = bool(os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT"))
+        self_scoped = False
+        fenced = in_process
+    if fenced and not self_scoped:
+        raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
+    if in_process and not self_scoped:
         raise PermissionError("delegate_task child contexts cannot mutate Kanban tasks or boards")
 
 
@@ -1768,7 +1796,10 @@ def add_comment(conn: sqlite3.Connection, task_id: str, author: str, body: str) 
     now = int(time.time())
     # ``allow_nested=True``: graph builders (kanban_swarm blackboard seeding)
     # compose comment writes under one outer commit.
-    with write_txn(conn, allow_nested=True):
+    # ``self_scoped_task``: a delegated child may comment on the task the
+    # dispatcher-owned parent granted it, and only that one (see
+    # ``_assert_not_delegated_child_mutation``).
+    with write_txn(conn, allow_nested=True, self_scoped_task=task_id):
         _require_task(conn, task_id)
         cur = conn.execute(
             "INSERT INTO task_comments (task_id, author, body, created_at) "
@@ -1876,7 +1907,8 @@ def add_attachment(
     if not stored_path or not stored_path.strip():
         raise ValueError("attachment stored_path is required")
     now = int(time.time())
-    with write_txn(conn):
+    # ``self_scoped_task``: the attach half of the child self-report carve-out.
+    with write_txn(conn, self_scoped_task=task_id):
         _require_task(conn, task_id)
         cur = conn.execute(
             "INSERT INTO task_attachments "

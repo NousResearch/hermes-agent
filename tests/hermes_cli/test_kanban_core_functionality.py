@@ -720,12 +720,17 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
         return FakeProc()
 
     monkeypatch.setattr("subprocess.Popen", fake_popen)
+    # Hermetic w.r.t. the dispatcher's own INVOCATION_ID, and faithful to
+    # real dispatch: only a claimed task (which carries a run id) is ever
+    # spawned, so claim here instead of get_task on an unclaimed row.
+    monkeypatch.delenv("INVOCATION_ID", raising=False)
 
     conn = kbc.connect()
     try:
         tid = kb.create_task(conn, title="skill-loading test",
                              assignee="some-profile")
-        task = kb.get_task(conn, tid)
+        task = kb.claim_task(conn, tid)
+        assert task is not None and task.current_run_id is not None
         workspace = kbw.resolve_workspace(task)
         pid = kbd._default_spawn(task, str(workspace))
         assert pid == 99999

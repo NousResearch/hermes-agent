@@ -22,6 +22,7 @@ import logging
 import os
 import re
 import shlex
+import shutil
 import stat
 import subprocess
 import sys
@@ -408,6 +409,26 @@ def _delivery_lock(argv: list[str], *, stdin_file: bool):
     return acquire_turn_lock(_hermes_root(Path(_default_home())), argv[2])
 
 
+def _park_undelivered(dm_file: str, target: str) -> Optional[str]:
+    """Copy an undelivered DM body aside and return its path (None if it can't be saved).
+
+    ``_run_delivery`` unlinks ``dm_file`` unconditionally, which is right for a delivered
+    message but destroys the only verbatim copy when the turn never ran: the sender's next
+    turn is a self-summary, so literal spans (quoted replacement text, code, other-language
+    prose) are unrecoverable and get paraphrased on resend. Parked copies age out with the
+    same sweep as DM payloads.
+    """
+    try:
+        stamp = time.strftime("%Y%m%d-%H%M%S")
+        parked = _dm_dir() / f"undelivered-{target}-{stamp}-{os.getpid()}.txt"
+        shutil.copyfile(dm_file, parked)
+        parked.chmod(0o600)
+        return str(parked)
+    except OSError:
+        logger.debug("could not park undelivered DM body", exc_info=True)
+        return None
+
+
 def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, str]] = None) -> int:
     """One Bot Chat turn via ``--query-file`` (plus one policy-gated retry); re-emits
     the transport's streams and returns its exit code. Transient failures re-run the
@@ -440,10 +461,18 @@ def _run_local_turn(argv: list[str], dm_file: str, *, env: Optional[dict[str, st
         # never ran — tell the sender plainly instead of leaking a raw lease error.
         # See #100523.
         who = argv[argv.index("-p") + 1] if "-p" in argv[:-1] else "the teammate"
+        # The turn never ran, so nothing on the target side ever saw this text and the
+        # sender's own next turn is a summary, not the payload. Park the undelivered body
+        # where a resend can read it verbatim instead of destroying the only literal copy.
+        undelivered = _park_undelivered(dm_file, who)
         print(json.dumps({
             "error": f"Delivery failed: @{who}'s Bot Chat is open on another "
-                     "surface right now, so your message was NOT delivered. Try again later.",
+                     "surface right now, so your message was NOT delivered. Try again later."
+                     + (f" Your unsent message body is preserved at {undelivered} — "
+                        "resend it from there so verbatim content is not retyped from memory."
+                        if undelivered else ""),
             "reason": "target_busy",
+            **({"undelivered_body_path": undelivered} if undelivered else {}),
         }))
         return 1
     # Re-emit the transport's streams: stdout is the reply text the

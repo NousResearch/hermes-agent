@@ -122,3 +122,52 @@ def test_keepalive_falls_back_to_singleton_state(monkeypatch):
 
     assert keepalive.refresh_nous_auth_keepalive_once(timeout_seconds=15.0) is True
     assert calls == [{"timeout_seconds": 15.0}]
+
+
+def test_multiplex_keepalive_binds_process_profile_and_restores_scope(
+    tmp_path, monkeypatch
+):
+    from agent.secret_scope import (
+        current_secret_scope,
+        get_secret,
+        reset_secret_scope,
+        set_multiplex_active,
+        set_secret_scope,
+    )
+
+    process_home = tmp_path / "process"
+    process_home.mkdir()
+    (process_home / ".env").write_text(
+        "NOUS_INFERENCE_BASE_URL=https://process.example/v1\n", encoding="utf-8"
+    )
+    monkeypatch.setattr(
+        "hermes_constants.get_process_hermes_home", lambda: process_home
+    )
+
+    class _Pool:
+        def has_credentials(self):
+            return False
+
+    seen = []
+    monkeypatch.setattr("agent.credential_pool.load_pool", lambda provider: _Pool())
+    monkeypatch.setattr(
+        keepalive,
+        "get_provider_auth_state",
+        lambda provider: {"access_token": "stored-access-token"},
+    )
+    monkeypatch.setattr(
+        keepalive,
+        "resolve_nous_runtime_credentials",
+        lambda **kwargs: seen.append(get_secret("NOUS_INFERENCE_BASE_URL")) or {},
+    )
+
+    previous_scope = {"NOUS_INFERENCE_BASE_URL": "https://previous.example/v1"}
+    previous_token = set_secret_scope(previous_scope)
+    set_multiplex_active(True)
+    try:
+        assert keepalive.refresh_nous_auth_keepalive_once() is True
+        assert seen == ["https://process.example/v1"]
+        assert current_secret_scope() is previous_scope
+    finally:
+        set_multiplex_active(False)
+        reset_secret_scope(previous_token)

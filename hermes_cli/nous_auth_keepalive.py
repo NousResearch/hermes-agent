@@ -5,6 +5,8 @@ from __future__ import annotations
 import logging
 import os
 import threading
+from contextlib import contextmanager
+from pathlib import Path
 from typing import Optional
 
 from hermes_cli.auth import (
@@ -36,6 +38,36 @@ NOUS_AUTH_KEEPALIVE_INTERVAL_CONFIG_KEY = "keepalive_interval_seconds"
 _keepalive_lock = threading.Lock()
 _keepalive_stop = threading.Event()
 _keepalive_thread: Optional[threading.Thread] = None
+
+
+@contextmanager
+def _keepalive_profile_scope():
+    """Bind the process profile while a process-wide keepalive tick reads secrets.
+
+    Multiplexed gateways fail closed when a credential read has no profile scope.  The keepalive
+    thread belongs to the process profile, but a new thread does not inherit the caller's
+    ContextVars, so install that profile's secrets explicitly for the duration of each tick.
+    """
+    from agent.secret_scope import (
+        build_profile_secret_scope,
+        is_multiplex_active,
+        reset_secret_scope,
+        set_secret_scope,
+    )
+
+    if not is_multiplex_active():
+        yield
+        return
+
+    from hermes_constants import get_process_hermes_home
+
+    token = set_secret_scope(
+        build_profile_secret_scope(Path(get_process_hermes_home()))
+    )
+    try:
+        yield
+    finally:
+        reset_secret_scope(token)
 
 
 def _timeout_seconds(value: Optional[float]) -> float:
@@ -151,23 +183,27 @@ def refresh_nous_auth_keepalive_once(
     min_access_ttl_seconds: Optional[int] = None, timeout_seconds: Optional[float] = None,
 ) -> bool:
     """Refresh Nous auth once if credentials are configured (pool entry first, then singleton state)."""
-    pool_result = _refresh_selected_pool_entry(
-        min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)), min_access_ttl_seconds=min_access_ttl_seconds
-    )
-    if pool_result is not None:
-        return pool_result
-    if not get_provider_auth_state("nous"):
-        return False
-    try:
-        resolve_nous_runtime_credentials(timeout_seconds=_timeout_seconds(timeout_seconds))
-        logger.debug("Nous auth keepalive: refreshed singleton auth state")
-        return True
-    except Exception as exc:
-        if isinstance(exc, AuthError) and exc.relogin_required:
-            logger.info("Nous auth keepalive requires re-login: %s", exc)
-        else:
-            logger.debug("Nous auth keepalive failed: %s", exc)
-        return False
+    with _keepalive_profile_scope():
+        pool_result = _refresh_selected_pool_entry(
+            min_key_ttl_seconds=max(60, int(min_key_ttl_seconds)),
+            min_access_ttl_seconds=min_access_ttl_seconds,
+        )
+        if pool_result is not None:
+            return pool_result
+        if not get_provider_auth_state("nous"):
+            return False
+        try:
+            resolve_nous_runtime_credentials(
+                timeout_seconds=_timeout_seconds(timeout_seconds)
+            )
+            logger.debug("Nous auth keepalive: refreshed singleton auth state")
+            return True
+        except Exception as exc:
+            if isinstance(exc, AuthError) and exc.relogin_required:
+                logger.info("Nous auth keepalive requires re-login: %s", exc)
+            else:
+                logger.debug("Nous auth keepalive failed: %s", exc)
+            return False
 
 
 def _keepalive_loop(

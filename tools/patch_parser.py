@@ -51,6 +51,11 @@ _OP_MARKERS: List[Tuple[OperationType, re.Pattern]] = [
     (OperationType.DELETE, re.compile(r'\*\*\*\s*Delete\s+File:\s*(.+)')),
     (OperationType.MOVE, re.compile(r'\*\*\*\s*Move\s+File:\s*(.+?)\s*->\s*(.+)'))]
 _HINT_RE = re.compile(r'@@\s*(.+?)\s*@@')
+# Codex apply_patch grammar lines inside an Update block. Unrecognised, they fall through to the
+# implicit-context branch: an End-of-File marker then poisons the hunk's search pattern, and a
+# Move-to line becomes an inert anchor so the edit lands but the rename silently never happens.
+_EOF_MARKER = re.compile(r'^\*\*\*\s*End\s+of\s+File\s*$')
+_MOVE_TO_MARKER = re.compile(r'^\*\*\*\s*Move\s+to:\s*(.*)$')
 
 
 def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[str]]:
@@ -66,6 +71,7 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
             end_idx = i
             break
     operations: List[PatchOperation] = []
+    parse_errors: List[str] = []
     current_op: Optional[PatchOperation] = None
     current_hunk: Optional[Hunk] = None
 
@@ -93,6 +99,13 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
             if kind in (OperationType.DELETE, OperationType.MOVE):
                 operations.append(current_op)
                 current_op = None
+        elif _EOF_MARKER.match(line):
+            continue
+        elif (move_to := _MOVE_TO_MARKER.match(line)) and current_op:
+            parse_errors.append(
+                f"'*** Move to: {move_to.group(1).strip()}' is not supported; rename with "
+                f"'*** Move File: {current_op.file_path} -> {move_to.group(1).strip()}' "
+                "and put any edits in their own '*** Update File:' block")
         elif line.startswith('@@'):
             if current_op:
                 _flush_hunk()
@@ -106,7 +119,6 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
             elif line[0] != '\\':  # "\ No newline at end of file" marker is skipped
                 current_hunk.lines.append(HunkLine(' ', line))  # implicit context line
     _flush()
-    parse_errors: List[str] = []
     for op in operations:
         if not op.file_path:
             parse_errors.append("Operation with empty file path")

@@ -83,7 +83,13 @@ def _runner_fake(user_config, chat_id):
         _ctx=ctx,
         _runner=types.SimpleNamespace(
             config=types.SimpleNamespace(streaming=None),
+            # Upstream renamed the adapter lookup _adapter_for_source ->
+            # _delivery_adapter_for (run_turn_runner.py:267, merged 2026-09-21);
+            # the AttributeError was swallowed by the runner's own try/except,
+            # so the gate silently never opened for the positive cases. Provide
+            # BOTH names so the fixture survives a rename from either side.
             _adapter_for_source=lambda source: consulted.append(1) or None,
+            _delivery_adapter_for=lambda source: consulted.append(1) or None,
             _build_stream_consumer_config=None,
         ),
         _track_future_cleanup_id=lambda fut: None,
@@ -124,7 +130,11 @@ def _proxy_fake(user_config, chat_id):
     consulted = []
     self_obj = types.SimpleNamespace(
         config=types.SimpleNamespace(streaming=None),
+        # Upstream renamed the adapter lookup _adapter_for_source ->
+        # _delivery_adapter_for (run_turn.py:2694, merged 2026-09-21). Provide
+        # BOTH names so the fixture survives a rename from either side.
         _adapter_for_source=lambda source: consulted.append(1) or None,
+        _delivery_adapter_for=lambda source: consulted.append(1) or None,
     )
     from gateway.config import Platform
 

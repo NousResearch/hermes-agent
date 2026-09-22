@@ -69,7 +69,7 @@ def test_credential_resolution_fallback_reaches_agent_notice_not_agent_kwargs():
     ctx = TurnContext(
         source=SessionSource(platform=Platform.LOCAL, chat_id="c", user_id="u"),
         message="hi", history=[], session_id="sid", session_key="test-session-key", user_config={},
-        AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a: False, _run_still_current=lambda: True,
+        AIAgent=_RecordingAgent, resolve_display_setting=lambda *_a, **_k: False, _run_still_current=lambda: True,
         _hooks_ref=SimpleNamespace(loaded_hooks=False),
     )
     def primary_auth_fails(**kw):

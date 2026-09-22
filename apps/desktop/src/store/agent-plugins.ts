@@ -241,6 +241,10 @@ export interface AgentPluginInstallResult {
   warnings?: string[]
   missingEnv?: string[]
   error?: string
+  /** Plugin MCP servers not connected yet (`activation.deferred.mcp_servers`). */
+  deferredMcpServers: string[]
+  /** A running gateway already re-wired the plugin's handlers. */
+  gatewayReloaded: boolean
 }
 
 export async function installAgentPlugin(
@@ -264,6 +268,8 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      activation?: { activated_now?: Record<string, string[]>; deferred?: Record<string, string[]> } | null
+      gateway_reloaded?: boolean
       error?: string
     }>(
       'plugins.manage',
@@ -281,17 +287,19 @@ export async function installAgentPlugin(
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed' }
+      return { ok: false, error: result?.error || 'Install failed', deferredMcpServers: [], gatewayReloaded: false }
     }
 
     return {
       ok: true,
       pluginName: result.plugin_name,
       warnings: result.warnings,
-      missingEnv: result.missing_env
+      missingEnv: result.missing_env,
+      deferredMcpServers: result.activation?.deferred?.mcp_servers ?? [],
+      gatewayReloaded: Boolean(result.gateway_reloaded)
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    return { ok: false, error: e instanceof Error ? e.message : String(e), deferredMcpServers: [], gatewayReloaded: false }
   }
 }
 

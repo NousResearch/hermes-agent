@@ -361,7 +361,15 @@ export const ja = defineLocale({
       installModal: {
         installFromGit: 'Git からインストール',
         reviewRepository: 'リポジトリを確認',
-        repoPlaceholder: 'https://github.com/owner/repo'
+        repoPlaceholder: 'https://github.com/owner/repo',
+        connectServers: (name, n) =>
+          n === 1
+            ? `${name} をインストールしました。その MCP サーバーはまだ接続されていません。`
+            : `${name} をインストールしました。${n} 個の MCP サーバーはまだ接続されていません。`,
+        connectNow: '今すぐ接続',
+        connectSub: '開いているチャットはコンテキストを再送します',
+        connectFailed: 'プラグインの MCP サーバーに接続できませんでした。',
+        liveNow: name => `${name} はインストールされ、有効です。`
       }
     },
     closeSettings: '設定を閉じる',

@@ -352,7 +352,13 @@ export const zhHant = defineLocale({
       installModal: {
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
-        repoPlaceholder: 'https://github.com/owner/repo'
+        repoPlaceholder: 'https://github.com/owner/repo',
+        connectServers: (name, n) =>
+          n === 1 ? `${name} 已安裝。其 MCP 伺服器尚未連線。` : `${name} 已安裝。其 ${n} 個 MCP 伺服器尚未連線。`,
+        connectNow: '立即連線',
+        connectSub: '開啟的聊天會重新傳送其上下文',
+        connectFailed: '無法連線該外掛的 MCP 伺服器。',
+        liveNow: name => `${name} 已安裝並生效。`
       }
     },
     closeSettings: '關閉設定',

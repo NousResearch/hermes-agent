@@ -849,6 +849,14 @@ export const en: Translations = {
           'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
         restartToApply: 'Restart the gateway for the plugin to take effect.',
         restartNow: 'Restart gateway',
+        connectServers: (name, n) =>
+          n === 1
+            ? `${name} installed. Its MCP server is not connected yet.`
+            : `${name} installed. Its ${n} MCP servers are not connected yet.`,
+        connectNow: 'Connect now',
+        connectSub: 'Open chats re-send their context',
+        connectFailed: 'Could not connect the plugin’s MCP servers.',
+        liveNow: name => `${name} installed and active.`,
         missingEnvAction: 'Set it up',
         alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",

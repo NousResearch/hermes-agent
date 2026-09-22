@@ -632,6 +632,12 @@ export const zh = defineLocale({
         reviewedIntro: '此条目已在其固定提交处经过人工审核。你仍可在下方检查确切代码。',
         restartToApply: '重启网关后插件才会生效。',
         restartNow: '重启网关',
+        connectServers: (name, n) =>
+          n === 1 ? `${name} 已安装。其 MCP 服务器尚未连接。` : `${name} 已安装。其 ${n} 个 MCP 服务器尚未连接。`,
+        connectNow: '立即连接',
+        connectSub: '打开的聊天会重新发送其上下文',
+        connectFailed: '无法连接该插件的 MCP 服务器。',
+        liveNow: name => `${name} 已安装并生效。`,
         missingEnvAction: '去设置',
         alreadyInstalled: (name: string) => `${name} 已安装。`,
         desktopTarget: '安装到此应用的本地 desktop-plugins 文件夹',

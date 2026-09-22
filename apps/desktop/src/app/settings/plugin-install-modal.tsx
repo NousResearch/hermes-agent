@@ -24,7 +24,7 @@ import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
 import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
-import { notify } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -32,7 +32,7 @@ import {
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
-import { $connection } from '@/store/session'
+import { $activeSessionId, $connection } from '@/store/session'
 import { runGatewayRestart } from '@/store/system-actions'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
@@ -207,6 +207,9 @@ export function PluginInstallModal() {
     const errors: string[] = []
     const successes: string[] = []
     let agentInstalled = false
+    let deferredMcpServers: string[] = []
+    let gatewayReloaded = false
+    let agentPluginName = ''
 
     try {
       if (installAgent && probe.agent) {
@@ -222,6 +225,9 @@ export function PluginInstallModal() {
         if (result.ok) {
           successes.push(m.agentSuccess(result.pluginName ?? request.repo))
           agentInstalled = true
+          deferredMcpServers = result.deferredMcpServers
+          gatewayReloaded = result.gatewayReloaded
+          agentPluginName = result.pluginName ?? request.repo
 
           if (result.missingEnv?.length) {
             const firstVar = result.missingEnv[0]
@@ -284,14 +290,42 @@ export function PluginInstallModal() {
           notify({ kind: 'success', message })
         }
 
-        // An enabled agent plugin only takes effect after a gateway restart —
-        // offer the restart right here instead of a dim hint to run later.
+        // The right follow-up depends on what the backend says is live now:
+        // deferred MCP servers can be connected in place (reload.mcp), an
+        // already-reloaded gateway needs nothing, and only a plugin the
+        // gateway did not pick up still needs the restart.
         if (agentInstalled && enableAgent) {
-          notify({
-            kind: 'success',
-            message: m.restartToApply,
-            action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
-          })
+          if (deferredMcpServers.length > 0) {
+            notify({
+              kind: 'success',
+              message: m.connectServers(agentPluginName, deferredMcpServers.length),
+              meta: m.connectSub,
+              action: {
+                label: m.connectNow,
+                onClick: () => {
+                  void (async () => {
+                    try {
+                      await requestGateway('reload.mcp', {
+                        confirm: true,
+                        session_id: $activeSessionId.get() ?? undefined
+                      })
+                      await loadAgentPlugins(requestGateway, targetProfile)
+                    } catch (err) {
+                      notifyError(err, m.connectFailed)
+                    }
+                  })()
+                }
+              }
+            })
+          } else if (gatewayReloaded) {
+            notify({ kind: 'success', message: m.liveNow(agentPluginName) })
+          } else {
+            notify({
+              kind: 'success',
+              message: m.restartToApply,
+              action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
+            })
+          }
         }
 
         closePluginInstallRequest()

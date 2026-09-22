@@ -660,8 +660,8 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
 
     import hermes_cli.config as _cfg
 
-    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
-        "skills": {"ledger_max_bytes": 8192}})
+    cap = {"skills": {"ledger_max_bytes": 0}}  # no sweeps while seeding
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
 
     newest_id = None
     for i in range(5):
@@ -672,7 +672,9 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
             evidence={"pad": "y" * 2048})
     with open(skill_ledger.ledger_path(), "a", encoding="utf-8") as fh:
         fh.write("{not json at all\n")
+    assert skill_ledger.ledger_path().stat().st_size > 8192
 
+    cap["skills"]["ledger_max_bytes"] = 8192
     skill_ledger._maintain_size()
 
     rows = skill_ledger.list_entries()
@@ -681,11 +683,15 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     # malformed lines are never parsed away — they stay in the file verbatim
     raw = skill_ledger.ledger_path().read_text(encoding="utf-8")
     assert "{not json at all" in raw
-    assert skill_ledger.ledger_path().stat().st_size <= 8192
-    # A sweep that fires does not stop at the cap but at the low-water mark, so the
-    # next few appends ride under the cap without paying compact+trim+gc again.
+    # A sweep that fires does not stop at the cap but at the low-water mark ...
+    assert skill_ledger.ledger_path().stat().st_size <= int(8192 * 0.8)
+    # ... so the next append rides under the cap without paying compact+trim+gc again.
+    compactions = []
+    monkeypatch.setattr(skill_ledger, "compact_ledger",
+                        lambda *a, **k: compactions.append(1) or (0, 0, 0))
     skill_ledger.append_entry(
         "edit", "my-skill", before=[{"path": "my-skill/z.md", "sha256": "a" * 64}],
-        after=[{"path": "my-skill/z2.md", "sha256": "b" * 64}], evidence={"pad": "z" * 3000})
-    assert skill_ledger.ledger_path().stat().st_size <= int(8192 * 0.8)
+        after=[{"path": "my-skill/z2.md", "sha256": "b" * 64}], evidence={"pad": "z" * 1000})
+    assert compactions == [], "an append under the cap must not re-run the sweep"
+    assert skill_ledger.ledger_path().stat().st_size <= 8192
     assert "{not json at all" in skill_ledger.ledger_path().read_text(encoding="utf-8")

@@ -19,6 +19,7 @@ const legacyDetail: Omit<KanbanTaskDetail, 'attachments'> = {
   comments: [{ id: 1, author: 'test', body: 'Keep this comment readable.', created_at: 0 }],
   events: [],
   links: { parents: [], children: [] },
+  goal_configuration_locked: false,
   runs: []
 }
 
@@ -39,6 +40,13 @@ const rest = vi.fn(async (path: string, options?: PluginRestOptions): Promise<un
   }
 
   if (path === '/tasks/t_example') {
+    if (options?.method === 'PATCH') {
+      const patch = options.body as Record<string, unknown>
+      const current = detail as KanbanTaskDetail
+      detail = { ...current, task: { ...current.task, ...patch } }
+      return { task: (detail as KanbanTaskDetail).task }
+    }
+
     return detail
   }
 
@@ -248,5 +256,94 @@ describe('dependency chips resolve titles', () => {
 
     expect(await screen.findByText('parent')).toBeTruthy()
     expect(screen.getByText('child')).toBeTruthy()
+  })
+})
+
+describe('goal configuration', () => {
+  it('sends controlled goal and budget patches, and follows a refreshed task', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: { ...legacyDetail.task, goal_mode: false, goal_max_turns: 7 }
+    }
+    openDrawer()
+
+    const toggle = await screen.findByRole('switch', { name: en.goalMode })
+    const budget = screen.getByRole<HTMLInputElement>('spinbutton', { name: en.goalTurnBudget })
+    expect(budget.value).toBe('7')
+    fireEvent.click(toggle)
+    await waitFor(() => expect(rest).toHaveBeenCalledWith('/tasks/t_example', { method: 'PATCH', body: { goal_mode: true } }))
+
+    fireEvent.change(budget, { target: { value: '12' } })
+    fireEvent.blur(budget)
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith('/tasks/t_example', { method: 'PATCH', body: { goal_max_turns: 12 } })
+    )
+
+    fireEvent.change(budget, { target: { value: '' } })
+    fireEvent.blur(budget)
+    await waitFor(() =>
+      expect(rest).toHaveBeenCalledWith('/tasks/t_example', { method: 'PATCH', body: { goal_max_turns: null } })
+    )
+
+    detail = { ...detail, task: { ...(detail as KanbanTaskDetail).task, goal_mode: true, goal_max_turns: 18 } }
+    await act(() => client.invalidateQueries({ queryKey: taskKey('local', '', legacyDetail.task.id) }))
+    await waitFor(() => expect(budget.value).toBe('18'))
+  })
+
+  it('rejects invalid budget input locally and disables goal controls after a run', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: { ...legacyDetail.task, goal_mode: true, goal_max_turns: 7 }
+    }
+    openDrawer()
+
+    const budget = await screen.findByRole<HTMLInputElement>('spinbutton', { name: en.goalTurnBudget })
+    fireEvent.change(budget, { target: { value: '0' } })
+    fireEvent.blur(budget)
+    expect(budget.value).toBe('7')
+    expect(rest).not.toHaveBeenCalledWith('/tasks/t_example', { method: 'PATCH', body: { goal_max_turns: 0 } })
+
+    detail = {
+      ...(detail as KanbanTaskDetail),
+      goal_configuration_locked: true,
+      runs: [{ id: 1, status: 'completed' }]
+    }
+    await act(() => client.invalidateQueries({ queryKey: taskKey('local', '', legacyDetail.task.id) }))
+    const toggle = await screen.findByRole('switch', { name: en.goalMode })
+    expect((toggle as HTMLButtonElement).disabled).toBe(true)
+    expect(budget.disabled).toBe(true)
+  })
+
+  it('visibly disables goal mode while preserving its budget after the PATCH succeeds', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: { ...legacyDetail.task, goal_mode: true, goal_max_turns: 50 }
+    }
+    openDrawer()
+
+    const toggle = await screen.findByRole('switch', { name: en.goalMode })
+    fireEvent.click(toggle)
+    await waitFor(() => expect(rest).toHaveBeenCalledWith('/tasks/t_example', { method: 'PATCH', body: { goal_mode: false } }))
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('false'))
+    expect(screen.getByRole<HTMLInputElement>('spinbutton', { name: en.goalTurnBudget }).value).toBe('50')
+  })
+
+  it('restores authoritative goal values when a PATCH is rejected', async () => {
+    detail = {
+      ...legacyDetail,
+      attachments: [],
+      task: { ...legacyDetail.task, goal_mode: true, goal_max_turns: 50 }
+    }
+    openDrawer()
+
+    const toggle = await screen.findByRole('switch', { name: en.goalMode })
+    rest.mockRejectedValueOnce(new Error('goal settings are locked'))
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(toggle.getAttribute('aria-checked')).toBe('true'))
+    expect(screen.getByRole<HTMLInputElement>('spinbutton', { name: en.goalTurnBudget }).value).toBe('50')
   })
 })

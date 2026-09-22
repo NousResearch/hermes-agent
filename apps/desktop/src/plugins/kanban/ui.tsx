@@ -248,7 +248,7 @@ export function PriorityGlyph({ priority }: { priority: number }) {
 // create dialog's Field, and the orchestration panel all read identically.
 export const FIELD_LABEL = 'text-[0.62rem] font-semibold uppercase tracking-[0.14em] text-(--ui-text-quaternary)'
 
-export function Section({ action, children, label }: { action?: ReactNode; children: ReactNode; label: string }) {
+export function Section({ action, children, label }: { action?: ReactNode; children: ReactNode; label: ReactNode }) {
   return (
     <section className="flex flex-col gap-1.5">
       <div className="flex items-center justify-between">

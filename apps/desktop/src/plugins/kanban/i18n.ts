@@ -80,6 +80,12 @@ type KanbanMessages = {
   parent: string
   noParent: string
   goalMode: string
+  goalModeDescription: string
+  goalTurnBudget: string
+  goalTurnBudgetDescription: string
+  goalTurnBudgetPlaceholder: string
+  goalTurnBudgetInvalid: string
+  goalSettingsLocked: string
   creating: string
   createTask: string
   cancel: string
@@ -297,7 +303,13 @@ export const en: KanbanMessages = {
   skillsPlaceholder: 'translation, github',
   parent: "Parent (blocks until it's done)",
   noParent: '— no parent —',
-  goalMode: "Goal mode (worker loops until a judge agrees it's done)",
+  goalMode: 'Goal mode',
+  goalModeDescription: "Worker loops until a judge agrees it's done.",
+  goalTurnBudget: 'Goal turn budget',
+  goalTurnBudgetDescription: 'Maximum turns for this task. Leave blank to use the engine default.',
+  goalTurnBudgetPlaceholder: 'Engine default',
+  goalTurnBudgetInvalid: 'Goal turn budget must be a positive whole number.',
+  goalSettingsLocked: 'Goal settings are locked after the first worker run.',
   creating: 'Creating…',
   createTask: 'Create task',
   cancel: 'Cancel',
@@ -511,7 +523,13 @@ const ja: KanbanMessages = {
   skillsPlaceholder: 'translation, github',
   parent: '親（完了するまでブロック）',
   noParent: '— 親なし —',
-  goalMode: 'ゴールモード（ジャッジが完了と認めるまでワーカーがループ）',
+  goalMode: 'ゴールモード',
+  goalModeDescription: 'ジャッジが完了と認めるまでワーカーがループします。',
+  goalTurnBudget: 'ゴールのターン上限',
+  goalTurnBudgetDescription: 'このタスクの最大ターン数です。空欄の場合はエンジン既定値を使います。',
+  goalTurnBudgetPlaceholder: 'エンジン既定値',
+  goalTurnBudgetInvalid: 'ゴールのターン上限は正の整数で指定してください。',
+  goalSettingsLocked: '最初のワーカー実行後はゴール設定を変更できません。',
   creating: '作成中…',
   createTask: 'タスクを作成',
   cancel: 'キャンセル',
@@ -723,7 +741,13 @@ const zh: KanbanMessages = {
   skillsPlaceholder: 'translation, github',
   parent: '父任务（完成前会阻塞）',
   noParent: '— 无父任务 —',
-  goalMode: '目标模式（工作单元循环直到评判代理认可完成）',
+  goalMode: '目标模式',
+  goalModeDescription: '工作单元会循环，直到评判代理认可任务已完成。',
+  goalTurnBudget: '目标回合上限',
+  goalTurnBudgetDescription: '此任务的最大回合数。留空则使用引擎默认值。',
+  goalTurnBudgetPlaceholder: '引擎默认值',
+  goalTurnBudgetInvalid: '目标回合上限必须为正整数。',
+  goalSettingsLocked: '首次工作单元运行后，目标设置将被锁定。',
   creating: '创建中…',
   createTask: '创建任务',
   cancel: '取消',
@@ -933,7 +957,13 @@ const zhHant: KanbanMessages = {
   skillsPlaceholder: 'translation, github',
   parent: '父任務（完成前會阻擋）',
   noParent: '— 無父任務 —',
-  goalMode: '目標模式（工作單元循環直到評判代理認可完成）',
+  goalMode: '目標模式',
+  goalModeDescription: '工作單元會循環，直到評判代理認可任務已完成。',
+  goalTurnBudget: '目標回合上限',
+  goalTurnBudgetDescription: '此任務的最大回合數。留空則使用引擎預設值。',
+  goalTurnBudgetPlaceholder: '引擎預設值',
+  goalTurnBudgetInvalid: '目標回合上限必須為正整數。',
+  goalSettingsLocked: '首次工作單元執行後，目標設定會被鎖定。',
   creating: '建立中…',
   createTask: '建立任務',
   cancel: '取消',

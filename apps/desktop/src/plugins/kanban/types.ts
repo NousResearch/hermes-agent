@@ -111,6 +111,9 @@ export interface KanbanTaskFull extends KanbanTask {
   model_override?: null | string
   provider_override?: null | string
   reasoning_effort?: null | string
+  /** Worker launch contract; mutable only until the first durable run. */
+  goal_mode?: boolean
+  goal_max_turns?: null | number
   completed_at?: null | number
   last_failure_error?: null | string
   workspace_kind?: null | string
@@ -132,6 +135,8 @@ export interface KanbanTaskDetail {
   attachments?: KanbanAttachment[] | null
   links: { parents: string[]; children: string[] }
   link_tasks?: KanbanLinkTask[] | null
+  /** Authoritative domain lock; absent on older backends and treated as locked. */
+  goal_configuration_locked?: boolean
   runs: KanbanRun[]
 }
 

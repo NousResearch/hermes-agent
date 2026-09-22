@@ -1625,6 +1625,93 @@ def test_stop_desktop_processes_locking_build_posix_swap_bypasses_early_return(t
     assert main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True) == [100]
 
 
+class _FakeTreeProc:
+    """Minimal psutil.Process stand-in recording the signals it received."""
+
+    def __init__(self, pid, ppid, exe, *, survives_first_wait=False):
+        self.info = {"pid": pid, "ppid": ppid, "exe": exe}
+        self.pid = pid
+        self.signals: list[str] = []
+        self.survives_first_wait = survives_first_wait
+
+    def terminate(self):
+        self.signals.append("terminate")
+
+    def kill(self):
+        self.signals.append("kill")
+
+
+def _fake_psutil_for(procs, *, waits):
+    """psutil stub whose ``wait_procs`` replays ``waits`` (a list of alive-lists)."""
+
+    class _FakePsutil:
+        @staticmethod
+        def process_iter(attrs):
+            return list(procs)
+
+        @staticmethod
+        def wait_procs(victims, timeout=5):
+            alive = waits.pop(0) if waits else []
+            gone = [p for p in victims if p not in alive]
+            return gone, list(alive)
+
+    return _FakePsutil
+
+
+def test_stop_desktop_processes_signals_only_the_browser_not_its_children(tmp_path, monkeypatch):
+    """Chromium children must be reaped by their own browser process.
+
+    Signalling every process under ``release/`` races the browser's teardown
+    against its children dying underneath it; the browser then traps
+    (``string_view::substr`` out-of-range under -fno-exceptions → SIGTRAP) and
+    dumps core instead of exiting 0. Reproduced against a live Electron 40 app.
+    """
+    monkeypatch.setattr(main_desktop.sys, "platform", "darwin")
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+
+    browser = _FakeTreeProc(100, 1, str(live_exe))
+    zygote = _FakeTreeProc(101, 100, str(live_exe))
+    renderer = _FakeTreeProc(102, 101, str(live_exe))
+    gpu = _FakeTreeProc(103, 100, str(live_exe))
+    outsider = _FakeTreeProc(200, 1, "/usr/bin/unrelated")
+    procs = [zygote, renderer, browser, gpu, outsider]
+
+    monkeypatch.setitem(sys.modules, "psutil",
+                        _fake_psutil_for(procs, waits=[[]]))
+
+    stopped = main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
+
+    assert stopped == [100]
+    assert browser.signals == ["terminate"]
+    assert [p.signals for p in (zygote, renderer, gpu, outsider)] == [[], [], [], []]
+
+
+def test_stop_desktop_processes_escalates_to_children_the_browser_left_behind(tmp_path, monkeypatch):
+    """A child still alive after the browser is gone is nobody's race any more:
+    signal it directly, then SIGKILL if it still will not go."""
+    monkeypatch.setattr(main_desktop.sys, "platform", "darwin")
+    root = _make_desktop_tree(tmp_path)
+    desktop_dir = root / "apps" / "desktop"
+    live_exe = desktop_dir / "release" / _packaged_exe_rel()
+    live_exe.parent.mkdir(parents=True)
+    live_exe.write_text("old", encoding="utf-8")
+
+    browser = _FakeTreeProc(100, 1, str(live_exe))
+    stuck = _FakeTreeProc(101, 100, str(live_exe))
+    monkeypatch.setitem(sys.modules, "psutil",
+                        _fake_psutil_for([browser, stuck], waits=[[stuck], [stuck]]))
+
+    stopped = main_desktop._stop_desktop_processes_locking_build(desktop_dir, also_posix=True)
+
+    assert stopped == [100, 101]
+    assert browser.signals == ["terminate"]
+    assert stuck.signals == ["terminate", "kill"]
+
+
 def test_gui_failed_pack_leaves_previous_app_untouched(tmp_path, monkeypatch, capsys):
     """Every pack attempt fails → the pre-existing app is exactly as it was,
     no staging dir remains, exit is non-zero."""

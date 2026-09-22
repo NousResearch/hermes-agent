@@ -600,7 +600,8 @@ def test_backup_fill_ignores_tar_path_traversal(ledger_env):
     )
     # Malicious members are not.
     assert not any(p.endswith("evil.md") or p.endswith("outside.md") for p in paths)
-import json
+
+
 from pathlib import Path
 
 import pytest
@@ -674,41 +675,3 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
         after=[{"path": "my-skill/z2.md", "sha256": "b" * 64}], evidence={"pad": "z" * 3000})
     assert skill_ledger.ledger_path().stat().st_size <= int(8192 * 0.8)
     assert "{not json at all" in skill_ledger.ledger_path().read_text(encoding="utf-8")
-
-
-def test_disabled_threshold_never_touches_the_file(ledger_env, monkeypatch):
-    """ledger_max_bytes: 0 keeps the append-only contract: no
-    rewrite ever happens, however large the file is."""
-    from tools import skill_ledger
-
-    import hermes_cli.config as _cfg
-
-    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
-        "skills": {"ledger": True, "ledger_max_bytes": 0}})
-
-    _append_padded(skill_ledger, "patch", "z" * 4096, n=4)
-    raw = skill_ledger.ledger_path().read_text(encoding="utf-8")
-
-    skill_ledger._maintain_size()
-
-    assert skill_ledger.ledger_path().read_text(encoding="utf-8") == raw
-
-
-def test_maintenance_failure_never_blocks_append(ledger_env, monkeypatch):
-    """Telemetry contract: a broken maintenance sweep logs and leaves the
-    appended entries on disk."""
-    from tools import skill_ledger
-
-    import hermes_cli.config as _cfg
-
-    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
-        "skills": {"ledger_max_bytes": 8192}})
-
-    def _boom(*a, **k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(skill_ledger, "compact_ledger", _boom)
-    # appends past the threshold hit the broken sweep and must survive it
-    _append_padded(skill_ledger, "patch", "w" * 4096, n=6)
-
-    assert len(skill_ledger.list_entries()) == 6

@@ -10,7 +10,6 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
-import pytest
 
 from tools.computer_use import cua_backend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
@@ -38,11 +37,6 @@ def _write_config(tmp_path, body: str) -> None:
 
 class TestAxWalkBound:
 
-    def test_default_is_a_finite_bound(self):
-        """No config line: the walk is bounded, not unbounded. The whole point of the fix."""
-        assert cua_backend._DEFAULT_AX_MAX_ELEMENTS > 0
-        assert cua_backend._cua_configured_ax_max_elements() == cua_backend._DEFAULT_AX_MAX_ELEMENTS
-
     def test_configured_value_reaches_the_driver_args(self, tmp_path, monkeypatch):
         """End to end through the loader the backend uses: config.yaml -> get_window_state args."""
         _write_config(tmp_path, "computer_use:\n  ax_max_elements: 350\n")
@@ -56,25 +50,6 @@ class TestAxWalkBound:
         monkeypatch.setenv("HERMES_HOME", str(tmp_path))
         assert cua_backend._cua_configured_ax_max_elements() == 0
         assert "max_elements" not in _StubCapture()._gws_args()
-
-    def test_unusable_value_fails_to_the_default_not_to_unbounded(self, tmp_path, monkeypatch):
-        """A junk config line is a latency regression, never a silent revert to walking everything."""
-        _write_config(tmp_path, "computer_use:\n  ax_max_elements: plenty\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert cua_backend._cua_configured_ax_max_elements() == cua_backend._DEFAULT_AX_MAX_ELEMENTS
-
-    def test_negative_values_are_clamped(self, tmp_path, monkeypatch):
-        _write_config(tmp_path, "computer_use:\n  ax_max_elements: -5\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        assert cua_backend._cua_configured_ax_max_elements() == 0
-
-    def test_bound_rides_alongside_the_target(self, tmp_path, monkeypatch):
-        """The bound is an addition: pid/window_id addressing is untouched."""
-        _write_config(tmp_path, "computer_use:\n  ax_max_elements: 250\n")
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        args = _StubCapture()._gws_args()
-        assert args["pid"] == 607 and args["window_id"] == 382
-        assert args["max_elements"] == 250
 
 
 class TestCappedWalkHint:

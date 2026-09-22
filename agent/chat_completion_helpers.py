@@ -3496,9 +3496,11 @@ class _StreamingCall(StreamingWaitMonitor):
         return self._call_anthropic(request_client)
 
     def _call(self):
-        _max_stream_retries = env_int("HERMES_STREAM_RETRIES", 2)
+        # Resolved once in agent_init from agent.max_stream_retries (config) with the
+        # HERMES_STREAM_RETRIES env var as the fallback for existing setups.
+        _max_stream_retries = getattr(self.agent, "_max_stream_retries", env_int("HERMES_STREAM_RETRIES", 2))
         # The one stream_options compatibility retry (#9705) is not a network retry and must not
-        # consume the transient budget: on the last attempt (or HERMES_STREAM_RETRIES=0) the
+        # consume the transient budget: on the last attempt (or max_stream_retries=0) the
         # handler returned True and the loop ended with neither a response nor an error set.
         self._compat_retries = 0
         _stream_attempt = -1

@@ -1062,13 +1062,16 @@ class TestCodexStreamCallbacks:
 
 
     def test_codex_remote_protocol_error_retries_then_raises(self):
-        """Transport errors from ``responses.create`` retry once then re-raise.
+        """Transport errors from ``responses.create`` retry then re-raise.
 
         With the migration from ``responses.stream(...)`` to
         ``responses.create(stream=True)``, there is no longer a separate
         fallback function — the same call IS the streaming path.  When it
-        raises ``httpx.RemoteProtocolError``, we retry once (matching the
-        old behavior on the helper) and re-raise on the second failure.
+        raises ``httpx.RemoteProtocolError``, the configured stream retry
+        count is consumed and the error is re-raised once exhausted.
+
+        The count is pinned here so the assertion describes the mechanism
+        rather than whatever ``agent.max_stream_retries`` defaults to.
         """
         from run_agent import AIAgent
         import httpx
@@ -1083,6 +1086,7 @@ class TestCodexStreamCallbacks:
         )
         agent.api_mode = "codex_responses"
         agent._interrupt_requested = False
+        agent._max_stream_retries = 1
 
         call_count = {"n": 0}
 
@@ -1583,7 +1587,10 @@ class TestPartialToolCallWarning:
         import httpx
 
         agent, calls = self._zero_char_agent(mock_create, attempts_that_die=99)
-        with patch.dict("os.environ", {"HERMES_STREAM_RETRIES": "0"}), pytest.raises(httpx.RemoteProtocolError):
+        # Pin the resolved count directly — the knob since `agent.max_stream_retries` landed; the
+        # assertion describes the exhaust-and-propagate mechanism, not whatever the config defaults to.
+        agent._max_stream_retries = 0
+        with pytest.raises(httpx.RemoteProtocolError):
             agent._interruptible_streaming_api_call({})
         assert calls["n"] == 1
 

@@ -123,3 +123,32 @@ test('a failed recovery does not release its claim while another owner/start or 
   assert.equal(latch.retryAfterFailedStart({ ...empty, intentionalTeardown: true }), false)
   assert.equal(latch.claim(empty), false, 'intentional teardown does not re-arm recovery')
 })
+
+test('a failed start that owns no recovery claim is not re-armed and spends no budget', () => {
+  let clock = 1_000
+  const latch = createBackendExitRecoveryLatch({ maxRespawns: 3, windowMs: 120_000, now: () => clock })
+  const empty = { hasCurrentOwner: false, hasPendingStart: false, intentionalTeardown: false }
+
+  // Nothing claimed yet (fresh latch): a pre-ready failure of a user-driven
+  // start is not the supervisor's retry to take.
+  assert.equal(latch.retryAfterFailedStart(empty), false, 'fresh latch has no claim to re-arm')
+  assert.equal(latch.isCrashLooping(), false)
+
+  // A ready backend released the claim: a later failed start still owns nothing.
+  assert.equal(latch.claim(empty), true)
+  latch.reset()
+  clock += 1_000
+  assert.equal(latch.retryAfterFailedStart(empty), false, 'reset() leaves nothing to re-arm')
+  assert.equal(latch.isCrashLooping(), false)
+
+  // Neither refusal consumed the window: the remaining two grants are intact.
+  clock += 1_000
+  assert.equal(latch.claim(empty), true, 'second respawn')
+  latch.reset()
+  clock += 1_000
+  assert.equal(latch.claim(empty), true, 'third respawn')
+  latch.reset()
+  clock += 1_000
+  assert.equal(latch.claim(empty), false, 'fourth is the real budget exhaustion')
+  assert.equal(latch.isCrashLooping(), true)
+})

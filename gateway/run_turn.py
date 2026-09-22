@@ -630,11 +630,26 @@ class GatewayTurnMixin:
             hs.provider = _model_cfg.get("provider") or None
             hs.base_url = _model_cfg.get("base_url") or None
 
-        # Only the enabled flag is shared with the agent's compression config (hygiene runs higher).
+        # The enabled flag and the ratio threshold are shared with the agent's compression config;
+        # the net's own default stays the floor (see _hmwa_hygiene_settings).
         _comp_cfg = data.get("compression", {})
         if not isinstance(_comp_cfg, dict):
             return
         hs.compression_enabled = str(_comp_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+
+        # A ratio above the net's default is a supported configuration and the only way to give a
+        # large window a long runway: the hard-coded net used to fire at its default first, so the
+        # session capped short of the ratio the operator asked for and the agent's own compressor
+        # never ran. Raise the net to the agent's threshold, never lower it — the net exists to be
+        # HIGHER than the compressor, not to cap it.
+        _raw_threshold = _comp_cfg.get("threshold")
+        if not isinstance(_raw_threshold, bool):
+            try:
+                _agent_threshold = float(_raw_threshold)
+            except (TypeError, ValueError):
+                _agent_threshold = None
+            if _agent_threshold is not None and _agent_threshold > hs.threshold_pct:
+                hs.threshold_pct = _agent_threshold
 
         def _knob(key, current, cast, allow_zero=False):
             raw = _comp_cfg.get(key)

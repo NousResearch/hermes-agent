@@ -493,6 +493,26 @@ sudo docker exec nova python -m nova status /var/lib/nova/bundle
 > deployment, keeping a channel and its channel-scoped agent profile alive after the
 > tenant had removed them. The replacement is staged beside the destination and swapped
 > in by rename, so a malformed archive fails before the live bundle is touched.
+>
+> **During an image upgrade, use the one-shot form instead.** The command above runs
+> inside the *running* container, which still holds the previous image until the service
+> is restarted — so it cannot carry a fix that is only in the new one. That is a real
+> ordering problem, not a hypothetical: replacing the bundle should precede the restart,
+> and the code that replaces it correctly arrives with the new image. Run the new image
+> directly, mounting the same state volume:
+>
+> ```bash
+> sudo docker run --rm \
+>   --volume /var/lib/nova:/var/lib/nova \
+>   <new-image-digest> \
+>   -- bundle unpack /var/lib/nova/<archive>.tgz --into /var/lib/nova/bundle --replace
+> ```
+>
+> `--` is the entrypoint's passthrough to `python -m nova` (`deploy/docker/entrypoint.sh`).
+> Without it the first argument is read as an entrypoint command — `serve`, `apply`,
+> `plan` or `validate` — and `python` or `bundle` is refused by name. No `--network host`
+> and no `--env-file` are needed: nothing is served, and the paths come from the image's
+> own defaults.
 
 Warnings that each agent "cannot run yet" are correct, not errors. Step 25 fixes them.
 

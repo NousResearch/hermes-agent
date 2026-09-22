@@ -506,3 +506,51 @@ def test_the_runbook_uses_replace_for_the_authoritative_bundle():
         "the runbook's unpack would be refused on any redeploy, because the destination "
         "already holds the previous bundle"
     )
+
+
+def test_the_entrypoint_passes_bundle_commands_through(tmp_path):
+    """`docker run <image> bundle unpack …` is refused; `-- bundle unpack …` is the way.
+
+    The entrypoint dispatches on its first argument, and `bundle` is not one of its
+    commands — so during an image upgrade, when the running container still holds the old
+    image and the one-shot form is the only way to use the new one, the obvious
+    invocation fails by name. Pinned here because the runbook now documents the `--`
+    form and the two must not drift.
+    """
+    import subprocess
+
+    entrypoint = DEPLOY / "docker" / "entrypoint.sh"
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    (bin_dir / "python").write_text('#!/bin/sh\necho "ARGS: $*"\n', encoding="utf-8")
+    (bin_dir / "python").chmod(0o755)
+    env = {
+        "PATH": f"{bin_dir}:/usr/bin:/bin",
+        "NOVA_HOME": str(tmp_path / "home"),
+        "NOVA_BUNDLE": str(tmp_path / "bundle"),
+    }
+
+    def run(*args):
+        return subprocess.run(
+            ["sh", str(entrypoint), *args], env=env, capture_output=True, text=True
+        )
+
+    refused = run("bundle", "unpack", "/a.tgz", "--into", "/b", "--replace")
+    assert refused.returncode != 0
+    assert "unknown command 'bundle'" in refused.stderr
+
+    ok = run("--", "bundle", "unpack", "/a.tgz", "--into", "/b", "--replace")
+    assert ok.returncode == 0, ok.stderr
+    assert "ARGS: -m nova bundle unpack /a.tgz --into /b --replace" in ok.stdout
+
+
+def test_the_runbook_documents_the_one_shot_upgrade_form():
+    """An operator mid-upgrade cannot use `docker exec` to run code the running container
+    does not have. The runbook has to say so, or this is rediscovered every time."""
+    runbook = (DEPLOY / "FIRST_DEPLOYMENT.md").read_text(encoding="utf-8")
+    transfer = runbook[runbook.index("## Steps 23–24"):]
+    transfer = transfer[: transfer.index("## Step 25")]
+    assert "docker run" in transfer and "-- bundle unpack" in transfer, (
+        "the runbook only shows the docker exec form, which cannot carry a fix that is "
+        "only in the new image"
+    )

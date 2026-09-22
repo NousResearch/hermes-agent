@@ -15,7 +15,7 @@ Prerequisites:
     - Ollama running with bge-m3:latest (needed for vec_memory_add embedding)
 
 Environment:
-    HERMES_PROFILE  – target profile name (default: zunhunfan)
+    HERMES_PROFILE  – target profile name (default: default)
 """
 
 import json
@@ -31,7 +31,7 @@ VENV_SITE = Path.home() / ".hermes/hermes-agent/venv/lib/python3.11/site-package
 if VENV_SITE.exists():
     sys.path.insert(0, str(VENV_SITE))
 
-PROFILE = os.environ.get("HERMES_PROFILE", "zunhunfan")
+PROFILE = os.environ.get("HERMES_PROFILE", "default")
 # `default` profile 的 HERMES_HOME 就是 ~/.hermes/（没有 profiles/default/）——
 # 不做特判会让 default 解析到不存在的路径，验证脚本自身先报错。
 if PROFILE == "default":
@@ -136,7 +136,7 @@ def main():
 
     # 4. keyword search (FTS)
     # A single hard-coded query gives a FALSE FAILURE on profiles whose corpus
-    # simply lacks that word (e.g. zunhunfan's reports contain no "用户").
+    # simply lacks that word (some profiles' reports contain no "用户").
     # Probe a few common terms and pass if any hits — the point is "does FTS
     # work at all", not "does this word exist in this corpus".
     print("\n--- vec_memory_search (keyword) ---")

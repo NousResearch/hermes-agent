@@ -38,7 +38,7 @@ CHILD = r'''
 import os, sys, time
 PLUGIN, WORK, MODE = sys.argv[1], sys.argv[2], sys.argv[3]
 HOME = os.path.expanduser("~/.hermes")
-os.environ.setdefault("HERMES_HOME", os.path.join(HOME, "profiles/zunhunfan"))
+os.environ.setdefault("HERMES_HOME", os.path.join(HOME, "profiles/default"))
 sys.path.insert(0, os.path.join(HOME, "hermes-agent"))
 from plugins.memory import load_memory_provider
 

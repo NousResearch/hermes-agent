@@ -51,7 +51,7 @@ Verification: `git status --short` should not show the plugin; `git check-ignore
 
 ```bash
 # Layer 1: discovery (the easiest to skip, and the true cause of this incident)
-for prof in default chip_expert financial_expert health_manager zunhunfan; do
+for prof in default <profile> <profile> <profile> <profile>; do
   if [ "$prof" = "default" ]; then HH="$HOME/.hermes"; else HH="$HOME/.hermes/profiles/$prof"; fi
   HERMES_HOME="$HH" <venv>/python -c "
 from plugins.memory import list_memory_provider_names, find_provider_dir

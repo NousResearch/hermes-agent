@@ -20,7 +20,7 @@ ls ~/.hermes/profiles/<name>/lance_memory/memories.lance/
 # Normal (default profile, after upgrade):
 #   _deletions  _indices  _transactions  _versions  data
 
-# Broken (fe/zunhunfan):
+# Broken (fe/<profile>):
 #   data   ← only data
 
 # 2. Check whether data/ contains .lance files
@@ -114,8 +114,8 @@ assert tbl.list_indices()  # FTS index present
 
 | Profile | rows before fix | rows after fix | time |
 |---|---|---|---|
-| financial_expert | 0 (Table not found) | 325 | 0.42s |
-| zunhunfan | 0 (Table not found) | 237 | 0.10s |
+| <profile> | 0 (Table not found) | 325 | 0.42s |
+| <profile> | 0 (Table not found) | 237 | 0.10s |
 
 ## Pitfalls
 

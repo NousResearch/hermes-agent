@@ -1,7 +1,7 @@
 # Financial Business Data: LanceDB → Zvec Migration
 
 Migration plan for replacing `lancedb_news/` and `lancedb_analysis/` with Zvec collections
-in the financial_expert profile.
+in the <profile> profile.
 
 > **Scope**: News articles, telegraph flashes, and analysis reports — NOT session memory
 > (that's covered by the main migration playbook).

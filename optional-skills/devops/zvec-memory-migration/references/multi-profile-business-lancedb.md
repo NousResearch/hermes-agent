@@ -17,17 +17,17 @@ different things** that share the same engine but have separate data paths:
 
 ## Business LanceDB Inventory (real example, 2026-06-04)
 
-financial_expert profile's domain data:
+<profile> profile's domain data:
 - `lancedb_analysis/analysis_reports.lance` — analysis reports corpus (20K)
 - `lancedb_news/financial_news.lance` — financial news feed (1.5M)
 - `lancedb_news/financial_telegraph.lance` — financial telegraph feed (492K)
 - `sqlite_holdings_journal/holdings.db` — actual holdings table (1.1M SQLite, not lancedb)
 
-chip_expert profile:
+<profile> profile:
 - `skills/hardware/chip-database/scripts/chip_compare.db` — chip compare
   database (332K SQLite)
 
-zunhunfan profile:
+<profile> profile:
 - `data/negative-news-history/history.db` — negative news history (44K SQLite)
 
 **All of these are NOT touched by `vec_memory_*` tools.** They are accessed
@@ -44,7 +44,7 @@ find ~/.hermes \( -name "*.db" -o -name "*.sqlite*" \) -type f 2>/dev/null \
   | grep -v venv | grep -v __pycache__
 
 # 3. Per-profile business data (top-level dirs that look like data)
-for p in default chip_expert financial_expert zunhunfan; do
+for p in default <profile> <profile> <profile>; do
   echo "=== $p ==="
   ls -la ~/.hermes/${p:+/profiles/$p/} 2>/dev/null \
     | grep -E "(lancedb|sqlite|holdings|docs|data|history)" \

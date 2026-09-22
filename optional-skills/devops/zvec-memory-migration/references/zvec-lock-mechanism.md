@@ -26,9 +26,9 @@ A file-level LOCK located at `<collection_path>/LOCK`.
 |------|------|
 | 2026-09-10 | In-tree patch optimize_fix (hot-path HNSW amortized optimization) |
 | 2026-09-11 | In-tree patch for the shutdown race (thread tracking + atexit draining) — but the draining was not hooked into initialize, so the race was not truly fixed |
-| 2026-09-14 14:07 | chip_expert session initialization collided with the previous session's closing batch write, **the entire session's memory silently failed** (journal signature: same-second WARNING "still locked" + ERROR "failed to open (read-only)") |
+| 2026-09-14 14:07 | <profile> session initialization collided with the previous session's closing batch write, **the entire session's memory silently failed** (journal signature: same-second WARNING "still locked" + ERROR "failed to open (read-only)") |
 | 2026-09-14 23:00 | Plugin moved out of the hermes-agent tree → `~/.hermes/plugins/memory-zvec` (user-level, immune to updates); 6 configs point to `memory.provider: memory-zvec` |
-| 2026-09-14 late night | Discovered that the dashboard (root profile) web UI **embeds profile chats** (`web_server_chat.py` supports `profile=`, with HERMES_HOME pointed at the sub-profile) and held the zunhunfan lock for **35 hours** (fd timestamp as hard evidence) — from this, idle release was born |
+| 2026-09-14 late night | Discovered that the dashboard (root profile) web UI **embeds profile chats** (`web_server_chat.py` supports `profile=`, with HERMES_HOME pointed at the sub-profile) and held the <profile> lock for **35 hours** (fd timestamp as hard evidence) — from this, idle release was born |
 | 2026-09-15 | 8 adversarial-review fixes (v1.3.1); profile symlinks changed to physical copies |
 
 ### v1.1.0 — Root Fix for the Back-to-Back Session Race

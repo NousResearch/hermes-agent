@@ -14,7 +14,7 @@ What this does:
     6. ★ Timestamp fix — use message-level timestamps, not write time
     7. Embed via Ollama HTTP API, write to profile's LanceDB
 
-Replaces: migrate_chip/zunhunfan/financial_expert_sessions_to_lancedb.py
+Replaces: the earlier per-profile *_sessions_to_lancedb.py scripts
 """
 
 import argparse
@@ -415,7 +415,7 @@ if __name__ == "__main__":
         description="Migrate profile session history to LanceDB (with built-in Strip Pipeline)",
     )
     parser.add_argument("--profile", "-p", required=True,
-                        help="Profile name (e.g. 'default', 'chip_expert')")
+                        help="Profile name (e.g. 'default', 'my_profile')")
     parser.add_argument("--dry-run", action="store_true",
                         help="Show what would be migrated without writing")
     args = parser.parse_args()

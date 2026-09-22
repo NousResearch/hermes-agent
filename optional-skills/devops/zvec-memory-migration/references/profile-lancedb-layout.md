@@ -12,9 +12,9 @@
 | Profile | HERMES_HOME | lance_dir (config) | Resolved Path | Data Files | HNSW+FTS | Config Key |
 |---|---|---|---|---|---|---|
 | default | `~/.hermes` | `$HERMES_HOME/记忆数据库/lance_memory` | `~/.hermes/记忆数据库/lance_memory` | 219 | ✅ | `plugins.memory-lancedb` |
-| chip_expert | `~/.hermes/profiles/chip_expert` | `$HERMES_HOME/记忆数据库/lance_memory` | `~/.hermes/profiles/chip_expert/记忆数据库/lance_memory` | 69 | ✅ | `plugins.memory-lancedb` |
-| financial_expert | `~/.hermes/profiles/financial_expert` | absolute path (unicode-escaped) | `~/.hermes/profiles/financial_expert/记忆数据库/lance_memory` | 1 | ✅ | `plugins.lancedb-embed` (legacy) |
-| zunhunfan | `~/.hermes/profiles/zunhunfan` | `$HERMES_HOME/记忆数据库/lance_memory` | `~/.hermes/profiles/zunhunfan/记忆数据库/lance_memory` | 1 | ✅ | `plugins.memory-lancedb` |
+| <profile> | `~/.hermes/profiles/<profile>` | `$HERMES_HOME/记忆数据库/lance_memory` | `~/.hermes/profiles/<profile>/记忆数据库/lance_memory` | 69 | ✅ | `plugins.memory-lancedb` |
+| <profile> | `~/.hermes/profiles/<profile>` | absolute path (unicode-escaped) | `~/.hermes/profiles/<profile>/记忆数据库/lance_memory` | 1 | ✅ | `plugins.lancedb-embed` (legacy) |
+| <profile> | `~/.hermes/profiles/<profile>` | `$HERMES_HOME/记忆数据库/lance_memory` | `~/.hermes/profiles/<profile>/记忆数据库/lance_memory` | 1 | ✅ | `plugins.memory-lancedb` |
 
 ## Directory Structure (per profile)
 
@@ -33,7 +33,7 @@
 
 ## Notes
 
-- financial_expert still uses legacy `plugins.lancedb-embed` key; backward compat in plugin code handles it
+- <profile> still uses legacy `plugins.lancedb-embed` key; backward compat in plugin code handles it
 - default profile has 375 rows (heaviest usage); sub-profiles have sparse data
 - All paths use Chinese directory name `记忆数据库` (configured in lance_dir)
 - Ollama process: `ollama app.exe` on Windows (PID varies), WSL accesses via localhost forwarding

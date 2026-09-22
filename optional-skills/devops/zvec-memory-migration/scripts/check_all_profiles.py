@@ -10,7 +10,7 @@ Checks all Hermes profiles' zvec_memory collections for:
 
 Usage:
     python3 check_all_profiles.py
-    HERMES_PROFILE=chip_expert python3 check_all_profiles.py  # single profile
+    HERMES_PROFILE=my_profile python3 check_all_profiles.py  # single profile
 
 Requires zvec installed in the Python environment running this script.
 """

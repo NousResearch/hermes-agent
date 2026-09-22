@@ -23,7 +23,7 @@ import lance.file as lf
 import pyarrow as pa
 
 
-PROFILES = ["default", "financial_expert", "chip_expert", "zunhunfan"]
+PROFILES = ["default"]  # add your profile names here, or run per profile
 SCHEMA = pa.schema([
     pa.field("id", pa.string()),
     pa.field("content", pa.string()),

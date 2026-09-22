@@ -1,6 +1,6 @@
 # memory-zvec — Zvec Vector Memory Plugin
 
-**Drop-in replacement for `memory-lancedb`**. Same 6 tool schemas, same
+**Drop-in replacement for `memory-lancedb`**. Same 5 tool schemas, same
 prefetch/sync_turn/on_session_end hooks, same Ollama bge-m3:latest embedding —
 but backed by Zvec v0.5.0+ with **native hybrid query** (MultiQuery + RRFReRanker).
 
@@ -35,7 +35,7 @@ cp -r ~/.hermes/plugins/memory-zvec /path/to/your/hermes/plugins/memory-zvec
 ### 1. Run the migration script
 
 ```bash
-python3 ~/.hermes/profiles/chip_expert/skills/hardware/vector-db-migration/references/migrate-lancedb-to-zvec.py
+python3 ~/.hermes/profiles/<profile>/skills/hardware/vector-db-migration/references/migrate-lancedb-to-zvec.py
 ```
 
 This migrates all 105 LanceDB memories into Zvec in full (vectors already exist; no re-embedding).

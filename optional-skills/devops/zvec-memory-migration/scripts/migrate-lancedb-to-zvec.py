@@ -14,7 +14,7 @@ Prerequisites:
     - Ollama running with bge-m3:latest (not needed for migration itself, only for post-migration verification)
 
 Environment:
-    HERMES_PROFILE  – target profile name (default: zunhunfan)
+    HERMES_PROFILE  – target profile name (default: default)
 """
 
 import ast
@@ -34,7 +34,7 @@ if VENV_SITE.exists():
 import lance  # noqa: E402
 import zvec   # noqa: E402
 
-PROFILE = os.environ.get("HERMES_PROFILE", "zunhunfan")
+PROFILE = os.environ.get("HERMES_PROFILE", "default")
 if PROFILE == "default":
     HERMES_HOME = Path.home() / ".hermes"
 else:

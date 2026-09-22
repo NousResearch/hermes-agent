@@ -17,7 +17,7 @@ Check whether each profile's `memory.provider` points to `memory-zvec`:
 
 ```bash
 echo "=== default ===" && grep -A6 '^memory:' ~/.hermes/config.yaml 2>/dev/null
-for p in chip_expert financial_expert health_manager zunhunfan; do
+for p in <profile> <profile> <profile> <profile>; do
   echo "=== $p ==="
   grep -A6 '^memory:' ~/.hermes/profiles/$p/config.yaml 2>/dev/null || echo "NO CONFIG"
 done
@@ -28,7 +28,7 @@ Expected output for each item contains `provider: memory-zvec`.
 Also check that a `memory-zvec` config block exists under the `plugins:` section (zvec_dir / embedding_model / vector_dim, etc.):
 
 ```bash
-for p in chip_expert financial_expert health_manager zunhunfan; do
+for p in <profile> <profile> <profile> <profile>; do
   echo "=== $p plugins ==="
   grep -A10 '^plugins:' ~/.hermes/profiles/$p/config.yaml 2>/dev/null
 done
@@ -41,7 +41,7 @@ Check that the plugin itself exists and that the symlinks in each sub-profile ar
 ```bash
 echo "=== memory-zvec plugin ===" && ls -la ~/.hermes/plugins/memory-zvec/ | head -5
 echo ""
-for p in chip_expert financial_expert health_manager zunhunfan; do
+for p in <profile> <profile> <profile> <profile>; do
   link="$HOME/.hermes/profiles/$p/plugins/memory-zvec"
   if [ -L "$link" ] && [ -d "$(readlink -f "$link")" ]; then
     echo "✅ $p: symlink OK → $(readlink "$link")"
@@ -67,7 +67,7 @@ Check whether each profile's data directory exists, its size, and its last activ
 echo "=== default ===" && du -sh ~/.hermes/记忆数据库/zvec_memory/ 2>/dev/null && \
   ls -lt ~/.hermes/记忆数据库/zvec_memory/memories/manifest.* 2>/dev/null | head -1
 
-for p in chip_expert financial_expert health_manager zunhunfan; do
+for p in <profile> <profile> <profile> <profile>; do
   dir="$HOME/.hermes/profiles/$p/记忆数据库/zvec_memory/"
   if [ -d "$dir" ]; then
     echo "=== $p ==="
@@ -89,8 +89,8 @@ The last modification time of the manifest is the most reliable indicator of whe
 Read each profile's agent.log and check whether the memory-zvec initialization sequence is complete:
 
 ```bash
-for p in chip_expert financial_expert health_manager zunhunfan; do
-  if [ "$p" = "zunhunfan" ]; then
+for p in <profile> <profile> <profile> <profile>; do
+  if [ "$p" = "<profile>" ]; then
     logfile="$HOME/.hermes/profiles/$p/logs/agent.log"
   else
     logfile="$HOME/.hermes/profiles/$p/logs/agent.log"
@@ -132,10 +132,10 @@ done
 | Profile | Config | Plugin | Data | Runtime | Verdict |
 |---------|------|------|------|--------|------|
 | default | ✅ | ✅ | ✅ 76MB/694 entries | ✅ Normal | ✅ |
-| chip_expert | ✅ | ✅ (old code) | ✅ 20MB | ⚠️ NameError → read-only | Gateway restart needed |
-| financial_expert | ✅ | ✅ (old code) | ✅ 7.8MB | ⚠️ NameError → read-only | Gateway restart needed |
-| health_manager | ✅ | ✅ | ✅ 19MB | ✅ Normal (new code) | ✅ |
-| zunhunfan | ✅ | ✅ | ✅ 6.0MB | ❓ No recent conversations → not activated | Auto-loads on the next message |
+| <profile> | ✅ | ✅ (old code) | ✅ 20MB | ⚠️ NameError → read-only | Gateway restart needed |
+| <profile> | ✅ | ✅ (old code) | ✅ 7.8MB | ⚠️ NameError → read-only | Gateway restart needed |
+| <profile> | ✅ | ✅ | ✅ 19MB | ✅ Normal (new code) | ✅ |
+| <profile> | ✅ | ✅ | ✅ 6.0MB | ❓ No recent conversations → not activated | Auto-loads on the next message |
 
 ### Post-Fix Verification: Restart the Gateway
 

@@ -1,6 +1,6 @@
 ---
 name: zvec-memory-migration
-description: Deploy, migrate, health-check and repair the Zvec memory backend for Hermes Agent — full playbook for switching profiles to Zvec, including LanceDB data migration, index repair, and 12-point functional verification.
+description: Deploy, migrate and repair the Zvec memory backend.
 version: 3.4.0
 author: kuntao2011
 license: MIT
@@ -23,6 +23,30 @@ Covers deployment, migration, health checks, fault diagnosis, index repair, and 
 > The original skills were archived and deleted.
 
 ---
+
+## When to Use
+
+Use this skill when a Hermes profile's memory backend should be Zvec (the
+`memory-zvec` plugin): fresh deployment, migration from LanceDB or FTS5
+session history, post-migration verification, index repair, or lock/health
+troubleshooting. For a single profile, follow Steps 1 and 3-7; Step 2 is only
+needed for multi-profile fleets.
+
+## Prerequisites
+
+- Hermes Agent with the `memory-zvec` plugin available
+  (<https://github.com/kuntao2011/kkk-hermes-memory-zvec>)
+- An embedding model served over an Ollama-compatible API (`/api/embed`):
+  local Ollama with `bge-m3` by default, or a hosted endpoint via the
+  plugin's `base_url`
+- Hermes venv Python (the `zvec` package is installed there)
+- Terminal access to the target machine (`systemctl --user`, file copies)
+
+## Verification
+
+After any deploy/migration/repair, run the 12-point functional verification
+in Step 6 (vector/keyword/hybrid search, add, delete, stable stats) plus the
+log confirmation in Step 7. All 12 checks must pass before declaring success.
 
 ## Memory System Architecture
 
@@ -86,8 +110,8 @@ Therefore: no matter how many turns a CLI session (including `-z` one-shot runs)
 **Key concept**: Hermes uses the `HERMES_HOME` environment variable to isolate each profile's plugins and skills.
 
 ```
-HERMES_HOME（无 profile / default） = ~/.hermes/
-HERMES_HOME（有 profile 时）        = ~/.hermes/profiles/<profile_name>/
+HERMES_HOME (no profile / default) = ~/.hermes/
+HERMES_HOME (with a profile)       = ~/.hermes/profiles/<profile_name>/
 ```
 
 > **⚠️ Note**: the default profile has no `~/.hermes/profiles/default/` directory.
@@ -100,9 +124,9 @@ HERMES_HOME（有 profile 时）        = ~/.hermes/profiles/<profile_name>/
 > Multiple profiles' config.yaml files appear to contain identical `$HERMES_HOME/...` paths,
 > but their runtime resolutions **differ**. Verification method:
 > ```bash
-> for p in default chip_expert financial_expert health_manager zunhunfan; do
+> for p in default <your-profiles>; do
 >   pid=$(pgrep -f "hermes.*$p" 2>/dev/null | head -1)
->   [ -n "$pid" ] && cat /proc/$pid/environ 2>/dev/null | tr '\0' '\n' | grep HERMES_HOME
+>   [ -n "$pid" ] && cat /proc/$pid/environ 2>/dev/null | tr '\0' '\n' | grep HERMES_HOME   # Linux only
 > done
 > ```
 
@@ -161,7 +185,7 @@ The config block key is still `plugins.memory-zvec` (hard-coded in code for back
 > (each profile keeps its own physical copy, config and data — nothing is
 > shared between profiles).
 
-> **Iron rule: the memory provider's discovery root is profile-scoped.** `~/.hermes/plugins/<name>/` is visible
+> **Field-verified rule (ops lesson, not an upstream requirement): the memory provider's discovery root is profile-scoped.** `~/.hermes/plugins/<name>/` is visible
 > only to **default**; a sub-profile without a deployment reports `Plugin: NOT installed`, and because the config
 > still lists the provider, external memory **fails silently with zero warnings**.
 > Full mechanism: [`references/discovery-and-deployment-verification.md`](references/discovery-and-deployment-verification.md).
@@ -185,7 +209,7 @@ done
 **Verify "discovery" per profile** (checking that files exist is not enough):
 
 ```bash
-for prof in chip_expert financial_expert health_manager trading_bot zunhunfan; do
+for prof in <your-profiles>; do   # e.g. "default prof-a prof-b"
   HERMES_HOME="$HOME/.hermes/profiles/$prof" ~/.hermes/hermes-agent/venv/bin/python -c "
 import sys; sys.path.insert(0, '/home/<user>/.hermes/hermes-agent')
 from plugins.memory import find_provider_dir
@@ -360,7 +384,7 @@ After migration completes, verify item by item through Hermes tools (these tools
 > **Quick verification script**: you can run [`scripts/verify-plugin-tools.py`](scripts/verify-plugin-tools.py) directly;
 > it performs all 8 checks automatically (loads the plugin through the Hermes framework, no gateway shutdown needed):
 > ```bash
-> HERMES_PROFILE=zunhunfan ~/.hermes/hermes-agent/venv/bin/python3 \
+> HERMES_PROFILE=<profile> ~/.hermes/hermes-agent/venv/bin/python3 \
 >   ~/.hermes/skills/zvec-memory-migration/scripts/verify-plugin-tools.py
 > ```
 >
@@ -479,9 +503,9 @@ bash ~/.hermes/skills/zvec-memory-migration/scripts/check_ollama.sh
 **Three-step triage for a zero-write day** (check the usage side before calling it a fault):
 ```bash
 # 1) Any user DMs that day (gateway.log)
-grep -c "<日期>.*Inbound dm message" ~/.hermes/logs/gateway.log
+grep -c "<date>.*Inbound dm message" ~/.hermes/logs/gateway.log
 # 2) Real cron runs that day (cron_now field on the Shutdown drain line, or job execution logs)
-grep "<日期>" ~/.hermes/logs/gateway.log | grep -c "cron_now=[1-9]"
+grep "<date>" ~/.hermes/logs/gateway.log | grep -c "cron_now=[1-9]"
 # 3) Any agent activity that day (agent.log)
 ```
 If all three are zero → genuinely zero usage (normal); do not treat it as a write fault. Note that in count_in-style FTS approximate-count scripts, `created_at` is a **second-granularity** timestamp (do not multiply the filter value by 1000 — multiplied, everything returns 0, easily misread as a write stoppage).
@@ -697,7 +721,7 @@ while sub-profiles use `~/.hermes/profiles/<name>/`. If the migration script har
 default resolves to the nonexistent `~/.hermes/profiles/default/`.
 **Correct logic**:
 ```python
-PROFILE = os.environ.get("HERMES_PROFILE", "zunhunfan")
+PROFILE = os.environ.get("HERMES_PROFILE", "<profile>")
 if PROFILE == "default":
     HERMES_HOME = Path.home() / ".hermes"
 else:
@@ -958,7 +982,7 @@ holding the rw lock; `on_session_end` can still be triggered later by other path
 If the gateway **shuts down normally** after eviction, idle agents are cleaned up correctly by `_stop_impl` lines 6740-6755.
 **The only risk**: if the gateway is SIGKILLed after eviction but before normal shutdown, those idle agents' on_session_end never runs.
 
-**Observed consequence chain (confirmed on trading_bot, 2026-09-14) — post-eviction lock leak → the next new session gets _coll=None**:
+**Observed consequence chain (confirmed on <profile>, 2026-09-14) — post-eviction lock leak → the next new session gets _coll=None**:
 The evicted agent's provider instance is strongly referenced by gateway internal structures, so GC never reclaims it → the rw lock stays held. The next new session's initialize:
 `lock detected → GC+retry fails → read-only also rejected (read/write mutual exclusion) → _coll=None`, yet the logs **still print**
 `Memory provider 'memory-zvec' activated` (false positive). From then on every vec_memory_* reports `database not yet initialized`,
@@ -969,7 +993,7 @@ Side checks (both ruled out here): whether the configured embedding_model tag ca
 
 ### 16. Ollama Embedding Model-Name Drift Silently Stops Automatic Memory Writes (‼️ Discovered 2026-09-07)
 **Symptom**: when the configured `plugins.memory-zvec.embedding_model` does not match the actual Ollama model tag, all `sync_turn`/`on_session_end` embedding calls fail **without any prominent error** (the skill log has `session_end batch store failed`, but grep for "not found" in gateway.log counts 0 — very easy to miss). It shows up as turn/session_end entries in Zvec stopping after a certain date, while the collection itself is healthy (stats normal, manual writes normal).
-**Real case** (financial_expert): on 8/22 the Ollama-side model tag changed from `bge-m3:567m` to `bge-m3:latest` (`ollama list` showed only `bge-m3:latest`) while config.yaml still said `bge-m3:567m` → `/api/embed` returned `{"error": "model not found"}` → after 8/22, automatic turn/session_end entries dropped to 0 (previously 195 in July and 32 in early August), undetected for 16 days.
+**Real case** (<profile>): on 8/22 the Ollama-side model tag changed from `bge-m3:567m` to `bge-m3:latest` (`ollama list` showed only `bge-m3:latest`) while config.yaml still said `bge-m3:567m` → `/api/embed` returned `{"error": "model not found"}` → after 8/22, automatic turn/session_end entries dropped to 0 (previously 195 in July and 32 in early August), undetected for 16 days.
 **Diagnosis** (three steps, 2 minutes):
 ```bash
 # 1. Compare config with reality
@@ -990,7 +1014,7 @@ for f in ~/.hermes/config.yaml ~/.hermes/profiles/*/config.yaml; do
   tag=$(grep -m1 'embedding_model' "$f" | awk '{print $2}')
   printf '%-52s %-16s ' "$f" "$tag"
   curl -s http://localhost:11434/api/embed -d "{\"model\":\"$tag\",\"input\":[\"t\"]}" \
-    | grep -q '"embeddings"' && echo '✅' || echo '❌ 该 tag 无法 embed'
+    | grep -q '"embeddings"' && echo '✅' || echo '❌ this tag cannot embed'
 done
 ```
 
@@ -1070,7 +1094,7 @@ atexit.register(_drain_pending_writes)
 so each cron job's expected yield is **1 turn record + 1 session_end record**, not "one per message".
 When judging write health by "latest record time", you must distinguish gateway sessions (multi-turn) from cron jobs (single-turn).
 
-### 19. A Live Idle-Cached Agent Holds the Lock → GC+Retry Fails, New Session Stuck at _coll=None (‼️ Verified on health_manager, 2026-09-14)
+### 19. A Live Idle-Cached Agent Holds the Lock → GC+Retry Fails, New Session Stuck at _coll=None (‼️ Verified on <profile>, 2026-09-14)
 
 **Symptom**: within the same gateway process, session A's agent successfully `zvec.open()`s, takes the rw lock, and enters the **idle cache (still strongly referenced, not GC'd)**;
 session B's agent `initialize()` runs `self.shutdown()` (clearing only its own `_coll`) + `gc.collect()` + retry,

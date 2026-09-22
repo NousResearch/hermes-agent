@@ -1,5 +1,8 @@
-name: gemini-image-gen
-kind: backend
+name: gemini
 version: 1.0.0
-description: Native Google AI Studio Gemini image generation using GOOGLE_API_KEY or GEMINI_API_KEY.
-author: Nous Research
+description: "Native Google AI Studio Gemini (Nano Banana) image generation and editing using GOOGLE_API_KEY or GEMINI_API_KEY. Saves generated images to $HERMES_HOME/cache/images/."
+author: Google DeepMind
+kind: backend
+requires_env:
+  - GOOGLE_API_KEY
+  - GEMINI_API_KEY

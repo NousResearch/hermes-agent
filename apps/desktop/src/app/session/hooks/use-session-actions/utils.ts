@@ -1,11 +1,19 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  textPart,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
+import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -78,12 +86,7 @@ function hasStructuralParts(message: ChatMessage): boolean {
  * turn — as opposed to a committed transcript row.
  */
 function isLiveTailRow(message: ChatMessage): boolean {
-  return (
-    message.pending === true ||
-    message.id.startsWith('assistant-stream-') ||
-    message.id.startsWith('inflight-assistant-') ||
-    message.interim === true
-  )
+  return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
 }
 
 /**
@@ -159,6 +162,8 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'durableComplete',
+  'recovered',
   'asyncResult',
   'asyncResultKind',
   'id',
@@ -222,6 +227,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   }
 
   if (aPart.type === 'text' || aPart.type === 'reasoning') {
+    if (aPart.sourceRowId !== bPart.sourceRowId) {
+      return false
+    }
+
     return (aPart as { text: string }).text === (bPart as { text: string }).text
   }
 
@@ -274,6 +283,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.role !== b.role ||
+    a.durableComplete !== b.durableComplete ||
+    a.recovered !== b.recovered ||
     a.pending !== b.pending ||
     a.error !== b.error ||
     // Structural compare — the descriptor arrives as a fresh object per
@@ -324,6 +335,15 @@ export function chatMessageArraysEquivalent(a: ChatMessage[], b: ChatMessage[]):
  */
 export function preserveEquivalentTranscript(current: ChatMessage[], next: ChatMessage[]): ChatMessage[] {
   return chatMessageArraysEquivalent(current, next) ? current : next
+}
+
+/** Durable history against the local view: role-ordinal pairing, then the
+ *  local pending turn and local assistant errors the DB cannot know about. */
+export function reconcileDurableHistory(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const reconciled = reconcileResumeMessages(messages, previous)
+  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previous)
+
+  return preserveLocalAssistantErrors(withPendingTurn, previous)
 }
 
 export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
@@ -534,6 +554,52 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
   return merged
 }
 
+/** Text of the response that follows a folded tool round, not the commentary before it. */
+function lastFoldedResponseText(message: ChatMessage): string {
+  let afterTool = false
+  let text = ''
+
+  for (const part of message.parts) {
+    if (part.type === 'tool-call') {
+      afterTool = true
+      text = ''
+
+      continue
+    }
+
+    if (afterTool && part.type === 'text') {
+      text = textWithoutReferenceLines(part.text).trim()
+    }
+  }
+
+  return afterTool ? text : ''
+}
+
+/**
+ * History folds a final answer into the preceding tool-round bubble. A live
+ * stream bubble holding only that answer is the same occurrence, but full-bubble
+ * equality cannot see it.
+ */
+function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessage): boolean {
+  const needle = textWithoutReferenceLines(chatMessageText(live)).trim()
+
+  if (!needle || live.parts.some(part => part.type === 'tool-call')) {
+    return false
+  }
+
+  const lastUser = messages.findLastIndex(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  return messages.slice(lastUser + 1).some(message => {
+    if (message.role !== 'assistant' || isLiveTailReplyId(message.id)) {
+      return false
+    }
+
+    const folded = lastFoldedResponseText(message)
+
+    return folded === needle || isStrictAnswerTextExtension(folded, needle)
+  })
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -597,6 +663,7 @@ export function preserveLocalPendingTurnMessages(
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
+  const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
 
   for (const message of previousMessages) {
     if (isGatewaySystemMarker(message)) {
@@ -734,6 +801,14 @@ export function preserveLocalPendingTurnMessages(
 
         continue
       }
+    }
+
+    if (
+      isPendingAssistant &&
+      previousMessages.indexOf(message) > lastPreviousUser &&
+      durableFoldCoversLiveResponse(nextMessages, message)
+    ) {
+      continue
     }
 
     preserved.push(message)

@@ -461,6 +461,29 @@ def test_background_review_registers_before_start_runs_and_cleans_up(monkeypatch
     assert agent._active_children == []
 
 
+def test_background_review_holds_gateway_admission_until_worker_exit(monkeypatch):
+    """A gateway review lease spans the daemon thread, not only thread construction."""
+    events = []
+    monkeypatch.setattr(run_agent_module, "AIAgent", FakeReviewAgent)
+    CapturingThread.targets = []
+    monkeypatch.setattr(run_agent_module.threading, "Thread", CapturingThread)
+
+    agent = _bare_agent()
+    agent._background_review_admission_callback = lambda: (
+        events.append("admit") or (lambda: events.append("release"))
+    )
+
+    AIAgent._spawn_background_review(
+        agent,
+        messages_snapshot=[{"role": "user", "content": "hello"}],
+        review_memory=True,
+    )
+
+    assert events == ["admit"]
+    CapturingThread.targets[0]()
+    assert events == ["admit", "release"]
+
+
 def test_background_review_snapshot_isolated_from_live_nested_messages():
     """A review must not mutate the persisted/live transcript through aliases."""
     original = [{

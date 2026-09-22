@@ -1270,6 +1270,7 @@ class TurnRunner:
         # the system prompt. Assigned unconditionally so a reused agent never replays a stale note.
         agent._gateway_turn_context_notes = "\n\n".join(runner._consume_pending_turn_sidecar_notes(ctx.session_key))
         agent.background_review_callback, bg_release = self._make_bg_review_callbacks()
+        agent._background_review_admission_callback = runner._admit_background_review
         # Register the release hook on the adapter so base.py's finally block fires it after the
         # main response is delivered.
         if ctx._status_adapter and ctx.session_key:

@@ -3553,6 +3553,8 @@ class GatewayRunner(
     def _init_lifecycle_state(self) -> None:
         """Initialise run/exit/restart flags, per-session state, and completion-delivery bookkeeping."""
         self._running = self._exit_cleanly = self._exit_with_failure = self._draining = False
+        self._background_review_admission_lock = threading.Lock()
+        self._background_review_count = 0
         self._gateway_loop: Optional[asyncio.AbstractEventLoop] = None
         self._shutdown_event = asyncio.Event()
         self._exit_reason: Optional[str] = None

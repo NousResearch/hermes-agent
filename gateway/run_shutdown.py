@@ -172,6 +172,44 @@ class GatewayShutdownMixin:
             return time.monotonic() - self.started_at
 
     # Active-work accounting
+    def _background_review_gate_lock(self) -> threading.Lock:
+        """Lock shared by review admission and the one-way shutdown-drain boundary."""
+        lock = getattr(self, "_background_review_admission_lock", None)
+        if lock is None:  # Minimal shutdown-path doubles do not run GatewayRunner.__init__.
+            lock = self._background_review_admission_lock = threading.Lock()
+        return lock
+
+    def _active_background_review_count(self) -> int:
+        lock = self._background_review_gate_lock()
+        with lock:
+            return max(0, int(getattr(self, "_background_review_count", 0)))
+
+    def _admit_background_review(self) -> Optional[Callable[[], None]]:
+        """Atomically reject launches after shutdown drain starts; track earlier ones until exit."""
+        lock = self._background_review_gate_lock()
+        with lock:
+            if self._draining:
+                return None
+            self._background_review_count = getattr(self, "_background_review_count", 0) + 1
+        self._persist_active_agents()
+        released = False
+
+        def release() -> None:
+            nonlocal released
+            with lock:
+                if released:
+                    return
+                released = True
+                self._background_review_count = max(0, self._background_review_count - 1)
+            self._persist_active_agents()
+
+        return release
+
+    def _begin_shutdown_drain(self) -> None:
+        """Close background-review admission at the same boundary that refuses new turns."""
+        with self._background_review_gate_lock():
+            self._draining = True
+
     def _active_work_count(self) -> int:
         """All agent work the gateway must expose and drain as one total."""
         return (
@@ -179,6 +217,7 @@ class GatewayShutdownMixin:
             + self._active_cron_job_count()
             + self._active_api_run_count()
             + self._active_deferred_agent_worker_count()
+            + self._active_background_review_count()
         )
 
     @staticmethod
@@ -783,10 +822,11 @@ class GatewayShutdownMixin:
 
     # Drain / interrupt
     def _drain_work_counts(self) -> tuple:
-        """``(agents, cron, api, deferred)`` — the four sources the drain waits on."""
+        """``(agents, cron, api, deferred, reviews)`` — work the drain waits on."""
         return (
             self._running_agent_count(), self._active_cron_job_count(),
             self._active_api_run_count(), self._active_deferred_agent_worker_count(),
+            self._active_background_review_count(),
         )
 
     async def _drain_active_agents(
@@ -805,10 +845,10 @@ class GatewayShutdownMixin:
                 self._update_runtime_status("draining")
                 last_counts, last_status_at = counts, now
 
-        # Cron/API/deferred work lives outside ``_running_agents``; fold it in or it is killed unwarned.
-        _cron0, _api0, _deferred0 = last_counts[1:]
+        # Cron/API/deferred/review work lives outside ``_running_agents``; fold it in or it is killed unwarned.
+        _cron0, _api0, _deferred0, _reviews0 = last_counts[1:]
         _maybe_update_status(force=True)
-        if not self._running_agents and not (_cron0 or _api0 or _deferred0):
+        if not self._running_agents and not (_cron0 or _api0 or _deferred0 or _reviews0):
             return snapshot, False
         # Cron has its own deadline: a chat turn is announced+resumable; a killed cron run is a permanent failure.
         # ``timeout`` (``restart_drain_timeout``) defaults to 0 because interrupting a chat turn is
@@ -822,8 +862,9 @@ class GatewayShutdownMixin:
 
         def _still_draining() -> bool:
             now = loop.time()
-            agents, cron, api, deferred = self._drain_work_counts()
-            return bool(((agents or api or deferred) and now < deadline) or (cron and now < cron_deadline))
+            agents, cron, api, deferred, reviews = self._drain_work_counts()
+            return bool(((agents or api or deferred or reviews) and now < deadline)
+                        or (cron and now < cron_deadline))
 
         # Both budgets at 0 = an expired deadline (loop unentered), so timed_out still comes from real state.
         while _still_draining():
@@ -1541,7 +1582,11 @@ class GatewayShutdownMixin:
                 units.append({"kind": "cron", "job_id": job["job_id"], "elapsed_s": job["elapsed_s"],
                               "pid": job["worker_pid"] or os.getpid(), "external": bool(job["worker_pid"]),
                               "wedged": job["job_id"] in wedged})
-        for kind, count in (("api", self._active_api_run_count()), ("deferred", self._active_deferred_agent_worker_count())):
+        for kind, count in (
+            ("api", self._active_api_run_count()),
+            ("deferred", self._active_deferred_agent_worker_count()),
+            ("background_review", self._active_background_review_count()),
+        ):
             units.extend({"kind": kind, "pid": os.getpid()} for _ in range(count))
         return units
 
@@ -1613,7 +1658,7 @@ class GatewayShutdownMixin:
         self._restart_via_service = via_service
         self._restart_task_started = True
         # Refuse new turns; keep ``_running`` True so the active turn can still deliver its final response.
-        self._draining = True
+        self._begin_shutdown_drain()
         # The restart's after-turn wait is a drain window too: pollers of GET /v1/runs/{id} must see
         # the boundary from the moment new turns are refused, not only once stop() begins (#115133).
         self._mark_api_runs_shutdown_requested()
@@ -1754,7 +1799,7 @@ class GatewayShutdownMixin:
         ctx.started_at = time.monotonic()
         self._running = False
         self._clear_plugin_message_injector()
-        self._draining = True
+        self._begin_shutdown_drain()
         self._mark_api_runs_shutdown_requested()
         # getattr-guards: shutdown-path test doubles may lack the room worker / systemd watchdog.
         stop_room_worker = getattr(self, "_stop_hosted_room_worker", None)
@@ -1787,6 +1832,7 @@ class GatewayShutdownMixin:
         _cron_at_start = self._active_cron_job_count()
         _api_at_start = self._active_api_run_count()
         _deferred_at_start = ctx.deferred_count()
+        _reviews_at_start = self._active_background_review_count()
         # Cron floor clamped to the watchdog leash; getattr-guard for bare shutdown-path doubles.
         _cron_drain_cfg = getattr(self, "_cron_drain_timeout", DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT)
         # Under launchd the real leash is launchd's own exit timeout, not our watchdog
@@ -1810,10 +1856,12 @@ class GatewayShutdownMixin:
         logger.info(
             "Shutdown phase: drain done at +%.2fs (drain took %.2fs, timed_out=%s, active_at_start=%d, "
             "active_now=%d, cron_at_start=%d, cron_now=%d, api_at_start=%d, api_now=%d, "
-            "deferred_at_start=%d, deferred_now=%d)", ctx.elapsed(), ctx.drain_elapsed,
+            "deferred_at_start=%d, deferred_now=%d, reviews_at_start=%d, reviews_now=%d)",
+            ctx.elapsed(), ctx.drain_elapsed,
             ctx.timed_out, len(ctx.active_agents), self._running_agent_count(), _cron_at_start,
             self._active_cron_job_count(), _api_at_start, self._active_api_run_count(),
-            _deferred_at_start, ctx.deferred_count(),
+            _deferred_at_start, ctx.deferred_count(), _reviews_at_start,
+            self._active_background_review_count(),
         )
         if ctx.timed_out:
             return
@@ -1831,9 +1879,11 @@ class GatewayShutdownMixin:
         from gateway.run import GatewayRunner
         logger.warning(
             "Gateway drain timed out after %.1fs with %d active agent(s), "
-            "%d in-flight cron job(s), %d api_server run(s), and %d deferred agent worker(s); "
+            "%d in-flight cron job(s), %d api_server run(s), %d deferred agent worker(s), "
+            "and %d background review(s); "
             "interrupting remaining work.", ctx.drain_elapsed, self._running_agent_count(),
             self._active_cron_job_count(), self._active_api_run_count(), ctx.deferred_count(),
+            self._active_background_review_count(),
         )
         # Mark resume_pending BEFORE interrupting so the next message auto-resumes (stuck sessions
         # still escalate via .restart_failure_counts). CURRENT _running_agents, not the drain snapshot.
@@ -2106,6 +2156,7 @@ class GatewayShutdownMixin:
             "active_cron_jobs": self._active_cron_job_count(),
             "active_api_runs": self._active_api_run_count(),
             "active_deferred_agent_workers": ctx.deferred_count(),
+            "active_background_reviews": self._active_background_review_count(),
             "restart_drain_timeout": self._restart_drain_timeout,
             "effective_drain_timeout": effective_stop_drain_timeout(self),
             "launchd_exit_timeout_s": getattr(self, "_launchd_exit_timeout_s", None),

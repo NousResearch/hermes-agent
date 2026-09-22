@@ -821,8 +821,16 @@ class AIAgent(
         )
         from tools.thread_context import propagate_context_to_thread
 
+        release_admission = None
+        admit = getattr(self, "_background_review_admission_callback", None)
+        if callable(admit):
+            release_admission = admit()
+            if release_admission is None:
+                return
         review_run = prepare_background_review_run(self)
         if review_run is None:
+            if release_admission is not None:
+                release_admission()
             return
         try:
             target, _prompt = spawn_background_review_thread(
@@ -831,17 +839,23 @@ class AIAgent(
             )
 
             def _target_with_requeue() -> None:
-                target()
-                self._maybe_requeue_preempted_review(review_run, dict(
-                    messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
-                    focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
-                    explicit=explicit))
+                try:
+                    target()
+                    self._maybe_requeue_preempted_review(review_run, dict(
+                        messages_snapshot=messages_snapshot, review_memory=review_memory, review_skills=review_skills,
+                        focus=focus, task_cfg=task_cfg, _requeue_attempts=_requeue_attempts + 1,
+                        explicit=explicit))
+                finally:
+                    if release_admission is not None:
+                        release_admission()
 
             # Carry the active profile into the review thread so MEMORY.md / skill review writes land in the
             # right profile.
             threading.Thread(target=propagate_context_to_thread(_target_with_requeue), daemon=True, name="bg-review").start()
         except Exception:
             finish_background_review_run(self, review_run)
+            if release_admission is not None:
+                release_admission()
             raise
 
     _REVIEW_REQUEUE_MAX_ATTEMPTS = 3

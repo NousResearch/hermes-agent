@@ -20,6 +20,7 @@ from hermes_cli.update_target import (
     TargetRequest,
     TargetAdmissionError,
     apply_pinned_target,
+    verify_pinned_post_swap,
 )
 
 
@@ -78,6 +79,26 @@ def _remote_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
 
 def _request(target: str, current: str) -> TargetRequest:
     return TargetRequest(target, INSTALL_ID, current)
+
+
+def test_post_swap_head_mismatch_is_refused_without_repair(tmp_path):
+    checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
+
+    with pytest.raises(TargetAdmissionError, match="post-swap-head-mismatch"):
+        verify_pinned_post_swap(checkout, _request(b_sha, a_sha))
+
+    assert _git(checkout, "rev-parse", "HEAD") == a_sha
+
+
+def test_post_swap_install_identity_mismatch_is_refused_without_repair(tmp_path):
+    checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
+    apply_pinned_target(checkout, _request(b_sha, a_sha))
+    (checkout / "install_id").write_text("f" * 32 + "\n", encoding="utf-8")
+
+    with pytest.raises(TargetAdmissionError, match="post-swap-install-id-mismatch"):
+        verify_pinned_post_swap(checkout, _request(b_sha, a_sha))
+
+    assert _git(checkout, "rev-parse", "HEAD") == b_sha
 
 
 def test_moving_origin_still_applies_reviewed_target_not_new_tip(tmp_path):

@@ -105,8 +105,10 @@ def test_cmd_gc_negative_days_leaves_workspaces_untouched(board):
     ],
 )
 def test_slash_kanban_gc_retention_bounds(board, days, expected):
-    """``/kanban gc`` from a chat session goes through the same parser type
-    and the same _cmd_gc guard as the shell command."""
+    """``/kanban gc`` from a chat session uses the same argparse type as the
+    shell command: ``-1`` is rejected by the parser type before ``_cmd_gc``
+    runs (usage error); ``0`` parses, reaches ``_cmd_gc``, and disables the
+    sweep."""
     from hermes_cli import kanban
     with kbc.connect_closing() as conn:
         tid = _done_task_with_old_event(conn)

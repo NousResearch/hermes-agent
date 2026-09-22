@@ -266,13 +266,15 @@ def test_max_runtime_terminates_overrun_worker(kanban_home):
     """A running task whose elapsed time exceeds max_runtime_seconds gets
     SIGTERM'd, emits a ``timed_out`` event, and goes back to ready."""
     killed = []
+    state = {"alive": True}
     def _signal_fn(pid, sig):
         killed.append((pid, sig))
+        state["alive"] = False
 
     # We bypass _pid_alive by stubbing it so the grace-poll exits fast.
     import hermes_cli.kanban_db as _kb
     original_alive = _kb._pid_alive
-    _kb._pid_alive = lambda pid: False  # pretend SIGTERM worked immediately
+    _kb._pid_alive = lambda pid: state["alive"]  # SIGTERM makes the worker exit.
 
     try:
         conn = kbc.connect()

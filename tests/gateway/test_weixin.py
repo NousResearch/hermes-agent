@@ -764,6 +764,49 @@ class TestWeixinApiTimeout:
         assert result == {"ret": 0, "msgs": [], "get_updates_buf": "buf-123"}
 
 
+class TestWeixinPollLoopSyncBuf:
+    """The long-poll cursor write (fsync + rename) must not run on the event loop."""
+
+    def _run_polls(self, monkeypatch, buffers):
+        import threading
+
+        adapter = _make_adapter()
+        adapter._running = True
+        adapter._poll_session = Mock()
+        responses = iter(buffers)
+        saves = []
+
+        async def _get_updates(*args, **kwargs):
+            try:
+                return {"ret": 0, "msgs": [], "get_updates_buf": next(responses)}
+            except StopIteration:
+                adapter._running = False
+                return {"ret": 0, "msgs": []}
+
+        def _save(hermes_home, account_id, sync_buf):
+            saves.append((sync_buf, threading.get_ident()))
+
+        monkeypatch.setattr(weixin, "_get_updates", _get_updates)
+        monkeypatch.setattr(weixin, "_load_sync_buf", lambda *a: "buf-0")
+        monkeypatch.setattr(weixin, "_save_sync_buf", _save)
+
+        async def scenario():
+            await adapter._poll_loop()
+            return threading.get_ident()
+
+        return saves, asyncio.run(scenario())
+
+    def test_cursor_write_runs_off_the_loop_thread(self, monkeypatch):
+        saves, loop_thread = self._run_polls(monkeypatch, ["buf-1"])
+        assert [buf for buf, _ in saves] == ["buf-1"]
+        assert all(thread != loop_thread for _, thread in saves)
+
+    def test_unchanged_cursor_is_not_rewritten(self, monkeypatch):
+        # Empty long-polls (and the timeout sentinel) echo the current buffer back.
+        saves, _ = self._run_polls(monkeypatch, ["buf-0", "buf-1", "buf-1", "buf-2"])
+        assert [buf for buf, _ in saves] == ["buf-1", "buf-2"]
+
+
 class TestWeixinVoiceAlwaysDownloaded:
     """Regression tests for #27300: when WeChat (Weixin) returns a
     ``voice_item.text`` (Tencent Cloud's STT) we must still download

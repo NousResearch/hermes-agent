@@ -184,7 +184,7 @@ function CatalogAdvancedForm({ entry, fields, onCancel, onInstall }: CatalogAdva
               </p>
             ) : null}
             {entry.requirements.length > 0 ? (
-              <Facts rows={[[copy.requirementsLabel, entry.requirements.join(', ')]]} />
+              <Facts mono={false} rows={[[copy.requirementsLabel, entry.requirements.join(', ')]]} />
             ) : null}
           </Section>
         ) : null}
@@ -227,16 +227,17 @@ function Section({ children, title }: { children: ReactNode; title: string }) {
   )
 }
 
-/** Read-only provenance as a two-column table; empty values are left out. */
-function Facts({ rows }: { rows: [string, null | string | undefined][] }) {
+/** Read-only provenance as a two-column table; empty values are left out. The label column is fixed so
+ *  Source and Security line up. */
+function Facts({ mono = true, rows }: { mono?: boolean; rows: [string, null | string | undefined][] }) {
   return (
-    <dl className={cn(CAPTION, 'grid grid-cols-[auto_minmax(0,1fr)] gap-x-4 gap-y-1')}>
+    <dl className={cn(CAPTION, 'grid grid-cols-[5.5rem_minmax(0,1fr)] gap-x-3 gap-y-1')}>
       {rows
         .filter((row): row is [string, string] => Boolean(row[1]))
         .map(([label, value]) => (
           <div className="contents" key={label}>
             <dt className="text-(--ui-text-tertiary)">{label}</dt>
-            <dd className="break-all font-mono text-foreground">{value}</dd>
+            <dd className={cn('text-foreground', mono ? 'break-all font-mono' : 'wrap-anywhere')}>{value}</dd>
           </div>
         ))}
     </dl>

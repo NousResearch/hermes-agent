@@ -12,6 +12,7 @@ import {
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { WIDGET_SHELL_CLASS } from '@/components/chat/widget-shell'
 import { Button } from '@/components/ui/button'
+import { Progress } from '@/components/ui/progress'
 import { useI18n } from '@/i18n'
 import { Book, Loader2, Plug } from '@/lib/icons'
 import { cn } from '@/lib/utils'
@@ -138,14 +139,7 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
         <div className="grid min-w-0 flex-1 gap-0.5">
           <div className="flex min-w-0 flex-wrap items-baseline gap-x-1.5 gap-y-1">
             <span className="font-medium leading-4.5 wrap-anywhere">{catalog.display}</span>
-            <span
-              className={cn(
-                PILL,
-                'border border-(--ui-stroke-tertiary) font-mono text-[0.5625rem] tracking-[0.08em] text-(--ui-text-tertiary) uppercase'
-              )}
-            >
-              {copy.kind[target.kind]}
-            </span>
+            <span className={cn(PILL, 'bg-(--ui-bg-quaternary) text-muted-foreground')}>{copy.kind[target.kind]}</span>
             {catalog.tier ? (
               <span className={cn(PILL, 'bg-(--ui-bg-quaternary) text-muted-foreground')}>
                 {copy.tier[catalog.tier]}
@@ -300,9 +294,7 @@ function RowOutcome({
         <p className={cn(CAPTION, 'text-(--ui-text-tertiary) wrap-anywhere')}>
           {target.state === 'initiated' && target.detail ? target.detail : copy.installing}
         </p>
-        <span aria-hidden className="block h-0.5 overflow-hidden rounded-full bg-primary/15">
-          <span className="block h-full w-full animate-pulse rounded-full bg-primary motion-reduce:animate-none" />
-        </span>
+        <Progress animated aria-label={copy.installing} className="h-0.5 bg-primary/15" indeterminate />
       </div>
     )
   }

@@ -153,7 +153,20 @@ class _Recovery(OverflowVerdict):
         ends WITHOUT ``compression_exhausted`` so the gateway does not auto-reset. With
         ``fail_on_timeout`` a host timeout (recovery spent its wait budget with no
         committed summary) ends the turn via the typed contract, since re-sending would
-        hit the same overflow."""
+        hit the same overflow.
+
+        #118438: recovery is the LAST automatic compression gate, and a detached
+        review fork marked ``_review_fork_compression_disallowed`` must never own a
+        pass here either — the provider has already rejected the request, so the
+        summary would be minutes of work a supersede discards whole. The marker's
+        ``return None`` means "nothing was compressed", which routes each recovery
+        path into its existing no-progress outcome: the honest failure copy for 413 /
+        context-length, or the max_tokens-only clamp retry for output-cap errors
+        (which never needed compression to proceed)."""
+        from agent.turn_context import _review_fork_compression_disallowed
+
+        if _review_fork_compression_disallowed(self.agent):
+            return None
         from agent.conversation_compression import conversation_history_after_compression
         from agent.conversation_loop import _COMPRESSION_TIMEOUT_FINAL_RESPONSE, _compression_deferred_result
 

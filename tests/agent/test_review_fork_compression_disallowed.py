@@ -277,3 +277,106 @@ def test_fork_over_threshold_warns_fork_disallowed_never_attempts_exhausted(
         assert verdict.messages is messages
     finally:
         db.close()
+
+
+def test_provider_error_recovery_honors_the_marker(tmp_path: Path) -> None:
+    """#118438 coverage gap found in independent review of ``6003d11fc6``: provider-error
+    recovery (HTTP 413 / 400 context-length) reaches ``agent/turn_overflow.py``
+    ``_Recovery.compress`` without reading the marker, so an oversized review request
+    still owned a compress-then-discard pass. Every automatic compression gate honors
+    the marker — recovery is the last gate, so a marked fork's ``compress()`` must be a
+    no-op: the caller's existing no-progress outcome ends the oversized review honestly
+    (fail copy for 413 / context-length, max_tokens-only clamp retry for output-cap)
+    instead of a summary pass a supersede would discard whole."""
+    parent_sid = "REVIEW_FORK_RECOVERY_NO_COMPRESS_118438"
+
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session(parent_sid, source="discord")
+    db.append_message(parent_sid, role="user", content="durable parent turn")
+    durable_before = db.get_messages(parent_sid)
+    parent = _build_parent_agent(db, parent_sid)
+    parent._cached_system_prompt = "stable parent prompt"
+
+    class _ProviderPayloadTooLarge(Exception):
+        status_code = 413
+
+    snapshot = [
+        {
+            "role": "user" if i % 2 == 0 else "assistant",
+            "content": f"review turn {i} " + "x" * 200,
+        }
+        for i in range(24)
+    ]
+    captured: dict = {}
+    from run_agent import AIAgent
+
+    real_run_conversation = AIAgent.run_conversation
+
+    def _run_review_with_413(self, *args, **kwargs):
+        captured["marker"] = getattr(self, "_review_fork_compression_disallowed", "missing")
+        # Keep every in-turn gate quiet (threshold unreachable): the ONLY route to a
+        # compression pass in this scenario is provider-error recovery.
+        self.context_compressor.threshold_tokens = 10**9
+        self.context_compressor.protect_first_n = 1
+        self.context_compressor.protect_last_n = 1
+        self.context_compressor.compress = MagicMock(
+            return_value=[
+                {"role": "user", "content": "[CONTEXT COMPACTION] recovery summary"},
+                {"role": "assistant", "content": "summary acknowledged"},
+            ]
+        )
+        self.context_compressor.should_compress = MagicMock(return_value=False)
+        self.context_compressor.should_compress_info = MagicMock(return_value=(False, None))
+        self.context_compressor.should_compress_preflight = MagicMock(return_value=False)
+        self.context_compressor.should_defer_preflight_to_real_usage = MagicMock(return_value=False)
+        self.context_compressor.get_active_compression_failure_cooldown = MagicMock(return_value=None)
+        self.context_compressor.select_context = MagicMock(return_value=None)
+        self._compression_feasibility_checked = True
+        self.client = MagicMock()
+        self.client.chat.completions.create.side_effect = _ProviderPayloadTooLarge(
+            "request entity too large"
+        )
+        self._disable_streaming = True
+        self._use_prompt_caching = False
+
+        result = real_run_conversation(self, *args, **kwargs)
+        captured["compression_calls"] = self.context_compressor.compress.call_count
+        create = self.client.chat.completions.create
+        captured["create_calls"] = create.call_count
+        captured["outbound"] = [call.kwargs.get("messages") for call in create.call_args_list]
+        captured["result"] = result
+        return result
+
+    try:
+        with patch.object(AIAgent, "run_conversation", _run_review_with_413):
+            br_result = _drive_review_413(parent, snapshot)
+        del br_result
+
+        assert captured["compression_calls"] == 0, (
+            "#118438: provider-error recovery owned a compression pass on a marked "
+            f"fork (compress() called {captured['compression_calls']}x). Recovery is "
+            "the fourth gate — a supersede would discard that summary whole after the "
+            "provider already rejected the request. A marked fork's compress() must "
+            "return immediately so the recovery's no-progress outcome ends the "
+            "oversized review honestly."
+        )
+        assert captured["marker"] is True
+        assert captured["create_calls"] == 1, (
+            f"the oversized request must not be retried on a compressed body "
+            f"(create called {captured['create_calls']}x)"
+        )
+        for messages in captured["outbound"]:
+            texts = [str(m.get("content", "")) for m in (messages or [])]
+            assert not any("[CONTEXT COMPACTION]" in t for t in texts), (
+                "recovery must not rewrite the fork's snapshot with a summary"
+            )
+        assert db.get_messages(parent_sid) == durable_before
+    finally:
+        db.close()
+
+
+def _drive_review_413(parent, snapshot):
+    """Run the real review-thread driver with the 413 stubs above installed."""
+    import agent.background_review as br
+
+    return br._run_review_in_thread(parent, snapshot, "review this conversation")

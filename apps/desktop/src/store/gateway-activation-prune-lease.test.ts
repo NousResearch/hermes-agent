@@ -52,6 +52,7 @@ const {
   configureGatewayRegistry,
   ensureGatewayForAgent,
   ensureGatewayForProfile,
+  openGatewayForAgent,
   pruneSecondaryGateways,
   setPrimaryGateway,
   SECONDARY_MIN_LIFETIME_MS
@@ -144,6 +145,23 @@ describe('activation lease vs. the live-work pruner (#89622)', () => {
 
     releaseConnect()
     await expect(switching).resolves.toBe(true)
+  })
+
+  it('releases a settled phase-one lease so an older idle socket is not deferred to the next prune tick (#118856)', async () => {
+    vi.useFakeTimers()
+
+    // Make a normal pre-warmed registry socket old enough for pruning. A
+    // later source-switch phase one can find this same socket already open.
+    await openGatewayForAgent('homelab', 'research')
+    vi.setSystemTime(Date.now() + SECONDARY_MIN_LIFETIME_MS + 1_000)
+
+    // The lease protects an in-flight dial only. Once phase one has settled,
+    // it must not add another 30-second idle window when phase two never
+    // follows (for example, when a newer source selection supersedes it).
+    await openGatewayForAgent('homelab', 'research', { activationLease: true })
+    pruneSecondaryGateways(new Set())
+
+    expect(secondaryGateways[0].close).toHaveBeenCalledOnce()
   })
 
   it('the lease is released once the switch settles — a later prune reclaims the idle entry', async () => {

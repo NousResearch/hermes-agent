@@ -1736,18 +1736,17 @@ export async function openGatewayForAgent(
     entry.activationLeaseUntil = Date.now() + ACTIVATION_LEASE_MS
   }
 
-  if (isOpen(entry.gateway)) {
-    return
-  }
-
   try {
-    await openSecondary(entry, spawnPriority)
-  } catch (error) {
+    if (!isOpen(entry.gateway)) {
+      await openSecondary(entry, spawnPriority)
+    }
+  } finally {
     if (activationLease) {
+      // Phase one needs the lease only while its socket is still opening.
+      // Once it settles, a later phase two activation can use the open socket
+      // without pinning an otherwise-idle route for another full lease window.
       entry.activationLeaseUntil = 0
     }
-
-    throw error
   }
 }
 

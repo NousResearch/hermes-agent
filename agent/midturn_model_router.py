@@ -50,7 +50,7 @@ def _same_runtime(agent: Any, route: TurnRoute) -> bool:
         # transplant a route's credential or pool into the cached agent; accepting a
         # different one would quietly send the selected model on an unknown runtime.
         and target.get("api_key") == active["api_key"]
-        and target.get("credential_pool") == getattr(agent, "credential_pool", None)
+        and target.get("credential_pool") == getattr(agent, "_credential_pool", None)
     )
 
 

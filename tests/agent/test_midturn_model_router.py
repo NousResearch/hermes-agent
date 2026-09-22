@@ -123,6 +123,101 @@ def test_route_with_different_credential_runtime_is_rejected_without_mutation():
     assert agent._fallback_chain is fallback_chain
 
 
+def test_route_with_the_active_private_credential_pool_is_compatible():
+    """Runtime pools are intentionally private AIAgent state, but still part of identity."""
+    from agent.midturn_model_router import maybe_apply_midturn_route
+
+    agent = _agent()
+    pool = object()
+    agent._credential_pool = pool
+
+    def pooled_runtime(provider, model):
+        runtime = _runtime(provider, model)
+        runtime["credential_pool"] = pool
+        return runtime
+
+    applied = maybe_apply_midturn_route(
+        agent,
+        messages=[{"role": "tool", "content": "completed inspection"}],
+        original_user_message="Inspect the data.",
+        config_loader=_config,
+        runtime_resolver=pooled_runtime,
+        controller=lambda *_args: {"choice": "routine", "confidence": 1.0},
+    )
+
+    assert applied is True
+    assert agent.model == "fast-model"
+
+
+def test_midturn_route_400_does_not_activate_cross_provider_fallback_and_restores_runtime():
+    """A temporary route must not turn one rejected request into a persistent provider hop."""
+    from agent.error_classifier import classify_api_error
+    from agent.turn_api_error import settle_unrecovered_error
+
+    class Error400(Exception):
+        status_code = 400
+        response = None
+
+        def __init__(self):
+            super().__init__("Unsupported parameter: 'max_tokens'")
+            self.body = {"error": {"message": str(self), "type": "invalid_request_error"}}
+
+    agent = _agent()
+    agent.model = "fast-model"
+    agent._midturn_route_restore = {
+        "model": "base-model",
+        "reasoning_config": {"enabled": True, "effort": "medium"},
+        "request_overrides": {"extra_body": {"base": True}},
+    }
+    agent._fallback_chain = [{"provider": "other", "model": "other-model"}]
+    agent.activated = []
+    agent._has_pending_fallback = lambda: True
+    agent._try_activate_fallback = lambda **_kwargs: agent.activated.append(True) or True
+    agent._summarize_api_error = lambda error: str(error)
+    agent._try_recover_primary_transport = lambda *_args, **_kwargs: False
+    error = Error400()
+    classified = classify_api_error(error, provider=agent.provider, model=agent.model)
+    retry = SimpleNamespace(
+        copilot_stale_cred_retry_attempted=False,
+        primary_recovery_attempted=False,
+        restart_with_redirected_messages=False,
+    )
+
+    with (
+        patch("agent.conversation_loop._is_copilot_provider", lambda _agent: False),
+        patch("agent.turn_api_error.nonretryable_client_error_result", lambda *_args, **_kwargs: {"failed": True}),
+    ):
+        verdict = settle_unrecovered_error(
+            agent, api_error=error, classified=classified, _retry=retry, status_code=400,
+            error_msg=str(error), is_context_length_error=False, is_rate_limited=False,
+            _is_zai_coding_overload=False, _provider=agent.provider, _base=agent.base_url,
+            _model=agent.model, messages=[], api_messages=[], api_kwargs={}, active_system_prompt="",
+            conversation_history=None, approx_tokens=0, retry_count=0, max_retries=3,
+            compression_attempts=0, api_call_count=1,
+        )
+
+    assert verdict.action == "return"
+    assert agent.activated == []
+    assert agent.model == "base-model"
+    assert not hasattr(agent, "_midturn_route_restore")
+
+
+def test_active_midturn_route_blocks_codex_app_server_fallback_path():
+    """The specialized Codex path must obey the same request-local fallback boundary."""
+    from agent.turn_recovery import activate_codex_app_server_fallback
+
+    agent = _agent()
+    agent._midturn_route_restore = {
+        "model": "base-model", "reasoning_config": None, "request_overrides": {},
+    }
+    activated = []
+    agent._has_pending_fallback = lambda: True
+    agent._try_activate_fallback = lambda **_kwargs: activated.append(True) or True
+
+    assert activate_codex_app_server_fallback(agent, {"error": "HTTP 429 rate limited"}) is False
+    assert activated == []
+
+
 @pytest.fixture()
 def loop_agent():
     from run_agent import AIAgent

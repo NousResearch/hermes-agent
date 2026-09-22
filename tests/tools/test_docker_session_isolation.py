@@ -219,6 +219,123 @@ class TestSessionScopedMountResolution:
         assert terminal_tool._resolve_task_host_cwd(cfg, "t") is None
 
 
+class TestExplicitWorkspaceWinsInSharedMode:
+    """A workspace the user ATTACHED to the session mounts in BOTH modes.
+
+    Shared (persistent) mode collapses every session onto ONE profile-scoped
+    container and derived the mount from the backend process cwd, so a desktop
+    backend launched from ``$HOME`` bound the whole home directory at
+    ``/workspace`` — host secrets readable in the sandbox — while ignoring the
+    workspace the user had attached to that session. A deliberate choice is not
+    a launch artifact: the same explicit-workspace rule the isolation branch
+    already applies now governs shared mode too.
+    """
+
+    def _config(self, host_cwd="/home/user", mount=True):
+        return {
+            "env_type": "docker",
+            "docker_mount_cwd_to_workspace": mount,
+            "host_cwd": host_cwd,
+        }
+
+    def test_attached_workspace_wins_over_process_cwd(self, monkeypatch, tmp_path):
+        """The reported leak: attaching a workspace must displace the $HOME bind."""
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        assert terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1") == str(ws)
+
+    def test_no_attached_workspace_keeps_legacy_process_cwd(self, monkeypatch):
+        """No choice recorded ⇒ legacy behaviour, so the single-session CLI parent
+        launched from its worktree still mounts that worktree (regression guard)."""
+        _disable_isolation(monkeypatch)
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_process_tagged_override_never_becomes_a_mount(self, monkeypatch, tmp_path):
+        """A TERMINAL_CWD/terminal.cwd fallback is a launch artifact, not a workspace —
+        refused in shared mode exactly as it is under isolation."""
+        _disable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(tmp_path), "cwd_source": "process"}
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_nonexistent_attached_workspace_falls_back(self, monkeypatch, tmp_path):
+        _disable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1",
+            {"cwd": str(tmp_path / "gone"), "cwd_source": "session"},
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_in_container_path_never_becomes_a_mount(self, monkeypatch):
+        _disable_isolation(monkeypatch)
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": "/workspace", "cwd_source": "session"}
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+            == "/home/user"
+        )
+
+    def test_mount_flag_off_still_mounts_nothing(self, monkeypatch, tmp_path):
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        assert (
+            terminal_tool._resolve_task_host_cwd(self._config(mount=False), "tui:sess-1")
+            is None
+        )
+
+    def test_untagged_acp_override_mounts(self, monkeypatch, tmp_path):
+        """ACP session/load switches the project root mid-session; its override is the
+        session's own (same rule the isolation branch applies)."""
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "acp-project"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides("acp:1", {"cwd": str(ws)})
+        assert terminal_tool._resolve_task_host_cwd(self._config(), "acp:1") == str(ws)
+
+    def test_non_docker_backend_ignores_attached_workspace(self, monkeypatch, tmp_path):
+        _disable_isolation(monkeypatch)
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        cfg = self._config()
+        cfg["env_type"] = "modal"
+        assert terminal_tool._resolve_task_host_cwd(cfg, "tui:sess-1") is None
+
+    def test_isolation_and_shared_agree_on_the_attached_workspace(self, monkeypatch, tmp_path):
+        """Same workspace, same answer in both modes — the asymmetry was the bug."""
+        ws = tmp_path / "worktree"
+        ws.mkdir()
+        terminal_tool.register_task_env_overrides(
+            "tui:sess-1", {"cwd": str(ws), "cwd_source": "session"}
+        )
+        _disable_isolation(monkeypatch)
+        shared = terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+        _enable_isolation(monkeypatch)
+        isolated = terminal_tool._resolve_task_host_cwd(self._config(), "tui:sess-1")
+        assert shared == isolated == str(ws)
+
+
 class TestRecordedHostCwdDiscardedOnContainers:
     """_resolve_command_cwd must not cd to a recorded HOST path in a sandbox.
 

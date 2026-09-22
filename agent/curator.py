@@ -894,13 +894,16 @@ def _consolidation_pass(prefix: str, auto_summary: str, dry_run: bool, before_na
 def run_curator_review(
     on_summary: Optional[Callable[[str], None]] = None, synchronous: bool = False,
     dry_run: bool = False, consolidate: Optional[bool] = None,
+    hold_run_claim: bool = False,
 ) -> Dict[str, Any]:
     """Execute a single curator review pass: (1) automatic state transitions (no LLM); (2) if *consolidate* and there are
     candidates, fork an AIAgent on the review prompt; (3) update .curator_state; (4) call *on_summary*.
     *synchronous* runs the LLM review in the calling thread (default: daemon thread). *consolidate* ``None`` reads
     ``curator.consolidate`` (OFF by default); when off only the deterministic prune runs — no fork, no aux cost.
     *dry_run* SKIPS the stale/archive transitions and instructs the fork to report only; REPORT.md is still written and
-    recorded in ``state.last_report_path`` so users can read what WOULD have happened."""
+    recorded in ``state.last_report_path`` so users can read what WOULD have happened.
+    *hold_run_claim* makes the pass own the cross-process ``curator-run`` claim until the review — including the async
+    worker — has fully finished; the caller must have acquired the claim first."""
     consolidate = get_consolidate() if consolidate is None else consolidate
     start = datetime.now(timezone.utc)
     if dry_run:  # count candidates without mutating state
@@ -936,32 +939,42 @@ def run_curator_review(
     save_state(state)
 
     def _llm_pass():
-        # Snapshot skill state BEFORE the LLM pass so the report can diff.
-        before_report = _safe_curated_report()
-        before_names = set(_by_name(before_report))
-        if consolidate:
-            final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
-        else:
-            # Prune-only run: record it and write a report, but never fork.
-            final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
-            llm_meta = _llm_meta("skipped (consolidation off)")
-        elapsed = (datetime.now(timezone.utc) - start).total_seconds()
-        state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
-        # Per-run report, best-effort; path recorded for `hermes curator status`.
         try:
-            report_path = _write_run_report(
-                started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
-                before_report=before_report, before_names=before_names, after_report=_safe_curated_report(), llm_meta=llm_meta,
-            )
-            if report_path is not None:
-                state2["last_report_path"] = str(report_path)
-        except Exception as e:
-            logger.debug("Curator report write failed: %s", e, exc_info=True)
-        save_state(state2)
-        _notify(on_summary, f"curator: {final_summary}")
+            # Snapshot skill state BEFORE the LLM pass so the report can diff.
+            before_report = _safe_curated_report()
+            before_names = set(_by_name(before_report))
+            if consolidate:
+                final_summary, llm_meta = _consolidation_pass(prefix, auto_summary, dry_run, before_names)
+            else:
+                # Prune-only run: record it and write a report, but never fork.
+                final_summary = f"{prefix}{auto_summary}; llm: skipped (consolidation off)"
+                llm_meta = _llm_meta("skipped (consolidation off)")
+            elapsed = (datetime.now(timezone.utc) - start).total_seconds()
+            state2 = {**load_state(), "last_run_duration_seconds": elapsed, "last_run_summary": final_summary}
+            # Per-run report, best-effort; path recorded for `hermes curator status`.
+            try:
+                report_path = _write_run_report(
+                    started_at=start, elapsed_seconds=elapsed, auto_counts=counts, auto_summary=auto_summary,
+                    before_report=before_report, before_names=before_names, after_report=_safe_curated_report(), llm_meta=llm_meta,
+                )
+                if report_path is not None:
+                    state2["last_report_path"] = str(report_path)
+            except Exception as e:
+                logger.debug("Curator report write failed: %s", e, exc_info=True)
+            save_state(state2)
+            _notify(on_summary, f"curator: {final_summary}")
+        finally:
+            # The async worker outlives its caller, so the claim must follow it into the
+            # thread: releasing at call-return let a later tick start an overlapping pass.
+            if hold_run_claim and not synchronous:
+                _release_run_claim()
 
     if synchronous:
-        _llm_pass()
+        try:
+            _llm_pass()
+        finally:
+            if hold_run_claim:
+                _release_run_claim()
     else:
         threading.Thread(target=_llm_pass, daemon=True, name="curator-review").start()
     return {"started_at": start.isoformat(), "auto_transitions": counts, "summary_so_far": auto_summary}
@@ -1156,9 +1169,12 @@ def maybe_run_curator(*, idle_for_seconds: Optional[float] = None, on_summary: O
         if not _claim_run():
             return None
         try:
-            return run_curator_review(on_summary=on_summary)
-        finally:
+            return run_curator_review(on_summary=on_summary, hold_run_claim=True)
+        except Exception:
+            # The review owns the claim from here on; an exception can only mean the
+            # worker never started, so the caller still releases it.
             _release_run_claim()
+            raise
     except Exception as e:
         logger.debug("maybe_run_curator failed: %s", e, exc_info=True)
         return None

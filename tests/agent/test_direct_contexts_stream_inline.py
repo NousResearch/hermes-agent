@@ -19,10 +19,10 @@ import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from types import SimpleNamespace
 
+import httpx
 import pytest
 
 import run_agent
-from agent import chat_completion_helpers as helpers
 from agent.chat_completion_helpers import (
     interruptible_streaming_api_call,
     should_use_direct_api_call,
@@ -190,14 +190,15 @@ def test_inline_stream_stale_detector_still_fires_from_monitor_thread(
     agent = _make_agent(stalling_wire.base_url, platform="subagent")
 
     started = time.time()
-    response = interruptible_streaming_api_call(agent, dict(_KW))
+    # The one delta reached no consumer (inline contexts have none), so the killed
+    # stream is undelivered: with the retry budget spent the error surfaces to the
+    # conversation loop instead of an empty partial-stream stub (same contract as the
+    # worker path, #112419).
+    with pytest.raises(httpx.RemoteProtocolError):
+        interruptible_streaming_api_call(agent, dict(_KW))
     elapsed = time.time() - started
 
     assert elapsed < 6.0, f"inline stream was not bounded by the stale detector ({elapsed:.1f}s)"
-    # A partial delta was delivered → the loop gets the length-truncated
-    # partial-stream stub (same contract as the worker path).
-    assert getattr(response, "id", None) == helpers.PARTIAL_STREAM_STUB_ID
-    assert response.choices[0].finish_reason == helpers.FINISH_REASON_LENGTH
 
 
 def test_inline_stream_cross_thread_interrupt_aborts_promptly(stalling_wire, monkeypatch):

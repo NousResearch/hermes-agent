@@ -33,6 +33,10 @@ class TestWriteVerification:
         # still report verified.
         f = workdir / "win.txt"
         f.write_bytes(b"old line\r\n")
+        # Establish a full-read baseline: write_file refuses to overwrite
+        # existing files the task has never read (stale-write guard).
+        from tools.file_tools import read_file_tool
+        json.loads(read_file_tool(str(f), task_id="t-wv"))
         r = json.loads(write_file_tool(str(f), "new line\nsecond\n", task_id="t-wv"))
         assert "error" not in r
         assert r.get("verified") is True

@@ -4,6 +4,7 @@ Every git call goes through ``_git``/``_git_out``/``_git_quiet`` (UTF-8 text, ca
 bounded timeout). Classification helpers fail SAFE toward "preserve". ``cli`` re-exports
 these names; ``_cprint`` is imported lazily from ``cli`` to avoid a cycle.
 """
+import atexit
 import concurrent.futures
 import json
 import logging
@@ -18,6 +19,7 @@ import uuid
 from pathlib import Path
 from typing import Dict, Optional
 
+from hermes_cli._subprocess_compat import kill_process_tree
 from hermes_constants import get_hermes_home
 from utils import atomic_json_write
 
@@ -77,6 +79,20 @@ def _path_is_within_root(path: Path, root: Path) -> bool:
         return False
 
 
+def release_lsp_clients(wt_path: str) -> None:
+    """Shut down this process's language servers for ``wt_path`` before ``git worktree remove``.
+
+    A gateway outlives the sessions it runs, so without this the ``(server, root)`` client for the
+    removed tree stays registered (tsserver heaps of several GiB pointed at a deleted worktree).
+    Best-effort: LSP trouble must never block worktree removal.
+    """
+    try:
+        from agent.lsp import release_workspace
+        release_workspace(wt_path)
+    except Exception as e:
+        logger.debug("LSP release for worktree %s failed: %s", wt_path, e)
+
+
 def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str) -> None:
     """Sweep the leftovers of a failed/timed-out ``git worktree add`` (fail-soft).
 
@@ -98,6 +114,70 @@ def _cleanup_failed_worktree_add(repo_root: str, wt_path: Path, branch_name: str
 
 
 _PACK_SPRAWL_THRESHOLD = 15
+_REPACK_TIMEOUT = 1800
+# One repack attempt per clone per interval, box-wide. Every ``hermes -w`` launch on a shared clone
+# used to start its own ``git repack -a`` of the whole store; on a multi-agent box that stacked 50+
+# concurrent multi-GB repacks (each too slow under the others to ever finish inside the timeout).
+_REPACK_MIN_INTERVAL = 6 * 3600
+_REPACK_LOCK = "hermes-repack.lock"
+
+
+def _claim_repack_slot(git_dir: Path) -> bool:
+    """Exactly one process per clone gets to repack per ``_REPACK_MIN_INTERVAL``.
+
+    The lock file's mtime is the stamp: younger than the interval means another launch is
+    repacking (or just tried and timed out) — skip. A stale lock is taken over by ``replace``,
+    which only one of N racing processes can win; the O_EXCL create then serializes against a
+    process that found no lock at all.
+    """
+    lock = git_dir / _REPACK_LOCK
+    try:
+        st = lock.stat()
+    except FileNotFoundError:
+        pass
+    else:
+        if time.time() - st.st_mtime < _REPACK_MIN_INTERVAL:
+            return False
+        try:
+            lock.replace(lock.with_suffix(".stale"))
+        except OSError:
+            return False
+    try:
+        fd = os.open(lock, os.O_CREAT | os.O_EXCL | os.O_WRONLY)
+    except FileExistsError:
+        return False
+    with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh.write(f"{os.getpid()}\n")
+    lock.with_suffix(".stale").unlink(missing_ok=True)
+    return True
+
+
+def _run_bounded_repack(repo_root: str) -> None:
+    """Incremental geometric repack whose whole process tree dies with the timeout or with us.
+
+    ``repack`` forks ``pack-objects``; ``subprocess.run(timeout=)`` killed only the parent and
+    left the grandchild packing for days, and a daemon thread's child outlived the CLI the same
+    way. A new session/process group + ``atexit`` reaps both cases.
+    """
+    cmd = ["git", "repack", "-d", "--geometric=2", "--write-midx", "--quiet"]
+    if os.name == "posix":
+        cmd = ["nice", "-n", "19", *cmd]
+        group_kw: dict = {"process_group": 0}
+    else:
+        group_kw = {"creationflags": getattr(subprocess, "CREATE_NEW_PROCESS_GROUP", 0)}
+    proc = subprocess.Popen(cmd, cwd=repo_root, stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                            stderr=subprocess.DEVNULL, **group_kw)
+
+    def _reap() -> None:
+        if proc.poll() is None:
+            kill_process_tree(proc)
+
+    atexit.register(_reap)
+    try:
+        proc.wait(timeout=_REPACK_TIMEOUT)
+    except subprocess.TimeoutExpired:
+        _reap()
+        logger.info("git repack exceeded %ds; killed (next attempt in %dh)", _REPACK_TIMEOUT, _REPACK_MIN_INTERVAL // 3600)
 
 
 def _maintain_pack_health(repo_root: str) -> None:
@@ -113,12 +193,12 @@ def _maintain_pack_health(repo_root: str) -> None:
         packs = len(list(pack_dir.glob("*.pack")))
         if packs < _PACK_SPRAWL_THRESHOLD:
             return
+        if not _claim_repack_slot(pack_dir.parent.parent):
+            return
+        from hermes_cli.gitlock import clear_stale_tmp_packs
+        clear_stale_tmp_packs(Path(repo_root))
         logger.info("git pack sprawl (%d packs) — repacking in background", packs)
-        cmd = ["git", "repack", "-a", "-d", "--quiet"]
-        if os.name == "posix":
-            cmd = ["nice", "-n", "19", *cmd]
-        subprocess.run(cmd, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=1800,
-                       cwd=repo_root, check=False)
+        _run_bounded_repack(repo_root)
         # Repacking can strand now-duplicated admin files; prune on the same pass.
         _git(["worktree", "prune"], repo_root, timeout=60, check=False)
     except Exception as e:
@@ -367,18 +447,60 @@ def _setup_worktree(repo_root: str = None, sync_base: bool = True,
     return {"path": str(wt_path), "branch": branch_name, "repo_root": repo_root, "base": base_ref}
 
 
+_REMOTE_TRUNK_CANDIDATES = ("origin/HEAD", "origin/main", "origin/master")
+_LOCAL_TRUNK_CANDIDATES = ("main", "master")
+
+
+def _worktree_local_trunk(path: str, timeout: float = 5) -> Optional[str]:
+    """Local trunk of a repo with NO remote-tracking refs: ``main``/``master``, else the branch
+    checked out in the main worktree. None = no baseline at all; callers must preserve.
+
+    Nothing in such a repo was ever pushed, so "merged into the local trunk" is the only fact
+    that can tell redundant scratch work from unique commits. May raise like ``_git``.
+    """
+    for name in _LOCAL_TRUNK_CANDIDATES:
+        if _git_out(["rev-parse", "--verify", "--quiet", f"refs/heads/{name}"], path, timeout=timeout):
+            return name
+    porcelain = _git_out(["worktree", "list", "--porcelain"], path, timeout=timeout) or ""
+    for line in porcelain.split("\n\n", 1)[0].splitlines():  # first block = the main worktree
+        if line.startswith("branch refs/heads/"):
+            return line[len("branch refs/heads/"):].strip() or None
+    return None
+
+
+def _worktree_merge_base_ref(path: str, timeout: float = 5) -> Optional[str]:
+    """Ref merged work is judged against: ``origin/HEAD``/``origin/main``/``origin/master``, or the
+    local trunk when the repo has no remote-tracking refs at all. None = nothing to compare
+    against -> every consumer must preserve. May raise like ``_git``.
+    """
+    for cand in _REMOTE_TRUNK_CANDIDATES:
+        if _git_out(["rev-parse", "--verify", "--quiet", cand], path, timeout=timeout):
+            return cand
+    if _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], path, timeout=timeout) == "":
+        return _worktree_local_trunk(path, timeout=timeout)
+    return None
+
+
 def _worktree_has_unpushed_commits(worktree_path: str, timeout: int = 10) -> bool:
     """Whether a worktree has commits unreachable from any remote branch. Fails SAFE toward True.
 
-    No remote-tracking refs = no baseline -> False. A shallow boundary can disconnect an older
-    HEAD from origin/* so public commits look unpushed; ``_deepen_shallow_repo`` first if affordable.
+    No remote-tracking refs = nothing was ever pushed, so the tree is compared against the local
+    trunk instead (``_worktree_local_trunk``); no trunk either -> True. A shallow boundary can
+    disconnect an older HEAD from origin/* so public commits look unpushed;
+    ``_deepen_shallow_repo`` first if affordable.
     """
     try:
         remote_refs = _git_out(["for-each-ref", "--format=%(refname)", "refs/remotes"], worktree_path,
                                timeout=timeout)
+        if remote_refs is None:
+            return True
+        baseline = ["--remotes"]
         if not remote_refs:
-            return remote_refs is None  # no remote-tracking refs: nothing to be unpushed against
-        unpushed = _git_out(["log", "--oneline", "HEAD", "--not", "--remotes"], worktree_path,
+            trunk = _worktree_local_trunk(worktree_path, timeout=timeout)
+            if trunk is None:
+                return True
+            baseline = [trunk]
+        unpushed = _git_out(["log", "--oneline", "HEAD", "--not", *baseline], worktree_path,
                             timeout=timeout)
         return unpushed is None or bool(unpushed)
     except Exception:
@@ -472,13 +594,12 @@ def _worktree_commits_all_merged_upstream(
     """Whether every local-only commit is patch-equivalent (``git cherry``) to upstream. Fails SAFE -> False.
 
     Catches squash-merged/cherry-picked PRs whose remote branch was deleted (commits unreachable
-    from ``refs/remotes/*`` forever). More than *max_ahead* ahead = stale-base tree -> False.
+    from ``refs/remotes/*`` forever). Upstream is ``_worktree_merge_base_ref`` (the local trunk in
+    a repo without remotes). More than *max_ahead* ahead = stale-base tree -> False.
     *cache* memoizes on ``(base_sha, head_sha, max_ahead)``, exactly what ``git cherry`` consumes.
     """
     try:
-        base = next((c for c in ("origin/HEAD", "origin/main", "origin/master")
-                     if _git_out(["rev-parse", "--verify", "--quiet", c], worktree_path, timeout=timeout)),
-                    None)
+        base = _worktree_merge_base_ref(worktree_path, timeout=timeout)
         if base is None:
             return False
 

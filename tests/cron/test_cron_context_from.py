@@ -158,22 +158,24 @@ class TestBuildJobPromptContextFrom:
         assert context_pos < prompt_pos
 
     def test_output_truncated_at_8k_chars(self, cron_env):
-        """Output longer than 8000 chars should be truncated."""
+        """Output longer than the 8000-char budget is clipped head+tail (#117290)."""
         from cron.jobs import create_job, OUTPUT_DIR
         from cron.scheduler import _build_job_prompt
 
         job_a = create_job(prompt="Find data", schedule="every 1h")
         out_dir = OUTPUT_DIR / job_a["id"]
         out_dir.mkdir(parents=True, exist_ok=True)
-        big_output = "x" * 10000
+        big_output = "HEAD" + "x" * 9992 + "TAIL"
         (out_dir / "2026-04-22_10-00-00.md").write_text(big_output, encoding="utf-8")
 
         job_b = create_job(
             prompt="Process", schedule="every 2h", context_from=job_a["id"]
         )
         prompt = _build_job_prompt(job_b)
-        assert "truncated" in prompt
-        assert "x" * 10000 not in prompt
+        assert "chars omitted" in prompt
+        assert "x" * 9992 not in prompt
+        assert "HEAD" in prompt  # head+tail clip keeps both ends
+        assert "TAIL" in prompt
 
 
     def test_invalid_job_id_skipped(self, cron_env):

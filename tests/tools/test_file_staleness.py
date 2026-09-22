@@ -2,8 +2,9 @@
 """
 Tests for file staleness detection in write_file and patch.
 
-When a file is modified externally between the agent's read and write,
-the write should include a warning so the agent can re-read and verify.
+write_file refuses (before any disk mutation) to overwrite an existing file the
+task never read in full or that changed on disk since that read; patch stays
+warning-only for stale reads.
 
 Run with:  python -m pytest tests/tools/test_file_staleness.py -v
 """
@@ -18,7 +19,7 @@ from unittest.mock import patch, MagicMock
 
 from tools import file_state
 from tools.file_tools import read_file_tool, write_file_tool, patch_tool
-from tools.file_tools_read_tracking import _check_file_staleness, _read_tracker
+from tools.file_tools_read_tracking import _check_file_staleness, _read_tracker, reset_file_dedup
 
 
 # ---------------------------------------------------------------------------
@@ -56,7 +57,7 @@ class _FakePatchResult:
 
 
 def _make_fake_ops(read_content="hello\n", file_size=6):
-    fake = MagicMock()
+    fake = MagicMock(env=None)
     fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
         content=read_content, total_lines=1, file_size=file_size,
     )
@@ -65,8 +66,17 @@ def _make_fake_ops(read_content="hello\n", file_size=6):
     return fake
 
 
+def _modify_externally(path: str, content: str) -> None:
+    """Rewrite *path* so its mtime provably differs from the pre-write stamp."""
+    before = os.path.getmtime(path)
+    with open(path, "w") as f:
+        f.write(content)
+    if os.path.getmtime(path) == before:
+        os.utime(path, (before + 1.0, before + 1.0))
+
+
 # ---------------------------------------------------------------------------
-# Core staleness check
+# write_file: refuse stale / unread overwrites before touching the disk
 # ---------------------------------------------------------------------------
 
 class TestStalenessCheck(unittest.TestCase):
@@ -96,6 +106,89 @@ class TestStalenessCheck(unittest.TestCase):
 
         result = json.loads(write_file_tool(self._tmpfile, "new content", task_id="t1"))
         self.assertNotIn("_warning", result)
+        self.assertNotIn("error", result)
+
+    def test_write_file_refuses_before_mutation_when_modified_externally(self):
+        """read → external edit → write_file: refused, external edit preserved;
+        a full re-read heals the baseline and the next write lands."""
+        self.assertNotIn("error", json.loads(read_file_tool(self._tmpfile, task_id="t1")))
+        _modify_externally(self._tmpfile, "someone else changed this\n")
+
+        refused = json.loads(write_file_tool(self._tmpfile, "new content\n", task_id="t1"))
+        self.assertTrue(refused.get("stale_write_blocked"), refused)
+        self.assertIn("modified since you last read", refused["error"])
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "someone else changed this\n")
+
+        self.assertNotIn("error", json.loads(read_file_tool(self._tmpfile, task_id="t1")))
+        written = json.loads(write_file_tool(self._tmpfile, "merged\n", task_id="t1"))
+        self.assertNotIn("error", written)
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "merged\n")
+
+    def test_write_file_requires_full_unredacted_read_of_existing_file(self):
+        """Existing file with no baseline is refused untouched: never read, only
+        patched, read partially, or read redacted (the «redacted:…» sentinel must
+        never be persisted). A net-new file needs no baseline and the task's own
+        write is a baseline for its next write."""
+        refused = json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t2"))
+        self.assertTrue(refused.get("stale_write_blocked"), refused)
+        self.assertIn("has not seen its full current content", refused["error"])
+
+        patched = json.loads(patch_tool(mode="replace", path=self._tmpfile,
+                                        old_string="original", new_string="patched", task_id="t2"))
+        self.assertNotIn("error", patched)
+        self.assertTrue(json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t2")).get("stale_write_blocked"))
+
+        with open(self._tmpfile, "w") as f:
+            f.write("one\ntwo\nthree\n")
+        self.assertNotIn("error", json.loads(read_file_tool(self._tmpfile, offset=1, limit=1, task_id="t2")))
+        self.assertTrue(json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t2")).get("stale_write_blocked"))
+
+        secret = "ghp_" + "A" * 40
+        with open(self._tmpfile, "w") as f:
+            f.write(f"token={secret}\n")
+        with patch("agent.redact._REDACT_ENABLED", True):
+            read = json.loads(read_file_tool(self._tmpfile, task_id="t2"))
+            self.assertNotIn(secret, read["content"])
+            refused = json.loads(write_file_tool(self._tmpfile, "token=«redacted:ghp_…»\n", task_id="t2"))
+        self.assertTrue(refused.get("stale_write_blocked"), refused)
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), f"token={secret}\n")
+
+        new_path = os.path.join(self._tmpdir, "brand_new.txt")
+        self.assertNotIn("error", json.loads(write_file_tool(new_path, "one\n", task_id="t2")))
+        self.assertNotIn("error", json.loads(write_file_tool(new_path, "two\n", task_id="t2")))
+        with open(new_path) as f:
+            self.assertEqual(f.read(), "two\n")
+        os.unlink(new_path)
+
+    def test_paged_read_of_large_file_is_a_full_baseline_that_survives_compaction(self):
+        """A file too big for one read_file page (>2000 lines) can only be seen by
+        paging; contiguous pages reaching the last line at one mtime count as a full
+        read, so write_file is not permanently refused. A compaction reset keeps that
+        baseline while the file is unchanged, and an edit between pages voids it."""
+        with open(self._tmpfile, "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(1, 2501)))
+        first = json.loads(read_file_tool(self._tmpfile, task_id="t3"))
+        self.assertTrue(first.get("truncated"), first)
+        self.assertTrue(json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t3")).get("stale_write_blocked"))
+
+        self.assertNotIn("error", json.loads(read_file_tool(self._tmpfile, offset=2001, task_id="t3")))
+        reset_file_dedup("t3")
+        written = json.loads(write_file_tool(self._tmpfile, "merged\n", task_id="t3"))
+        self.assertNotIn("error", written, written)
+        with open(self._tmpfile) as f:
+            self.assertEqual(f.read(), "merged\n")
+
+        with open(self._tmpfile, "w") as f:
+            f.write("".join(f"line {i}\n" for i in range(1, 2501)))
+        json.loads(read_file_tool(self._tmpfile, task_id="t3"))
+        _modify_externally(self._tmpfile, "".join(f"other {i}\n" for i in range(1, 2501)))
+        json.loads(read_file_tool(self._tmpfile, offset=2001, task_id="t3"))
+        refused = json.loads(write_file_tool(self._tmpfile, "x\n", task_id="t3"))
+        self.assertTrue(refused.get("stale_write_blocked"), refused)
+        self.assertNotIn("Warning:", refused["error"])
 
 
     @patch("tools.file_tools._get_file_ops")
@@ -114,6 +207,7 @@ class TestStalenessCheck(unittest.TestCase):
             f.write("live copy\n")
 
         fake_ops = _make_fake_ops("live copy\n", 10)
+        fake_ops.write_file = MagicMock(side_effect=AssertionError("must not write stale content"))
         mock_ops.return_value = fake_ops
 
         from tools import terminal_tool
@@ -135,8 +229,9 @@ class TestStalenessCheck(unittest.TestCase):
         finally:
             terminal_tool.clear_session_cwd("live_task")
 
-        self.assertIn("_warning", result)
-        self.assertIn("modified since you last read", result["_warning"])
+        self.assertTrue(result.get("stale_write_blocked"), result)
+        self.assertIn("modified since you last read", result["error"])
+        fake_ops.write_file.assert_not_called()
 
 
 # ---------------------------------------------------------------------------

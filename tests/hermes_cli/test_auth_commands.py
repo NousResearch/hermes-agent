@@ -609,6 +609,56 @@ def test_auth_add_codex_oauth_keeps_distinct_pool_accounts(tmp_path, monkeypatch
     assert payload["active_provider"] == "openai-codex"
 
 
+def _codex_jwt(email: str, account_id: str, subject: str) -> str:
+    header = base64.urlsafe_b64encode(b'{"alg":"RS256","typ":"JWT"}').rstrip(b"=").decode()
+    claims = {"email": email, "sub": subject, "https://api.openai.com/auth": {"chatgpt_account_id": account_id}}
+    payload = base64.urlsafe_b64encode(json.dumps(claims).encode()).rstrip(b"=").decode()
+    return f"{header}.{payload}.signature"
+
+
+def _add_codex_twice(tmp_path, monkeypatch, capsys, second_token: str) -> str:
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
+    _write_auth_store(tmp_path, {"version": 1, "providers": {}})
+    codex_login = {"base_url": "https://chatgpt.com/backend-api/codex", "last_refresh": "2026-09-01T00:00:00Z"}
+    logins = iter([
+        {"tokens": {"access_token": _codex_jwt("me@example.com", "acct-A", "user-1"), "refresh_token": "rt-1"}, **codex_login},
+        {"tokens": {"access_token": second_token, "refresh_token": "rt-2"}, **codex_login},
+    ])
+    monkeypatch.setattr("hermes_cli.auth._codex_device_code_login", lambda: next(logins))
+    from hermes_cli.auth_commands import auth_add_command
+
+    class _Args:
+        provider = "openai-codex"
+        auth_type = "oauth"
+        api_key = None
+        label = None
+
+    auth_add_command(_Args())
+    capsys.readouterr()
+    auth_add_command(_Args())
+    return capsys.readouterr().err
+
+
+def test_auth_add_codex_warns_when_login_is_same_account_as_pooled_entry(tmp_path, monkeypatch, capsys):
+    """A second ``hermes auth add openai-codex`` for the SAME OpenAI account must tell the user
+    which existing credential it duplicates (#47096): the two logins share one token family and
+    the provider revokes the older one, so the extra entry buys no quota. Different accounts
+    get no warning — they rotate independently.
+    """
+    from agent.credential_pool import load_pool
+
+    err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("me@example.com", "acct-A", "user-1"))
+    assert "same OpenAI account as openai-codex credential #1" in err
+    assert '"me@example.com"' in err and "hermes auth remove openai-codex 1" in err
+    # The warning informs; it never blocks the add.
+    assert len(load_pool("openai-codex").entries()) == 2
+
+
+def test_auth_add_codex_stays_quiet_for_a_different_account(tmp_path, monkeypatch, capsys):
+    err = _add_codex_twice(tmp_path, monkeypatch, capsys, _codex_jwt("other@example.com", "acct-B", "user-2"))
+    assert "same OpenAI account" not in err
+
+
 def test_codex_auth_status_reports_pool_only_credential(tmp_path, monkeypatch):
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes"))
     _write_auth_store(tmp_path, _codex_pool_only_store())

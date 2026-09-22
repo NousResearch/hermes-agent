@@ -20,12 +20,13 @@ from starlette.concurrency import run_in_threadpool
 from fastapi import HTTPException, Request
 from gateway.status import (
     derive_gateway_busy, derive_gateway_drainable, normalize_updated_at, parse_active_agents,
-    profile_platforms_from_multiplexer, resolve_gateway_liveness)
+    profile_platforms_from_multiplexer, resolve_gateway_liveness, retained_gateway_state,
+    runtime_status_heartbeat_age_s, runtime_status_is_stale)
 from hermes_cli import __version__, __release_date__
 from hermes_cli.config import get_config_path, get_env_path
 from hermes_constants import get_process_hermes_home, profile_name_for_home
 from hermes_cli.web_models import CuratorPause, LearningNodeRef, LearningNodeEdit, DebugShareRequest
-from hermes_cli.web_routers._common import scoped_to_thread
+from hermes_cli.web_routers._common import config_scoped_to_thread, destructive_profile, scoped_to_thread
 from pathlib import Path
 from typing import Any, Dict, Optional
 
@@ -48,6 +49,7 @@ _ssh_runtime_intact = late("_ssh_runtime_intact")
 app = LateState("app")  # the FastAPI instance (app.state.*)
 check_config_version = late("check_config_version", "hermes_cli.config")
 get_hermes_home = late("get_hermes_home", "hermes_cli.config")
+_profile_cli_args = late("_profile_cli_args", "hermes_cli.web_server_profiles")
 get_install_id = late("get_install_id")
 get_running_pid_cached = late("get_running_pid_cached", "gateway.status")
 get_runtime_status_running_pid = late("get_runtime_status_running_pid", "gateway.status")
@@ -115,6 +117,51 @@ async def get_health():
     """Lightweight process liveness for desktop/backend readiness probes."""
     return {"ok": True, "version": __version__,
             "auth_required": bool(getattr(app.state, "auth_required", False))}
+
+
+@router.get("/api/host/identity")
+async def get_host_identity(request: Request):
+    """Prove to an attaching `hermes serve`/`dashboard` WHO owns this port.
+
+    The host rendezvous record names a (pid, port) owner, but a record cannot say whether that
+    owner still holds the port: a graceful-shutdown window or an unrelated listener that
+    inherited the port both look identical on disk. The attaching side dials this endpoint with
+    the owner's 0600 token and attaches only when pid+role match. ``servesSpa`` is false for
+    headless ``serve``, so a `hermes dashboard` user is never routed to a backend with no UI.
+    """
+    _require_token(request)
+    # ``role`` is the host ROLE this process owns (gateway/host_rendezvous.ROLE_SERVE), not the
+    # launch mode: `hermes serve` and `hermes dashboard` are one host role that differ in SPA.
+    return {"ok": True, "protocolVersion": 1, "pid": os.getpid(), "role": "serve",
+            "servesSpa": bool(getattr(app.state, "serves_spa", False))}
+
+
+@router.get("/api/health/idle")
+async def get_health_idle(request: Request):
+    """Token-gated diagnostic snapshot; never a retirement permit. None means cannot prove idle."""
+    from hermes_cli.web_server_idle_proof import idle_proof
+    _require_token(request)
+    return {"ok": True, **idle_proof()}
+
+
+@router.post("/api/health/retirement")
+async def post_health_retirement(request: Request):
+    from hermes_cli.backend_retirement import retirement
+
+    _require_token(request)
+    try:
+        body = await request.json()
+    except ValueError:
+        raise HTTPException(status_code=400, detail="JSON body required")
+    if not isinstance(body, dict) or body.get("action") not in ("prepare", "commit", "cancel"):
+        raise HTTPException(status_code=400, detail="action must be prepare, commit, or cancel")
+    action = body["action"]
+    if action == "prepare":
+        return await run_in_threadpool(retirement.prepare)
+    token = body.get("token")
+    if not isinstance(token, str) or not token:
+        raise HTTPException(status_code=400, detail="token required")
+    return getattr(retirement, action)(token)
 
 
 # Profile segment mirrors hermes_cli.profiles._PROFILE_ID_RE. Platform segment mirrors the
@@ -265,17 +312,26 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
     gateway_platforms: dict = {}
     gateway_exit_reason = None
     gateway_updated_at = None
+    gateway_heartbeat_stale_s = None
     if runtime:
         gateway_state = runtime.get("gateway_state")
         if not gateway_running:
-            gateway_state = gateway_state if gateway_state in {"stopped", "startup_failed"} else "stopped"
+            # Shared with /api/messaging/platforms: a durable operator stop outranks a retained
+            # ``startup_failed`` / watchdog ``degraded`` (kept on disk for diagnostics), so the
+            # overview does not alarm on it.
+            gateway_state = retained_gateway_state(runtime)
         elif remote_health_body is not None and gateway_state in {None, "stopped"}:
             # The health probe confirmed the gateway is alive, but the local runtime status
             # file may be stale (cross-container): override so the badge is correct.
             gateway_state = "running"
+        elif gateway_state in {"running", "degraded", "starting"} and runtime_status_is_stale(runtime):
+            # Alive PID, but housekeeping stopped re-stamping the heartbeat: the loop or the
+            # housekeeping thread wedged while the file still says 'running' (#113372). Same arm
+            # as ``hermes gateway status`` so the sidebar strip and the CLI agree.
+            gateway_heartbeat_stale_s = runtime_status_heartbeat_age_s(runtime)
         gateway_platforms = _project_gateway_platforms(
             runtime.get("platforms") or {}, configured, gateway_running, gateway_state)
-        gateway_exit_reason = runtime.get("exit_reason")
+        gateway_exit_reason = None if gateway_state == "stopped" else runtime.get("exit_reason")
         # Contract: gateway_updated_at is RFC3339 string | null, never a number. ``runtime``
         # may be the local gateway_state.json (legacy gateways wrote epoch floats; hand
         # edits can inject anything) or a remote /health/detailed body — normalize both.
@@ -292,6 +348,7 @@ async def _resolve_gateway_status(profile_dir: Optional[Path], health_url) -> Di
         "runtime": runtime, "gateway_running": gateway_running, "gateway_pid": liveness.pid,
         "gateway_state": gateway_state, "gateway_platforms": gateway_platforms,
         "gateway_exit_reason": gateway_exit_reason, "gateway_updated_at": gateway_updated_at,
+        "gateway_heartbeat_stale_s": gateway_heartbeat_stale_s,
         "gateway_shared_with": [str(p) for p in served] if isinstance(served, list) else None}
 
 
@@ -350,11 +407,14 @@ async def _component_health(gateway: Dict[str, Any]) -> Dict[str, Any]:
         components["storage"] = {"status": storage_check.get("status", "degraded")}
     except Exception:
         components["storage"] = {"status": "degraded"}
+    # ``disabled`` entries are platforms the multiplexer deliberately does not run for a served profile
+    # (shared ingress owned by the default) — informational, never a degraded verdict.
     platform_states = [str(value.get("state") or value.get("status") or "").lower()
                        for value in gateway_platforms.values() if isinstance(value, dict)]
+    platform_states = [state for state in platform_states if state != "disabled"]
     connected = sum(1 for state in platform_states if state in _HEALTHY_PLATFORM_STATES)
     components["platforms"] = {"status": "ok" if connected == len(platform_states) else "degraded",
-                               "configured": len(gateway_platforms), "connected": connected}
+                               "configured": len(platform_states), "connected": connected}
     return components
 
 
@@ -423,7 +483,7 @@ async def get_status(profile: Optional[str] = None):
 
         # Busy/drainable (NAS lifecycle-safety gate) derive from the persisted in-flight turn
         # count + liveness via gateway.status. Liveness keys off gateway_running, NEVER
-        # gateway_updated_at — a healthy idle gateway never advances that.
+        # gateway_updated_at — a stale heartbeat is reported separately, not treated as death.
         active_agents = parse_active_agents((gateway["runtime"] or {}).get("active_agents", 0))
         # Off-loop: on a cold Windows install the first import of hermes_cli.gateway blocks
         # 15-30s (.pyc compilation + Defender), exceeding the desktop handshake's 15s timeout.
@@ -438,6 +498,9 @@ async def get_status(profile: Optional[str] = None):
             "gateway_platforms": gateway["gateway_platforms"],
             "gateway_exit_reason": gateway["gateway_exit_reason"],
             "gateway_updated_at": gateway["gateway_updated_at"],
+            # Seconds since housekeeping last stamped the heartbeat, only when the PID is alive but the
+            # stamp is past the freshness TTL (loop/housekeeping wedged, #113372); else null.
+            "gateway_heartbeat_stale_s": gateway["gateway_heartbeat_stale_s"],
             # Non-null only for a profile served by the shared multiplexer: every profile that process carries.
             "gateway_shared_with": gateway["gateway_shared_with"],
             "active_agents": active_agents,
@@ -543,41 +606,51 @@ async def get_system_stats():
 
 
 @router.get("/api/curator")
-async def get_curator_status():
+async def get_curator_status(profile: Optional[str] = None):
     try:
         from agent import curator
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"Curator unavailable: {exc}")
-    state = _safe_call(curator, "load_state", {})
-    return {
-        "enabled": _safe_call(curator, "is_enabled", True),
-        "paused": _safe_call(curator, "is_paused", False),
-        "interval_hours": _safe_call(curator, "get_interval_hours", None),
-        "last_run_at": state.get("last_run_at"),
-        **{key: _safe_call(curator, f"get_{key}", None)
-           for key in ("min_idle_hours", "stale_after_days", "archive_after_days")}}
+
+    def _run():
+        state = _safe_call(curator, "load_state", {})
+        return {
+            "enabled": _safe_call(curator, "is_enabled", True),
+            "paused": _safe_call(curator, "is_paused", False),
+            "interval_hours": _safe_call(curator, "get_interval_hours", None),
+            "last_run_at": state.get("last_run_at"),
+            **{key: _safe_call(curator, f"get_{key}", None)
+               for key in ("min_idle_hours", "stale_after_days", "archive_after_days")}}
+
+    return await config_scoped_to_thread(profile, _run)
 
 
 @router.put("/api/curator/paused")
-async def set_curator_paused(body: CuratorPause):
+async def set_curator_paused(body: CuratorPause, profile: Optional[str] = None):
     from agent import curator
-    curator.set_paused(bool(body.paused))
+    # ``_state_file()`` is ``get_hermes_home()/skills/.curator_state`` resolved at call
+    # time, so the request's home override is what decides which profile pauses.
+    await config_scoped_to_thread(profile, lambda: curator.set_paused(bool(body.paused)))
     return {"ok": True, "paused": bool(body.paused)}
 
 
-def _spawn_action(argv: list, name: str, prefix: str) -> dict:
-    """Spawn a background ``hermes <argv>`` action; a spawn failure is ``500 "<prefix>: <exc>"``."""
+def _spawn_action(argv: list, name: str, prefix: str, profile: Optional[str] = None) -> dict:
+    """Spawn a background ``hermes -p <profile> <argv>`` action; a spawn failure is
+    ``500 "<prefix>: <exc>"``."""
     try:
-        proc = _spawn_hermes_action(argv, name)
+        proc = _spawn_hermes_action(_profile_cli_args(profile) + argv, name)
     except Exception as exc:
         raise HTTPException(status_code=500, detail=f"{prefix}: {exc}")
     return {"ok": True, "pid": proc.pid, "name": name}
 
 
 @router.post("/api/curator/run")
-async def run_curator():
-    """Trigger a curator review now (backgrounded; tail via action status)."""
-    return _spawn_action(["curator", "run"], "curator-run", "Failed to run curator")
+async def run_curator(profile: Optional[str] = None):
+    """Trigger a curator review now (backgrounded; tail via action status). The curator
+    archives and rewrites skills, so an unnamed target is refused while this backend
+    serves several profiles."""
+    return _spawn_action(["curator", "run"], "curator-run", "Failed to run curator",
+                         destructive_profile(profile, "POST /api/curator/run"))
 
 
 @router.get("/api/learning/graph")
@@ -632,10 +705,10 @@ async def update_learning_node(body: LearningNodeEdit):
 
 
 @router.get("/api/portal")
-async def get_portal_status():
+async def get_portal_status(profile: Optional[str] = None):
     # load_config() + auth/subscription snapshots are disk reads on a polled endpoint —
     # keep them off the event loop.
-    return await asyncio.to_thread(_get_portal_status_sync)
+    return await config_scoped_to_thread(profile, _get_portal_status_sync)
 
 
 def _feature_state(feat) -> str:
@@ -682,30 +755,31 @@ def _get_portal_status_sync():
 
 
 @router.post("/api/ops/prompt-size")
-async def run_prompt_size():
-    return _spawn_action(["prompt-size"], "prompt-size", "Failed")
+async def run_prompt_size(profile: Optional[str] = None):
+    return _spawn_action(["prompt-size"], "prompt-size", "Failed", profile)
 
 
 @router.post("/api/ops/dump")
-async def run_dump():
-    return _spawn_action(["dump"], "dump", "Failed")
+async def run_dump(profile: Optional[str] = None):
+    return _spawn_action(["dump"], "dump", "Failed", profile)
 
 
 @router.post("/api/ops/config-migrate")
-async def run_config_migrate():
-    return _spawn_action(["config", "migrate"], "config-migrate", "Failed")
+async def run_config_migrate(profile: Optional[str] = None):
+    return _spawn_action(["config", "migrate"], "config-migrate", "Failed", profile)
 
 
 @router.post("/api/ops/debug-share")
-async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
+async def run_debug_share_endpoint(body: DebugShareRequest | None = None,
+                                   profile: Optional[str] = None):
     """Upload a redacted debug report + full logs and return the paste URLs. Synchronous,
     unlike the other diagnostics actions: the point is the shareable URLs, returned as a
     structured payload the dashboard renders as copyable links."""
     from hermes_cli.debug import build_debug_share
     req = body or DebugShareRequest()
     try:
-        result = await asyncio.to_thread(
-            build_debug_share, log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact))
+        result = await config_scoped_to_thread(profile, lambda: build_debug_share(
+            log_lines=max(1, min(int(req.lines), 5000)), redact=bool(req.redact)))
     except RuntimeError as exc:
         # Required summary-report upload failed (offline / paste service down).
         raise HTTPException(status_code=502, detail=f"Upload failed: {exc}")
@@ -720,12 +794,14 @@ async def run_debug_share_endpoint(body: DebugShareRequest | None = None):
 @logs_router.get("/api/logs")
 async def get_logs(
     file: str = "agent", lines: int = 100, level: Optional[str] = None,
-    component: Optional[str] = None, search: Optional[str] = None):
+    component: Optional[str] = None, search: Optional[str] = None,
+    profile: Optional[str] = None):
     from hermes_cli.logs import _read_tail, LOG_FILES
     log_name = LOG_FILES.get(file)
     if not log_name:
         raise HTTPException(status_code=400, detail=f"Unknown log file: {file}")
-    log_path = get_hermes_home() / "logs" / log_name
+    with _config_profile_scope(profile):
+        log_path = get_hermes_home() / "logs" / log_name
     if not log_path.exists():
         return {"file": file, "lines": []}
 

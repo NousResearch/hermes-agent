@@ -73,6 +73,11 @@ def _doctor_runtime(plugin_path: Path):
             raise _DoctorLoadError(
                 f"Expected one plugin manifest, discovered {len(manifests)} under {copied}")
         manifest = manifests[0]
+        if manifest.kind == "model-provider":
+            with _load_model_provider(copied, manifest) as registered:
+                yield SimpleNamespace(manifest=manifest, manager=manager, registered_tools=(),
+                                      registered_hooks=(), registered_providers=registered)
+            return
         manager._load_plugin(manifest)
         loaded = manager._plugins.get(manifest.key or manifest.name)
         if loaded is None:
@@ -83,8 +88,20 @@ def _doctor_runtime(plugin_path: Path):
             raise _DoctorLoadError("Plugin registration did not enable the runtime record")
         yield SimpleNamespace(
             manifest=manifest, manager=manager, registered_tools=tuple(sorted(loaded.tools_registered)),
-            registered_hooks=tuple(loaded.hooks_registered))
+            registered_hooks=tuple(loaded.hooks_registered), registered_providers=())
     finally:
+        # Dispose the plugin's own registrations FIRST, while the temporary
+        # HERMES_HOME still exists. This runs the host-owned ctx.on_unload(...)
+        # callbacks — e.g. closing a SQLite handle a context-engine plugin
+        # opened under that home. Without it the DB stays open and stack.close()
+        # below (TemporaryDirectory removal) fails with WinError 32 on Windows
+        # (#99918). Best-effort: the snapshot restore below remains the
+        # authoritative registry cleanup, so an unload hiccup never masks it or
+        # the original exception.
+        try:
+            manager.unload()
+        except Exception:
+            pass
         entries_after = {entry.name: entry for entry in registry._snapshot_entries()}
         changed_names = {
             name
@@ -112,6 +129,40 @@ def _is_plugin_module(name: str) -> bool:
     return name == "hermes_plugins" or name.startswith("hermes_plugins.")
 
 
+@contextmanager
+def _load_model_provider(copied: Path, manifest):
+    """Doctor path for ``kind: model-provider``: those register a ProviderProfile at import through
+    providers/ discovery (PluginManager skips the kind), so demanding ``register(ctx)`` would fail
+    every valid provider plugin. Registry additions are undone on exit."""
+    import providers
+
+    # The live install may already have imported this very plugin (same directory name) during
+    # startup discovery; import the copy fresh and put the live module/profiles back afterwards.
+    module_name = providers._user_module_name(copied, "")
+    prior_module = sys.modules.pop(module_name, None)
+    before = dict(providers._REGISTRY)
+    before_aliases = dict(providers._ALIASES)
+    try:
+        providers._import_plugin_dir(copied, "user")
+        registered = tuple(sorted(
+            name for name, profile in providers._REGISTRY.items() if before.get(name) is not profile))
+        if not registered:
+            raise _DoctorLoadError(
+                "model-provider plugin registered no ProviderProfile at import (see the warning above)")
+        yield registered
+    finally:
+        for name in [n for n, p in providers._REGISTRY.items() if before.get(n) is not p]:
+            providers._REGISTRY.pop(name)
+            providers._SOURCES.pop(name, None)
+        providers._REGISTRY.update(before)
+        providers._ALIASES.clear()
+        providers._ALIASES.update(before_aliases)
+        providers._PROVIDER_LIST_CACHE = None
+        sys.modules.pop(module_name, None)
+        if prior_module is not None:
+            sys.modules[module_name] = prior_module
+
+
 @dataclass(frozen=True)
 class DoctorFinding:
     level: Literal["error", "warning"]
@@ -125,6 +176,7 @@ class DoctorReport:
     findings: list[DoctorFinding] = field(default_factory=list)
     registered_tools: tuple[str, ...] = ()
     registered_hooks: tuple[str, ...] = ()
+    registered_providers: tuple[str, ...] = ()
 
     @property
     def ok(self) -> bool:
@@ -147,7 +199,8 @@ class DoctorReport:
         if self.ok:
             lines.append("  OK: runtime discovery, manifest parsing, import, and registration passed")
         lines.append(
-            f"  registrations: {len(self.registered_tools)} tool(s), {len(self.registered_hooks)} hook(s)")
+            f"  registrations: {len(self.registered_tools)} tool(s), {len(self.registered_hooks)} hook(s)"
+            + (f", provider(s): {', '.join(self.registered_providers)}" if self.registered_providers else ""))
         return "\n".join(lines)
 
 
@@ -294,6 +347,7 @@ def doctor_plugin(target: str | os.PathLike[str] | None = None) -> DoctorReport:
             report.manifest = host.manifest
             report.registered_tools = host.registered_tools
             report.registered_hooks = host.registered_hooks
+            report.registered_providers = host.registered_providers
 
             from hermes_cli.plugins import VALID_HOOKS
 

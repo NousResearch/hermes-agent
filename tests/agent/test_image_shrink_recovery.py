@@ -106,6 +106,120 @@ class TestImageTooLargeClassification:
         result = classify_api_error(err, provider="minimax", model="MiniMax-M3")
         assert result.reason != FailoverReason.image_too_large
 
+    _NIM_400 = "Please make sure your payload is below 26214400 bytes in size. For larger payloads, please use the Assets API."
+    _DASHSCOPE_400 = (
+        "String value length (28049408) exceeds the maximum allowed (28000000, from "
+        "`StreamReadConstraints.getMaxStringLength()`)"
+    )
+
+    @staticmethod
+    def _pydantic_400(loc, url):
+        """Real ``openai.BadRequestError`` shape: ``str(err)`` is ``Error code: 400 - <body JSON>``."""
+        import json
+
+        body = {"detail": [{"type": "string_type", "loc": loc, "msg": "Input should be a valid string",
+                            "input": [{"type": "text", "text": "what is this"},
+                                      {"type": "image_url", "image_url": {"url": url}}]}]}
+        return _FakeApiError(400, "Error code: 400 - " + json.dumps(body), body)
+
+    def test_oversize_rejections_reported_as_400_shrink(self):
+        """Byte caps enforced with a 400 instead of a 413 must reach the shrink recovery (#112473):
+        NVIDIA NIM (whole payload), Alibaba DashScope (Jackson string cap) and Nebius Token Factory,
+        which names no size at all and reports the per-image cap through the pydantic ``string_type``
+        detail on ``messages.N.content`` whose rejected input carries the large inline image. Controls:
+        the same pydantic shape on a tool-scoped loc or with a small image keeps the multimodal
+        tool-content verdict, and an ordinary validation 400 stays format_error."""
+        big = "data:image/png;base64," + "A" * (11 * 1024 * 1024)
+        small = "data:image/png;base64," + "A" * (64 * 1024)
+        oversize = [
+            _FakeApiError(400, self._NIM_400, {"error": {"message": self._NIM_400, "code": "invalid_image_format"}}),
+            _FakeApiError(400, self._DASHSCOPE_400),
+            self._pydantic_400(["body", "messages", 0, "content", "str"], big),
+        ]
+        for err in oversize:
+            result = classify_api_error(err, provider="custom", model="x")
+            assert result.reason == FailoverReason.image_too_large, str(err)[:120]
+            assert result.retryable is True
+
+        controls = {
+            FailoverReason.multimodal_tool_content_unsupported: [
+                self._pydantic_400(["body", "messages", 3, "tool", "content", "str"], big),
+                self._pydantic_400(["body", "messages", 0, "content", "str"], small),
+            ],
+            FailoverReason.format_error: [_FakeApiError(400, "Unsupported parameter: 'max_tokens' is not supported with this model.")],
+        }
+        for expected, errs in controls.items():
+            for err in errs:
+                assert classify_api_error(err, provider="custom", model="x").reason == expected, str(err)[:120]
+
+
+class TestSpentShrinkFallsBack:
+    """``image_too_large`` is retryable so the shrink can run once; after the one shrink attempt was
+    spent without recovering, the loop must not re-send the byte-identical oversized body
+    ``max_retries`` times — it falls back at once, as the old format_error verdict did (#112473)."""
+
+    class _Agent:
+        log_prefix = ""
+        verbose = False
+        provider = "custom"
+        _fallback_chain = [object()]
+        _fallback_index = 0
+        _credential_pool = None
+
+        def __init__(self):
+            self.activated = []
+
+        def _has_pending_fallback(self):
+            return True
+
+        def _try_activate_fallback(self, **kwargs):
+            self.activated.append(True)
+            return True
+
+        def _summarize_api_error(self, error):
+            return str(error)
+
+        def __getattr__(self, name):
+            return lambda *args, **kwargs: None
+
+    def _settle(self, shrink_attempted):
+        from types import SimpleNamespace
+        from unittest.mock import patch
+
+        from agent.turn_api_error import settle_unrecovered_error
+
+        agent = self._Agent()
+        err = _FakeApiError(400, "Please make sure your payload is below 26214400 bytes in size.")
+        retry = SimpleNamespace(
+            image_shrink_retry_attempted=shrink_attempted, copilot_stale_cred_retry_attempted=False,
+            primary_recovery_attempted=False, restart_with_redirected_messages=False,
+        )
+        classified = classify_api_error(err, provider="custom")
+        assert classified.reason == FailoverReason.image_too_large
+        with patch("agent.conversation_loop._is_copilot_provider", lambda a: False), patch(
+            "agent.conversation_loop._arm_fallback_restart", lambda agent, msgs, prompt, retry: prompt
+        ), patch("agent.turn_api_error.compute_error_backoff", lambda *a, **k: 0), patch(
+            "agent.turn_api_error.interruptible_backoff_sleep", lambda *a, **k: None
+        ):
+            verdict = settle_unrecovered_error(
+                agent, api_error=err, classified=classified, _retry=retry, status_code=400, error_msg=str(err),
+                is_context_length_error=False, is_rate_limited=False, _is_zai_coding_overload=False,
+                _provider="custom", _base="https://integrate.api.nvidia.com/v1", _model="x", messages=[],
+                api_messages=[], api_kwargs={}, active_system_prompt="", conversation_history=None,
+                approx_tokens=10, retry_count=0, max_retries=3, compression_attempts=0, api_call_count=1,
+            )
+        return agent, verdict
+
+    def test_spent_shrink_falls_back_instead_of_retrying_unchanged(self):
+        agent, verdict = self._settle(shrink_attempted=True)
+        assert verdict.action == "break"
+        assert agent.activated == [True]
+
+        # Control: before the shrink has run the verdict stays retryable (the shrink gets its shot).
+        agent, verdict = self._settle(shrink_attempted=False)
+        assert verdict.action == "fallthrough"
+        assert agent.activated == []
+
 
 class TestImagePatchBudgetShrink:
     def test_codex_patch_budget_shrinks_responses_image_under_budget(self):

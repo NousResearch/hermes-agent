@@ -172,16 +172,6 @@ class TestShouldExclude:
         assert _should_exclude(Path("profiles/clean/models/big.gguf"))
         assert _should_exclude(Path("profiles/clean/runtimes/llamacpp/x.dll"))
 
-    def test_excludes_live_chrome_debug_only_at_profile_homes(self):
-        """The local CDP profile is runtime state at each profile home, not a
-        generic directory name that can erase user skill content."""
-        from hermes_cli.backup import _should_exclude
-
-        assert _should_exclude(Path("chrome-debug/Default/Cookies"))
-        assert _should_exclude(Path("profiles/coder/chrome-debug/Default/Cookies"))
-        assert not _should_exclude(Path("skills/example/chrome-debug/notes.md"))
-        assert not _should_exclude(Path("profiles/coder/skills/example/chrome-debug/notes.md"))
-
     def test_excludes_regenerable_cache_but_keeps_durable_artifacts(self):
         """Catalogs and live browser profiles are rebuilt on demand; delivered media and the
         citation ledger are not, so they stay in the archive."""
@@ -254,19 +244,23 @@ class TestIterBackupFiles:
         assert str(Path("models/big.gguf")) not in selected
         assert not any(s.startswith("hermes-agent") for s in selected)
 
-    def test_prunes_browser_use_cli_profiles_at_home_roots_only(self, tmp_path):
-        """The Browser Use CLI backend writes ``HERMES_HOME/browser_profiles/`` (underscore) — a
-        live Chromium user-data dir holding Login Data / Cookies. It must never enter an archive,
-        at the root or under ``profiles/<name>/``; a skill's same-named dir is user data (#117346)."""
+    @pytest.mark.parametrize("browser_dir", ["browser_profiles", "chrome-debug"])
+    def test_prunes_live_browser_profiles_at_home_roots_only(self, tmp_path, browser_dir):
+        """Browser Use CLI and local-CDP profiles hold Login Data / Cookies. Exclude them at
+        home roots, but keep same-named user directories deeper in the tree (#117346, #61703)."""
         from hermes_cli.backup import _iter_backup_files
 
         root = tmp_path / ".hermes"
         root.mkdir()
         files = {
-            "browser_profiles/browser-use-default/Default/Login Data": False,
-            "browser_profiles/browser-use-default/Default/Network/Cookies": False,
-            "profiles/coder/browser_profiles/browser-use-default/Default/Cookies": False,
-            "skills/example/browser_profiles/notes.md": True,
+            f"{browser_dir}/Default/Login Data": False,
+            f"{browser_dir}/Default/Network/Cookies": False,
+            f"{browser_dir}/browser-use-default/Default/Login Data": False,
+            f"{browser_dir}/browser-use-default/Default/Network/Cookies": False,
+            f"profiles/coder/{browser_dir}/browser-use-default/Default/Cookies": False,
+            f"profiles/coder/{browser_dir}/Default/Cookies": False,
+            f"skills/example/{browser_dir}/notes.md": True,
+            f"profiles/coder/skills/example/{browser_dir}/notes.md": True,
         }
         for rel in files:
             f = root / rel
@@ -338,26 +332,27 @@ class TestIterBackupFiles:
 
 class TestBackup:
 
+    @pytest.mark.parametrize("browser_dir", ["browser_profiles", "chrome-debug"])
     @pytest.mark.parametrize("entry_point", ["manual", "automatic"])
     @pytest.mark.parametrize("invoking_profile", ["default", "coder"])
-    def test_live_chrome_debug_is_pruned_before_both_full_backup_walks(
-        self, tmp_path, monkeypatch, capsys, entry_point, invoking_profile
+    def test_live_browser_profile_is_pruned_before_both_full_backup_walks(
+        self, tmp_path, monkeypatch, capsys, browser_dir, entry_point, invoking_profile
     ):
-        """Both full ZIP entry points skip live root/profile CDP directories
-        before walking them, while retaining nested user content."""
+        """Both full ZIP entry points prune live browser directories before traversal,
+        while retaining nested user content and upstream Browser Use CLI protection."""
         hermes_home = tmp_path / ".hermes"
         hermes_home.mkdir()
         _make_hermes_tree(hermes_home)
         live_dirs = [
-            hermes_home / "chrome-debug",
-            hermes_home / "profiles" / "coder" / "chrome-debug",
+            hermes_home / browser_dir,
+            hermes_home / "profiles" / "coder" / browser_dir,
         ]
         for live_dir in live_dirs:
             (live_dir / "Default").mkdir(parents=True)
             (live_dir / "Default" / "Cookies").write_text("live runtime state")
         nested_files = [
-            hermes_home / "skills" / "example" / "chrome-debug" / "notes.md",
-            hermes_home / "profiles" / "coder" / "skills" / "example" / "chrome-debug" / "notes.md",
+            hermes_home / "skills" / "example" / browser_dir / "notes.md",
+            hermes_home / "profiles" / "coder" / "skills" / "example" / browser_dir / "notes.md",
         ]
         for nested_file in nested_files:
             nested_file.parent.mkdir(parents=True)
@@ -400,8 +395,8 @@ class TestBackup:
         )
         with zipfile.ZipFile(out_zip) as zf:
             names = set(zf.namelist())
-        assert not any(name.startswith("chrome-debug/") for name in names)
-        assert not any(name.startswith("profiles/coder/chrome-debug/") for name in names)
+        assert not any(name.startswith(f"{browser_dir}/") for name in names)
+        assert not any(name.startswith(f"profiles/coder/{browser_dir}/") for name in names)
         expected_nested = {
             path.relative_to(archive_root).as_posix()
             for path in nested_files if path.is_relative_to(archive_root)
@@ -1042,9 +1037,11 @@ class TestBackupEdgeCases:
 
         real_lstat = Path.lstat
         real_write = zipfile.ZipFile.write
+        lstat_attempts = []
 
         def racing_lstat(path):
             if path == raced_file:
+                lstat_attempts.append(path)
                 raise OSError("simulated lstat race")
             return real_lstat(path)
 
@@ -1058,6 +1055,7 @@ class TestBackupEdgeCases:
         out_zip = tmp_path / "raced.zip"
 
         assert backup_mod.run_backup(Namespace(output=str(out_zip))) is False
+        assert lstat_attempts
         output = capsys.readouterr().out
         assert "Backup incomplete" in output
         assert "raced.txt: simulated archive read failure" in output

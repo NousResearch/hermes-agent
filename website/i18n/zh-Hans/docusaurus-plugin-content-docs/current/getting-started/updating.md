@@ -58,7 +58,7 @@ updates:
 
 旧版布尔值仍然有效：`true` 等同于 `full`，`false` 等同于 `off`。
 
-默认和命名 profile 中专用于本地 CDP 的 `chrome-debug/` 浏览器 profile 会被排除在完整备份之外。该目录包含 Chromium 正在使用的套接字、锁定的数据库以及与本机绑定的浏览器状态，Chromium 运行时无法对其进行一致备份。如需保留已登录的浏览器 profile，请先关闭 Chromium，再单独备份该目录。
+完整备份会排除默认和命名 profile 根目录下的本地 CDP `chrome-debug/` 和 Browser Use CLI `browser_profiles/` 目录。这些目录包含 Chromium 正在使用的套接字、锁定的数据库以及与本机绑定的浏览器凭据；更深层的同名用户目录仍会保留。如需单独复制浏览器状态，请先停止 Chromium，并将副本作为敏感数据保管；已登录的会话不一定能在另一台机器上使用。
 
 ### Windows：另一个 `hermes.exe` 正在运行
 

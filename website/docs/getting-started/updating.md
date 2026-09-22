@@ -300,7 +300,7 @@ Legacy boolean values remain supported: `true` means `full`, and `false` means `
 Update backups protect an in-place update. If you're migrating your whole setup to different hardware, use `hermes backup` + `hermes import` instead — see [Exporting Hermes to another machine](../reference/faq.md#exporting-hermes-to-another-machine) and [`hermes backup` vs `hermes profile export`](../reference/faq.md#hermes-backup-vs-hermes-profile-export).
 :::
 
-The dedicated local-CDP browser profile at `chrome-debug/` is excluded from full backups for the default and named profiles. It holds live Chromium sockets, locked databases, and machine-bound browser state that cannot be copied consistently while Chromium is running. To preserve a signed-in browser profile, close Chromium and back up that directory separately.
+Full backups exclude the local-CDP `chrome-debug/` and Browser Use CLI `browser_profiles/` directories at default and named profile roots. These hold live Chromium sockets, locked databases, and machine-bound browser credentials. Deeper user directories with the same names are retained. If you need a separate copy of browser state, stop Chromium first and treat the copy as sensitive; signed-in sessions may not work on another machine.
 
 ### Windows process ownership and dependency changes
 

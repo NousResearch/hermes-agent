@@ -441,6 +441,44 @@ def test_prune_builtins_still_archives_bundled_via_deterministic_pass(
     assert "bundled-fixture" in u.read_suppressed_names()
 
 
+def test_swarm_role_skills_survive_inactivity(curator_env, monkeypatch):
+    """Swarm verifier and synthesizer preloads must outlive the archive sweep.
+
+    These bundled skills are force-loaded only after their dependent Kanban
+    cards dispatch.  Treating the card metadata itself as a use would hide a
+    missing, disabled, or unreadable preload, but letting the curator archive
+    the dependencies makes that preload impossible in the first place.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = curator_env["home"] / "skills"
+    from hermes_cli.kanban_swarm import SWARM_ROLE_SKILLS
+
+    swarm_skills = set(SWARM_ROLE_SKILLS)
+    assert swarm_skills == {"requesting-code-review", "humanizer"}
+    for name in [*swarm_skills, "ordinary-bundled-skill"]:
+        _write_skill(skills_dir, name)
+    (skills_dir / ".bundled_manifest").write_text(
+        "".join(f"{name}:abc\n" for name in [*swarm_skills, "ordinary-bundled-skill"]),
+        encoding="utf-8",
+    )
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    data = u.load_usage()
+    for name in [*swarm_skills, "ordinary-bundled-skill"]:
+        data[name] = {**u._empty_record(), "created_at": super_old, "last_used_at": super_old}
+    u.save_usage(data)
+
+    counts = c.apply_automatic_transitions()
+
+    assert counts["archived"] == 1
+    for name in swarm_skills:
+        assert (skills_dir / name).exists()
+        assert u.get_record(name)["state"] == u.STATE_ACTIVE
+    assert not (skills_dir / "ordinary-bundled-skill").exists()
+
+
 
 
 

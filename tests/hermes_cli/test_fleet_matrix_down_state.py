@@ -15,6 +15,14 @@ from pathlib import Path
 import hermes_cli.update_receipt as ur
 
 
+# The record must carry the launch argv a real gateway stamps (``write_runtime_status`` writes
+# ``sys.argv``), pinned to the checkout under test. Without it ``_gateway_code_root`` falls through
+# to probing this process and resolves the interpreter path — the shared ``venv`` inside the main
+# checkout even when the code under test was imported from a git worktree — so every live-pid row
+# reads ``external`` instead of ``current``/``stale``.
+_CHECKOUT = Path(ur.__file__).resolve().parent.parent
+
+
 def _setup(monkeypatch, tmp_path, record: dict):
     home = tmp_path / ".hermes"
     home.mkdir(exist_ok=True)
@@ -27,6 +35,7 @@ def _setup(monkeypatch, tmp_path, record: dict):
         "hermes_cli.profiles._get_profiles_root", lambda: tmp_path / "no-profiles"
     )
     monkeypatch.setattr("gateway.control_socket.identify_gateway", lambda h, **k: None)
+    record = {"argv": [str(_CHECKOUT / "hermes_cli" / "main.py")], **record}
     (home / "gateway_state.json").write_text(json.dumps(record), encoding="utf-8")
     return home
 

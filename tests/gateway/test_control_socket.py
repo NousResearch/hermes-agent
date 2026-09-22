@@ -350,6 +350,14 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     home = tmp_path / ".hermes"
     home.mkdir()
 
+    # The record must carry the launch argv a real gateway stamps (``write_runtime_status`` writes
+    # ``sys.argv``), pinned to the checkout under test. Without it ``_gateway_code_root`` falls
+    # through to probing *this* process and resolves the interpreter path — which is the shared
+    # ``venv`` inside the main checkout even when the code under test was imported from a git
+    # worktree — so the row is misread as ``external`` and this test only passes in the main
+    # checkout. Pinning argv keeps the fixture honest wherever it runs.
+    checkout = Path(ur.__file__).resolve().parent.parent
+
     monkeypatch.setattr(
         "hermes_cli.build_info.get_code_identity",
         lambda refresh=False: {"sha": "HEADSHA", "version": "1.0"},
@@ -369,6 +377,7 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
                 "pid": os.getpid(),  # a live pid so _pid_exists passes
                 "code_sha": "OLDSHA",
                 "kind": "hermes-gateway",
+                "argv": [str(checkout / "hermes_cli" / "main.py")],
             }
         )
     )
@@ -389,6 +398,8 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     assert len(fleet) == 1
     assert fleet[0]["state"] == "stale"
     assert fleet[0]["code_sha"] == "OLDSHA"
+    # The row reports the checkout it resolved: the one under test, never the interpreter's.
+    assert fleet[0]["code_root"] == str(checkout)
     assert "source" not in fleet[0]
 
 

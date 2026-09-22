@@ -106,7 +106,7 @@ def test_gc_blobs_removes_only_unreferenced(ledger_home):
 
 
 @pytest.mark.parametrize("failure", ["unreadable", "missing", "invalid-encoding", "malformed-json", "non-dict-row"])
-def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, monkeypatch, caplog, failure):
+def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, caplog, failure):
     from tools import skill_ledger
 
     skill = ledger_home / "skills" / "demo" / "SKILL.md"
@@ -118,27 +118,24 @@ def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, mon
     ledger = skill_ledger.ledger_path()
     saved = ledger.read_bytes()
     blobs_before = {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()}
-    with monkeypatch.context() as patch:
-        if failure == "unreadable":
-            real_read = Path.read_text
-
-            def read_text(path, *args, **kwargs):
-                if path == ledger:
-                    raise PermissionError("ledger is temporarily unreadable")
-                return real_read(path, *args, **kwargs)
-
-            patch.setattr(Path, "read_text", read_text)
-        elif failure == "missing":
-            ledger.unlink()
-        elif failure == "malformed-json":
-            ledger.write_bytes(saved + b"{broken\n")
-        elif failure == "non-dict-row":
-            ledger.write_bytes(saved + b"[]\n")
-        else:
-            ledger.write_bytes(b"\xff")
-        assert skill_ledger.gc_blobs() == (0, 0)
-        assert "blob GC skipped" in caplog.text
-        assert {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()} == blobs_before
+    if failure == "unreadable":
+        # A directory at the ledger path fails read_text() with an OSError on every platform
+        # (IsADirectoryError on POSIX, PermissionError on Windows) without patching Path.
+        ledger.unlink()
+        ledger.mkdir()
+    elif failure == "missing":
+        ledger.unlink()
+    elif failure == "malformed-json":
+        ledger.write_bytes(saved + b"{broken\n")
+    elif failure == "non-dict-row":
+        ledger.write_bytes(saved + b"[]\n")
+    else:
+        ledger.write_bytes(b"\xff")
+    assert skill_ledger.gc_blobs() == (0, 0)
+    assert "blob GC skipped" in caplog.text
+    assert {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()} == blobs_before
+    if ledger.is_dir():
+        ledger.rmdir()
     ledger.write_bytes(saved)
     ok, message = skill_ledger.rollback_entry(entry_id)
     assert ok, message

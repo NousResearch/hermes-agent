@@ -2101,6 +2101,33 @@ def test_bare_custom_resolves_model_key_env_for_configured_base_url(monkeypatch)
     assert other["api_key"] == "no-key-required"
 
 
+def test_named_custom_provider_inherits_matching_model_api_key_only(monkeypatch):
+    """#118721: an auxiliary named route shares the main model credential only when it is the
+    configured provider and endpoint; another entry must remain keyless instead of borrowing it."""
+    config = {
+        "model": {
+            "provider": "deepseek-custom",
+            "api_key": "model-level-secret",
+        },
+        "providers": {
+            "deepseek-custom": {
+                "base_url": "https://api.deepseek.example/v1",
+                "default_model": "deepseek-flash",
+            },
+            "other-custom": {
+                "base_url": "https://other.example/v1",
+                "default_model": "other-model",
+            },
+        },
+    }
+    monkeypatch.setattr(rp, "load_config", lambda: config)
+    monkeypatch.setattr(rp, "_get_model_config", lambda: dict(config["model"]))
+    monkeypatch.setattr(rp, "_try_resolve_from_custom_pool", lambda *a, **k: None)
+
+    assert rp.resolve_runtime_provider(requested="deepseek-custom")["api_key"] == "model-level-secret"
+    assert rp.resolve_runtime_provider(requested="other-custom")["api_key"] == "no-key-required"
+
+
 def test_configured_key_env_resolving_empty_is_logged(monkeypatch, caplog):
     """#67453: a declared ``key_env`` whose variable is unset used to be laundered silently into
     ``no-key-required`` and surface only as the provider's 403; a keyless block stays silent."""

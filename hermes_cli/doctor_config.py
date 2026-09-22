@@ -274,20 +274,28 @@ def _validate_auxiliary_config(config_path, issues: list) -> None:
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from utils import base_url_hostname
     aux = read_user_config_raw(config_path).get("auxiliary")
-    routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
-              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
+    routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ()) if isinstance(block, dict)}
     ok = []
     for task, block in sorted(routed.items()):
-        provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))
+        provider_raw, model, base_url, api_key = (str(block.get(k) or "").strip() or None
+                                                   for k in ("provider", "model", "base_url", "api_key"))
+        # Empty/auto auxiliary blocks use the configured main route. Pass None so the runtime
+        # resolver follows that exact chain instead of treating ``auto`` as an independent choice.
+        provider = None if provider_raw is None or provider_raw.lower() == "auto" else provider_raw
+        provider_label = provider_raw or "auto"
         try:
             runtime = resolve_runtime_provider(requested=provider, target_model=model, explicit_api_key=api_key, explicit_base_url=base_url)
         except Exception as exc:  # noqa: BLE001 — every resolver error is a finding here
-            _fail_and_issue(f"auxiliary.{task}.provider '{provider}' does not resolve", f"({str(exc).splitlines()[0]})",
-                            f"auxiliary.{task}.provider '{provider}' cannot be resolved ({str(exc).splitlines()[0]}); the task "
+            _fail_and_issue(f"auxiliary.{task}.provider '{provider_label}' does not resolve", f"({str(exc).splitlines()[0]})",
+                            f"auxiliary.{task}.provider '{provider_label}' cannot be resolved ({str(exc).splitlines()[0]}); the task "
                             f"silently runs on the main model. Fix the provider name/credentials in auxiliary.{task}.", issues)
             continue
+        if runtime.get("api_key") == "no-key-required":
+            check_warn(f"auxiliary.{task}.provider '{provider_label}' resolved with placeholder credentials",
+                       f"({runtime.get('provider')} @ {runtime.get('base_url')}; no-key-required)")
+            continue
         if not runtime.get("api_key") and not runtime.get("command"):
-            check_warn(f"auxiliary.{task}.provider '{provider}' resolved without credentials", f"({runtime.get('provider')} @ {runtime.get('base_url')})")
+            check_warn(f"auxiliary.{task}.provider '{provider_label}' resolved without credentials", f"({runtime.get('provider')} @ {runtime.get('base_url')})")
             continue
         ok.append(f"{task}→{runtime.get('provider')}@{base_url_hostname(str(runtime.get('base_url') or '')) or '?'}")
     if ok:

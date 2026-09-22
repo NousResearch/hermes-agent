@@ -1904,3 +1904,25 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     issues = []
     doctor_config._validate_auxiliary_config(cfg_file, issues)
     assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]
+
+
+@pytest.mark.parametrize("block", [{"provider": "auto"}, {}])
+def test_doctor_checks_auto_auxiliary_blocks_for_placeholder_credentials(tmp_path, monkeypatch, capsys, block):
+    """#118721: ``provider: auto`` means the main route, so doctor must not skip a placeholder
+    credential that would be sent by runtime-less auxiliary calls."""
+    import yaml
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {"title_generation": block}}))
+    calls = []
+
+    def resolve_runtime_provider(**kwargs):
+        calls.append(kwargs)
+        return {"provider": "custom", "base_url": "https://api.example/v1", "api_key": "no-key-required"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve_runtime_provider)
+    issues = []
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+
+    assert calls == [{"requested": None, "target_model": None, "explicit_api_key": None, "explicit_base_url": None}]
+    assert "auxiliary.title_generation.provider 'auto' resolved with placeholder credentials" in capsys.readouterr().out

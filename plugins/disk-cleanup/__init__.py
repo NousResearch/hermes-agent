@@ -40,7 +40,15 @@ def _extract_paths_from_terminal(args: Dict[str, Any], result: str) -> Set[str]:
     cmd = args.get("command") or ""
     if isinstance(cmd, str) and cmd:
         with contextlib.suppress(ValueError):  # tokenise — catches `touch /tmp/hermes-x/test_foo.py`
-            paths.update(tok for tok in shlex.split(cmd, posix=True) if tok.startswith(("/", "~")))
+            for tok in shlex.split(cmd, posix=True):
+                if not tok.startswith(("/", "~")):
+                    continue
+                # Environment assignments can contain PATH-like values that begin with "/"
+                # but are not filesystem paths. Treating the whole value as one Path can
+                # exceed the host filename limit during ``exists()`` below.
+                if "=" in tok.split("/", 1)[0]:
+                    continue
+                paths.add(tok)
     # Only scan the result text if it's a reasonable size (avoid 50KB dumps).
     if isinstance(result, str) and len(result) < 4096:
         paths.update(_TERMINAL_PATH_REGEX.findall(result))

@@ -208,20 +208,25 @@ def _stamp_worker_session_metadata(task_id: str, metadata: Optional[dict]) -> Op
     return {**(metadata or {}), "worker_session_id": session_id} if session_id else metadata
 
 
-def _enforce_worker_task_ownership(tid: str) -> None:
+def _enforce_worker_task_ownership(tid: str, *, orchestrator_tool: bool = False) -> None:
     """A dispatcher-spawned worker may only mutate its own HERMES_KANBAN_TASK; a
     prompt-injected ``task_id`` must not corrupt sibling/cross-tenant runs.
-    Orchestrators (toolset enabled, no env task) legitimately route child tasks.
+    Orchestrator tools remain profile-scoped: only the orchestrator profile may
+    route sibling tasks while it owns a dispatcher card.
 
     Tools like ``kanban_complete`` / ``kanban_block`` / ``kanban_heartbeat`` mutate run-lifecycle state, so
     a buggy or prompt-injected worker that passed an explicit ``task_id`` for some other task could corrupt
     sibling or cross-tenant runs (see #19534).
     """
     env_tid = os.environ.get("HERMES_KANBAN_TASK")
-    if env_tid and tid != env_tid:
-        raise _Reject(
-            f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
-            f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
+    if not env_tid or tid == env_tid:
+        return
+    profile = (os.environ.get("HERMES_PROFILE") or "default").strip()
+    if orchestrator_tool and profile == "orchestrator":
+        return
+    raise _Reject(
+        f"worker is scoped to task {env_tid}; refusing to mutate {tid}. Use kanban_comment "
+        f"to hand off information to other tasks, or kanban_create to spawn follow-up work.")
 
 
 def _worker_guard(tool_name: str, args: dict) -> str:
@@ -442,6 +447,54 @@ _GOAL_GATE_MESSAGES = {
         "continue": (
             "Goal review handoff rejected by judge: {reason}. Provide acceptance evidence "
             "matching the card before requesting review.")}}
+
+
+def _human_gate_rejection(task) -> Optional[str]:
+    """Refuse agent completion of a card parked on a HUMAN decision lane.
+
+    INCIDENT 2026-08-29. Eight cards on the Mac personal-infra board went
+    ``blocked``/``needs_input``, assignee ``sam``, each asking Sam to approve
+    retiring a cron. Overnight a worker closed all eight as ``completed`` and
+    acted on one: the Mac half of the cron estate audit was deleted from
+    jobs.json. Sam never answered any of them.
+
+    RE-CUT 2026-09-09: this gate vanished from the tree during an upstream
+    bump (patch 141 stopped applying and nobody noticed, because the suite that
+    proves it -- tests/test_kanban_human_gate.py -- was ALSO failing with
+    AttributeError, which reads like a broken test rather than a missing
+    guard). A guard whose absence only shows up as a red test is a guard that
+    dies quietly at the next update.
+
+    Deliberately narrow, so this never blocks ordinary worker flow:
+      * only DECISION states (blocked, triage, review) are protected.
+      * only NON-PROFILE assignees are protected -- ``sam`` is deliberately not
+        a profile on disk; real worker profiles are untouched.
+      * fails OPEN when the profile registry cannot be read, matching the
+        goal-judge gate: a broken import must not wedge the board.
+    """
+    if not task:
+        return None
+    assignee = (getattr(task, "assignee", None) or "").strip()
+    if not assignee:
+        return None
+    status = (getattr(task, "status", None) or "").strip().lower()
+    if status not in {"blocked", "triage", "review"}:
+        return None
+    try:
+        from hermes_cli.profiles import profile_exists
+    except Exception:
+        return None  # fail open, same contract as _goal_judge_available
+    try:
+        if profile_exists(assignee):
+            return None
+    except Exception:
+        return None
+    return (
+        "card is parked on human lane '%s' in state '%s' and is waiting on a "
+        "person, not a worker. An agent may add a comment with evidence, but "
+        "only the human (or an explicit `hermes kanban complete`) may close it."
+        % (assignee, status)
+    )
 
 
 def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
@@ -674,6 +727,9 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
+        human_gate = _human_gate_rejection(task)
+        if human_gate is not None:
+            return tool_error("kanban_complete refused: " + human_gate)
         _goal_gate("kanban_complete", task, tid, (summary or result or "").strip())
         try:
             ok = kb.complete_task(
@@ -805,7 +861,11 @@ def _handle_request_review(args: dict, **kw) -> str:
                f"reviewer profile {reviewer!r} is not installed. "
                f"Installed profiles: {', '.join(list_profile_names())}")
     with _board(args.get("board")) as (kb, conn):
-        _goal_gate("kanban_request_review", kb.get_task(conn, tid), tid, summary)
+        task = kb.get_task(conn, tid)
+        human_gate = _human_gate_rejection(task)
+        if human_gate is not None:
+            return tool_error("kanban_request_review refused: " + human_gate)
+        _goal_gate("kanban_request_review", task, tid, summary)
         try:
             ok, fail_reason = kb.request_review(
                 conn, tid, summary=summary, metadata=metadata, reviewer=reviewer,
@@ -1013,6 +1073,25 @@ def _handle_create(args: dict, **kw) -> str:
     triage, skills, goal_mode = (
         _parse_bool_arg(args, "triage"), _coerce_str_list(args.get("skills"), "skills", "skill names"),
         _parse_bool_arg(args, "goal_mode"))
+    if skills:
+        # Validate in the assignee's real profile scope before the DB write.
+        # Otherwise a missing skill becomes a deterministic spawn crash, gets
+        # retried, and emits noisy task-status notifications for a task that
+        # could never have started successfully.
+        from agent.skill_commands import build_preloaded_skills_prompt
+        from hermes_cli.profiles import get_profile_dir, profile_exists
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        _check(profile_exists(str(assignee)),
+               f"assignee profile '{assignee}' does not exist; task was not created")
+        home_token = set_hermes_home_override(str(get_profile_dir(str(assignee))))
+        try:
+            _prompt, _loaded, missing_skills = build_preloaded_skills_prompt(list(skills))
+        finally:
+            reset_hermes_home_override(home_token)
+        _check(not missing_skills,
+               f"assignee '{assignee}' cannot load skill(s): {', '.join(missing_skills)}; "
+               "task was not created")
     model_override, provider_override = args.get("model"), args.get("provider")
     _check(model_override or not provider_override, "'provider' requires 'model' to be set as well")
     parents = _coerce_str_list(args.get("parents") or [], "parents", "task ids")
@@ -1141,8 +1220,11 @@ def _handle_unblock(args: dict, **kw) -> str:
     tid = args.get("task_id")
     _check(tid, "task_id is required")
     tid = str(tid)
-    _enforce_worker_task_ownership(tid)
+    _enforce_worker_task_ownership(tid, orchestrator_tool=True)
     with _board(args.get("board")) as (kb, conn):
+        human_gate = _human_gate_rejection(kb.get_task(conn, tid))
+        if human_gate is not None:
+            return tool_error("kanban_unblock refused: " + human_gate)
         _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 

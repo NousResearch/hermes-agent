@@ -3421,6 +3421,7 @@ def _is_model_not_found_error(exc: Exception) -> bool:
         "is not a valid model", "no such model", "model not found",
         "the model `",            # OpenAI-style: "The model `X` does not exist"
         "model_not_found", "unknown model",
+        "unknown provider for model",
     ))
 
 
@@ -7324,6 +7325,7 @@ class _LadderStep(NamedTuple):
 _FALLBACK_REASONS: Tuple[Tuple[Callable[[Exception], bool], str], ...] = (
     (_is_auth_error, "auth error"), (_is_payment_error, "payment error"),
     (_is_rate_limit_error, "rate limit"), (_is_model_incompatible_error, "model incompatible with route"),
+    (_is_model_not_found_error, "model not found"),
     (_is_invalid_aux_response_error, "invalid provider response"),
     # Before the connection-error rung (its superset): a full-budget timeout must be named as one, or
     # a slow local model reads as an unreachable endpoint (#89445).
@@ -7605,10 +7607,10 @@ def _next_fallback_after_quarantine(
 def _ladder_provider_fallback(first_err: Exception, route: _LadderRoute):
     """Last rung: other providers (per-task chain; then auto: main fallback chain + discovery
     chain, explicit: main-agent-model net). Returns the response or None.
-    Capacity errors (payment/quota, connection, exhausted 429, model incompatible, malformed
-    response) bypass the explicit-provider gate — the provider cannot serve this request
-    regardless of user intent. Auth errors from an explicit provider may only use the task's
-    own configured fallback_chain; they never imply an unconfigured provider hop."""
+    Capacity errors (payment/quota, connection, exhausted 429, model incompatible, model not
+    found, malformed response) bypass the explicit-provider gate — the provider cannot serve
+    this request regardless of user intent. Auth errors from an explicit provider may only use
+    the task's own configured fallback_chain; they never imply an unconfigured provider hop."""
     task, tag, resolved_provider = route.task, route.tag, route.resolved_provider
     # Respect explicit provider choice for transient errors (auth, request validation, etc.) but allow
     # fallback when the provider clearly cannot serve the request due to capacity: payment/quota exhaustion

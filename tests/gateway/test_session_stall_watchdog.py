@@ -3,8 +3,10 @@
 from __future__ import annotations
 
 import asyncio
+import threading
 import time
 from types import SimpleNamespace
+from typing import Any, cast
 
 import pytest
 
@@ -23,7 +25,7 @@ class _FakeAdapter:
         self._pending_messages = {}
         self.sent = []
 
-    async def send(self, chat_id, content, metadata=None):
+    async def send(self, chat_id, content, metadata=None) -> Any:
         self.sent.append(
             {"chat_id": chat_id, "content": content, "metadata": metadata}
         )
@@ -56,6 +58,25 @@ class _AgentWithoutSummary:
 
     def __init__(self, last_activity_ts: float):
         self._last_activity_ts = last_activity_ts
+
+
+class _SteerableAgent(_FakeAgent):
+    """Records whether the watchdog wakes the turn or merely queues text."""
+
+    def __init__(self, last_activity_ts: float, *, redirect_result: bool = True):
+        super().__init__(last_activity_ts)
+        self.redirect_result = redirect_result
+        self.redirect_calls = []
+        self.steer_calls = []
+        self._todo_store = None
+
+    def redirect(self, text: str) -> bool:
+        self.redirect_calls.append(text)
+        return self.redirect_result
+
+    def steer(self, text: str) -> bool:
+        self.steer_calls.append(text)
+        return True
 
 
 def test_should_emit_requires_pending_and_idle():
@@ -149,8 +170,8 @@ def test_resolve_idle_prefers_seconds_since_activity_field():
     assert idle == 42.5
 
 
-def _runner_for_stall(adapter: _FakeAdapter) -> GatewayRunner:
-    r = GatewayRunner.__new__(GatewayRunner)
+def _runner_for_stall(adapter: Any) -> Any:
+    r = cast(Any, GatewayRunner.__new__(GatewayRunner))
     r._running = True
     r.adapters = {"fake": adapter}
     r._profile_adapters = {}
@@ -169,6 +190,14 @@ def _pending_event(chat_id: str = "chat-1", thread_id: str | None = None):
     from gateway.config import Platform
     source = SessionSource(chat_id=chat_id, thread_id=thread_id, platform=Platform.TELEGRAM)
     return SimpleNamespace(text="follow-up", source=source, timestamp=time.time())
+
+
+def _install_session_state(runner: GatewayRunner, agent: Any) -> None:
+    setattr(
+        runner,
+        "_peek_session_state",
+        lambda session_key: SimpleNamespace(turn=SimpleNamespace(agent=agent)),
+    )
 
 
 @pytest.mark.asyncio
@@ -203,6 +232,131 @@ async def test_check_session_stalls_skips_fresh_activity():
     sent = await runner._check_session_stalls(60)
     assert sent == 0
     assert adapter.sent == []
+
+
+def _real_redirectable_agent(last_activity_ts: float):
+    """Build a REAL AIAgent (not a fake stub) wired the way the live model
+    loop wires it, so this test proves the auto-redirect branch is reachable
+    through the actual ``redirect()`` implementation and its real firing
+    condition (``_model_request_active`` set, ``_executing_tools`` False) —
+    not through a test double that always returns True (PERS-107).
+    """
+    from run_agent import AIAgent
+
+    agent = object.__new__(AIAgent)
+    agent._pending_steer = None
+    agent._pending_steer_lock = threading.Lock()
+    agent._pending_redirect = None
+    agent._pending_redirect_lock = threading.Lock()
+    agent._model_request_active = threading.Event()
+    agent._executing_tools = False
+    agent._execution_thread_id = None
+    agent._interrupt_thread_signal_pending = False
+    agent._interrupt_requested = False
+    agent._interrupt_message = None
+    agent.api_mode = "chat_completions"
+    agent._active_request_abort = None
+    agent._todo_store = None
+    agent._last_activity_ts = last_activity_ts
+    agent._last_activity_desc = "api call"
+    agent._last_activity_provenance = ActivityProvenance.UNKNOWN
+    agent._current_tool = None
+    agent._api_call_count = 0
+    agent.max_iterations = 0
+    agent.iteration_budget = SimpleNamespace(used=0, max_total=0)
+    return agent
+
+
+@pytest.mark.asyncio
+async def test_check_session_stalls_hits_real_redirect_branch_when_model_request_active(
+    caplog,
+):
+    """PERS-107: prove auto-redirect is reachable, not dead code.
+
+    redirect() falls back to steer() only while ``_executing_tools`` is set.
+    The watchdog fires while a live model API call is outstanding
+    (``_model_request_active.set()`` in conversation_loop.py, no tool
+    running), which is exactly the window this test recreates on a REAL
+    AIAgent instance. This must land the "auto-redirect" log line, matching
+    what the live gateway would emit.
+    """
+    import logging
+
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:real-redirect"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _real_redirectable_agent(time.time() - 120)
+    agent._model_request_active.set()  # mid-flight model call, no tool running
+    runner._running_agents[session_key] = agent
+    _install_session_state(runner, agent)
+
+    with caplog.at_level(logging.WARNING):
+        assert await runner._check_session_stalls(60) == 1
+    assert any(
+        "auto-redirect accepted" in r.message for r in caplog.records
+    ), [r.message for r in caplog.records]
+    assert agent._pending_redirect  # a redirect text was actually queued
+    assert agent._interrupt_requested is True
+    assert agent._pending_steer is None  # steer() branch was NOT used
+
+
+@pytest.mark.asyncio
+async def test_check_session_stalls_redirects_live_turn_before_falling_back_to_steer():
+    """A watchdog nudge must wake the model now, not wait for a future tool result."""
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:redirect"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _SteerableAgent(time.time() - 120)
+    runner._running_agents[session_key] = agent
+    _install_session_state(runner, agent)
+
+    assert await runner._check_session_stalls(60) == 1
+    assert len(agent.redirect_calls) == 1
+    assert agent.steer_calls == []
+    assert "Continue where you left off" in agent.redirect_calls[0]
+
+
+@pytest.mark.asyncio
+async def test_check_session_stalls_falls_back_to_steer_when_redirect_declines():
+    adapter = _FakeAdapter()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:steer-fallback"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _SteerableAgent(time.time() - 120, redirect_result=False)
+    runner._running_agents[session_key] = agent
+    _install_session_state(runner, agent)
+
+    assert await runner._check_session_stalls(60) == 1
+    assert len(agent.redirect_calls) == 1
+    assert len(agent.steer_calls) == 1
+
+
+@pytest.mark.asyncio
+async def test_check_session_stalls_does_not_repeat_successful_wake_when_notice_fails():
+    """Transport trouble must not enqueue the same watchdog nudge every tick."""
+    from gateway.platforms.base import SendResult
+
+    class _AlwaysSoftFail(_FakeAdapter):
+        async def send(self, chat_id, content, metadata=None):
+            return SendResult(success=False, error="flood wait")
+
+    adapter = _AlwaysSoftFail()
+    runner = _runner_for_stall(adapter)
+    session_key = "agent:main:telegram:dm:wake-once"
+    adapter._pending_messages[session_key] = _pending_event()
+    agent = _SteerableAgent(time.time() - 120)
+    runner._running_agents[session_key] = agent
+    _install_session_state(runner, agent)
+
+    assert await runner._check_session_stalls(60) == 0
+    assert runner._session_stall_notified.get(session_key) is True
+    assert len(agent.redirect_calls) == 1
+
+    assert await runner._check_session_stalls(60) == 0
+    assert len(agent.redirect_calls) == 1
+    assert agent.steer_calls == []
 
 
 @pytest.mark.asyncio
@@ -472,7 +626,7 @@ def test_resolve_idle_rejects_boolean_seconds_and_uses_timestamp():
 def test_session_stall_timeout_in_default_config():
     from hermes_cli.config import DEFAULT_CONFIG
 
-    timeout = DEFAULT_CONFIG["agent"]["session_stall_timeout"]
+    timeout = cast(Any, DEFAULT_CONFIG)["agent"]["session_stall_timeout"]
     assert isinstance(timeout, (int, float))
     assert timeout > 0  # enabled by default; 0 would disable the watchdog
 

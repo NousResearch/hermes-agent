@@ -260,6 +260,43 @@ class A2ARequestHandler(BaseHTTPRequestHandler):
 class A2AAdapter(BasePlatformAdapter):
     """Inbound A2A server adapter."""
 
+    @property
+    def supports_voice_delivery(self) -> bool:
+        """A2A is a text transport: peers read JSON, they cannot hear audio.
+
+        RECUT 2026-09-09 alongside the base gate (patches 151+156 were in the
+        series but their code was gone from live source). Without this, auto-TTS
+        replaced an agent peer's actual answer with an audio artifact it could
+        not read. Capability outranks preference: /voice on must not re-enable
+        audio here, which is why the base gate checks this BEFORE the per-chat
+        opt-in sets.
+        """
+        return False
+
+    async def send_voice(
+        self, chat_id: str, audio_path: str, caption: Optional[str] = None,
+        reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None,
+        **kwargs,
+    ) -> SendResult:
+        """Swallow the audio; never let the fallback notice become the reply.
+
+        RECUT 2026-09-09. The inherited default calls _send_media_fallback_notice,
+        which SENDS "Couldn't deliver the audio attachment" through send(). On A2A
+        that text becomes the JSON-RPC task result, so a peer asking a question
+        received the apology INSTEAD of the answer. Here: log it, deliver a real
+        caption as text if there is one, and report success so no caller retries.
+        """
+        logger.info(
+            "[a2a] send_voice suppressed for %s (text-only transport): %s",
+            chat_id, audio_path,
+        )
+        if caption:
+            return await self.send(
+                chat_id=chat_id, content=caption, reply_to=reply_to,
+                metadata=metadata,
+            )
+        return SendResult(success=True, message_id="voice-suppressed")
+
     def __init__(self, config, **kwargs):
         super().__init__(config=config, platform=Platform("a2a"))
         extra = getattr(config, "extra", {}) or {}

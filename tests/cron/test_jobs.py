@@ -1,6 +1,8 @@
 """Tests for cron/jobs.py — schedule parsing, job CRUD, and due-job detection."""
 
 import threading
+from unittest.mock import patch
+
 import pytest
 from datetime import datetime, timedelta, timezone
 
@@ -1369,12 +1371,21 @@ class TestClaimDispatch:
         # Persisted BEFORE any side effect — survives a crash.
         assert load_jobs()[0]["repeat"]["completed"] == 1
 
-    def test_already_dispatched_oneshot_is_removed(self, tmp_cron_dir):
-        # A prior tick claimed (completed==times) then died before mark_job_run
-        # could remove the job.  The next claim must refuse AND clean up.
+    def test_already_dispatched_oneshot_is_retained_not_deleted(self, tmp_cron_dir):
+        # A prior tick claimed (completed==times) then died before mark_job_run could record the
+        # run. The next claim must refuse — but must NOT delete the record. Silently dropping it
+        # lost a real financial deadline (job f98f9fcf2561, 2026-08-20); the job is now retained,
+        # disabled, in the terminal `interrupted` state and reported loudly.
+        # See tests/cron/test_oneshot_reaper_no_silent_delete.py.
         save_jobs([self._oneshot(times=1, completed=1)])
-        assert claim_dispatch("os1") is False
-        assert load_jobs() == []  # removed, will not re-fire
+        with patch("cron.scheduler._deliver_result", return_value=None) as deliver:
+            assert claim_dispatch("os1") is False
+        retained = load_jobs()
+        assert len(retained) == 1  # retained, NOT deleted
+        assert retained[0]["enabled"] is False  # cannot re-fire
+        assert retained[0]["state"] == "interrupted"
+        assert retained[0]["next_run_at"] is None
+        deliver.assert_called_once()  # reported, not silent
 
 
     def test_mark_job_run_does_not_double_count_preclaimed_oneshot(self, tmp_cron_dir):
@@ -1392,10 +1403,11 @@ class TestClaimDispatch:
         assert retired[0]["enabled"] is False
 
 
-    def test_get_due_jobs_removes_stale_maxed_oneshot(self, tmp_cron_dir):
+    def test_get_due_jobs_retains_stale_maxed_oneshot(self, tmp_cron_dir):
         # A claimed one-shot whose tick died leaves completed>=times with
         # last_run_at still unset, so the recovery helper re-arms it as due.
-        # get_due_jobs must drop it instead of returning it for another fire.
+        # get_due_jobs must not return it for another fire — and must not delete it either
+        # (the f98f9fcf2561 silent-loss incident). It is disarmed in place and reported.
         past = (datetime.now(timezone.utc) - timedelta(seconds=5)).isoformat()
         save_jobs([{
             "id": "os1",
@@ -1405,9 +1417,13 @@ class TestClaimDispatch:
             "repeat": {"times": 1, "completed": 1},
             "next_run_at": None,
         }])
-        due = get_due_jobs()
+        with patch("cron.scheduler._deliver_result", return_value=None):
+            due = get_due_jobs()
         assert due == []
-        assert load_jobs() == []  # cleaned up
+        retained = load_jobs()
+        assert len(retained) == 1  # retained, NOT deleted
+        assert retained[0]["enabled"] is False
+        assert retained[0]["state"] == "interrupted"
 
 
 class TestLateEnvRepointScopesStore:

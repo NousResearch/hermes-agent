@@ -83,6 +83,7 @@ async def test_polling_conflict_retries_before_fatal(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.rate_limiter.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -239,6 +240,7 @@ async def test_polling_conflict_becomes_fatal_after_retries(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.rate_limiter.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr("plugins.platforms.telegram.adapter.Application", SimpleNamespace(builder=MagicMock(return_value=builder)))
 
@@ -320,6 +322,7 @@ async def test_connect_clears_webhook_before_polling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.rate_limiter.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -388,6 +391,7 @@ async def test_connect_does_not_block_on_post_connect_housekeeping(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.rate_limiter.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -464,6 +468,7 @@ async def test_polling_conflict_reschedule_uses_running_loop(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.rate_limiter.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -526,6 +531,7 @@ def _build_polling_app(monkeypatch, adapter):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.rate_limiter.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",
@@ -623,6 +629,7 @@ async def test_conflict_callback_disarms_before_scheduling(monkeypatch):
     builder.token.return_value = builder
     builder.request.return_value = builder
     builder.get_updates_request.return_value = builder
+    builder.rate_limiter.return_value = builder
     builder.build.return_value = app
     monkeypatch.setattr(
         "plugins.platforms.telegram.adapter.Application",

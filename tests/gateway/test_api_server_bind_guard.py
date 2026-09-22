@@ -191,3 +191,25 @@ class TestBindMechanics:
         finally:
             await first.disconnect()
             await second.disconnect()
+
+    @pytest.mark.asyncio
+    async def test_port_conflict_is_retryable_during_reconnect(self):
+        """A startup collision can be permanent; a reconnect collision can be a race.
+
+        A gateway replacement may overlap the old listener briefly. Startup
+        should still fail closed, but the reconnect watcher must keep retrying
+        so the API server returns once the old process releases the port.
+        """
+        port = self._free_port()
+        first = self._make_adapter(port)
+        assert await first.connect() is True
+        second = self._make_adapter(port)
+        try:
+            result = await second.connect(is_reconnect=True)
+            assert result is False
+            assert second.has_fatal_error is True
+            assert second.fatal_error_retryable is True
+            assert second.fatal_error_code == "api_server_port_in_use"
+        finally:
+            await first.disconnect()
+            await second.disconnect()

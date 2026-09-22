@@ -221,6 +221,73 @@ def test_explicit_provider_auth_uses_its_configured_task_fallback(monkeypatch, s
     assert not chain
 
 
+def _model_not_found_error():
+    return _ApiError(
+        "Error code: 400 - {'error': {'message': 'unknown provider for "
+        "model gemini-flash-lite-latest', 'type': 'invalid_request_error', "
+        "'code': 'model_not_found', 'param': 'model'}}",
+        status_code=400,
+    )
+
+
+def test_explicit_provider_model_not_found_uses_task_fallback_chain(monkeypatch):
+    """A 400 model_not_found on an explicit aux route must walk fallback_chain.
+
+    Hub compression pinned gemini-flash-lite-latest via cliproxyapi. When the
+    router said unknown provider, the ladder skipped the configured chain and
+    the Telegram session could not compress. Capacity-class: the named model
+    cannot be served, so the task chain is in play.
+    """
+    fallback_client = _FakeClient()
+    monkeypatch.setattr(
+        aux,
+        "_get_auxiliary_task_config",
+        lambda task: {
+            "fallback_chain": [
+                {"provider": "cliproxyapi", "model": "gemini-3.7-flash-high"},
+            ]
+        },
+    )
+    monkeypatch.setattr(aux, "_auth_refresh_provider_for_route", lambda *a, **k: None)
+    monkeypatch.setattr(aux, "_recoverable_pool_provider", lambda *a, **k: None)
+    monkeypatch.setattr(
+        aux,
+        "_try_configured_fallback_chain",
+        lambda *a, **k: (fallback_client, FALLBACK_MODEL, "fallback_chain[0](cliproxyapi)"),
+    )
+    for name in ("_try_payment_fallback", "_try_main_fallback_chain"):
+        monkeypatch.setattr(
+            aux, name, lambda *a, _n=name, **k: pytest.fail("%s must stay gated" % _n)
+        )
+
+    ladder = aux._aux_recovery_ladder(
+        _model_not_found_error(),
+        client=_ExplicitProviderClient(),
+        kwargs={"model": "gemini-flash-lite-latest"},
+        task="compression",
+        async_mode=False,
+        base_info="http://127.0.0.1:8318/v1",
+        resolved_provider="cliproxyapi",
+        resolved_model="gemini-flash-lite-latest",
+        resolved_base_url=None,
+        resolved_api_key=None,
+        resolved_api_mode=None,
+        final_model="gemini-flash-lite-latest",
+        max_tokens=None,
+        main_runtime=None,
+        route_info={},
+    )
+
+    def perform(step):
+        assert step.kind == "fallback"
+        assert step.args == (
+            fallback_client, FALLBACK_MODEL, "fallback_chain[0](cliproxyapi)",
+        )
+        return "fallback-response"
+
+    assert aux._drive_ladder(ladder, perform) == "fallback-response"
+
+
 def test_explicit_provider_auth_never_uses_an_unconfigured_fallback(monkeypatch):
     """A 401 without a task chain preserves the explicit-provider boundary."""
     monkeypatch.setattr(aux, "_get_auxiliary_task_config", lambda task: {})

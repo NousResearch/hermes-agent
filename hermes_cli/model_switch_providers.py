@@ -388,11 +388,22 @@ def _has_fast_aws_sdk_signal() -> bool:
 
 
 def _has_aws_sdk_creds_for_listing(slug: str, current_provider: str) -> bool:
-    """AWS SDK credential check; the full boto3 chain is only consulted for the *current* provider."""
+    """Check AWS SDK credentials for the current or explicitly configured provider.
+
+    A non-current Bedrock row must not probe ambient AWS credentials. Once Hermes itself has an
+    explicit Bedrock config, however, the SDK chain is the configured auth path and the row belongs
+    in every model picker.
+    """
     if _has_fast_aws_sdk_signal():
         return True
-    if str(slug or "").strip().lower() != str(current_provider or "").strip().lower():
-        return False
+    is_current = str(slug or "").strip().lower() == str(current_provider or "").strip().lower()
+    if not is_current:
+        try:
+            from hermes_cli.auth import is_provider_explicitly_configured
+            if not is_provider_explicitly_configured(slug):
+                return False
+        except Exception:
+            return False
     try:
         from agent.bedrock_adapter import has_aws_credentials
         return bool(has_aws_credentials())
@@ -691,6 +702,9 @@ class _PickerBuild:
     builtin_endpoints: set = field(default_factory=set)
     # (display_name, base_url) pairs from section 3 so section 4 skips overlapping rows.
     section3_pairs: set = field(default_factory=set)
+    # Normalized base URLs of every endpoint row already emitted: section 3b skips a bare
+    # ``custom`` duplicate pointing at the same endpoint as a named providers: row.
+    endpoint_urls: set = field(default_factory=set)
 
     @property
     def current_provider_norm(self) -> str:
@@ -740,6 +754,9 @@ class _PickerBuild:
             "models": models if shown is None else shown, "total_models": len(models), "source": source,
             "api_url": api_url, "native_catalog_empty": native_catalog_empty})
         self.seen_slugs.add(slug.lower())
+        url_norm = _norm_url(api_url)
+        if url_norm:
+            self.endpoint_urls.add(url_norm)
 
     def record_section3_pair(self, name: str, url_norm: str) -> bool:
         """Remember a (display_name, base_url) pair for section-4 dedup; False when either is blank."""
@@ -1025,6 +1042,10 @@ def _lap_bare_custom_row(b: _PickerBuild, custom_providers: list | None) -> None
     if any(
         isinstance(cp, dict) and _norm_url(_entry_base_url(cp)) == _norm_url(b.current_base_url)
         for cp in (custom_providers or [])):
+        return
+    # A named providers:/custom_providers row already emitted for this exact endpoint wins:
+    # showing a second bare "Custom endpoint" row at the same URL is a duplicate, not a choice.
+    if b.current_base_url_norm and b.current_base_url_norm in b.endpoint_urls:
         return
     api_url = str(b.current_base_url).strip().rstrip("/")
     models = [b.current_model] if b.current_model else []

@@ -94,3 +94,27 @@ async def test_teardown_continues_after_cancellation_swallowing_background_cance
         await asyncio.wait_for(finished.wait(), timeout=0.2)
 
 
+@pytest.mark.asyncio
+async def test_outer_cancel_budget_has_margin_over_adapter_inner_budget(
+    bare_runner, monkeypatch, caplog
+):
+    """The runner must not cancel cleanup at the same instant as the adapter's own deadline."""
+    monkeypatch.setenv("HERMES_GATEWAY_ADAPTER_DISCONNECT_TIMEOUT", "0.10")
+    adapter = MagicMock()
+
+    async def finishes_just_after_nominal_timeout():
+        await asyncio.sleep(0.105)
+
+    adapter.cancel_background_tasks = AsyncMock(
+        side_effect=finishes_just_after_nominal_timeout
+    )
+    adapter.disconnect = AsyncMock(return_value=None)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        await bare_runner._bounded_adapter_teardown(adapter, Platform.TELEGRAM)
+
+    adapter.disconnect.assert_awaited_once()
+    assert "telegram background-task cancel timed out" not in caplog.text
+    assert "exception was never retrieved" not in caplog.text
+
+

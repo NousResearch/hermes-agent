@@ -309,6 +309,28 @@ def _elevenlabs_error_detail(err_body: Dict[str, Any]) -> str:
     return str(error_value) if error_value else ""
 
 
+def _normalize_keyterms(raw: Any) -> list:
+    """Config keyterms -> a clean list for repeated multipart fields.
+
+    Accepts a list or a comma-separated string. Terms are trimmed, deduped
+    (order preserved) and dropped when empty or >= the API's 50-character
+    keyword limit. NEVER JSON-encode this list into one field: Scribe reads a
+    single `keyterms` value as ONE keyword, so a JSON array becomes a 900+ char
+    keyword and the whole request 400s with "All keywords must be less than 50
+    characters" - every voice note then fails to transcribe.
+    """
+    if isinstance(raw, str):
+        raw = raw.split(",")
+    terms, seen = [], set()
+    for item in raw or []:
+        term = str(item).strip()
+        if not term or len(term) >= 50 or term in seen:
+            continue
+        seen.add(term)
+        terms.append(term)
+    return terms[:100]
+
+
 def _transcribe_elevenlabs(
     file_path: str, model_name: str, *, language: Optional[str] = None, prompt: Optional[str] = None
 ) -> Dict[str, Any]:
@@ -328,20 +350,59 @@ def _transcribe_elevenlabs(
     # Language: hook override > stt.elevenlabs.language(_code) > stt.language.
     language_code = language or _resolve_stt_language("elevenlabs", stt_config, extra_keys=("language_code",)) or ""
 
+    # stt.elevenlabs.keyterms / .corrections. Restored 2026-09-09: local patches
+    # 163 + 166 carried these, were put on HOLD as "present upstream", and an
+    # upstream rewrite then dropped them. Config kept 50 keyterms and 30 name
+    # corrections that nothing read, so every voice note silently lost the
+    # configured domain vocabulary while transcription looked perfectly healthy.
+    keyterms = _normalize_keyterms(elevenlabs_config.get("keyterms"))
+    corrections = {
+        str(k): str(v)
+        for k, v in (elevenlabs_config.get("corrections") or {}).items()
+        if str(k).strip()
+    }
+
     def _post() -> Any:
-        data: Dict[str, str] = {
+        data: Dict[str, Any] = {
             "model_id": model_name,
             "tag_audio_events": str(is_truthy_value(elevenlabs_config.get("tag_audio_events", False))).lower(),
             "diarize": str(is_truthy_value(elevenlabs_config.get("diarize", False))).lower(),
             **({"language_code": language_code} if language_code else {})}
+        if keyterms:
+            # Repeated multipart fields, one keyword each (see _normalize_keyterms).
+            data["keyterms"] = keyterms
         return _post_audio_multipart(f"{base_url}/speech-to-text", {"xi-api-key": api_key}, file_path, data)
 
     def _log(transcript_text: str, _body: Dict[str, Any]) -> None:
-        logger.info("Transcribed %s via ElevenLabs Scribe (%s, %d chars)",
-                    Path(file_path).name, model_name, len(transcript_text))
+        logger.info("Transcribed %s via ElevenLabs Scribe (%s, %d chars, %d keyterms)",
+                    Path(file_path).name, model_name, len(transcript_text), len(keyterms))
 
-    return _rest_provider(file_path, "elevenlabs", "ElevenLabs STT", _post, _elevenlabs_error_detail,
-                          _extract_transcript_text, _log)
+    result = _rest_provider(file_path, "elevenlabs", "ElevenLabs STT", _post, _elevenlabs_error_detail,
+                            _extract_transcript_text, _log)
+    if corrections and isinstance(result, dict) and result.get("text"):
+        result["text"] = _apply_transcript_corrections(result["text"], corrections)
+    return result
+
+
+def _apply_transcript_corrections(text: str, corrections: Dict[str, str]) -> str:
+    """Fix known mis-hearings from the configured correction map.
+
+    Whole-word, case-insensitive, longest-key-first. Word boundaries matter: a
+    naive substring replace of a short key inside an already-corrected longer
+    token doubles the suffix. Longest-first means a two-word key wins over the
+    one-word key that is its prefix.
+    """
+    if not text or not corrections:
+        return text
+    for wrong in sorted(corrections, key=len, reverse=True):
+        right = corrections[wrong]
+        if not wrong.strip():
+            continue
+        # \b fails next to '.' or '-' (e.g. "Item O.C.S."), so anchor on a
+        # non-word char / string edge instead of relying on \b alone.
+        pattern = r"(?<![\w])" + re.escape(wrong) + r"(?![\w])"
+        text = re.sub(pattern, right, text, flags=re.IGNORECASE)
+    return text
 
 
 def _transcribe_deepinfra(

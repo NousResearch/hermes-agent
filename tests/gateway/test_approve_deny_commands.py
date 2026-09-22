@@ -66,6 +66,29 @@ def _make_runner():
     return runner
 
 
+@pytest.fixture(autouse=True)
+def _isolate_approval_env(monkeypatch):
+    """Keep the HOST shell out of the approval gate's branch selection.
+
+    The agent shell exports HERMES_SINGLE_QUERY_SESSION, HERMES_EXEC_ASK and
+    HERMES_INTERACTIVE. pytest inherits them, so
+    _is_single_query_approval_context() returns True and the gate takes the
+    single_query deny branch, returning a dict with no "status" key. Six
+    tests in this file then fail on the host's environment rather than on the
+    code — measured 2026-08-30, where the same file was 15/15 green under
+    `env -u`. Each test sets whatever it actually needs; the ambient values
+    must never decide the branch.
+    """
+    for _var in (
+        "HERMES_SINGLE_QUERY_SESSION",
+        "HERMES_EXEC_ASK",
+        "HERMES_INTERACTIVE",
+        "HERMES_GATEWAY_SESSION",
+        "HERMES_SESSION_KEY",
+    ):
+        monkeypatch.delenv(_var, raising=False)
+
+
 def _clear_approval_state():
     """Reset all module-level approval state between tests."""
     from tools import approval as mod

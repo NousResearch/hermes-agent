@@ -34,6 +34,21 @@ def _ensure_telegram_mock():
     if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
         return # Real library installed
 
+    # "Not imported yet" is not "not installed". When PTB IS installed but has
+    # not been imported at this point in collection, the check above passes and
+    # the mock gets installed anyway -- and because this mock registers
+    # "telegram" WITHOUT "telegram.error", any test module later doing
+    # `from telegram.error import ...` dies with "'telegram' is not a package".
+    # PathFinder answers the real question (is it on sys.path?) and, unlike
+    # importlib.util.find_spec, does not raise when a MagicMock is cached.
+    try:
+        from importlib.machinery import PathFinder
+
+        if PathFinder.find_spec("telegram", None) is not None:
+            return  # Real library is available -- do not shadow it
+    except Exception:
+        pass  # Fall through and mock, e.g. a partially-installed package
+
     telegram_mod = MagicMock()
     telegram_mod.Update = MagicMock()
     telegram_mod.Update.ALL_TYPES = []

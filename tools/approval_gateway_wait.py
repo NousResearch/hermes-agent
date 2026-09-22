@@ -65,10 +65,18 @@ def _poll_event(event: threading.Event, session_key: str, *, interrupt_log: str)
             if is_interrupted():
                 logger.info(interrupt_log, session_key)
                 return "interrupted"
-            remaining = deadline - time.monotonic()
-            if remaining <= 0:
+            # LOCAL PATCH 160 (t_4878d4f2, re-cut after approval.py was split into this module).
+            # The delivered ANSWER is checked BEFORE the deadline. The gateway notify callback
+            # resolves an entry synchronously, so it can set the event before this loop is even
+            # entered; testing the deadline first meant a busy box (load 45 during a full-suite
+            # run) discarded an approval the user had actually granted and reported a timeout.
+            # Fail-closed here means honouring the tap, not denying it.
+            if event.is_set():
+                return "set"
+            _remaining = deadline - time.monotonic()
+            if _remaining <= 0:
                 return "timeout"
-            if event.wait(timeout=min(1.0, remaining)):
+            if event.wait(timeout=min(1.0, _remaining)):
                 return "set"
             heartbeat()
 

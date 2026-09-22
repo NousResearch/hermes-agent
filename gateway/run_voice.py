@@ -297,9 +297,25 @@ class GatewayVoiceMixin:
         if not response or response.startswith("Error:"):
             return False
         chat_id = event.source.chat_id
+        adapter = getattr(self, "_delivery_adapter_for", None)
+        if callable(adapter):
+            adapter = adapter(event.source)
+        elif hasattr(self, "_adapter_for_source"):
+            adapter = self._adapter_for_source(event.source)
+        elif hasattr(self, "_adapter"):
+            adapter = getattr(self, "_adapter", None)
+        # Layer 0, RECUT 2026-09-09: a transport with no audio channel never gets a
+        # voice reply, whatever the chat's voice_mode says. This check MUST precede
+        # the voice_mode decision below: on A2A, /voice all otherwise produced a TTS
+        # send whose fallback notice replaced the peer's actual answer. Capability
+        # outranks preference.
+        if adapter is not None and not getattr(adapter, "supports_voice_delivery", True):
+            logger.debug(
+                "Auto voice reply skipped: transport %s has no voice delivery",
+                event.source.platform.value)
+            return False
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE
-        adapter = self._delivery_adapter_for(event.source)
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))

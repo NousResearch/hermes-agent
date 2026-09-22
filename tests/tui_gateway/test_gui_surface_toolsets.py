@@ -17,8 +17,20 @@ import pytest
 import tui_gateway.server as server
 from toolsets import TOOLSETS, resolve_toolset
 
+# ``apply_layout`` joins ``desktop_ui`` through ``registry.register`` at import
+# time rather than through the static TOOLSETS table, so whether
+# ``resolve_toolset("desktop_ui")`` returns it depends on whether ANY earlier
+# test in the same process imported ``tools.apply_layout_tool``. That made this
+# module order-dependent: green alone, red in a full run behind
+# tests/tools/test_apply_layout_tool.py (observed 2026-08-27: `pytest -k
+# toolset` failed with "Extra items in the left set: 'apply_layout'" while the
+# same test passed in isolation). Importing it here pins the registration so
+# the assertion means the same thing in both orders.
+import tools.apply_layout_tool  # noqa: F401  (registers apply_layout)
+
 GUI_TOOLS = {
     "annotate_preview",
+    "apply_layout",
     "desktop_preview",
     "drive_preview",
     "close_terminal",

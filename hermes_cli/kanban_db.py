@@ -288,6 +288,25 @@ DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS = 60 * 60
 # under memory.high, SIGKILL pending): releasing now would spawn a duplicate.
 RECLAIM_DEFER_GRACE_SECONDS = 120
 
+# Self-exit reaper (see hermes_cli/kanban_self_reaper.py). A worker that
+# self-completes cannot kill itself synchronously without losing the lifecycle
+# hook and the notifier, so a detached reaper enforces the exit instead. The
+# grace is generous on purpose: on the healthy path the worker leaves well
+# inside it and nothing is ever signalled.
+_SELF_REAPER_DEFAULT_GRACE = 45.0
+_SELF_REAPER_DEFAULT_KILL_AFTER = 15.0
+
+
+def _positive_float(value: Any, default: float, *, minimum: float = 0.0) -> float:
+    """Coerce ``value`` to a float >= ``minimum``, falling back to ``default``."""
+    try:
+        parsed = float(value)
+    except (TypeError, ValueError):
+        return default
+    if parsed != parsed or parsed in (float("inf"), float("-inf")):
+        return default
+    return parsed if parsed >= minimum else default
+
 
 def _resolve_claim_ttl_seconds(ttl_seconds: Optional[int] = None) -> int:
     """Explicit ``ttl_seconds`` > ``HERMES_KANBAN_CLAIM_TTL_SECONDS`` > default."""
@@ -2757,6 +2776,12 @@ def complete_task(
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
+    # Capture the worker PID BEFORE the write txn nulls every pid column.
+    # Once ``complete_task`` commits, tasks.worker_pid, task_runs.worker_pid
+    # and tasks.current_run_id are all NULL, so no later sweeper can ever
+    # correlate the still-running OS process back to this card. That is the
+    # whole mechanism of the leak this read closes.
+    _reap_pid = _worker_pid_for_reap(conn, task_id)
     with write_txn(conn):
         # Hard invariant even for human review approval: a parent may have
         # reopened while this task waited.
@@ -2821,10 +2846,363 @@ def complete_task(
     _clear_failure_counter(conn, task_id)
     recompute_ready(conn)  # separate txn so children see ``done``
     _cleanup_workspace(conn, task_id)
+    # Assert the worker's self-reported cleanup actually happened. Runs AFTER
+    # _cleanup_workspace so a worktree the dispatcher itself can safely remove
+    # is already gone and never reported as an orphan.
+    _assert_no_orphan_worktrees(conn, task_id, run_id=run_id)
+    # Reap the worker process for this run. Last, so a self-completing worker
+    # (the normal case: kanban_complete runs INSIDE the worker) has already
+    # committed its handoff, fired cleanup, and emitted its events before it
+    # is asked to exit.
+    _reap_completed_worker(conn, task_id, _reap_pid, run_id=run_id)
     _done_task = get_task(conn, task_id)
     if fire_lifecycle_hook:
         _fire_task_hook("kanban_task_completed", _done_task, task_id, run_id, summary=handoff_summary)
     return True
+
+
+# ---------------------------------------------------------------------------
+# Completion-time worker reap + orphan-worktree assertion
+# ---------------------------------------------------------------------------
+
+
+def _worker_pid_for_reap(
+    conn: sqlite3.Connection, task_id: str,
+) -> Optional[int]:
+    """Read the worker PID for ``task_id`` before completion nulls it.
+
+    Prefers ``tasks.worker_pid``; falls back to the active run's copy, which
+    survives paths that clear the task row first. Returns ``None`` when there
+    is no recorded worker (manual CLI completion, never-claimed task).
+    """
+    try:
+        row = conn.execute(
+            "SELECT t.worker_pid AS task_pid, r.worker_pid AS run_pid "
+            "FROM tasks t "
+            "LEFT JOIN task_runs r ON r.id = t.current_run_id "
+            "WHERE t.id = ?",
+            (task_id,),
+        ).fetchone()
+    except sqlite3.Error:
+        return None
+    if not row:
+        return None
+    for key in ("task_pid", "run_pid"):
+        try:
+            value = row[key]
+        except (IndexError, KeyError):
+            continue
+        if value:
+            return int(value)
+    return None
+
+
+def self_exit_reaper_config(
+    kanban_cfg: Optional[dict] = None,
+) -> tuple[bool, float, float]:
+    """Return ``(enabled, grace_seconds, kill_after_seconds)`` for the self reap.
+
+    Behavioural settings, so they live in ``config.yaml`` under ``kanban:``
+    (``worker_self_exit_reaper``, ``worker_self_exit_grace_seconds``,
+    ``worker_self_exit_kill_after_seconds``) rather than in an env var.
+
+    Defaults are chosen so the healthy path never signals anything: a worker
+    whose loop has correctly closed only needs interpreter teardown, which
+    cli.py's own exit watchdog already bounds at 30s.
+    """
+    if kanban_cfg is None:
+        try:
+            from hermes_cli.config import load_config
+
+            kanban_cfg = (load_config().get("kanban") or {})
+        except Exception:
+            kanban_cfg = {}
+    cfg = kanban_cfg or {}
+    enabled = cfg.get("worker_self_exit_reaper", True)
+    if isinstance(enabled, str):
+        enabled = enabled.strip().lower() not in {"0", "false", "no", "off"}
+    grace = _positive_float(
+        cfg.get("worker_self_exit_grace_seconds"),
+        _SELF_REAPER_DEFAULT_GRACE,
+    )
+    kill_after = _positive_float(
+        cfg.get("worker_self_exit_kill_after_seconds"),
+        _SELF_REAPER_DEFAULT_KILL_AFTER,
+    )
+    return bool(enabled), grace, kill_after
+
+
+def _arm_self_exit_reaper(
+    task_id: str,
+    pid: int,
+    *,
+    run_id: Optional[int] = None,
+    spawn_fn=None,
+) -> dict[str, Any]:
+    """Spawn a detached reaper that guarantees this worker actually exits.
+
+    Must be called from INSIDE the worker (``pid == os.getpid()``). The child
+    is fully detached (``start_new_session=True``, no inherited stdio) so it
+    survives its parent and can still act when the parent is wedged in a
+    blocking syscall and therefore unable to run its own SIGTERM handler.
+
+    The parent's start-time token is captured HERE, before the spawn, and
+    handed to the child. The child re-reads it before signalling, so a
+    recycled PID is never signalled.
+
+    Best-effort: returns ``{"armed": False, ...}`` rather than raising, since a
+    completion that already committed must never fail on this.
+    """
+    result: dict[str, Any] = {"armed": False, "reaper_pid": None}
+    try:
+        enabled, grace, kill_after = self_exit_reaper_config()
+    except Exception:
+        enabled, grace, kill_after = (
+            True, _SELF_REAPER_DEFAULT_GRACE, _SELF_REAPER_DEFAULT_KILL_AFTER,
+        )
+    if not enabled:
+        result["reason"] = "disabled"
+        return result
+    # Never arm under pytest: a detached process that SIGKILLs the test runner
+    # after the grace window would be a spectacular way to break CI.
+    if os.environ.get("PYTEST_CURRENT_TEST"):
+        result["reason"] = "pytest"
+        return result
+    try:
+        import subprocess
+
+        from hermes_cli.kanban_self_reaper import process_start_time
+
+        argv = [
+            sys.executable,
+            "-m", "hermes_cli.kanban_self_reaper",
+            "--pid", str(int(pid)),
+            "--task-id", str(task_id or ""),
+            "--grace", str(float(grace)),
+            "--kill-after", str(float(kill_after)),
+        ]
+        start_token = process_start_time(int(pid))
+        if start_token:
+            argv.extend(["--expected-start", start_token])
+        board = None
+        try:
+            board = get_current_board()
+        except Exception:
+            board = None
+        if board:
+            argv.extend(["--board", str(board)])
+        if run_id is not None:
+            argv.extend(["--run-id", str(int(run_id))])
+
+        env = dict(os.environ)
+        # The child re-enters hermes_cli to write its event; make sure it
+        # resolves the same install tree and the same board as this worker.
+        env.setdefault("PYTHONPATH", str(Path(__file__).resolve().parent.parent))
+        env.pop("PYTEST_CURRENT_TEST", None)
+
+        spawn = spawn_fn if spawn_fn is not None else subprocess.Popen
+        proc = spawn(  # noqa: S603 -- argv is a fixed list built above
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            env=env,
+            start_new_session=True,
+            close_fds=True,
+        )
+        result["armed"] = True
+        result["reaper_pid"] = getattr(proc, "pid", None)
+        result["grace_seconds"] = float(grace)
+        result["kill_after_seconds"] = float(kill_after)
+    except Exception as exc:
+        result["reason"] = f"{type(exc).__name__}: {exc}"
+        _log.debug(
+            "kanban: self-exit reaper arm failed for %s", task_id, exc_info=True,
+        )
+    return result
+
+
+def _reap_completed_worker(
+    conn: sqlite3.Connection,
+    task_id: str,
+    pid: Optional[int],
+    *,
+    run_id: Optional[int] = None,
+    signal_fn=None,
+) -> dict[str, Any]:
+    """Terminate the worker process belonging to a just-completed card.
+
+    Closes the shared-state race where a card reaches ``done`` while its
+    spawned worker keeps running and keeps writing shared files. Completion
+    nulls ``tasks.worker_pid``, ``task_runs.worker_pid`` and
+    ``tasks.current_run_id`` in one transaction, so after the commit **no**
+    sweeper (``detect_crashed_workers``, ``release_stale_claims``,
+    ``enforce_max_runtime``, ``reconcile_orphaned_running``) can correlate the
+    surviving process back to the card — every one of them selects on
+    ``status = 'running'``. The process is therefore unreachable by design,
+    which is why the reap has to happen here rather than on a later tick.
+
+    **Self-completion is the normal case.** ``kanban_complete`` executes
+    inside the worker itself, so ``pid`` is usually this very process. Killing
+    ourselves synchronously would abort the interpreter mid-completion and
+    lose the lifecycle hook, the notifier, and the process's own clean
+    shutdown. Instead we record the reap and let the CLI's existing
+    kanban-worker SIGTERM path (which already calls ``os._exit(0)`` for
+    ``HERMES_KANBAN_TASK`` processes, see #28181) run at its natural exit.
+    Self-reap is recorded as ``mode="self"`` and is deliberately not a kill.
+
+    A **foreign** PID (dispatcher-side completion, human `hermes kanban
+    complete`, reviewer approval) IS terminated, reusing
+    ``_terminate_reclaimed_worker`` so the SIGTERM → 5s grace → SIGKILL
+    ladder and the host-local claim-lock guard are identical to every other
+    termination path. Cross-host workers are never signalled.
+
+    Always emits a ``worker_reaped`` event so the reap is auditable on the
+    board instead of being invisible. Best-effort: never raises, never blocks
+    a completion that already committed.
+    """
+    info: dict[str, Any] = {
+        "pid": int(pid) if pid else None,
+        "mode": None,
+        "terminated": False,
+    }
+    if not pid or int(pid) <= 0:
+        return info
+    pid = int(pid)
+    try:
+        if pid == os.getpid():
+            # Self-completion: the normal case. We cannot kill ourselves here
+            # without aborting the interpreter mid-completion and losing the
+            # lifecycle hook and the delivery notifier, so we arm a detached
+            # fail-safe reaper that outlives this process and applies the
+            # SIGTERM -> grace -> SIGKILL ladder to us if we do not leave on
+            # our own.
+            #
+            # Patch 008 recorded mode="self" and deferred to "the process's own
+            # exit path". That contract did not exist: the agent loop's
+            # continuation gates re-opened the loop after completion (fixed in
+            # agent/conversation_loop.py), and a plain SIGTERM was not always
+            # enough because CPython defers signal handlers while the main
+            # thread is parked in a blocking C call. Observed live on
+            # 2026-08-20: pid 65495 outlived its card by 25 minutes and only
+            # SIGKILL cleared it.
+            #
+            # The healthy path signals nothing: once the loop gates are closed
+            # the worker exits inside the grace window and the reaper records
+            # outcome="exited_on_own". The event it writes carries the REAL
+            # outcome, so mode="self" is no longer a claim that a self-reap was
+            # merely noted.
+            info["mode"] = "self"
+            info["terminated"] = False
+            armed = _arm_self_exit_reaper(task_id, pid, run_id=run_id)
+            info["self_exit_armed"] = bool(armed.get("armed"))
+            if armed.get("reaper_pid"):
+                info["reaper_pid"] = armed["reaper_pid"]
+            if not info["self_exit_armed"]:
+                _log.warning(
+                    "kanban: could not arm the self-exit reaper for task %s "
+                    "(pid %s); this worker may outlive its card",
+                    task_id, pid,
+                )
+        elif not _pid_alive(pid):
+            info["mode"] = "already_exited"
+            info["terminated"] = True
+        else:
+            # Foreign live worker. Reuse the shared termination ladder so the
+            # host-local guard and SIGTERM/SIGKILL semantics stay in one place.
+            lock = _claimer_id()
+            term = _terminate_reclaimed_worker(
+                pid, lock, signal_fn=signal_fn,
+            )
+            info["mode"] = "terminated"
+            info["terminated"] = bool(term.get("terminated"))
+            info["sigkill"] = bool(term.get("sigkill"))
+            if not info["terminated"]:
+                _log.warning(
+                    "kanban: worker pid %s for completed task %s survived "
+                    "termination; it may still mutate shared state",
+                    pid, task_id,
+                )
+        with write_txn(conn):
+            _append_event(
+                conn, task_id, "worker_reaped", dict(info), run_id=run_id,
+            )
+    except Exception:
+        _log.debug("kanban worker reap failed for %s", task_id, exc_info=True)
+    return info
+
+
+def _assert_no_orphan_worktrees(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    run_id: Optional[int] = None,
+) -> list[str]:
+    """Verify no git worktree belonging to ``task_id`` survived completion.
+
+    The worker's handoff is a *claim* that it cleaned up; this checks the real
+    filesystem. Any registered worktree whose path still contains the task id
+    is reported as an orphan via a loud ``orphan_worktrees_detected`` event
+    and a WARNING log, so a false "cleaned up" self-report cannot pass
+    silently.
+
+    Deliberately does NOT fail the completion: by the time this runs the
+    completion has already committed, dependent children have been promoted,
+    and refusing here would leave the card in a contradictory state. The event
+    is the durable signal. Returns the orphan paths found (empty when clean).
+    """
+    orphans: list[str] = []
+    try:
+        row = conn.execute(
+            "SELECT workspace_kind, workspace_path FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        repo: Optional[Path] = None
+        if row and row["workspace_path"]:
+            candidate = Path(row["workspace_path"]).expanduser()
+            # The worktree lives at <repo>/.worktrees/<task-id>; walk up to the
+            # primary checkout so `git worktree list` sees the whole set.
+            for parent in [candidate, *candidate.parents]:
+                if (parent / ".git").exists():
+                    repo = parent
+                    break
+        if repo is None:
+            return orphans
+        proc = subprocess.run(
+            ["git", "worktree", "list", "--porcelain"],
+            cwd=str(repo),
+            stdout=subprocess.PIPE,
+            stderr=subprocess.DEVNULL,
+            text=True, encoding="utf-8", errors="replace",
+            timeout=30,
+            check=False,
+        )
+        if proc.returncode != 0:
+            return orphans
+        for line in (proc.stdout or "").splitlines():
+            if not line.startswith("worktree "):
+                continue
+            path = line.split(" ", 1)[1].strip()
+            if task_id in Path(path).name and Path(path).exists():
+                orphans.append(path)
+        if orphans:
+            _log.warning(
+                "kanban: task %s completed but left %d orphan git worktree(s): "
+                "%s — the worker's cleanup self-report was wrong",
+                task_id, len(orphans), ", ".join(orphans),
+            )
+            with write_txn(conn):
+                _append_event(
+                    conn, task_id, "orphan_worktrees_detected",
+                    {"worktrees": orphans, "count": len(orphans)},
+                    run_id=run_id,
+                )
+    except Exception:
+        _log.debug(
+            "kanban orphan-worktree assertion failed for %s",
+            task_id, exc_info=True,
+        )
+    return orphans
 
 
 _REVIEW_APPROVED_NOTE = "Review approved without additional evidence."

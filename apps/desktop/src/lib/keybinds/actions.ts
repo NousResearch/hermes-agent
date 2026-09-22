@@ -91,11 +91,11 @@ export const KEYBIND_ACTIONS: readonly KeybindActionMeta[] = [
   ...SESSION_SLOT_ACTIONS,
   { id: 'session.focusSearch', category: 'session', defaults: ['mod+shift+f'] },
   { id: 'session.togglePin', category: 'session', defaults: [] },
-  // Archive the active session. Ships unbound (like `session.togglePin`) so an
-  // irreversible-feeling, mouse-only action doesn't silently claim a chord for
-  // every user — surfaced in the panel for opt-in binding (the issue suggests
-  // ⌘⇧⌫ / Ctrl+Shift+⌫).
-  { id: 'session.archive', category: 'session', defaults: [] },
+  // Archive the active session. ⌘L (Ctrl+L off macOS): "leave this chat".
+  // Ships bound because the user asked for a dedicated archive chord; the
+  // panel still lets them rebind. Previously unbound so a mouse-only action
+  // did not silently claim a chord for every install.
+  { id: 'session.archive', category: 'session', defaults: ['mod+l'] },
   // ⌘⇧B — "b" for branch: spin up a new git worktree from the active repo.
   { id: 'workspace.newWorktree', category: 'session', defaults: ['mod+shift+b'] },
   // ⌘O — the editor-standard "open folder" chord (VS Code ⌘O, Zed's

@@ -709,6 +709,7 @@ class TestRegisterHandlers:
         builder.token.return_value = builder
         builder.request.return_value = builder
         builder.get_updates_request.return_value = builder
+        builder.rate_limiter.return_value = builder
         builder.build.side_effect = [first_app, rebuilt_app]
         monkeypatch.setattr(
             "plugins.platforms.telegram.adapter.Application",

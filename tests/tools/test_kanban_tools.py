@@ -650,6 +650,8 @@ def test_link_running_child_allows_owner_but_rejects_foreign(monkeypatch, worker
 
 
 def test_unblock_happy_path(monkeypatch, worker_env):
+    import hermes_cli.profiles as _profiles
+    monkeypatch.setattr(_profiles, "profile_exists", lambda name: name == "worker")
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
@@ -674,6 +676,8 @@ def test_unblock_happy_path(monkeypatch, worker_env):
 
 
 def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
+    import hermes_cli.profiles as _profiles
+    monkeypatch.setattr(_profiles, "profile_exists", lambda name: name == "worker")
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     home = tmp_path / ".hermes"
     home.mkdir()

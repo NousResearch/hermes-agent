@@ -156,6 +156,37 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     # --- systemd (Linux): user and system scopes ---
     if supports_systemd_services():
         pattern = "hermes-gateway*" if all_profiles else get_service_name()
+        # LOCAL PATCH (ai-hub, 2026-09-09). The all_profiles glob assumes every
+        # gateway unit is named hermes-gateway*. On this box the live gateway unit
+        # is `hermes-primary.service` (hosted-primary migration), so the glob
+        # matched NOTHING: _get_service_pids(all_profiles=True) returned an empty
+        # set and the orphan reaper saw the live gateway as a manual process. The
+        # sweep guard measured EXCL=[] TARGETED=[<live pid>].
+        # The fix must NOT widen to "hermes*": that would protect 8 unrelated
+        # hermes-* services from every sweep. Instead ask the units themselves
+        # which ones are gateways, by matching the ExecStart that starts one.
+        extra_units: list[str] = []
+        if all_profiles:
+            try:
+                listing = subprocess.run(
+                    scope_args_probe := ["systemctl", "list-units", "hermes-*",
+                                        "--plain", "--no-legend", "--no-pager"],
+                    timeout=5, **_CAPTURE_TEXT)
+                for _line in listing.stdout.strip().splitlines():
+                    _parts = _line.split()
+                    if not _parts or not _parts[0].endswith(".service"):
+                        continue
+                    _svc = _parts[0]
+                    if _svc.startswith("hermes-gateway"):
+                        continue  # already covered by the glob
+                    _ex = subprocess.run(
+                        ["systemctl", "show", _svc, "--property=ExecStart",
+                         "--value"], timeout=5, **_CAPTURE_TEXT)
+                    # Only a unit whose ExecStart literally runs the gateway.
+                    if "gateway run" in (_ex.stdout or ""):
+                        extra_units.append(_svc)
+            except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+                pass
         for scope_args in [["systemctl", "--user"], ["systemctl"]]:
             try:
                 # Belt-and-suspenders for the EXCLUDE use case (#74075): a bare ``launchctl list`` prefix
@@ -169,7 +200,11 @@ def _get_service_pids(all_profiles: bool = False) -> set:
                     timeout=5,
                     **_CAPTURE_TEXT,
                 )
-                for line in result.stdout.strip().splitlines():
+                _lines = result.stdout.strip().splitlines()
+                # LOCAL PATCH (see above): fold in gateway units whose name does not
+                # match the hermes-gateway* glob, discovered by their ExecStart.
+                _lines = _lines + ["%s x" % u for u in extra_units]
+                for line in _lines:
                     parts = line.split()
                     if not parts or not parts[0].endswith(".service"):
                         continue
@@ -2223,6 +2258,51 @@ def get_systemd_unit_path(system: bool = False) -> Path:
     return user_systemd_unit_dir() / f"{name}.service"
 
 
+def _adopted_systemd_unit_name() -> str | None:
+    """Name of a systemd unit that RUNS this gateway but is not named hermes-gateway*.
+
+    LOCAL PATCH (ai-hub, 2026-09-09). Companion to the _get_service_pids
+    discovery: patch 232 taught the orphan REAPER to find such units, but the
+    restart arm still decided "is there a supervisor?" purely from
+    get_systemd_unit_path().exists(). On this box the live gateway runs under a
+    hand-written hermes-primary.service and no hermes-gateway.service file
+    exists, so that test returns False and the restart arm falls through to the
+    MANUAL branch: it signals the running gateway and starts an unsupervised
+    replacement in the caller's own foreground, racing Restart=always.
+
+    Identify by ExecStart, never by name glob: matching hermes* would adopt 8
+    unrelated hermes-* services. Returns the unit name, or None when the
+    standard unit is present or nothing on the box runs a gateway.
+    """
+    if not supports_systemd_services():
+        return None
+    _pin = os.environ.get("HERMES_GATEWAY_SYSTEMD_UNIT")
+    if _pin:
+        return _pin
+    try:
+        listing = subprocess.run(
+            ["systemctl", "list-units", "hermes-*", "--plain", "--no-legend",
+             "--no-pager"],
+            timeout=5, **_CAPTURE_TEXT)
+    except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+        return None
+    for line in (listing.stdout or "").strip().splitlines():
+        parts = line.split()
+        if not parts or not parts[0].endswith(".service"):
+            continue
+        svc = parts[0]
+        if svc.startswith("hermes-gateway"):
+            continue
+        try:
+            ex = subprocess.run(
+                ["systemctl", "show", svc, "--property=ExecStart", "--value"],
+                timeout=5, **_CAPTURE_TEXT)
+        except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
+            continue
+        if "gateway run" in (ex.stdout or ""):
+            return svc
+    return None
+
 class UserSystemdUnavailableError(RuntimeError):
     """``systemctl --user`` cannot reach the user D-Bus session (fresh SSH sessions with linger off,
     so ``/run/user/$UID/bus`` never exists). ``args[0]`` is a user-facing remediation message."""
@@ -4265,8 +4345,18 @@ def _running_under_s6() -> bool:
 
 
 def _systemd_unit_installed() -> bool:
+    # LOCAL PATCH (ai-hub, 2026-09-09). A unit FILE named hermes-gateway*.service is
+    # not the only supervisor. This box runs the gateway under a hand-written
+    # hermes-primary.service, so both path checks are False and every caller
+    # concluded "no service installed": _cmd_restart then skipped the systemd verb
+    # and took the manual branch (signal the live gateway, start an unsupervised
+    # replacement in the caller's foreground) while Restart=always respawned it.
+    # Patch 232 taught the orphan reaper the same lesson via ExecStart discovery;
+    # this is the restart-arm half. Identify by ExecStart, never by name glob.
     return supports_systemd_services() and (
-        get_systemd_unit_path(system=False).exists() or get_systemd_unit_path(system=True).exists()
+        get_systemd_unit_path(system=False).exists()
+        or get_systemd_unit_path(system=True).exists()
+        or _adopted_systemd_unit_name() is not None
     )
 
 

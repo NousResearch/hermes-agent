@@ -932,6 +932,48 @@ def handle_function_call(
         if function_name in _AGENT_LOOP_TOOLS:
             return tool_error(f"{function_name} must be handled by the agent loop")
 
+        # Fail-closed shared-state guard. A dispatcher worker whose card is no
+        # longer 'running' must not mutate the shared managed-patch tree.
+        # Placed here, in the single chokepoint every execution path funnels
+        # through, rather than in one caller — a guard wired into only the
+        # concurrent path would be trivially bypassed by the sequential one.
+        # It also runs BEFORE the pre_tool_call hooks so a `modify` directive
+        # cannot rewrite the args past the check.
+        try:
+            from agent.kanban_shared_state_guard import check_shared_state_write
+
+            _shared_state_refusal = check_shared_state_write(
+                function_name, function_args,
+            )
+        except Exception:
+            # Fail CLOSED, and only for calls that are actually in scope. The
+            # original handler set the refusal to None here, which turned the
+            # one guard whose whole contract is fail-closed into a fail-OPEN on
+            # any internal error. Scope stays narrow: an unrelated tool call
+            # must never be blocked because this guard broke.
+            logger.debug("kanban shared-state guard failed", exc_info=True)
+            _shared_state_refusal = None
+            try:
+                from agent.kanban_shared_state_guard import (
+                    _touches_managed_patches,
+                )
+                if os.environ.get("HERMES_KANBAN_TASK") and _touches_managed_patches(
+                    function_name, function_args,
+                ):
+                    _shared_state_refusal = (
+                        "Refused: the Kanban shared-state guard could not verify "
+                        "that this card still owns the shared managed-patch tree, "
+                        "so the write is refused rather than risked. Re-check the "
+                        "card status and retry, or report the guard failure."
+                    )
+            except Exception:
+                logger.debug(
+                    "kanban shared-state guard: fail-closed fallback failed",
+                    exc_info=True,
+                )
+        if _shared_state_refusal:
+            return tool_error(_shared_state_refusal)
+
         function_args, blocked = _pre_dispatch_guards(function_name, function_args, skip_pre_tool_call_hook, ids, trace)
         if blocked is not None:
             result, error_type, error_message = blocked

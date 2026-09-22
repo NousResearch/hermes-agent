@@ -32,6 +32,18 @@ from gateway.shutdown_watchdog import arm_shutdown_watchdog, resolve_shutdown_wa
 logger = logging.getLogger("gateway.run")
 
 
+def _begin_cron_shutdown_lock_budget(seconds: float) -> None:
+    """Clamp cron lock waits for the rest of teardown (late import: cron is optional at import time)."""
+    from cron.jobs import begin_shutdown_lock_budget
+    begin_shutdown_lock_budget(seconds)
+
+
+def _clear_cron_shutdown_lock_budget() -> None:
+    """Drop the clamp so a gateway that keeps running is back on normal cron lock timeouts."""
+    from cron.jobs import clear_shutdown_lock_budget
+    clear_shutdown_lock_budget()
+
+
 def _exit_with_failure_verdict(runner) -> bool:
     """True (after logging the reason) when the runner asked for a failure exit."""
     if not runner.should_exit_with_failure:
@@ -2132,6 +2144,12 @@ class GatewayShutdownMixin:
                 _effective_watchdog_leash(self), done_event=_watchdog_done,
                 snapshot_fn=lambda: GatewayRunner._shutdown_watchdog_snapshot(self, ctx), exit_code=1,
             )
+        # Cron locks default to a 30s wait each. Teardown marks in-flight jobs interrupted one at a
+        # time, so two contended locks alone outlast the watchdog and it SIGKILLs us mid-drain.
+        # Give the whole cron teardown a small shared budget instead; past it a lock fails closed,
+        # which is the same outcome the watchdog produced, minus the kill.
+        GatewayShutdownMixin._quiet_step(
+            "cron shutdown lock budget", lambda: _begin_cron_shutdown_lock_budget(10.0))
         try:
             await GatewayRunner._stop_begin_teardown(self, ctx)
             timeout = effective_stop_drain_timeout(self)
@@ -2149,6 +2167,8 @@ class GatewayShutdownMixin:
             GatewayRunner._stop_quiesce_and_close_session_dbs(self, timeout, ctx)
             await GatewayRunner._stop_persist_exit_state(self, ctx)
         finally:
+            GatewayShutdownMixin._quiet_step(
+                "cron shutdown lock budget clear", _clear_cron_shutdown_lock_budget)
             _watchdog_done.set()
 
     async def stop(

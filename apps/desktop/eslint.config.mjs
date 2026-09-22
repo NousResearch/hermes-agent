@@ -37,7 +37,14 @@ export default [
   {
     files: ['**/*.test.tsx'],
     rules: {
-      'no-restricted-globals': ['warn', 'document']
+      // Upstream 66c097ab78 warns on `document` in tsx tests ("almost always
+      // a mistake"). jsdom suites here legitimately reach for `document` to
+      // assert real DOM behaviour, so `document` -- and only `document` -- is
+      // dropped. The rule stays enabled at warn level with an empty list, so
+      // any global added to the shared policy later still applies to test
+      // files. Deliberately NOT `'no-restricted-globals': 'off'`, which would
+      // silently opt tests out of every future restriction.
+      'no-restricted-globals': ['warn']
     }
   },
   {

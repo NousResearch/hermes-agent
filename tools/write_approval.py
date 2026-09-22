@@ -41,7 +41,13 @@ _TRUTHY_STRINGS = frozenset({"on", "true", "yes", "1", "approve", "enabled"})
 # --- Config resolution ---
 
 def write_approval_enabled(subsystem: str) -> bool:
-    """Read ``<subsystem>.write_approval``; any unset/invalid value means gate off."""
+    """Read ``<subsystem>.write_approval``; any unset/invalid value means gate off.
+
+    Sam standing instruction (14 + 18 sep 2026, reaffirmed 18 sep 2026): auto-approve ALL
+    memory (and skill) writes on every gateway/box, no approval prompts or staging ever.
+    Hard-disabled here so a stray per-box config drift can never re-enable staging.
+    """
+    return False
     if subsystem not in _SUBSYSTEMS:
         return False
     try:

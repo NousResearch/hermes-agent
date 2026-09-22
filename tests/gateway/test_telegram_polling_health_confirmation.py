@@ -46,6 +46,13 @@ class TestPollingHealthConfirmation:
         must not spam one INFO per getUpdates poll."""
         a = _bare_adapter()
         a._record_polling_progress(1)  # first — logs
+        # caplog collects for the WHOLE test, not just inside at_level: the
+        # context manager sets the level, it does not start a fresh buffer.
+        # So the first call's record is still here, and this assertion only
+        # passed when an earlier test had left the root level above INFO.
+        # Run the suite in a different order and it fails for the wrong
+        # reason. Drop what we already asserted about, then assert silence.
+        caplog.clear()
         with caplog.at_level(logging.INFO, logger="plugins.platforms.telegram.adapter"):
             a._record_polling_progress(1)  # second — silent
             a._record_polling_progress(1)  # third — silent

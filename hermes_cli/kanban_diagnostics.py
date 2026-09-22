@@ -11,8 +11,10 @@ recovery action and auto-clears when the failure mode resolves.
 from __future__ import annotations
 
 from dataclasses import asdict, dataclass, field
+from pathlib import Path
 from typing import Any, Callable, Iterable, Optional
 import json
+import os
 import time
 
 
@@ -256,6 +258,15 @@ def _positive_int(value: Any, default: int) -> int:
 def _rule_hallucinated_cards(task, events, runs, now, cfg) -> list[Diagnostic]:
     """A worker's kanban_complete named created_cards that don't exist / weren't
     its own; the completion was blocked. Clears on a later completion/edit."""
+    # Terminal status is the authoritative "this completion landed" signal; event
+    # ORDER is not. A worker that outlives its own card emits its blocked
+    # completion AFTER the real one, so the order-based clear below can never
+    # supersede it and the card stays flagged forever. Live case: done card
+    # t_fc48b87f was re-emitted as an active diagnostic in 51 consecutive
+    # self-heal sweeps across ten hours. A done/archived card by definition was
+    # not blocked, so exempt it before looking at events at all.
+    if _task_field(task, "status") in ("done", "archived"):
+        return []
     hits = _active_hallucination_events(events, "completion_blocked_hallucination")
     if not hits:
         return []
@@ -736,6 +747,195 @@ def _rule_stranded_in_ready(task, events, runs, now, cfg) -> list[Diagnostic]:
     )]
 
 
+def _assignee_has_run_history(assignee: str) -> bool:
+    """True if this assignee has EVER produced a task_run on any board.
+
+    Discriminates a real human / external pull lane (which claims cards
+    via ``claim_task`` and legitimately has no Hermes profile) from a
+    typo'd assignee that nothing will ever claim. Measured rather than
+    curated, so no allowlist needs maintaining.
+    """
+    from hermes_cli import kanban_db as _kb
+
+    root = Path(
+        os.environ.get("HERMES_HOME", str(Path.home() / ".hermes"))
+    ) / "kanban" / "boards"
+    boards = []
+    if root.is_dir():
+        boards = [
+            d.name for d in root.iterdir() if (d / "kanban.db").is_file()
+        ]
+    for b in boards or [None]:
+        try:
+            conn = _kb.connect(board=b) if b else _kb.connect()
+            row = conn.execute(
+                "SELECT 1 FROM task_runs WHERE profile = ? LIMIT 1",
+                (assignee,),
+            ).fetchone()
+            if row is not None:
+                return True
+        except Exception:
+            continue
+    return False
+
+
+def _rule_stranded_in_review(task, events, runs, now, cfg) -> list[Diagnostic]:
+    """Flag a task parked in ``review`` that no reviewer ever claims.
+
+    The review lane has exactly the failure mode ``_rule_stranded_in_ready``
+    covers for the ready lane, and until this rule existed it was silent.
+    ``request_review(reviewer=...)`` accepts ANY string: the value is
+    normalized and written straight onto ``tasks.assignee`` with no check
+    that it names a real profile. The review dispatch loop then calls
+    ``profile_exists`` and buckets the row into ``skipped_nonspawnable``,
+    which is deliberately quiet so human-pulled control-plane lanes don't
+    spam the operator. Net effect: a plausible-but-wrong reviewer name
+    parks finished work in ``review`` forever with no signal anywhere.
+
+    Observed live 2026-08-22 (card t_1165020d): two cards sat in
+    ``review`` for ~4h on assignee ``reviewer``, which is not a Hermes
+    profile on this install (the real grader profile is ``verifier``).
+    ``has_spawnable_review`` returned False the entire time, so even the
+    dispatcher's own review-lane reservation never engaged.
+
+    Age-based and identity-agnostic for the same reason as the ready rule:
+    it catches a typo, a deleted profile, a down external reviewer pool,
+    and a misconfigured dispatcher without curating a registry. A task
+    under a live claim is excluded (a reviewer is actually working it).
+    """
+    threshold_seconds = float(
+        cfg.get("stranded_review_threshold_seconds",
+                cfg.get("stranded_threshold_seconds", 30 * 60))
+    )
+    if _task_field(task, "status") != "review":
+        return []
+    # A live claim means a reviewer really is on it.
+    if _task_field(task, "claim_lock"):
+        return []
+    assignee = (_task_field(task, "assignee") or "").strip()
+
+    # Anchor on the most recent transition INTO review. ``changes_requested``
+    # is not included: that moves the card out of review, back to the
+    # implementer, so it can never be the start of a review wait.
+    last_review_ts = 0
+    for ev in events:
+        if _event_kind(ev) == "review_requested":
+            last_review_ts = max(last_review_ts, _event_ts(ev))
+    if last_review_ts == 0:
+        last_review_ts = int(_task_field(task, "created_at", default=0) or 0)
+    if last_review_ts == 0:
+        return []
+
+    age_seconds = now - last_review_ts
+    if age_seconds < threshold_seconds:
+        return []
+
+    if age_seconds >= 3600:
+        age_str = f"{age_seconds / 3600:.1f}h"
+    else:
+        age_str = f"{int(age_seconds / 60)}m"
+
+    # An assignee nothing can claim is strictly worse than a slow reviewer:
+    # no amount of waiting will ever produce a worker. But "not a Hermes
+    # profile" is NOT sufficient to conclude that — a human or external
+    # terminal lane (e.g. 'sam') legitimately pulls cards via claim_task
+    # and has no profile. Discriminate on measured behaviour: does this
+    # lane have ANY run history on this board? A real lane does; a typo
+    # has exactly zero. Live 2026-08-22: 'sam' had 37 runs and is a real
+    # pull lane, 'reviewer' had 0 and was a typo for 'verifier'.
+    #
+    # Resolved only to ESCALATE severity and sharpen the message, never to
+    # suppress the rule — a card nobody grades still deserves a flag, so an
+    # unimportable profiles module or an absent runs table cannot silently
+    # disable this.
+    is_profile = False
+    if assignee:
+        try:
+            from hermes_cli.profiles import profile_exists
+            is_profile = bool(profile_exists(assignee))
+        except Exception:
+            is_profile = False
+
+    has_lane_history = False
+    if assignee and not is_profile:
+        try:
+            has_lane_history = _assignee_has_run_history(assignee)
+        except Exception:
+            # Unknown: assume it IS a real lane rather than accusing a
+            # human reviewer of being a typo.
+            has_lane_history = True
+
+    # Unclaimable == not a profile the dispatcher can spawn AND not a lane
+    # that has ever actually run anything.
+    unclaimable = bool(assignee) and not is_profile and not has_lane_history
+
+    if unclaimable or age_seconds >= threshold_seconds * 6:
+        severity = "critical"
+    elif age_seconds >= threshold_seconds * 2:
+        severity = "error"
+    else:
+        severity = "warning"
+
+    if not assignee:
+        detail = (
+            f"This task has been in review for {age_str} with no reviewer "
+            f"assigned, so the review dispatcher will never spawn one. "
+            f"Assign a reviewer profile, or pass reviewer= on "
+            f"kanban_request_review."
+        )
+    elif unclaimable:
+        detail = (
+            f"This task has been in review for {age_str} assigned to "
+            f"{assignee!r}, which is NOT an existing Hermes profile and "
+            f"has never produced a run on any board. The review dispatcher "
+            f"skips it as non-spawnable every tick, so the card can never "
+            f"be graded. Reassign it to a real profile (see "
+            f"`hermes profile list`)."
+        )
+    else:
+        detail = (
+            f"This task has been in review for {age_str} but no reviewer "
+            f"has claimed it. Confirm {assignee!r} is actually polling, "
+            f"that kanban.review_dispatch is enabled, and that the profile "
+            f"is not stuck at its per-profile concurrency cap."
+        )
+
+    actions = [
+        DiagnosticAction(
+            kind="reassign",
+            label="Reassign to a real reviewer profile",
+            payload={"current_assignee": assignee},
+        ),
+        DiagnosticAction(
+            kind="cli_hint",
+            label="List available profiles",
+            payload={"command": "hermes profile list"},
+        ),
+    ]
+
+    return [Diagnostic(
+        kind="stranded_in_review",
+        severity=severity,
+        title=(
+            f"In review {age_str} with an unclaimable reviewer"
+            if unclaimable else f"In review {age_str} with no reviewer"
+        ),
+        detail=detail,
+        actions=actions,
+        first_seen_at=last_review_ts,
+        last_seen_at=last_review_ts,
+        count=1,
+        data={
+            "review_since": last_review_ts,
+            "age_seconds": int(age_seconds),
+            "assignee": assignee,
+            "assignee_is_profile": is_profile,
+            "assignee_has_lane_history": has_lane_history,
+            "threshold_seconds": int(threshold_seconds),
+        },
+    )]
+
+
 # Order matters: earlier rules render first on severity ties.
 _RULES: list[RuleFn] = [
     _rule_hallucinated_cards,
@@ -748,6 +948,7 @@ _RULES: list[RuleFn] = [
     _rule_stuck_in_blocked,
     _rule_block_unblock_cycling,
     _rule_stranded_in_ready,
+    _rule_stranded_in_review,
 ]
 
 
@@ -849,5 +1050,6 @@ DIAGNOSTIC_KINDS = (
     "stuck_in_blocked",
     "block_unblock_cycling",
     "stranded_in_ready",
+    "stranded_in_review",
 )
 # ---- END PLUGIN-COMPAT ----

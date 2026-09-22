@@ -19,6 +19,14 @@ def test_autonomous_silence_accepts_marker_with_own_line_note():
     assert is_autonomous_silence_response("[SILENT] No changes detected")
 
 
+def test_truncated_silent_token_is_cron_silence_not_chat_silence():
+    """A cut-off ``[SILENT`` leaked overnight-autofix-triage into chat on 2026-09-21."""
+    assert is_autonomous_silence_response("[SILENT")
+    assert not is_intentional_silence_response("[SILENT")
+    assert not is_autonomous_silence_response("[SILENCE")
+    assert not is_autonomous_silence_response("we said [SILENT mid-sentence and kept talking")
+
+
 def test_translated_sentinel_is_silence_in_every_form_the_english_one_is():
     """#110935: a lane that answers the cron instruction in its own language translates the
     sentinel; ``[静默]`` must suppress delivery exactly like ``[SILENT]`` (exact, own-line note,

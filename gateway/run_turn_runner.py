@@ -400,6 +400,10 @@ class TurnRunner:
                 )
                 st.publication_suppressed = True
                 return
+            # The message we were editing is gone (user deleted it, topic cleared). Drop the dead id
+            # so the send below opens a fresh one; keeping it re-edits a 404 on every progress tick.
+            if getattr(result, "error_kind", None) == "not_found":
+                st.fallback_msg_id = None
         result = await self._send_progress_text(st, text)
         if getattr(result, "success", False) and getattr(result, "message_id", None):
             st.fallback_msg_id = str(result.message_id)

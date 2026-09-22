@@ -2045,13 +2045,31 @@ class BasePlatformAdapter(ABC):
     fatal_error_code = property(lambda self: self._fatal_error_code)
     fatal_error_retryable = property(lambda self: self._fatal_error_retryable)
 
+    @property
+    def supports_voice_delivery(self) -> bool:
+        """Whether this transport can deliver synthesized audio.
+
+        RECUT 2026-09-09 (patches 151+156 were registered as applied but their
+        code was absent from live source; the A2A guard suite was 7 red). A2A is
+        a text transport: an agent peer receives a JSON message, so a TTS reply
+        arrives as an audio artifact the peer cannot read, replacing the real
+        answer. Layer 0 in _should_auto_tts_for_chat below is what enforces it.
+        """
+        return True
+
     def _should_auto_tts_for_chat(self, chat_id: str) -> bool:
         """Whether auto-TTS fires for ``chat_id``: explicit ``/voice on|tts`` wins,
         then explicit ``/voice off``, then the global ``voice.auto_tts`` default.
 
-        Decision layers (Issue #16007): 1. Explicit ``/voice on`` or ``/voice tts`` → always fire (even if
-        ``voice.auto_tts`` is False). 2. 3.
+        Decision layers (Issue #16007):
+          0. A transport without voice delivery never auto-TTSes.
+          1. Explicit ``/voice on`` or ``/voice tts`` -> always fire (even if
+             ``voice.auto_tts`` is False).
+          2. Explicit ``/voice off`` -> never fire.
+          3. Fall back to the global ``voice.auto_tts`` config default.
         """
+        if not getattr(self, "supports_voice_delivery", True):
+            return False
         return chat_id in self._auto_tts_enabled_chats or (
             chat_id not in self._auto_tts_disabled_chats and bool(self._auto_tts_default))
 

@@ -1778,3 +1778,19 @@ def test_load_conversation_skips_non_dict_lines(monkeypatch, tmp_path):
         f.write("42\n")
     convo = protocol.load_conversation("ctx-mixed")
     assert len(convo) == 1 and convo[0]["text"] == "hello"
+
+
+def test_is_connected_does_not_borrow_default_port_under_multiplex(monkeypatch):
+    """A secondary profile with no A2A config must not inherit the default profile's env bridge."""
+    from agent.secret_scope import reset_secret_scope, set_multiplex_active, set_secret_scope
+    from gateway.config import PlatformConfig
+    from plugins.platforms.a2a import is_connected
+
+    monkeypatch.setenv("A2A_PORT", "9900")
+    set_multiplex_active(True)
+    token = set_secret_scope({})
+    try:
+        assert is_connected(PlatformConfig(enabled=False, extra={})) is False
+    finally:
+        reset_secret_scope(token)
+        set_multiplex_active(False)

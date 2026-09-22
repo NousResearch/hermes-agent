@@ -842,7 +842,7 @@ def my_callback(session_id: str, platform: str, model: str, coding: bool,
 
 Scope a hook to the coding context by checking `coding` and make it one-shot with `attempt` (shell hooks read both from `.extra`), the same way a `pre_tool_call` hook scopes on `tool_name` — so you can register several `pre_verify` hooks, each firing only where it should.
 
-**Fires:** In `agent/conversation_loop.py`, at the point the agent would accept a final answer, immediately after the verify-on-stop check — but only when the agent edited code this turn and at least one `pre_verify` hook is registered.
+**Fires:** At the point the agent would accept a final answer, immediately after the verify-on-stop check, when code was edited or `agent.pre_verify_without_edits: true` opts in to read-only completion checks. At least one `pre_verify` hook must be registered. The payload also includes `open_todos` from this agent's in-memory task list and `pending_children` from its active children, so hooks need not read the session database. User interrupts and exhausted iteration budgets bypass continuation. The existing `agent.max_verify_nudges` bound still applies; this is not an unlimited completion guarantee.
 
 **Return value — keep the agent going:**
 

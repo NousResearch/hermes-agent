@@ -56,6 +56,18 @@ class TestSkillViewDedup:
         assert "unchanged" in r2["message"]
         assert "content" not in r2
 
+    @pytest.mark.parametrize("file_path, expected", [
+        (None, "Step one"),
+        ("references/guide.md", "Detailed reference"),
+    ])
+    def test_repeated_reload_cannot_loop_on_stub(self, skills_home, file_path, expected):
+        first = _view("demo-dedup-skill", file_path=file_path)
+        assert expected in first["content"]
+        stub = _view("demo-dedup-skill", file_path=file_path)
+        assert stub["content_returned"] is False
+        recovered = _view("demo-dedup-skill", file_path=file_path)
+        assert recovered.get("content") == first["content"]
+
     def test_modified_skill_returns_full_content(self, skills_home):
         _view("demo-dedup-skill")
         md = skills_home / "skills" / "demo-dedup-skill" / "SKILL.md"

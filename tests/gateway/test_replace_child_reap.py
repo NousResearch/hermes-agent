@@ -22,6 +22,29 @@ from gateway import status
 from gateway.config import GatewayConfig
 
 
+@pytest.fixture(autouse=True)
+def _never_leak_gateway_runtime_lock():
+    """A start_gateway test must not poison whichever file pytest runs next.
+
+    `start_gateway(..., replace=True)` acquires the process-global
+    `gateway.status._gateway_lock_handle`. The production process holds that for
+    its lifetime, but this test swaps GatewayRunner for a stand-in and returns
+    without the real teardown path. pytest's monkeypatch restores attributes and
+    env vars; it cannot release an OS file lock or clear this module global.
+
+    Before this fixture, running this file immediately before test_status.py
+    made its first two runtime-lock tests fail (`is_gateway_runtime_lock_active`
+    returned True under a fresh tmp HERMES_HOME). Both files passed alone. The
+    fixture is autouse because any present or future test in this module that
+    enters start_gateway owns the same cleanup contract.
+    """
+    status.release_gateway_runtime_lock()
+    try:
+        yield
+    finally:
+        status.release_gateway_runtime_lock()
+
+
 class _FakeChild:
     """Minimal psutil.Process stand-in for reap tests."""
 

@@ -439,12 +439,25 @@ def foreign_state_db_holders(db_path: Path) -> List[Tuple[int, str]]:
     if psutil is None:
         return [(-1, "open-file scan unavailable")]
     try:
-        for process in psutil.process_iter(["pid", "open_files"]):
-            info = process.info
-            pid = int(info["pid"])
+        for process in psutil.process_iter(["pid"]):
+            # A SINGLE unreadable process must not blind the whole scan.
+            # On macOS proc_pidinfo(PROC_PIDLISTFDS) raises for processes we
+            # do not own, which aborted the loop and reported a phantom
+            # holder, so state.db repair refused forever. The linux /proc
+            # branch above already degrades per process; match it here.
+            try:
+                pid = int(process.info["pid"])
+            except Exception:
+                continue
             if pid == os.getpid():
                 continue
-            for opened in info.get("open_files") or ():
+            try:
+                opened_files = process.open_files() or ()
+            except (psutil.AccessDenied, psutil.NoSuchProcess, psutil.ZombieProcess):
+                continue
+            except Exception:
+                continue
+            for opened in opened_files:
                 path = getattr(opened, "path", "")
                 if path and canonical_sqlite_path(os.path.realpath(path)) in watched:
                     holders.append((pid, path))

@@ -1520,6 +1520,18 @@ class TestIsModelNotFoundError:
         # billing keyword wins — payment owns it
         assert _is_model_not_found_error(exc) is False
 
+    def test_cliproxy_unknown_provider_400_is_model_not_found(self):
+        """Hub 2026-09-21: CLIProxy returned 400 model_not_found for a live
+        alias. Compression retried the same model three times and the session
+        looked dead. The predicate must match this exact body."""
+        exc = Exception(
+            "Error code: 400 - {'error': {'message': 'unknown provider for "
+            "model gemini-flash-lite-latest', 'type': 'invalid_request_error', "
+            "'code': 'model_not_found', 'param': 'model'}}"
+        )
+        exc.status_code = 400
+        assert _is_model_not_found_error(exc) is True
+
 
 
 

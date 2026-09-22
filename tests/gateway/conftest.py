@@ -114,13 +114,55 @@ def _fake_str_enum(enum_name: str, **members: str):
 def _ensure_telegram_mock() -> None:
     """Install a comprehensive telegram mock in sys.modules.
 
-    Idempotent — skips when the real library is already imported.
+    Idempotent — skips when the real library is available.
     Uses ``sys.modules[name] = mod`` (overwrite) instead of
     ``setdefault`` so it wins even if a partial/broken import
     already cached a module with ``ChatType = None``.
     """
     if "telegram" in sys.modules and hasattr(sys.modules["telegram"], "__file__"):
         return  # Real library is installed — nothing to mock
+
+    # An "is it imported yet?" check is not the same question as "does it
+    # exist?". When PTB IS installed but simply not imported yet, the check
+    # above passes and this mock is installed anyway, clobbering
+    # sys.modules["telegram.request"] with a MagicMock for the rest of the
+    # process. Any later test that subclasses the real
+    # telegram.request.BaseRequest then fails with "object MagicMock can't be
+    # used in 'await' expression" — a cross-file order-dependent failure that
+    # passes when the file is run alone (6 such failures in
+    # test_telegram_polling_progress_ptb.py when it ran after
+    # tests/gateway/test_telegram_network.py). Ask whether the real package is
+    # importable, not whether it happens to be loaded.
+    #
+    # PathFinder, not importlib.util.find_spec: find_spec consults sys.modules
+    # first and raises ValueError ("__spec__ is not set") when a MagicMock is
+    # already cached there, which would send us down the mock path again.
+    #
+    # Declining to mock is not enough on its own: some other stub may already
+    # have put a BARE ``telegram`` module in sys.modules with no submodules, and
+    # then every ``from telegram.error import ...`` fails with "'telegram' is
+    # not a package". So when the real library is available, import it eagerly
+    # and register the submodules the test suite actually uses.
+    try:
+        from importlib.machinery import PathFinder
+
+        if PathFinder.find_spec("telegram", None) is not None:
+            import importlib
+
+            for _name in (
+                "telegram",
+                "telegram.error",
+                "telegram.ext",
+                "telegram.constants",
+                "telegram.request",
+            ):
+                _existing = sys.modules.get(_name)
+                if _existing is None or not hasattr(_existing, "__file__"):
+                    sys.modules.pop(_name, None)
+                    sys.modules[_name] = importlib.import_module(_name)
+            return  # Real library is available — do not shadow it
+    except Exception:
+        pass  # Fall through and mock, e.g. a partially-installed package
 
     mod = MagicMock()
     mod.ext.ContextTypes.DEFAULT_TYPE = type(None)

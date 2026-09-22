@@ -16,6 +16,8 @@ import subprocess
 from pathlib import Path
 from typing import Any
 
+from hermes_constants import get_default_hermes_root
+
 
 _HEX = re.compile(r"^[0-9a-f]+$")
 _INSTALL_ID = re.compile(r"^[0-9a-f]{32}$")
@@ -171,10 +173,10 @@ def _refuse(reason: str, result: subprocess.CompletedProcess[str] | None = None)
     raise TargetAdmissionError(reason, detail)
 
 
-def _read_install_id(root: Path) -> str | None:
-    """Read the already-published identity; never mint or repair it."""
+def _read_install_id() -> str | None:
+    """Read the already-published identity from the authoritative Hermes home."""
     try:
-        value = (root / "install_id").read_text(encoding="utf-8").strip()
+        value = (get_default_hermes_root() / "install_id").read_text(encoding="utf-8").strip()
     except (FileNotFoundError, OSError, UnicodeError):
         return None
     return value if _INSTALL_ID.fullmatch(value) else None
@@ -256,7 +258,7 @@ def apply_pinned_target(
     prior_sha = _git_value(root, "rev-parse", "HEAD")
     if prior_sha != request.current_sha:
         raise TargetAdmissionError("current-sha-mismatch")
-    stored_install_id = _read_install_id(root)
+    stored_install_id = _read_install_id()
     if stored_install_id != request.install_id:
         raise TargetAdmissionError("install-id-mismatch")
 
@@ -301,7 +303,7 @@ def verify_pinned_post_swap(root: str | Path, request: TargetRequest) -> dict[st
     post_sha = _git_value(root, "rev-parse", "HEAD")
     if post_sha != request.revision:
         raise TargetAdmissionError("post-swap-head-mismatch")
-    install_id = _read_install_id(root)
+    install_id = _read_install_id()
     if install_id != request.install_id:
         raise TargetAdmissionError("post-swap-install-id-mismatch")
     return {"post_sha": post_sha, "post_install_id": install_id}

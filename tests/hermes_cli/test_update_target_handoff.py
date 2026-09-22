@@ -27,6 +27,14 @@ from hermes_cli.update_target import (
 INSTALL_ID = "0123456789abcdef0123456789abcdef"
 
 
+@pytest.fixture(autouse=True)
+def _authoritative_install_identity(tmp_path, monkeypatch):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "install_id").write_text(INSTALL_ID + "\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+
 def _git(cwd: Path, *args: str, check: bool = True) -> str:
     result = subprocess.run(
         ["git", *args], cwd=cwd, capture_output=True, text=True,
@@ -65,11 +73,6 @@ def _remote_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     _git(tmp_path, "clone", "-b", "main", str(bare), str(checkout))
     _git(checkout, "config", "user.name", "Test Checkout")
     _git(checkout, "config", "user.email", "checkout@example.invalid")
-    # The real install identity is outside the Git history. Ignore this exact
-    # fixture file so the clean-checkout admission remains meaningful.
-    info_exclude = checkout / ".git" / "info" / "exclude"
-    info_exclude.write_text("install_id\n", encoding="utf-8")
-    (checkout / "install_id").write_text(INSTALL_ID + "\n", encoding="utf-8")
     (author / "payload.txt").write_text("B\n", encoding="utf-8")
     b_sha = _commit(author, "B")
     _git(author, "push", "origin", "main")
@@ -93,12 +96,27 @@ def test_post_swap_head_mismatch_is_refused_without_repair(tmp_path):
 def test_post_swap_install_identity_mismatch_is_refused_without_repair(tmp_path):
     checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
     apply_pinned_target(checkout, _request(b_sha, a_sha))
-    (checkout / "install_id").write_text("f" * 32 + "\n", encoding="utf-8")
+    (Path(os.environ["HERMES_HOME"]) / "install_id").write_text("f" * 32 + "\n", encoding="utf-8")
 
     with pytest.raises(TargetAdmissionError, match="post-swap-install-id-mismatch"):
         verify_pinned_post_swap(checkout, _request(b_sha, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == b_sha
+
+
+def test_install_identity_is_read_from_authoritative_hermes_home(tmp_path, monkeypatch):
+    checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
+    home = tmp_path / "hermes-home"
+    (home / "install_id").write_text(INSTALL_ID + "\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    result = apply_pinned_target(checkout, _request(b_sha, a_sha))
+
+    assert result.outcome == "applied"
+    assert verify_pinned_post_swap(checkout, _request(b_sha, a_sha)) == {
+        "post_sha": b_sha,
+        "post_install_id": INSTALL_ID,
+    }
 
 
 def test_moving_origin_still_applies_reviewed_target_not_new_tip(tmp_path):

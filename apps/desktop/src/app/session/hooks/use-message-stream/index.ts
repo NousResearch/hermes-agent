@@ -546,8 +546,8 @@ export function useMessageStream({
           // A later response can share this bubble after a suppressed interim.
           // A seal arriving after its tools, without any newer text, still
           // confirms the pre-tool response (legacy/delayed seal ordering).
-          const hasNewResponse = currentResponseParts(parts).some(part =>
-            (part.type === 'text' || part.type === 'reasoning') && part.text.trim()
+          const hasNewResponse = currentResponseParts(parts).some(
+            part => (part.type === 'text' || part.type === 'reasoning') && part.text.trim()
           )
 
           return hasNewResponse
@@ -648,7 +648,9 @@ export function useMessageStream({
         const replaceTextPart = (parts: ChatMessagePart[], interim: boolean) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
 
-          return interim
+          // Partial terminal errors carry the whole retained assistant buffer,
+          // not just the response after the last tool (unlike healthy finals).
+          return interim || keepFailedPartialText
             ? mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
             : mergeCurrentResponseText(parts, visibleFinalText, occurredAt)
         }
@@ -698,7 +700,14 @@ export function useMessageStream({
 
         // A new prompt or correction starts another occurrence, even when its
         // text (or answer) repeats. Hidden user rows are boundaries too.
-        const lastUserIndex = prev.findLastIndex(message => message.role === 'user')
+        // A projected queued prompt is for the NEXT turn while this response
+        // exists. message.start clears payload/interim ownership so a queued
+        // turn completing without deltas still starts its own occurrence.
+        const hasCurrentResponse = Boolean(streamId || state.sawAssistantPayload || interimBoundaryPending)
+
+        const lastUserIndex = prev.findLastIndex(
+          message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
+        )
 
         const streamIndex = streamId
           ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)
@@ -727,7 +736,7 @@ export function useMessageStream({
 
             const existingText = chatMessageText({
               ...existing,
-              parts: existing.interim ? existing.parts : currentResponseParts(existing.parts)
+              parts: existing.interim || keepFailedPartialText ? existing.parts : currentResponseParts(existing.parts)
             }).trim()
 
             // The last assistant row is a sealed interim (a tool-call turn or a

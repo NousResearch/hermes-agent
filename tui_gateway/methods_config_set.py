@@ -321,6 +321,24 @@ def _set_reasoning(rid, params, key, value, session):
             session.pop("create_reasoning_override", None)
     else:  # session-scoped like the gateway's `/reasoning <level>`; a menu pick must not rewrite the global
         session["create_reasoning_override"] = parsed
+        # A CANONICAL Bot Chat is the agent's own chat, so a pick made there is that agent's setting: the
+        # chat rebuilds effort from its member profile's config.yaml on every resume, so a session-scoped
+        # pick snaps back on the next backend rebuild (app restart, idle recycle). Write it into that bot's
+        # profile with the same scoped write _set_model already performs for model picks, so the pick
+        # survives the rebuild and every later chat with that agent starts from it.
+        #
+        # Identity is the persisted ``follow_profile_config`` marker; the bare ``"Bot Chat"`` title compare
+        # is the legacy fallback _row_follows_profile keeps for rows written before that marker existed.
+        #
+        # ``room_plumbing`` is excluded on purpose: a Bot-Mode ROOM member session is created with
+        # follow_profile_config AND room_plumbing (hosted_room_server_rpc.create), and its profile feeds
+        # every room that member sits in, so a pick made inside a room must never rewrite the member's
+        # configured effort. Plain chats and room members stay session-scoped, exactly as before.
+        canonical_bot_chat = bool(session.get("follow_profile_config")) or (
+            str(session.get("title") or "").strip() == "Bot Chat")
+        if canonical_bot_chat and not session.get("room_plumbing"):
+            with _session_profile_runtime_scope(session):
+                _write_config_key("agent.reasoning_effort", arg)
     if session and session.get("agent") is not None:
         session["agent"].reasoning_config = parsed
         _persist_live_session_runtime(session)

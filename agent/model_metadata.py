@@ -4,7 +4,6 @@ Pure utility functions with no AIAgent dependency. Used by ContextCompressor
 and run_agent.py for pre-flight context checks.
 """
 
-import base64
 import contextlib
 import hashlib
 import ipaddress
@@ -320,6 +319,16 @@ MINIMUM_CONTEXT_LENGTH = 64_000
 # startup resolves the same model several times (banner, /model, compressor). Never persisted.
 _LOCAL_CTX_PROBE_TTL_SECONDS = 30.0
 _LOCAL_CTX_PROBE_CACHE: Dict[tuple, tuple] = {}
+# In-process (model, region) -> monotonic_ts memo of a FAILED Bedrock context probe. That probe pads
+# prompts of 1.3M/2.2M tokens and attempts up to two converse calls (agent/bedrock_adapter.py
+# _BEDROCK_PROBE_TIERS; the second tier is sent only when the first yields no parseable limit, i.e. on
+# the failure path), and its failures are deliberately never persisted, so without a negative memo a
+# model whose probe keeps failing (un-enabled model, opaque InternalServerException, unparseable length
+# error) would re-send them on every resolution. Negative only, in memory only, and bounded — same
+# reasoning as _ENDPOINT_PROBE_FAILURE_TTL_SECONDS: a failure is usually transient (expired SSO
+# session, offline box), so it must expire rather than stick.
+_BEDROCK_PROBE_FAILURE_TTL_SECONDS = 300.0
+_BEDROCK_PROBE_FAILURE_CACHE: Dict[tuple, float] = {}
 # Family-pattern fallbacks, used only when provider-aware sources all miss.
 # Lookups are longest-key-first substring matches, so dict order is cosmetic
 # and a specific key must be STRICTLY longer than its catch-all.
@@ -358,10 +367,11 @@ DEFAULT_CONTEXT_LENGTHS = {
     # MiniMax — M3 is 1M; M2.x is 204,800. https://platform.minimax.io/docs/api-reference/text-chat-openai
     "minimax-m3": 1000000, "minimax": 204800,
     # GLM — Nous + OpenRouter /v1/models (2026-09-09): 5.3 / 5.3-flash 1,310,720 (:batch/:US 1,048,576);
+    # 5.3-flashx 1,048,576 (2026-09-20; its own key, else the shorter 5.3-flash entry wins by substring);
     # 5.2 1,048,576; 5 / 5.1 / 4.7 / 4.6 204,800; *-turbo / 4.7-flash 202,752 (the catch-all).
     # The OpenRouter :free variant is capped; the longer key wins.
     "glm-5.3": 1_310_720, "glm-5.3-flash": 1_310_720, "glm-5.3:batch": 1_048_576, "glm-5.3:us": 1_048_576,
-    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576,
+    "glm-5.3-flash:batch": 1_048_576, "glm-5.3-flash:us": 1_048_576, "glm-5.3-flashx": 1_048_576,
     "glm-5.2": 1_048_576, "glm-5.2:free": 256_000,
     "glm-5.1": 204_800, "glm-5-turbo": 202752, "glm-5v-turbo": 202752, "glm-5": 204_800,
     "glm-4.7-flash": 202752, "glm-4.7": 204_800, "glm-4.6v": 131072, "glm-4.6": 204_800, "glm": 202752,
@@ -376,13 +386,15 @@ DEFAULT_CONTEXT_LENGTHS = {
     "grok-3": 131072, "grok-2": 131072, "grok": 131072,
     # Kimi — K3 is 1 Mi (matches the endpoint-scoped override); older Kimi 256K.
     "kimi-k3": 1_048_576, "kimi": 262144,
-    # Upstage Solar — /v1/models returns no context_length; dated variants resolve via prefix.
-    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768,
+    # Upstage Solar — /v1/models returns no context_length. Later generations and new lineups
+    # default to 512K (Upstage /v1/solar/models max_model_len, 2026-09).
+    "solar-open2": 262144, "solar-pro3": 131072, "solar-pro2": 65536, "solar-mini": 32768, "solar-": 524288,
     # Tencent Hunyuan (262144 = 256 × 1024, aligned with OpenRouter live metadata)
     "hy4-preview": 1_048_576, "hy3-preview": 262144, "hy3": 262144,
-    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); NVIDIA Nemotron (128K
+    # "Ox Alpha" stealth model (OpenCode Zen / OpenRouter slugs); "Union Alpha" stealth model
+    # (OpenRouter ``stealth/union-alpha``, 262144 per /api/v1/models); NVIDIA Nemotron (128K
     # except 3.5 Lightning); Poolside Laguna 2.1 (:free / -free slugs); Arcee; OpenRouter.
-    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576,
+    "x-preview-f": 1_048_576, "ox-alpha": 1_048_576, "union-alpha": 262144,
     "nemotron-3.5-lightning": 1_000_000, "nemotron": 131072,
     "laguna-s-2.1": 262144, "laguna-xs-2.1": 262144, "trinity": 262144, "elephant": 262144,
     # Hugging Face Inference Providers — model IDs use org/name format
@@ -403,6 +415,21 @@ def grok_supports_reasoning_effort(model: str) -> bool:
     """Allowlist check (aggregator prefixes like ``x-ai/`` stripped); unknown Grok models get no effort dial."""
     name = (model or "").strip().lower().rsplit("/", 1)[-1]
     return bool(name) and any(name.startswith(prefix) for prefix in _GROK_EFFORT_CAPABLE_PREFIXES)
+
+
+# OpenAI chat-era families served on api.openai.com that 400 on ANY ``reasoning`` field
+# ("Unsupported parameter: 'reasoning.effort' is not supported with this model"): gpt-3.5,
+# gpt-4 / gpt-4-turbo / gpt-4o / gpt-4.1 / gpt-4.5 and the chatgpt-* snapshots. A denylist so
+# an unknown future OpenAI model keeps its effort dial (fail-open); ``ft:`` fine-tune ids are
+# ``ft:<base>:<org>::<id>`` and inherit the base model's contract.
+_OPENAI_NON_REASONING_RE = re.compile(r"^(?:ft:)?(?:gpt-3\.5|gpt-4(?![0-9])|chatgpt-)")
+
+
+def openai_model_rejects_reasoning(model: str) -> bool:
+    """True for an OpenAI model id (aggregator ``openai/`` prefix stripped) that rejects the
+    Responses ``reasoning`` parameter outright, so callers send no ``reasoning`` key at all."""
+    name = (model or "").strip().lower().rsplit("/", 1)[-1]
+    return bool(_OPENAI_NON_REASONING_RE.match(name))
 
 
 def is_grok_46_family(model: str) -> bool:
@@ -536,9 +563,23 @@ def _server_root(base_url: str) -> str:
     return server_url[:-3] if server_url.endswith("/v1") else server_url
 
 
+# Families whose generation digit is part of the name (``solar-mini`` vs ``solar-mini4``): their keys
+# match only on an id boundary, after folding aggregator slugs (``solar-pro-3``) into the native form.
+_BOUNDARY_MATCHED_KEY_PREFIXES = ("solar-",)
+_HYPHENATED_GENERATION_RE = re.compile(
+    rf"((?:{'|'.join(map(re.escape, _BOUNDARY_MATCHED_KEY_PREFIXES))})[a-z]+)-(\d{{1,2}})(?=[-:.@]|$)")
+
+
 def _catalog_key_matches(key: str, model_lower: str) -> bool:
     """Substring match with version separators normalised on both sides, so a relay slug like
-    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398)."""
+    ``z-ai-glm-5-3`` still hits the ``glm-5.3`` entry instead of the ``glm`` catch-all (#97398).
+    Boundary-matched families: a key must be followed by ``-:.@`` or the end, and a key ending in
+    ``-`` is the family default for bare names (``org/`` allowed) continuing with a lineup letter."""
+    if key.startswith(_BOUNDARY_MATCHED_KEY_PREFIXES):
+        model_lower = _HYPHENATED_GENERATION_RE.sub(r"\1\2", model_lower)
+        if key.endswith("-"):
+            return re.match(re.escape(key) + "[a-z]", model_lower.rsplit("/", 1)[-1]) is not None
+        return re.search(re.escape(key) + r"(?:[-:.@]|$)", model_lower) is not None
     return key in model_lower or _normalize_model_version(key) in _normalize_model_version(model_lower)
 
 
@@ -601,6 +642,21 @@ def _skip_persistent_context_cache(base_url: str, provider: str) -> bool:
     """Providers whose disk context cache must not short-circuit probing: LM Studio (loaded
     context is transient), Codex OAuth (entitlement-specific window; a persisted fallback would suppress revalidation)."""
     return (provider or "").strip().lower() in {"lmstudio", "openai-codex"}
+
+
+def _is_codex_route(provider: str, base_url: str, custom_providers: list | None) -> bool:
+    """True when the request travels the Codex Responses wire regardless of host: the native
+    ``openai-codex`` provider (also behind a ``HERMES_CODEX_BASE_URL`` / ``model.base_url`` proxy)
+    or a custom entry declaring ``api_mode: codex_responses``. The transport, not the hostname,
+    decides which window the model actually gets (#116191)."""
+    if (provider or "").strip().lower() == "openai-codex":
+        return True
+    if not base_url:
+        return False
+    with contextlib.suppress(Exception):  # config unreadable → not a known Codex route
+        from hermes_cli.config import get_custom_provider_api_mode
+        return get_custom_provider_api_mode(base_url, custom_providers) == "codex_responses"
+    return False
 
 
 def _save_unless_skipped(model: str, base_url: str, ctx: int, provider: str) -> None:
@@ -690,6 +746,12 @@ def detect_local_server_type(base_url: str, api_key: str = "") -> Optional[str]:
     import httpx
     # IPv4-resolve BEFORE deriving server/LM Studio URLs and the cache lookup, so localhost and 127.0.0.1 share a cache entry.
     normalized = _localhost_to_ipv4(_normalize_base_url(base_url))
+    # A hosted provider (api.openai.com, api.anthropic.com, ...) never runs Ollama/LM Studio/llama.cpp/vLLM:
+    # skip the waterfall so egress logs do not fill with 404s for /api/tags, /v1/props, /version (#61421).
+    # Local addresses are never in that table, and ollama.com is the one hosted host that does speak
+    # Ollama's /api/tags, so it keeps the probe.
+    if _infer_provider_from_url(normalized) not in (None, "ollama-cloud"):
+        return None
     server_url = _server_root(normalized)
     lmstudio_url = _lmstudio_server_root(normalized)
     cached = _endpoint_probe_path_cache.get(server_url)
@@ -789,6 +851,33 @@ def _context_length_from_model_payload(payload: Dict[str, Any]) -> Optional[int]
     return int(raw) if isinstance(raw, (int, float)) and int(raw) > 0 else None
 
 
+# Generic ``/models`` pricing: an explicit ``unit`` beside the rates wins; without one, a token rate
+# at or above $0.001/token ($1,000/MTok — no real model charges that) can only be a per-million quote.
+_PRICING_UNIT_DIVISORS = {
+    "per_token": 1, "per_1k_tokens": 1_000, "per_thousand_tokens": 1_000,
+    "per_1m_tokens": 1_000_000, "per_million_tokens": 1_000_000,
+}
+_PER_MILLION_QUOTE_MIN = 0.001
+_TOKEN_RATE_FIELDS = ("prompt", "completion", "cache_read", "cache_write")
+
+
+def _normalize_token_rates(pricing: Dict[str, Any], unit: Any) -> Dict[str, Any]:
+    """Rescale the generic path's token rates to per-token strings (the contract usage_pricing
+    multiplies by 1e6), the way the Novita/DeepInfra branches already do for their known units."""
+    rates: Dict[str, float] = {}
+    for key in _TOKEN_RATE_FIELDS:
+        try:
+            rates[key] = float(pricing[key])
+        except (KeyError, TypeError, ValueError):
+            continue
+    divisor = _PRICING_UNIT_DIVISORS.get(str(unit or "").strip().lower())
+    if divisor is None:
+        divisor = 1_000_000 if any(v >= _PER_MILLION_QUOTE_MIN for v in rates.values()) else 1
+    if divisor != 1:
+        pricing.update({key: str(value / divisor) for key, value in rates.items()})
+    return pricing
+
+
 def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
     def _per_token(source: Dict[str, Any], fields: Dict[str, str], scale) -> Dict[str, Any]:
         # Provider $/MTok (or Novita's 1/10_000-$ per M) -> per-token strings, the same path usage_pricing uses for OpenRouter.
@@ -818,7 +907,7 @@ def _extract_pricing(payload: Dict[str, Any]) -> Dict[str, Any]:
                     pricing[target] = normalized[alias]
                     break
         if pricing:
-            return pricing
+            return _normalize_token_rates(pricing, normalized.get("unit"))
     return {}
 
 
@@ -1044,23 +1133,37 @@ def _get_context_cache_path() -> Path:
     return get_hermes_home() / "context_length_cache.yaml"
 
 
-def _load_context_cache() -> Dict[str, int]:
-    """Load the model+provider -> context_length cache from disk."""
+def _load_context_cache_document() -> dict:
+    """Read scalar lengths and their provenance from the same atomic document."""
     path = _get_context_cache_path()
     if not path.exists():
         return {}
     try:
         with open(path, encoding="utf-8") as f:
-            return (yaml.safe_load(f) or {}).get("context_lengths") or {}
+            data = yaml.safe_load(f)
+            if not isinstance(data, dict):
+                return {}
+            for section in ("context_lengths", "bedrock_confirmed_v1"):
+                if not isinstance(data.get(section), dict):
+                    data[section] = {}
+            return data
     except Exception as e:
         logger.debug("Failed to load context length cache: %s", e)
         return {}
 
 
-def _write_context_cache(cache: Dict[str, int]) -> None:
+def _load_context_cache() -> Dict[str, int]:
+    """Load scalar lengths, preserving the legacy reader contract."""
+    return _load_context_cache_document().get("context_lengths") or {}
+
+
+def _write_context_cache(cache: Dict[str, int], bedrock_confirmed: dict | None = None) -> None:
     """Atomic write (a truncating write killed mid-dump leaves a partial file that
     _load_context_cache() swallows as {}, wiping EVERY cached length). Raises on failure."""
-    atomic_yaml_write(_get_context_cache_path(), {"context_lengths": cache})
+    document = {"context_lengths": cache}
+    if bedrock_confirmed:
+        document["bedrock_confirmed_v1"] = bedrock_confirmed
+    atomic_yaml_write(_get_context_cache_path(), document)
 
 
 def _context_cache_key(model: str, base_url: str) -> str:
@@ -1068,48 +1171,92 @@ def _context_cache_key(model: str, base_url: str) -> str:
     return f"{model}@{(base_url or '').rstrip('/')}"
 
 
-def save_context_length(model: str, base_url: str, length: int) -> None:
+def save_context_length(model: str, base_url: str, length: int, *, source: str = "") -> None:
     """Persist a discovered context length under ``model@base_url`` (same model, different providers, different limits)."""
     # 0/negative is always a bug and would make get_model_context_length() return 0 (`0 is not None`).
     if length <= 0:
         logger.warning("Refusing to cache non-positive context length %s -> %s tokens", f"{model}@{base_url}", length)
         return
     key = _context_cache_key(model, base_url)
-    cache = _load_context_cache()
-    if cache.get(key) == length:
+    document = _load_context_cache_document()
+    cache = document.get("context_lengths") or {}
+    confirmed = document.get("bedrock_confirmed_v1") or {}
+    confirmed = confirmed if isinstance(confirmed, dict) else {}
+    old_confirmed = confirmed.copy()
+    # Generic writes revoke provenance even for the same number. The marker
+    # binds to the value, so an older writer cannot leave mismatched evidence.
+    for alias in (key, f"{model}@{base_url}", f"{key}/"):
+        confirmed.pop(alias, None)
+    if source == "bedrock-confirmed-v1":
+        confirmed[key] = length
+    if cache.get(key) == length and confirmed == old_confirmed:
         return  # already stored
     cache[key] = length
     try:
-        _write_context_cache(cache)
+        _write_context_cache(cache, confirmed)
         logger.info("Cached context length %s -> %s tokens", key, f"{length:,}")
     except Exception as e:
         logger.debug("Failed to save context length cache: %s", e)
 
 
-def get_cached_context_length(model: str, base_url: str) -> Optional[int]:
+def save_provider_context_length(model: str, base_url: str, length: int, provider: str = "") -> None:
+    """Persist a provider-confirmed window, distinguishing it from legacy Bedrock fallbacks."""
+    if _is_bedrock_context(base_url, provider):
+        save_context_length(model, base_url or "bedrock://", length, source="bedrock-confirmed-v1")
+    else:
+        save_context_length(model, base_url, length)
+
+
+def get_cached_context_length(model: str, base_url: str, *, bedrock_confirmed: bool = False) -> Optional[int]:
     """Look up a previously discovered context length for model+provider."""
     key = _context_cache_key(model, base_url)
-    cache = _load_context_cache()
+    document = _load_context_cache_document()
+    cache = document.get("context_lengths") or {}
+    if not isinstance(cache, dict):
+        return None
     # Legacy rows may carry a trailing slash, so probe the canonical key, the literal form and the slashed canonical form.
-    return next((hit for hit in map(cache.get, (key, f"{model}@{base_url}", f"{key}/")) if hit is not None), None)
+    matched_key = next((k for k in (key, f"{model}@{base_url}", f"{key}/") if cache.get(k) is not None), None)
+    length = cache.get(matched_key)
+    if type(length) is not int:
+        return None
+    if bedrock_confirmed:
+        confirmed = document.get("bedrock_confirmed_v1")
+        marker = confirmed.get(matched_key) if isinstance(confirmed, dict) else None
+        if type(marker) is not int or marker != length:
+            return None
+    return length
 
 
 def _invalidate_cached_context_length(model: str, base_url: str) -> None:
-    """Drop a stale cache entry so it gets re-resolved on the next lookup."""
+    """Drop a stale entry and its probe cooldown using the persisted cache URL.
+
+    Bedrock callers without a runtime endpoint must pass ``bedrock://``, as
+    the resolver does; a blank URL addresses the distinct generic cache key.
+    """
     key = _context_cache_key(model, base_url)
-    cache = _load_context_cache()
+    document = _load_context_cache_document()
+    cache = document.get("context_lengths") or {}
+    confirmed = document.get("bedrock_confirmed_v1") or {}
+    confirmed = confirmed if isinstance(confirmed, dict) else {}
     # Also drop the in-memory TTL probe entries, or the next resolution inside the TTL window reuses the stale value.
     bare, stripped = _strip_provider_prefix(model), (base_url or "").rstrip("/")
     _LOCAL_CTX_PROBE_CACHE.pop((bare, stripped), None)
     _LOCAL_CTX_PROBE_CACHE.pop(("ollama_show", bare, stripped), None)
+    # Same for a memoised Bedrock probe failure (keyed by region, which the caller does not know):
+    # the entry being dropped is the reason to ask the probe again, not to wait out its TTL.
+    from hermes_constants import hermes_home_key
+    for memo_key in list(_BEDROCK_PROBE_FAILURE_CACHE):  # snapshot: another thread may be memoising
+        if memo_key[:2] == (hermes_home_key(), stripped) and memo_key[2] in (model, bare):
+            _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)
     # Every key shape get_cached_context_length consults.
     stale_keys = {key, f"{model}@{base_url}", f"{key}/"}
-    if not any(k in cache for k in stale_keys):
+    if not any(k in cache or k in confirmed for k in stale_keys):
         return
     for k in stale_keys:
         cache.pop(k, None)
+        confirmed.pop(k, None)
     try:
-        _write_context_cache(cache)
+        _write_context_cache(cache, confirmed)
     except Exception as e:
         logger.debug("Failed to invalidate context length cache entry %s: %s", key, e)
 
@@ -1120,8 +1267,13 @@ def get_next_probe_tier(current_length: int) -> Optional[int]:
 
 
 def parse_context_limit_from_error(error_msg: str) -> Optional[int]:
-    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any."""
+    """Context limit quoted in a provider error ("maximum context length is 32768 tokens"), if any.
+
+    A message about only an OUTPUT cap ("... model output limit of 16384") never says "context";
+    bail out so the generic "limit ... of N" pattern can't cache the output cap as the window."""
     error_lower = error_msg.lower()
+    if ("output limit" in error_lower or "output tokens" in error_lower or "output token" in error_lower) and "context" not in error_lower:
+        return None
     patterns = (
         r'max_model_len\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM: "max_model_len 32768", "=32768", ": 32768", "(32768)", "is 32768"
         r'maximum model length\s*(?:is\s*)?[:=(]?\s*(\d{4,})',  # vLLM alt: "maximum model length 131072", "... is 131072"
@@ -1149,6 +1301,26 @@ def get_context_length_from_provider_error(error_msg: str, current_context_lengt
     return parsed_limit if parsed_limit is not None and parsed_limit < current_context_length else None
 
 
+# OpenAI's original overflow wording, copied by vLLM / llama-cpp-python: "(36865 in the messages,
+# 65536 in the completion)"; legacy completions: "(771 in your prompt; 4000 for the completion)".
+# The first figure is the prompt the server MEASURED, the second the requested max_tokens.
+_COMPLETION_SPLIT_RE = re.compile(
+    r'\((\d+)\s+(?:tokens\s+)?in (?:the messages|your prompt|the prompt)\s*[;,]\s*'
+    r'(\d+)\s+(?:tokens\s+)?(?:in|for) the completion\)'
+)
+
+
+def _completion_split_budget(error_lower: str) -> Optional[int]:
+    """window - measured prompt from the OpenAI-style parenthetical split, or None when the wording
+    is absent or the prompt alone fills the window (a genuine input overflow -> compress)."""
+    split = _COMPLETION_SPLIT_RE.search(error_lower)
+    ctx = re.search(r'maximum context length is (\d+)', error_lower)
+    if not split or not ctx:
+        return None
+    available = int(ctx.group(1)) - int(split.group(1))
+    return available if available >= 1 else None
+
+
 def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     """Available OUTPUT tokens from a "max_tokens too large" error, or None. Distinct from "prompt
     too long" (-> compress): here input + requested_output > window, so the fix is a smaller
@@ -1157,12 +1329,21 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
     if not _any_phrase_group(error_lower, _PARSEABLE_OUTPUT_CAP_SIGNALS):
         return None
     # Direct cap figures, most specific first: "exceeds model's maximum output tokens (65536)", "Range of
-    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "= available_tokens: 10000", last "= N".
+    # max_tokens should be [1, 65536]" (upper bound is the cap), Anthropic "max_tokens: 100000 > 64000, which
+    # is the maximum allowed number of output tokens" (the ceiling is the right-hand side), Anthropic
+    # "= available_tokens: 10000", last "= N".
     for pattern in (
         r'exceeds model(?:\'s)? maximum output tokens\s*\(?\s*(\d+)\s*\)?',
+        r'max_tokens\s*:\s*\d+\s*>\s*(\d+)\s*,?\s*which is the maximum allowed number of output tokens',
         r'range of max_tokens should be\s*\[\s*\d+\s*,\s*(\d+)\s*\]',
         r'available_tokens[:\s]+(\d+)',
         r'available\s+tokens[:\s]+(\d+)',
+        # Switchyard: "max_tokens cannot exceed the configured model output limit of 16384".
+        r'output limit (?:of|is)\s*(\d+)',
+        # Azure OpenAI: "max_tokens is too large: 65536. This model supports at most 32768 completion tokens."
+        r'supports at most\s+(\d+)\s*(?:completion\s+)?tokens',
+        # Scaleway: "max_completion_tokens is limited to 16384 for glm-5.2".
+        r'(?:max_tokens|max_completion_tokens) is limited to\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1175,6 +1356,9 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = int(_m_ctx.group(1)) - int(_m_parts.group(1)) - int(_m_parts.group(2))
         if _available >= 1:
             return _available
+    _split_available = _completion_split_budget(error_lower)
+    if _split_available is not None:
+        return _split_available
     # LM Studio / llama.cpp: window in tokens, prompt in CHARACTERS; ~3 chars/token over-reserves the input.
     _m_ctx_tok = re.search(r'maximum context length is (\d+)\s*token', error_lower)
     _m_chars = re.search(r'prompt contains (\d+)\s*character', error_lower)
@@ -1182,6 +1366,12 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         _available = int(_m_ctx_tok.group(1)) - (int(_m_chars.group(1)) + 2) // 3
         if _available >= 1:
             return _available
+    # SGLang: "maximum context length of 131072 tokens. You requested a total of 132528 tokens: 66992 tokens
+    # from the input messages and 65536 tokens for the completion" -> window - input (None when the input
+    # alone overflows -> compress).
+    _m_sglang = _sglang_window_and_input(error_lower)
+    if _m_sglang and _m_sglang[0] - _m_sglang[1] >= 1:
+        return _m_sglang[0] - _m_sglang[1]
     # vLLM: window and prompt both in TOKENS; available = window - input (None when the input alone
     # overflows -> compress). When max_tokens is the BINDING constraint vLLM reports "at least N input
     # tokens" with N == window + 1 - requested_output, so window - N == requested_output - 1 and each
@@ -1201,11 +1391,15 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
 
 
 # Each entry is a phrase group; the group matches when ALL phrases are present.
-# DashScope, Anthropic, OpenRouter/Nous, LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
+# DashScope, Anthropic (available_tokens / "maximum allowed number of output tokens"), OpenRouter/Nous,
+# LM Studio/llama.cpp, generic "should be <= N", OpenAI-compat relays.
 _OUTPUT_CAP_SIGNALS = (
     ("range of max_tokens should be",), ("available_tokens",), ("available tokens",),
     ("in the output", "maximum context length"), ("requested", "output tokens"),
     ("should be",), ("less than or equal",), ("must be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",), ("maximum allowed number of output tokens",),
+    ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
+    ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1219,8 +1413,19 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("max_tokens", "available_tokens"), ("max_tokens", "available tokens"),
     ("in the output", "maximum context length"),
     ("maximum context length", "requested", "output tokens"),
+    ("maximum context length", "in the completion"), ("maximum context length", "for the completion"),
     ("range of max_tokens should be",), ("exceeds model", "maximum output tokens"),
+    ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
+    ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
+    ("limited to",),
 )
+
+
+def _sglang_window_and_input(error_lower: str) -> Optional[Tuple[int, int]]:
+    """``(window, input_tokens)`` from SGLang's wording, else None; both figures are explicit there."""
+    _m_ctx = re.search(r'maximum context length of (\d+)\s*token', error_lower)
+    _m_in = re.search(r'(\d+)\s*tokens from the input messages', error_lower)
+    return (int(_m_ctx.group(1)), int(_m_in.group(1))) if _m_ctx and _m_in else None
 
 
 def _any_phrase_group(text: str, groups: tuple) -> bool:
@@ -1232,11 +1437,18 @@ def is_output_cap_error(error_msg: str) -> bool:
     output-cap 400 misclassified as context overflow death-loops the compressor (same max_tokens, same
     rejection). Signal: talks about max_tokens as a cap/range/limit and NOT about an oversized input."""
     error_lower = error_msg.lower()
+    # The OpenAI-style split names neither max_tokens nor "output tokens" and ends with "reduce the
+    # length", so it fails both gates below; the measured prompt decides instead (#90607).
+    if _completion_split_budget(error_lower) is not None:
+        return True
     # An error that ALSO describes an oversized INPUT is a genuine overflow — compression can fix it.
+    # SGLang states both figures: input >= window is that same genuine overflow.
+    _m_sglang = _sglang_window_and_input(error_lower)
     return (
-        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens"))
+        any(p in error_lower for p in ("max_tokens", "max_output_tokens", "max_completion_tokens", "tokens for the completion"))
         and _any_phrase_group(error_lower, _OUTPUT_CAP_SIGNALS)
         and not any(p in error_lower for p in _INPUT_OVERFLOW_SIGNALS)
+        and not (_m_sglang and _m_sglang[1] >= _m_sglang[0])
     )
 
 
@@ -1481,9 +1693,13 @@ def _normalize_model_version(model: str) -> str:
     return model.replace(".", "-")
 
 
-def _query_anthropic_context_length(model: str, base_url: str, api_key: str) -> Optional[int]:
-    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped."""
-    if not api_key or api_key.startswith("sk-ant-oat"):
+def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> Optional[int]:
+    """Anthropic /v1/models max_input_tokens; OAuth tokens (sk-ant-oat*) 401 and are skipped.
+
+    ``api_key`` may be a ``key_cmd`` callable token source; the metadata probe never mints — a
+    callable is not a Console key, so the lookup is skipped like an OAuth token (#114967).
+    """
+    if not api_key or not isinstance(api_key, str) or api_key.startswith("sk-ant-oat"):
         return None
     try:
         base = base_url.rstrip("/").removesuffix("/v1")
@@ -1585,7 +1801,17 @@ def _verified_codex_ctx_for_slug(model_bare: str) -> Optional[int]:
 
 
 _codex_oauth_context_cache: Dict[str, Tuple[Dict[str, int], float]] = {}
+# ``{slug: max_context_window}`` from the same fetch, keyed by the same token fingerprint. Only the
+# opted-in ``-900k`` bump reads it (#105443); a catalog without the field leaves the entry empty.
+_codex_oauth_max_context_cache: Dict[str, Dict[str, int]] = {}
 _CODEX_OAUTH_CONTEXT_CACHE_TTL = 3600  # 1 hour
+# The Codex models endpoint reads ``client_version`` as a Codex CLI compatibility version and
+# hides models whose ``minimal_client_version`` is newer, so a made-up version (the old
+# "1.0.0") silently drops future models. "0.0.0" is the backend's ungated sentinel returning
+# the full account catalog; other out-of-sequence values return an empty catalog and omitting
+# the parameter is HTTP 400.
+CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
+CODEX_MODELS_CATALOG_URL = f"https://chatgpt.com/backend-api/codex/models?client_version={CODEX_UNGATED_CLIENT_VERSION}"
 
 
 def _codex_oauth_token_fingerprint(access_token: str) -> str:
@@ -1593,35 +1819,23 @@ def _codex_oauth_token_fingerprint(access_token: str) -> str:
     return hashlib.sha256(access_token.encode("utf-8")).hexdigest()[:16]
 
 
-def _extract_chatgpt_account_id(access_token: str) -> Optional[str]:
-    """``chatgpt_account_id`` from the Codex OAuth JWT, or None on any parse error. Without the
-    ``ChatGPT-Account-Id`` header /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200)
-    and the probe silently falls back. Mirrors auxiliary_client.py."""
-    try:
-        payload_b64 = access_token.split(".")[1]
-        claims = json.loads(base64.urlsafe_b64decode(payload_b64 + "=" * (-len(payload_b64) % 4)))
-        acct_id = claims.get("https://api.openai.com/auth", {}).get("chatgpt_account_id") if isinstance(claims, dict) else None
-        return acct_id if isinstance(acct_id, str) and acct_id else None
-    except Exception:
-        return None
-
-
 def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[Dict[str, int], bool]:
     """Codex catalogue ``{slug: context_window}`` plus whether it came from HTTP. Cached per token
-    fingerprint (windows vary by entitlement). An in-process hit reports False: not a fresh
-    provider confirmation, must not drive persistent writes."""
+    fingerprint (windows vary by entitlement); ``max_context_window`` lands in
+    ``_codex_oauth_max_context_cache`` under the same key. An in-process hit reports False: not a
+    fresh provider confirmation, must not drive persistent writes."""
     now = time.time()
     cache_key = _codex_oauth_token_fingerprint(access_token)
     cached = _codex_oauth_context_cache.get(cache_key)
     if cached is not None and now - cached[1] < _CODEX_OAUTH_CONTEXT_CACHE_TTL:
         return cached[0], False
-    headers = {"Authorization": f"Bearer {access_token}"}
-    acct_id = _extract_chatgpt_account_id(access_token)
-    if acct_id:
-        headers["ChatGPT-Account-Id"] = acct_id
+    # Without ChatGPT-Account-ID /backend-api/codex/models returns ``{"models":[]}`` (HTTP 200) and
+    # the probe silently falls back; residency-enforced workspaces 401 without the residency header.
+    from agent.codex_headers import codex_account_headers
+    headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
     try:
         _ensure_requests()
-        resp = requests.get("https://chatgpt.com/backend-api/codex/models?client_version=1.0.0", headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
+        resp = requests.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=(5, 10), verify=_resolve_requests_verify())
         if resp.status_code != 200:
             logger.debug("Codex /models probe returned HTTP %s; falling back to hardcoded defaults", resp.status_code)
             return {}, False
@@ -1630,12 +1844,16 @@ def _fetch_codex_oauth_context_lengths_with_source(access_token: str) -> Tuple[D
         logger.debug("Codex /models probe failed: %s", exc)
         return {}, False
     result: Dict[str, int] = {}
+    max_result: Dict[str, int] = {}
     for item in data.get("models", []) if isinstance(data, dict) else []:
-        slug, ctx = (item.get("slug"), item.get("context_window")) if isinstance(item, dict) else (None, None)
+        slug, ctx, max_ctx = (item.get("slug"), item.get("context_window"), item.get("max_context_window")) if isinstance(item, dict) else (None, None, None)
         if isinstance(slug, str) and isinstance(ctx, int) and ctx > 0:
             result[slug.strip()] = ctx
+            if isinstance(max_ctx, int) and max_ctx > 0:
+                max_result[slug.strip()] = max_ctx
     if result:
         _codex_oauth_context_cache[cache_key] = (result, now)
+        _codex_oauth_max_context_cache[cache_key] = max_result
     return result, True
 
 
@@ -1646,10 +1864,12 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     model_bare = _strip_provider_prefix(model).strip()
     if not model_bare:
         return None, ""
-    def _apply_verified_bump(ctx: int, source: str) -> Tuple[int, str]:
-        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only."""
+    def _apply_verified_bump(ctx: int, source: str, catalog_max: Optional[int] = None) -> Tuple[int, str]:
+        """Lift an EXACT stale 272K advertisement to the verified cap for opted-in ``-900k`` variants only,
+        never above the catalog's own ``max_context_window`` when it publishes one (#105443)."""
         bumped = _verified_codex_ctx_for_slug(model_bare)
         if bumped is not None and ctx == _CODEX_OAUTH_STALE_ADVERTISED_CTX:
+            bumped = min(bumped, catalog_max) if catalog_max else bumped
             logger.debug("Codex OAuth context for %s: advertised %d raised to live-verified %d", model_bare, ctx, bumped)
             return bumped, source
         return ctx, source
@@ -1661,12 +1881,11 @@ def _resolve_codex_oauth_context_length_with_source(model: str, access_token: st
     lookup_bare = _bare_codex_slug(strip_codex_context_variant_suffix(model_bare))
     if access_token:
         live, fresh_probe = _fetch_codex_oauth_context_lengths_with_source(access_token)
+        live_max = _codex_oauth_max_context_cache.get(_codex_oauth_token_fingerprint(access_token), {})
         # Exact slug, then case-insensitive in case casing drifts.
-        hit = live.get(lookup_bare)
-        if hit is None:
-            hit = next((ctx for slug, ctx in live.items() if slug.lower() == lookup_bare.lower()), None)
-        if hit is not None:
-            return _apply_verified_bump(hit, "live" if fresh_probe else "memory")
+        slug = lookup_bare if lookup_bare in live else next((s for s in live if s.lower() == lookup_bare.lower()), None)
+        if slug is not None:
+            return _apply_verified_bump(live[slug], "live" if fresh_probe else "memory", live_max.get(slug))
     hit = _longest_key_match(_CODEX_OAUTH_CONTEXT_FALLBACK, lookup_bare.lower())
     return _apply_verified_bump(hit[1], "fallback") if hit else (None, "")
 
@@ -1705,7 +1924,7 @@ def _resolve_nous_context_length(model: str, base_url: str = "", api_key: str = 
     return None, ""
 
 
-def _validate_cached_context_length(model: str, base_url: str, cached: int, is_bedrock_context: bool, *, api_key: str = "") -> Optional[int]:
+def _validate_cached_context_length(model: str, base_url: str, cached: int, *, api_key: str = "") -> Optional[int]:
     """Step 1 of get_model_context_length: accept, repair, or drop a persisted entry. Returns the
     value to use, or None to fall through to live resolution. Order matters: a value must be
     rejected as bogus before any provider-specific handling."""
@@ -1729,18 +1948,7 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     if _infer_provider_from_url(base_url) == "nous":
         logger.debug("Bypassing persistent cache for %s@%s (Nous portal authoritative)", model, base_url)
         return None
-    if is_bedrock_context:
-        # Bedrock: the static table is a FLOOR — probe-derived entries may legitimately exceed it.
-        try:
-            from agent.bedrock_adapter import get_bedrock_context_length
-            bedrock_ctx = get_bedrock_context_length(model)
-        except ImportError:
-            return cached
-        if cached < bedrock_ctx:
-            logger.info("Dropping stale Bedrock cache entry %s@%s -> %s; using static Bedrock table value %s", model, base_url, f"{cached:,}", f"{bedrock_ctx:,}")
-            _invalidate_cached_context_length(model, base_url)
-            return bedrock_ctx
-        return cached
+
     # For local endpoints, run the probe that respects configured Modelfile context values first.
     # _query_local_context_length prefers num_ctx from Modelfile, while _query_ollama_api_show returns the
     # GGUF training max first which can be larger and would create a false-safe window for compression
@@ -1750,29 +1958,57 @@ def _validate_cached_context_length(model: str, base_url: str, cached: int, is_b
     return cached
 
 
+def _bedrock_probe_failed_recently(key: tuple) -> bool:
+    """Prune expired failures and check this home/endpoint/model/region's cooldown."""
+    now = time.monotonic()
+    for memo_key, failed_at in list(_BEDROCK_PROBE_FAILURE_CACHE.items()):
+        if now - failed_at >= _BEDROCK_PROBE_FAILURE_TTL_SECONDS:
+            _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)
+    return key in _BEDROCK_PROBE_FAILURE_CACHE
+
+
+def _is_bedrock_context(base_url: str, provider: str = "") -> bool:
+    return provider == "bedrock" or bool(
+        base_url and base_url_hostname(base_url).startswith("bedrock-runtime.")
+        and base_url_host_matches(base_url, "amazonaws.com")
+    )
+
+
 def _resolve_bedrock_context_length(model: str, base_url: str) -> Optional[int]:
     """Step 1b: Bedrock static table + one cached live probe (Bedrock exposes no context window via
-    metadata APIs); None when boto3 is absent. Cached per model under base_url, else a synthetic
-    bedrock:// key so display/offline paths share it."""
+    metadata APIs); None when boto3 is absent. Only provider-confirmed windows from a probe
+    or runtime error are reused. The table answers a call, never the cache. Keys use base_url,
+    or synthetic bedrock:// when absent, consistently with provider-error writers."""
     try:
-        from agent.bedrock_adapter import get_bedrock_context_length, resolve_bedrock_region
+        from agent.bedrock_adapter import get_bedrock_context_length, probe_bedrock_context_length, resolve_bedrock_region
     except ImportError:
         return None  # boto3 not installed — fall through to generic resolution
     cache_key_url = base_url or "bedrock://"
-    cached = get_cached_context_length(model, cache_key_url)
-    if cached is not None:
+    cached = get_cached_context_length(model, cache_key_url, bedrock_confirmed=True)
+    if cached is not None and cached > 0:
         return cached
+    # Legacy scalars have no trustworthy source. Ignore them until a successful
+    # probe replaces them; deleting here could erase a concurrent confirmed write
+    # or reset the failure cooldown repeatedly when the cache is read-only.
     # Region from the base_url host first, then the standard AWS chain. An empty region disables probing (table only).
     _m = re.search(r"bedrock-runtime\.([a-z0-9-]+)\.", base_url) if base_url else None
     region = _m.group(1) if _m else ""
     if not region:
         with contextlib.suppress(Exception):
             region = resolve_bedrock_region()
-    ctx = get_bedrock_context_length(model, region=region, probe=bool(region))
-    # Only persist probe-derived values (region present); a pure table fallback must not poison the cache.
-    if ctx and region:
-        save_context_length(model, cache_key_url, ctx)
-    return ctx
+    from hermes_constants import hermes_home_key
+    memo_key = (hermes_home_key(), cache_key_url.rstrip('/'), model, region)
+    if region and not _bedrock_probe_failed_recently(memo_key):
+        probed = probe_bedrock_context_length(model, region)
+        if probed:
+            # The probe is the only authoritative source, so it is the only thing worth persisting:
+            # a table fallback written here would be served forever (this branch runs before it),
+            # and the probe would never be consulted for the model again.
+            save_provider_context_length(model, cache_key_url, probed, provider="bedrock")
+            _BEDROCK_PROBE_FAILURE_CACHE.pop(memo_key, None)  # success ends the failure window
+            return probed
+        _BEDROCK_PROBE_FAILURE_CACHE[memo_key] = time.monotonic()
+    return get_bedrock_context_length(model, probe=False)  # static table / default: answers this call only
 
 
 def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
@@ -1805,6 +2041,19 @@ def _resolve_custom_endpoint_context_length(model: str, base_url: str, api_key: 
     # Same silent-256K bug class as the step-9 fallback — warn here too.
     _warn_context_length_fallback(model, base_url)
     return DEFAULT_FALLBACK_CONTEXT
+
+
+def _resolve_custom_codex_route_context_length(model: str, base_url: str, api_key: str, provider: str) -> int:
+    """Step 2 for a custom ``api_mode: codex_responses`` route — a Codex proxy on a generic URL.
+    The Codex OAuth table (with the opted-in ``-900k`` bump) answers first: the proxy's own /models
+    and the direct-API catalog both advertise the 1.05M direct window that Codex does not honour.
+    No live catalog probe — the route's key is the proxy's, not a ChatGPT token. Slugs the table
+    does not know take the ordinary endpoint probes."""
+    ctx, _source = _resolve_codex_oauth_context_length_with_source(model)
+    if ctx:
+        logger.info("Using Codex OAuth context length %s for model %r (codex_responses route at %s)", f"{ctx:,}", model, base_url)
+        return ctx
+    return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
 
 
 def _resolve_moa_context_length(model: str, custom_providers: list | None) -> Optional[int]:
@@ -1846,7 +2095,9 @@ def _config_override_context_length(model: str, base_url: str, provider: str, cu
     # 0c. custom_providers per-model override — check before any probe. This closes the gap where /model
     # switch and display paths used to fall back to 128K despite the user having a per-model context_length
     # set. See #15779.
-    if custom_providers and base_url and model:
+    # Not gated on custom_providers: callers that never load the route list pass None and the
+    # helper self-resolves it from config (#69807).
+    if base_url and model:
         with contextlib.suppress(Exception):  # fall through to probing
             from hermes_cli.config import get_custom_provider_context_length
             cp_ctx = get_custom_provider_context_length(model=model, base_url=base_url, custom_providers=custom_providers)
@@ -1958,12 +2209,21 @@ def get_model_context_length(
     endpoint_context = _endpoint_scoped_context_length(model, base_url)
     if endpoint_context is not None:
         return endpoint_context
-    is_bedrock_context = provider == "bedrock" or (
-        base_url and base_url_hostname(base_url).startswith("bedrock-runtime.") and base_url_host_matches(base_url, "amazonaws.com")
-    )
-    # 1. Persistent cache (LM Studio / Codex OAuth excluded — see _skip_persistent_context_cache).
-    cached = get_cached_context_length(model, base_url) if base_url and not _skip_persistent_context_cache(base_url, provider) else None
-    validated = _validate_cached_context_length(model, base_url, cached, is_bedrock_context, api_key=api_key) if cached is not None else None
+    # A profile that qualifies its own bound (external processes have no /models probe) wins
+    # over the generic caches below; explicit user/endpoint overrides above still take precedence.
+    from providers import get_provider_profile
+    profile = get_provider_profile(provider)
+    context = profile.get_model_context_length(model) if profile else None
+    if type(context) is int and context > 0:
+        return context
+    is_bedrock_context = _is_bedrock_context(base_url, provider)
+    # A Codex Responses route is keyed on its transport, not its host: behind a proxy
+    # (HERMES_CODEX_BASE_URL, model.base_url, custom api_mode: codex_responses) the URL looks
+    # generic while the window is still the Codex OAuth one (#116191).
+    codex_route = _is_codex_route(provider, base_url, custom_providers)
+    # 1. Persistent cache (LM Studio / Codex routes excluded — see _skip_persistent_context_cache).
+    cached = get_cached_context_length(model, base_url) if base_url and not is_bedrock_context and not codex_route and not _skip_persistent_context_cache(base_url, provider) else None
+    validated = _validate_cached_context_length(model, base_url, cached, api_key=api_key) if cached is not None else None
     if validated is not None:
         return validated
     # 1b. AWS Bedrock. Must run BEFORE the custom-endpoint step: bedrock-runtime.* is not in
@@ -1978,9 +2238,11 @@ def get_model_context_length(
                 save_context_length(model, base_url, ctx)
             return ctx
     # 2. Live /models for truly custom endpoints. Known providers skip this: their /models may
-    # report a provider-imposed limit (Copilot: 128k) rather than the window.
-    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url):
-        return _resolve_custom_endpoint_context_length(model, base_url, api_key, provider)
+    # report a provider-imposed limit (Copilot: 128k) rather than the window. The native
+    # openai-codex provider skips it too even on a proxy URL — step 5 runs its live catalog probe.
+    if _is_custom_endpoint(base_url) and not _is_known_provider_base_url(base_url) and (provider or "").strip().lower() != "openai-codex":
+        resolve = _resolve_custom_codex_route_context_length if codex_route else _resolve_custom_endpoint_context_length
+        return resolve(model, base_url, api_key, provider)
     # 4. Anthropic /v1/models API (only for regular API keys, not OAuth)
     if provider == "anthropic" or (base_url and base_url_hostname(base_url) == "api.anthropic.com"):
         ctx = _query_anthropic_context_length(model, base_url or "https://api.anthropic.com", api_key)
@@ -2028,6 +2290,10 @@ async def get_model_context_length_async(model: str, base_url: str = "", api_key
 
 # CJK/Hangul/Kana codepoints (~1 token each), counted in one C-level regex pass: Hangul
 # Jamo (+Ext-A), CJK radicals/ideographs (+compat), Hangul syllables, fullwidth/halfwidth.
+# Rough chars-per-token ratio for ASCII text; the single source for every "N tokens ≈ N*4 chars"
+# budget conversion (context files, tool-output budgets, whisper prompt cap, compressor metadata).
+CHARS_PER_TOKEN = 4
+
 _CJK_DENSE_RE = re.compile("[\u1100-\u11ff\u2e80-\u9fff\ua960-\ua97f\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]")
 
 
@@ -2049,10 +2315,10 @@ def estimate_tokens_rough(text: str) -> int:
         return 0
     text = str(text)
     if text.isascii():  # flag check on CPython; ASCII cannot contain token-dense CJK
-        return (len(text) + 3) // 4
+        return (len(text) + 3) // CHARS_PER_TOKEN
     stripped = _CJK_DENSE_RE.sub("", text)
     dense = len(text) - len(stripped)
-    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // 4)
+    return dense + ((len(stripped.encode("utf-8", "replace")) + 3) // CHARS_PER_TOKEN)
 
 
 def estimate_messages_tokens_rough(messages: List[Dict[str, Any]], *, charge_stale_thinking: bool = True) -> int:
@@ -2152,16 +2418,22 @@ def _count_parts(parts: Any, types: set) -> int:
     return sum(1 for part in parts if isinstance(part, dict) and part.get("type") in types) if isinstance(parts, list) else 0
 
 
+_IMAGE_PART_TYPES = frozenset({"image", "image_url", "input_image"})
+
+
 def _count_image_tokens(msg: Dict[str, Any], cost_per_image: int) -> int:
     """Count image-like content parts in a message; return their token cost."""
     if not isinstance(msg, dict):
         return 0
     content = msg.get("content")
-    count = _count_parts(content, {"image", "image_url", "input_image"})
+    count = _count_parts(content, _IMAGE_PART_TYPES)
     count += _count_parts(msg.get("_anthropic_content_blocks"), {"image"})
     # Multimodal tool results that haven't been converted yet.
     if isinstance(content, dict) and content.get("_multimodal"):
         count += _count_parts(content.get("content"), {"image", "image_url"})
+    # Responses ``function_call_output`` items carry converted tool-result
+    # parts under ``output`` (the converter moves chat ``content`` there).
+    count += _count_parts(msg.get("output"), _IMAGE_PART_TYPES)
     return count * cost_per_image
 
 
@@ -2205,11 +2477,22 @@ def _wire_message_shadow(msg: Dict[str, Any]) -> Dict[str, Any]:
         elif k == "content" and isinstance(v, list):
             shadow[k] = [
                 {"type": part.get("type"), "image": "[stripped]"}
-                if isinstance(part, dict) and part.get("type") in {"image", "image_url", "input_image"} else part
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                else part
                 for part in v
             ]
         elif k == "content" and isinstance(v, dict) and v.get("_multimodal"):
             shadow[k] = v.get("text_summary", "")
+        elif k == "output" and isinstance(v, list):
+            # Responses ``function_call_output`` output parts: strip the image
+            # payload like the ``content`` branch above so encoded bytes are
+            # priced by the flat per-image model, never as text.
+            shadow[k] = [
+                {"type": part.get("type"), "image": "[stripped]"}
+                if isinstance(part, dict) and part.get("type") in _IMAGE_PART_TYPES
+                else part
+                for part in v
+            ]
         elif k == "codex_reasoning_items":
             shadow[k] = strip_opaque_replay_items(v)
         elif k == "encrypted_content":  # a Responses reasoning/compaction item passed as a row

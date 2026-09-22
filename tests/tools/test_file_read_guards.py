@@ -423,6 +423,26 @@ class TestFileDedup(unittest.TestCase):
         self.assertNotIn("content", r2)
 
     @patch("tools.file_tools._get_file_ops")
+    def test_background_review_fork_gets_content_and_read_mark_not_stub(self, mock_ops):
+        """The review fork shares the parent's task_id; a dedup stub there would skip the
+        read-mark its read-before-write guard requires (#95976)."""
+        from pathlib import Path
+        from tools.skill_manager_guards import _background_review_has_read, _reset_background_review_read_marks
+        from tools.skill_provenance import reset_current_write_origin, set_current_write_origin
+
+        mock_ops.return_value = _make_fake_ops(content="line one\nline two\n", file_size=20)
+        read_file_tool(self._tmpfile, task_id="dup")  # parent's read arms the dedup
+        _reset_background_review_read_marks()
+        token = set_current_write_origin("background_review")
+        try:
+            fork = json.loads(read_file_tool(self._tmpfile, task_id="dup"))
+        finally:
+            reset_current_write_origin(token)
+        self.assertNotIn("dedup", fork)
+        self.assertIn("content", fork)
+        self.assertTrue(_background_review_has_read(Path(self._tmpfile)))
+
+    @patch("tools.file_tools._get_file_ops")
     def test_write_rejects_internal_read_status_text(self, mock_ops):
         """write_file must not persist internal read_file status text."""
         fake = MagicMock()
@@ -827,9 +847,12 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         # Read with different offsets to populate multiple dedup entries.
         read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off")
         read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off")
+        # The last read was partial; a full read restores the write baseline.
+        read_file_tool(self._tmpfile, offset=1, limit=500, task_id="off")
 
         # Write — should invalidate BOTH dedup entries.
-        write_file_tool(self._tmpfile, "replaced\n", task_id="off")
+        write = json.loads(write_file_tool(self._tmpfile, "replaced\n", task_id="off"))
+        self.assertNotIn("error", write)
 
         # Both reads should return fresh content.
         r1 = json.loads(read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off"))

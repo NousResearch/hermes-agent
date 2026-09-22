@@ -52,11 +52,21 @@ vi.mock('./canonical-chat', () => ({ PROFILE_SESSION_LIST_LIMIT: 200 }))
 
 vi.mock('./data', () => ({ $lastRoster: { get: () => lastRoster.value } }))
 
-vi.mock('./group-chat', () => ({ $groupChats: { get: () => groupChats.value } }))
+vi.mock('./group-chat', () => ({
+  $groupChats: { get: () => groupChats.value },
+  updateGroupChat: (group: string, mutate: (room: any) => unknown) => {
+    groupChats.value = {
+      ...groupChats.value,
+      [group]: mutate(groupChats.value[group] || {})
+    }
+  }
+}))
 
 vi.mock('./group-membership', () => ({
   groupMemberKey: (member: GroupMember) =>
-    member?.route?.connectionId ? `${member.route.connectionId}::${member.name}` : member?.name
+    member?.route?.connectionId ? `${member.route.connectionId}::${member.name}` : member?.name,
+  groupSessionMemberKey: (key: string) =>
+    key.startsWith('thread:') ? key.slice(key.indexOf('::', 'thread:'.length) + 2) : key
 }))
 
 vi.mock('./routing', () => ({
@@ -186,6 +196,27 @@ describe('the id half: group room member sessions', () => {
         .sort()
     ).toEqual(['source-a', 'source-b'])
     expect(hiddenCalls().every(([, options]) => options.sessionId === 'same-id')).toBe(true)
+  })
+
+  it('prunes a missing persisted room session so later startups do not resend it', async () => {
+    groupChats.value = {
+      Core: {
+        sessionOwners: { alpha: { name: 'alpha' } },
+        sessions: { alpha: 'deleted-session' }
+      }
+    }
+    lastRoster.value = [{ name: 'alpha' } as RosterRow]
+    hostMock.setPersistedSessionHidden.mockRejectedValue(new Error('404: {"detail":"Session not found"}'))
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['deleted-session'])
+    expect((groupChats.value.Core as { sessions: Record<string, string> }).sessions).toEqual({})
+    expect((groupChats.value.Core as { sessionOwners: Record<string, unknown> }).sessionOwners).toEqual({})
+
+    await runSweep()
+
+    expect(hiddenCalls().map(([, options]) => options.sessionId)).toEqual(['deleted-session'])
   })
 
   it('fails closed on a source-qualified session whose persisted owner is malformed', async () => {

@@ -8,7 +8,7 @@ description: "通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Emai
 
 通过 Telegram、Discord、Slack、WhatsApp、Signal、SMS、Email、Home Assistant、Mattermost、Matrix、DingTalk、Feishu/Lark、WeCom、Weixin、BlueBubbles（iMessage）、QQ、Yuanbao、Microsoft Teams、LINE、ntfy 或浏览器与 Hermes 对话。网关是一个单一后台进程，连接所有已配置的平台，管理会话，运行 cron 任务，并传递语音消息。
 
-完整的语音功能集——包括 CLI 麦克风模式、消息中的语音回复以及 Discord 语音频道对话——请参阅 [Voice Mode](/user-guide/features/voice-mode) 和 [Use Voice Mode with Hermes](/guides/use-voice-mode-with-hermes)。
+完整的语音功能集——包括 CLI 麦克风模式、消息中的语音回复以及 Discord 语音频道对话——请参阅 [Voice Mode](../features/voice-mode.md) 和 [Use Voice Mode with Hermes](../../guides/use-voice-mode-with-hermes.md)。
 
 ## 平台对比
 
@@ -101,6 +101,22 @@ flowchart TB
 ```
 
 每个平台适配器接收消息，通过每个聊天的会话存储进行路由，并将其分发给 AIAgent 处理。网关还运行 cron 调度器，每 60 秒触发一次以执行到期任务。
+
+## 有意静默令牌
+
+在群聊、hooks 和自动化流程中，Hermes 支持显式的静默令牌。若 agent 的最终回复恰好只是一个受支持的令牌，网关会抑制外发投递，不向聊天发送任何内容。
+
+支持的令牌：
+
+- `[SILENT]`
+- `SILENT`
+- `NO_REPLY`
+- `NO REPLY`
+- `[静默]` / `静默` 与 `[沉默]` / `沉默` —— 模型把哨兵翻译成中文而非原样输出时产生的形式
+
+空白与大小写会被规范化，但整条最终回复必须只是该令牌。像"没有变化时请用 `[SILENT]`"这样的句子会正常投递。
+
+静默只是投递层面的决定：Hermes 仍会把这条静默回复保存在会话记录中，因此对话依旧正常交替。失败的回合仍会以错误形式呈现；不会因为文本形似静默令牌而隐藏失败。
 
 ## 快速配置
 
@@ -245,7 +261,7 @@ gateway:
 
 #### 查看你的权限
 
-在任意平台使用 `/whoami` 查看当前范围、你的层级（管理员 / 普通用户 / 无限制）以及你可以运行的斜杠命令。平台特定示例请参阅 [Telegram](/user-guide/messaging/telegram#slash-command-access-control) 和 [Discord](/user-guide/messaging/discord#slash-command-access-control) 页面。
+在任意平台使用 `/whoami` 查看当前范围、你的层级（管理员 / 普通用户 / 无限制）以及你可以运行的斜杠命令。平台特定示例请参阅 [Telegram](./telegram.md#slash-command-access-control) 和 [Discord](./discord.md#slash-command-access-control) 页面。
 
 ## 中断 Agent
 

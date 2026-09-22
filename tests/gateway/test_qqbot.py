@@ -287,6 +287,26 @@ class TestResolveSTTConfig:
         with mock.patch.dict(os.environ, {}, clear=True):
             assert adapter._resolve_stt_config() is None
 
+    def test_call_stt_posts_with_configured_timeout(self, tmp_path):
+        """The configured ``stt.timeout`` reaches the STT HTTP request; default 60s, not the
+        old fixed 30s (#112939). Drives ``_call_stt`` so a regression at the call-site is caught."""
+        wav = tmp_path / "v.wav"
+        wav.write_bytes(b"RIFF")
+        posted = []
+
+        class _FakeClient:
+            async def post(self, url, **kwargs):
+                posted.append(kwargs)
+                return httpx.Response(200, json={"text": "hi"}, request=httpx.Request("POST", url))
+
+        with mock.patch.dict(os.environ, {}, clear=True):
+            for stt, expected in (({"apiKey": "k", "provider": "zai"}, 60.0),
+                                  ({"apiKey": "k", "provider": "zai", "timeout": "95"}, 95.0)):
+                adapter = self._make_adapter(app_id="a", client_secret="b", stt=stt)
+                adapter._http_client = _FakeClient()
+                assert asyncio.run(adapter._call_stt(str(wav))) == "hi"
+                assert posted[-1]["timeout"] == expected
+
 
 # ---------------------------------------------------------------------------
 # _detect_message_type

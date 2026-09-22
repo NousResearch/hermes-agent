@@ -144,6 +144,7 @@ describe('ModelPill per-surface model label', () => {
       $model: atom('tile/claude-sonnet'),
       $provider: atom('anthropic'),
       $reasoningEffort: atom('high'),
+      $reasoningEffortWire: atom(''),
       $runtimeId: atom('tile-runtime'),
       $storedId: atom('stored-tile'),
       $turnStartedAt: atom<number | null>(null)
@@ -158,7 +159,7 @@ describe('ModelPill per-surface model label', () => {
       </SessionViewProvider>
     )
 
-    expect(screen.getByText('Sonnet · High')).toBeTruthy()
+    expect(screen.getByText('Sonnet')).toBeTruthy()
     expect(screen.queryByText(/primary/i)).toBeNull()
   })
 })

@@ -1,13 +1,13 @@
 import { PassThrough } from 'stream'
 
 import { Box, renderSync } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
 import chalk from 'chalk'
 import React from 'react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { AUDIO_DIRECTIVE_RE, INLINE_RE, Md, MEDIA_LINE_RE, stripInlineMarkup } from '../components/markdown.js'
 import { __resetLinkTitleCache, fetchLinkTitle } from '../lib/externalLink.js'
-import { stripAnsi } from '../lib/text.js'
 import { DEFAULT_THEME, LIGHT_THEME } from '../theme.js'
 
 afterEach(() => {

@@ -146,6 +146,15 @@ def test_console_cancel_stops_forked_agent_request_before_reporting(console_clie
 
     from agent import curator
     from hermes_cli.web_routers import chat_ws
+    from hermes_constants import get_hermes_home
+    from tools import skill_usage
+
+    # The LLM pass only forks when an agent-created skill is a candidate: bundled
+    # built-ins are excluded from the review list, so the temp home needs one.
+    skill_dir = get_hermes_home() / "skills" / "console-cancel-probe"
+    skill_dir.mkdir(parents=True, exist_ok=True)
+    (skill_dir / "SKILL.md").write_text("---\nname: console-cancel-probe\ndescription: x\n---\n", encoding="utf-8")
+    skill_usage.record_created("console-cancel-probe", agent_created=True)
 
     monkeypatch.setattr(
         curator, "_resolve_review_provider",

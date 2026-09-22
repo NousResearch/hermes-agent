@@ -210,6 +210,33 @@ class TestRuntimeProvider:
             assert result["api_key"] == "aws-sdk"
             assert result["bedrock_openai"] is True, model_id
 
+    def test_bedrock_openai_inference_profile_routes_to_mantle_responses(self, monkeypatch):
+        """Cross-region profile IDs keep the OpenAI model behind their scope prefix.
+
+        Regression for #115916: ``global.openai.gpt-5.6-sol`` was misrouted to
+        Converse, where it held the connection until the read timeout.
+        """
+        from agent.bedrock_adapter import is_openai_bedrock_model
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        model_id = "global.openai.gpt-5.6-sol"
+        monkeypatch.setenv("AWS_ACCESS_KEY_ID", "«redacted:AKIA…»")
+        monkeypatch.setenv("AWS_SECRET_ACCESS_KEY", "wJalrXUtnFEMI/K7MDENG/bPxRfiCYEXAMPLEKEY")
+        monkeypatch.setenv("AWS_REGION", "us-east-1")
+
+        assert is_openai_bedrock_model(model_id)
+        assert not is_openai_bedrock_model("global.openai.gpt-oss-120b")
+        with patch("hermes_cli.runtime_provider.resolve_provider", return_value="bedrock"), \
+             patch("hermes_cli.runtime_provider._get_model_config", return_value={
+                 "provider": "bedrock", "default": model_id,
+             }):
+            result = resolve_runtime_provider(requested="bedrock")
+
+        assert result["api_mode"] == "codex_responses"
+        assert result["model"] == model_id
+        assert result["base_url"] == "https://bedrock-mantle.us-east-1.api.aws/openai/v1"
+        assert result["bedrock_openai"] is True
+
     def test_bedrock_openai_context_length_is_272k(self):
         """AWS model cards list a 272K context window for the Mantle OpenAI
         models; make sure we do not fall back to the 128K default."""

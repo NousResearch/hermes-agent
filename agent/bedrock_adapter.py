@@ -87,6 +87,9 @@ def scoped_aws_session_kwargs() -> Dict[str, str]:
 BEDROCK_OPENAI_RESPONSES_MODEL_IDS: Tuple[str, ...] = (
     "openai.gpt-5.5", "openai.gpt-5.6-sol", "openai.gpt-5.6-terra", "openai.gpt-5.6-luna",
 )
+_BEDROCK_INFERENCE_PROFILE_PREFIXES = (
+    "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.",
+)
 _BEDROCK_OPENAI_HOST_RE = re.compile(r"^bedrock-mantle\.([a-z0-9-]+)\.api\.aws$", re.IGNORECASE)
 # Bedrock-hosted xAI Grok (any regional inference-profile prefix) rejects temperature/topP in Converse
 # with a hard 400 ("This model doesn't support the temperature field"); reasoning-first, same
@@ -166,7 +169,10 @@ def invalidate_runtime_client(region: str) -> bool:
 
 def is_openai_bedrock_model(model_id: str) -> bool:
     """True for Bedrock-hosted OpenAI models that require Mantle (GPT-OSS excluded)."""
-    return str(model_id or "").strip().lower() in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
+    normalized = str(model_id or "").strip().lower()
+    if normalized.startswith(_BEDROCK_INFERENCE_PROFILE_PREFIXES):
+        normalized = normalized.split(".", 1)[1]
+    return normalized in {m.lower() for m in BEDROCK_OPENAI_RESPONSES_MODEL_IDS}
 
 
 def merge_bedrock_openai_model_ids(model_ids: List[str]) -> List[str]:

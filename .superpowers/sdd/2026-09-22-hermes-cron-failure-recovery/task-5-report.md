@@ -53,3 +53,51 @@ Restarting now would validate stale installed modules and could create a desktop
 before the final owner is activated. Restart the rebuilt exact Task 5 source during the final
 verification task, then verify one default multiplex gateway, one ticker per served home, and one
 dispatcher-lock owner from fresh logs/process state.
+
+## Independent review of `c330fbe02e`
+
+### Findings
+
+No source-level correctness or maintainability defect was found in the reviewed diff. The new
+`_owned_profile_homes()` helper preserves live re-enumeration and deleted-home filtering, applies
+the ownership gate atomically before publishing a home list, and is used for both startup recovery
+and normal cycles. A rejected home therefore receives neither startup recovery nor ticker state
+writes. The A -> B -> A regression exercises the required profile scope, and the existing raising
+gate survival regression confirms fail-closed behavior without ending the ticker thread.
+
+The gateway lifecycle regression constructs exactly one supervisor and confirms that its live
+enumerator returns the complete served-home set. The dispatcher regression uses the real advisory
+lock path: the first gateway retains the lock, the second logs `this gateway will NOT dispatch`,
+and a sentinel dispatcher class proves the losing path exits before constructing a worker loop.
+
+### Configuration and launchd boundary
+
+Current read-only inspection confirms `/Users/mikedemott/.hermes/config.yaml` explicitly contains
+`gateway.multiplex_profiles: true`. Only the default
+`/Users/mikedemott/Library/LaunchAgents/ai.hermes.gateway.plist` is present; no launchd plist whose
+name contains `task-intake-router` or `task-orchestrator` remains. `launchctl print` returns 113 for
+the default and both former profile labels, so all three are currently unloaded. This current state
+is consistent with the implementation report. The commit does not contain a before-state receipt,
+so the historical claim that the two removed profile definitions were already unloaded rests on
+the implementation report rather than an independently replayable artifact.
+
+### Verification assessment
+
+- Review rerun: the four affected files passed, 65 tests, 0 failures, through
+  `scripts/run_tests.sh`.
+- Additional directly affected startup-survival file passed, 4 tests, 0 failures.
+- The reported full-suite attempt is not green: it reached 37,570 passing tests and 51 failing
+  files before aggregation was interrupted. The described failures are environment/dependency and
+  unrelated baseline failures rather than evidence of a regression in this diff, so they do not by
+  themselves block the source-quality verdict. They also do not establish full-suite acceptance.
+
+### Verdicts
+
+- **Code quality: PASS.** The ownership fix is small, centralized, fail-closed, and covered at the
+  startup, cycle, profile-scope, gateway-supervisor, and dispatcher-lock boundaries.
+- **Task specification: INCOMPLETE.** The source behavior, explicit multiplex configuration,
+  duplicate profile launchd cleanup, and unloaded-state checks are satisfied. The brief also
+  requires restarting Hermes Desktop's backend after the source changes. That step was explicitly
+  deferred, and there is therefore no fresh exact-source runtime evidence proving one active
+  default multiplex gateway, one ticker per served home, and one dispatcher-lock owner. Complete
+  that runtime verification before marking Task 5 fully accepted.

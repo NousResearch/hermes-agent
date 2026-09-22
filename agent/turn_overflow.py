@@ -24,7 +24,7 @@ from agent.error_classifier import FailoverReason
 from agent.message_sanitization import serialized_messages_bytes
 from agent.model_metadata import (
     get_context_length_from_provider_error, is_output_cap_error,
-    parse_available_output_tokens_from_error,
+    parse_available_output_tokens_from_error, step_down_assumed_context_length,
 )
 from agent.turn_failure_copy import site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
@@ -320,9 +320,12 @@ def _clamp_output_cap(st: _Recovery, _retry: TurnRetryState, available_out: int,
 
 
 def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -> Optional[int]:
-    """Shrink context_length only when the provider reports the real limit; else keep
-    the window and compress. Guessed probe tiers can turn a configured 1M window into
-    256K/128K/64K. Returns the provider-reported limit, or ``None``."""
+    """Shrink context_length when the provider reports the real limit; else step down
+    an unverified fallback assumption one probe tier (#115637); else keep the window
+    and compress. Guessed probe tiers can turn a configured 1M window into
+    256K/128K/64K, so the step-down never touches configured/probed windows, never
+    displaces an explicit model.context_length pin, and is never persisted.
+    Returns the adopted window, or ``None``."""
     from agent.model_metadata import save_provider_context_length
 
     agent = st.agent
@@ -345,6 +348,24 @@ def _adopt_provider_context_limit(st: _Recovery, error_msg: str, old_ctx: int) -
             compressor._context_probe_persistable = True
         agent._buffer_vprint(f"⚠️  Context length exceeded — using provider limit: {old_ctx:,} → {new_ctx:,} tokens")
         return new_ctx
+
+    # No usable advertised limit. When the working estimate is itself an
+    # unverified fallback assumption (not a user pin), the rejection is direct
+    # evidence it is too large: step down one tier so the follow-up compression
+    # targets a window that fits, stopping the loop after one round (#115637).
+    pinned = getattr(agent, "_config_context_length", None)
+    if not (isinstance(pinned, int) and not isinstance(pinned, bool) and pinned > 0):
+        stepped = step_down_assumed_context_length(old_ctx)
+        if stepped is not None:
+            agent._buffer_vprint(
+                f"Context length exceeded — provider quoted no usable limit; "
+                f"assuming a smaller window: {old_ctx:,} to {stepped:,} tokens"
+            )
+            compressor.update_model(
+                model=agent.model, context_length=stepped, base_url=agent.base_url,
+                api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+            )
+            return stepped
 
     is_minimax_provider = (
         (getattr(agent, "provider", "") or "").lower() in {"minimax", "minimax-cn"}

@@ -10,7 +10,13 @@ describe('isDesktopRelevantPlugin (#98861)', () => {
     expect(isDesktopRelevantPlugin(row({ key: 'disk-cleanup', source: 'bundled' }))).toBe(true)
     expect(isDesktopRelevantPlugin(row({ key: 'security-guidance', source: 'bundled' }))).toBe(true)
 
-    for (const key of ['platforms/discord', 'model-providers/openai', 'web/firecrawl', 'browser/agent-browser', 'kanban']) {
+    for (const key of [
+      'platforms/discord',
+      'model-providers/openai',
+      'web/firecrawl',
+      'browser/agent-browser',
+      'kanban'
+    ]) {
       expect(isDesktopRelevantPlugin(row({ key, source: 'bundled' }))).toBe(false)
     }
 

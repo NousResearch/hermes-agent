@@ -4,7 +4,11 @@ import io
 import logging
 import os
 import signal
+import subprocess
+import sys
 import tarfile
+import tempfile
+import time
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
@@ -14,15 +18,25 @@ fcntl = pytest.importorskip("fcntl")
 
 from tools.environments.file_sync import (
     FileSyncManager,
+    _cleanup_stale_sync_back_temp,
     _sha256_file,
     _SYNC_BACK_BACKOFF,
     _SYNC_BACK_MAX_RETRIES,
+    _SYNC_BACK_STALE_SECONDS,
+    _SYNC_BACK_TEMP_PREFIX,
 )
 
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
+
+
+def _dead_pid() -> int:
+    """PID of a child that has already been reaped."""
+    proc = subprocess.Popen([sys.executable, "-c", "pass"], stdin=subprocess.DEVNULL)
+    proc.wait()
+    return proc.pid
 
 def _make_tar(files: dict[str, bytes], dest: Path):
     """Write a tar archive containing the given arcname->content pairs."""
@@ -87,6 +101,73 @@ def _make_manager(
         if not mgr._pushed_hashes:
             mgr._pushed_hashes["/_sentinel"] = "0" * 64
     return mgr
+
+
+class TestStaleSyncBackTempCleanup:
+    """Sync-back temp entries leaked by a hard kill are reclaimed by the next sync-back (#110812)."""
+
+    def test_removes_only_stale_prefixed_entries(self, tmp_path, monkeypatch):
+        stale_tar = tmp_path / "hermes-sync-back-stale.tar"
+        stale_dir = tmp_path / "hermes-sync-back-stale-staging"
+        recent = tmp_path / "hermes-sync-back-recent.tar"
+        unrelated = tmp_path / "other-process.tar"
+        for path in (stale_tar, recent, unrelated):
+            path.write_bytes(b"tar")
+        stale_dir.mkdir()
+        (stale_dir / "root").mkdir()
+        now = 10_000.0
+        for path in (stale_tar, stale_dir):
+            os.utime(path, (now - _SYNC_BACK_STALE_SECONDS - 1,) * 2)
+        os.utime(recent, (now - _SYNC_BACK_STALE_SECONDS + 1,) * 2)
+        monkeypatch.setattr("tools.environments.file_sync.time.time", lambda: now)
+
+        assert _cleanup_stale_sync_back_temp(tmp_path) == 2
+
+        assert not stale_tar.exists()
+        assert not stale_dir.exists()
+        assert recent.exists()
+        assert unrelated.exists()
+
+    def test_sync_back_sweeps_leaked_entry_and_uses_identifiable_tar(self, tmp_path, monkeypatch):
+        tmp_root = tmp_path / "tmproot"
+        tmp_root.mkdir()
+        monkeypatch.setattr(tempfile, "tempdir", str(tmp_root))
+        leaked = tmp_root / "hermes-sync-back-leaked.tar"
+        leaked.write_bytes(b"x" * 1024)
+        old = time.time() - _SYNC_BACK_STALE_SECONDS - 60
+        os.utime(leaked, (old, old))
+
+        seen = {}
+
+        def download(dest: Path):
+            seen["tar"] = dest
+            _make_tar({"root/.hermes/x.txt": b"hi"}, dest)
+
+        mgr = _make_manager(tmp_path, bulk_download_fn=download)
+        mgr.sync_back()
+
+        assert seen["tar"].name.startswith(f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-")
+        assert not leaked.exists()
+        assert list(tmp_root.iterdir()) == []
+
+    def test_owner_liveness_decides_before_age(self, tmp_path):
+        """A hard-killed owner's fresh entry is reclaimed at once; a live owner's fresh entry and
+        a legacy (no-PID) fresh entry are kept; a live owner's entry past the cutoff still goes
+        (a recycled PID must not pin a leak forever)."""
+        dead_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{_dead_pid()}-a.tar"
+        live_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-b"
+        legacy_fresh = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}legacy.tar"
+        live_old = tmp_path / f"{_SYNC_BACK_TEMP_PREFIX}{os.getpid()}-c.tar"
+        for path in (dead_fresh, legacy_fresh, live_old):
+            path.write_bytes(b"x")
+        live_fresh.mkdir()
+        old = time.time() - _SYNC_BACK_STALE_SECONDS - 60
+        os.utime(live_old, (old, old))
+
+        assert _cleanup_stale_sync_back_temp(tmp_path) == 2
+
+        assert not dead_fresh.exists() and not live_old.exists()
+        assert live_fresh.exists() and legacy_fresh.exists()
 
 
 # ---------------------------------------------------------------------------
@@ -419,8 +500,8 @@ class TestSyncBackSizeCap:
     """The size cap refuses to extract tars above the configured limit."""
 
     def test_sync_back_refuses_oversized_tar(self, tmp_path, caplog):
-        """A tar larger than _SYNC_BACK_MAX_BYTES should be skipped with a warning."""
-        # Build a download_fn that writes a small tar, but patch the cap
+        """A tar larger than terminal.sync_back_max_bytes should be skipped with a warning."""
+        # Build a download_fn that writes a small tar, but lower the configured cap
         # so the test doesn't need to produce a 2 GiB file.
         skill_host = _write_file(tmp_path / "host_skill.md", b"original")
         files = {"root/.hermes/skill.md": b"remote_version"}
@@ -434,7 +515,7 @@ class TestSyncBackSizeCap:
 
         # Cap at 1 byte so any non-empty tar exceeds it
         with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
-            with patch("tools.environments.file_sync._SYNC_BACK_MAX_BYTES", 1):
+            with patch("hermes_cli.config.load_config", return_value={"terminal": {"sync_back_max_bytes": 1}}):
                 mgr.sync_back(hermes_home=tmp_path / ".hermes")
 
         # Host file should be untouched because extraction was skipped
@@ -457,3 +538,69 @@ class TestSyncBackSizeCap:
         # Default cap (2 GiB) is far above our tiny tar; extraction should proceed
         mgr.sync_back(hermes_home=tmp_path / ".hermes")
         assert Path(host_file).read_bytes() == b"remote_version"
+
+    def test_cap_override_config_key_raises_the_cap(self, tmp_path, monkeypatch, caplog):
+        """config.yaml ``terminal.sync_back_max_bytes`` overrides the 2 GiB default; a
+        non-integer value is ignored with a warning and the default applies. The env var
+        the first cut used is gone — non-secret settings live in config.yaml."""
+        from hermes_cli.config_defaults import DEFAULT_CONFIG
+        assert DEFAULT_CONFIG["terminal"]["sync_back_max_bytes"] == 2 * 1024 * 1024 * 1024
+
+        host_file = _write_file(tmp_path / "host_skill.md", b"original")
+        files = {"root/.hermes/skill.md": b"remote_version"}
+        mgr = _make_manager(tmp_path, file_mapping=[(host_file, "/root/.hermes/skill.md")],
+                            bulk_download_fn=_make_download_fn(files))
+
+        monkeypatch.setenv("HERMES_SYNC_BACK_MAX_BYTES", "1")  # the first cut's env var: must be ignored
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": 1}})
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"original"  # 1-byte cap: skipped
+
+        monkeypatch.setattr("hermes_cli.config.load_config",
+                            lambda: {"terminal": {"sync_back_max_bytes": "lots"}})
+        with caplog.at_level(logging.WARNING, logger="tools.environments.file_sync"):
+            mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert Path(host_file).read_bytes() == b"remote_version"  # default cap applies
+        assert any("sync_back_max_bytes" in r.message for r in caplog.records)
+
+
+class TestSyncBackWindowsHost:
+    """#76267: sync_back on a Windows host. The staging tar must be reopenable for writing by
+    the backend (NamedTemporaryFile held an exclusive handle → PermissionError), and remote
+    keys/parents must stay POSIX (relpath/Path stringify with backslashes on Windows, so no
+    staged file ever matched its mapping and every edit was dropped as "no host mapping")."""
+
+    def test_backend_can_reopen_the_tar_path_for_writing(self, tmp_path):
+        """Contract on every host: the download callback receives a path nothing else holds open."""
+        seen = {}
+
+        def download(dest: Path) -> None:
+            buf = io.BytesIO()
+            with tarfile.open(fileobj=buf, mode="w") as tar:
+                info = tarfile.TarInfo(name="root/.hermes/skill.py")
+                info.size = 2
+                tar.addfile(info, io.BytesIO(b"v2"))
+            with open(dest, "wb") as fh:  # the SSH/Modal backends write exactly like this
+                fh.write(buf.getvalue())
+            seen["dest"] = dest
+
+        host_file = tmp_path / "host" / "skill.py"
+        _write_file(host_file, b"v1")
+        mgr = _make_manager(tmp_path, [(str(host_file), "/root/.hermes/skill.py")], bulk_download_fn=download)
+        mgr._pushed_hashes["/root/.hermes/skill.py"] = _sha256_bytes(b"v1")
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert host_file.read_bytes() == b"v2"
+        assert not seen["dest"].exists()  # staging tar removed after use
+
+    @pytest.mark.windows_only
+    def test_posix_remote_keys_match_on_windows(self, tmp_path):
+        host_file = tmp_path / "host" / "skill.py"
+        _write_file(host_file, b"v1")
+        mapping = [(str(host_file), "/root/.hermes/skills/a/skill.py")]
+        mgr = _make_manager(tmp_path, mapping, bulk_download_fn=_make_download_fn({
+            "root/.hermes/skills/a/skill.py": b"v2", "root/.hermes/skills/a/new.md": b"new"}))
+        mgr._pushed_hashes["/root/.hermes/skills/a/skill.py"] = _sha256_bytes(b"v1")
+        mgr.sync_back(hermes_home=tmp_path / ".hermes")
+        assert host_file.read_bytes() == b"v2"  # relpath key was 'root\\.hermes\\...' → skipped
+        assert (tmp_path / "host" / "new.md").read_bytes() == b"new"  # _infer_host_path parent match

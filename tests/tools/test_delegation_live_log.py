@@ -364,3 +364,33 @@ def test_prune_unlinks_a_symlinked_live_dir_instead_of_leaking_it(tmp_path, monk
     assert not link.is_symlink() and not link.exists(), "the link itself is gone"
     assert fresh.is_dir(), "an entry inside the window survives"
     assert (target / "payload.txt").exists(), "the link target is never chased"
+
+def test_prune_unlinks_a_dangling_symlinked_live_dir(tmp_path, monkeypatch):
+    """A link whose target is gone is reclaimed too: is_dir() can never classify it.
+
+    ``is_dir()``/``stat()`` follow the link, so a dangling entry is neither "a dir" nor
+    an error the sweep reports — it is simply skipped, and the leak the symlink branch
+    exists to close stays open for exactly the entries whose target disappeared first.
+    """
+    root = tmp_path / "live"
+    root.mkdir()
+    target = tmp_path / "outside"
+    target.mkdir()
+    link = root / "deleg_dangling"
+    link.symlink_to(target, target_is_directory=True)
+    fresh_link = root / "deleg_dangling_fresh"
+    fresh_link.symlink_to(target, target_is_directory=True)
+
+    old = time.time() - 30 * 86400
+    os.utime(link, (old, old), follow_symlinks=False)  # age the LINK, not its target
+    target.rmdir()  # both entries now dangle
+    assert link.is_symlink() and not link.exists()
+    assert not link.is_dir(), "the precondition: is_dir() cannot see a dangling link"
+
+    monkeypatch.setattr(dll, "live_transcript_root", lambda: root)
+
+    removed = prune_stale_live_dirs()
+
+    assert removed == 1, "only the expired dangling entry is reclaimed"
+    assert not link.is_symlink() and not link.exists(), "the dangling link itself is gone"
+    assert fresh_link.is_symlink(), "a dangling link inside the window survives"

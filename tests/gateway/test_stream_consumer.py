@@ -572,6 +572,10 @@ class TestSegmentBreakOnToolBoundary:
         consumer.on_delta(prefix)
         task = asyncio.create_task(consumer.run())
         await asyncio.sleep(0.08)
+        # A separate space delta so the edit's cut lands cleanly at the word boundary
+        # already on screen ("world") rather than gluing directly onto it -- matching how a
+        # real model stream would flow, and exercising the "nothing to fix" backup-skip case.
+        consumer.on_delta(" ")
         consumer.on_delta(tail)
         await asyncio.sleep(0.08)
         consumer.finish()

@@ -54,11 +54,15 @@ class StreamFallbackMixin:
             cut = len(prefix)
             # ``prefix`` is whatever the last successful edit put on screen. Edits
             # fire on a throttle tick, not at a word boundary, so that prefix can
-            # end inside a word.  Back the cut up to the last space or newline so
-            # the continuation re-sends the broken word's tail and reads as an
-            # ordinary continuation.  A prefix with no boundary (one very long
-            # token) keeps the original cut rather than re-sending the whole reply.
-            if cut < len(final_text):
+            # end inside a word -- but only when the cut itself lands between two
+            # non-space characters. Back the cut up to the last space or newline
+            # ONLY in that case, so the continuation re-sends the broken word's
+            # tail; a cut that already falls on a boundary (prefix ends in
+            # whitespace, or the very next character is whitespace/EOF) must not
+            # be walked back to an EARLIER word already fully shown on screen. A
+            # prefix with no boundary to back up to (one very long token) keeps
+            # the original cut rather than re-sending the whole reply.
+            if cut < len(final_text) and not final_text[cut - 1].isspace() and not final_text[cut].isspace():
                 boundary = max(
                     final_text.rfind(" ", 0, cut),
                     final_text.rfind("\n", 0, cut),

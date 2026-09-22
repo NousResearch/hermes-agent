@@ -70,7 +70,7 @@ def _telegram_adapter(send_result=None):
 
     adapter = TelegramAdapter(PlatformConfig(enabled=True, token="test-token", extra={}))
     runner = MagicMock()
-    runner._adapter_for_source = MagicMock(return_value=adapter)
+    runner._delivery_adapter_for = MagicMock(return_value=adapter)
     runner._schedule_flood_redelivery = MagicMock(return_value=187.0)
     adapter.gateway_runner = runner
     adapter.send = AsyncMock(return_value=send_result or SendResult(success=True, message_id="900"))
@@ -204,7 +204,7 @@ def _chain_runner_and_ctx(followup_return):
     runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
     runner._reply_anchor_for_event = MagicMock(return_value=None)
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
     turn_ctx = SimpleNamespace(
@@ -232,7 +232,7 @@ async def test_a_chained_queued_turn_carries_its_own_inbound_id():
     runner._session_key_for_source = MagicMock(return_value=TOPIC_SESSION_KEY)
     runner._prepare_profile_scoped_inbound_message_text = AsyncMock(return_value="the follow-up")
     runner._reply_anchor_for_event = MagicMock(return_value=None)   # forum topic: no anchor
-    runner._adapter_for_source = MagicMock(return_value=None)
+    runner._delivery_adapter_for = MagicMock(return_value=None)
     runner._refresh_agent_cache_message_count = AsyncMock()
     topic = _source(chat_id="-1001", thread_id="7", chat_type="supergroup")
     turn_ctx = SimpleNamespace(
@@ -325,7 +325,7 @@ async def test_ephemeral_delete_targets_the_adapter_that_sent_the_final(tmp_path
     sender._schedule_ephemeral_delete = MagicMock()
     replacement._schedule_ephemeral_delete = MagicMock()
     live = {"adapter": sender}
-    sender.gateway_runner._adapter_for_source = MagicMock(side_effect=lambda _s: live["adapter"])
+    sender.gateway_runner._delivery_adapter_for = MagicMock(side_effect=lambda _s: live["adapter"])
 
     async def swap_then_send(*args, **kwargs):
         live["adapter"] = replacement  # reconnect lands while the send is in flight

@@ -95,6 +95,17 @@ def _event_ids(event) -> Tuple[Optional[str], Optional[str]]:
     return message_id, getattr(event.source, "chat_id", None)
 
 
+def _profile_from_session_key(session_key: str) -> Optional[str]:
+    """Named profile encoded in an ``agent:<ns>:...`` session key; None for the legacy ``agent:main``
+    namespace (single-profile gateway) so the wire frame stays byte-identical there."""
+    parts = (session_key or "").split(":")
+    if len(parts) < 2 or parts[0] != "agent" or not parts[1]:
+        return None
+    from gateway.session import profile_from_session_key_namespace
+    profile = profile_from_session_key_namespace(parts[1])
+    return None if profile == "default" else profile
+
+
 class RelayAdapter(BasePlatformAdapter):
     """Generic relay adapter advertising a connector-negotiated capability profile."""
 
@@ -125,6 +136,10 @@ class RelayAdapter(BasePlatformAdapter):
         # platforms on one WS and a reply must egress through the platform the
         # inbound came from. Empty for a single-platform gateway (connector default).
         self._platform_by_chat: Dict[str, str] = {}
+        # chat_id -> Hermes profile the connector routed the inbound to (multiplex mode). Echoed
+        # on every outbound frame's metadata so the connector can stamp the SAME profile on the
+        # next passthrough_forward for that chat; empty on a single-profile gateway.
+        self._profile_by_chat: Dict[str, str] = {}
         # Chats the connector has refused (see the terminal-decline latch).
         # chat_id -> (thread_id, initial_name) of the auto-thread the CONNECTOR
         # created for our latest send; read by the semantic thread-rename lane.
@@ -1042,6 +1057,7 @@ class RelayAdapter(BasePlatformAdapter):
             for attr, cache in (
                 ("user_id", self._dm_user_by_chat), ("scope_id", self._scope_by_chat),
                 ("chat_type", self._chat_type_by_chat),
+                ("profile", self.__dict__.setdefault("_profile_by_chat", {})),
             ):
                 value = getattr(src, attr, None)
                 if value:
@@ -1059,7 +1075,11 @@ class RelayAdapter(BasePlatformAdapter):
         first and only falls back to user_id on a route miss, so carrying both never
         overrides routing-table resolution."""
         meta: Dict[str, Any] = dict(metadata or {})
-        for key, cache in (("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat)):
+        # ``getattr``: relay tests build bare adapters via ``__new__`` without ``__init__``.
+        for key, cache in (
+            ("scope_id", self._scope_by_chat), ("user_id", self._dm_user_by_chat),
+            ("profile", getattr(self, "_profile_by_chat", {})),
+        ):
             if not meta.get(key):
                 value = cache.get(str(chat_id))
                 if value:
@@ -1698,13 +1718,20 @@ class RelayAdapter(BasePlatformAdapter):
         # default routes it.
         prefix = kind.split(".", 1)[0] if kind and "." in kind else None
         follow_up_platform = prefix if prefix and self.fronts_platform(prefix) else None
+        follow_up_metadata = dict(metadata or {})
+        # The session key names the profile namespace the interaction ran under; carry it so the
+        # connector's next passthrough_forward for this interaction routes to the same profile.
+        if not follow_up_metadata.get("profile"):
+            profile = _profile_from_session_key(session_key)
+            if profile:
+                follow_up_metadata["profile"] = profile
         result = await self._transport.send_follow_up(
             {
                 "op": "follow_up",
                 "session_key": session_key,
                 "kind": kind,
                 "content": content,
-                "metadata": metadata or {},
+                "metadata": follow_up_metadata,
             },
             platform=follow_up_platform,
         )

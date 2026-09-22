@@ -72,15 +72,16 @@ def _handle(name: str) -> str:
 def _roster(root: Path) -> list[tuple[str, Path]]:
     """(name, dir) for the default profile + every live named profile, sorted. Same identity
     predicate as ``profile list``: infra dirs (``sessions/``, ``logs/``) and tombstones are not
-    teammates (#99392)."""
-    from hermes_constants import named_profile_is_live
+    teammates (#99392), and neither is a marker-carrying dir whose name is not a profile id —
+    a parked backup or staging dir must never become a ``message_agent`` target (#116905)."""
+    from hermes_constants import PROFILE_ID_RE, named_profile_is_live
 
     profiles = root / "profiles"
     named = _swallow(
         lambda: [
             (c.name, c)
             for c in sorted(profiles.iterdir())
-            if c.name != "default" and named_profile_is_live(c)
+            if c.name != "default" and PROFILE_ID_RE.match(c.name) and named_profile_is_live(c)
         ]
         if profiles.is_dir()
         else [],
@@ -247,6 +248,12 @@ def _remote_roster(root: Path) -> list[dict]:
     return _swallow(_read, [])
 
 
+def local_taken_forms(root: Path) -> set[str]:
+    """Bare forms this gateway's own profiles answer to (handles + friendly-name slugs); a remote
+    row must not be offered under any of them, since local resolution wins (``_resolve_local_name``)."""
+    return {_handle(name) for name, _d in _roster(root)} | set(local_alias_map(root))
+
+
 def _remote_paragraph(root: Path) -> str:
     """Addendum for agents on OTHER connected machines; only when the relay roster is non-empty."""
     roster = _remote_roster(root)
@@ -256,13 +263,13 @@ def _remote_paragraph(root: Path) -> str:
 
     lines = [
         _bullet(f"@{form}", f"on {row['connection_label'] or row['connection_id']}", row["title"], row["description"])
-        for row, form in zip(roster, remote_target_forms(roster))
+        for row, form in zip(roster, remote_target_forms(roster, local_taken_forms(root)))
     ]
     return (
         "\n\nTeammates on OTHER connected machines (reachable through the "
         "Desktop relay — message them with message_agent exactly like local "
         "teammates; replies arrive as completion notifications the same "
-        "way):\n" + "\n".join(lines)
+        "way, or via reply_delivery=\"poll\" as below):\n" + "\n".join(lines)
     )
 
 
@@ -298,7 +305,9 @@ def _build_section(home: Path) -> str:
         "with your attribution prefixed automatically and returns an acknowledgement "
         "immediately — it never returns the reply. Send it, finish your turn, and "
         "the reply arrives later as a background-process completion notification "
-        "that wakes you; relay it to the user then, attributed to that agent. "
+        "that wakes you; relay it to the user then, attributed to that agent — unless "
+        "the ack returns reply_delivery=\"poll\", in which case follow its "
+        "process(action=\"wait\") instruction before ending the turn. "
         "COMPOSE every message yourself — say what YOU need from that agent; never "
         "forward the user's words verbatim, and never reveal private 1:1 chat "
         "content. When the user says \"ask <name>\" or \"tell <name> ...\", that is "

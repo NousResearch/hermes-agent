@@ -181,6 +181,44 @@ def detect_unclean_exit(home: Optional[Path] = None) -> Optional[Dict[str, Any]]
     return evidence
 
 
+# Startup-watchdog lease held while the unclean-exit integrity check runs (#115542):
+# ``PRAGMA quick_check(1)`` is one monolithic SQLite operation and per-call leases
+# clamp at 900s, so a single entry lease cannot cover a multi-thousand-second healthy
+# check on a huge store — without renewal the watchdog kills the attempt with exit 75
+# and the restart loop never reaches the cron ticker. The progress handler below renews
+# a phase-owned lease for as long as SQLite is making progress, and always returns 0
+# so it never aborts the check; the ok/absent/first-complaint verdicts stay fail-closed.
+_INTEGRITY_CHECK_LEASE_PHASE = "state_db_unclean_integrity_check"
+_INTEGRITY_CHECK_LEASE_S = 900.0
+# VM instructions between progress-handler invocations; each invocation is a
+# monotonic-clock compare, renewing at most every _INTEGRITY_CHECK_LEASE_RENEW_S.
+_INTEGRITY_CHECK_PROGRESS_OPS = 100_000
+_INTEGRITY_CHECK_LEASE_RENEW_S = 60.0
+
+
+def _install_integrity_check_lease(conn: sqlite3.Connection) -> None:
+    """Claim the integrity-check lease and renew it from a SQLite progress handler.
+
+    ``report_startup_progress`` is a no-op when no watchdog is armed and never raises.
+    The handler always returns 0 -- it must never abort the verdict PRAGMA.  Synchronous
+    by design: no checker worker thread can outlive the check.
+    """
+    from hermes_startup_watchdog import report_startup_progress
+
+    report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
+    last_renew = time.monotonic()
+
+    def _on_progress() -> int:
+        nonlocal last_renew
+        now = time.monotonic()
+        if now - last_renew >= _INTEGRITY_CHECK_LEASE_RENEW_S:
+            last_renew = now
+            report_startup_progress(_INTEGRITY_CHECK_LEASE_S, phase=_INTEGRITY_CHECK_LEASE_PHASE)
+        return 0
+
+    conn.set_progress_handler(_on_progress, _INTEGRITY_CHECK_PROGRESS_OPS)
+
+
 def check_state_db_integrity(home: Optional[Path] = None) -> str:
     """``"ok"``, ``"absent"``, or the first ``quick_check`` complaint.  Never raises.
 
@@ -188,12 +226,17 @@ def check_state_db_integrity(home: Optional[Path] = None) -> str:
     b-tree pages.  ``quick_check(1)`` stops at the first problem (~2s on a healthy
     500MB store): cheap once per unclean boot, too costly every boot.  Opened
     normally: a WAL store needs its -shm sidecar for read-only, and the PRAGMA writes nothing.
+
+    Holds a phase-owned startup-watchdog lease for the check duration
+    (renewed from a SQLite progress handler, #115542) so a long healthy check
+    on a huge store is not mistaken for a parked deadlock.
     """
     path = _home_path(home, "state.db")
     if not path.exists():
         return "absent"
     try:
         with closing(sqlite3.connect(str(path))) as conn:
+            _install_integrity_check_lease(conn)
             row = conn.execute("PRAGMA quick_check(1)").fetchone()
     except Exception as exc:
         return f"check-failed: {exc}"

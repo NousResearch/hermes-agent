@@ -725,23 +725,12 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
         self._group_allow_from = self._coerce_list(_wx_secret("WEIXIN_GROUP_ALLOWED_USERS", "") if group_allow_from is None else group_allow_from)
         self._split_multiline_messages = _coerce_bool(_extra_or_secret(extra, "split_multiline_messages", ""), default=False)
         # Text debounce batching (Telegram pattern): iLink delivers messages individually, so rapid bursts would each
-        # trigger a separate agent run. 3s / 5s (after a ~2048-char split chunk) suit iLink's cadence.
-        self._text_batch_delay_seconds = self._coerce_float_extra("text_batch_delay_seconds", 3.0)
-        self._text_batch_split_delay_seconds = self._coerce_float_extra("text_batch_split_delay_seconds", 5.0)
+        # trigger a separate agent run. Telegram cadence and ceilings (#44883); ``0`` dispatches immediately.
+        self._configure_text_batch_delays()
         persisted = load_weixin_account(hermes_home, self._account_id) if self._account_id and not self._token else None
         if persisted:
             self._token = str(persisted.get("token") or "").strip()
             self._base_url = str(persisted.get("base_url") or self._base_url).strip().rstrip("/")
-
-    def _coerce_float_extra(self, key: str, default: float) -> float:
-        """Float from ``config.extra``; fed to ``asyncio.sleep()``, so NaN/Inf/negative/unparseable → default."""
-        import math
-        value = (self.config.extra or {}).get(key)
-        try:
-            parsed = float(value) if value is not None else float(default)
-        except (TypeError, ValueError):
-            return float(default)
-        return parsed if math.isfinite(parsed) and parsed >= 0 else float(default)
 
     @staticmethod
     def _coerce_list(value: Any) -> List[str]:
@@ -912,12 +901,6 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
             self._enqueue_text_event(event)
         else:
             await self.handle_message(event)
-
-    def _text_batch_key(self, event: MessageEvent) -> str:
-        from gateway.session import build_session_key
-        return build_session_key(
-            event.source, group_sessions_per_user=self.config.extra.get("group_sessions_per_user", True),
-            thread_sessions_per_user=self.config.extra.get("thread_sessions_per_user", False), profile=event.source.profile)
 
     async def _collect_media(self, item: Dict[str, Any], media_paths: List[str], media_types: List[str]) -> None:
         spec = _INBOUND_MEDIA.get(item.get("type"))
@@ -1128,7 +1111,7 @@ class WeixinAdapter(OwnAccessPolicyMixin, BasePlatformAdapter):
     async def send_video(self, chat_id: str, video_path: str, caption: Optional[str] = None, reply_to=None, metadata=None) -> SendResult:
         return await self._send_file_result(chat_id, video_path, caption or "", "send_video")
 
-    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to=None, metadata=None) -> SendResult:
+    async def send_voice(self, chat_id: str, audio_path: str, caption: Optional[str] = None, reply_to=None, metadata=None, **kwargs) -> SendResult:
         # Native outbound voice bubbles are not proven-working upstream; a file attachment at least plays (even .silk).
         return await self._send_file_result(chat_id, audio_path, caption or self.warning_text("[voice message as attachment]"), "send_voice", force_file_attachment=True)
 

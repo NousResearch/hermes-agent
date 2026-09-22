@@ -665,12 +665,24 @@ def _peer_run(args, message: str, peer_name: str, profile: str | None, base: str
 def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str, key: str) -> int:
     wait_seconds = _resolve_wait_seconds(args)
     sender_profile = _sender_profile()
+    session_id = ""
     try:
         session_id = _ensure_bot_chat(base, key)
     except RuntimeError as exc:
         print(f"Peer '{peer_name}': {exc}", file=sys.stderr)
         return 1
     except (urllib.error.URLError, TimeoutError, OSError) as exc:
+        # A timeout while awaiting the response, once the Bot Chat is known, means the peer took
+        # this turn: the message is already in its Bot Chat and the gateway runs the turn to
+        # completion regardless of this client, so reporting it unreachable makes the sender resend
+        # and deliver it twice. urllib raises that timeout bare; one it wraps in URLError hit while
+        # connecting or sending, so the request never arrived and "could not reach" is the truth.
+        if session_id and isinstance(exc, TimeoutError):
+            print(f"Peer '{peer_name}' accepted the message but its turn is still running after "
+                  f"{DM_TIMEOUT_S}s: the message is already in its Bot Chat (session {session_id}) "
+                  "and will be answered there. The reply cannot come back on this call. Do NOT resend.",
+                  file=sys.stderr)
+            return 1
         return _peer_failure(peer_name, exc)
     # The derived key is bound to the resolved session id, so it is minted here
     # rather than before the Bot Chat lookup (§4.1).
@@ -703,9 +715,26 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
         envelope.setdefault("profile", profile)
         return _emit_dm_envelope(args, envelope, session_id=session_id,
                                  idempotency_key=idempotency_key, peer_name=peer_name)
+    if result.get("object") == "hermes.session.chat.queued":
+        # The peer's Bot Chat is open in its Desktop and that turn outlasted the peer's wait: the
+        # message is in the open chat and is answered there, so a resend would run it twice.
+        queued_in = result.get("session_id") or session_id
+        return _emit(args, {"peer": peer_name, "profile": profile, "session_id": queued_in,
+                            "status": result.get("status") or "queued", "delivery_id": result.get("delivery_id")},
+                     [f"Peer '{peer_name}' has its Bot Chat open, so the message went into that chat (session "
+                      f"{queued_in}) and is answered there. The reply cannot come back on this call. Do NOT resend."])
     # Legacy peer without the delivery envelope: keep the pre-receipt reply shape.
     msg = result.get("message")
     reply = str(msg.get("content") or "") if isinstance(msg, dict) else ""
+    # A successful bare silence marker is a delivery decision, not a message:
+    # the turn stays in the peer's own transcript, the sending agent never
+    # sees NO_REPLY/[SILENT] as a real reply. Same rule as the gateway's live
+    # Bot Chat completion, the Desktop bot_relay.deliver RPC and the one-shot
+    # local `hermes chat -Q` transport (tools/bot_mode_dm.py) — this is the
+    # 4th Bot Mode delivery door and was missing the same check.
+    from gateway.response_filters import is_intentional_silence_response
+    if is_intentional_silence_response(reply):
+        reply = ""
     payload = {"peer": peer_name, "profile": profile,
                "session_id": result.get("session_id") or session_id, "reply": reply,
                "idempotency_key": idempotency_key, "waited_seconds": float(wait_seconds)}

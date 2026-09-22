@@ -166,7 +166,7 @@ class BaseEnvironment(ABC):
     def get_temp_dir(self) -> str:
         """Backend temp directory for session artifacts (``/tmp`` in sandboxes;
         LocalEnvironment overrides for Termux where only ``TMPDIR`` is writable)."""
-        return "/tmp"
+        return "/tmp"  # no-tmp: ok — sandbox-side (remote container) temp dir, not the host
 
     def __init__(self, cwd: str, timeout: int, env: dict = None):
         self.cwd = cwd

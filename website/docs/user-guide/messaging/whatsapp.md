@@ -238,7 +238,7 @@ All of this works out of the box in bot (Baileys) mode; no configuration needed.
 
 ### Message Batching (Debounce)
 
-WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **5s**, extended to **10s** for very long fragments). Tune via `config.yaml`:
+WhatsApp delivers each message individually, so a rapid burst (forwarded batches, paste-splits, multi-line text) would otherwise trigger a separate agent invocation per fragment — wasting tokens and producing several disjointed replies. The adapter buffers successive text messages from the same chat and dispatches them as one combined request after a short quiet period (default **0.3s**, extended to **1s** for very long fragments; capped at 2s / 4s). Tune via `config.yaml`:
 
 ```yaml
 # ~/.hermes/config.yaml
@@ -246,8 +246,8 @@ gateway:
   platforms:
     whatsapp:
       extra:
-        text_batch_delay_seconds: 5.0         # quiet period before flushing a batch
-        text_batch_split_delay_seconds: 10.0  # extended delay near the split threshold
+        text_batch_delay_seconds: 0.3         # quiet period before flushing a batch (max 2.0)
+        text_batch_split_delay_seconds: 1.0   # extended delay near the split threshold (max 4.0)
 ```
 
 Set `text_batch_delay_seconds: 0` to dispatch each message immediately (disables batching).

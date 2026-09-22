@@ -1,6 +1,7 @@
 """Tests for hermes_constants module."""
 
 import os
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -80,8 +81,9 @@ class TestGetDefaultHermesRoot:
         """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
 
         get_default_hermes_root() resolves HERMES_HOME against the native
-        home (~80us of path resolution) and is called at 31+ sites — kanban,
-        backup, gateway, update, profile enumeration. The memo is keyed on
+        home (~80us of path resolution) and is called at 31+ sites — every
+        _load_global_auth_store() (per provider row in the /model picker),
+        kanban, backup, gateway, update. The memo is keyed on
         (native home, HERMES_HOME) compared for free each call.
         """
         # HERMES_HOME set to a Docker-profile path: every call resolves the
@@ -573,6 +575,23 @@ class TestResolveReasoningConfig:
         from hermes_constants import resolve_reasoning_config
         cfg = self._cfg(effort="medium", overrides={"gpt-5": "turbo-max"})
         assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "medium"}
+
+    def test_dict_form_passes_bespoke_tier_verbatim_globally_and_per_model(self):
+        """#93238: providers with custom tiers (fast/thinking) need the dict form to send their
+        real level; a bare non-ladder string stays rejected so typos never reach the wire."""
+        from hermes_constants import parse_reasoning_effort, resolve_reasoning_config
+        cfg = self._cfg(effort={"enabled": True, "effort": "thinking"},
+                        overrides={"lumo-max": {"enabled": True, "effort": "fast"}})
+        assert resolve_reasoning_config(cfg, "gpt-5") == {"enabled": True, "effort": "thinking"}
+        assert resolve_reasoning_config(cfg, "my-relay/lumo-max") == {"enabled": True, "effort": "fast"}
+        assert parse_reasoning_effort("thinking") is None
+
+    def test_dict_form_disabled_or_empty_effort(self):
+        """enabled:false disables regardless of level; a dict without a level is 'unset'."""
+        from hermes_constants import parse_reasoning_effort
+        assert parse_reasoning_effort({"enabled": False, "effort": "low"}) == {"enabled": False}
+        assert parse_reasoning_effort({"enabled": True}) is None
+        assert parse_reasoning_effort({"effort": 0}) is None
 
 
 class TestReasoningOverridesDefaultConfig:
@@ -1223,3 +1242,40 @@ class TestHealAttemptFlagSemantics:
         # The flag is set, so the once-per-process budget is spent.
         assert heal_hermes_managed_node() is False
         assert calls["n"] == 1
+
+class TestProjectVenvDirOutOfTree:
+    """#116148: a checkout with no in-tree venv whose interpreter lives in ``$HERMES_HOME/venvs/<name>``
+    (the layout the shipped Windows launchers pin) must resolve to the running interpreter's venv,
+    never ``None`` — every updater call site turns ``None`` into a fabricated ``<checkout>/venv`` that
+    uv cannot inspect, so tool dependencies are never refreshed."""
+
+    @staticmethod
+    def _running_from(monkeypatch, checkout, venv):
+        monkeypatch.setattr(hermes_constants, "__file__", str(checkout / "hermes_constants.py"))
+        monkeypatch.setattr(sys, "prefix", str(venv))
+        monkeypatch.setattr(sys, "base_prefix", str(checkout / "no-such-base"))
+
+    def test_out_of_tree_install_resolves_the_running_interpreter_venv(self, monkeypatch, tmp_path):
+        checkout = tmp_path / "hermes-agent"
+        checkout.mkdir()
+        venv = tmp_path / "venvs" / "hermes"
+        hermes_constants.venv_python_path(venv).parent.mkdir(parents=True)
+        hermes_constants.venv_python_path(venv).write_text("", encoding="utf-8")
+        self._running_from(monkeypatch, checkout, venv)
+
+        assert hermes_constants.project_venv_dir(checkout) == venv
+
+    def test_foreign_root_and_in_tree_venv_are_unchanged(self, monkeypatch, tmp_path):
+        """A temp dir / another clone never claims the running venv; an in-tree venv still wins."""
+        checkout = tmp_path / "hermes-agent"
+        checkout.mkdir()
+        venv = tmp_path / "venvs" / "hermes"
+        hermes_constants.venv_python_path(venv).parent.mkdir(parents=True)
+        hermes_constants.venv_python_path(venv).write_text("", encoding="utf-8")
+        self._running_from(monkeypatch, checkout, venv)
+        other = tmp_path / "not-our-checkout"
+        other.mkdir()
+
+        assert hermes_constants.project_venv_dir(other) is None
+        (checkout / ".venv").mkdir()
+        assert hermes_constants.project_venv_dir(checkout) == checkout / ".venv"

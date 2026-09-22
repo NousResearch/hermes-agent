@@ -18,6 +18,7 @@ from agent.context_compressor import _DB_PERSISTED_MARKER
 from agent.message_content import flatten_message_text
 from agent.message_metadata import append_message, stamp_message_timestamp
 from agent.message_sanitization import _sanitize_surrogates
+from agent.served_model import result_model_fields
 
 # Verification-continuation nudges (verify-on-stop / pre_verify) must be stripped from
 # returned/live history to avoid role-alternation breaks; the assistant response is
@@ -482,6 +483,10 @@ def finalize_turn(
     _rollback_interrupted_preflight_display(agent, interrupted)
 
     _cleanup_errors: List[str] = []
+    # The model has answered (or the loop gave up): a title upgrade held back because it shares a
+    # self-hosted endpoint with the main request (#117296) may go out now.
+    from agent.turn_context import start_deferred_title_upgrade
+    _guarded_cleanup("start_deferred_title_upgrade", lambda: start_deferred_title_upgrade(agent), _cleanup_errors, logger)
     # ``user_message`` may be a multimodal list of parts; the trajectory format wants a string.
     _guarded_cleanup(
         "save_trajectory",
@@ -572,6 +577,8 @@ def finalize_turn(
         "pre_transform_response": _pre_transform_response,
         "response_previewed": getattr(agent, "_response_was_previewed", False),
         "model": agent.model,
+        # requested_model / served_model: proxy-reported deployment or Hermes' own fallback route.
+        **result_model_fields(agent),
         "provider": agent.provider,
         "base_url": agent.base_url,
         **{key: getattr(agent, f"session_{key}") for key in _SESSION_TOKEN_KEYS},

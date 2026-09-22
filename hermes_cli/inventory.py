@@ -161,9 +161,32 @@ def _strip_aggregator_overlaps(rows: list[dict]) -> None:
     except Exception:
         return
 
+    builtin_aggregators = {
+        _slug(row) for row in rows
+        if not row.get("is_user_defined") and is_routing_aggregator(_slug(row))
+    }
+
+    def _duplicates_builtin_aggregator(row: dict) -> bool:
+        # A user row that IS the same upstream as a built-in aggregator (registered OpenRouter via
+        # Settings → Providers, or a ``custom:openrouter`` slug) is that aggregator's twin, not a
+        # rival: its catalog is a superset of the built-in row's, so counting it empties the
+        # built-in row (openrouter → total=0 beside a live custom:openrouter row).
+        row_slug = _slug(row)
+        slug_suffix = (
+            row_slug.split(":", 1)[1] if row_slug.startswith("custom:") else ""
+        )
+        if slug_suffix and slug_suffix in builtin_aggregators:
+            return True
+        from agent.model_metadata import _infer_provider_from_url
+
+        inferred = _infer_provider_from_url(str(row.get("api_url") or ""))
+        return inferred is not None and inferred in builtin_aggregators
+
     user_models: set[str] = set()
     for row in rows:
         if row.get("is_user_defined"):
+            if builtin_aggregators and _duplicates_builtin_aggregator(row):
+                continue  # the twin IS that aggregator; it must not retro-strip it
             user_models.update(m.lower() for m in (row.get("models") or []))
     if not user_models:
         return
@@ -666,14 +689,17 @@ def _apply_pricing(rows: list[dict], *, force_fresh_nous_tier: bool = False, cac
 
 def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
     """The ``llamacpp`` row from staged GGUFs (``None`` when none) — downloaded models must be selectable
-    before the server runs (selection starts it via the runtime_provider seam)."""
+    before the server runs (selection starts it via the runtime_provider seam). The row's id comes from
+    the provider registry's own definition, never a local literal: a row the resolver can't resolve is
+    the bug this row's offline-first contract depends on not having."""
     try:
         from hermes_cli.local_runtime.bootstrap import staged_model_ids
+        from hermes_cli.providers import LLAMACPP_ALIASES, LLAMACPP_PROVIDER_ID
 
         staged = staged_model_ids()
         if not staged:
             return None
-        current = (ctx.current_provider or "").strip().lower() in ("llamacpp", "llama.cpp", "llama-cpp")
+        current = (ctx.current_provider or "").strip().lower() in LLAMACPP_ALIASES
         if not current:
             # A LIVE session on the managed server reports provider "custom" with the managed base_url;
             # match on the endpoint so the session being chatted in still shows a selection.
@@ -686,7 +712,7 @@ def _local_runtime_row(ctx: "ConfigContext") -> dict | None:
             except Exception:
                 current = False
         # Bare "Local" user-facing (engine name is an implementation detail); authenticated = reachability.
-        return _row("llamacpp", "Local", current, models=staged, total_models=len(staged),
+        return _row(LLAMACPP_PROVIDER_ID, "Local", current, models=staged, total_models=len(staged),
                     source="local-runtime", authenticated=True, auth_type="local", warning=None)
     except Exception:
         return None

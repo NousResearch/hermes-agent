@@ -218,6 +218,24 @@ class TestResolveProvider:
         assert resolve_provider("Z-AI") == "zai"
         assert resolve_provider("Kimi") == "kimi-coding"
 
+    def test_alias_chatgpt(self):
+        """Issue #95794: ``--provider chatgpt`` selects the ChatGPT-backed Codex OAuth provider."""
+        assert resolve_provider("chatgpt") == "openai-codex"
+        assert resolve_provider("chatgpt-codex") == "openai-codex"
+
+    def test_alias_chatgpt_every_alias_table(self):
+        """Issue #95794: the runtime (providers.py), the /model parser (models_catalog_static via
+        parse_model_input) and ``hermes auth login`` all resolve the ChatGPT alias, not just auth."""
+        from hermes_cli.providers import normalize_provider
+        from hermes_cli.models import parse_model_input
+        from hermes_cli.auth_commands import _normalize_provider
+
+        assert normalize_provider("chatgpt") == "openai-codex"
+        assert normalize_provider("chatgpt-codex") == "openai-codex"
+        assert parse_model_input("chatgpt:gpt-5.5", "openrouter") == ("openai-codex", "gpt-5.5")
+        assert parse_model_input("chatgpt-codex:gpt-5.5", "openrouter") == ("openai-codex", "gpt-5.5")
+        assert _normalize_provider("chatgpt") == "openai-codex"
+
     def test_alias_github_copilot(self):
         assert resolve_provider("github-copilot") == "copilot"
 

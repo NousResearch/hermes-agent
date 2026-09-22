@@ -251,7 +251,8 @@ def _owner_alive(pid: Any, started_at: Any) -> bool:
         except Exception:
             return False
     try:
-        return started_at is None or int(current_start) == int(started_at)
+        from gateway.status import start_time_fingerprints_match
+        return started_at is None or start_time_fingerprints_match(started_at, current_start)
     except (TypeError, ValueError):
         return True
 

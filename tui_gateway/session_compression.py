@@ -6,6 +6,8 @@ from __future__ import annotations
 
 import contextlib
 
+from utils import is_truthy_value
+
 from .method_ctx import bind_module
 
 
@@ -35,6 +37,19 @@ def _compressor_ctor_default(name: str, fallback: Any) -> Any:
         return fallback if default is inspect.Parameter.empty else default
     except Exception:
         return fallback
+
+
+def _default_threshold_tokens_cap():
+    """The cap a fresh agent build installs when the key is absent: DEFAULT_CONFIG's
+    ``compression.threshold_tokens``. agent_init reads the MERGED config, so "no key in
+    config.yaml" still installs the 256K default at construction; key removal here must
+    restore that same value. ``None`` instead would re-derive the uncapped ratio trigger
+    (500K on a 1M-window model) and the default cap would be gone after the first turn
+    (#117093). An explicit ``threshold_tokens: null`` stays ratio-only — the key is present,
+    so ``.get`` returns it untouched."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    return (DEFAULT_CONFIG.get("compression") or {}).get("threshold_tokens")
 
 
 def _derived_default_threshold_percent(agent: Any, compression: dict) -> float:
@@ -83,6 +98,7 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
     cfg = cfg if isinstance(cfg, dict) else {}
     compression = cfg.get("compression") if isinstance(cfg.get("compression"), dict) else {}
     model_cfg = cfg.get("model") if isinstance(cfg.get("model"), dict) else {}
+    from agent.agent_init import config_context_length_for_runtime, set_config_context_length
     enabled_raw = compression.get("enabled", True)
     agent.compression_enabled = enabled_raw if isinstance(enabled_raw, bool) else str(enabled_raw).lower() in {"true", "1", "yes"}
     agent.codex_responses_native_compaction = is_truthy_value(compression.get("codex_responses_native", False))
@@ -134,18 +150,25 @@ def _apply_live_compression_config(agent: Any, cfg: dict | None) -> None:
         cc.threshold_percent = cc._effective_threshold_percent(cc.context_length, base)
     except Exception:
         cc.threshold_percent = pct
-    raw_ctx = model_cfg.get("context_length")
-    if raw_ctx is not None:
-        with contextlib.suppress(TypeError, ValueError):
-            if (new_ctx := int(raw_ctx)) > 0:
-                cc._config_context_length = new_ctx
-                with contextlib.suppress(Exception):
-                    cc.context_length = new_ctx
+    # Same scoping rule as construction and the switch path: the pin describes the configured default
+    # route, so a session that /model-switched elsewhere must not have it re-applied on a config save
+    # (None = absent, invalid, or scoped out).
+    new_ctx = config_context_length_for_runtime(agent, cfg)
+    if new_ctx is not None:
+        # Both cached copies: the compressor's (its own re-resolution) and the agent's
+        # (switch/fallback + every display surface). Writing one left the other stale, so the
+        # session showed a pinned ceiling while compressing against a different window (#116467).
+        set_config_context_length(agent, new_ctx)
+        with contextlib.suppress(Exception):
+            cc.context_length = new_ctx
     elif getattr(cc, "_config_context_length", None) is not None:
         # model.context_length removed: drop the override and force re-inference from model metadata on
         # next access (construction's deferred resolution); re-applies the small-context floor too.
-        cc._config_context_length = cc._resolved_context_length = None
-    cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(compression.get("threshold_tokens"))
+        set_config_context_length(agent, None)
+        cc._resolved_context_length = None
+    cc.threshold_tokens_cap = cc._coerce_threshold_tokens_cap(
+        compression.get("threshold_tokens", _default_threshold_tokens_cap())
+    )
     # Invalidate the cached trigger so the next preflight re-derives from percent/window, then the cap.
     cc._threshold_tokens = cc._tail_token_budget = None
 

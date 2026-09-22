@@ -122,6 +122,40 @@ def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
     assert result["failure_retryable"] is True
 
 
+def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
+    """The real usage-limit envelope: ``_summarize_api_error`` reduces the body to ``HTTP 429: The
+    usage limit has been reached``, so the reset must travel through the classifier, not the text (#89401)."""
+    import httpx
+    import openai
+    from agent.api_error_summary import ApiErrorSummaryMixin
+
+    body = {"error": {"type": "usage_limit_reached", "message": "The usage limit has been reached",
+                      "resets_in_seconds": 30995, "plan_type": "pro"}}
+    response = httpx.Response(429, json=body, request=httpx.Request("POST", "https://chatgpt.com/backend-api/codex/responses"))
+    error = openai.RateLimitError(f"Error code: 429 - {body}", response=response, body=body)
+    classified = classify_api_error(error, provider="openai-codex", model="gpt-5.3-codex")
+    agent = _Agent()
+    agent._summarize_api_error = ApiErrorSummaryMixin._summarize_api_error
+    result = max_retries_exhausted_result(
+        agent, error, classified, max_retries=3, is_rate_limited=True, error_msg=str(error).lower(),
+        api_kwargs=None, api_messages=[], messages=[], conversation_history=None, api_call_count=3,
+        approx_tokens=10, provider="openai-codex", base_url="https://chatgpt.com/backend-api/codex", model="gpt-5.3-codex",
+    )
+    text = result["final_response"]
+    assert result["error"] == "HTTP 429: The usage limit has been reached"
+    assert "resets in ~9h" in text and "/retry" in text and "/model" in text
+    assert "Wait a minute" not in text
+    # A throttle with no reset window keeps the short-wait copy.
+    short = _Http(429, "HTTP 429: Rate limit exceeded")
+    plain = max_retries_exhausted_result(
+        _Agent(), short, classify_api_error(short, provider="openrouter", model="m"), max_retries=3,
+        is_rate_limited=True, error_msg=str(short).lower(), api_kwargs=None, api_messages=[], messages=[],
+        conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", model="m",
+    )
+    assert "Wait a minute" in plain["final_response"] and "resets in" not in plain["final_response"]
+
+
 def test_invalid_response_stamps_reason_from_embedded_provider_code():
     """An HTTP-200 body carrying a 429 is rate limiting for the UI, not 'unknown'."""
     agent = _Agent()

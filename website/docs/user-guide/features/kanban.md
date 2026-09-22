@@ -54,7 +54,10 @@ work; existing and undeclared cards retain that default. Prose URLs are not poli
 
 After publishing, pass `metadata.published_pr` to completion. The first matching
 URL binds the card permanently; retries cannot substitute a green sibling PR.
-CLI `show --json` and `kanban_show` expose the persisted contract.
+When the persisted contract is already an exact PR URL, `kanban_complete` and
+`kanban_request_review` auto-populate `metadata.published_pr` from it if the
+worker omits the field; a conflicting value is rejected. CLI `show --json` and
+`kanban_show` expose the persisted contract.
 
 The shared `complete_task` boundary covers worker tools, CLI, review approval and
 dashboard completion. It reads classic branch protection and active ruleset

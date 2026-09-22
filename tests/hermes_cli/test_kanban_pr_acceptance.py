@@ -129,3 +129,99 @@ def test_acceptance_receipts_and_terminal_write_share_run_ownership(github):
             assert kb.get_task(conn, tid).status != "done"
             assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchone()[0] == 0
             github.pop("race")
+
+
+PR7 = "https://github.com/acme/repo/pull/7"
+
+
+def _last_receipt(conn, tid):
+    rows = conn.execute(
+        "SELECT payload FROM task_events WHERE task_id=? AND kind='pr_acceptance'", (tid,)).fetchall()
+    assert rows
+    return json.loads(rows[-1][0])
+
+
+def _last_run_metadata(conn, tid):
+    row = conn.execute(
+        "SELECT metadata FROM task_runs WHERE task_id=? ORDER BY id DESC LIMIT 1", (tid,)).fetchone()
+    return json.loads(row[0]) if row and row[0] else {}
+
+
+@pytest.mark.linux_only
+def test_exact_pr_contract_auto_populates_published_pr(github):
+    with connect() as conn:
+        github.update(conclusion="success", head="a" * 40)
+        # Omitted: the exact-PR-URL contract resolves itself and the closing
+        # run's metadata carries published_pr.
+        tid = kb.create_task(conn, title="omitted", completion_contract=PR7)
+        assert kb.complete_task(conn, tid, summary="done")
+        assert kb.get_task(conn, tid).status == "done"
+        assert _last_receipt(conn, tid)["pr_url"] == PR7
+        assert _last_run_metadata(conn, tid)["published_pr"] == PR7
+        # Matching explicit value stays accepted unchanged.
+        tid = kb.create_task(conn, title="matching", completion_contract=PR7)
+        assert kb.complete_task(conn, tid, summary="done", metadata={"published_pr": PR7})
+        assert kb.get_task(conn, tid).status == "done"
+        assert _last_run_metadata(conn, tid)["published_pr"] == PR7
+        # Conflicting explicit value is rejected, classified, and not done.
+        tid = kb.create_task(conn, title="conflict", completion_contract=PR7)
+        assert not kb.complete_task(conn, tid, summary="done",
+                                    metadata={"published_pr": "https://github.com/acme/repo/pull/8"})
+        assert kb.get_task(conn, tid).status != "done"
+        assert _last_receipt(conn, tid)["classification"] == "conflict"
+
+
+@pytest.mark.linux_only
+def test_exact_pr_contract_keeps_exact_head_and_non_pr_explicit(github):
+    with connect() as conn:
+        github.update(conclusion="success", head="a" * 40)
+        # Exact-head acceptance still applies to the auto-populated contract.
+        tid = kb.create_task(conn, title="head moved", completion_contract=PR7)
+        github["head_change"] = True
+        assert not kb.complete_task(conn, tid, summary="done")
+        assert kb.get_task(conn, tid).status != "done"
+        assert _last_receipt(conn, tid)["classification"] == "stale"
+        github.pop("head_change")
+        # OWNER/REPO and local-only contracts are never guessed.
+        owner = kb.create_task(conn, title="owner", completion_contract="acme/repo")
+        assert not kb.complete_task(conn, owner, summary="local green")
+        local = kb.create_task(conn, title="local", completion_contract="local-only")
+        assert kb.complete_task(conn, local, summary="local green")
+
+
+@pytest.mark.linux_only
+def test_request_review_auto_populates_published_pr_from_contract(github):
+    with connect() as conn:
+        # Omitted: review handoff metadata carries the contract URL.
+        tid = kb.create_task(conn, title="review omitted", completion_contract=PR7)
+        assert kb.request_review(conn, tid, summary="ready for review")
+        assert kb.get_task(conn, tid).status == "review"
+        assert _last_run_metadata(conn, tid)["published_pr"] == PR7
+        # Matching explicit value passes through.
+        tid = kb.create_task(conn, title="review matching", completion_contract=PR7)
+        assert kb.request_review(conn, tid, summary="ready", metadata={"published_pr": PR7})
+        assert kb.get_task(conn, tid).status == "review"
+        assert _last_run_metadata(conn, tid)["published_pr"] == PR7
+        # Conflicting value rejects the handoff; the task stays untouched.
+        tid = kb.create_task(conn, title="review conflict", completion_contract=PR7)
+        ok, reason = kb.request_review(conn, tid, summary="ready", with_reason=True,
+                                       metadata={"published_pr": "https://github.com/acme/repo/pull/8"})
+        assert not ok
+        assert "conflicts" in reason
+        assert kb.get_task(conn, tid).status != "review"
+        # Non-PR contracts: nothing is auto-populated.
+        tid = kb.create_task(conn, title="review owner", completion_contract="acme/repo")
+        assert kb.request_review(conn, tid, summary="ready")
+        assert "published_pr" not in _last_run_metadata(conn, tid)
+
+
+@pytest.mark.linux_only
+def test_worker_context_exposes_exact_pr_contract(github):
+    with connect() as conn:
+        tid = kb.create_task(conn, title="ctx", completion_contract=PR7)
+        context = kb.build_worker_context(conn, tid)
+        assert f"PR contract: {PR7}" in context
+        owner = kb.create_task(conn, title="ctx owner", completion_contract="acme/repo")
+        assert "PR contract:" not in kb.build_worker_context(conn, owner)
+        local = kb.create_task(conn, title="ctx local", completion_contract="local-only")
+        assert "PR contract:" not in kb.build_worker_context(conn, local)

@@ -2754,6 +2754,15 @@ def complete_task(
         conn, task_id, metadata, summary=summary, result=result,
     )
     handoff_summary = summary if summary is not None else result
+    if metadata is None:
+        # An exact-PR-URL contract auto-populates the handoff metadata even
+        # when the worker supplied none at all (prepare_acceptance fills the
+        # dict case; non-PR contracts stay explicit).
+        from hermes_cli.kanban_pr_acceptance import resolve_published_pr
+        row = conn.execute("SELECT completion_contract FROM tasks WHERE id=?", (task_id,)).fetchone()
+        resolved_pr, _ = resolve_published_pr(row[0] if row else None, None)
+        if resolved_pr:
+            metadata = {"published_pr": resolved_pr}
     acceptance = prepare_acceptance(conn, task_id, expected_run_id, metadata)
     if acceptance is False:
         return False
@@ -3385,7 +3394,7 @@ def request_review(
                 return _ret(False, "parent dependencies are not satisfied")
             trow = conn.execute(
                 "SELECT assignee, status, claim_lock, current_run_id, worker_pid, "
-                "worker_started_at FROM tasks WHERE id = ?", (task_id,),
+                "worker_started_at, completion_contract FROM tasks WHERE id = ?", (task_id,),
             ).fetchone()
             if trow is None:
                 return _ret(False, "task not found")
@@ -3407,6 +3416,20 @@ def request_review(
                         "malformed); pass reviewer= explicitly",
                     )
             reviewer = _canonical_assignee(reviewer)
+            # An exact-PR-URL completion contract auto-populates the review
+            # handoff's metadata.published_pr when the worker omitted it; a
+            # conflicting value rejects the handoff BEFORE any task state
+            # changes. Non-PR contracts stay explicit -- acceptance itself
+            # (exact-head CI) still runs only at completion, never here.
+            contract = trow["completion_contract"]
+            if contract and contract != "local-only":
+                from hermes_cli.kanban_pr_acceptance import resolve_published_pr
+                supplied = metadata.get("published_pr") if isinstance(metadata, dict) else None
+                resolved_pr, conflict = resolve_published_pr(contract, supplied)
+                if conflict:
+                    return _ret(False, conflict)
+                if resolved_pr and not supplied:
+                    metadata = {**(metadata or {}), "published_pr": resolved_pr}
             # The actor is the run that did the work. ``assignee`` is the actor
             # only while a worker holds the card; on a never-claimed card it is
             # whoever the operator assigned -- possibly the reviewer itself,
@@ -4055,6 +4078,15 @@ def _ctx_header(lines: list[str], task: Task) -> None:
             lines.append(f"Terminal timeout: {effective_terminal_timeout}s")
     if task.branch_name:
         lines.append(f"Branch:   {task.branch_name}")
+    if task.completion_contract and task.completion_contract != "local-only":
+        from hermes_cli.kanban_pr_acceptance import resolve_published_pr
+        resolved_pr, _ = resolve_published_pr(task.completion_contract, None)
+        if resolved_pr:
+            lines.append(f"PR contract: {resolved_pr}")
+            lines.append(
+                "(metadata.published_pr is auto-populated from this contract when omitted at "
+                "kanban_request_review/kanban_complete; a conflicting value is rejected)"
+            )
     lines.append("")
     if task.body and task.body.strip():
         lines.append("## Body")

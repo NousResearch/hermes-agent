@@ -36,6 +36,25 @@ def _api(endpoint: str, *, query: str | None = None, paginate: bool = False):
     return value
 
 
+def resolve_published_pr(contract: str | None, published_pr: str | None) -> tuple[str | None, str | None]:
+    """Resolve the PR URL a handoff should record for a persisted contract.
+
+    An exact-PR-URL contract resolves to itself, so an omitted
+    ``metadata.published_pr`` is auto-populated instead of failing acceptance.
+    Any other contract (``local-only`` or ``OWNER/REPO``) stays explicit: the
+    caller's value is returned unchanged and never guessed. Returns
+    ``(resolved_url_or_None, conflict_reason_or_None)``; a conflict means the
+    supplied value contradicts an exact-PR-URL contract and the handoff is
+    rejected.
+    """
+    if not contract or contract == "local-only" or not _PR.fullmatch(contract):
+        return published_pr, None
+    if published_pr and published_pr != contract:
+        return None, ("metadata.published_pr conflicts with the persisted completion "
+                      "contract; the declared PR cannot be replaced.")
+    return contract, None
+
+
 def collect_acceptance(contract: str, published_pr: str | None) -> dict:
     receipt = {"ok": False, "classification": "missing", "head_sha": None,
                "pr_url": published_pr, "checks": [],
@@ -45,7 +64,11 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         declared = _PR.fullmatch(contract)
         url = contract if declared else published_pr
         match = _PR.fullmatch(url or "")
-        if not match or (not declared and match[1] != contract) or (declared and published_pr and published_pr != contract):
+        if declared and published_pr and published_pr != contract:
+            receipt.update(classification="conflict",
+                           detail="metadata.published_pr conflicts with the persisted completion contract.")
+            return receipt
+        if not match or (not declared and match[1] != contract):
             receipt["detail"] = "Supply metadata.published_pr matching the persisted completion contract."
             return receipt
         repo, number = match[1], int(match[2])

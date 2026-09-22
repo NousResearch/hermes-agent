@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from hermes_cli.kanban_db_connect import write_txn
-from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance
+from hermes_cli.kanban_pr_acceptance import _PR, collect_acceptance, resolve_published_pr
 
 
 def _snapshot(conn, task_id):
@@ -29,7 +29,15 @@ def prepare_acceptance(conn, task_id, expected_run_id, metadata):
             conn.execute("UPDATE tasks SET completion_contract=? WHERE id=?", (published_pr, task_id))
         snapshot = (run_id, status, published_pr)
         contract = published_pr
-    return snapshot, collect_acceptance(contract, published_pr)
+    # An exact-PR-URL contract resolves to itself: an omitted published_pr is
+    # auto-populated (the handoff metadata carries it), a conflicting one is
+    # rejected. Non-PR contracts stay explicit; nothing is guessed.
+    resolved_pr, conflict = resolve_published_pr(contract, published_pr)
+    if conflict:
+        return snapshot, collect_acceptance(contract, published_pr)
+    if resolved_pr and isinstance(metadata, dict) and not published_pr:
+        metadata["published_pr"] = resolved_pr
+    return snapshot, collect_acceptance(contract, resolved_pr)
 
 
 def record_acceptance(conn, task_id, acceptance):

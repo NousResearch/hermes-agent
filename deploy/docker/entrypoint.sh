@@ -23,6 +23,7 @@
 #   NOVA_TLS_KEY           <unset>
 #   NOVA_BEHIND_TLS_PROXY  <unset>                any non-empty value sets the flag
 #   NOVA_APPLY_ON_START    <unset>                any non-empty value runs `nova apply` first
+#   NOVA_PRUNE_ORPHANS     <unset>                with APPLY_ON_START, also `--prune`
 #   NOVA_LOG_LEVEL         <unset>                read by nova itself
 #   NOVA_LOG_FORMAT        json                   read by nova itself
 #
@@ -91,8 +92,17 @@ case "$command" in
             # response that removes the diagnosis along with the symptom. The failure is
             # logged loudly, the exit status is kept, and the tasks screen reports the
             # board as unattended on its own.
-            log "applying $NOVA_BUNDLE before serving (NOVA_APPLY_ON_START)"
-            if python -m nova apply "$NOVA_BUNDLE"; then
+            # NOVA_PRUNE_ORPHANS opts this boot apply into reconciling NOVA-managed
+            # profiles the bundle no longer declares (e.g. a channel-derived profile left
+            # behind when a channel is removed). Off by default: an unattended apply on
+            # every restart must not quietly delete state on a transient bad bundle, and
+            # `nova apply --prune` already keeps any profile that still holds customer
+            # state. Set it only when the bundle is meant to be the whole truth for this
+            # host.
+            prune_flag=""
+            [ -n "${NOVA_PRUNE_ORPHANS:-}" ] && prune_flag="--prune"
+            log "applying $NOVA_BUNDLE before serving (NOVA_APPLY_ON_START${prune_flag:+, $prune_flag})"
+            if python -m nova apply "$NOVA_BUNDLE" $prune_flag; then
                 log "apply finished; declared agents are materialized as runtime profiles"
             else
                 status=$?

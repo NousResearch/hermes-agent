@@ -519,6 +519,23 @@ Warnings that each agent "cannot run yet" are correct, not errors. Step 25 fixes
 > `apply` **overwrites** derived files, including each agent's `SOUL.md`. Edit the bundle,
 > never the generated output.
 
+> **Removing an agent or a channel is not enough on its own.** A profile NOVA created
+> from a previous bundle — including a profile a channel *derived*, like
+> `operations__acme-support-telegram` — stays materialized after you drop it from the
+> bundle. Plain `apply` reports it and stops there; unattended deletion on every restart
+> is a footgun this deliberately avoids. To reconcile it, run `apply --prune`:
+>
+> ```bash
+> sudo docker exec nova python -m nova apply /var/lib/nova/bundle --prune
+> ```
+>
+> `--prune` removes only profiles NOVA itself created (a hand-made profile has no
+> provenance marker and is left alone), and it keeps — never deletes — any orphan still
+> holding customer state (`state.db`, `memories`, `sessions`), reporting it instead. To
+> preview without touching anything, `plan --prune`. To reconcile automatically on every
+> boot, set `NOVA_PRUNE_ORPHANS=1` in the runtime's environment beside
+> `NOVA_APPLY_ON_START=1`; leave it unset to keep boots non-destructive.
+
 ---
 
 ## Step 25 — The model credential

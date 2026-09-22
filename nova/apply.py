@@ -15,6 +15,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 
 from nova.audit import AuditLog, new_correlation_id
+from nova.errors import RuntimeAdapterError
 from nova.observability import operation, set_correlation_id
 from nova.policy import compile_policy
 from nova.runtime.base import AgentRuntime, MaterializeResult
@@ -33,6 +34,13 @@ class ApplyReport:
     identity: Optional[MaterializeResult] = None
     agents: tuple[MaterializeResult, ...] = ()
     skipped: tuple[str, ...] = ()
+    #: NOVA-managed agents that were in the runtime, absent from the bundle, and
+    #: reconciled away this run. Empty unless ``prune`` was set.
+    pruned: tuple[str, ...] = ()
+    #: Orphans that ``prune`` was asked to remove but ``remove_agent`` refused, as
+    #: ``(agent_id, reason)`` — a profile NOVA did not create, or one still holding
+    #: customer state. Kept, never a hard failure.
+    kept_orphans: tuple[tuple[str, str], ...] = ()
     warnings: tuple[str, ...] = field(default_factory=tuple)
 
     @property
@@ -69,6 +77,7 @@ def apply_bundle(
     audit: AuditLog,
     dry_run: bool = False,
     include_disabled: bool = False,
+    prune: bool = False,
     correlation_id: Optional[str] = None,
 ) -> ApplyReport:
     """Make ``runtime`` match ``bundle``. See :func:`_apply_bundle` for the behaviour.
@@ -91,6 +100,7 @@ def apply_bundle(
             audit=audit,
             dry_run=dry_run,
             include_disabled=include_disabled,
+            prune=prune,
             correlation_id=correlation_id,
             trace=trace,
         )
@@ -103,6 +113,7 @@ def _apply_bundle(
     audit: AuditLog,
     dry_run: bool,
     include_disabled: bool,
+    prune: bool,
     correlation_id: Optional[str],
     trace: operation,
 ) -> ApplyReport:
@@ -112,9 +123,17 @@ def _apply_bundle(
     no profile behind is the unambiguous state, and a disabled agent that still has a
     profile is one dispatcher configuration change away from running.
 
-    This function never removes agents. Deletion is destructive and stays an explicit
-    operator action through :meth:`AgentRuntime.remove_agent`; a bundle that no longer
-    names an agent produces a warning here, not a removal.
+    Removal is opt-in. By default a bundle that no longer names a NOVA-managed agent
+    produces a *warning*, not a deletion — deletion is destructive and an unattended
+    apply on every boot must not quietly erase state. With ``prune`` set, those orphans
+    are reconciled through :meth:`AgentRuntime.remove_agent`, which is the one removal
+    path and already refuses a profile NOVA did not create or one still holding customer
+    state. A refusal keeps that single profile and is reported; it never aborts the apply,
+    so pruning is all-or-what-is-safe, never all-or-nothing.
+
+    "Orphan" includes channel-derived variants only when their channel is gone too:
+    :func:`_orphans` counts a channel's derived profiles as declared while the channel is,
+    so ``--prune`` cannot remove a profile the tenant's own channel policy still depends on.
     """
     # Already set by the caller above; the same id the audit log stamps, so an operational
     # trace and a governance record line up without guessing from timestamps.
@@ -237,20 +256,42 @@ def _apply_bundle(
     for result in results:
         warnings.extend(f"{result.agent_id}: {note}" for note in result.warnings)
 
+    orphans = _orphans(bundle, runtime)
+    pruned: list[str] = []
+    kept_orphans: list[tuple[str, str]] = []
+    if orphans and not prune:
+        warnings.append(
+            f"runtime still holds NOVA-managed agent(s) no longer in the bundle: "
+            f"{', '.join(orphans)} — re-run with --prune to reconcile them"
+        )
+    elif orphans:
+        for agent_id in orphans:
+            try:
+                removed = runtime.remove_agent(
+                    agent_id,
+                    audit=audit,
+                    correlation_id=correlation_id,
+                    dry_run=dry_run,
+                )
+            except RuntimeAdapterError as exc:
+                # The safety boundary, not a failure to abort over. remove_agent refuses a
+                # profile NOVA never created, and one still holding customer state (its own
+                # state.db, memories, sessions). Keep that single profile, say why, and let
+                # the rest reconcile — an all-or-nothing prune would make one protected
+                # profile block cleaning up every safe one beside it.
+                kept_orphans.append((agent_id, str(exc)))
+                continue
+            if removed:
+                pruned.append(agent_id)
+
     trace.add(
         created=len([r for r in results if r.created]),
         changed=len([r for r in results if r.changed and not r.created]),
         unchanged=len([r for r in results if r.unchanged]),
         skipped=len(skipped),
+        pruned=len(pruned),
         warnings=len(warnings),
     )
-
-    orphans = _orphans(bundle, runtime)
-    if orphans:
-        warnings.append(
-            f"runtime still holds NOVA-managed agent(s) no longer in the bundle: "
-            f"{', '.join(orphans)} — remove them explicitly if that is intended"
-        )
 
     report = ApplyReport(
         tenant_id=bundle.tenant_id,
@@ -261,6 +302,8 @@ def _apply_bundle(
         identity=identity_result,
         agents=tuple(results),
         skipped=tuple(skipped),
+        pruned=tuple(pruned),
+        kept_orphans=tuple(kept_orphans),
         warnings=tuple(warnings),
     )
 
@@ -276,6 +319,8 @@ def _apply_bundle(
             "changed": list(report.changed),
             "unchanged": list(report.unchanged),
             "skipped": list(report.skipped),
+            "pruned": list(report.pruned),
+            "kept_orphans": [aid for aid, _reason in report.kept_orphans],
             "warnings": list(report.warnings),
         },
     )

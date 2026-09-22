@@ -171,3 +171,124 @@ def test_two_tenants_differing_only_in_identity_produce_different_brands(tmp_pat
         names[tenant] = skin["branding"]["agent_name"]
 
     assert names == {"acme": "Acme Intelligence", "bristol": "Bristol Foods AI"}
+
+
+# ---------------------------------------------------------------------------
+# Pruning stale NOVA-managed profiles
+#
+# The first field deployment removed a channel from the bundle. `unpack --replace`
+# correctly dropped channels.yaml, but the profile that channel had derived —
+# operations__acme-support-telegram — stayed materialized: apply detected the orphan and
+# only warned. `--prune` reconciles it, through the same remove_agent path that already
+# refuses a non-NOVA profile or one holding customer state.
+# ---------------------------------------------------------------------------
+
+
+def _bundle_without_channels(tmp_path):
+    reduced = tmp_path / "no-channels"
+    shutil.copytree(EXAMPLE_BUNDLE, reduced)
+    (reduced / "channels.yaml").unlink()           # both agents stay declared
+    return load_bundle(reduced)
+
+
+def test_prune_removes_a_channel_derived_orphan_when_its_channel_is_gone(
+    tmp_path, runtime, audit, home
+):
+    """The exact live scenario, end to end."""
+    apply_bundle(load_bundle(EXAMPLE_BUNDLE), runtime, audit=audit)
+    derived = HermesPaths(home=home).profile_dir("operations__acme-support-telegram")
+    assert derived.exists(), "the example channel should have derived this profile"
+
+    report = apply_bundle(
+        _bundle_without_channels(tmp_path), runtime, audit=audit, prune=True
+    )
+
+    assert not derived.exists(), "the stale channel-derived profile survived --prune"
+    assert "operations__acme-support-telegram" in report.pruned
+    assert report.kept_orphans == ()
+
+
+def test_prune_keeps_the_currently_declared_agents(tmp_path, runtime, audit, home):
+    apply_bundle(load_bundle(EXAMPLE_BUNDLE), runtime, audit=audit)
+    apply_bundle(_bundle_without_channels(tmp_path), runtime, audit=audit, prune=True)
+
+    paths = HermesPaths(home=home)
+    for declared in ("customer-support", "operations"):
+        assert paths.profile_dir(declared).exists(), (
+            f"--prune removed {declared}, which the bundle still declares"
+        )
+
+
+def test_prune_is_off_by_default_and_only_warns(tmp_path, runtime, audit, home):
+    """The invariant the earlier design chose on purpose: an unattended apply never
+    deletes. Absent --prune, the orphan is reported and left in place."""
+    apply_bundle(load_bundle(EXAMPLE_BUNDLE), runtime, audit=audit)
+    report = apply_bundle(_bundle_without_channels(tmp_path), runtime, audit=audit)
+
+    assert report.pruned == ()
+    assert any("no longer in the bundle" in w for w in report.warnings)
+    assert any("--prune" in w for w in report.warnings)
+    assert HermesPaths(home=home).profile_dir("operations__acme-support-telegram").exists()
+
+
+def test_prune_is_idempotent(tmp_path, runtime, audit, home):
+    apply_bundle(load_bundle(EXAMPLE_BUNDLE), runtime, audit=audit)
+    reduced = _bundle_without_channels(tmp_path)
+    first = apply_bundle(reduced, runtime, audit=audit, prune=True)
+    assert first.pruned == ("operations__acme-support-telegram",)
+
+    second = apply_bundle(reduced, runtime, audit=audit, prune=True)
+    assert second.pruned == (), "a second prune found something to remove again"
+    assert second.kept_orphans == ()
+
+
+def test_prune_keeps_an_orphan_that_still_holds_customer_state(
+    tmp_path, runtime, audit, home
+):
+    """remove_agent refuses a profile carrying its own state.db / memories, and that
+    refusal must keep the profile and be reported — never abort the apply."""
+    apply_bundle(load_bundle(EXAMPLE_BUNDLE), runtime, audit=audit)
+    derived = HermesPaths(home=home).profile_dir("operations__acme-support-telegram")
+    (derived / "state.db").write_text("customer conversation state\n", encoding="utf-8")
+
+    report = apply_bundle(
+        _bundle_without_channels(tmp_path), runtime, audit=audit, prune=True
+    )
+
+    assert derived.exists(), "an orphan holding customer state was deleted"
+    assert "operations__acme-support-telegram" not in report.pruned
+    kept = dict(report.kept_orphans)
+    assert "operations__acme-support-telegram" in kept
+    assert "customer state" in kept["operations__acme-support-telegram"]
+
+
+def test_prune_never_touches_an_unmanaged_profile(tmp_path, runtime, audit, home):
+    """A profile NOVA did not create has no provenance marker, is not a NOVA-managed
+    orphan, and must survive even a pruning apply untouched."""
+    apply_bundle(load_bundle(EXAMPLE_BUNDLE), runtime, audit=audit)
+    paths = HermesPaths(home=home)
+    unmanaged = paths.profile_dir("hand-rolled")
+    unmanaged.mkdir(parents=True)
+    (unmanaged / "config.yaml").write_text("model:\n  provider: bedrock\n", encoding="utf-8")
+    assert not paths.provenance_path("hand-rolled").exists()
+
+    report = apply_bundle(
+        _bundle_without_channels(tmp_path), runtime, audit=audit, prune=True
+    )
+
+    assert unmanaged.exists() and (unmanaged / "config.yaml").is_file()
+    assert "hand-rolled" not in report.pruned
+    assert "hand-rolled" not in dict(report.kept_orphans)
+
+
+def test_plan_prune_previews_the_removal_without_deleting(tmp_path, runtime, audit, home):
+    """`plan --prune` (dry-run) reports what WOULD go, and touches nothing on disk."""
+    apply_bundle(load_bundle(EXAMPLE_BUNDLE), runtime, audit=audit)
+    derived = HermesPaths(home=home).profile_dir("operations__acme-support-telegram")
+
+    report = apply_bundle(
+        _bundle_without_channels(tmp_path), runtime, audit=audit, prune=True, dry_run=True
+    )
+
+    assert "operations__acme-support-telegram" in report.pruned
+    assert derived.exists(), "a dry-run prune deleted a profile"

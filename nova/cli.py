@@ -88,6 +88,11 @@ def _build_parser() -> argparse.ArgumentParser:
 
     plan = sub.add_parser("plan", help="show what applying a bundle would change")
     plan.add_argument("bundle", type=Path)
+    plan.add_argument(
+        "--prune",
+        action="store_true",
+        help="also preview which stale NOVA-managed profiles would be removed",
+    )
 
     apply_cmd = sub.add_parser("apply", help="make the runtime match a bundle")
     apply_cmd.add_argument("bundle", type=Path)
@@ -95,6 +100,15 @@ def _build_parser() -> argparse.ArgumentParser:
         "--include-disabled",
         action="store_true",
         help="also materialize agents whose spec sets enabled: false",
+    )
+    apply_cmd.add_argument(
+        "--prune",
+        action="store_true",
+        help=(
+            "remove NOVA-managed profiles no longer in the bundle. Only profiles NOVA "
+            "created are touched, and one still holding customer state is kept and "
+            "reported rather than deleted"
+        ),
     )
 
     status = sub.add_parser("status", help="report what the runtime currently holds")
@@ -320,6 +334,11 @@ def _report(report, *, verb: str) -> None:
             print(f"  {label:9} {agent_id}")
     for agent_id in report.skipped:
         print(f"  {'skipped':9} {agent_id} (disabled in its spec)")
+    prune_label = "would remove" if report.dry_run else "removed"
+    for agent_id in getattr(report, "pruned", ()):  # noqa: B009 — tolerant of older reports
+        print(f"  {prune_label:9} {agent_id} (no longer in the bundle)")
+    for agent_id, reason in getattr(report, "kept_orphans", ()):
+        print(f"  kept      {agent_id}: {reason}")
     for warning in report.warnings:
         print(f"  warning:  {warning}")
     if report.dry_run:
@@ -1164,6 +1183,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
             audit=audit,
             dry_run=dry_run,
             include_disabled=getattr(args, "include_disabled", False),
+            prune=getattr(args, "prune", False),
         )
         _report(report, verb="apply")
         if not dry_run:

@@ -467,7 +467,7 @@ def _profile_purge_identity(args):
 
 
 def _profile_export(args):
-    from hermes_cli.profiles import export_profile, get_profile_export_path
+    from hermes_cli.profiles_export import export_profile, get_profile_export_path
     name = args.profile_name
     try:
         output = args.output or str(get_profile_export_path(name))
@@ -478,7 +478,8 @@ def _profile_export(args):
 
 
 def _profile_import(args):
-    from hermes_cli.profiles import check_alias_collision, create_wrapper_script, import_profile
+    from hermes_cli.profiles import check_alias_collision, create_wrapper_script
+    from hermes_cli.profiles_export import import_profile
     try:
         profile_dir = import_profile(args.archive, name=getattr(args, "import_name", None))
         name = profile_dir.name

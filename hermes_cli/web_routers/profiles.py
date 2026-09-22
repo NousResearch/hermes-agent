@@ -961,7 +961,7 @@ async def describe_profile_auto_endpoint(name: str, body: ProfileDescribeAuto):
             "description_auto": bool(outcome.ok)}
 
 
-# ── Export / Import ── wraps hermes_cli.profiles.export_profile / import_profile. Paths are
+# ── Export / Import ── wraps hermes_cli.profiles_export.export_profile / import_profile. Paths are
 # exchanged, not bytes — the desktop backends share the filesystem with the native dialogs.
 
 
@@ -973,11 +973,11 @@ def _read_desktop_overlay(profile_dir: Path) -> Any:
 
 @router.post("/api/profiles/{name}/export")
 async def export_profile_endpoint(name: str, body: ProfileExport):
-    from hermes_cli import profiles as profiles_mod
+    from hermes_cli import profiles_export as profiles_export_mod
     output = (body.output or "").strip()
     if not output:
         try:
-            output = str(profiles_mod.get_profile_export_path(name))
+            output = str(profiles_export_mod.get_profile_export_path(name))
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         except OSError as exc:
@@ -985,13 +985,14 @@ async def export_profile_endpoint(name: str, body: ProfileExport):
 
     with _profile_errors("POST /api/profiles/%s/export failed", name):
         result = await run_in_threadpool(
-            profiles_mod.export_profile, name, output, extra_files=body.extra_files or None)
+            profiles_export_mod.export_profile, name, output, extra_files=body.extra_files or None)
     return {"ok": True, "archive": str(result)}
 
 
 @router.post("/api/profiles/import")
 async def import_profile_endpoint(body: ProfileImport):
     from hermes_cli import profiles as profiles_mod
+    from hermes_cli import profiles_export as profiles_export_mod
     archive = (body.archive or "").strip()
     if not archive:
         raise HTTPException(status_code=400, detail="archive path is required")
@@ -999,7 +1000,7 @@ async def import_profile_endpoint(body: ProfileImport):
     with _profile_errors("POST /api/profiles/import failed",
                          bad_request=(ValueError, FileExistsError)):
         profile_dir = await run_in_threadpool(
-            profiles_mod.import_profile, archive, name=(body.name or "").strip() or None)
+            profiles_export_mod.import_profile, archive, name=(body.name or "").strip() or None)
 
     imported = profile_dir.name
 

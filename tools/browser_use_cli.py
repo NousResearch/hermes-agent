@@ -58,7 +58,10 @@ def _hermes_ensure_own_tab():
     try:
         # Force a fresh target: new_tab() would REUSE a blank current tab,
         # which is exactly the tab a sibling daemon may also hold.
-        _tid = cdp("Target.createTarget", url="about:blank").get("targetId")
+        # background=True: without it the CDP brings the tab/window to the
+        # front and STEALS desktop focus (fullscreen game alt-tab incident,
+        # 2026-09-14). Sibling of #82482, which fixes the CDP backend paths.
+        _tid = cdp("Target.createTarget", url="about:blank", background=True).get("targetId")
         if _tid:
             switch_tab(_tid)
     except Exception:

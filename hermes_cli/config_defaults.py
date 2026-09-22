@@ -1752,6 +1752,10 @@ DEFAULT_CONFIG = {
         # banner. Add via `hermes doctor --ack <id>`; remove by editing the list. Catalog:
         # hermes_cli/security_advisories.py.
         "acked_advisories": [],
+        # Temporary, reviewed exceptions for `hermes security audit --fail-on`. Every entry needs
+        # an OSV/GHSA `id`, a non-empty `reason`, and a future ISO `review_by` date; expired or
+        # malformed entries keep findings blocking. Findings remain visible in all audit output.
+        "accepted_advisories": [],
         # Lazy-install opt-in backend packages from PyPI when a backend that needs them is first
         # enabled (e.g. `elevenlabs`). False = require explicit pip install for everything beyond
         # the base set (restricted/audited/air-gapped environments).

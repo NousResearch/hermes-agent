@@ -214,3 +214,74 @@ class TestExitCodes:
         assert data["finding_count"] == 1
         assert data["findings"][0]["severity"] == "HIGH"
         assert data["findings"][0]["fixed_versions"] == ["1.1"]
+
+    def test_future_accepted_advisory_does_not_fail_gate(self, tmp_path: Path, monkeypatch, capsys):
+        """Regression for #119057: a reviewed, future-dated risk remains visible but non-blocking."""
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        finding = sa.Finding(
+            sa.Component("pkg", "1.0", "PyPI", "venv"),
+            sa.Vulnerability("GHSA-accepted", severity="HIGH"),
+        )
+        monkeypatch.setattr(sa, "_discover_components", lambda **kwargs: [finding.component])
+        monkeypatch.setattr(sa, "run_audit", lambda **kwargs: [finding])
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"accepted_advisories": [{
+                "id": "GHSA-accepted", "reason": "No upstream fix is available", "review_by": "2099-01-01",
+            }]}},
+        )
+
+        assert sa.cmd_security_audit(self._build_args(fail_on="high")) == 0
+        assert "ACCEPTED" in capsys.readouterr().out
+
+    def test_expired_or_incomplete_acceptance_still_fails_gate(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        finding = sa.Finding(
+            sa.Component("pkg", "1.0", "PyPI", "venv"),
+            sa.Vulnerability("GHSA-expired", severity="HIGH"),
+        )
+        monkeypatch.setattr(sa, "_discover_components", lambda **kwargs: [finding.component])
+        monkeypatch.setattr(sa, "run_audit", lambda **kwargs: [finding])
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"accepted_advisories": [
+                {"id": "GHSA-expired", "reason": "Review was missed", "review_by": "2020-01-01"},
+                {"id": "GHSA-expired", "review_by": "2099-01-01"},
+                {"id": "GHSA-expired", "reason": "Bad date", "review_by": "not-a-date"},
+            ]}},
+        )
+
+        assert sa.cmd_security_audit(self._build_args(fail_on="high")) == 1
+
+    def test_unaccepted_finding_keeps_existing_fail_on_behavior(self, tmp_path: Path, monkeypatch):
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        finding = sa.Finding(
+            sa.Component("pkg", "1.0", "PyPI", "venv"),
+            sa.Vulnerability("GHSA-unaccepted", severity="HIGH"),
+        )
+        monkeypatch.setattr(sa, "_discover_components", lambda **kwargs: [finding.component])
+        monkeypatch.setattr(sa, "run_audit", lambda **kwargs: [finding])
+        monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"security": {}})
+
+        assert sa.cmd_security_audit(self._build_args(fail_on="high")) == 1
+
+    def test_json_marks_only_valid_future_acceptances(self, tmp_path: Path, monkeypatch, capsys):
+        monkeypatch.setattr(sa, "get_hermes_home", lambda: str(tmp_path))
+        finding = sa.Finding(
+            sa.Component("pkg", "1.0", "PyPI", "venv"),
+            sa.Vulnerability("GHSA-json", severity="HIGH"),
+        )
+        monkeypatch.setattr(sa, "_discover_components", lambda **kwargs: [finding.component])
+        monkeypatch.setattr(sa, "run_audit", lambda **kwargs: [finding])
+        monkeypatch.setattr(
+            "hermes_cli.config.load_config",
+            lambda: {"security": {"accepted_advisories": [{
+                "id": "GHSA-json", "reason": "Temporary mitigation is active", "review_by": "2099-01-01",
+            }]}},
+        )
+
+        assert sa.cmd_security_audit(self._build_args(json=True, fail_on="high")) == 0
+        data = json.loads(capsys.readouterr().out)
+        assert data["findings"][0]["accepted"] is True
+        assert data["findings"][0]["acceptance_reason"] == "Temporary mitigation is active"
+        assert data["findings"][0]["review_by"] == "2099-01-01"

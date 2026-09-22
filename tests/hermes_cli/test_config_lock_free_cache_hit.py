@@ -45,11 +45,6 @@ def config_home(tmp_path, monkeypatch):
     cfgmod._RAW_CONFIG_CACHE.clear()
 
 
-def _bump_mtime(path):
-    st = path.stat()
-    os.utime(path, ns=(st.st_atime_ns, st.st_mtime_ns + 1_000_000))
-
-
 def _time_cached_read_under_held_lock(reader):
     """Prime ``reader`` (lock-free), then time one more call while another thread holds
     ``_CONFIG_LOCK``. Returns ``(result, elapsed_seconds)``."""
@@ -101,35 +96,3 @@ def test_cached_raw_read_completes_while_another_thread_holds_the_config_lock(co
         f"a cached read_raw_config_readonly() blocked {elapsed:.1f}s behind a held "
         "_CONFIG_LOCK; cache hits must not serialize against config writers"
     )
-
-
-def test_hook_timeout_memo_never_pairs_a_new_sig_with_an_old_value(config_home):
-    """The memo is published as ONE ``(sig, value)`` tuple: with a writer thread flipping the config
-    between two timeouts, every lock-free read must see sig and value from the SAME publish."""
-    from hermes_cli import plugins as pluginsmod
-    from hermes_cli.config import _load_config_cache_sig, get_config_path
-
-    def write(v):
-        (config_home / "config.yaml").write_text(f"plugins:\n  hook_callback_timeout: {v}\n", encoding="utf-8")
-        _bump_mtime(get_config_path())
-        return pluginsmod._resolve_hook_callback_timeout(), _load_config_cache_sig(get_config_path())[1]
-
-    sig_of = {}
-    for v in (5, 7):
-        value, sig = write(v)
-        assert value == float(v)
-        sig_of[sig] = value
-    stop = threading.Event()
-
-    def writer():
-        while not stop.is_set():
-            write(5); write(7)
-
-    t = threading.Thread(target=writer, daemon=True); t.start()
-    try:
-        for _ in range(2000):
-            for sig, value in list(pluginsmod._HOOK_TIMEOUT_CACHE.values()):
-                if sig in sig_of:
-                    assert sig_of[sig] == value, "memo published a new sig with a stale value"
-    finally:
-        stop.set(); t.join(timeout=5)

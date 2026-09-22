@@ -1131,45 +1131,15 @@ for _name, _method in list(vars(PluginContext).items()):
 del _name, _method
 
 
-# Keyed by the scope-resolved config path (like `_LOAD_CONFIG_CACHE`) so multiplexed profiles do not
-# evict each other. Each value is ONE `(sig, value)` tuple stored with a single dict item assignment
-# (atomic under the GIL), so a lock-free reader can never observe a new sig paired with an old value.
-_HOOK_TIMEOUT_CACHE: Dict[str, Tuple[Any, float]] = {}
-
-
 def _resolve_hook_callback_timeout() -> float:
     """Effective hook-callback timeout from ``plugins.hook_callback_timeout`` (default 30s; ``<= 0``
     disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``).
 
-    Memoized on the config file's cache signature. ``invoke_hook`` calls this
-    once per hook invocation, and a gateway fires hooks on every inbound
-    message — so this was a full config read per message, on the event loop.
-    The value only changes when config.yaml does; every other call is a dict
-    lookup.
+    ``invoke_hook`` calls this once per hook invocation; ``load_config_readonly()`` serves cache hits
+    without ``_CONFIG_LOCK``, so this is a stat + dict lookup per call and needs no memo of its own.
     """
-    try:
-        from hermes_cli.config import _load_config_cache_sig, get_config_path
-        config_path = get_config_path()
-        path_key = str(config_path)
-        _, sig = _load_config_cache_sig(config_path)
-    except Exception:
-        path_key, sig = "", None
-
-    cached = _HOOK_TIMEOUT_CACHE.get(path_key)  # one read of the published tuple
-    if cached is not None and sig is not None and cached[0] == sig:
-        return cached[1]
-
-    resolved = _resolve_hook_callback_timeout_uncached()
-    if sig is not None:
-        _HOOK_TIMEOUT_CACHE[path_key] = (sig, resolved)
-    return resolved
-
-
-def _resolve_hook_callback_timeout_uncached() -> float:
-    """Read + validate ``plugins.hook_callback_timeout``; see the memoized wrapper above."""
     default = _HOOK_CALLBACK_TIMEOUT_SECS
     try:
-        from hermes_cli.config import load_config_readonly
         plugins_cfg = (load_config_readonly() or {}).get("plugins")
         if not isinstance(plugins_cfg, dict) or plugins_cfg.get("hook_callback_timeout") is None:
             return default

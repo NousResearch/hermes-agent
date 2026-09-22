@@ -1,0 +1,8 @@
+{
+  "stage": "data validation only; Blender shell alignment pending",
+  "plans": 14,
+  "routeSegments": 63,
+  "actorRadius": 0.35,
+  "doors": "at least1.2m by2.2m",
+  "reservedWaterVoids": "clear of all floor rectangles"
+}

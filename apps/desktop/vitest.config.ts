@@ -27,7 +27,17 @@ const electronNative: TestProjectConfiguration = {
     // ignores the same pattern so they run in exactly one runner.
     include: ['electron/**/*.test.ts', 'scripts/**.test.{ts,mjs}', 'e2e/**/*.unit.test.ts'],
     // These use node:test and have dedicated npm scripts, not Vitest suites.
-    exclude: ['scripts/run-short-session-hang-repro.test.mjs', 'scripts/tasks-scroll.test.mjs']
+    exclude: [
+      'scripts/run-short-session-hang-repro.test.mjs',
+      'scripts/tasks-scroll.test.mjs',
+      'scripts/lunar-city/build-review-buildings.test.mjs',
+      'scripts/lunar-city/river-placement.test.mjs',
+      'scripts/lunar-city/settlement-layout.test.mjs',
+      'scripts/lunar-city/terrain-clearance.test.mjs',
+      'scripts/perf/lunar-city-orchestrator.test.mjs',
+      'scripts/perf/lunar-city-runner.test.mjs',
+      'scripts/perf/lunar-city.test.mjs'
+    ]
   }
 }
 

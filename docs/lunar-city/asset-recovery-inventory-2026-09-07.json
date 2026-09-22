@@ -1,0 +1,403 @@
+{
+  "date": "2026-09-07",
+  "preservationCommit": "4dd951e205acd86608bba40b795b10e0431f194d",
+  "sourceCards": [
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 01_06_05 AM.png",
+      "sha256": "f4b5aed98e2e052b9e7a195a5cd88a4dfe34dabd64f40a7367b2aafc5d1f7146",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 02_17_04 AM.png",
+      "sha256": "c39e6f65b02012ad42b88bee0dea69ffeec94027bfc9151401fbf529d7a3fc6f",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 02_17_08 AM.png",
+      "sha256": "f4b5aed98e2e052b9e7a195a5cd88a4dfe34dabd64f40a7367b2aafc5d1f7146",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 02_33_23 AM.png",
+      "sha256": "7a885c800022ba1ecd22be33faaee955e768ad64184c48929e8a88a507564a96",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 02_33_26 AM.png",
+      "sha256": "d1749c348856ca37122f2f38cd60b917fe4c7e8774169f340d7e23a95b11ddd6",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 02_37_51 AM.png",
+      "sha256": "505bfd9c2bc8892b30d6e7d4b4148f0c5c17e35234ed3b2a2146d99b14319976",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_24 AM.png",
+      "sha256": "74c79d08d38e66b7706a29b3d1f0e475bec4c8048446c71d9d1c5e5bd0b679a2",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_35 AM.png",
+      "sha256": "cf258b9d8e954db9f6bf2ce253bb960aee40f72c34f82469993a5aedde47362c",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_39 AM.png",
+      "sha256": "c1728b33e91f6c8cfd60e45209328cad54ee006acafa794fb0cbc1cebe20e08a",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_43 AM.png",
+      "sha256": "2b85d932c7fb013b7c3425345973a508446dba207be3ebefe02deb0937e9db51",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_46 AM.png",
+      "sha256": "31231152b4fc3752abca7c862a6da8bbd05737422436d563c80573cd90816a38",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_50 AM.png",
+      "sha256": "0629785b40f08b569e8d2dfa2b21b72c12248194751fc92d6d45869eacd4d6d4",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_53 AM.png",
+      "sha256": "0f561ec4be33e3a297abca77c78631a6a0e67150ec07c2487cba9db071d6d632",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_56 AM.png",
+      "sha256": "02c4cde76f2b5917d49043d900b4e5d6e7f71f727d856a6a4823c2b4f69dd893",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_37_59 AM.png",
+      "sha256": "c9f90d998befd78ae0c27774f82caf3c582888c427d1561c32004ab400b5d85f",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_03 AM.png",
+      "sha256": "982b8a98848919274d7d9ab8eef64060685a45db1ddce4967090f58f3b0130ca",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_06 AM.png",
+      "sha256": "0ceba096db1da81e1854ade5b1ff367a2ec5a54980d6efdb232a2e88920441c1",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_33 AM.png",
+      "sha256": "a1a9e533bf44f19f044cc1b39c30876d6993bc1db2dec1e6ffd429bf6be5cdb0",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_36 AM.png",
+      "sha256": "1330050c95f485973cbbb95276bd05f3e5d679443e8c8f28f58b02b7b6aa7d5c",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_40 AM.png",
+      "sha256": "f1d6d152ab20d044d9ef82e857ca17cb8b1bba824c70c1ff6f5f4cf00855e73d",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_44 AM.png",
+      "sha256": "fedb4e233461b2a1eb8d18f94e7803642bee59b4714c4dc6b4c2442a60e20c2a",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_54 AM.png",
+      "sha256": "b19c0ff28b77e36a1468298a8fbfc8c746d70e603128be57673e542987e62ef3",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_38_58 AM.png",
+      "sha256": "892d055c79369217b7b4a59997c22f031a366526d750329766c082321b9111a3",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_01 AM.png",
+      "sha256": "145c853890fa95b5251fe5f0da04a0ac030d283c47f2680cf8750aec4f407556",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_04 AM.png",
+      "sha256": "e10f436b43add9a775138b5110a03185e917f0511f390256b14dd861731ad765",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_12 AM.png",
+      "sha256": "9c246fe1be3ba7c7c5a503b15fe743f5a540c7a5ca6f0cd1efee6d2123d58b8c",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_15 AM.png",
+      "sha256": "8d49e914d59b64d6de22ba6930d21a1d1650bd7cc6abe932387222ff8279dfa2",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_18 AM.png",
+      "sha256": "6cb70c03fdc75474351244f4f51feb9af0f3d5e6b7edd4d36102d6a2976b1cb2",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_28 AM.png",
+      "sha256": "b2e319adf2df05697584c70c9769f3c0271e65554febecd6856c64cee64d7242",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_31 AM.png",
+      "sha256": "6cdbc973c91c2f779ab56927e5055e32f363b0cec2791c27cc2d8e30e9594c85",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_39_34 AM.png",
+      "sha256": "a1dea883134b5b2a447d14f405979006fd9ea79caf5ec48ff289acb6002b8035",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_49_01 AM.png",
+      "sha256": "cbe943bec81e93e2257d6e9e652e620e06a08110be4bbd97252eb2addddad613",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/Codex Image Sep 4, 2026, 12_49_05 AM.png",
+      "sha256": "1848b18231ab22b546ebaab54fbee79a58fb8b9275efd3a7086d9939e84bf0db",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/exec-65e67b81-fae8-47e5-a39c-6da24eab789d.png",
+      "sha256": "b75070444345d063e8543210048933b520929ccabbb4cdf4f3a74fd81dd34a7a",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/exec-7c0eae54-1768-455c-81d5-538d785e7136.png",
+      "sha256": "5d9181b04b2e0aecb6aeed51e5117bba4f1e8c93f2834e4ecb3e082aa83659ce",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/exec-94d15032-292f-479d-98b7-a2e4d869b013.png",
+      "sha256": "1848b18231ab22b546ebaab54fbee79a58fb8b9275efd3a7086d9939e84bf0db",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/exec-9f76f574-bde3-470b-9b5b-0523439ccd51.png",
+      "sha256": "126003e8916edf28ff0566a0a4a69fae72d068e981d88fb9d46963c1730613ad",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/exec-a356f883-9988-4840-84d8-a26b5ceb2abc.png",
+      "sha256": "aeb3db0e2f1ec05db238e5818f8291e1d4b596a0ca7f062de88666922d6e1d41",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/exec-cb81adb2-368f-406c-91c7-a293f86ee958.png",
+      "sha256": "33839963ca7b01a783fb3e1e6c94cb821ec6b082bc545fe7e63c2e5e91fbfe60",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/source-cards/downloads-2026-09-05/exec-f0b2bb19-711c-4a70-aa9c-b3887d24890c.png",
+      "sha256": "0110f442a4b945d6ba4496f6c5c2f9cc3a7a066734fabda84f2bca5a59bd9496",
+      "downloadBackupMatches": true,
+      "classification": "pending_visual_inventory"
+    }
+  ],
+  "referenceMeshes": [
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/beaver.glb",
+      "sha256": "fe90a5443104d02556b648b21691beaf42a28f2c94ed858078289e31cafea339",
+      "triangles": 530376,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/capybara.glb",
+      "sha256": "27fc2b746fdc350445b4981b4aaeb9df373a6cdc2edcf2b0251e7b4d5bc31334",
+      "triangles": 575228,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/cat.glb",
+      "sha256": "92305d0f2657ff7e01aac5010d55c2e657722e028fa0a08a985cf0efa742a8c2",
+      "triangles": 741062,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/elephant.glb",
+      "sha256": "4629beb1f0ad9426b2fd44cf4d2026ac3d41d1b524ebeb15d632346bead4a72f",
+      "triangles": 1022686,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/fox.glb",
+      "sha256": "bb879c2918215ce81dd13a139a06db4ce7f2733c77fe48440a27a7d77fa18a68",
+      "triangles": 433952,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/lion.glb",
+      "sha256": "d60fe8aa18e6f1fba63dd5400235a4fe792d44545bddae707222c29f1043d898",
+      "triangles": 595970,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/monkey.glb",
+      "sha256": "cb5cd843d352c9748b8c778756aa59cde5464bec6abffe9368a8c89ba690a3e5",
+      "triangles": 674410,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-reference-2026-09-04/owl.glb",
+      "sha256": "0aaf68eb38ca11b6ad76da4918e76affbde4212e9699655420876385556dcc3c",
+      "triangles": 564158,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-worker-reference-2026-09-04/worker-audit.glb",
+      "sha256": "1190cc96c2aebc825a10e21b9ea60030d5577e2f339b74578e05099377ac9161",
+      "triangles": 425996,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-worker-reference-2026-09-04/worker-operations.glb",
+      "sha256": "713e149e2602739b8a52d66b93326dd96c6f20f4be5128828217c067e31d5ff9",
+      "triangles": 363504,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-worker-reference-2026-09-04/worker-release.glb",
+      "sha256": "5ad2a8a9aff2149255239d9b2de52f17b6ffc3ae5a58e43cad57db5790a00584",
+      "triangles": 1684202,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-worker-reference-2026-09-04/worker-research.glb",
+      "sha256": "de097b76308f0e39e1a5931c4f0c19757e557b8e0fa468ee834c157dff3978b5",
+      "triangles": 1703920,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-worker-reference-2026-09-04/worker-review.glb",
+      "sha256": "983642bc5420b7582321f522c8262ec72792da41fd04e45fe9cc01b8f4912b5b",
+      "triangles": 1896674,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    },
+    {
+      "file": "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-worker-reference-2026-09-04/worker-support.glb",
+      "sha256": "fffc41b3b15bf9e2d67d5bd0864ca5518032cbee7242efd8bcb350f177e34dab",
+      "triangles": 1747372,
+      "materials": 0,
+      "textures": 0,
+      "skins": 0,
+      "animations": 0,
+      "hasUV0": false,
+      "status": "reference_only_requires_visual_and_topology_review"
+    }
+  ],
+  "productionReady": false
+}

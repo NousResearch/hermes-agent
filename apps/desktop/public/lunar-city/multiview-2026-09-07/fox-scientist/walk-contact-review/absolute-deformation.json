@@ -1,0 +1,14 @@
+{
+  "asset": "fox-scientist",
+  "worstAbsoluteGrowth": {
+    "frame": 46,
+    "growthMetres": 0.029423525354515666,
+    "restLengthMetres": 0.01630742817172253,
+    "restMidpoint": [
+      0.0050626423908397555,
+      -0.06606381013989449,
+      0.34401361644268036
+    ]
+  },
+  "maxEdgesOver3xAnd5mmGrowth": 5
+}

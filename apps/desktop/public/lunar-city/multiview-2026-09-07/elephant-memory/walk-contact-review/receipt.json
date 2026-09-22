@@ -1,0 +1,385 @@
+{
+  "asset": "elephant-memory",
+  "sourceSha256": "d562446ef10b86185d7e947b1bc81dcebf00a66901ba3a7da3e2e0ba26d72aad",
+  "sha256": "7e374de83a3b45002d9cff20190c9f57544c0715a2433f282ce4b0577a264e8f",
+  "stage": "held: meaningful walk deformation remains; ground correction only",
+  "heightMetres": 2.300529203397673,
+  "frames": [
+    {
+      "frame": 0,
+      "minimumZ": 0.00020000000949949026,
+      "maximumEdgeStretch": 1.0000123340774671,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 1,
+      "minimumZ": 0.00019999989308416843,
+      "maximumEdgeStretch": 1.1867741989442662,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 2,
+      "minimumZ": 0.0002000001259148121,
+      "maximumEdgeStretch": 1.6757974622081422,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 3,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 2.355427645470883,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 4,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 3.111054990033673,
+      "edgesOver3x": 1
+    },
+    {
+      "frame": 5,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 3.8301087616989338,
+      "edgesOver3x": 8
+    },
+    {
+      "frame": 6,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.4257043845612785,
+      "edgesOver3x": 10
+    },
+    {
+      "frame": 7,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.901236325470507,
+      "edgesOver3x": 15
+    },
+    {
+      "frame": 8,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.281749443752582,
+      "edgesOver3x": 22
+    },
+    {
+      "frame": 9,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.591609112801429,
+      "edgesOver3x": 34
+    },
+    {
+      "frame": 10,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.854608851261957,
+      "edgesOver3x": 40
+    },
+    {
+      "frame": 11,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.088501564754148,
+      "edgesOver3x": 48
+    },
+    {
+      "frame": 12,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.288454484472726,
+      "edgesOver3x": 52
+    },
+    {
+      "frame": 13,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.444108796095668,
+      "edgesOver3x": 55
+    },
+    {
+      "frame": 14,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.545126007943129,
+      "edgesOver3x": 58
+    },
+    {
+      "frame": 15,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.585407658888021,
+      "edgesOver3x": 58
+    },
+    {
+      "frame": 16,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.552912379097173,
+      "edgesOver3x": 58
+    },
+    {
+      "frame": 17,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.467507331559961,
+      "edgesOver3x": 56
+    },
+    {
+      "frame": 18,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.323632188186524,
+      "edgesOver3x": 53
+    },
+    {
+      "frame": 19,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.119851178878948,
+      "edgesOver3x": 48
+    },
+    {
+      "frame": 20,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.854608851261957,
+      "edgesOver3x": 40
+    },
+    {
+      "frame": 21,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.528548075002886,
+      "edgesOver3x": 32
+    },
+    {
+      "frame": 22,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.1512707499540165,
+      "edgesOver3x": 22
+    },
+    {
+      "frame": 23,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.73451695849729,
+      "edgesOver3x": 15
+    },
+    {
+      "frame": 24,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.290119267230695,
+      "edgesOver3x": 9
+    },
+    {
+      "frame": 25,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 3.8301087616989338,
+      "edgesOver3x": 8
+    },
+    {
+      "frame": 26,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 3.3612901448986565,
+      "edgesOver3x": 1
+    },
+    {
+      "frame": 27,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 2.8669744465765192,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 28,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 2.32343441738488,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 29,
+      "minimumZ": 0.0002000001259148121,
+      "maximumEdgeStretch": 1.7066746011568705,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 30,
+      "minimumZ": 0.00020000000949949026,
+      "maximumEdgeStretch": 1.0000123340774671,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 31,
+      "minimumZ": 0.0002000001259148121,
+      "maximumEdgeStretch": 1.6252075205163221,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 32,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 2.3072178350783874,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 33,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 2.954088748822472,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 34,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 3.5633197069755145,
+      "edgesOver3x": 1
+    },
+    {
+      "frame": 35,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.147868431396204,
+      "edgesOver3x": 4
+    },
+    {
+      "frame": 36,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.71861059226588,
+      "edgesOver3x": 13
+    },
+    {
+      "frame": 37,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.266295233807954,
+      "edgesOver3x": 21
+    },
+    {
+      "frame": 38,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.7774194149218205,
+      "edgesOver3x": 26
+    },
+    {
+      "frame": 39,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.238985754997552,
+      "edgesOver3x": 29
+    },
+    {
+      "frame": 40,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.638289958005882,
+      "edgesOver3x": 35
+    },
+    {
+      "frame": 41,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.964901265305021,
+      "edgesOver3x": 46
+    },
+    {
+      "frame": 42,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 7.217482093156345,
+      "edgesOver3x": 57
+    },
+    {
+      "frame": 43,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 7.396942520336858,
+      "edgesOver3x": 61
+    },
+    {
+      "frame": 44,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 7.504123063636918,
+      "edgesOver3x": 63
+    },
+    {
+      "frame": 45,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 7.539712093836023,
+      "edgesOver3x": 64
+    },
+    {
+      "frame": 46,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 7.4949846933528,
+      "edgesOver3x": 63
+    },
+    {
+      "frame": 47,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 7.36948978415178,
+      "edgesOver3x": 60
+    },
+    {
+      "frame": 48,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 7.176232842719952,
+      "edgesOver3x": 56
+    },
+    {
+      "frame": 49,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.92816339453114,
+      "edgesOver3x": 45
+    },
+    {
+      "frame": 50,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.638289958005882,
+      "edgesOver3x": 35
+    },
+    {
+      "frame": 51,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 6.3127546780909665,
+      "edgesOver3x": 30
+    },
+    {
+      "frame": 52,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.929836146841348,
+      "edgesOver3x": 27
+    },
+    {
+      "frame": 53,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 5.46062535508556,
+      "edgesOver3x": 22
+    },
+    {
+      "frame": 54,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.876125503562338,
+      "edgesOver3x": 14
+    },
+    {
+      "frame": 55,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 4.147868431396204,
+      "edgesOver3x": 4
+    },
+    {
+      "frame": 56,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 3.2772884563535807,
+      "edgesOver3x": 1
+    },
+    {
+      "frame": 57,
+      "minimumZ": 0.00019999966025352478,
+      "maximumEdgeStretch": 2.3818710199999793,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 58,
+      "minimumZ": 0.0002000001259148121,
+      "maximumEdgeStretch": 1.6190149917357461,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 59,
+      "minimumZ": 0.00020000000949949026,
+      "maximumEdgeStretch": 1.1430451387518532,
+      "edgesOver3x": 0
+    },
+    {
+      "frame": 60,
+      "minimumZ": 0.00020000000949949026,
+      "maximumEdgeStretch": 1.0000123340774671,
+      "edgesOver3x": 0
+    }
+  ],
+  "clips": [
+    "leader:elephant:walk",
+    "leader:elephant:unavailable",
+    "leader:elephant:thinking",
+    "leader:elephant:talking",
+    "leader:elephant:listening",
+    "leader:elephant:idle",
+    "leader:elephant:acknowledging"
+  ],
+  "deformationDetails": "absolute-deformation.json"
+}

@@ -1,0 +1,532 @@
+{
+  "0": {
+    "x": 850,
+    "y": 640,
+    "point": {
+      "_isDirty": true,
+      "_x": -41.667675180488814,
+      "_y": 7.452172446003797,
+      "_z": -1.5664588974333213
+    },
+    "chain": [
+      {
+        "name": "terrain:near:surface:3",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "terrain:lod:near",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:lod:near"
+            }
+          },
+          "lunarCity": {
+            "distance": 0,
+            "kind": "lod",
+            "modelId": "terrain"
+          }
+        }
+      },
+      {
+        "name": "terrain:root",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:root"
+            }
+          }
+        }
+      },
+      {
+        "name": "__root__",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "lunar-city:placement:terrain",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      }
+    ]
+  },
+  "1": {
+    "x": 875,
+    "y": 678,
+    "point": {
+      "_isDirty": true,
+      "_x": -40.73847407108116,
+      "_y": 7.203681964002612,
+      "_z": -1.4785976854661307
+    },
+    "chain": [
+      {
+        "name": "terrain:near:surface:3",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "terrain:lod:near",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:lod:near"
+            }
+          },
+          "lunarCity": {
+            "distance": 0,
+            "kind": "lod",
+            "modelId": "terrain"
+          }
+        }
+      },
+      {
+        "name": "terrain:root",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:root"
+            }
+          }
+        }
+      },
+      {
+        "name": "__root__",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "lunar-city:placement:terrain",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      }
+    ]
+  },
+  "2": {
+    "x": 900,
+    "y": 730,
+    "point": {
+      "_isDirty": true,
+      "_x": -39.84366304373326,
+      "_y": 6.423974768782109,
+      "_z": -1.4714449038315838
+    },
+    "chain": [
+      {
+        "name": "terrain:near:surface:3",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "terrain:lod:near",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:lod:near"
+            }
+          },
+          "lunarCity": {
+            "distance": 0,
+            "kind": "lod",
+            "modelId": "terrain"
+          }
+        }
+      },
+      {
+        "name": "terrain:root",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:root"
+            }
+          }
+        }
+      },
+      {
+        "name": "__root__",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "lunar-city:placement:terrain",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      }
+    ]
+  },
+  "3": {
+    "x": 925,
+    "y": 780,
+    "point": {
+      "_isDirty": true,
+      "_x": -38.96952686344841,
+      "_y": 5.680344142415123,
+      "_z": -1.4774336872306808
+    },
+    "chain": [
+      {
+        "name": "terrain:near:surface:3",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "terrain:lod:near",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:lod:near"
+            }
+          },
+          "lunarCity": {
+            "distance": 0,
+            "kind": "lod",
+            "modelId": "terrain"
+          }
+        }
+      },
+      {
+        "name": "terrain:root",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:root"
+            }
+          }
+        }
+      },
+      {
+        "name": "__root__",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "lunar-city:placement:terrain",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      }
+    ]
+  },
+  "4": {
+    "x": 950,
+    "y": 835,
+    "point": {
+      "_isDirty": true,
+      "_x": -38.053102122049985,
+      "_y": 4.82364741462322,
+      "_z": -1.4630479076958878
+    },
+    "chain": [
+      {
+        "name": "terrain:near:surface:3",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "terrain:lod:near",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:lod:near"
+            }
+          },
+          "lunarCity": {
+            "distance": 0,
+            "kind": "lod",
+            "modelId": "terrain"
+          }
+        }
+      },
+      {
+        "name": "terrain:root",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:root"
+            }
+          }
+        }
+      },
+      {
+        "name": "__root__",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "lunar-city:placement:terrain",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      }
+    ]
+  },
+  "5": {
+    "x": 974,
+    "y": 870,
+    "point": {
+      "_isDirty": true,
+      "_x": -37.347974076300495,
+      "_y": 4.3501238326822325,
+      "_z": -1.55161463938542
+    },
+    "chain": [
+      {
+        "name": "terrain:near:surface:3",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "terrain:lod:near",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:lod:near"
+            }
+          },
+          "lunarCity": {
+            "distance": 0,
+            "kind": "lod",
+            "modelId": "terrain"
+          }
+        }
+      },
+      {
+        "name": "terrain:root",
+        "metadata": {
+          "gltf": {
+            "extras": {
+              "semantic": "terrain:root"
+            }
+          }
+        }
+      },
+      {
+        "name": "__root__",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark-mesh",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      },
+      {
+        "name": "lunar-city:placement:terrain",
+        "metadata": {
+          "lunarCity": {
+            "cameraAnchor": {
+              "x": 0,
+              "y": 8,
+              "z": 0
+            },
+            "focusEntityKey": "lunar-city:model:terrain",
+            "kind": "landmark",
+            "modelId": "terrain",
+            "occlusionGroup": "terrain",
+            "selectable": false
+          }
+        }
+      }
+    ]
+  },
+  "errors": [],
+  "capturedAt": "2026-09-08T03:33:32.619Z"
+}

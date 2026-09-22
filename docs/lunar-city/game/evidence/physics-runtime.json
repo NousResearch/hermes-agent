@@ -1,0 +1,334 @@
+{
+  "routes": [
+    {
+      "from": "library",
+      "to": "research-lab",
+      "ticks": 155,
+      "maxStep": 0.30000000000000193,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "library",
+      "to": "bus",
+      "ticks": 76,
+      "maxStep": 0.30000000000000077,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "research-lab",
+      "to": "bus",
+      "ticks": 80,
+      "maxStep": 0.3000000000000007,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "depot",
+      "to": "garden",
+      "ticks": 102,
+      "maxStep": 0.30000000000000093,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "review-office",
+      "to": "triage",
+      "ticks": 149,
+      "maxStep": 0.3000000000000021,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "triage",
+      "to": "garden",
+      "ticks": 50,
+      "maxStep": 0.3000000000000006,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "triage",
+      "to": "council",
+      "ticks": 53,
+      "maxStep": 0.3000000000000013,
+      "arrivalError": 4.7683715642676816e-8
+    },
+    {
+      "from": "bus",
+      "to": "triage",
+      "ticks": 103,
+      "maxStep": 0.30000000000000143,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "arts-studio",
+      "to": "library",
+      "ticks": 43,
+      "maxStep": 0.3000000000000007,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "arts-studio",
+      "to": "depot",
+      "ticks": 56,
+      "maxStep": 0.3000000000000006,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "engineering-workshop",
+      "to": "garden",
+      "ticks": 60,
+      "maxStep": 0.30000000000000043,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "engineering-workshop",
+      "to": "release-gatehouse",
+      "ticks": 111,
+      "maxStep": 0.3000000000000001,
+      "arrivalError": 4.7683715642676816e-8
+    },
+    {
+      "from": "release-gatehouse",
+      "to": "triage",
+      "ticks": 86,
+      "maxStep": 0.3000000000000007,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "archive",
+      "to": "council",
+      "ticks": 104,
+      "maxStep": 0.30000000000000177,
+      "arrivalError": 4.7683715642676816e-8
+    },
+    {
+      "from": "archive",
+      "to": "review-office",
+      "ticks": 124,
+      "maxStep": 0.3000000000000034,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "revenue",
+      "to": "library",
+      "ticks": 132,
+      "maxStep": 0.3000000000000014,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "revenue",
+      "to": "research-lab",
+      "ticks": 75,
+      "maxStep": 0.30000000000000043,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "revenue",
+      "to": "bus",
+      "ticks": 57,
+      "maxStep": 0.3000000000000007,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "publishing",
+      "to": "revenue",
+      "ticks": 103,
+      "maxStep": 0.3000000000000003,
+      "arrivalError": 4.7683715642676816e-8
+    },
+    {
+      "from": "project-inner",
+      "to": "garden",
+      "ticks": 578,
+      "maxStep": 0.30000000000000443,
+      "arrivalError": 4.7683715198587606e-8
+    },
+    {
+      "from": "project-outer",
+      "to": "council",
+      "ticks": 277,
+      "maxStep": 0.3000000000000042,
+      "arrivalError": 4.7683715642676816e-8
+    }
+  ],
+  "colliders": [
+    {
+      "id": "tree:0",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:1",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:2",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:3",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:4",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:5",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:6",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:7",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:11",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:15",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:16",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:19",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:21",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "tree:23",
+      "kind": "cylinder",
+      "blocked": true
+    },
+    {
+      "id": "building:library",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:research-lab",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:depot",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:review-office",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:triage",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:garden",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:council",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:arts-studio",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:engineering-workshop",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:release-gatehouse",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:archive",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:bus",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:publishing",
+      "kind": "box",
+      "blocked": true
+    },
+    {
+      "id": "building:revenue",
+      "kind": "box",
+      "blocked": true
+    }
+  ],
+  "permanence": {
+    "before": {
+      "position": {
+        "x": -20.507780118201666,
+        "y": 2.200000047683716,
+        "z": -13.279507209890289
+      },
+      "moving": true,
+      "animation": "idle"
+    },
+    "afterPoll": {
+      "position": {
+        "x": -20.507780118201666,
+        "y": 2.200000047683716,
+        "z": -13.279507209890289
+      },
+      "moving": true,
+      "animation": "idle"
+    },
+    "paused": {
+      "position": {
+        "x": -20.507780118201666,
+        "y": 2.200000047683716,
+        "z": -13.279507209890289
+      },
+      "moving": false,
+      "animation": "idle"
+    },
+    "restored": {
+      "position": {
+        "x": -20.507780118201666,
+        "y": 2.200000047683716,
+        "z": -13.279507209890289
+      },
+      "moving": true,
+      "animation": "idle"
+    }
+  },
+  "scope": "Actual Recast routes through movement controller; collider center/offmesh holds; real imported worker polling/pause/world-remount identity. In-memory renderer scope, not browser reload persistence.",
+  "errors": [],
+  "capturedAt": "2026-09-08T07:32:35.831Z"
+}

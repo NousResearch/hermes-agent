@@ -1,0 +1,112 @@
+{
+  "url": "http://127.0.0.1:5180/lunar-city-review.html",
+  "capturedAt": "2026-09-08T06:21:35.908Z",
+  "scope": "Actual built viewer request/load, source GLB bounds, declared town design transforms, unique focus options and screenshots; visual quality remains review only",
+  "buildings": [
+    {
+      "species": "owl",
+      "id": "library",
+      "uri": "models/review-building-owl-f76ec839e4cd.glb",
+      "sha256": "f76ec839e4cd26baa6db183dd1d79ef5ffb884d9577551e00f49ad15548ccf1b",
+      "sourceHeightMetres": 16.001234300871147,
+      "placedHeightMetres": 12.00092572565336,
+      "position": [
+        -29.232,
+        2.1997741639162998,
+        -18.792
+      ]
+    },
+    {
+      "species": "fox",
+      "id": "research-lab",
+      "uri": "models/review-building-fox-cbce9ab6d4e1.glb",
+      "sha256": "cbce9ab6d4e121e39e3ec75eb39159732f4daca79ffbd77ac7f765ff157765cb",
+      "sourceHeightMetres": 12,
+      "placedHeightMetres": 9,
+      "position": [
+        26.099999999999998,
+        2.2,
+        -22.968000000000004
+      ]
+    },
+    {
+      "species": "monkey",
+      "id": "publishing",
+      "uri": "models/review-building-monkey-4147ed882633.glb",
+      "sha256": "4147ed8826331096e7844ab13a0006df935738ba1e5b826a77c60440ad4705f7",
+      "sourceHeightMetres": 12,
+      "placedHeightMetres": 9,
+      "position": [
+        14.355,
+        2.2,
+        -41.76
+      ]
+    },
+    {
+      "species": "cat",
+      "id": "arts-studio",
+      "uri": "models/review-building-cat-8b3378294db0.glb",
+      "sha256": "8b3378294db02a9ee598872b84dfaefbdc328fb33ba90dd6c8ef798f2c14de50",
+      "sourceHeightMetres": 10,
+      "placedHeightMetres": 7.5,
+      "position": [
+        -30.276000000000003,
+        2.2,
+        -1.044
+      ]
+    },
+    {
+      "species": "elephant",
+      "id": "archive",
+      "uri": "models/review-building-elephant-f5784a3ebdd6.glb",
+      "sha256": "f5784a3ebdd68d8f1b6bf232560ee284bc531cc4393e37f97b5e398cb1d75d08",
+      "sourceHeightMetres": 24,
+      "placedHeightMetres": 18,
+      "position": [
+        42.412499999999994,
+        2.2,
+        -6.5249999999999995
+      ]
+    },
+    {
+      "species": "capybara",
+      "id": "revenue",
+      "uri": "models/review-building-capybara-49598b840363.glb",
+      "sha256": "49598b84036340dc2e77ac89cc817693ba4f1554bcf0f773e76291b189142110",
+      "sourceHeightMetres": 16,
+      "placedHeightMetres": 12,
+      "position": [
+        -3.915,
+        2.2,
+        -24.1425
+      ]
+    },
+    {
+      "species": "lion",
+      "id": "council",
+      "uri": "models/review-building-lion-1cc020265594.glb",
+      "sha256": "1cc0202655943a3c39f06521a88b83dcc55bcf00b0a1c96e36a6f831a45cb6cc",
+      "sourceHeightMetres": 25.999998092651367,
+      "placedHeightMetres": 19.499998569488525,
+      "position": [
+        32.625,
+        2.2,
+        37.845
+      ]
+    },
+    {
+      "species": "beaver",
+      "id": "engineering-workshop",
+      "uri": "models/review-building-beaver-c15b2bf553f3.glb",
+      "sha256": "c15b2bf553f30c054c65fb0c853b39f5f34d2eedc858544324a123da8e4707ef",
+      "sourceHeightMetres": 14.000000953674316,
+      "placedHeightMetres": 10.500000715255737,
+      "position": [
+        -30.276000000000003,
+        2.2,
+        31.32
+      ]
+    }
+  ],
+  "errors": []
+}

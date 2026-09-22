@@ -1,0 +1,14 @@
+{
+  "asset": "elephant-memory",
+  "worstAbsoluteGrowth": {
+    "frame": 46,
+    "growthMetres": 0.11470687318438946,
+    "restLengthMetres": 0.030796463872524583,
+    "restMidpoint": [
+      0.6034156382083893,
+      0.31046444177627563,
+      0.4719671458005905
+    ]
+  },
+  "maxEdgesOver3xAnd5mmGrowth": 63
+}

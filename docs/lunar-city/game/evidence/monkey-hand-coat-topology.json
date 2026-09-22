@@ -1,0 +1,55 @@
+{
+  "source": "apps/desktop/public/lunar-city/multiview-2026-09-07/monkey-poet/material-review-v4.glb",
+  "sha256": "d961d9faf52726ee7d00c32ebe3408aa19549eabd6d1585d0fe35d2d63398afa",
+  "meshCount": 1,
+  "skins": 0,
+  "primitiveVertices": 45700,
+  "triangles": 59995,
+  "localBounds": [
+    [
+      -0.5617063045501709,
+      1.7394384030922083e-06,
+      -0.726102352142334
+    ],
+    [
+      0.5614337921142578,
+      1.649240255355835,
+      0.7258111834526062
+    ]
+  ],
+  "nodes": [
+    {
+      "mesh": 0,
+      "name": "monkey-poet | textured review.002"
+    }
+  ],
+  "weldToleranceMetres": 1e-06,
+  "weldedComponentTriangleCounts": [
+    58838,
+    374,
+    156,
+    150,
+    124,
+    58,
+    44,
+    40,
+    40,
+    32,
+    24,
+    18,
+    18,
+    18,
+    16,
+    12,
+    10,
+    8,
+    6,
+    4,
+    1,
+    1,
+    1,
+    1,
+    1
+  ],
+  "interpretation": "Structural connectivity only; no automatic semantic hand/coat seam identified. Source kept unchanged."
+}

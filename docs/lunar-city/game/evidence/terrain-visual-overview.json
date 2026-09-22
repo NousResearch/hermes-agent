@@ -1,0 +1,10 @@
+{
+  "capturedAt": "2026-09-08T06:30:25.272Z",
+  "url": "http://127.0.0.1:5180/lunar-city-review.html",
+  "errors": [],
+  "navSha": "b62e296a6ba0f0a8c5e35229767a35280267a5d846d5a0a02f736b576986193a",
+  "colliders": 28,
+  "terrain": "091b8a6e7b8e4643c929097af189de61740cca17bf418d5ddbafdcf2ad7ceaa6",
+  "stationaryFramesByteIdentical": true,
+  "scope": "Built overview only, idle paused, two stationary captures one second apart. No moving-camera or hardware acceptance."
+}

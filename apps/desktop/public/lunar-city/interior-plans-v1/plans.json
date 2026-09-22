@@ -1,0 +1,9341 @@
+{
+  "version": 1,
+  "stage": "basic_authored_cutaway_review",
+  "worldManifestSha256": "5e65ea0a065c6522b448f09deda996bdb29232ac0cb7d87a597e67d89366dabc",
+  "plans": [
+    {
+      "id": "library",
+      "title": "Library",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-owl-f76ec839e4cd.glb",
+      "sourceModelSha256": "f76ec839e4cd26baa6db183dd1d79ef5ffb884d9577551e00f49ad15548ccf1b",
+      "placedExteriorBounds": [
+        16.14381194114685,
+        12.00092572565336,
+        16.146756649017334
+      ],
+      "exteriorTransform": {
+        "position": [
+          -29.232,
+          2.1997741639162998,
+          -18.792
+        ],
+        "rotation": [
+          0,
+          0.9994588469612697,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.7,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.7,
+      "leaderEnvelope": {
+        "id": "owl",
+        "sourceUri": "models/review-owl-424364fdacee.glb",
+        "boundsMin": [
+          -0.6674062609672546,
+          -0.0001344696938758716,
+          -0.4593304395675659
+        ],
+        "boundsMax": [
+          0.6674721240997314,
+          1.4999547004699707,
+          0.4588414132595062
+        ],
+        "size": [
+          1.334878385066986,
+          1.5000891701638466,
+          0.9181718528270721
+        ],
+        "radiusMetres": 0.7518176428118409,
+        "clearWidth": 1.7
+      },
+      "footprint": [
+        12.59,
+        12.59
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Stacks",
+          "rect": [
+            -6.22,
+            -6.22,
+            5.22,
+            6.145
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Book intake",
+          "rect": [
+            -6.22,
+            0.075,
+            5.22,
+            6.145
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Librarian desk",
+          "rect": [
+            0.9999999999999999,
+            -6.22,
+            5.22,
+            6.145
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Reading room",
+          "rect": [
+            0.9999999999999999,
+            0.075,
+            5.22,
+            6.145
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            12.59,
+            0.15,
+            12.59
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -6.295
+          ],
+          "size": [
+            12.59,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -6.295,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            12.59
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -3.5725,
+            1.5,
+            6.295
+          ],
+          "size": [
+            5.445,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            6.295,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            12.59
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            3.5725,
+            1.5,
+            6.295
+          ],
+          "size": [
+            5.445,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            6.295
+          ],
+          "size": [
+            1.7,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -3.5725,
+            1.5,
+            0
+          ],
+          "size": [
+            5.145,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            -5.14625
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            -1.14875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.9249999999999999,
+            2.8,
+            -3.1475
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -5.545,
+            0.4,
+            -3.1475
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            1.14875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            5.14625
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.9249999999999999,
+            2.8,
+            3.1475
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -5.545,
+            0.4,
+            3.1475
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            3.5725,
+            1.5,
+            0
+          ],
+          "size": [
+            5.145,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            -5.14625
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            -1.14875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.9249999999999999,
+            2.8,
+            -3.1475
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            5.545,
+            0.4,
+            -3.1475
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            1.14875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            5.14625
+          ],
+          "size": [
+            0.15,
+            3,
+            2.2975
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.9249999999999999,
+            2.8,
+            3.1475
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            5.545,
+            0.4,
+            3.1475
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            12.59,
+            0.15,
+            12.59
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            8.010000000000002
+          ],
+          "size": [
+            1.7,
+            0.15,
+            3.4300000000000015
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            6.295
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.9249999999999999,
+            0,
+            -3.1475
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.9249999999999999,
+            0,
+            3.1475
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.9249999999999999,
+            0,
+            -3.1475
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.9249999999999999,
+            0,
+            3.1475
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -3.1475
+          ],
+          [
+            -3.06,
+            0,
+            -3.1475
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            3.1475
+          ],
+          [
+            -3.06,
+            0,
+            3.1475
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -3.1475
+          ],
+          [
+            3.06,
+            0,
+            -3.1475
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            3.1475
+          ],
+          [
+            3.06,
+            0,
+            3.1475
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            6.295
+          ],
+          [
+            0,
+            0,
+            -5.343182357188159
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -6.295
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -3.06,
+          0,
+          -3.1475
+        ],
+        "workspace-1": [
+          -3.06,
+          0,
+          3.1475
+        ],
+        "workspace-2": [
+          3.06,
+          0,
+          -3.1475
+        ],
+        "workspace-3": [
+          3.06,
+          0,
+          3.1475
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -5.343182357188159
+        ],
+        "entry": [
+          0,
+          0,
+          6.295
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -3.06,
+          0,
+          -3.1475
+        ],
+        "rest": [
+          0,
+          0,
+          -5.343182357188159
+        ],
+        "jobPickup": [
+          -3.06,
+          0,
+          -3.1475
+        ],
+        "leaderWork": [
+          3.06,
+          0,
+          -3.1475
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            6.295
+          ],
+          "approach": [
+            -1.7763568394002505e-15,
+            0,
+            9.725000000000001
+          ],
+          "width": 1.7
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          -33.53432748066701,
+          2.1997741639162998,
+          -17.920028384006983
+        ],
+        "workspace-1": [
+          -28.239108978171604,
+          2.1997741639162998,
+          -14.51595934668851
+        ],
+        "workspace-2": [
+          -30.224891021828395,
+          2.1997741639162998,
+          -23.068040653311492
+        ],
+        "workspace-3": [
+          -24.929672519332993,
+          2.1997741639162998,
+          -19.66397161599302
+        ],
+        "workspace-4": [
+          -33.72656998887843,
+          2.1997741639162998,
+          -21.681366421421853
+        ],
+        "entry": [
+          -23.936781497504594,
+          2.1997741639162998,
+          -15.387930962681526
+        ],
+        "home": [
+          -29.232,
+          2.1997741639162998,
+          -18.792
+        ],
+        "work": [
+          -33.53432748066701,
+          2.1997741639162998,
+          -17.920028384006983
+        ],
+        "rest": [
+          -33.72656998887843,
+          2.1997741639162998,
+          -21.681366421421853
+        ],
+        "jobPickup": [
+          -33.53432748066701,
+          2.1997741639162998,
+          -17.920028384006983
+        ],
+        "leaderWork": [
+          -30.224891021828395,
+          2.1997741639162998,
+          -23.068040653311492
+        ]
+      }
+    },
+    {
+      "id": "research-lab",
+      "title": "Research Lab",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-fox-cbce9ab6d4e1.glb",
+      "sourceModelSha256": "cbce9ab6d4e121e39e3ec75eb39159732f4daca79ffbd77ac7f765ff157765cb",
+      "placedExteriorBounds": [
+        13.165547847747803,
+        9.0,
+        13.213242530822754
+      ],
+      "exteriorTransform": {
+        "position": [
+          26.099999999999998,
+          2.2,
+          -22.968000000000004
+        ],
+        "rotation": [
+          0,
+          -0.8491414759301352,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.6,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.6,
+      "leaderEnvelope": {
+        "id": "fox",
+        "sourceUri": "models/review-fox-6f02184262d0.glb",
+        "boundsMin": [
+          -0.5481868386268616,
+          2.0381705326144584e-05,
+          -0.5908471345901489
+        ],
+        "boundsMax": [
+          0.5481914281845093,
+          1.7498737573623657,
+          0.5909748077392578
+        ],
+        "size": [
+          1.0963782668113708,
+          1.7498533756570396,
+          1.1818219423294067
+        ],
+        "radiusMetres": 0.7065954442227611,
+        "clearWidth": 1.6
+      },
+      "footprint": [
+        10.27,
+        10.31
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Instrument lab",
+          "rect": [
+            -5.06,
+            -5.08,
+            4.109999999999999,
+            5.005
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Sample reception",
+          "rect": [
+            -5.06,
+            0.075,
+            4.109999999999999,
+            5.005
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Observation control",
+          "rect": [
+            0.95,
+            -5.08,
+            4.109999999999999,
+            5.005
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Analysis benches",
+          "rect": [
+            0.95,
+            0.075,
+            4.109999999999999,
+            5.005
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            10.27,
+            0.15,
+            10.31
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -5.155
+          ],
+          "size": [
+            10.27,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -5.135,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            10.31
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -2.9675,
+            1.5,
+            5.155
+          ],
+          "size": [
+            4.335,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            5.135,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            10.31
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            2.9675,
+            1.5,
+            5.155
+          ],
+          "size": [
+            4.335,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            5.155
+          ],
+          "size": [
+            1.6,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -2.9674999999999994,
+            1.5,
+            0
+          ],
+          "size": [
+            4.034999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            -4.26625
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7774999999999999
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            -0.88875
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7775
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.875,
+            2.8,
+            -2.5775
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -4.385,
+            0.4,
+            -2.5775
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            0.88875
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7775
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            4.26625
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7774999999999999
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.875,
+            2.8,
+            2.5775
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -4.385,
+            0.4,
+            2.5775
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            2.9674999999999994,
+            1.5,
+            0
+          ],
+          "size": [
+            4.034999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            -4.26625
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7774999999999999
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            -0.88875
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7775
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.875,
+            2.8,
+            -2.5775
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            4.385,
+            0.4,
+            -2.5775
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            0.88875
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7775
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            4.26625
+          ],
+          "size": [
+            0.15,
+            3,
+            1.7774999999999999
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.875,
+            2.8,
+            2.5775
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            4.385,
+            0.4,
+            2.5775
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            10.27,
+            0.15,
+            10.31
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            6.690000000000001
+          ],
+          "size": [
+            1.6,
+            0.15,
+            3.070000000000001
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            5.155
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.875,
+            0,
+            -2.5775
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.875,
+            0,
+            2.5775
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.875,
+            0,
+            -2.5775
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.875,
+            0,
+            2.5775
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -2.5775
+          ],
+          [
+            -2.455,
+            0,
+            -2.5775
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.5775
+          ],
+          [
+            -2.455,
+            0,
+            2.5775
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -2.5775
+          ],
+          [
+            2.455,
+            0,
+            -2.5775
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.5775
+          ],
+          [
+            2.455,
+            0,
+            2.5775
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            5.155
+          ],
+          [
+            0,
+            0,
+            -4.248404555777239
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -5.155
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "Instrument/control floor only. Telescope dome access and circular-shell wall fitting are future work.",
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -2.455,
+          0,
+          -2.5775
+        ],
+        "workspace-1": [
+          -2.455,
+          0,
+          2.5775
+        ],
+        "workspace-2": [
+          2.455,
+          0,
+          -2.5775
+        ],
+        "workspace-3": [
+          2.455,
+          0,
+          2.5775
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -4.248404555777239
+        ],
+        "entry": [
+          0,
+          0,
+          5.155
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -2.455,
+          0,
+          -2.5775
+        ],
+        "rest": [
+          0,
+          0,
+          -4.248404555777239
+        ],
+        "jobPickup": [
+          -2.455,
+          0,
+          -2.5775
+        ],
+        "leaderWork": [
+          2.455,
+          0,
+          -2.5775
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            5.155
+          ],
+          "approach": [
+            0.0,
+            0,
+            8.225000000000001
+          ],
+          "width": 1.6
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          26.413122607908477,
+          2.2,
+          -26.513770083129565
+        ],
+        "workspace-1": [
+          22.543194428171674,
+          2.2,
+          -23.108233284961173
+        ],
+        "workspace-2": [
+          29.656805571828322,
+          2.2,
+          -22.827766715038834
+        ],
+        "workspace-3": [
+          25.78687739209152,
+          2.2,
+          -19.422229916870442
+        ],
+        "workspace-4": [
+          29.289334725378186,
+          2.2,
+          -25.774614558332807
+        ],
+        "entry": [
+          22.230071820263195,
+          2.2,
+          -19.562463201831616
+        ],
+        "home": [
+          26.099999999999998,
+          2.2,
+          -22.968000000000004
+        ],
+        "work": [
+          26.413122607908477,
+          2.2,
+          -26.513770083129565
+        ],
+        "rest": [
+          29.289334725378186,
+          2.2,
+          -25.774614558332807
+        ],
+        "jobPickup": [
+          26.413122607908477,
+          2.2,
+          -26.513770083129565
+        ],
+        "leaderWork": [
+          29.656805571828322,
+          2.2,
+          -22.827766715038834
+        ]
+      }
+    },
+    {
+      "id": "depot",
+      "title": "Depot",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/depot.glb",
+      "sourceModelSha256": "a0140d4edbee71357b54f23a4ef593e7afc2516622e72f4da7dd853e4c330911",
+      "placedExteriorBounds": [
+        18.0,
+        10.5,
+        15.0
+      ],
+      "exteriorTransform": {
+        "position": [
+          -41.1075,
+          2.2,
+          13.049999999999999
+        ],
+        "rotation": [
+          0,
+          1.8781937999177183,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.5,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.5,
+      "leaderEnvelope": null,
+      "footprint": [
+        14.04,
+        11.7
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Parts storage",
+          "rect": [
+            -6.944999999999999,
+            -5.7749999999999995,
+            6.044999999999999,
+            5.699999999999999
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Receiving",
+          "rect": [
+            -6.944999999999999,
+            0.075,
+            6.044999999999999,
+            5.699999999999999
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Packing benches",
+          "rect": [
+            0.8999999999999999,
+            -5.7749999999999995,
+            6.044999999999999,
+            5.699999999999999
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Dispatch",
+          "rect": [
+            0.8999999999999999,
+            0.075,
+            6.044999999999999,
+            5.699999999999999
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            14.04,
+            0.15,
+            11.7
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -5.85
+          ],
+          "size": [
+            14.04,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -7.02,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            11.7
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -3.885,
+            1.5,
+            5.85
+          ],
+          "size": [
+            6.27,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            7.02,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            11.7
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            3.885,
+            1.5,
+            5.85
+          ],
+          "size": [
+            6.27,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            5.85
+          ],
+          "size": [
+            1.5,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -3.8849999999999993,
+            1.5,
+            0
+          ],
+          "size": [
+            5.969999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            -2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -6.27,
+            0.4,
+            -2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -6.27,
+            0.4,
+            2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            3.8849999999999993,
+            1.5,
+            0
+          ],
+          "size": [
+            5.969999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            -2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            6.27,
+            0.4,
+            -2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            6.27,
+            0.4,
+            2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            14.04,
+            0.15,
+            11.7
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            7.412500000000001
+          ],
+          "size": [
+            1.5,
+            0.15,
+            3.1250000000000036
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            5.85
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.825,
+            0,
+            -2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.825,
+            0,
+            2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.825,
+            0,
+            -2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.825,
+            0,
+            2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -2.925
+          ],
+          [
+            -3.3724999999999996,
+            0,
+            -2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.925
+          ],
+          [
+            -3.3724999999999996,
+            0,
+            2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -2.925
+          ],
+          [
+            3.3724999999999996,
+            0,
+            -2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.925
+          ],
+          [
+            3.3724999999999996,
+            0,
+            2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            5.85
+          ],
+          [
+            0,
+            0,
+            -5.3
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -5.85
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -3.3724999999999996,
+          0,
+          -2.925
+        ],
+        "workspace-1": [
+          -3.3724999999999996,
+          0,
+          2.925
+        ],
+        "workspace-2": [
+          3.3724999999999996,
+          0,
+          -2.925
+        ],
+        "workspace-3": [
+          3.3724999999999996,
+          0,
+          2.925
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -5.3
+        ],
+        "entry": [
+          0,
+          0,
+          5.85
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -3.3724999999999996,
+          0,
+          -2.925
+        ],
+        "rest": [
+          0,
+          0,
+          -5.3
+        ],
+        "jobPickup": [
+          -3.3724999999999996,
+          0,
+          -2.925
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            5.85
+          ],
+          "approach": [
+            -8.881784197001252e-16,
+            0,
+            8.975000000000003
+          ],
+          "width": 1.5
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          -42.874940357288274,
+          2.2,
+          17.14945555329347
+        ],
+        "workspace-1": [
+          -37.2991633944927,
+          2.2,
+          15.379367628596462
+        ],
+        "workspace-2": [
+          -44.9158366055073,
+          2.2,
+          10.720632371403534
+        ],
+        "workspace-3": [
+          -39.34005964271173,
+          2.2,
+          8.950544446706525
+        ],
+        "workspace-4": [
+          -46.15905861586608,
+          2.2,
+          14.653669401862246
+        ],
+        "entry": [
+          -35.53172303720443,
+          2.2,
+          11.27991207530299
+        ],
+        "home": [
+          -41.1075,
+          2.2,
+          13.049999999999999
+        ],
+        "work": [
+          -42.874940357288274,
+          2.2,
+          17.14945555329347
+        ],
+        "rest": [
+          -46.15905861586608,
+          2.2,
+          14.653669401862246
+        ],
+        "jobPickup": [
+          -42.874940357288274,
+          2.2,
+          17.14945555329347
+        ]
+      }
+    },
+    {
+      "id": "review-office",
+      "title": "Review Office",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-office.glb",
+      "sourceModelSha256": "64caff11e123d4d7ec3329b771b07d509ad9d87520a10c42bf8b4fee9627f02e",
+      "placedExteriorBounds": [
+        19.5,
+        11.25,
+        15.0
+      ],
+      "exteriorTransform": {
+        "position": [
+          58.724999999999994,
+          2.2,
+          27.405
+        ],
+        "rotation": [
+          0,
+          -2.007423486608438,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.5,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.5,
+      "leaderEnvelope": null,
+      "footprint": [
+        15.21,
+        11.7
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Evidence records",
+          "rect": [
+            -7.53,
+            -5.7749999999999995,
+            6.63,
+            5.699999999999999
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Review reception",
+          "rect": [
+            -7.53,
+            0.075,
+            6.63,
+            5.699999999999999
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Decision meeting",
+          "rect": [
+            0.8999999999999999,
+            -5.7749999999999995,
+            6.63,
+            5.699999999999999
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Peer review room",
+          "rect": [
+            0.8999999999999999,
+            0.075,
+            6.63,
+            5.699999999999999
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            15.21,
+            0.15,
+            11.7
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -5.85
+          ],
+          "size": [
+            15.21,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -7.605,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            11.7
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -4.1775,
+            1.5,
+            5.85
+          ],
+          "size": [
+            6.855,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            7.605,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            11.7
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            4.1775,
+            1.5,
+            5.85
+          ],
+          "size": [
+            6.855,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            5.85
+          ],
+          "size": [
+            1.5,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -4.1775,
+            1.5,
+            0
+          ],
+          "size": [
+            6.555,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            -2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -6.855,
+            0.4,
+            -2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -6.855,
+            0.4,
+            2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            4.1775,
+            1.5,
+            0
+          ],
+          "size": [
+            6.555,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            -2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            6.855,
+            0.4,
+            -2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            1.0875
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            4.762499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            2.175
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            2.925
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            6.855,
+            0.4,
+            2.925
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            15.21,
+            0.15,
+            11.7
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            7.4125
+          ],
+          "size": [
+            1.5,
+            0.15,
+            3.125
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            5.85
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.825,
+            0,
+            -2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.825,
+            0,
+            2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.825,
+            0,
+            -2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.825,
+            0,
+            2.925
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -2.925
+          ],
+          [
+            -3.665,
+            0,
+            -2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.925
+          ],
+          [
+            -3.665,
+            0,
+            2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -2.925
+          ],
+          [
+            3.665,
+            0,
+            -2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.925
+          ],
+          [
+            3.665,
+            0,
+            2.925
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            5.85
+          ],
+          [
+            0,
+            0,
+            -5.3
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -5.85
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -3.665,
+          0,
+          -2.925
+        ],
+        "workspace-1": [
+          -3.665,
+          0,
+          2.925
+        ],
+        "workspace-2": [
+          3.665,
+          0,
+          -2.925
+        ],
+        "workspace-3": [
+          3.665,
+          0,
+          2.925
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -5.3
+        ],
+        "entry": [
+          0,
+          0,
+          5.85
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -3.665,
+          0,
+          -2.925
+        ],
+        "rest": [
+          0,
+          0,
+          -5.3
+        ],
+        "jobPickup": [
+          -3.665,
+          0,
+          -2.925
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            5.85
+          ],
+          "approach": [
+            -4.440892098500626e-16,
+            0,
+            8.975
+          ],
+          "width": 1.5
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          62.92546091492472,
+          2.2,
+          25.320778778010894
+        ],
+        "workspace-1": [
+          57.624289545952415,
+          2.2,
+          22.846898805823816
+        ],
+        "workspace-2": [
+          59.825710454047574,
+          2.2,
+          31.963101194176186
+        ],
+        "workspace-3": [
+          54.52453908507527,
+          2.2,
+          29.48922122198911
+        ],
+        "workspace-4": [
+          63.5277706419749,
+          2.2,
+          29.646292966254958
+        ],
+        "entry": [
+          53.42382863102769,
+          2.2,
+          24.931120027812923
+        ],
+        "home": [
+          58.724999999999994,
+          2.2,
+          27.405
+        ],
+        "work": [
+          62.92546091492472,
+          2.2,
+          25.320778778010894
+        ],
+        "rest": [
+          63.5277706419749,
+          2.2,
+          29.646292966254958
+        ],
+        "jobPickup": [
+          62.92546091492472,
+          2.2,
+          25.320778778010894
+        ]
+      }
+    },
+    {
+      "id": "triage",
+      "title": "Triage",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/triage.glb",
+      "sourceModelSha256": "dc6aa1f813071c43c0a1e7ec81e74cf04591b62d88e8e54fa504240afd6fc791",
+      "placedExteriorBounds": [
+        10.5,
+        6.75,
+        9.0
+      ],
+      "exteriorTransform": {
+        "position": [
+          10.44,
+          2.2,
+          27.405
+        ],
+        "rotation": [
+          0,
+          -2.7776136970801493,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.5,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.5,
+      "leaderEnvelope": null,
+      "footprint": [
+        8.19,
+        7.02
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Repair benches",
+          "rect": [
+            -4.02,
+            -3.4349999999999996,
+            3.119999999999999,
+            3.36
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Incident intake",
+          "rect": [
+            -4.02,
+            0.075,
+            3.119999999999999,
+            3.36
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Recovery station",
+          "rect": [
+            0.8999999999999999,
+            -3.4349999999999996,
+            3.119999999999999,
+            3.36
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Diagnostics",
+          "rect": [
+            0.8999999999999999,
+            0.075,
+            3.119999999999999,
+            3.36
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            8.19,
+            0.15,
+            7.02
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -3.51
+          ],
+          "size": [
+            8.19,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -4.095,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            7.02
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -2.4225,
+            1.5,
+            3.51
+          ],
+          "size": [
+            3.3449999999999998,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            4.095,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            7.02
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            2.4225,
+            1.5,
+            3.51
+          ],
+          "size": [
+            3.3449999999999998,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            3.51
+          ],
+          "size": [
+            1.5,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -2.4224999999999994,
+            1.5,
+            0
+          ],
+          "size": [
+            3.0449999999999995,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -3.0075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -0.5025
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            -1.755
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -3.3449999999999998,
+            0.4,
+            -1.755
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            0.5025
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            3.0075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            1.755
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -3.3449999999999998,
+            0.4,
+            1.755
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            2.4224999999999994,
+            1.5,
+            0
+          ],
+          "size": [
+            3.0449999999999995,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -3.0075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -0.5025
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            -1.755
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            3.3449999999999998,
+            0.4,
+            -1.755
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            0.5025
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            3.0075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.005
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            1.755
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            3.3449999999999998,
+            0.4,
+            1.755
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            8.19,
+            0.15,
+            7.02
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            4.742500000000001
+          ],
+          "size": [
+            1.5,
+            0.15,
+            2.4650000000000016
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            3.51
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.825,
+            0,
+            -1.755
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.825,
+            0,
+            1.755
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.825,
+            0,
+            -1.755
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.825,
+            0,
+            1.755
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -1.755
+          ],
+          [
+            -1.91,
+            0,
+            -1.755
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            1.755
+          ],
+          [
+            -1.91,
+            0,
+            1.755
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -1.755
+          ],
+          [
+            1.91,
+            0,
+            -1.755
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            1.755
+          ],
+          [
+            1.91,
+            0,
+            1.755
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            3.51
+          ],
+          [
+            0,
+            0,
+            -2.9599999999999995
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -3.51
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -1.91,
+          0,
+          -1.755
+        ],
+        "workspace-1": [
+          -1.91,
+          0,
+          1.755
+        ],
+        "workspace-2": [
+          1.91,
+          0,
+          -1.755
+        ],
+        "workspace-3": [
+          1.91,
+          0,
+          1.755
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -2.9599999999999995
+        ],
+        "entry": [
+          0,
+          0,
+          3.51
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -1.91,
+          0,
+          -1.755
+        ],
+        "rest": [
+          0,
+          0,
+          -2.9599999999999995
+        ],
+        "jobPickup": [
+          -1.91,
+          0,
+          -1.755
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            3.51
+          ],
+          "approach": [
+            -8.881784197001252e-16,
+            0,
+            5.975000000000001
+          ],
+          "width": 1.5
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          12.849643373638266,
+          2.2,
+          28.365074899099643
+        ],
+        "workspace-1": [
+          11.60009977379039,
+          2.2,
+          25.085022949498967
+        ],
+        "workspace-2": [
+          9.279900226209609,
+          2.2,
+          29.724977050501035
+        ],
+        "workspace-3": [
+          8.030356626361733,
+          2.2,
+          26.44492510090036
+        ],
+        "workspace-4": [
+          11.493746169672283,
+          2.2,
+          30.171083695389747
+        ],
+        "entry": [
+          9.190456400152122,
+          2.2,
+          24.124948050399322
+        ],
+        "home": [
+          10.44,
+          2.2,
+          27.405
+        ],
+        "work": [
+          12.849643373638266,
+          2.2,
+          28.365074899099643
+        ],
+        "rest": [
+          11.493746169672283,
+          2.2,
+          30.171083695389747
+        ],
+        "jobPickup": [
+          12.849643373638266,
+          2.2,
+          28.365074899099643
+        ]
+      }
+    },
+    {
+      "id": "garden",
+      "title": "Garden",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/garden.glb",
+      "sourceModelSha256": "f1f0514f12861292de27290f1e673e0830aa70726530920f8fc377acb3feb474",
+      "placedExteriorBounds": [
+        21.0,
+        3.75,
+        18.0
+      ],
+      "exteriorTransform": {
+        "position": [
+          -8.352,
+          2.2,
+          35.495999999999995
+        ],
+        "rotation": [
+          0,
+          2.910501986393896,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": null,
+      "doorClearWidth": 1.5,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.5,
+      "leaderEnvelope": null,
+      "footprint": [
+        16.38,
+        14.04
+      ],
+      "rooms": [
+        {
+          "id": "bed-0",
+          "name": "Learning beds",
+          "rect": [
+            -7.0434,
+            -5.3351999999999995,
+            4.2588,
+            3.6504
+          ]
+        },
+        {
+          "id": "bed-1",
+          "name": "Herb nursery",
+          "rect": [
+            2.7845999999999997,
+            -5.3351999999999995,
+            4.2588,
+            3.6504
+          ]
+        },
+        {
+          "id": "bed-2",
+          "name": "Seed exchange",
+          "rect": [
+            -7.0434,
+            1.6847999999999999,
+            4.2588,
+            3.6504
+          ]
+        },
+        {
+          "id": "bed-3",
+          "name": "Quiet seating",
+          "rect": [
+            2.7845999999999997,
+            1.6847999999999999,
+            4.2588,
+            3.6504
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "court-floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            16.38,
+            0.15,
+            14.04
+          ]
+        },
+        {
+          "id": "bed-0",
+          "kind": "planter",
+          "center": [
+            -4.914,
+            0.3,
+            -3.51
+          ],
+          "size": [
+            4.2588,
+            0.6,
+            3.6504
+          ]
+        },
+        {
+          "id": "bed-1",
+          "kind": "planter",
+          "center": [
+            4.914,
+            0.3,
+            -3.51
+          ],
+          "size": [
+            4.2588,
+            0.6,
+            3.6504
+          ]
+        },
+        {
+          "id": "bed-2",
+          "kind": "planter",
+          "center": [
+            -4.914,
+            0.3,
+            3.51
+          ],
+          "size": [
+            4.2588,
+            0.6,
+            3.6504
+          ]
+        },
+        {
+          "id": "bed-3",
+          "kind": "planter",
+          "center": [
+            4.914,
+            0.3,
+            3.51
+          ],
+          "size": [
+            4.2588,
+            0.6,
+            3.6504
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            8.7475
+          ],
+          "size": [
+            1.5,
+            0.15,
+            3.455000000000002
+          ]
+        }
+      ],
+      "doors": [],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            7.02
+          ],
+          [
+            0,
+            0,
+            -7.02
+          ]
+        ],
+        [
+          [
+            -8.19,
+            0,
+            0
+          ],
+          [
+            8.19,
+            0,
+            0
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "future-shelter",
+          "position": [
+            0,
+            0,
+            -7.02
+          ],
+          "note": "Future canopy/service pod only after exterior and clearance review"
+        }
+      ],
+      "notes": [
+        "Open-air layout; no invented enclosed room or 3 m interior beneath the bus asset which is only 3 m tall overall.",
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "open_air",
+      "anchors": {
+        "workspace-0": [
+          0,
+          0,
+          -7.02
+        ],
+        "workspace-1": [
+          8.19,
+          0,
+          0
+        ],
+        "entry": [
+          0,
+          0,
+          7.02
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          0,
+          0,
+          -7.02
+        ],
+        "rest": [
+          0,
+          0,
+          -7.02
+        ],
+        "jobPickup": [
+          0,
+          0,
+          -7.02
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            7.02
+          ],
+          "approach": [
+            0.0,
+            0,
+            10.475000000000001
+          ],
+          "width": 1.5
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          -9.959856122753344,
+          2.2,
+          42.329388521701695
+        ],
+        "workspace-1": [
+          -16.324286608651988,
+          2.2,
+          33.62016785678776
+        ],
+        "entry": [
+          -6.744143877246657,
+          2.2,
+          28.66261147829829
+        ],
+        "home": [
+          -8.352,
+          2.2,
+          35.495999999999995
+        ],
+        "work": [
+          -9.959856122753344,
+          2.2,
+          42.329388521701695
+        ],
+        "rest": [
+          -9.959856122753344,
+          2.2,
+          42.329388521701695
+        ],
+        "jobPickup": [
+          -9.959856122753344,
+          2.2,
+          42.329388521701695
+        ]
+      }
+    },
+    {
+      "id": "council",
+      "title": "Council",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-lion-1cc020265594.glb",
+      "sourceModelSha256": "1cc0202655943a3c39f06521a88b83dcc55bcf00b0a1c96e36a6f831a45cb6cc",
+      "placedExteriorBounds": [
+        29.083484172821045,
+        19.499998569488525,
+        29.23734140396118
+      ],
+      "exteriorTransform": {
+        "position": [
+          32.625,
+          2.2,
+          37.845
+        ],
+        "rotation": [
+          0,
+          -2.4301335278502854,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.6,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.6,
+      "leaderEnvelope": {
+        "id": "lion",
+        "sourceUri": "models/review-lion-c135959f5fd5.glb",
+        "boundsMin": [
+          -0.6683811545372009,
+          -3.397377804503776e-05,
+          -0.5547307133674622
+        ],
+        "boundsMax": [
+          0.6682522892951965,
+          1.9999150037765503,
+          0.5552127361297607
+        ],
+        "size": [
+          1.3366334438323975,
+          1.9999489775545953,
+          1.109943449497223
+        ],
+        "radiusMetres": 0.7346944460864892,
+        "clearWidth": 1.6
+      },
+      "footprint": [
+        22.69,
+        22.81
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Steward office",
+          "rect": [
+            -11.270000000000001,
+            -11.33,
+            10.320000000000002,
+            11.254999999999999
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Public reception",
+          "rect": [
+            -11.270000000000001,
+            0.075,
+            10.320000000000002,
+            11.254999999999999
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Planning records",
+          "rect": [
+            0.95,
+            -11.33,
+            10.320000000000002,
+            11.254999999999999
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Council chamber",
+          "rect": [
+            0.95,
+            0.075,
+            10.320000000000002,
+            11.254999999999999
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            22.69,
+            0.15,
+            22.81
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -11.405
+          ],
+          "size": [
+            22.69,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -11.345,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            22.81
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -6.072500000000001,
+            1.5,
+            11.405
+          ],
+          "size": [
+            10.545,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            11.345,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            22.81
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            6.072500000000001,
+            1.5,
+            11.405
+          ],
+          "size": [
+            10.545,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            11.405
+          ],
+          "size": [
+            1.6,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -6.072500000000001,
+            1.5,
+            0
+          ],
+          "size": [
+            10.245000000000001,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            -8.95375
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            -2.45125
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.875,
+            2.8,
+            -5.7025
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -10.595,
+            0.4,
+            -5.7025
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            2.45125
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            8.95375
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.875,
+            2.8,
+            5.7025
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -10.595,
+            0.4,
+            5.7025
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            6.072500000000001,
+            1.5,
+            0
+          ],
+          "size": [
+            10.245000000000001,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            -8.95375
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            -2.45125
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.875,
+            2.8,
+            -5.7025
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            10.595,
+            0.4,
+            -5.7025
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            2.45125
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            8.95375
+          ],
+          "size": [
+            0.15,
+            3,
+            4.9025
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.875,
+            2.8,
+            5.7025
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            10.595,
+            0.4,
+            5.7025
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            22.69,
+            0.15,
+            22.81
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            13.752500000000001
+          ],
+          "size": [
+            1.6,
+            0.15,
+            4.695000000000002
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            11.405
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.875,
+            0,
+            -5.7025
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.875,
+            0,
+            5.7025
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.875,
+            0,
+            -5.7025
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.875,
+            0,
+            5.7025
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -5.7025
+          ],
+          [
+            -5.56,
+            0,
+            -5.7025
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            5.7025
+          ],
+          [
+            -5.56,
+            0,
+            5.7025
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -5.7025
+          ],
+          [
+            5.56,
+            0,
+            -5.7025
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            5.7025
+          ],
+          [
+            5.56,
+            0,
+            5.7025
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            11.405
+          ],
+          [
+            0,
+            0,
+            -10.47030555391351
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -11.405
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "Ground-level public/work floor only; stairs, chamber proportions and upper levels are future design.",
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -5.56,
+          0,
+          -5.7025
+        ],
+        "workspace-1": [
+          -5.56,
+          0,
+          5.7025
+        ],
+        "workspace-2": [
+          5.56,
+          0,
+          -5.7025
+        ],
+        "workspace-3": [
+          5.56,
+          0,
+          5.7025
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -10.47030555391351
+        ],
+        "entry": [
+          0,
+          0,
+          11.405
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -5.56,
+          0,
+          -5.7025
+        ],
+        "rest": [
+          0,
+          0,
+          -10.47030555391351
+        ],
+        "jobPickup": [
+          -5.56,
+          0,
+          -5.7025
+        ],
+        "leaderWork": [
+          -5.56,
+          0,
+          -5.7025
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            11.405
+          ],
+          "approach": [
+            8.881784197001252e-16,
+            0,
+            16.1
+          ],
+          "width": 1.6
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          40.559587581350314,
+          2.2,
+          38.533786007321076
+        ],
+        "workspace-1": [
+          33.11281119164809,
+          2.2,
+          29.895525395266496
+        ],
+        "workspace-2": [
+          32.1371888083519,
+          2.2,
+          45.7944746047335
+        ],
+        "workspace-3": [
+          24.690412418649682,
+          2.2,
+          37.15621399267892
+        ],
+        "workspace-4": [
+          39.461477351324085,
+          2.2,
+          45.77531372753594
+        ],
+        "entry": [
+          25.178223610297778,
+          2.2,
+          29.20673938794542
+        ],
+        "home": [
+          32.625,
+          2.2,
+          37.845
+        ],
+        "work": [
+          40.559587581350314,
+          2.2,
+          38.533786007321076
+        ],
+        "rest": [
+          39.461477351324085,
+          2.2,
+          45.77531372753594
+        ],
+        "jobPickup": [
+          40.559587581350314,
+          2.2,
+          38.533786007321076
+        ],
+        "leaderWork": [
+          40.559587581350314,
+          2.2,
+          38.533786007321076
+        ]
+      }
+    },
+    {
+      "id": "arts-studio",
+      "title": "Arts Studio",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-cat-8b3378294db0.glb",
+      "sourceModelSha256": "8b3378294db02a9ee598872b84dfaefbdc328fb33ba90dd6c8ef798f2c14de50",
+      "placedExteriorBounds": [
+        9.315121293067932,
+        7.5,
+        9.314257264137268
+      ],
+      "exteriorTransform": {
+        "position": [
+          -30.276000000000003,
+          2.2,
+          -1.044
+        ],
+        "rotation": [
+          0,
+          1.5363272257953886,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.6,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.6,
+      "leaderEnvelope": {
+        "id": "cat",
+        "sourceUri": "models/review-cat-ea4f708d37b7.glb",
+        "boundsMin": [
+          -0.5025925040245056,
+          -4.240362250129692e-05,
+          -0.6114845275878906
+        ],
+        "boundsMax": [
+          0.5024817585945129,
+          1.5998072624206543,
+          0.6114767789840698
+        ],
+        "size": [
+          1.0050742626190186,
+          1.5998496660431556,
+          1.2229613065719604
+        ],
+        "radiusMetres": 0.7054029790399786,
+        "clearWidth": 1.6
+      },
+      "footprint": [
+        7.27,
+        7.27
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Digital workbench",
+          "rect": [
+            -3.5599999999999996,
+            -3.5599999999999996,
+            2.6099999999999994,
+            3.485
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Materials store",
+          "rect": [
+            -3.5599999999999996,
+            0.075,
+            2.6099999999999994,
+            3.485
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Critique room",
+          "rect": [
+            0.95,
+            -3.5599999999999996,
+            2.6099999999999994,
+            3.485
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Painting studio",
+          "rect": [
+            0.95,
+            0.075,
+            2.6099999999999994,
+            3.485
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            7.27,
+            0.15,
+            7.27
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -3.635
+          ],
+          "size": [
+            7.27,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -3.635,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            7.27
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -2.2175,
+            1.5,
+            3.635
+          ],
+          "size": [
+            2.835,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            3.635,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            7.27
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            2.2175,
+            1.5,
+            3.635
+          ],
+          "size": [
+            2.835,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            3.635
+          ],
+          "size": [
+            1.6,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -2.2175,
+            1.5,
+            0
+          ],
+          "size": [
+            2.5349999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            -3.1262499999999998
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0175
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            -0.5087499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0174999999999998
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.875,
+            2.8,
+            -1.8175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -2.885,
+            0.4,
+            -1.8175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            0.5087499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0174999999999998
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.875,
+            1.5,
+            3.1262499999999998
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0175
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.875,
+            2.8,
+            1.8175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -2.885,
+            0.4,
+            1.8175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            2.2175,
+            1.5,
+            0
+          ],
+          "size": [
+            2.5349999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            -3.1262499999999998
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0175
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            -0.5087499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0174999999999998
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.875,
+            2.8,
+            -1.8175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            2.885,
+            0.4,
+            -1.8175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            0.5087499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0174999999999998
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.875,
+            1.5,
+            3.1262499999999998
+          ],
+          "size": [
+            0.15,
+            3,
+            1.0175
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.875,
+            2.8,
+            1.8175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.6
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            2.885,
+            0.4,
+            1.8175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            7.27,
+            0.15,
+            7.27
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            5.5550000000000015
+          ],
+          "size": [
+            1.6,
+            0.15,
+            3.8400000000000025
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            3.635
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.875,
+            0,
+            -1.8175
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.875,
+            0,
+            1.8175
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.875,
+            0,
+            -1.8175
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.875,
+            0,
+            1.8175
+          ],
+          "width": 1.6,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -1.8175
+          ],
+          [
+            -1.705,
+            0,
+            -1.8175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            1.8175
+          ],
+          [
+            -1.705,
+            0,
+            1.8175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -1.8175
+          ],
+          [
+            1.705,
+            0,
+            -1.8175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            1.8175
+          ],
+          [
+            1.705,
+            0,
+            1.8175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            3.635
+          ],
+          [
+            0,
+            0,
+            -2.729597020960021
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -3.635
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -1.705,
+          0,
+          -1.8175
+        ],
+        "workspace-1": [
+          -1.705,
+          0,
+          1.8175
+        ],
+        "workspace-2": [
+          1.705,
+          0,
+          -1.8175
+        ],
+        "workspace-3": [
+          1.705,
+          0,
+          1.8175
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -2.729597020960021
+        ],
+        "entry": [
+          0,
+          0,
+          3.635
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -1.705,
+          0,
+          -1.8175
+        ],
+        "rest": [
+          0,
+          0,
+          -2.729597020960021
+        ],
+        "jobPickup": [
+          -1.705,
+          0,
+          -1.8175
+        ],
+        "leaderWork": [
+          1.705,
+          0,
+          1.8175
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            3.635
+          ],
+          "approach": [
+            1.6653345369377348e-16,
+            0,
+            7.475000000000002
+          ],
+          "width": 1.6
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          -32.151178584131976,
+          2.2,
+          0.5973520425590686
+        ],
+        "workspace-1": [
+          -28.518337776481683,
+          2.2,
+          0.7226224152366649
+        ],
+        "workspace-2": [
+          -32.03366222351833,
+          2.2,
+          -2.810622415236665
+        ],
+        "workspace-3": [
+          -28.400821415868034,
+          2.2,
+          -2.685352042559069
+        ],
+        "workspace-4": [
+          -33.00397563856513,
+          2.2,
+          -1.138068125467763
+        ],
+        "entry": [
+          -26.643159192349714,
+          2.2,
+          -0.9187296273224038
+        ],
+        "home": [
+          -30.276000000000003,
+          2.2,
+          -1.044
+        ],
+        "work": [
+          -32.151178584131976,
+          2.2,
+          0.5973520425590686
+        ],
+        "rest": [
+          -33.00397563856513,
+          2.2,
+          -1.138068125467763
+        ],
+        "jobPickup": [
+          -32.151178584131976,
+          2.2,
+          0.5973520425590686
+        ],
+        "leaderWork": [
+          -28.400821415868034,
+          2.2,
+          -2.685352042559069
+        ]
+      }
+    },
+    {
+      "id": "engineering-workshop",
+      "title": "Engineering Workshop",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-beaver-c15b2bf553f3.glb",
+      "sourceModelSha256": "c15b2bf553f30c054c65fb0c853b39f5f34d2eedc858544324a123da8e4707ef",
+      "placedExteriorBounds": [
+        16.422229528427124,
+        10.500000715255737,
+        16.36777424812317
+      ],
+      "exteriorTransform": {
+        "position": [
+          -30.276000000000003,
+          2.2,
+          31.32
+        ],
+        "rotation": [
+          0,
+          2.37314201999875,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.7,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.7,
+      "leaderEnvelope": {
+        "id": "beaver",
+        "sourceUri": "models/review-beaver-b0878c9ea5cc.glb",
+        "boundsMin": [
+          -0.5701134204864502,
+          -6.573538121301681e-05,
+          -0.7337265610694885
+        ],
+        "boundsMax": [
+          0.5702633857727051,
+          1.599893569946289,
+          0.7344173789024353
+        ],
+        "size": [
+          1.1403768062591553,
+          1.599959305327502,
+          1.4681439399719238
+        ],
+        "radiusMetres": 0.7844210655026559,
+        "clearWidth": 1.7
+      },
+      "footprint": [
+        15.62,
+        15.57
+      ],
+      "rooms": [
+        {
+          "id": "bank--1",
+          "name": "Mechanical workshop",
+          "rect": [
+            -7.809999999999999,
+            -7.785,
+            4.81,
+            15.57
+          ]
+        },
+        {
+          "id": "bank-1",
+          "name": "Waterworks control",
+          "rect": [
+            2.9999999999999996,
+            -7.785,
+            4.81,
+            15.57
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "bank-floor--1",
+          "kind": "floor",
+          "center": [
+            -5.404999999999999,
+            0.7250000000000001,
+            0
+          ],
+          "size": [
+            4.81,
+            0.15,
+            15.57
+          ]
+        },
+        {
+          "id": "end--1--7.785--1",
+          "kind": "wall",
+          "center": [
+            -7.032499999999999,
+            2.3,
+            -7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "end--1--7.785-1",
+          "kind": "wall",
+          "center": [
+            -3.7774999999999994,
+            2.3,
+            -7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "end--1-7.785--1",
+          "kind": "wall",
+          "center": [
+            -7.032499999999999,
+            2.3,
+            7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "end--1-7.785-1",
+          "kind": "wall",
+          "center": [
+            -3.7774999999999994,
+            2.3,
+            7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "bank-wall--1--7.809999999999999",
+          "kind": "wall",
+          "center": [
+            -7.809999999999999,
+            2.3,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            15.57
+          ]
+        },
+        {
+          "id": "bench--1",
+          "kind": "desk",
+          "center": [
+            -7.259999999999999,
+            1.2000000000000002,
+            -3.4254000000000002
+          ],
+          "size": [
+            0.8,
+            0.8,
+            2.4
+          ]
+        },
+        {
+          "id": "bank-floor-1",
+          "kind": "floor",
+          "center": [
+            5.404999999999999,
+            0.7250000000000001,
+            0
+          ],
+          "size": [
+            4.81,
+            0.15,
+            15.57
+          ]
+        },
+        {
+          "id": "end-1--7.785--1",
+          "kind": "wall",
+          "center": [
+            3.7774999999999994,
+            2.3,
+            -7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "end-1--7.785-1",
+          "kind": "wall",
+          "center": [
+            7.032499999999999,
+            2.3,
+            -7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "end-1-7.785--1",
+          "kind": "wall",
+          "center": [
+            3.7774999999999994,
+            2.3,
+            7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "end-1-7.785-1",
+          "kind": "wall",
+          "center": [
+            7.032499999999999,
+            2.3,
+            7.785
+          ],
+          "size": [
+            1.5549999999999997,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "bank-wall-1-7.809999999999999",
+          "kind": "wall",
+          "center": [
+            7.809999999999999,
+            2.3,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            15.57
+          ]
+        },
+        {
+          "id": "bench-1",
+          "kind": "desk",
+          "center": [
+            7.259999999999999,
+            1.2000000000000002,
+            -3.4254000000000002
+          ],
+          "size": [
+            0.8,
+            0.8,
+            2.4
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            -5.404999999999999,
+            0.7250000000000001,
+            8.409443562030791
+          ],
+          "size": [
+            1.7,
+            0.15,
+            1.248887124061584
+          ]
+        },
+        {
+          "id": "portal-floor-1",
+          "kind": "floor",
+          "center": [
+            5.404999999999999,
+            0.7250000000000001,
+            8.409443562030791
+          ],
+          "size": [
+            1.7,
+            0.15,
+            1.248887124061584
+          ]
+        },
+        {
+          "id": "bridge-bank-wall--1-rear",
+          "kind": "wall",
+          "center": [
+            -3.0,
+            2.3,
+            -1.925
+          ],
+          "size": [
+            0.15,
+            3,
+            11.72
+          ]
+        },
+        {
+          "id": "bridge-bank-wall--1-front",
+          "kind": "wall",
+          "center": [
+            -3.0,
+            2.3,
+            6.71
+          ],
+          "size": [
+            0.15,
+            3,
+            2.1500000000000004
+          ]
+        },
+        {
+          "id": "bridge-door-header--1",
+          "kind": "header",
+          "center": [
+            -3.0,
+            3.5999999999999996,
+            4.785
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "bridge-bank-wall-1-rear",
+          "kind": "wall",
+          "center": [
+            3.0,
+            2.3,
+            -1.925
+          ],
+          "size": [
+            0.15,
+            3,
+            11.72
+          ]
+        },
+        {
+          "id": "bridge-bank-wall-1-front",
+          "kind": "wall",
+          "center": [
+            3.0,
+            2.3,
+            6.71
+          ],
+          "size": [
+            0.15,
+            3,
+            2.1500000000000004
+          ]
+        },
+        {
+          "id": "bridge-door-header-1",
+          "kind": "header",
+          "center": [
+            3.0,
+            3.5999999999999996,
+            4.785
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "elevated-channel-catwalk",
+          "kind": "floor",
+          "center": [
+            0,
+            0.7250000000000001,
+            4.785
+          ],
+          "size": [
+            6.0,
+            0.15,
+            1.7
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "bank-door--1--7.785",
+          "center": [
+            -5.404999999999999,
+            0.8,
+            -7.785
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "bank-door--1-7.785",
+          "center": [
+            -5.404999999999999,
+            0.8,
+            7.785
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "bank-door-1--7.785",
+          "center": [
+            5.404999999999999,
+            0.8,
+            -7.785
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "bank-door-1-7.785",
+          "center": [
+            5.404999999999999,
+            0.8,
+            7.785
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "bridge-bank-door--1",
+          "center": [
+            -3.0,
+            0.8,
+            4.785
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "bridge-bank-door-1",
+          "center": [
+            3.0,
+            0.8,
+            4.785
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            -5.404999999999999,
+            0.8,
+            7.785
+          ],
+          [
+            -5.404999999999999,
+            0.8,
+            -7.785
+          ]
+        ],
+        [
+          [
+            5.404999999999999,
+            0.8,
+            7.785
+          ],
+          [
+            5.404999999999999,
+            0.8,
+            -7.785
+          ]
+        ],
+        [
+          [
+            -5.404999999999999,
+            0.8,
+            4.785
+          ],
+          [
+            5.404999999999999,
+            0.8,
+            4.785
+          ]
+        ],
+        [
+          [
+            0.0,
+            0,
+            9.724999999999998
+          ],
+          [
+            0,
+            0.8,
+            5.635
+          ]
+        ],
+        [
+          [
+            0,
+            0.8,
+            5.635
+          ],
+          [
+            0,
+            0.8,
+            4.785
+          ]
+        ]
+      ],
+      "reservedVoids": [
+        {
+          "id": "river-channel",
+          "rect": [
+            -3.0,
+            -7.785,
+            6.0,
+            15.57
+          ],
+          "floorForbidden": true,
+          "minimumBridgeUnderside": 0.6
+        }
+      ],
+      "ramps": [
+        {
+          "id": "waterworks-entry-ramp",
+          "start": [
+            0.0,
+            0,
+            9.724999999999998
+          ],
+          "end": [
+            0,
+            0.8,
+            5.635
+          ],
+          "width": 1.7,
+          "thickness": 0.12
+        }
+      ],
+      "expansion": [
+        {
+          "id": "future-upper-gallery",
+          "position": [
+            0,
+            3.4,
+            0
+          ],
+          "note": "Separate future bridge above water; no deck or floor currently closes channel"
+        }
+      ],
+      "notes": [
+        "Six-metre-wide water channel retained beneath the raised crossing; both bank rooms have front/rear access.",
+        "Authored 0.8 m raised bank floors and 1.5 m catwalk; 0.65 m underside above local datum keeps the water channel open below. Entry ramp joins the existing outdoor approach; river/road edge requires visible alignment review.",
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "bank_rooms_with_open_water_channel",
+      "anchors": {
+        "workspace-0": [
+          -5.404999999999999,
+          0.8,
+          -7.785
+        ],
+        "workspace-1": [
+          5.404999999999999,
+          0.8,
+          -7.785
+        ],
+        "entry": [
+          0,
+          0.8,
+          5.635
+        ],
+        "home": [
+          -5.404999999999999,
+          0.8,
+          4.785
+        ],
+        "work": [
+          -5.404999999999999,
+          0.8,
+          -1.5570000000000002
+        ],
+        "rest": [
+          5.404999999999999,
+          0.8,
+          4.785
+        ],
+        "jobPickup": [
+          -5.404999999999999,
+          0.8,
+          4.785
+        ],
+        "leaderWork": [
+          -5.404999999999999,
+          0.8,
+          -1.5570000000000002
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "raised-channel-entry",
+          "entry": [
+            0,
+            0.8,
+            5.635
+          ],
+          "approach": [
+            0.0,
+            0,
+            9.724999999999998
+          ],
+          "width": 1.7
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          -31.80061485141215,
+          3.0,
+          40.67391894100294
+        ],
+        "workspace-1": [
+          -39.572879196503045,
+          3.0,
+          33.160730074081734
+        ],
+        "entry": [
+          -26.35955048426448,
+          3.0,
+          27.268500500963256
+        ],
+        "home": [
+          -23.064187094039386,
+          3.0,
+          31.636235054065597
+        ],
+        "work": [
+          -27.472017232246074,
+          3.0,
+          36.196059334969064
+        ],
+        "rest": [
+          -30.836451439130286,
+          3.0,
+          24.123046187144396
+        ],
+        "jobPickup": [
+          -23.064187094039386,
+          3.0,
+          31.636235054065597
+        ],
+        "leaderWork": [
+          -27.472017232246074,
+          3.0,
+          36.196059334969064
+        ]
+      }
+    },
+    {
+      "id": "release-gatehouse",
+      "title": "Release Gatehouse",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/release-gatehouse.glb",
+      "sourceModelSha256": "f2d81385bc6c5a7e346f7b74f3dbd5c3f3270956962577f6fa0d7a58aeb25555",
+      "placedExteriorBounds": [
+        16.5,
+        11.25,
+        13.5
+      ],
+      "exteriorTransform": {
+        "position": [
+          0,
+          2.2,
+          12.528
+        ],
+        "rotation": [
+          0,
+          -3.141592653589793,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.5,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.5,
+      "leaderEnvelope": null,
+      "footprint": [
+        12.87,
+        10.53
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Staging store",
+          "rect": [
+            -6.359999999999999,
+            -5.1899999999999995,
+            5.459999999999999,
+            5.114999999999999
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Release intake",
+          "rect": [
+            -6.359999999999999,
+            0.075,
+            5.459999999999999,
+            5.114999999999999
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Release control",
+          "rect": [
+            0.8999999999999999,
+            -5.1899999999999995,
+            5.459999999999999,
+            5.114999999999999
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Validation benches",
+          "rect": [
+            0.8999999999999999,
+            0.075,
+            5.459999999999999,
+            5.114999999999999
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            12.87,
+            0.15,
+            10.53
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -5.265
+          ],
+          "size": [
+            12.87,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -6.435,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            10.53
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -3.5925,
+            1.5,
+            5.265
+          ],
+          "size": [
+            5.685,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            6.435,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            10.53
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            3.5925,
+            1.5,
+            5.265
+          ],
+          "size": [
+            5.685,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            5.265
+          ],
+          "size": [
+            1.5,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -3.5924999999999994,
+            1.5,
+            0
+          ],
+          "size": [
+            5.384999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -4.3237499999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -0.9412499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            -2.6325
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -5.685,
+            0.4,
+            -2.6325
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            0.9412499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            4.3237499999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            2.6325
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -5.685,
+            0.4,
+            2.6325
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            3.5924999999999994,
+            1.5,
+            0
+          ],
+          "size": [
+            5.384999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -4.3237499999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -0.9412499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            -2.6325
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            5.685,
+            0.4,
+            -2.6325
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            0.9412499999999999
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            4.3237499999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            1.8824999999999998
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            2.6325
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            5.685,
+            0.4,
+            2.6325
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            12.87,
+            0.15,
+            10.53
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            6.744999999999999
+          ],
+          "size": [
+            1.5,
+            0.15,
+            2.96
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            5.265
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.825,
+            0,
+            -2.6325
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.825,
+            0,
+            2.6325
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.825,
+            0,
+            -2.6325
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.825,
+            0,
+            2.6325
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -2.6325
+          ],
+          [
+            -3.08,
+            0,
+            -2.6325
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.6325
+          ],
+          [
+            -3.08,
+            0,
+            2.6325
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -2.6325
+          ],
+          [
+            3.08,
+            0,
+            -2.6325
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.6325
+          ],
+          [
+            3.08,
+            0,
+            2.6325
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            5.265
+          ],
+          [
+            0,
+            0,
+            -4.715
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -5.265
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -3.08,
+          0,
+          -2.6325
+        ],
+        "workspace-1": [
+          -3.08,
+          0,
+          2.6325
+        ],
+        "workspace-2": [
+          3.08,
+          0,
+          -2.6325
+        ],
+        "workspace-3": [
+          3.08,
+          0,
+          2.6325
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -4.715
+        ],
+        "entry": [
+          0,
+          0,
+          5.265
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -3.08,
+          0,
+          -2.6325
+        ],
+        "rest": [
+          0,
+          0,
+          -4.715
+        ],
+        "jobPickup": [
+          -3.08,
+          0,
+          -2.6325
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            5.265
+          ],
+          "approach": [
+            0.0,
+            0,
+            8.225
+          ],
+          "width": 1.5
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          3.0800000000000005,
+          2.2,
+          15.1605
+        ],
+        "workspace-1": [
+          3.0799999999999996,
+          2.2,
+          9.8955
+        ],
+        "workspace-2": [
+          -3.0799999999999996,
+          2.2,
+          15.1605
+        ],
+        "workspace-3": [
+          -3.0800000000000005,
+          2.2,
+          9.8955
+        ],
+        "workspace-4": [
+          5.77420965797977e-16,
+          2.2,
+          17.243000000000002
+        ],
+        "entry": [
+          -6.447765397510814e-16,
+          2.2,
+          7.263000000000001
+        ],
+        "home": [
+          0.0,
+          2.2,
+          12.528
+        ],
+        "work": [
+          3.0800000000000005,
+          2.2,
+          15.1605
+        ],
+        "rest": [
+          5.77420965797977e-16,
+          2.2,
+          17.243000000000002
+        ],
+        "jobPickup": [
+          3.0800000000000005,
+          2.2,
+          15.1605
+        ]
+      }
+    },
+    {
+      "id": "archive",
+      "title": "Archive",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-elephant-f5784a3ebdd6.glb",
+      "sourceModelSha256": "f5784a3ebdd68d8f1b6bf232560ee284bc531cc4393e37f97b5e398cb1d75d08",
+      "placedExteriorBounds": [
+        23.00664496421814,
+        18.0,
+        22.744932174682617
+      ],
+      "exteriorTransform": {
+        "position": [
+          42.412499999999994,
+          2.2,
+          -6.5249999999999995
+        ],
+        "rotation": [
+          0,
+          -1.4181469983996315,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 2.4,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 2.4,
+      "leaderEnvelope": {
+        "id": "elephant",
+        "sourceUri": "models/review-elephant-90357430baa2.glb",
+        "boundsMin": [
+          -0.8702650666236877,
+          -2.0174156816210598e-05,
+          -0.7482641935348511
+        ],
+        "boundsMax": [
+          0.8710346817970276,
+          2.300508737564087,
+          0.7476096749305725
+        ],
+        "size": [
+          1.7412997484207153,
+          2.300528911720903,
+          1.4958738684654236
+        ],
+        "radiusMetres": 1.1398319202566929,
+        "clearWidth": 2.4
+      },
+      "footprint": [
+        17.95,
+        17.74
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Protected records",
+          "rect": [
+            -8.9,
+            -8.795,
+            7.55,
+            8.719999999999999
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Acquisition desk",
+          "rect": [
+            -8.9,
+            0.075,
+            7.55,
+            8.719999999999999
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Memory curator",
+          "rect": [
+            1.3499999999999999,
+            -8.795,
+            7.55,
+            8.719999999999999
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Catalog room",
+          "rect": [
+            1.3499999999999999,
+            0.075,
+            7.55,
+            8.719999999999999
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            17.95,
+            0.15,
+            17.74
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -8.87
+          ],
+          "size": [
+            17.95,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -8.975,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            17.74
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -5.0874999999999995,
+            1.5,
+            8.87
+          ],
+          "size": [
+            7.7749999999999995,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            8.975,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            17.74
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            5.0874999999999995,
+            1.5,
+            8.87
+          ],
+          "size": [
+            7.7749999999999995,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            8.87
+          ],
+          "size": [
+            2.4,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -5.0874999999999995,
+            1.5,
+            0
+          ],
+          "size": [
+            7.475,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -1.275,
+            1.5,
+            -7.2524999999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -1.275,
+            1.5,
+            -1.6174999999999997
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -1.275,
+            2.8,
+            -4.435
+          ],
+          "size": [
+            0.15,
+            0.4,
+            2.4
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -8.225,
+            0.4,
+            -4.435
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -1.275,
+            1.5,
+            1.6174999999999997
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -1.275,
+            1.5,
+            7.2524999999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -1.275,
+            2.8,
+            4.435
+          ],
+          "size": [
+            0.15,
+            0.4,
+            2.4
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -8.225,
+            0.4,
+            4.435
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            5.0874999999999995,
+            1.5,
+            0
+          ],
+          "size": [
+            7.475,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            1.275,
+            1.5,
+            -7.2524999999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            1.275,
+            1.5,
+            -1.6174999999999997
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            1.275,
+            2.8,
+            -4.435
+          ],
+          "size": [
+            0.15,
+            0.4,
+            2.4
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            8.225,
+            0.4,
+            -4.435
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            1.275,
+            1.5,
+            1.6174999999999997
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            1.275,
+            1.5,
+            7.2524999999999995
+          ],
+          "size": [
+            0.15,
+            3,
+            3.2349999999999994
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            1.275,
+            2.8,
+            4.435
+          ],
+          "size": [
+            0.15,
+            0.4,
+            2.4
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            8.225,
+            0.4,
+            4.435
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            17.95,
+            0.15,
+            17.74
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            10.985
+          ],
+          "size": [
+            2.4,
+            0.15,
+            4.23
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            8.87
+          ],
+          "width": 2.4,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -1.275,
+            0,
+            -4.435
+          ],
+          "width": 2.4,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -1.275,
+            0,
+            4.435
+          ],
+          "width": 2.4,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            1.275,
+            0,
+            -4.435
+          ],
+          "width": 2.4,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            1.275,
+            0,
+            4.435
+          ],
+          "width": 2.4,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -4.435
+          ],
+          [
+            -4.575,
+            0,
+            -4.435
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            4.435
+          ],
+          [
+            -4.575,
+            0,
+            4.435
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -4.435
+          ],
+          [
+            4.575,
+            0,
+            -4.435
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            4.435
+          ],
+          [
+            4.575,
+            0,
+            4.435
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            8.87
+          ],
+          [
+            0,
+            0,
+            -7.530168079743306
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -8.87
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "Ground-level trunk pavilion prototype only; canopy pods remain future separate rooms. Rectangular bbox fit does not prove fit within organic trunk.",
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -4.575,
+          0,
+          -4.435
+        ],
+        "workspace-1": [
+          -4.575,
+          0,
+          4.435
+        ],
+        "workspace-2": [
+          4.575,
+          0,
+          -4.435
+        ],
+        "workspace-3": [
+          4.575,
+          0,
+          4.435
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -7.530168079743306
+        ],
+        "entry": [
+          0,
+          0,
+          8.87
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -4.575,
+          0,
+          -4.435
+        ],
+        "rest": [
+          0,
+          0,
+          -7.530168079743306
+        ],
+        "jobPickup": [
+          -4.575,
+          0,
+          -4.435
+        ],
+        "leaderWork": [
+          4.575,
+          0,
+          -4.435
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            8.87
+          ],
+          "approach": [
+            -2.220446049250313e-16,
+            0,
+            13.1
+          ],
+          "width": 2.4
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          46.1002668611187,
+          2.2,
+          -11.721174128917802
+        ],
+        "workspace-1": [
+          37.333409902957726,
+          2.2,
+          -10.372426904585346
+        ],
+        "workspace-2": [
+          47.49159009704226,
+          2.2,
+          -2.677573095414654
+        ],
+        "workspace-3": [
+          38.72473313888129,
+          2.2,
+          -1.3288258710821972
+        ],
+        "workspace-4": [
+          49.855105008570376,
+          2.2,
+          -7.670016155164673
+        ],
+        "entry": [
+          33.64564304183902,
+          2.2,
+          -5.1762527756675425
+        ],
+        "home": [
+          42.412499999999994,
+          2.2,
+          -6.5249999999999995
+        ],
+        "work": [
+          46.1002668611187,
+          2.2,
+          -11.721174128917802
+        ],
+        "rest": [
+          49.855105008570376,
+          2.2,
+          -7.670016155164673
+        ],
+        "jobPickup": [
+          46.1002668611187,
+          2.2,
+          -11.721174128917802
+        ],
+        "leaderWork": [
+          47.49159009704226,
+          2.2,
+          -2.677573095414654
+        ]
+      }
+    },
+    {
+      "id": "bus",
+      "title": "Bus",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/bus.glb",
+      "sourceModelSha256": "106ac5a0863817fd7f0d58903a08704b6a56b085bf40b38ae844da1a9f30ef0f",
+      "placedExteriorBounds": [
+        7.5,
+        3.0,
+        4.5
+      ],
+      "exteriorTransform": {
+        "position": [
+          0,
+          2.2,
+          -9.135
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": null,
+      "doorClearWidth": 1.5,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.5,
+      "leaderEnvelope": null,
+      "footprint": [
+        5.85,
+        3.51
+      ],
+      "rooms": [
+        {
+          "id": "waiting",
+          "name": "Open waiting and message-routing bay",
+          "rect": [
+            -0.75,
+            -1.755,
+            1.5,
+            3.51
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "court-floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            5.85,
+            0.15,
+            3.51
+          ]
+        },
+        {
+          "id": "bench--1",
+          "kind": "bench",
+          "center": [
+            -1.8719999999999999,
+            0.23,
+            0
+          ],
+          "size": [
+            0.5,
+            0.46,
+            2.1761999999999997
+          ]
+        },
+        {
+          "id": "bench-1",
+          "kind": "bench",
+          "center": [
+            1.8719999999999999,
+            0.23,
+            0
+          ],
+          "size": [
+            0.5,
+            0.46,
+            2.1761999999999997
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            2.7399999999999998
+          ],
+          "size": [
+            1.5,
+            0.15,
+            1.9699999999999998
+          ]
+        }
+      ],
+      "doors": [],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            1.755
+          ],
+          [
+            0,
+            0,
+            -1.755
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "future-shelter",
+          "position": [
+            0,
+            0,
+            -1.755
+          ],
+          "note": "Future canopy/service pod only after exterior and clearance review"
+        }
+      ],
+      "notes": [
+        "Open-air layout; no invented enclosed room or 3 m interior beneath the bus asset which is only 3 m tall overall.",
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "open_air",
+      "anchors": {
+        "workspace-0": [
+          0,
+          0,
+          -1.755
+        ],
+        "entry": [
+          0,
+          0,
+          1.755
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          0,
+          0,
+          -1.755
+        ],
+        "rest": [
+          0,
+          0,
+          -1.755
+        ],
+        "jobPickup": [
+          0,
+          0,
+          -1.755
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            1.755
+          ],
+          "approach": [
+            0.0,
+            0,
+            3.7249999999999996
+          ],
+          "width": 1.5
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          0.0,
+          2.2,
+          -10.89
+        ],
+        "entry": [
+          0.0,
+          2.2,
+          -7.38
+        ],
+        "home": [
+          0.0,
+          2.2,
+          -9.135
+        ],
+        "work": [
+          0.0,
+          2.2,
+          -10.89
+        ],
+        "rest": [
+          0.0,
+          2.2,
+          -10.89
+        ],
+        "jobPickup": [
+          0.0,
+          2.2,
+          -10.89
+        ]
+      }
+    },
+    {
+      "id": "publishing",
+      "title": "Publishing",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-monkey-4147ed882633.glb",
+      "sourceModelSha256": "4147ed8826331096e7844ab13a0006df935738ba1e5b826a77c60440ad4705f7",
+      "placedExteriorBounds": [
+        9.863572239875793,
+        9.0,
+        11.618744015693665
+      ],
+      "exteriorTransform": {
+        "position": [
+          14.355,
+          2.2,
+          -41.76
+        ],
+        "rotation": [
+          0,
+          -0.3310960767041321,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.7,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.7,
+      "leaderEnvelope": {
+        "id": "monkey",
+        "sourceUri": "models/review-monkey-d961d9faf527.glb",
+        "boundsMin": [
+          -0.5617063045501709,
+          1.7394384030922083e-06,
+          -0.726102352142334
+        ],
+        "boundsMax": [
+          0.5614337921142578,
+          1.649240255355835,
+          0.7258111834526062
+        ],
+        "size": [
+          1.1231400966644287,
+          1.6492385159174319,
+          1.4519135355949402
+        ],
+        "radiusMetres": 0.7761113987661817,
+        "clearWidth": 1.7
+      },
+      "footprint": [
+        7.69,
+        9.06
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Print preparation",
+          "rect": [
+            -3.77,
+            -4.455,
+            2.77,
+            4.38
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Editorial intake",
+          "rect": [
+            -3.77,
+            0.075,
+            2.77,
+            4.38
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Publishing desk",
+          "rect": [
+            0.9999999999999999,
+            -4.455,
+            2.77,
+            4.38
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Editing desks",
+          "rect": [
+            0.9999999999999999,
+            0.075,
+            2.77,
+            4.38
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            7.69,
+            0.15,
+            9.06
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -4.53
+          ],
+          "size": [
+            7.69,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -3.845,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            9.06
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -2.3475,
+            1.5,
+            4.53
+          ],
+          "size": [
+            2.995,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            3.845,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            9.06
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            2.3475,
+            1.5,
+            4.53
+          ],
+          "size": [
+            2.995,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            4.53
+          ],
+          "size": [
+            1.7,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -2.3475,
+            1.5,
+            0
+          ],
+          "size": [
+            2.6950000000000003,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            -3.8225000000000002
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            -0.7075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.9249999999999999,
+            2.8,
+            -2.265
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -3.095,
+            0.4,
+            -2.265
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            0.7075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.9249999999999999,
+            1.5,
+            3.8225000000000002
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.9249999999999999,
+            2.8,
+            2.265
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -3.095,
+            0.4,
+            2.265
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            2.3475,
+            1.5,
+            0
+          ],
+          "size": [
+            2.6950000000000003,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            -3.8225000000000002
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            -0.7075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.9249999999999999,
+            2.8,
+            -2.265
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            3.095,
+            0.4,
+            -2.265
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            0.7075
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.9249999999999999,
+            1.5,
+            3.8225000000000002
+          ],
+          "size": [
+            0.15,
+            3,
+            1.415
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.9249999999999999,
+            2.8,
+            2.265
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.7
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            3.095,
+            0.4,
+            2.265
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            7.69,
+            0.15,
+            9.06
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            6.002499999999998
+          ],
+          "size": [
+            1.7,
+            0.15,
+            2.944999999999995
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            4.53
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.9249999999999999,
+            0,
+            -2.265
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.9249999999999999,
+            0,
+            2.265
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.9249999999999999,
+            0,
+            -2.265
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.9249999999999999,
+            0,
+            2.265
+          ],
+          "width": 1.7,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -2.265
+          ],
+          [
+            -1.835,
+            0,
+            -2.265
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.265
+          ],
+          [
+            -1.835,
+            0,
+            2.265
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -2.265
+          ],
+          [
+            1.835,
+            0,
+            -2.265
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            2.265
+          ],
+          [
+            1.835,
+            0,
+            2.265
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            4.53
+          ],
+          [
+            0,
+            0,
+            -3.5538886012338184
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -4.53
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -1.835,
+          0,
+          -2.265
+        ],
+        "workspace-1": [
+          -1.835,
+          0,
+          2.265
+        ],
+        "workspace-2": [
+          1.835,
+          0,
+          -2.265
+        ],
+        "workspace-3": [
+          1.835,
+          0,
+          2.265
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -3.5538886012338184
+        ],
+        "entry": [
+          0,
+          0,
+          4.53
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -1.835,
+          0,
+          -2.265
+        ],
+        "rest": [
+          0,
+          0,
+          -3.5538886012338184
+        ],
+        "jobPickup": [
+          -1.835,
+          0,
+          -2.265
+        ],
+        "leaderWork": [
+          1.835,
+          0,
+          -2.265
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            4.53
+          ],
+          "approach": [
+            -8.881784197001252e-16,
+            0,
+            7.474999999999995
+          ],
+          "width": 1.7
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          13.355970765953094,
+          2.2,
+          -44.498501522643295
+        ],
+        "workspace-1": [
+          11.883359414598045,
+          2.2,
+          -40.21454122779225
+        ],
+        "workspace-2": [
+          16.826640585401954,
+          2.2,
+          -43.30545877220774
+        ],
+        "workspace-3": [
+          15.354029234046905,
+          2.2,
+          -39.0214984773567
+        ],
+        "workspace-4": [
+          15.510297283803142,
+          2.2,
+          -45.12086482560914
+        ],
+        "entry": [
+          12.882388648644953,
+          2.2,
+          -37.47603970514895
+        ],
+        "home": [
+          14.355,
+          2.2,
+          -41.76
+        ],
+        "work": [
+          13.355970765953094,
+          2.2,
+          -44.498501522643295
+        ],
+        "rest": [
+          15.510297283803142,
+          2.2,
+          -45.12086482560914
+        ],
+        "jobPickup": [
+          13.355970765953094,
+          2.2,
+          -44.498501522643295
+        ],
+        "leaderWork": [
+          16.826640585401954,
+          2.2,
+          -43.30545877220774
+        ]
+      }
+    },
+    {
+      "id": "revenue",
+      "title": "Revenue",
+      "units": "metres",
+      "axes": "Y up; +Z front",
+      "sourceModelUri": "models/review-building-capybara-49598b840363.glb",
+      "sourceModelSha256": "49598b84036340dc2e77ac89cc817693ba4f1554bcf0f773e76291b189142110",
+      "placedExteriorBounds": [
+        20.111894845962524,
+        12.0,
+        20.088037490844727
+      ],
+      "exteriorTransform": {
+        "position": [
+          -3.915,
+          2.2,
+          -24.1425
+        ],
+        "rotation": [
+          0,
+          0.16076274062583473,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "fitStatus": "authored_plan_within_bounds_not_surveyed_shell_fit",
+      "ceilingClearance": 3.0,
+      "doorClearWidth": 1.5,
+      "doorClearHeight": 2.6,
+      "circulationClearWidth": 1.5,
+      "leaderEnvelope": {
+        "id": "capybara",
+        "sourceUri": "models/review-capybara-bf281acb2538.glb",
+        "boundsMin": [
+          -0.6389699578285217,
+          7.1240697252505925e-06,
+          -0.4350607693195343
+        ],
+        "boundsMax": [
+          0.638813853263855,
+          1.699979543685913,
+          0.43533411622047424
+        ],
+        "size": [
+          1.2777838110923767,
+          1.6999724196161878,
+          0.8703948855400085
+        ],
+        "radiusMetres": 0.6890441653210353,
+        "clearWidth": 1.5
+      },
+      "footprint": [
+        15.69,
+        15.67
+      ],
+      "rooms": [
+        {
+          "id": "room-2",
+          "name": "Secure records",
+          "rect": [
+            -7.77,
+            -7.76,
+            6.869999999999999,
+            7.685
+          ]
+        },
+        {
+          "id": "room-0",
+          "name": "Visitor reception",
+          "rect": [
+            -7.77,
+            0.075,
+            6.869999999999999,
+            7.685
+          ]
+        },
+        {
+          "id": "room-3",
+          "name": "Revenue office",
+          "rect": [
+            0.8999999999999999,
+            -7.76,
+            6.869999999999999,
+            7.685
+          ]
+        },
+        {
+          "id": "room-1",
+          "name": "Accounts workspace",
+          "rect": [
+            0.8999999999999999,
+            0.075,
+            6.869999999999999,
+            7.685
+          ]
+        }
+      ],
+      "solids": [
+        {
+          "id": "floor",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            0
+          ],
+          "size": [
+            15.69,
+            0.15,
+            15.67
+          ]
+        },
+        {
+          "id": "rear-wall",
+          "kind": "wall",
+          "center": [
+            0,
+            1.5,
+            -7.835
+          ],
+          "size": [
+            15.69,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer--1",
+          "kind": "wall",
+          "center": [
+            -7.845,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            15.67
+          ]
+        },
+        {
+          "id": "entry-jamb--1",
+          "kind": "wall",
+          "center": [
+            -4.297499999999999,
+            1.5,
+            7.835
+          ],
+          "size": [
+            7.095,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "outer-1",
+          "kind": "wall",
+          "center": [
+            7.845,
+            1.5,
+            0
+          ],
+          "size": [
+            0.15,
+            3,
+            15.67
+          ]
+        },
+        {
+          "id": "entry-jamb-1",
+          "kind": "wall",
+          "center": [
+            4.297499999999999,
+            1.5,
+            7.835
+          ],
+          "size": [
+            7.095,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "entry-header",
+          "kind": "header",
+          "center": [
+            0,
+            2.8,
+            7.835
+          ],
+          "size": [
+            1.5,
+            0.4,
+            0.15
+          ]
+        },
+        {
+          "id": "room-divider--1",
+          "kind": "wall",
+          "center": [
+            -4.297499999999999,
+            1.5,
+            0
+          ],
+          "size": [
+            6.794999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor--1--1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -6.251250000000001
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1674999999999995
+          ]
+        },
+        {
+          "id": "corridor--1--1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            -1.58375
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1675
+          ]
+        },
+        {
+          "id": "door-header--1--1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            -3.9175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-2",
+          "kind": "desk",
+          "center": [
+            -7.095,
+            0.4,
+            -3.9175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor--1-1-a",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            1.58375
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1675
+          ]
+        },
+        {
+          "id": "corridor--1-1-b",
+          "kind": "wall",
+          "center": [
+            -0.825,
+            1.5,
+            6.251250000000001
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1674999999999995
+          ]
+        },
+        {
+          "id": "door-header--1-1",
+          "kind": "header",
+          "center": [
+            -0.825,
+            2.8,
+            3.9175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-0",
+          "kind": "desk",
+          "center": [
+            -7.095,
+            0.4,
+            3.9175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "room-divider-1",
+          "kind": "wall",
+          "center": [
+            4.297499999999999,
+            1.5,
+            0
+          ],
+          "size": [
+            6.794999999999999,
+            3,
+            0.15
+          ]
+        },
+        {
+          "id": "corridor-1--1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -6.251250000000001
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1674999999999995
+          ]
+        },
+        {
+          "id": "corridor-1--1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            -1.58375
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1675
+          ]
+        },
+        {
+          "id": "door-header-1--1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            -3.9175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-3",
+          "kind": "desk",
+          "center": [
+            7.095,
+            0.4,
+            -3.9175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "corridor-1-1-a",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            1.58375
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1675
+          ]
+        },
+        {
+          "id": "corridor-1-1-b",
+          "kind": "wall",
+          "center": [
+            0.825,
+            1.5,
+            6.251250000000001
+          ],
+          "size": [
+            0.15,
+            3,
+            3.1674999999999995
+          ]
+        },
+        {
+          "id": "door-header-1-1",
+          "kind": "header",
+          "center": [
+            0.825,
+            2.8,
+            3.9175
+          ],
+          "size": [
+            0.15,
+            0.4,
+            1.5
+          ]
+        },
+        {
+          "id": "desk-1",
+          "kind": "desk",
+          "center": [
+            7.095,
+            0.4,
+            3.9175
+          ],
+          "size": [
+            0.85,
+            0.8,
+            1.8
+          ]
+        },
+        {
+          "id": "ceiling-reference",
+          "kind": "ceiling",
+          "center": [
+            0,
+            3.075,
+            0
+          ],
+          "size": [
+            15.69,
+            0.15,
+            15.67
+          ]
+        },
+        {
+          "id": "portal-floor-0",
+          "kind": "floor",
+          "center": [
+            0,
+            -0.075,
+            9.717500000000001
+          ],
+          "size": [
+            1.5,
+            0.15,
+            3.7650000000000015
+          ]
+        }
+      ],
+      "doors": [
+        {
+          "id": "front-entry",
+          "center": [
+            0,
+            0,
+            7.835
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "x"
+        },
+        {
+          "id": "room-door-2",
+          "center": [
+            -0.825,
+            0,
+            -3.9175
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-0",
+          "center": [
+            -0.825,
+            0,
+            3.9175
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-3",
+          "center": [
+            0.825,
+            0,
+            -3.9175
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        },
+        {
+          "id": "room-door-1",
+          "center": [
+            0.825,
+            0,
+            3.9175
+          ],
+          "width": 1.5,
+          "height": 2.6,
+          "axis": "z"
+        }
+      ],
+      "routes": [
+        [
+          [
+            0,
+            0,
+            -3.9175
+          ],
+          [
+            -3.785,
+            0,
+            -3.9175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            3.9175
+          ],
+          [
+            -3.785,
+            0,
+            3.9175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            -3.9175
+          ],
+          [
+            3.785,
+            0,
+            -3.9175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            3.9175
+          ],
+          [
+            3.785,
+            0,
+            3.9175
+          ]
+        ],
+        [
+          [
+            0,
+            0,
+            7.835
+          ],
+          [
+            0,
+            0,
+            -6.945955834678965
+          ]
+        ]
+      ],
+      "reservedVoids": [],
+      "ramps": [],
+      "expansion": [
+        {
+          "id": "rear-service-growth",
+          "position": [
+            0,
+            0,
+            -7.835
+          ],
+          "note": "Future room/vertical access reserve; fit against actual shell before opening rear wall"
+        }
+      ],
+      "notes": [
+        "New authored interior design based on role and current scale, not recovered original floorplans. Exterior entrances and negative spaces still require visible Blender alignment."
+      ],
+      "enclosure": "single_storey_cutaway",
+      "anchors": {
+        "workspace-0": [
+          -3.785,
+          0,
+          -3.9175
+        ],
+        "workspace-1": [
+          -3.785,
+          0,
+          3.9175
+        ],
+        "workspace-2": [
+          3.785,
+          0,
+          -3.9175
+        ],
+        "workspace-3": [
+          3.785,
+          0,
+          3.9175
+        ],
+        "workspace-4": [
+          0,
+          0,
+          -6.945955834678965
+        ],
+        "entry": [
+          0,
+          0,
+          7.835
+        ],
+        "home": [
+          0,
+          0,
+          0
+        ],
+        "work": [
+          -3.785,
+          0,
+          -3.9175
+        ],
+        "rest": [
+          0,
+          0,
+          -6.945955834678965
+        ],
+        "jobPickup": [
+          -3.785,
+          0,
+          -3.9175
+        ],
+        "leaderWork": [
+          3.785,
+          0,
+          -3.9175
+        ]
+      },
+      "runtimePortalStatus": "authored_approach",
+      "portals": [
+        {
+          "id": "entry-0",
+          "entry": [
+            0,
+            0,
+            7.835
+          ],
+          "approach": [
+            0.0,
+            0,
+            11.600000000000001
+          ],
+          "width": 1.5
+        }
+      ],
+      "worldAnchors": {
+        "workspace-0": [
+          -8.278272996908582,
+          2.2,
+          -27.403616373950552
+        ],
+        "workspace-1": [
+          -7.024115469640637,
+          2.2,
+          -19.669644955798223
+        ],
+        "workspace-2": [
+          -0.8058845303593631,
+          2.2,
+          -28.615355044201774
+        ],
+        "workspace-3": [
+          0.44827299690858236,
+          2.2,
+          -20.881383626049445
+        ],
+        "workspace-4": [
+          -5.026847197719634,
+          2.2,
+          -30.998891052604403
+        ],
+        "entry": [
+          -2.6608424727320545,
+          2.2,
+          -16.40852858184767
+        ],
+        "home": [
+          -3.915,
+          2.2,
+          -24.1425
+        ],
+        "work": [
+          -8.278272996908582,
+          2.2,
+          -27.403616373950552
+        ],
+        "rest": [
+          -5.026847197719634,
+          2.2,
+          -30.998891052604403
+        ],
+        "jobPickup": [
+          -8.278272996908582,
+          2.2,
+          -27.403616373950552
+        ],
+        "leaderWork": [
+          -0.8058845303593631,
+          2.2,
+          -28.615355044201774
+        ]
+      }
+    }
+  ]
+}

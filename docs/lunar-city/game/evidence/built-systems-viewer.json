@@ -1,0 +1,13 @@
+{
+  "capturedAt": "2026-09-08T04:58:17.557Z",
+  "url": "http://127.0.0.1:5180/lunar-city-review.html",
+  "greeting": "Worker life\n\nAmbient gestures are local presentation. They do not send messages or change work.\n\nSession Demo 1 and Session Demo 0: greeting\nWorker personality\n\nCurious — Pauses for a small look around.\n\nAuthored city presentation. This style does not describe or change the agent’s instructions or work.\n\nConfigured role\nArchive specialist\nConfigured groups\nNo fresh group information\nRole metadata\nfresh · local-demo\nPreview city gesture\n\nProfile SOUL: Archivist on local-city-demo. Loaded only when requested.\n\nLoad profile SOUL\nGreet a nearby worker\nObserved delegation\n\nNo exact parent or delegated worker is present in this snapshot.\n\nAvailable for nearby resting workers in balanced or detailed mode with motion enabled. A greeting also needs a free nearby partner.",
+  "alerts": "City attention\n\n1 attention items · 1 unacknowledged\n\nAcknowledgement is local. It does not change tasks or clear blockers.\n\nShow resolved history\nArchivist · local-city-demo · blocked · reopened\n\nblocked\n\nInspect Archivist · local-city-demoAcknowledge Archivist · local-city-demo\nLocal demonstration · source health · resolved\n\nstale",
+  "delegation": "Observed delegation · local visual links. No messages or artifacts are sent.\n\nTraveling toward the same destination: Inspect parent · Archivist · local-city-demo to Inspect subagent demo-child · Archivist · local-city-demo",
+  "errors": [],
+  "externalRequests": [],
+  "tamperRejected": "Lunar City asset digest mismatch: http://127.0.0.1:5180/lunar-city/v2-review/models/terrain-752ada2a9541.glb",
+  "navigationTamperRejected": "Lunar City asset digest mismatch: http://127.0.0.1:5180/lunar-city/v2-review/models/navigation-a4ae0c0418e0.glb",
+  "recoveryAfterTamper": true,
+  "scope": "Actual local WebGL viewer. Demo observations only; no gateway/API writes."
+}

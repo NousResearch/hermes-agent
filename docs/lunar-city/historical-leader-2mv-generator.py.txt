@@ -1,0 +1,111 @@
+"""Convert the approved 2x2 leader cards into Hunyuan2MV reference meshes.
+
+This is the same multiview intake stage used for the Lunar City buildings and
+workers. It intentionally preserves the source-card basenames in metadata so
+each generated GLB can be traced back to the approved design.
+"""
+
+from __future__ import annotations
+
+import json
+from pathlib import Path
+
+from PIL import Image
+
+from hy3dgen.rembg import BackgroundRemover
+from hy3dgen.shapegen import Hunyuan3DDiTFlowMatchingPipeline
+from hy3dgen.shapegen.pipelines import export_to_trimesh
+
+
+ROOT = Path("/Users/mikedemott/.codex/worktrees/8d25/hermes-agent")
+IMAGE_ROOT = Path("/Users/mikedemott/.codex/generated_images/01a069cb-5f95-7040-a5d1-5832731e13f4")
+OUT_DIR = ROOT / "apps/desktop/public/lunar-city/generated-3d/hunyuan2mv-leader-reference-2026-09-04"
+CROP_DIR = OUT_DIR / "source-crops"
+MODEL = "/private/tmp/hunyuan-cache/hub/models--tencent--Hunyuan3D-2mv/snapshots/3a761b539b29fe4ff64714813aa9560fd66f5de0"
+METADATA = OUT_DIR / "leader-reference-metadata.json"
+
+
+LEADERS = [
+    ("leader-owl-librarian", "owl", "knowledge", "exec-6a3122cb-2538-4777-9d5e-75002988b2e5.png"),
+    ("leader-elephant-memory", "elephant", "memory", "exec-239f67bb-f45e-46b5-8f85-a99f0d5f12fb.png"),
+    ("leader-cat-arts", "cat", "creative", "exec-f0b3b64d-732e-4f07-a7a7-e9e2af970fe7.png"),
+    ("leader-fox-scientist", "fox", "research", "exec-77739e6c-1029-44c4-b241-8362bcc52bd2.png"),
+    ("leader-capybara-revenue", "capybara", "revenue", "exec-f1e0499f-dfb6-4449-88df-9357d9a180b9.png"),
+    ("leader-lion-steward", "lion", "governance", "exec-3a25ab22-6ed2-4170-943f-11133401149d.png"),
+    ("leader-beaver-architect", "beaver", "architecture", "exec-f365b1ce-578a-4339-b8a0-3586bd67c446.png"),
+    ("leader-monkey-poet", "monkey", "publication", "exec-efa2fe66-b4d7-411a-931e-2b428406c0db.png"),
+]
+
+
+def cut_views(source: Path, leader_id: str, remover: BackgroundRemover) -> dict[str, Image.Image]:
+    image = Image.open(source).convert("RGB")
+    width, height = image.size
+    mid_x, mid_y = width // 2, height // 2
+    # Leave out the panel labels and the center grid gutters while retaining
+    # the complete character/building silhouette in each approved view.
+    boxes = {
+        "plan": (8, 8, mid_x - 5, mid_y - 16),
+        "side": (mid_x + 5, 8, width - 8, mid_y - 16),
+        "front": (8, mid_y + 5, mid_x - 5, height - 34),
+        "rear": (mid_x + 5, mid_y + 5, width - 8, height - 34),
+    }
+    views = {}
+    crop_root = CROP_DIR / leader_id
+    crop_root.mkdir(parents=True, exist_ok=True)
+    for name, box in boxes.items():
+        cleaned = remover(image.crop(box))
+        cleaned.save(crop_root / f"{name}.png")
+        views[name] = cleaned
+    return views
+
+
+def main() -> None:
+    OUT_DIR.mkdir(parents=True, exist_ok=True)
+    remover = BackgroundRemover()
+    pipeline = Hunyuan3DDiTFlowMatchingPipeline.from_pretrained(
+        MODEL,
+        subfolder="hunyuan3d-dit-v2-mv-turbo",
+        use_safetensors=True,
+        device="cpu",
+    )
+    records = []
+    for leader_id, animal, role, source_name in LEADERS:
+        source = IMAGE_ROOT / source_name
+        output = OUT_DIR / f"{leader_id}.glb"
+        record = {
+            "id": leader_id,
+            "animal": animal,
+            "role": role,
+            "sourceCard": source_name,
+            "output": str(output.relative_to(ROOT / "apps/desktop/public/lunar-city/generated-3d")),
+        }
+        if not source.exists():
+            record["status"] = "missing_source_card"
+            records.append(record)
+            continue
+        if output.exists() and output.stat().st_size > 0:
+            record["status"] = "already_generated"
+            records.append(record)
+            continue
+        views = cut_views(source, leader_id, remover)
+        outputs = pipeline(
+            image=views,
+            num_inference_steps=5,
+            guidance_scale=5.0,
+            octree_resolution=64,
+            num_chunks=20000,
+            output_type="mesh",
+        )
+        mesh = export_to_trimesh(outputs)[0]
+        mesh.export(output)
+        record["status"] = "generated"
+        record["vertices"] = len(mesh.vertices)
+        record["faces"] = len(mesh.faces)
+        records.append(record)
+        print(json.dumps(record), flush=True)
+    METADATA.write_text(json.dumps({"schemaVersion": 1, "status": "reference_only", "leaders": records}, indent=2, sort_keys=True) + "\n")
+    print(json.dumps({"generated": sum(item["status"] in {"generated", "already_generated"} for item in records), "metadata": str(METADATA)}), flush=True)
+
+
+if __name__ == "__main__":
+    main()

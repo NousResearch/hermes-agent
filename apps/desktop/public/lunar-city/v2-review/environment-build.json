@@ -1,0 +1,385 @@
+{
+  "units": "metres",
+  "coordinates": "right-handed Y up",
+  "horizontalExpansion": 1,
+  "terrain": {
+    "uri": "models/terrain-091b8a6e7b8e.glb",
+    "colliders": [
+      {
+        "id": "tree:0",
+        "kind": "cylinder",
+        "center": [
+          -41.283515802988,
+          3.592633617486465,
+          52.29386552229397
+        ],
+        "radius": 0.11789843802825958,
+        "height": 2.263650010142584
+      },
+      {
+        "id": "tree:1",
+        "kind": "cylinder",
+        "center": [
+          -50.7392110668416,
+          3.5924024479832743,
+          43.372552441971294
+        ],
+        "radius": 0.11789843802825958,
+        "height": 2.263650010142584
+      },
+      {
+        "id": "tree:2",
+        "kind": "cylinder",
+        "center": [
+          -35.88711216344484,
+          3.639261167655315,
+          46.57686493494381
+        ],
+        "radius": 0.10530755143368625,
+        "height": 2.021904987526776
+      },
+      {
+        "id": "tree:3",
+        "kind": "cylinder",
+        "center": [
+          -45.336795357468674,
+          3.6389254454588995,
+          37.64918396323657
+        ],
+        "radius": 0.10530755143368625,
+        "height": 2.021904987526776
+      },
+      {
+        "id": "tree:4",
+        "kind": "cylinder",
+        "center": [
+          20.13980156976066,
+          2.8627074345612566,
+          1.0881408776037245
+        ],
+        "radius": 0.10041173604610129,
+        "height": 1.9279053320851447
+      },
+      {
+        "id": "tree:5",
+        "kind": "cylinder",
+        "center": [
+          67.56637771072693,
+          3.0828371516638837,
+          11.46413399887553
+        ],
+        "radius": 0.12084589017172143,
+        "height": 2.3202410912970515
+      },
+      {
+        "id": "tree:6",
+        "kind": "cylinder",
+        "center": [
+          60.14065353927307,
+          3.151198853315237,
+          0.7936785011244698
+        ],
+        "radius": 0.12084589017172143,
+        "height": 2.3202410912970515
+      },
+      {
+        "id": "tree:7",
+        "kind": "cylinder",
+        "center": [
+          65.77824858650199,
+          2.9447120898121923,
+          -3.3747610068987983
+        ],
+        "radius": 0.11925606908169567,
+        "height": 2.2897165263685566
+      },
+      {
+        "id": "tree:11",
+        "kind": "cylinder",
+        "center": [
+          1.8320510886165133,
+          3.3370651585664026,
+          -44.275284491046655
+        ],
+        "radius": 0.1447429607071437,
+        "height": 2.779064845577159
+      },
+      {
+        "id": "tree:15",
+        "kind": "cylinder",
+        "center": [
+          -41.86392724013626,
+          3.2686901845069998,
+          -26.654299223363306
+        ],
+        "radius": 0.13678093339964195,
+        "height": 2.6261939212731256
+      },
+      {
+        "id": "tree:16",
+        "kind": "cylinder",
+        "center": [
+          43.13607275986374,
+          2.8735291400215206,
+          -27.99292490373018
+        ],
+        "radius": 0.0965067080509649,
+        "height": 1.852928794578526
+      },
+      {
+        "id": "tree:19",
+        "kind": "cylinder",
+        "center": [
+          -42.476336467754,
+          2.8069152834297855,
+          -9.654299223363306
+        ],
+        "radius": 0.08925034022734002,
+        "height": 1.7136065323649283
+      },
+      {
+        "id": "tree:21",
+        "kind": "cylinder",
+        "center": [
+          -42.46797189374787,
+          3.3447459188448194,
+          -1.1542992233633065
+        ],
+        "radius": 0.1447429607071437,
+        "height": 2.779064845577159
+      },
+      {
+        "id": "tree:23",
+        "kind": "cylinder",
+        "center": [
+          -49.1176349177301,
+          3.4454392650649464,
+          30.63884919044674
+        ],
+        "radius": 0.14923831267087992,
+        "height": 2.8653756032808944
+      }
+    ],
+    "statistics": {
+      "animationClips": [],
+      "extent": [
+        900,
+        6.3572929949083035,
+        900
+      ],
+      "drawCalls": 15,
+      "materials": 10,
+      "meshes": 15,
+      "nodes": 20,
+      "textures": 1,
+      "triangles": 77520,
+      "sha256": "091b8a6e7b8e4643c929097af189de61740cca17bf418d5ddbafdcf2ad7ceaa6",
+      "bytes": 1662540,
+      "gpuMiB": 1.5855216979980469,
+      "gpuBytes": 1662540,
+      "accessorBytes": 1662540,
+      "budget": {
+        "maxDrawCalls": 16,
+        "maxGpuMiB": 20,
+        "maxMaterials": 10,
+        "maxTextures": 4,
+        "maxTriangles": 90000
+      }
+    },
+    "bounds": {
+      "min": [
+        -450,
+        0.8773068918280582,
+        -450
+      ],
+      "max": [
+        450,
+        7.234599886736362,
+        450
+      ]
+    }
+  },
+  "navigation": {
+    "uri": "models/navigation-b62e296a6ba0.glb",
+    "colliders": [],
+    "statistics": {
+      "animationClips": [],
+      "extent": [
+        106.02551040649413,
+        0.09999999999999964,
+        97.09581146240234
+      ],
+      "drawCalls": 1,
+      "materials": 2,
+      "meshes": 1,
+      "nodes": 3,
+      "textures": 1,
+      "triangles": 6648,
+      "sha256": "b62e296a6ba0f0a8c5e35229767a35280267a5d846d5a0a02f736b576986193a",
+      "bytes": 312180,
+      "gpuMiB": 0.2977180480957031,
+      "gpuBytes": 312180,
+      "accessorBytes": 312180
+    },
+    "bounds": {
+      "min": [
+        -33.6032112121582,
+        2.100000095367432,
+        -35.74099426269531
+      ],
+      "max": [
+        72.42229919433593,
+        2.2000000953674315,
+        61.35481719970703
+      ]
+    }
+  },
+  "districts": [
+    {
+      "id": "library",
+      "position": [
+        -29.232,
+        0.55,
+        -18.792
+      ],
+      "diameter": 18.75
+    },
+    {
+      "id": "research-lab",
+      "position": [
+        26.099999999999998,
+        0.55,
+        -22.968000000000004
+      ],
+      "diameter": 17.25
+    },
+    {
+      "id": "depot",
+      "position": [
+        -41.1075,
+        0.55,
+        13.049999999999999
+      ],
+      "diameter": 18
+    },
+    {
+      "id": "review-office",
+      "position": [
+        58.724999999999994,
+        0.55,
+        27.405
+      ],
+      "diameter": 18
+    },
+    {
+      "id": "triage",
+      "position": [
+        10.44,
+        0.55,
+        27.405
+      ],
+      "diameter": 15.75
+    },
+    {
+      "id": "garden",
+      "position": [
+        -8.352,
+        0.55,
+        35.495999999999995
+      ],
+      "diameter": 18
+    },
+    {
+      "id": "council",
+      "position": [
+        32.625,
+        0.55,
+        37.845
+      ],
+      "diameter": 33
+    },
+    {
+      "id": "bus",
+      "position": [
+        0,
+        0.55,
+        -9.135
+      ],
+      "diameter": 17.25
+    },
+    {
+      "id": "arts-studio",
+      "position": [
+        -30.276000000000003,
+        0.55,
+        -1.044
+      ],
+      "diameter": 15
+    },
+    {
+      "id": "engineering-workshop",
+      "position": [
+        -30.276000000000003,
+        0.55,
+        31.32
+      ],
+      "diameter": 19.5
+    },
+    {
+      "id": "release-gatehouse",
+      "position": [
+        0,
+        0.55,
+        12.528
+      ],
+      "diameter": 17.25
+    },
+    {
+      "id": "archive",
+      "position": [
+        42.412499999999994,
+        0.55,
+        -6.5249999999999995
+      ],
+      "diameter": 26.25
+    },
+    {
+      "id": "revenue",
+      "position": [
+        -3.915,
+        0.55,
+        -24.1425
+      ],
+      "diameter": 23.25
+    },
+    {
+      "id": "publishing",
+      "position": [
+        14.355,
+        0.55,
+        -41.76
+      ],
+      "diameter": 14.25
+    },
+    {
+      "id": "project-inner",
+      "position": [
+        -5.22,
+        0.55,
+        57.42
+      ],
+      "diameter": 15.75
+    },
+    {
+      "id": "project-outer",
+      "position": [
+        65.25,
+        0.55,
+        53.505
+      ],
+      "diameter": 15.75
+    }
+  ],
+  "buildingStatus": "Eight card-derived building review candidates with distinct operational fixtures",
+  "landscape": "Continuous district-colored ground, riverbanks, groves, gravel shoulders and paved streets"
+}

@@ -1,0 +1,47 @@
+{
+  "capturedAt": "2026-09-08T02:52:34.194471+00:00",
+  "uiTests": {
+    "files": 45,
+    "passed": 582
+  },
+  "rendererTypecheck": "passed",
+  "productionBuild": {
+    "passed": true,
+    "runtimeAssetsIncluded": true,
+    "sizeApproxMB": 170,
+    "durationSeconds": 20.37,
+    "includesCiAndReconstructedCat": true
+  },
+  "builtWebGLViewer": "evidence/built-viewer.json",
+  "navigation": "evidence/navigation.json",
+  "releaseAccepted": false,
+  "workerSkin": "evidence/worker-baseline-animation.json",
+  "independentSkeletonsAndLod": "evidence/worker-clones.json",
+  "leaderSkin": "evidence/cat-animation.json",
+  "focusAndPicking": "evidence/smoke.json",
+  "scopedLint": "passed",
+  "layoutTests": {
+    "passed": 2
+  },
+  "ciWorkerReview": {
+    "skin": "evidence/worker-ci-repair-triage-animation.json",
+    "scope": "Opt-in review pack included in refreshed production renderer build; no production fleet promotion",
+    "productionAccepted": false,
+    "independentSkeletonsAndLod": "evidence/worker-ci-clones.json"
+  },
+  "catStudioReview": {
+    "runtimeBounds": "evidence/cat-studio-runtime.json",
+    "builtLoad": "evidence/built-viewer.json",
+    "heightMetres": 10,
+    "groundYMetres": 2.35,
+    "productionAccepted": false
+  },
+  "terrainClearance": {
+    "regression": "terrain-clearance.test.mjs; failed before, passes after",
+    "districtsChecked": 16,
+    "layoutAndClearanceTestsPassed": 3,
+    "builtScreenshot": "evidence/built-arts-studio.png",
+    "navigation": "evidence/navigation.json",
+    "scope": "District perimeter trim only; no building asset changes"
+  }
+}

@@ -1,0 +1,208 @@
+{
+  "capturedAt": "2026-09-08T07:46:35.946Z",
+  "url": "http://127.0.0.1:5180/lunar-city-review.html",
+  "worldManifestSha256": "5e65ea0a065c6522b448f09deda996bdb29232ac0cb7d87a597e67d89366dabc",
+  "results": [
+    {
+      "id": "library",
+      "openedAndClosed": true
+    },
+    {
+      "id": "research-lab",
+      "openedAndClosed": true
+    },
+    {
+      "id": "depot",
+      "openedAndClosed": true
+    },
+    {
+      "id": "review-office",
+      "openedAndClosed": true
+    },
+    {
+      "id": "triage",
+      "openedAndClosed": true
+    },
+    {
+      "id": "garden",
+      "openedAndClosed": true
+    },
+    {
+      "id": "council",
+      "openedAndClosed": true
+    },
+    {
+      "id": "arts-studio",
+      "openedAndClosed": true
+    },
+    {
+      "id": "engineering-workshop",
+      "openedAndClosed": true
+    },
+    {
+      "id": "release-gatehouse",
+      "openedAndClosed": true
+    },
+    {
+      "id": "archive",
+      "openedAndClosed": true
+    },
+    {
+      "id": "bus",
+      "openedAndClosed": true
+    },
+    {
+      "id": "publishing",
+      "openedAndClosed": true
+    },
+    {
+      "id": "revenue",
+      "openedAndClosed": true
+    }
+  ],
+  "localLeaderControls": [
+    {
+      "key": "lunar-city:leader:owl",
+      "enabled": false,
+      "automaticResetVerified": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:elephant",
+      "enabled": false,
+      "automaticResetVerified": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:cat",
+      "enabled": true,
+      "automaticResetVerified": true,
+      "reason": "Local visual activity only · does not start backend work."
+    },
+    {
+      "key": "lunar-city:leader:fox",
+      "enabled": false,
+      "automaticResetVerified": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:capybara",
+      "enabled": false,
+      "automaticResetVerified": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:lion",
+      "enabled": false,
+      "automaticResetVerified": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:beaver",
+      "enabled": false,
+      "automaticResetVerified": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    },
+    {
+      "key": "lunar-city:leader:monkey",
+      "enabled": false,
+      "automaticResetVerified": false,
+      "reason": "Locomotion unavailable in this imported model: a usable walk clip is required."
+    }
+  ],
+  "errors": [],
+  "externalRequests": [],
+  "scope": "Actual browser cutaway UI open/close and selection reset for each authored plan; saved library and waterworks views. Not proof of shell fit or navigation.",
+  "servedManifestSha256": "8e6ad2140e8f14c0446f2670473032c21b7233a145920aad2baff8575d69e6c1",
+  "manifestSampledAfterUiAt": "2026-09-08T07:46:50.557Z",
+  "reviewLeaderAssets": [
+    {
+      "id": "owl",
+      "uri": "models/review-owl-424364fdacee.glb",
+      "heightMetres": 1.5,
+      "position": [
+        -21.051539326963017,
+        2.2,
+        -13.533132424476225
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "elephant",
+      "uri": "models/review-elephant-90357430baa2.glb",
+      "heightMetres": 2.3,
+      "position": [
+        29.46483076077691,
+        2.2,
+        -4.533050886273372
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "cat",
+      "uri": "models/review-cat-a94817c2f48a.glb",
+      "heightMetres": 1.6,
+      "position": [
+        -22.805440154831935,
+        2.2,
+        -0.786394488097653
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "fox",
+      "uri": "models/review-fox-6f02184262d0.glb",
+      "heightMetres": 1.75,
+      "position": [
+        19.925381323310337,
+        2.2,
+        -17.5343355645131
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "capybara",
+      "uri": "models/review-capybara-bf281acb2538.glb",
+      "heightMetres": 1.7,
+      "position": [
+        -2.0581745607775153,
+        2.2,
+        -12.69207645812801
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "lion",
+      "uri": "models/review-lion-c135959f5fd5.glb",
+      "heightMetres": 2,
+      "position": [
+        22.11267208468165,
+        2.2,
+        25.65069961823071
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "beaver",
+      "uri": "models/review-beaver-b0878c9ea5cc.glb",
+      "heightMetres": 1.6,
+      "position": [
+        -23.51691010815831,
+        2.2,
+        24.327838042922387
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "monkey",
+      "uri": "models/review-monkey-d961d9faf527.glb",
+      "heightMetres": 1.65,
+      "position": [
+        11.925028730379918,
+        2.2,
+        -34.690992670196124
+      ],
+      "rotationY": 0
+    }
+  ]
+}

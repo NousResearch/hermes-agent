@@ -1,0 +1,68 @@
+{
+  "url": "http://127.0.0.1:5178/lunar-city-review.html",
+  "capturedAt": "2026-09-08T02:52:29.372Z",
+  "evidence": "Headless browser WebGL, not packaged Electron or live gateway acceptance",
+  "pausedReviewAssets": [
+    {
+      "key": "lunar-city:leader:owl",
+      "cameraRadius": 5.25,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:leader:elephant",
+      "cameraRadius": 8.049999999999999,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:leader:cat",
+      "cameraRadius": 5.6000000000000005,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:leader:fox",
+      "cameraRadius": 6.125,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:leader:capybara",
+      "cameraRadius": 5.95,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:leader:lion",
+      "cameraRadius": 7,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:leader:beaver",
+      "cameraRadius": 5.6000000000000005,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:leader:monkey",
+      "cameraRadius": 5.7749999999999995,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:review-worker:baseline",
+      "cameraRadius": 4.2,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:model:library",
+      "cameraRadius": 47.363819503784185,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:model:research-lab",
+      "cameraRadius": 38.758844757080084,
+      "activeAnimations": 0
+    },
+    {
+      "key": "lunar-city:model:publishing",
+      "cameraRadius": 34.08164911270142,
+      "activeAnimations": 0
+    }
+  ],
+  "pageErrors": []
+}

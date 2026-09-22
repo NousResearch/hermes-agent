@@ -1,0 +1,257 @@
+{
+  "exports": [
+    {
+      "building": "library",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/library-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "library",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/library-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "research-lab",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/research-lab-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "research-lab",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/research-lab-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "depot",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/depot-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "depot",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/depot-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "review-office",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/review-office-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "review-office",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/review-office-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "triage",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/triage-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "triage",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/triage-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "garden",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/garden-interior.glb",
+      "objects": 6,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "garden",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/garden-cutaway.glb",
+      "objects": 6,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "council",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/council-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "council",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/council-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "arts-studio",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/arts-studio-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "arts-studio",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/arts-studio-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "engineering-workshop",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/engineering-workshop-interior.glb",
+      "objects": 24,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "engineering-workshop",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/engineering-workshop-cutaway.glb",
+      "objects": 22,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "release-gatehouse",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/release-gatehouse-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "release-gatehouse",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/release-gatehouse-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "archive",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/archive-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "archive",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/archive-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "bus",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/bus-interior.glb",
+      "objects": 4,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "bus",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/bus-cutaway.glb",
+      "objects": 4,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "publishing",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/publishing-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "publishing",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/publishing-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "revenue",
+      "mode": "interior",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/revenue-interior.glb",
+      "objects": 27,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    },
+    {
+      "building": "revenue",
+      "mode": "cutaway",
+      "file": "/Users/mikedemott/.codex/worktrees/71ea/hermes-update-20260902-bot-integration-sparse/apps/desktop/public/lunar-city/interior-plans-v1/revenue-cutaway.glb",
+      "objects": 21,
+      "units": "metres",
+      "front": "+Z",
+      "stage": "authored prototype; exterior fit pending"
+    }
+  ],
+  "sourceWorldSha256": "5e65ea0a065c6522b448f09deda996bdb29232ac0cb7d87a597e67d89366dabc"
+}

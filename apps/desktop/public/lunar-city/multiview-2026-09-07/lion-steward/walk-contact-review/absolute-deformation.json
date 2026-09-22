@@ -1,0 +1,14 @@
+{
+  "asset": "lion-steward",
+  "worstAbsoluteGrowth": {
+    "frame": 46,
+    "growthMetres": 0.027662413117387964,
+    "restLengthMetres": 0.014306013309805776,
+    "restMidpoint": [
+      -0.0013105107937008142,
+      -0.4351704269647598,
+      0.41318298876285553
+    ]
+  },
+  "maxEdgesOver3xAnd5mmGrowth": 1
+}

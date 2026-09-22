@@ -1,0 +1,48 @@
+{
+  "evidence": "Local headless WebGL with actual shipped GLB; not packaged or art acceptance",
+  "sourceAsset": "apps/desktop/public/lunar-city/v2-review/models/workers.glb",
+  "sourceSha256": "191736b25492d105798e0ba0aa115d8feca0143f997a25926be56a7cebc8058e",
+  "runtimeTargetHeightMetres": 1.2,
+  "normalization": "Selected enabled CPU-deformed geometry, uniform wrapper, ground pivot; cached per animated LOD and instance group; reviewedNear bypasses fit",
+  "cameraUnchangedRadius": 9.433981132056603,
+  "nearIdleSample": [
+    {
+      "name": "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:9:Archivist:session:string:6:demo-0",
+      "minY": 1.9424072138545512,
+      "maxY": 3.1160805253322224,
+      "anchorY": 1.9416667222976685,
+      "meshes": 5,
+      "height": 1.1736733114776712,
+      "groundOffset": 0.0007404915568827164
+    },
+    {
+      "name": "lunar-city:entity:kind:string:7:session:connection:string:15:local-city-demo:profile:string:8:Engineer:session:string:6:demo-1",
+      "minY": 1.9424072138545512,
+      "maxY": 3.1160805253322224,
+      "anchorY": 1.9416667222976685,
+      "meshes": 5,
+      "height": 1.1736733114776712,
+      "groundOffset": 0.0007404915568827164
+    }
+  ],
+  "hardwareInstanceLods": [
+    {
+      "lod": 1,
+      "meshes": 1,
+      "height": 1.1999999756398412,
+      "groundOffset": -1.243923031246652e-08
+    },
+    {
+      "lod": 2,
+      "meshes": 1,
+      "height": 1.1999999920527102,
+      "groundOffset": -7.947278390929569e-10
+    }
+  ],
+  "pageErrors": [],
+  "limitations": [
+    "Near height varies modestly with authored idle animation.",
+    "Historical fixture proportions and disconnected parts remain unpolished.",
+    "No revised source models or new rig acceptance."
+  ]
+}

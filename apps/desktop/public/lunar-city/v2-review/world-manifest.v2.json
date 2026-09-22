@@ -1,0 +1,5032 @@
+{
+  "version": 2,
+  "source": {
+    "sha256": "248e8d40946b08b9f74f4b2ddd0ba17e4f17fd054260189972164c5d6ca70590"
+  },
+  "assetVersion": "2.0.0",
+  "characterAssets": {
+    "fleetIdentityFloor": 128,
+    "leaders": [
+      {
+        "id": "owl",
+        "species": "owl",
+        "silhouetteId": "card-owl",
+        "visualId": "leader:owl"
+      },
+      {
+        "id": "elephant",
+        "species": "elephant",
+        "silhouetteId": "card-elephant",
+        "visualId": "leader:elephant"
+      },
+      {
+        "id": "cat",
+        "species": "cat",
+        "silhouetteId": "card-cat",
+        "visualId": "leader:cat"
+      },
+      {
+        "id": "fox",
+        "species": "fox",
+        "silhouetteId": "card-fox",
+        "visualId": "leader:fox"
+      },
+      {
+        "id": "capybara",
+        "species": "capybara",
+        "silhouetteId": "card-capybara",
+        "visualId": "leader:capybara"
+      },
+      {
+        "id": "lion",
+        "species": "lion",
+        "silhouetteId": "card-lion",
+        "visualId": "leader:lion"
+      },
+      {
+        "id": "beaver",
+        "species": "beaver",
+        "silhouetteId": "card-beaver",
+        "visualId": "leader:beaver"
+      },
+      {
+        "id": "monkey",
+        "species": "monkey",
+        "silhouetteId": "card-monkey",
+        "visualId": "leader:monkey"
+      }
+    ],
+    "workerVocabulary": {
+      "bodies": [
+        "compact",
+        "standard"
+      ],
+      "heads": [
+        "orb",
+        "visor"
+      ],
+      "silhouetteAccessories": [
+        "acceptance-gate",
+        "archive-satchel",
+        "artist-palette",
+        "ci-wrench",
+        "intake-beacon",
+        "content-quill",
+        "incident-siren",
+        "runtime-console",
+        "performance-meter",
+        "editorial-pen",
+        "engineering-hammer",
+        "federation-standard",
+        "knowledge-lantern",
+        "memory-vault",
+        "operations-baton",
+        "merge-rail",
+        "research-scope",
+        "review-lens",
+        "upstream-antenna"
+      ],
+      "palettes": [
+        "rust-bone",
+        "violet-cyan"
+      ],
+      "emblems": [
+        "acceptance-check",
+        "archive-box",
+        "arts-star",
+        "ci-loop",
+        "community-door",
+        "content-page",
+        "control-shield",
+        "core-gear",
+        "data-pulse",
+        "editorial-mark",
+        "engineering-bridge",
+        "federation-orbit",
+        "knowledge-book",
+        "memory-crystal",
+        "operations-route",
+        "pr-merge",
+        "research-flask",
+        "review-eye",
+        "upstream-arrow"
+      ]
+    },
+    "groupKits": [
+      {
+        "group": "Acceptance & Release",
+        "kitId": "acceptance-release",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "acceptance-gate",
+          "palette": "rust-bone",
+          "emblem": "acceptance-check"
+        }
+      },
+      {
+        "group": "Archive and Acquisition",
+        "kitId": "archive-acquisition",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "archive-satchel",
+          "palette": "violet-cyan",
+          "emblem": "archive-box"
+        }
+      },
+      {
+        "group": "Arts Studio",
+        "kitId": "arts-studio",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "artist-palette",
+          "palette": "rust-bone",
+          "emblem": "arts-star"
+        }
+      },
+      {
+        "group": "CI Repair Triage",
+        "kitId": "ci-repair-triage",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "ci-wrench",
+          "palette": "violet-cyan",
+          "emblem": "ci-loop"
+        }
+      },
+      {
+        "group": "Community Intake",
+        "kitId": "community-intake",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "intake-beacon",
+          "palette": "rust-bone",
+          "emblem": "community-door"
+        }
+      },
+      {
+        "group": "Content Studio",
+        "kitId": "content-studio",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "content-quill",
+          "palette": "violet-cyan",
+          "emblem": "content-page"
+        }
+      },
+      {
+        "group": "Control Plane Incidents",
+        "kitId": "control-plane-incidents",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "incident-siren",
+          "palette": "rust-bone",
+          "emblem": "control-shield"
+        }
+      },
+      {
+        "group": "Core Runtime & UX Repairs",
+        "kitId": "core-runtime-ux-repairs",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "runtime-console",
+          "palette": "violet-cyan",
+          "emblem": "core-gear"
+        }
+      },
+      {
+        "group": "Data & Performance Repairs",
+        "kitId": "data-performance-repairs",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "performance-meter",
+          "palette": "rust-bone",
+          "emblem": "data-pulse"
+        }
+      },
+      {
+        "group": "Editorial Desk",
+        "kitId": "editorial-desk",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "editorial-pen",
+          "palette": "violet-cyan",
+          "emblem": "editorial-mark"
+        }
+      },
+      {
+        "group": "Engineering Guild",
+        "kitId": "engineering-guild",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "engineering-hammer",
+          "palette": "rust-bone",
+          "emblem": "engineering-bridge"
+        }
+      },
+      {
+        "group": "Federation Council",
+        "kitId": "federation-council",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "federation-standard",
+          "palette": "violet-cyan",
+          "emblem": "federation-orbit"
+        }
+      },
+      {
+        "group": "Knowledge Commons",
+        "kitId": "knowledge-commons",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "knowledge-lantern",
+          "palette": "rust-bone",
+          "emblem": "knowledge-book"
+        }
+      },
+      {
+        "group": "Memory Stewardship",
+        "kitId": "memory-stewardship",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "memory-vault",
+          "palette": "violet-cyan",
+          "emblem": "memory-crystal"
+        }
+      },
+      {
+        "group": "Operations and Release",
+        "kitId": "operations-release",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "operations-baton",
+          "palette": "rust-bone",
+          "emblem": "operations-route"
+        }
+      },
+      {
+        "group": "PR Merge Train",
+        "kitId": "pr-merge-train",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "merge-rail",
+          "palette": "violet-cyan",
+          "emblem": "pr-merge"
+        }
+      },
+      {
+        "group": "Research Lab",
+        "kitId": "research-lab",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "research-scope",
+          "palette": "rust-bone",
+          "emblem": "research-flask"
+        }
+      },
+      {
+        "group": "Research Review Board",
+        "kitId": "research-review-board",
+        "signature": {
+          "body": "compact",
+          "head": "visor",
+          "silhouetteAccessory": "review-lens",
+          "palette": "violet-cyan",
+          "emblem": "review-eye"
+        }
+      },
+      {
+        "group": "Upstream Hermes Maintenance",
+        "kitId": "upstream-hermes-maintenance",
+        "signature": {
+          "body": "standard",
+          "head": "orb",
+          "silhouetteAccessory": "upstream-antenna",
+          "palette": "rust-bone",
+          "emblem": "upstream-arrow"
+        }
+      }
+    ],
+    "sharedResourceStrategy": {
+      "rig": "worker:shared-rig",
+      "gpuBuffers": "shared",
+      "animationClips": "shared",
+      "materials": "shared",
+      "textureAtlas": "textures/approved-palette.png",
+      "perProfile": {
+        "skeletons": 0,
+        "meshes": 0,
+        "materials": 0,
+        "textures": 0
+      }
+    },
+    "physicalVariantRoots": {
+      "activationScale": {
+        "worker:body-variant:compact": [
+          1,
+          1,
+          1
+        ],
+        "worker:body-variant:standard": [
+          1,
+          1,
+          1
+        ],
+        "worker:head-variant:orb": [
+          1,
+          1,
+          1
+        ],
+        "worker:head-variant:visor": [
+          1,
+          1,
+          1
+        ],
+        "worker:palette:rust-bone": [
+          1,
+          1,
+          1
+        ],
+        "worker:palette:violet-cyan": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:acceptance-release": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:archive-acquisition": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:arts-studio": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:ci-repair-triage": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:community-intake": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:content-studio": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:control-plane-incidents": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:core-runtime-ux-repairs": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:data-performance-repairs": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:editorial-desk": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:engineering-guild": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:federation-council": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:knowledge-commons": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:memory-stewardship": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:operations-release": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:pr-merge-train": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:research-lab": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:research-review-board": [
+          1,
+          1,
+          1
+        ],
+        "worker:group-kit:upstream-hermes-maintenance": [
+          1,
+          1,
+          1
+        ]
+      },
+      "body": {
+        "compact": "worker:body-variant:compact",
+        "standard": "worker:body-variant:standard"
+      },
+      "head": {
+        "orb": "worker:head-variant:orb",
+        "visor": "worker:head-variant:visor"
+      },
+      "palette": {
+        "rust-bone": "worker:palette:rust-bone",
+        "violet-cyan": "worker:palette:violet-cyan"
+      },
+      "groupKit": {
+        "emblemSuffix": "emblem",
+        "identityAccentSuffix": "identity-accent",
+        "silhouetteSuffix": "silhouette"
+      }
+    },
+    "lodRepresentations": [
+      {
+        "id": "near",
+        "animated": true,
+        "representation": "full"
+      },
+      {
+        "id": "mid",
+        "animated": false,
+        "representation": "reduced"
+      },
+      {
+        "id": "far",
+        "animated": false,
+        "representation": "static-or-aggregate"
+      }
+    ],
+    "runtimeIntegration": "pending-task-11d-b"
+  },
+  "materials": [
+    {
+      "id": "lunar-rust",
+      "palette": "lunar-rust",
+      "maxTextures": 1
+    },
+    {
+      "id": "charcoal-structure",
+      "palette": "charcoal-structure",
+      "maxTextures": 1
+    },
+    {
+      "id": "bone-metal",
+      "palette": "bone-metal",
+      "maxTextures": 1
+    },
+    {
+      "id": "signal-emissive",
+      "palette": "cyan-signal",
+      "maxTextures": 1
+    },
+    {
+      "id": "archive-emissive",
+      "palette": "violet-archive",
+      "maxTextures": 1
+    },
+    {
+      "id": "sunset-orange",
+      "palette": "sunset-orange",
+      "maxTextures": 1
+    },
+    {
+      "id": "garden-green",
+      "palette": "garden-green",
+      "maxTextures": 1
+    },
+    {
+      "id": "triage-amber",
+      "palette": "triage-amber",
+      "maxTextures": 1
+    }
+  ],
+  "models": [
+    {
+      "id": "terrain",
+      "uri": "models/terrain-091b8a6e7b8e.glb",
+      "maxTriangles": 90000,
+      "maxDrawCalls": 16,
+      "maxMaterials": 10,
+      "maxTextures": 4,
+      "maxGpuMiB": 20,
+      "requiredNodes": [
+        "terrain:root",
+        "terrain:lod:near",
+        "terrain:lod:far",
+        "terrain:walkways"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "terrain:lod:near"
+        },
+        {
+          "distance": 360,
+          "node": "terrain:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -450,
+          0.8773068918280582,
+          -450
+        ],
+        "max": [
+          450,
+          7.234599886736362,
+          450
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          8,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        8,
+        0
+      ],
+      "occlusionGroup": "terrain",
+      "collision": {
+        "kind": "mesh",
+        "navigationArea": "walkable"
+      },
+      "materialSlots": [
+        "lunar-rust",
+        "charcoal-structure"
+      ],
+      "statistics": {
+        "animationClips": [],
+        "extent": [
+          900,
+          6.3572929949083035,
+          900
+        ],
+        "drawCalls": 15,
+        "materials": 10,
+        "meshes": 15,
+        "nodes": 20,
+        "textures": 1,
+        "triangles": 77520,
+        "sha256": "091b8a6e7b8e4643c929097af189de61740cca17bf418d5ddbafdcf2ad7ceaa6",
+        "bytes": 1662540,
+        "gpuMiB": 1.5855216979980469,
+        "gpuBytes": 1662540,
+        "accessorBytes": 1662540,
+        "budget": {
+          "maxDrawCalls": 16,
+          "maxGpuMiB": 20,
+          "maxMaterials": 10,
+          "maxTextures": 4,
+          "maxTriangles": 90000
+        }
+      },
+      "colliders": [
+        {
+          "id": "tree:0",
+          "kind": "cylinder",
+          "center": [
+            -41.283515802988,
+            3.592633617486465,
+            52.29386552229397
+          ],
+          "radius": 0.11789843802825958,
+          "height": 2.263650010142584
+        },
+        {
+          "id": "tree:1",
+          "kind": "cylinder",
+          "center": [
+            -50.7392110668416,
+            3.5924024479832743,
+            43.372552441971294
+          ],
+          "radius": 0.11789843802825958,
+          "height": 2.263650010142584
+        },
+        {
+          "id": "tree:2",
+          "kind": "cylinder",
+          "center": [
+            -35.88711216344484,
+            3.639261167655315,
+            46.57686493494381
+          ],
+          "radius": 0.10530755143368625,
+          "height": 2.021904987526776
+        },
+        {
+          "id": "tree:3",
+          "kind": "cylinder",
+          "center": [
+            -45.336795357468674,
+            3.6389254454588995,
+            37.64918396323657
+          ],
+          "radius": 0.10530755143368625,
+          "height": 2.021904987526776
+        },
+        {
+          "id": "tree:4",
+          "kind": "cylinder",
+          "center": [
+            20.13980156976066,
+            2.8627074345612566,
+            1.0881408776037245
+          ],
+          "radius": 0.10041173604610129,
+          "height": 1.9279053320851447
+        },
+        {
+          "id": "tree:5",
+          "kind": "cylinder",
+          "center": [
+            67.56637771072693,
+            3.0828371516638837,
+            11.46413399887553
+          ],
+          "radius": 0.12084589017172143,
+          "height": 2.3202410912970515
+        },
+        {
+          "id": "tree:6",
+          "kind": "cylinder",
+          "center": [
+            60.14065353927307,
+            3.151198853315237,
+            0.7936785011244698
+          ],
+          "radius": 0.12084589017172143,
+          "height": 2.3202410912970515
+        },
+        {
+          "id": "tree:7",
+          "kind": "cylinder",
+          "center": [
+            65.77824858650199,
+            2.9447120898121923,
+            -3.3747610068987983
+          ],
+          "radius": 0.11925606908169567,
+          "height": 2.2897165263685566
+        },
+        {
+          "id": "tree:11",
+          "kind": "cylinder",
+          "center": [
+            1.8320510886165133,
+            3.3370651585664026,
+            -44.275284491046655
+          ],
+          "radius": 0.1447429607071437,
+          "height": 2.779064845577159
+        },
+        {
+          "id": "tree:15",
+          "kind": "cylinder",
+          "center": [
+            -41.86392724013626,
+            3.2686901845069998,
+            -26.654299223363306
+          ],
+          "radius": 0.13678093339964195,
+          "height": 2.6261939212731256
+        },
+        {
+          "id": "tree:16",
+          "kind": "cylinder",
+          "center": [
+            43.13607275986374,
+            2.8735291400215206,
+            -27.99292490373018
+          ],
+          "radius": 0.0965067080509649,
+          "height": 1.852928794578526
+        },
+        {
+          "id": "tree:19",
+          "kind": "cylinder",
+          "center": [
+            -42.476336467754,
+            2.8069152834297855,
+            -9.654299223363306
+          ],
+          "radius": 0.08925034022734002,
+          "height": 1.7136065323649283
+        },
+        {
+          "id": "tree:21",
+          "kind": "cylinder",
+          "center": [
+            -42.46797189374787,
+            3.3447459188448194,
+            -1.1542992233633065
+          ],
+          "radius": 0.1447429607071437,
+          "height": 2.779064845577159
+        },
+        {
+          "id": "tree:23",
+          "kind": "cylinder",
+          "center": [
+            -49.1176349177301,
+            3.4454392650649464,
+            30.63884919044674
+          ],
+          "radius": 0.14923831267087992,
+          "height": 2.8653756032808944
+        },
+        {
+          "id": "building:library",
+          "kind": "box",
+          "rotationY": 0.9994588469612697,
+          "halfExtents": [
+            8.071905970573425,
+            6.00046286282668,
+            8.073378324508667
+          ],
+          "center": [
+            -29.231995466079244,
+            8.20046286282668,
+            -18.791918432401953
+          ]
+        },
+        {
+          "id": "building:research-lab",
+          "kind": "box",
+          "rotationY": -0.8491414759301352,
+          "halfExtents": [
+            6.582773923873901,
+            4.5,
+            6.606621265411377
+          ],
+          "center": [
+            26.10099546633002,
+            6.7,
+            -22.96777175238006
+          ]
+        },
+        {
+          "id": "building:depot",
+          "kind": "box",
+          "rotationY": 1.8781937999177183,
+          "halfExtents": [
+            9,
+            5.25,
+            7.5
+          ],
+          "center": [
+            -41.1075,
+            7.45,
+            13.049999999999999
+          ]
+        },
+        {
+          "id": "building:review-office",
+          "kind": "box",
+          "rotationY": -2.007423486608438,
+          "halfExtents": [
+            9.75,
+            5.625,
+            7.5
+          ],
+          "center": [
+            58.724999999999994,
+            7.825,
+            27.405
+          ]
+        },
+        {
+          "id": "building:triage",
+          "kind": "box",
+          "rotationY": -2.7776136970801493,
+          "halfExtents": [
+            5.25,
+            3.375,
+            4.5
+          ],
+          "center": [
+            10.44,
+            5.575,
+            27.405
+          ]
+        },
+        {
+          "id": "building:garden",
+          "kind": "box",
+          "rotationY": 2.910501986393896,
+          "halfExtents": [
+            10.5,
+            1.875,
+            9
+          ],
+          "center": [
+            -8.352,
+            4.075,
+            35.495999999999995
+          ]
+        },
+        {
+          "id": "building:council",
+          "kind": "box",
+          "rotationY": -2.4301335278502854,
+          "halfExtents": [
+            14.541742086410522,
+            9.749999284744263,
+            14.61867070198059
+          ],
+          "center": [
+            32.627394723015755,
+            11.949999284744262,
+            37.84517840118572
+          ]
+        },
+        {
+          "id": "building:arts-studio",
+          "kind": "box",
+          "rotationY": 1.5363272257953886,
+          "halfExtents": [
+            4.657560646533966,
+            3.75,
+            4.657128632068634
+          ],
+          "center": [
+            -30.275186165048893,
+            5.95,
+            -1.0422544816007724
+          ]
+        },
+        {
+          "id": "building:engineering-workshop",
+          "kind": "box",
+          "rotationY": 2.37314201999875,
+          "halfExtents": [
+            8.211114764213562,
+            5.250000357627869,
+            8.183887124061584
+          ],
+          "center": [
+            -30.276632823333372,
+            7.450000357627869,
+            31.31964045472876
+          ]
+        },
+        {
+          "id": "building:release-gatehouse",
+          "kind": "box",
+          "rotationY": -3.141592653589793,
+          "halfExtents": [
+            8.25,
+            5.625,
+            6.75
+          ],
+          "center": [
+            0,
+            7.825,
+            12.528
+          ]
+        },
+        {
+          "id": "building:archive",
+          "kind": "box",
+          "rotationY": -1.4181469983996315,
+          "halfExtents": [
+            11.50332248210907,
+            9,
+            11.372466087341309
+          ],
+          "center": [
+            42.41216697757373,
+            11.2,
+            -6.522013918850483
+          ]
+        },
+        {
+          "id": "building:bus",
+          "kind": "box",
+          "rotationY": 0,
+          "halfExtents": [
+            3.75,
+            1.5,
+            2.25
+          ],
+          "center": [
+            0,
+            3.7,
+            -9.135
+          ]
+        },
+        {
+          "id": "building:publishing",
+          "kind": "box",
+          "rotationY": -0.3310960767041321,
+          "halfExtents": [
+            4.931786119937897,
+            4.5,
+            5.809372007846832
+          ],
+          "center": [
+            14.35508905859436,
+            6.7,
+            -41.75730689833359
+          ]
+        },
+        {
+          "id": "building:revenue",
+          "kind": "box",
+          "rotationY": 0.16076274062583473,
+          "halfExtents": [
+            10.055947422981262,
+            6,
+            10.044018745422363
+          ],
+          "center": [
+            -3.9168279667698416,
+            8.2,
+            -24.141281158306423
+          ]
+        }
+      ]
+    },
+    {
+      "id": "library",
+      "uri": "models/review-building-owl-f76ec839e4cd.glb",
+      "maxTriangles": 79990,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 18,
+      "requiredNodes": [
+        "library:root",
+        "library:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "library:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          -29.232,
+          2.1997741639162998,
+          -18.792
+        ],
+        "rotation": [
+          0,
+          0.9994588469612697,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -10.762629508972168,
+          0.00030111477826721966,
+          -10.764440536499023
+        ],
+        "max": [
+          10.762453079223633,
+          16.001535415649414,
+          10.764568328857422
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          8.800678865479131,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        8.800678865479131,
+        0
+      ],
+      "occlusionGroup": "library-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "library"
+      },
+      "materialSlots": [
+        "owl | baked review surface.002",
+        "owl | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 8881056,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 8881056,
+        "textures": 2,
+        "triangles": 79990,
+        "gpuMiB": 8.469635009765625,
+        "budget": {
+          "maxTriangles": 79990,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 18
+        },
+        "bytes": 8881056,
+        "extent": [
+          21.5250825881958,
+          16.001234300871147,
+          21.529008865356445
+        ],
+        "sha256": "f76ec839e4cd26baa6db183dd1d79ef5ffb884d9577551e00f49ad15548ccf1b"
+      }
+    },
+    {
+      "id": "research-lab",
+      "uri": "models/review-building-fox-cbce9ab6d4e1.glb",
+      "maxTriangles": 79999,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 18,
+      "requiredNodes": [
+        "research-lab:root",
+        "research-lab:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "research-lab:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          26.099999999999998,
+          2.2,
+          -22.968000000000004
+        ],
+        "rotation": [
+          0,
+          -0.8491414759301352,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -8.77592658996582,
+          0,
+          -8.809623718261719
+        ],
+        "max": [
+          8.77813720703125,
+          12,
+          8.808032989501953
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          6.6000000000000005,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        6.6000000000000005,
+        0
+      ],
+      "occlusionGroup": "research-lab-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "research"
+      },
+      "materialSlots": [
+        "fox | baked review surface.002",
+        "fox | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 8883428,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 8883428,
+        "textures": 2,
+        "triangles": 79999,
+        "gpuMiB": 8.47189712524414,
+        "budget": {
+          "maxTriangles": 79999,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 18
+        },
+        "bytes": 8883428,
+        "extent": [
+          17.55406379699707,
+          12,
+          17.617656707763672
+        ],
+        "sha256": "cbce9ab6d4e121e39e3ec75eb39159732f4daca79ffbd77ac7f765ff157765cb"
+      }
+    },
+    {
+      "id": "depot",
+      "uri": "models/depot.glb",
+      "maxTriangles": 24000,
+      "maxDrawCalls": 7,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 9,
+      "requiredNodes": [
+        "depot:root",
+        "depot:lod:near",
+        "depot:lod:far",
+        "depot:roof",
+        "depot:entrance",
+        "depot:camera"
+      ],
+      "requiredClips": [
+        "lights-idle"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "depot:lod:near"
+        },
+        {
+          "distance": 360,
+          "node": "depot:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          -41.1075,
+          2.2,
+          13.049999999999999
+        ],
+        "rotation": [
+          0,
+          1.8781937999177183,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -12,
+          0,
+          -10
+        ],
+        "max": [
+          12,
+          14,
+          10
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          4,
+          0
+        ],
+        "camera": [
+          0,
+          7,
+          13
+        ],
+        "dialogue": [
+          -1,
+          1,
+          2
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        7,
+        13
+      ],
+      "occlusionGroup": "depot-roof",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "depot"
+      },
+      "materialSlots": [
+        "charcoal-structure",
+        "bone-metal",
+        "signal-emissive"
+      ],
+      "statistics": {
+        "accessorBytes": 212196,
+        "animationClips": [
+          "lights-idle",
+          "workbench-cycle"
+        ],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 30,
+        "gpuBytes": 212196,
+        "textures": 0,
+        "triangles": 6250,
+        "gpuMiB": 0.2024,
+        "budget": {
+          "maxDrawCalls": 7,
+          "maxGpuMiB": 9,
+          "maxMaterials": 4,
+          "maxTextures": 3,
+          "maxTriangles": 24000
+        },
+        "bytes": 279360,
+        "extent": [
+          17.6855,
+          15.8066,
+          13.5275
+        ],
+        "sha256": "a0140d4edbee71357b54f23a4ef593e7afc2516622e72f4da7dd853e4c330911"
+      }
+    },
+    {
+      "id": "review-office",
+      "uri": "models/review-office.glb",
+      "maxTriangles": 26000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 10,
+      "requiredNodes": [
+        "review-office:root",
+        "review-office:lod:near",
+        "review-office:lod:far",
+        "review-office:roof",
+        "review-office:portal",
+        "review-office:camera"
+      ],
+      "requiredClips": [
+        "portal-idle",
+        "lights-idle"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "review-office:lod:near"
+        },
+        {
+          "distance": 360,
+          "node": "review-office:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          58.724999999999994,
+          2.2,
+          27.405
+        ],
+        "rotation": [
+          0,
+          -2.007423486608438,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -13,
+          0,
+          -10
+        ],
+        "max": [
+          13,
+          15,
+          10
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          4,
+          0
+        ],
+        "camera": [
+          0,
+          8,
+          14
+        ],
+        "dialogue": [
+          0,
+          1,
+          1
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        8,
+        14
+      ],
+      "occlusionGroup": "review-roof",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "review"
+      },
+      "materialSlots": [
+        "charcoal-structure",
+        "bone-metal",
+        "archive-emissive"
+      ],
+      "statistics": {
+        "accessorBytes": 285684,
+        "animationClips": [
+          "lights-idle",
+          "portal-idle"
+        ],
+        "drawCalls": 7,
+        "materials": 4,
+        "meshes": 7,
+        "nodes": 31,
+        "gpuBytes": 285684,
+        "textures": 0,
+        "triangles": 9970,
+        "gpuMiB": 0.2724,
+        "budget": {
+          "maxDrawCalls": 8,
+          "maxGpuMiB": 10,
+          "maxMaterials": 4,
+          "maxTextures": 3,
+          "maxTriangles": 26000
+        },
+        "bytes": 371184,
+        "extent": [
+          17.2596,
+          17.1001,
+          19.8
+        ],
+        "sha256": "64caff11e123d4d7ec3329b771b07d509ad9d87520a10c42bf8b4fee9627f02e"
+      }
+    },
+    {
+      "id": "triage",
+      "uri": "models/triage.glb",
+      "maxTriangles": 12000,
+      "maxDrawCalls": 5,
+      "maxMaterials": 3,
+      "maxTextures": 2,
+      "maxGpuMiB": 5,
+      "requiredNodes": [
+        "triage:root",
+        "triage:lod:near",
+        "triage:lod:far",
+        "triage:door",
+        "triage:camera"
+      ],
+      "requiredClips": [
+        "door-open",
+        "lights-idle"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "triage:lod:near"
+        },
+        {
+          "distance": 360,
+          "node": "triage:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          10.44,
+          2.2,
+          27.405
+        ],
+        "rotation": [
+          0,
+          -2.7776136970801493,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -7,
+          0,
+          -6
+        ],
+        "max": [
+          7,
+          9,
+          6
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          3,
+          0
+        ],
+        "camera": [
+          0,
+          6,
+          10
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        6,
+        10
+      ],
+      "occlusionGroup": "triage-shell",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "triage"
+      },
+      "materialSlots": [
+        "lunar-rust",
+        "bone-metal"
+      ],
+      "statistics": {
+        "accessorBytes": 31956,
+        "animationClips": [
+          "door-open",
+          "lights-idle",
+          "triage-station-idle"
+        ],
+        "drawCalls": 5,
+        "materials": 3,
+        "meshes": 5,
+        "nodes": 16,
+        "gpuBytes": 31956,
+        "textures": 0,
+        "triangles": 704,
+        "gpuMiB": 0.0305,
+        "budget": {
+          "maxDrawCalls": 5,
+          "maxGpuMiB": 5,
+          "maxMaterials": 3,
+          "maxTextures": 2,
+          "maxTriangles": 12000
+        },
+        "bytes": 48084,
+        "extent": [
+          9.5,
+          5.28,
+          8.07
+        ],
+        "sha256": "dc6aa1f813071c43c0a1e7ec81e74cf04591b62d88e8e54fa504240afd6fc791"
+      }
+    },
+    {
+      "id": "garden",
+      "uri": "models/garden.glb",
+      "maxTriangles": 18000,
+      "maxDrawCalls": 6,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 7,
+      "requiredNodes": [
+        "garden:root",
+        "garden:lod:near",
+        "garden:lod:far",
+        "garden:camera"
+      ],
+      "requiredClips": [
+        "garden-idle"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "garden:lod:near"
+        },
+        {
+          "distance": 360,
+          "node": "garden:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          -8.352,
+          2.2,
+          35.495999999999995
+        ],
+        "rotation": [
+          0,
+          2.910501986393896,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -14,
+          0,
+          -12
+        ],
+        "max": [
+          14,
+          5,
+          12
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          1,
+          0
+        ],
+        "camera": [
+          0,
+          6,
+          15
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        6,
+        15
+      ],
+      "occlusionGroup": "garden",
+      "collision": {
+        "kind": "mesh",
+        "navigationArea": "garden"
+      },
+      "materialSlots": [
+        "lunar-rust",
+        "signal-emissive"
+      ],
+      "statistics": {
+        "accessorBytes": 95460,
+        "animationClips": [
+          "garden-idle"
+        ],
+        "drawCalls": 6,
+        "materials": 4,
+        "meshes": 6,
+        "nodes": 15,
+        "gpuBytes": 95460,
+        "textures": 0,
+        "triangles": 3508,
+        "gpuMiB": 0.091,
+        "budget": {
+          "maxDrawCalls": 6,
+          "maxGpuMiB": 7,
+          "maxMaterials": 4,
+          "maxTextures": 3,
+          "maxTriangles": 18000
+        },
+        "bytes": 127116,
+        "extent": [
+          19,
+          4.9107,
+          19
+        ],
+        "sha256": "f1f0514f12861292de27290f1e673e0830aa70726530920f8fc377acb3feb474"
+      }
+    },
+    {
+      "id": "council",
+      "uri": "models/review-building-lion-1cc020265594.glb",
+      "maxTriangles": 79983,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 20,
+      "requiredNodes": [
+        "council:root",
+        "council:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "council:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          32.625,
+          2.2,
+          37.845
+        ],
+        "rotation": [
+          0,
+          -2.4301335278502854,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -19.391252517700195,
+          0,
+          -19.493825912475586
+        ],
+        "max": [
+          19.38672637939453,
+          25.999998092651367,
+          19.489295959472656
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          14.299998950958253,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        14.299998950958253,
+        0
+      ],
+      "occlusionGroup": "council-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "council"
+      },
+      "materialSlots": [
+        "lion | baked review surface.002",
+        "lion | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 9547652,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 9547652,
+        "textures": 2,
+        "triangles": 79983,
+        "gpuMiB": 9.105350494384766,
+        "budget": {
+          "maxTriangles": 79983,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 20
+        },
+        "bytes": 9547652,
+        "extent": [
+          38.77797889709473,
+          25.999998092651367,
+          38.98312187194824
+        ],
+        "sha256": "1cc0202655943a3c39f06521a88b83dcc55bcf00b0a1c96e36a6f831a45cb6cc"
+      }
+    },
+    {
+      "id": "arts-studio",
+      "uri": "models/review-building-cat-8b3378294db0.glb",
+      "maxTriangles": 79988,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 20,
+      "requiredNodes": [
+        "arts-studio:root",
+        "arts-studio:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "arts-studio:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          -30.276000000000003,
+          2.2,
+          -1.044
+        ],
+        "rotation": [
+          0,
+          1.5363272257953886,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -6.212369441986084,
+          0,
+          -6.208340167999268
+        ],
+        "max": [
+          6.207792282104492,
+          10,
+          6.21066951751709
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          5.5,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        5.5,
+        0
+      ],
+      "occlusionGroup": "arts-studio-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "arts"
+      },
+      "materialSlots": [
+        "reconstruction-v2 | baked review surface.002",
+        "reconstruction-v2 | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 9473600,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 9473600,
+        "textures": 2,
+        "triangles": 79988,
+        "gpuMiB": 9.03472900390625,
+        "budget": {
+          "maxTriangles": 79988,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 20
+        },
+        "bytes": 9473600,
+        "extent": [
+          12.420161724090576,
+          10,
+          12.419009685516357
+        ],
+        "sha256": "8b3378294db02a9ee598872b84dfaefbdc328fb33ba90dd6c8ef798f2c14de50"
+      }
+    },
+    {
+      "id": "engineering-workshop",
+      "uri": "models/review-building-beaver-c15b2bf553f3.glb",
+      "maxTriangles": 80000,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 18,
+      "requiredNodes": [
+        "engineering-workshop:root",
+        "engineering-workshop:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "engineering-workshop:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          -30.276000000000003,
+          2.2,
+          31.32
+        ],
+        "rotation": [
+          0,
+          2.37314201999875,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -10.947213172912598,
+          0,
+          -10.912091255187988
+        ],
+        "max": [
+          10.949092864990234,
+          14.000000953674316,
+          10.91160774230957
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          7.700000524520875,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        7.700000524520875,
+        0
+      ],
+      "occlusionGroup": "engineering-workshop-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "engineering"
+      },
+      "materialSlots": [
+        "beaver | baked review surface.002",
+        "beaver | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 8850264,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 8850264,
+        "textures": 2,
+        "triangles": 80000,
+        "gpuMiB": 8.440269470214844,
+        "budget": {
+          "maxTriangles": 80000,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 18
+        },
+        "bytes": 8850264,
+        "extent": [
+          21.896306037902832,
+          14.000000953674316,
+          21.82369899749756
+        ],
+        "sha256": "c15b2bf553f30c054c65fb0c853b39f5f34d2eedc858544324a123da8e4707ef"
+      }
+    },
+    {
+      "id": "release-gatehouse",
+      "uri": "models/release-gatehouse.glb",
+      "maxTriangles": 24000,
+      "maxDrawCalls": 8,
+      "maxMaterials": 5,
+      "maxTextures": 3,
+      "maxGpuMiB": 9,
+      "requiredNodes": [
+        "release-gatehouse:root",
+        "release-gatehouse:lod:near",
+        "release-gatehouse:lod:far",
+        "release-gatehouse:roof",
+        "release-gatehouse:entrance",
+        "release-gatehouse:camera",
+        "release-gatehouse:release-gate",
+        "release-gatehouse:beacon",
+        "release-gatehouse:city-identity",
+        "release-gatehouse:leader-anchor"
+      ],
+      "requiredClips": [
+        "gatehouse-beacon",
+        "gatehouse-gate"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "release-gatehouse:lod:near"
+        },
+        {
+          "distance": 360,
+          "node": "release-gatehouse:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          0,
+          2.2,
+          12.528
+        ],
+        "rotation": [
+          0,
+          -3.141592653589793,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -11,
+          0,
+          -9
+        ],
+        "max": [
+          11,
+          15,
+          9
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          4,
+          0
+        ],
+        "camera": [
+          0,
+          7,
+          13
+        ],
+        "dialogue": [
+          0,
+          1,
+          1
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        7,
+        13
+      ],
+      "occlusionGroup": "release-gatehouse-roof",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "release"
+      },
+      "materialSlots": [
+        "charcoal-structure",
+        "bone-metal",
+        "lunar-rust",
+        "triage-amber",
+        "garden-green"
+      ],
+      "statistics": {
+        "accessorBytes": 246552,
+        "animationClips": [
+          "gatehouse-beacon",
+          "gatehouse-gate"
+        ],
+        "drawCalls": 7,
+        "materials": 5,
+        "meshes": 7,
+        "nodes": 31,
+        "gpuBytes": 246552,
+        "textures": 0,
+        "triangles": 7220,
+        "gpuMiB": 0.2351,
+        "budget": {
+          "maxDrawCalls": 8,
+          "maxGpuMiB": 9,
+          "maxMaterials": 5,
+          "maxTextures": 3,
+          "maxTriangles": 24000
+        },
+        "bytes": 324908,
+        "extent": [
+          13.9,
+          15.9,
+          12.0475
+        ],
+        "sha256": "f2d81385bc6c5a7e346f7b74f3dbd5c3f3270956962577f6fa0d7a58aeb25555"
+      }
+    },
+    {
+      "id": "archive",
+      "uri": "models/review-building-elephant-f5784a3ebdd6.glb",
+      "maxTriangles": 79971,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 20,
+      "requiredNodes": [
+        "archive:root",
+        "archive:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "archive:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          42.412499999999994,
+          2.2,
+          -6.5249999999999995
+        ],
+        "rotation": [
+          0,
+          -1.4181469983996315,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -15.333895683288574,
+          0,
+          -15.162243843078613
+        ],
+        "max": [
+          15.341630935668945,
+          24,
+          15.164332389831543
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          13.200000000000001,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        13.200000000000001,
+        0
+      ],
+      "occlusionGroup": "archive-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "archive"
+      },
+      "materialSlots": [
+        "elephant | baked review surface.004",
+        "elephant | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 9445844,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 9445844,
+        "textures": 2,
+        "triangles": 79971,
+        "gpuMiB": 9.008258819580078,
+        "budget": {
+          "maxTriangles": 79971,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 20
+        },
+        "bytes": 9445844,
+        "extent": [
+          30.67552661895752,
+          24,
+          30.326576232910156
+        ],
+        "sha256": "f5784a3ebdd68d8f1b6bf232560ee284bc531cc4393e37f97b5e398cb1d75d08"
+      }
+    },
+    {
+      "id": "bus",
+      "uri": "models/bus.glb",
+      "maxTriangles": 9000,
+      "maxDrawCalls": 4,
+      "maxMaterials": 3,
+      "maxTextures": 2,
+      "maxGpuMiB": 4,
+      "requiredNodes": [
+        "bus:root",
+        "bus:lod:near",
+        "bus:lod:far",
+        "bus:camera"
+      ],
+      "requiredClips": [
+        "idle",
+        "arrive",
+        "depart"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "bus:lod:near"
+        },
+        {
+          "distance": 360,
+          "node": "bus:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          0,
+          2.2,
+          -9.135
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -5,
+          0,
+          -3
+        ],
+        "max": [
+          5,
+          4,
+          3
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          2,
+          0
+        ],
+        "camera": [
+          0,
+          5,
+          9
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        5,
+        9
+      ],
+      "occlusionGroup": "vehicles",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "transit"
+      },
+      "materialSlots": [
+        "lunar-rust",
+        "bone-metal",
+        "signal-emissive"
+      ],
+      "statistics": {
+        "accessorBytes": 10404,
+        "animationClips": [
+          "arrive",
+          "depart",
+          "idle"
+        ],
+        "drawCalls": 4,
+        "materials": 3,
+        "meshes": 4,
+        "nodes": 11,
+        "gpuBytes": 10404,
+        "textures": 0,
+        "triangles": 264,
+        "gpuMiB": 0.0099,
+        "budget": {
+          "maxDrawCalls": 4,
+          "maxGpuMiB": 4,
+          "maxMaterials": 3,
+          "maxTextures": 2,
+          "maxTriangles": 9000
+        },
+        "bytes": 18904,
+        "extent": [
+          6.8,
+          2.615,
+          2.92
+        ],
+        "sha256": "106ac5a0863817fd7f0d58903a08704b6a56b085bf40b38ae844da1a9f30ef0f"
+      }
+    },
+    {
+      "id": "leaders",
+      "uri": "models/leaders.glb",
+      "maxTriangles": 36000,
+      "maxDrawCalls": 12,
+      "maxMaterials": 6,
+      "maxTextures": 4,
+      "maxGpuMiB": 14,
+      "requiredNodes": [
+        "leaders:root",
+        "leader:owl",
+        "leader:fox",
+        "leader:badger",
+        "leader:otter",
+        "leader:bird",
+        "leader:stag",
+        "leaders:lod:near",
+        "leaders:lod:mid",
+        "leaders:lod:far"
+      ],
+      "requiredClips": [
+        "idle",
+        "listening",
+        "talking",
+        "thinking",
+        "acknowledging",
+        "unavailable"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "leaders:lod:near"
+        },
+        {
+          "distance": 18,
+          "node": "leaders:lod:mid"
+        },
+        {
+          "distance": 34,
+          "node": "leaders:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -44,
+          0,
+          -34
+        ],
+        "max": [
+          44,
+          14,
+          38
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "attachment": [
+          0,
+          1,
+          0
+        ],
+        "camera": [
+          0,
+          4,
+          8
+        ],
+        "dialogue": [
+          0,
+          1,
+          1
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        4,
+        8
+      ],
+      "occlusionGroup": "leaders",
+      "collision": {
+        "kind": "capsule",
+        "navigationArea": "walkable"
+      },
+      "materialSlots": [
+        "bone-metal",
+        "archive-emissive",
+        "signal-emissive"
+      ],
+      "statistics": {
+        "accessorBytes": 321420,
+        "animationClips": [
+          "acknowledge",
+          "acknowledging",
+          "idle",
+          "leader:badger:acknowledging",
+          "leader:badger:idle",
+          "leader:badger:listening",
+          "leader:badger:talking",
+          "leader:badger:thinking",
+          "leader:badger:unavailable",
+          "leader:bird:acknowledging",
+          "leader:bird:idle",
+          "leader:bird:listening",
+          "leader:bird:talking",
+          "leader:bird:thinking",
+          "leader:bird:unavailable",
+          "leader:fox:acknowledging",
+          "leader:fox:idle",
+          "leader:fox:listening",
+          "leader:fox:talking",
+          "leader:fox:thinking",
+          "leader:fox:unavailable",
+          "leader:otter:acknowledging",
+          "leader:otter:idle",
+          "leader:otter:listening",
+          "leader:otter:talking",
+          "leader:otter:thinking",
+          "leader:otter:unavailable",
+          "leader:owl:acknowledging",
+          "leader:owl:idle",
+          "leader:owl:listening",
+          "leader:owl:talking",
+          "leader:owl:thinking",
+          "leader:owl:unavailable",
+          "leader:stag:acknowledging",
+          "leader:stag:idle",
+          "leader:stag:listening",
+          "leader:stag:talking",
+          "leader:stag:thinking",
+          "leader:stag:unavailable",
+          "listen",
+          "listening",
+          "talk",
+          "talking",
+          "think",
+          "thinking",
+          "unavailable"
+        ],
+        "drawCalls": 11,
+        "materials": 4,
+        "meshes": 11,
+        "nodes": 33,
+        "gpuBytes": 321420,
+        "textures": 0,
+        "triangles": 15098,
+        "gpuMiB": 0.3065,
+        "budget": {
+          "maxDrawCalls": 12,
+          "maxGpuMiB": 14,
+          "maxMaterials": 6,
+          "maxTextures": 4,
+          "maxTriangles": 36000
+        },
+        "bytes": 447820,
+        "extent": [
+          86.4388,
+          13.0881,
+          71.4346
+        ],
+        "sha256": "104ecb6cde4bb3a51c44128c1321177686942ec64b42f3605e56bfe2c9161c88"
+      }
+    },
+    {
+      "id": "workers",
+      "uri": "models/workers.glb",
+      "maxTriangles": 18000,
+      "maxDrawCalls": 6,
+      "maxMaterials": 4,
+      "maxTextures": 3,
+      "maxGpuMiB": 8,
+      "requiredNodes": [
+        "workers:root",
+        "worker:body",
+        "worker:head",
+        "workers:lod:near",
+        "workers:lod:mid",
+        "workers:lod:far",
+        "worker:attachment",
+        "worker:group-kits",
+        "worker:group-kit:acceptance-release",
+        "worker:group-kit:archive-acquisition",
+        "worker:group-kit:arts-studio",
+        "worker:group-kit:ci-repair-triage",
+        "worker:group-kit:community-intake",
+        "worker:group-kit:content-studio",
+        "worker:group-kit:control-plane-incidents",
+        "worker:group-kit:core-runtime-ux-repairs",
+        "worker:group-kit:data-performance-repairs",
+        "worker:group-kit:editorial-desk",
+        "worker:group-kit:engineering-guild",
+        "worker:group-kit:federation-council",
+        "worker:group-kit:knowledge-commons",
+        "worker:group-kit:memory-stewardship",
+        "worker:group-kit:operations-release",
+        "worker:group-kit:pr-merge-train",
+        "worker:group-kit:research-lab",
+        "worker:group-kit:research-review-board",
+        "worker:group-kit:upstream-hermes-maintenance"
+      ],
+      "requiredClips": [
+        "idle",
+        "walk",
+        "talk",
+        "listen",
+        "work",
+        "tool-use",
+        "carry",
+        "handoff",
+        "queue",
+        "wait",
+        "blocked",
+        "failed",
+        "review",
+        "triage",
+        "heartbeat",
+        "rest",
+        "done"
+      ],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "workers:lod:near"
+        },
+        {
+          "distance": 14,
+          "node": "workers:lod:mid"
+        },
+        {
+          "distance": 28,
+          "node": "workers:lod:far"
+        }
+      ],
+      "transform": {
+        "position": [
+          0,
+          0,
+          0
+        ],
+        "rotation": [
+          0,
+          0,
+          0
+        ],
+        "scale": [
+          1,
+          1,
+          1
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -2,
+          0,
+          -2
+        ],
+        "max": [
+          2,
+          3,
+          2
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "attachment": [
+          0,
+          1,
+          0
+        ],
+        "camera": [
+          0,
+          2,
+          5
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        2,
+        5
+      ],
+      "occlusionGroup": "workers",
+      "collision": {
+        "kind": "capsule",
+        "navigationArea": "walkable"
+      },
+      "instancing": {
+        "eligible": true,
+        "variants": [
+          "orbital",
+          "archivist",
+          "builder",
+          "artist",
+          "dispatcher",
+          "verifier",
+          "courier"
+        ]
+      },
+      "materialSlots": [
+        "bone-metal",
+        "signal-emissive"
+      ],
+      "statistics": {
+        "accessorBytes": 119604,
+        "animationClips": [
+          "blocked",
+          "carry",
+          "done",
+          "failed",
+          "handoff",
+          "heartbeat",
+          "idle",
+          "listen",
+          "queue",
+          "rest",
+          "review",
+          "talk",
+          "tool-use",
+          "triage",
+          "wait",
+          "walk",
+          "work"
+        ],
+        "drawCalls": 6,
+        "materials": 3,
+        "meshes": 6,
+        "nodes": 155,
+        "gpuBytes": 119604,
+        "textures": 0,
+        "triangles": 3444,
+        "gpuMiB": 0.1141,
+        "budget": {
+          "maxDrawCalls": 6,
+          "maxGpuMiB": 8,
+          "maxMaterials": 4,
+          "maxTextures": 3,
+          "maxTriangles": 18000
+        },
+        "bytes": 223028,
+        "extent": [
+          3.788,
+          7.68,
+          2.9184
+        ],
+        "sha256": "191736b25492d105798e0ba0aa115d8feca0143f997a25926be56a7cebc8058e"
+      }
+    },
+    {
+      "id": "publishing",
+      "uri": "models/review-building-monkey-4147ed882633.glb",
+      "maxTriangles": 79997,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 18,
+      "requiredNodes": [
+        "publishing:root",
+        "publishing:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "publishing:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          14.355,
+          2.2,
+          -41.76
+        ],
+        "rotation": [
+          0,
+          -0.3310960767041321,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -6.574435234069824,
+          0,
+          -7.742472171783447
+        ],
+        "max": [
+          6.5769944190979,
+          12,
+          7.7491865158081055
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          6.6000000000000005,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        6.6000000000000005,
+        0
+      ],
+      "occlusionGroup": "publishing-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "library"
+      },
+      "materialSlots": [
+        "monkey | baked review surface.002",
+        "monkey | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 8882732,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 8882732,
+        "textures": 2,
+        "triangles": 79997,
+        "gpuMiB": 8.471233367919922,
+        "budget": {
+          "maxTriangles": 79997,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 18
+        },
+        "bytes": 8882732,
+        "extent": [
+          13.151429653167725,
+          12,
+          15.491658687591553
+        ],
+        "sha256": "4147ed8826331096e7844ab13a0006df935738ba1e5b826a77c60440ad4705f7"
+      }
+    },
+    {
+      "id": "revenue",
+      "uri": "models/review-building-capybara-49598b840363.glb",
+      "maxTriangles": 79996,
+      "maxDrawCalls": 2,
+      "maxMaterials": 2,
+      "maxTextures": 2,
+      "maxGpuMiB": 18,
+      "requiredNodes": [
+        "revenue:root",
+        "revenue:lod:near"
+      ],
+      "requiredClips": [],
+      "lods": [
+        {
+          "distance": 0,
+          "node": "revenue:lod:near"
+        }
+      ],
+      "transform": {
+        "position": [
+          -3.915,
+          2.2,
+          -24.1425
+        ],
+        "rotation": [
+          0,
+          0.16076274062583473,
+          0
+        ],
+        "scale": [
+          0.75,
+          0.75,
+          0.75
+        ]
+      },
+      "pivot": [
+        0,
+        0,
+        0
+      ],
+      "bounds": {
+        "min": [
+          -13.410595893859863,
+          0,
+          -13.3908109664917
+        ],
+        "max": [
+          13.405263900756836,
+          16,
+          13.39323902130127
+        ]
+      },
+      "anchors": {
+        "foot": [
+          0,
+          0,
+          0
+        ],
+        "interaction": [
+          0,
+          0,
+          0
+        ],
+        "camera": [
+          0,
+          8.8,
+          0
+        ]
+      },
+      "cameraAnchor": [
+        0,
+        8.8,
+        0
+      ],
+      "occlusionGroup": "revenue-review",
+      "collision": {
+        "kind": "box",
+        "navigationArea": "library"
+      },
+      "materialSlots": [
+        "capybara | baked review surface.002",
+        "capybara | apron stone"
+      ],
+      "statistics": {
+        "accessorBytes": 9077396,
+        "animationClips": [],
+        "drawCalls": 2,
+        "materials": 2,
+        "meshes": 1,
+        "nodes": 3,
+        "gpuBytes": 9077396,
+        "textures": 2,
+        "triangles": 79996,
+        "gpuMiB": 8.656879425048828,
+        "budget": {
+          "maxTriangles": 79996,
+          "maxDrawCalls": 2,
+          "maxMaterials": 2,
+          "maxTextures": 2,
+          "maxGpuMiB": 18
+        },
+        "bytes": 9077396,
+        "extent": [
+          26.8158597946167,
+          16,
+          26.78404998779297
+        ],
+        "sha256": "49598b84036340dc2e77ac89cc817693ba4f1554bcf0f773e76291b189142110"
+      }
+    }
+  ],
+  "camera": {
+    "overview": {
+      "id": "approved-overview",
+      "alpha": 0.62,
+      "beta": 0.82,
+      "radius": 150,
+      "target": [
+        4,
+        3,
+        5
+      ],
+      "minBeta": 0.72,
+      "maxBeta": 1.3,
+      "minRadius": 3,
+      "maxRadius": 200
+    },
+    "bounds": {
+      "min": [
+        -120,
+        -12,
+        -100
+      ],
+      "max": [
+        120,
+        45,
+        105
+      ]
+    },
+    "followOffset": [
+      0,
+      5,
+      -8
+    ]
+  },
+  "navigation": {
+    "meshUri": "models/navigation-b62e296a6ba0.glb",
+    "areas": [
+      "walkable",
+      "library",
+      "research",
+      "depot",
+      "review",
+      "triage",
+      "garden",
+      "council",
+      "transit",
+      "arts",
+      "engineering",
+      "release",
+      "archive"
+    ],
+    "links": [
+      {
+        "from": [
+          -21.051539326963017,
+          2.2,
+          -13.533132424476225
+        ],
+        "to": [
+          -19.260334280044447,
+          2.2,
+          -12.64342208965177
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -19.260334280044447,
+          2.2,
+          -12.64342208965177
+        ],
+        "to": [
+          -5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "to": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "to": [
+          18.36615384588797,
+          2.2,
+          -16.281814237887847
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          18.36615384588797,
+          2.2,
+          -16.281814237887847
+        ],
+        "to": [
+          19.925381323310337,
+          2.2,
+          -17.5343355645131
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -21.051539326963017,
+          2.2,
+          -13.533132424476225
+        ],
+        "to": [
+          -19.260334280044447,
+          2.2,
+          -12.64342208965177
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -19.260334280044447,
+          2.2,
+          -12.64342208965177
+        ],
+        "to": [
+          -5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "to": [
+          -1.9988002178116289,
+          2.2,
+          -5.479265354082581
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -1.9988002178116289,
+          2.2,
+          -5.479265354082581
+        ],
+        "to": [
+          0,
+          2.2,
+          -5.41
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          19.925381323310337,
+          2.2,
+          -17.5343355645131
+        ],
+        "to": [
+          18.36615384588797,
+          2.2,
+          -16.281814237887847
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          18.36615384588797,
+          2.2,
+          -16.281814237887847
+        ],
+        "to": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "to": [
+          1.9988002178116289,
+          2.2,
+          -5.479265354082581
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          1.9988002178116289,
+          2.2,
+          -5.479265354082581
+        ],
+        "to": [
+          0,
+          2.2,
+          -5.41
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -32.55320970237773,
+          2.2,
+          10.334352286469118
+        ],
+        "to": [
+          -30.810125265018026,
+          2.2,
+          11.314993221895744
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -30.810125265018026,
+          2.2,
+          11.314993221895744
+        ],
+        "to": [
+          -7.695897416584591,
+          2.2,
+          24.31881422627916
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -7.695897416584591,
+          2.2,
+          24.31881422627916
+        ],
+        "to": [
+          -5.952812979224889,
+          2.2,
+          25.299455161705787
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          50.59200631854249,
+          2.2,
+          23.609602948653162
+        ],
+        "to": [
+          48.80635106223612,
+          2.2,
+          22.708805909567538
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          48.80635106223612,
+          2.2,
+          22.708805909567538
+        ],
+        "to": [
+          34.288690157032995,
+          2.2,
+          15.385182880054622
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          34.288690157032995,
+          2.2,
+          15.385182880054622
+        ],
+        "to": [
+          14.496121763751212,
+          2.2,
+          19.653201741684466
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          14.496121763751212,
+          2.2,
+          19.653201741684466
+        ],
+        "to": [
+          10.20025254630086,
+          2.2,
+          21.15961575838305
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          10.20025254630086,
+          2.2,
+          21.15961575838305
+        ],
+        "to": [
+          8.312927917637873,
+          2.2,
+          21.821435783799416
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          8.312927917637873,
+          2.2,
+          21.821435783799416
+        ],
+        "to": [
+          6.369842421881646,
+          2.2,
+          22.295164351844218
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          6.369842421881646,
+          2.2,
+          22.295164351844218
+        ],
+        "to": [
+          -4.009727483468662,
+          2.2,
+          24.825726593660985
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -4.009727483468662,
+          2.2,
+          24.825726593660985
+        ],
+        "to": [
+          -5.952812979224889,
+          2.2,
+          25.299455161705787
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          8.312927917637873,
+          2.2,
+          21.821435783799416
+        ],
+        "to": [
+          10.20025254630086,
+          2.2,
+          21.15961575838305
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          10.20025254630086,
+          2.2,
+          21.15961575838305
+        ],
+        "to": [
+          14.496121763751212,
+          2.2,
+          19.653201741684466
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          14.496121763751212,
+          2.2,
+          19.653201741684466
+        ],
+        "to": [
+          20.54134575830294,
+          2.2,
+          24.413390612351748
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          20.54134575830294,
+          2.2,
+          24.413390612351748
+        ],
+        "to": [
+          22.11267208468165,
+          2.2,
+          25.65069961823071
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          0,
+          2.2,
+          -5.41
+        ],
+        "to": [
+          1.3894123014815485,
+          2.2,
+          -3.9714126872199427
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          1.3894123014815485,
+          2.2,
+          -3.9714126872199427
+        ],
+        "to": [
+          9.549999999999999,
+          2.2,
+          4.477999999999998
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          9.549999999999999,
+          2.2,
+          4.477999999999998
+        ],
+        "to": [
+          9.550000000000002,
+          2.2,
+          20.578
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          9.550000000000002,
+          2.2,
+          20.578
+        ],
+        "to": [
+          8.807756750582724,
+          2.2,
+          21.32406147027965
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          8.807756750582724,
+          2.2,
+          21.32406147027965
+        ],
+        "to": [
+          8.312927917637873,
+          2.2,
+          21.821435783799416
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -22.805440154831935,
+          2.2,
+          -0.786394488097653
+        ],
+        "to": [
+          -22.532816693664444,
+          2.2,
+          -2.7677264765390293
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -22.532816693664444,
+          2.2,
+          -2.7677264765390293
+        ],
+        "to": [
+          -21.324162788130508,
+          2.2,
+          -11.55180043603485
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -21.324162788130508,
+          2.2,
+          -11.55180043603485
+        ],
+        "to": [
+          -21.051539326963017,
+          2.2,
+          -13.533132424476225
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -22.805440154831935,
+          2.2,
+          -0.786394488097653
+        ],
+        "to": [
+          -22.92224787346695,
+          2.2,
+          1.2101915873990392
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -22.92224787346695,
+          2.2,
+          1.2101915873990392
+        ],
+        "to": [
+          -23.2319108183492,
+          2.2,
+          6.503238408911575
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -23.2319108183492,
+          2.2,
+          6.503238408911575
+        ],
+        "to": [
+          -30.703360052600285,
+          2.2,
+          9.574052165978353
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -30.703360052600285,
+          2.2,
+          9.574052165978353
+        ],
+        "to": [
+          -32.55320970237773,
+          2.2,
+          10.334352286469118
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -23.51691010815831,
+          2.2,
+          24.327838042922387
+        ],
+        "to": [
+          -21.580556186320177,
+          2.2,
+          23.827304837847954
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -21.580556186320177,
+          2.2,
+          23.827304837847954
+        ],
+        "to": [
+          -17.479217448963055,
+          2.2,
+          22.7671390282027
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -17.479217448963055,
+          2.2,
+          22.7671390282027
+        ],
+        "to": [
+          -7.906226046538649,
+          2.2,
+          24.87029623025049
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -7.906226046538649,
+          2.2,
+          24.87029623025049
+        ],
+        "to": [
+          -5.952812979224889,
+          2.2,
+          25.299455161705787
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -23.51691010815831,
+          2.2,
+          24.327838042922387
+        ],
+        "to": [
+          -22.366005657699027,
+          2.2,
+          22.692167249054314
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -22.366005657699027,
+          2.2,
+          22.692167249054314
+        ],
+        "to": [
+          -9.550000000000002,
+          2.2,
+          4.4780000000000015
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -9.550000000000002,
+          2.2,
+          4.4780000000000015
+        ],
+        "to": [
+          -1.9996642933093658,
+          2.2,
+          4.339643062966403
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -1.9996642933093658,
+          2.2,
+          4.339643062966403
+        ],
+        "to": [
+          -1.007271992298698e-15,
+          2.2,
+          4.303000000000001
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -1.007271992298698e-15,
+          2.2,
+          4.303000000000001
+        ],
+        "to": [
+          1.9996642933093636,
+          2.2,
+          4.3396430629664025
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          1.9996642933093636,
+          2.2,
+          4.3396430629664025
+        ],
+        "to": [
+          9.549999999999999,
+          2.2,
+          4.477999999999998
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          9.549999999999999,
+          2.2,
+          4.477999999999998
+        ],
+        "to": [
+          9.550000000000002,
+          2.2,
+          20.578
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          9.550000000000002,
+          2.2,
+          20.578
+        ],
+        "to": [
+          8.807756750582724,
+          2.2,
+          21.32406147027965
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          8.807756750582724,
+          2.2,
+          21.32406147027965
+        ],
+        "to": [
+          8.312927917637873,
+          2.2,
+          21.821435783799416
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          29.46483076077691,
+          2.2,
+          -4.533050886273372
+        ],
+        "to": [
+          28.991509756550958,
+          2.2,
+          -2.589866070832871
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          28.991509756550958,
+          2.2,
+          -2.589866070832871
+        ],
+        "to": [
+          22.5859930889076,
+          2.2,
+          23.707514802790207
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          22.5859930889076,
+          2.2,
+          23.707514802790207
+        ],
+        "to": [
+          22.11267208468165,
+          2.2,
+          25.65069961823071
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          29.46483076077691,
+          2.2,
+          -4.533050886273372
+        ],
+        "to": [
+          29.795679222089777,
+          2.2,
+          -2.560605881806351
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          29.795679222089777,
+          2.2,
+          -2.560605881806351
+        ],
+        "to": [
+          31.603134914347955,
+          2.2,
+          8.215043298616417
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          31.603134914347955,
+          2.2,
+          8.215043298616417
+        ],
+        "to": [
+          49.03842187656175,
+          2.2,
+          22.350089002070828
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          49.03842187656175,
+          2.2,
+          22.350089002070828
+        ],
+        "to": [
+          50.59200631854249,
+          2.2,
+          23.609602948653162
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -2.0581745607775153,
+          2.2,
+          -12.69207645812801
+        ],
+        "to": [
+          -0.058175551872756026,
+          2.2,
+          -12.690085383046558
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -0.058175551872756026,
+          2.2,
+          -12.690085383046558
+        ],
+        "to": [
+          5.050000000000001,
+          2.2,
+          -12.684999999999999
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          5.050000000000001,
+          2.2,
+          -12.684999999999999
+        ],
+        "to": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "to": [
+          -5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "to": [
+          -19.260334280044447,
+          2.2,
+          -12.64342208965177
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -19.260334280044447,
+          2.2,
+          -12.64342208965177
+        ],
+        "to": [
+          -21.051539326963017,
+          2.2,
+          -13.533132424476225
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -2.0581745607775153,
+          2.2,
+          -12.69207645812801
+        ],
+        "to": [
+          -0.08909829499415856,
+          2.2,
+          -13.042417234414003
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -0.08909829499415856,
+          2.2,
+          -13.042417234414003
+        ],
+        "to": [
+          9.191493069741757,
+          2.2,
+          -14.69363290320943
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          9.191493069741757,
+          2.2,
+          -14.69363290320943
+        ],
+        "to": [
+          17.991943213310968,
+          2.2,
+          -17.022654927003654
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          17.991943213310968,
+          2.2,
+          -17.022654927003654
+        ],
+        "to": [
+          19.925381323310337,
+          2.2,
+          -17.5343355645131
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -2.0581745607775153,
+          2.2,
+          -12.69207645812801
+        ],
+        "to": [
+          -0.058175551872756026,
+          2.2,
+          -12.690085383046558
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -0.058175551872756026,
+          2.2,
+          -12.690085383046558
+        ],
+        "to": [
+          5.050000000000001,
+          2.2,
+          -12.684999999999999
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          5.050000000000001,
+          2.2,
+          -12.684999999999999
+        ],
+        "to": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          5.050000000000001,
+          2.2,
+          -5.585
+        ],
+        "to": [
+          1.9988002178116289,
+          2.2,
+          -5.479265354082581
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          1.9988002178116289,
+          2.2,
+          -5.479265354082581
+        ],
+        "to": [
+          0,
+          2.2,
+          -5.41
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          11.925028730379918,
+          2.2,
+          -34.690992670196124
+        ],
+        "to": [
+          11.654158035109006,
+          2.2,
+          -32.70942029795143
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          11.654158035109006,
+          2.2,
+          -32.70942029795143
+        ],
+        "to": [
+          9.191493069741757,
+          2.2,
+          -14.69363290320943
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          9.191493069741757,
+          2.2,
+          -14.69363290320943
+        ],
+        "to": [
+          -0.08909829499415856,
+          2.2,
+          -13.042417234414003
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -0.08909829499415856,
+          2.2,
+          -13.042417234414003
+        ],
+        "to": [
+          -2.0581745607775153,
+          2.2,
+          -12.69207645812801
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -4.543245298332174,
+          2.2,
+          49.97569828165392
+        ],
+        "to": [
+          -2.6228622631887033,
+          2.2,
+          50.53438334350286
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -2.6228622631887033,
+          2.2,
+          50.53438334350286
+        ],
+        "to": [
+          30.961309842967005,
+          2.2,
+          60.304817119945376
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          30.961309842967005,
+          2.2,
+          60.304817119945376
+        ],
+        "to": [
+          62.026527240049404,
+          2.2,
+          41.139715791861576
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          62.026527240049404,
+          2.2,
+          41.139715791861576
+        ],
+        "to": [
+          71.37229602386725,
+          2.2,
+          21.11306839796621
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          71.37229602386725,
+          2.2,
+          21.11306839796621
+        ],
+        "to": [
+          55.423472759950585,
+          2.2,
+          13.670284208138426
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          55.423472759950585,
+          2.2,
+          13.670284208138426
+        ],
+        "to": [
+          34.288690157032995,
+          2.2,
+          15.385182880054622
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          34.288690157032995,
+          2.2,
+          15.385182880054622
+        ],
+        "to": [
+          14.496121763751212,
+          2.2,
+          19.653201741684466
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          14.496121763751212,
+          2.2,
+          19.653201741684466
+        ],
+        "to": [
+          -4.024952696587961,
+          2.2,
+          24.767144415401464
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          -4.024952696587961,
+          2.2,
+          24.767144415401464
+        ],
+        "to": [
+          -5.952812979224889,
+          2.2,
+          25.299455161705787
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          59.46982326603942,
+          2.2,
+          48.76525507815233
+        ],
+        "to": [
+          60.26055334263178,
+          2.2,
+          46.92820691711456
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          60.26055334263178,
+          2.2,
+          46.92820691711456
+        ],
+        "to": [
+          71.37229602386725,
+          2.2,
+          21.11306839796621
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          71.37229602386725,
+          2.2,
+          21.11306839796621
+        ],
+        "to": [
+          55.423472759950585,
+          2.2,
+          13.670284208138426
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          55.423472759950585,
+          2.2,
+          13.670284208138426
+        ],
+        "to": [
+          34.288690157032995,
+          2.2,
+          15.385182880054622
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          34.288690157032995,
+          2.2,
+          15.385182880054622
+        ],
+        "to": [
+          23.641750007560972,
+          2.2,
+          24.36154458265002
+        ],
+        "bidirectional": true
+      },
+      {
+        "from": [
+          23.641750007560972,
+          2.2,
+          24.36154458265002
+        ],
+        "to": [
+          22.11267208468165,
+          2.2,
+          25.65069961823071
+        ],
+        "bidirectional": true
+      }
+    ],
+    "colliders": [
+      {
+        "id": "tree:0",
+        "kind": "cylinder",
+        "center": [
+          -41.283515802988,
+          3.592633617486465,
+          52.29386552229397
+        ],
+        "radius": 0.11789843802825958,
+        "height": 2.263650010142584
+      },
+      {
+        "id": "tree:1",
+        "kind": "cylinder",
+        "center": [
+          -50.7392110668416,
+          3.5924024479832743,
+          43.372552441971294
+        ],
+        "radius": 0.11789843802825958,
+        "height": 2.263650010142584
+      },
+      {
+        "id": "tree:2",
+        "kind": "cylinder",
+        "center": [
+          -35.88711216344484,
+          3.639261167655315,
+          46.57686493494381
+        ],
+        "radius": 0.10530755143368625,
+        "height": 2.021904987526776
+      },
+      {
+        "id": "tree:3",
+        "kind": "cylinder",
+        "center": [
+          -45.336795357468674,
+          3.6389254454588995,
+          37.64918396323657
+        ],
+        "radius": 0.10530755143368625,
+        "height": 2.021904987526776
+      },
+      {
+        "id": "tree:4",
+        "kind": "cylinder",
+        "center": [
+          20.13980156976066,
+          2.8627074345612566,
+          1.0881408776037245
+        ],
+        "radius": 0.10041173604610129,
+        "height": 1.9279053320851447
+      },
+      {
+        "id": "tree:5",
+        "kind": "cylinder",
+        "center": [
+          67.56637771072693,
+          3.0828371516638837,
+          11.46413399887553
+        ],
+        "radius": 0.12084589017172143,
+        "height": 2.3202410912970515
+      },
+      {
+        "id": "tree:6",
+        "kind": "cylinder",
+        "center": [
+          60.14065353927307,
+          3.151198853315237,
+          0.7936785011244698
+        ],
+        "radius": 0.12084589017172143,
+        "height": 2.3202410912970515
+      },
+      {
+        "id": "tree:7",
+        "kind": "cylinder",
+        "center": [
+          65.77824858650199,
+          2.9447120898121923,
+          -3.3747610068987983
+        ],
+        "radius": 0.11925606908169567,
+        "height": 2.2897165263685566
+      },
+      {
+        "id": "tree:11",
+        "kind": "cylinder",
+        "center": [
+          1.8320510886165133,
+          3.3370651585664026,
+          -44.275284491046655
+        ],
+        "radius": 0.1447429607071437,
+        "height": 2.779064845577159
+      },
+      {
+        "id": "tree:15",
+        "kind": "cylinder",
+        "center": [
+          -41.86392724013626,
+          3.2686901845069998,
+          -26.654299223363306
+        ],
+        "radius": 0.13678093339964195,
+        "height": 2.6261939212731256
+      },
+      {
+        "id": "tree:16",
+        "kind": "cylinder",
+        "center": [
+          43.13607275986374,
+          2.8735291400215206,
+          -27.99292490373018
+        ],
+        "radius": 0.0965067080509649,
+        "height": 1.852928794578526
+      },
+      {
+        "id": "tree:19",
+        "kind": "cylinder",
+        "center": [
+          -42.476336467754,
+          2.8069152834297855,
+          -9.654299223363306
+        ],
+        "radius": 0.08925034022734002,
+        "height": 1.7136065323649283
+      },
+      {
+        "id": "tree:21",
+        "kind": "cylinder",
+        "center": [
+          -42.46797189374787,
+          3.3447459188448194,
+          -1.1542992233633065
+        ],
+        "radius": 0.1447429607071437,
+        "height": 2.779064845577159
+      },
+      {
+        "id": "tree:23",
+        "kind": "cylinder",
+        "center": [
+          -49.1176349177301,
+          3.4454392650649464,
+          30.63884919044674
+        ],
+        "radius": 0.14923831267087992,
+        "height": 2.8653756032808944
+      },
+      {
+        "id": "building:library",
+        "kind": "box",
+        "rotationY": 0.9994588469612697,
+        "halfExtents": [
+          8.071905970573425,
+          6.00046286282668,
+          8.073378324508667
+        ],
+        "center": [
+          -29.231995466079244,
+          8.20046286282668,
+          -18.791918432401953
+        ]
+      },
+      {
+        "id": "building:research-lab",
+        "kind": "box",
+        "rotationY": -0.8491414759301352,
+        "halfExtents": [
+          6.582773923873901,
+          4.5,
+          6.606621265411377
+        ],
+        "center": [
+          26.10099546633002,
+          6.7,
+          -22.96777175238006
+        ]
+      },
+      {
+        "id": "building:depot",
+        "kind": "box",
+        "rotationY": 1.8781937999177183,
+        "halfExtents": [
+          9,
+          5.25,
+          7.5
+        ],
+        "center": [
+          -41.1075,
+          7.45,
+          13.049999999999999
+        ]
+      },
+      {
+        "id": "building:review-office",
+        "kind": "box",
+        "rotationY": -2.007423486608438,
+        "halfExtents": [
+          9.75,
+          5.625,
+          7.5
+        ],
+        "center": [
+          58.724999999999994,
+          7.825,
+          27.405
+        ]
+      },
+      {
+        "id": "building:triage",
+        "kind": "box",
+        "rotationY": -2.7776136970801493,
+        "halfExtents": [
+          5.25,
+          3.375,
+          4.5
+        ],
+        "center": [
+          10.44,
+          5.575,
+          27.405
+        ]
+      },
+      {
+        "id": "building:garden",
+        "kind": "box",
+        "rotationY": 2.910501986393896,
+        "halfExtents": [
+          10.5,
+          1.875,
+          9
+        ],
+        "center": [
+          -8.352,
+          4.075,
+          35.495999999999995
+        ]
+      },
+      {
+        "id": "building:council",
+        "kind": "box",
+        "rotationY": -2.4301335278502854,
+        "halfExtents": [
+          14.541742086410522,
+          9.749999284744263,
+          14.61867070198059
+        ],
+        "center": [
+          32.627394723015755,
+          11.949999284744262,
+          37.84517840118572
+        ]
+      },
+      {
+        "id": "building:arts-studio",
+        "kind": "box",
+        "rotationY": 1.5363272257953886,
+        "halfExtents": [
+          4.657560646533966,
+          3.75,
+          4.657128632068634
+        ],
+        "center": [
+          -30.275186165048893,
+          5.95,
+          -1.0422544816007724
+        ]
+      },
+      {
+        "id": "building:engineering-workshop",
+        "kind": "box",
+        "rotationY": 2.37314201999875,
+        "halfExtents": [
+          8.211114764213562,
+          5.250000357627869,
+          8.183887124061584
+        ],
+        "center": [
+          -30.276632823333372,
+          7.450000357627869,
+          31.31964045472876
+        ]
+      },
+      {
+        "id": "building:release-gatehouse",
+        "kind": "box",
+        "rotationY": -3.141592653589793,
+        "halfExtents": [
+          8.25,
+          5.625,
+          6.75
+        ],
+        "center": [
+          0,
+          7.825,
+          12.528
+        ]
+      },
+      {
+        "id": "building:archive",
+        "kind": "box",
+        "rotationY": -1.4181469983996315,
+        "halfExtents": [
+          11.50332248210907,
+          9,
+          11.372466087341309
+        ],
+        "center": [
+          42.41216697757373,
+          11.2,
+          -6.522013918850483
+        ]
+      },
+      {
+        "id": "building:bus",
+        "kind": "box",
+        "rotationY": 0,
+        "halfExtents": [
+          3.75,
+          1.5,
+          2.25
+        ],
+        "center": [
+          0,
+          3.7,
+          -9.135
+        ]
+      },
+      {
+        "id": "building:publishing",
+        "kind": "box",
+        "rotationY": -0.3310960767041321,
+        "halfExtents": [
+          4.931786119937897,
+          4.5,
+          5.809372007846832
+        ],
+        "center": [
+          14.35508905859436,
+          6.7,
+          -41.75730689833359
+        ]
+      },
+      {
+        "id": "building:revenue",
+        "kind": "box",
+        "rotationY": 0.16076274062583473,
+        "halfExtents": [
+          10.055947422981262,
+          6,
+          10.044018745422363
+        ],
+        "center": [
+          -3.9168279667698416,
+          8.2,
+          -24.141281158306423
+        ]
+      }
+    ],
+    "sha256": "b62e296a6ba0f0a8c5e35229767a35280267a5d846d5a0a02f736b576986193a"
+  },
+  "destinations": {
+    "bus": [
+      0,
+      2.2,
+      -5.41
+    ],
+    "project": [
+      -4.543245298332174,
+      2.2,
+      49.97569828165392
+    ],
+    "depot": [
+      -32.55320970237773,
+      2.2,
+      10.334352286469118
+    ],
+    "review": [
+      50.59200631854249,
+      2.2,
+      23.609602948653162
+    ],
+    "triage": [
+      8.312927917637873,
+      2.2,
+      21.821435783799416
+    ],
+    "garden": [
+      -5.952812979224889,
+      2.2,
+      25.299455161705787
+    ],
+    "council": [
+      22.11267208468165,
+      2.2,
+      25.65069961823071
+    ],
+    "arts-studio": [
+      -22.805440154831935,
+      2.2,
+      -0.786394488097653
+    ],
+    "engineering-workshop": [
+      -23.51691010815831,
+      2.2,
+      24.327838042922387
+    ],
+    "release-gatehouse": [
+      -1.007271992298698e-15,
+      2.2,
+      4.303000000000001
+    ],
+    "archive": [
+      29.46483076077691,
+      2.2,
+      -4.533050886273372
+    ],
+    "unavailable": [
+      0,
+      2.2,
+      -5.41
+    ],
+    "library": [
+      -21.051539326963017,
+      2.2,
+      -13.533132424476225
+    ],
+    "lab": [
+      19.925381323310337,
+      2.2,
+      -17.5343355645131
+    ],
+    "revenue": [
+      -2.0581745607775153,
+      2.2,
+      -12.69207645812801
+    ],
+    "publishing": [
+      11.925028730379918,
+      2.2,
+      -34.690992670196124
+    ],
+    "project-inner": [
+      -4.543245298332174,
+      2.2,
+      49.97569828165392
+    ],
+    "project-outer": [
+      59.46982326603942,
+      2.2,
+      48.76525507815233
+    ]
+  },
+  "projectSlots": [
+    {
+      "id": "compound-inner-1",
+      "position": [
+        -5.22,
+        2.2,
+        57.42
+      ],
+      "bounds": {
+        "min": [
+          -13.219999999999999,
+          2.2,
+          49.42
+        ],
+        "max": [
+          2.7800000000000002,
+          14.2,
+          65.42
+        ]
+      },
+      "navigationLink": {
+        "from": [
+          -4.543245298332174,
+          2.2,
+          49.97569828165392
+        ],
+        "to": [
+          -5.952812979224889,
+          2.2,
+          25.299455161705787
+        ],
+        "bidirectional": true
+      }
+    },
+    {
+      "id": "compound-inner-2",
+      "position": [
+        65.25,
+        2.2,
+        53.505
+      ],
+      "bounds": {
+        "min": [
+          57.25,
+          2.2,
+          45.505
+        ],
+        "max": [
+          73.25,
+          14.2,
+          61.505
+        ]
+      },
+      "navigationLink": {
+        "from": [
+          59.46982326603942,
+          2.2,
+          48.76525507815233
+        ],
+        "to": [
+          22.11267208468165,
+          2.2,
+          25.65069961823071
+        ],
+        "bidirectional": true
+      }
+    }
+  ],
+  "qualityBudgets": {
+    "balancedOverview": {
+      "drawCalls": 180,
+      "visibleTriangles": 1500000,
+      "gpuMiB": 256
+    },
+    "balancedWorkerFocus": {
+      "drawCalls": 220,
+      "visibleTriangles": 2000000,
+      "gpuMiB": 256
+    }
+  },
+  "textures": [
+    {
+      "bytes": 101,
+      "sha256": "c2fc9a88c208cacba51481c92450811cac93913775feccdff127d94b1c031a63",
+      "source": "generated-approved-palette",
+      "uri": "textures/approved-palette.png"
+    }
+  ],
+  "generatedAssetPack": {
+    "builder": "babylonjs-null-engine",
+    "engineVersion": "9.21.2",
+    "navigation": {
+      "accessorBytes": 22968,
+      "animationClips": [],
+      "drawCalls": 1,
+      "materials": 1,
+      "meshes": 1,
+      "nodes": 18,
+      "gpuBytes": 22968,
+      "textures": 0,
+      "triangles": 564,
+      "gpuMiB": 0.0219,
+      "budget": {
+        "maxDrawCalls": 4,
+        "maxGpuMiB": 4,
+        "maxMaterials": 1,
+        "maxTextures": 0,
+        "maxTriangles": 12000
+      },
+      "bytes": 32304,
+      "extent": [
+        82,
+        1.01,
+        69
+      ],
+      "sha256": "ff0bdd3aec62b318eddf61916787c7222a19eb5d434ea6de18ddef6026e3b4c7"
+    },
+    "sourceSha256": "248e8d40946b08b9f74f4b2ddd0ba17e4f17fd054260189972164c5d6ca70590",
+    "reviewStatus": "Review only: eight card-derived building candidates; distinct operational fixtures retained. Static model quality and final animation acceptance remain pending."
+  },
+  "reviewLeaderAssets": [
+    {
+      "id": "owl",
+      "uri": "models/review-owl-424364fdacee.glb",
+      "heightMetres": 1.5,
+      "position": [
+        -21.051539326963017,
+        2.2,
+        -13.533132424476225
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "elephant",
+      "uri": "models/review-elephant-90357430baa2.glb",
+      "heightMetres": 2.3,
+      "position": [
+        29.46483076077691,
+        2.2,
+        -4.533050886273372
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "cat",
+      "uri": "models/review-cat-a94817c2f48a.glb",
+      "heightMetres": 1.6,
+      "position": [
+        -22.805440154831935,
+        2.2,
+        -0.786394488097653
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "fox",
+      "uri": "models/review-fox-6f02184262d0.glb",
+      "heightMetres": 1.75,
+      "position": [
+        19.925381323310337,
+        2.2,
+        -17.5343355645131
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "capybara",
+      "uri": "models/review-capybara-bf281acb2538.glb",
+      "heightMetres": 1.7,
+      "position": [
+        -2.0581745607775153,
+        2.2,
+        -12.69207645812801
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "lion",
+      "uri": "models/review-lion-c135959f5fd5.glb",
+      "heightMetres": 2,
+      "position": [
+        22.11267208468165,
+        2.2,
+        25.65069961823071
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "beaver",
+      "uri": "models/review-beaver-b0878c9ea5cc.glb",
+      "heightMetres": 1.6,
+      "position": [
+        -23.51691010815831,
+        2.2,
+        24.327838042922387
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "monkey",
+      "uri": "models/review-monkey-d961d9faf527.glb",
+      "heightMetres": 1.65,
+      "position": [
+        11.925028730379918,
+        2.2,
+        -34.690992670196124
+      ],
+      "rotationY": 0
+    }
+  ],
+  "reviewWorkerAssets": [
+    {
+      "id": "baseline",
+      "uri": "models/review-worker-baseline-dd8a79afef8e.glb",
+      "heightMetres": 1.2,
+      "position": [
+        11.708076922943984,
+        2.2,
+        -10.933407118943924
+      ],
+      "rotationY": 0
+    },
+    {
+      "id": "ci-repair-triage",
+      "uri": "models/review-worker-ci-repair-triage-6035edc9ddd9.glb",
+      "heightMetres": 1.2,
+      "position": [
+        24.392405960392104,
+        2.2,
+        17.519192310869542
+      ],
+      "rotationY": 0
+    }
+  ]
+}

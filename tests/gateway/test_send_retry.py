@@ -178,6 +178,52 @@ class TestSendWithRetryFallback:
 
 class TestSendWithRetryAfter:
     @pytest.mark.asyncio
+    async def test_non_opted_adapter_preserves_consecutive_server_waits(self):
+        adapter = _StubAdapter()
+        adapter._send_results = [
+            SendResult(success=False, error="rate limited", retry_after=35.0),
+            SendResult(success=False, error="rate limited", retry_after=35.0),
+            SendResult(success=True, message_id="ok"),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep, \
+                patch("gateway.platforms.base.random.uniform", return_value=0.0):
+            result = await adapter._send_with_retry("chat1", "hello")
+        assert result.success
+        assert [call.args[0] for call in sleep.await_args_list] == [35.0, 35.0]
+
+    @pytest.mark.asyncio
+    async def test_opted_adapter_counts_only_server_waits(self):
+        adapter = _StubAdapter()
+        adapter.retry_after_sleep_budget_secs = 60.0
+        adapter._send_results = [
+            SendResult(success=False, error="ConnectError", retryable=True),
+            SendResult(success=False, error="rate limited", retry_after=35.0),
+            SendResult(success=False, error="rate limited", retry_after=35.0),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep, \
+                patch("gateway.platforms.base.random.uniform", return_value=0.0):
+            result = await adapter._send_with_retry("chat1", "hello", max_retries=3)
+        assert not result.success
+        assert result.retry_after == 35.0
+        assert len(adapter._send_calls) == 3
+        assert [call.args[0] for call in sleep.await_args_list] == [2.0, 35.0]
+
+    @pytest.mark.asyncio
+    async def test_exact_budget_clips_jitter_and_refuses_another_wait(self):
+        adapter = _StubAdapter()
+        adapter.retry_after_sleep_budget_secs = 60.0
+        adapter._send_results = [
+            SendResult(success=False, error="rate limited", retry_after=60.0),
+            SendResult(success=False, error="rate limited", retry_after=0.1),
+        ]
+        with patch("asyncio.sleep", new_callable=AsyncMock) as sleep, \
+                patch("gateway.platforms.base.random.uniform", return_value=0.7):
+            result = await adapter._send_with_retry("chat1", "hello")
+        assert result.retry_after == 0.1
+        assert len(adapter._send_calls) == 2
+        sleep.assert_awaited_once_with(60.0)
+
+    @pytest.mark.asyncio
     async def test_retry_after_honored_on_first_retry(self):
         """When the initial result has retry_after, the first retry waits that long."""
         adapter = _StubAdapter()

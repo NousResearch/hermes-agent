@@ -502,6 +502,7 @@ class TelegramAdapter(BasePlatformAdapter):
     REQUIRES_EDIT_FINALIZE: bool = True
     FALLBACK_ON_FINAL_EDIT_FLOOD: bool = True  # retrying a final edit burns the same flood budget
     RESEND_FINAL_ON_EMPTY_STREAM_FALLBACK: bool = True  # a failed final edit may leave a partial preview
+    retry_after_sleep_budget_secs: Optional[float] = 60.0  # consecutive caller-side flood waits share one budget
 
     # Adaptive text-batch ingress ("feels instant"): ≤320 codepoints settle in ~180ms, ≤1024 in ~240ms,
     # longer waits the configured cap; always clamped to ``_text_batch_delay_seconds``.

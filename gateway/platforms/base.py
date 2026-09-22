@@ -1821,6 +1821,10 @@ _strip_media_directives = _strip_media_tag_directives
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
+    # Optional per-delivery cumulative budget for server-directed retry waits.
+    # Ordinary exponential backoff does not consume it.
+    retry_after_sleep_budget_secs: Optional[float] = None
+
     # ``format_message`` renders ``` fences as real code blocks (tool-progress then sends a bare
     # fenced terminal command; plain-text platforms get the preview).
     supports_code_blocks: bool = False
@@ -3566,6 +3570,7 @@ class BasePlatformAdapter(ABC):
         if is_network:
             # A server-requested retry_after (Telegram FloodWait) overrides backoff, once per send.
             server_retry_after = result.retry_after
+            retry_after_spent = 0.0
             for attempt in range(1, max_retries + 1):
                 backoff = server_retry_after
                 if backoff is None:
@@ -3580,7 +3585,21 @@ class BasePlatformAdapter(ABC):
                         self.name, backoff, _SEND_RETRY_INLINE_WAIT_CAP_SECS, error_str,
                     )
                     return result
+                if server_retry_after is not None:
+                    budget = self.retry_after_sleep_budget_secs
+                    if budget is not None:
+                        remaining = max(0.0, budget - retry_after_spent)
+                        if backoff > remaining:
+                            logger.warning(
+                                "[%s] Server retry after %.1fs exceeds remaining %.1fs of %.1fs "
+                                "delivery sleep budget; returning failure for redelivery: %s",
+                                self.name, backoff, remaining, budget, error_str,
+                            )
+                            return result
                 delay = backoff + random.uniform(0, 1)
+                if server_retry_after is not None and self.retry_after_sleep_budget_secs is not None:
+                    delay = min(delay, max(0.0, self.retry_after_sleep_budget_secs - retry_after_spent))
+                    retry_after_spent += delay
                 server_retry_after = None
                 logger.warning("[%s] Send failed (attempt %d/%d, retrying in %.1fs): %s", self.name,
                                attempt, max_retries, delay, error_str)

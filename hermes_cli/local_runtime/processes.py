@@ -5,11 +5,14 @@ from __future__ import annotations
 from collections.abc import Mapping
 import ctypes
 from ctypes import wintypes
+import logging
 import subprocess
 import sys
 import threading
 
 import psutil
+
+logger = logging.getLogger(__name__)
 
 
 class _BasicLimits(ctypes.Structure):
@@ -139,4 +142,100 @@ def spawn_server(cmd, **kwargs) -> tuple[subprocess.Popen, _WindowsJob | None]:
                         if stream is not None:
                             stream.close()
                     proc._handle.Close()
+        raise
+
+
+_kill_on_exit_lock = threading.Lock()
+_kill_on_exit_job: _WindowsJob | None = None
+_kill_on_exit_failed = False
+_assign_warned = False
+_session_assign_warned = False
+_assign_warn_lock = threading.Lock()
+
+
+def kill_on_exit_job() -> _WindowsJob | None:
+    """Process-lifetime containment job. Never closed.
+
+    None off Windows. A creation failure logs one warning and is not retried.
+    """
+    global _kill_on_exit_job, _kill_on_exit_failed
+    if sys.platform != "win32":
+        return None
+    if _kill_on_exit_job is not None or _kill_on_exit_failed:
+        return _kill_on_exit_job
+    with _kill_on_exit_lock:
+        if _kill_on_exit_job is not None or _kill_on_exit_failed:
+            return _kill_on_exit_job
+        try:
+            _kill_on_exit_job = _WindowsJob()
+        except OSError as exc:
+            _kill_on_exit_failed = True
+            logger.warning("kill-on-exit job creation failed: %s", exc)
+            return None
+        return _kill_on_exit_job
+
+
+def _warn_assign_once(exc: BaseException, *, session: bool = False) -> None:
+    global _assign_warned, _session_assign_warned
+    with _assign_warn_lock:
+        if session:
+            if _session_assign_warned:
+                return
+            _session_assign_warned = True
+        else:
+            if _assign_warned:
+                return
+            _assign_warned = True
+    kind = "session job" if session else "kill-on-exit job"
+    logger.warning("%s assign failed: %s", kind, exc)
+
+
+def spawn_contained(cmd, *, job, session: bool = False, **kwargs) -> subprocess.Popen:
+    """Start ``cmd``. With a Windows job: suspend, assign, resume.
+
+    Assign failure logs once and still resumes. A warning-log failure does
+    not skip that resume. ``session=True`` logs that warning as a session
+    job, once, separate from the process-lifetime job. ``psutil.NoSuchProcess``,
+    or any other resume error when ``proc`` has no real process handle, is
+    not a suspended child: return it and do not kill. Any other escape after
+    ``Popen`` before that return — including ``KeyboardInterrupt`` during
+    assign or warn, and resume failure of a real process handle — kills
+    that child and re-raises. This never closes ``job``.
+    Non-Windows, or ``job is None``, is a plain Popen.
+    """
+    if sys.platform != "win32" or job is None:
+        return subprocess.Popen(cmd, **kwargs)
+    kwargs["creationflags"] = kwargs.get("creationflags", 0) | 0x00000004  # CREATE_SUSPENDED
+    proc = subprocess.Popen(cmd, **kwargs)
+    try:
+        try:
+            job.assign(proc)
+        except Exception as exc:
+            try:
+                _warn_assign_once(exc, session=session)
+            except Exception:
+                pass
+        try:
+            psutil.Process(proc.pid).resume()
+        except psutil.NoSuchProcess:
+            return proc
+        except BaseException as exc:
+            handle = getattr(proc, "_handle", None)
+            if not isinstance(handle, int) or isinstance(handle, bool):
+                if not isinstance(exc, Exception):
+                    raise
+                return proc
+            raise
+        return proc
+    except BaseException:
+        handle = getattr(proc, "_handle", None)
+        if isinstance(handle, int) and not isinstance(handle, bool):
+            try:
+                proc.kill()
+                proc.wait(timeout=10)
+            finally:
+                for stream in (proc.stdin, proc.stdout, proc.stderr):
+                    if stream is not None:
+                        stream.close()
+                proc._handle.Close()
         raise

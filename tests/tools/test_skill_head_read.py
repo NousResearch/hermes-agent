@@ -4,17 +4,18 @@ Skill discovery scans every SKILL.md once per pass and only needs the routing fi
 frontmatter (name/description/platforms/environments) — over 131 installed skills the last of them
 ended within 422 bytes. The old path read the whole file and sliced it (`read_text()[:4000]`), so
 cost scaled with file size: 3.03ms vs 0.76ms over 131 skills. These tests pin the head read, its
-escalation for long frontmatter, the whole-file fallback for unclosed frontmatter, and the
-frontmatter ceiling enforced at the write boundary.
+escalation for long frontmatter, the whole-file fallback for unclosed frontmatter, the CRLF case
+that must NOT fall back (a Windows-written SKILL.md is the population the utf-8-sig decoding exists
+for), and the frontmatter ceiling enforced at the write boundary.
 """
 
+import builtins
 import pathlib
-
-import pytest
 
 from agent.skill_utils import (
     SKILL_FRONTMATTER_MAX_BYTES,
     SKILL_HEAD_MAX_BYTES,
+    _frontmatter_closed,
     parse_frontmatter,
     read_skill_head,
 )
@@ -22,6 +23,7 @@ from tools.skill_manager_tool import _validate_frontmatter
 from tools.skill_usage import _read_skill_name
 
 BIG_BODY = "\n" + ("filler line for the body\n" * 5000)  # ~120 KB, deliberately larger than the head
+CRLF_BODY = "\r\n" + ("filler line for the body\r\n" * 5000)  # same, Windows line endings
 
 
 def _make_skill(tmp_path, extra_fm: str = "", body: str = BIG_BODY, name: str = "head-sample",
@@ -36,15 +38,52 @@ def _make_skill(tmp_path, extra_fm: str = "", body: str = BIG_BODY, name: str = 
     return p
 
 
+def _make_crlf_skill(tmp_path, extra_fm: str = "", name: str = "crlf-sample"):
+    """The same skill saved with CRLF line endings (Windows editor, Hermes-managed external dir)."""
+    raw = f"---\r\nname: {name}\r\ndescription: sample skill\r\n{extra_fm}---\r\n{CRLF_BODY}"
+    return _make_skill(tmp_path, raw=raw)
+
+
 def _forbid_whole_file_read(monkeypatch):
     """Any whole-file read on the head path is a regression, not an implementation detail."""
-    real = pathlib.Path.read_text
 
     def boom(self, *a, **k):
         raise AssertionError(f"whole-file read on the head path: {self}")
 
     monkeypatch.setattr(pathlib.Path, "read_text", boom)
-    return real
+
+
+def _count_bytes_read(monkeypatch, path, sink):
+    """Count bytes returned by ``read`` for *path* only.
+
+    The whole-file fallback goes through ``Path.read_text`` → ``io.open``, so it stays out of the
+    count and the assertion below measures the head read alone.
+    """
+    real_open = builtins.open
+
+    class _Counting:
+        __slots__ = ("_fh",)
+
+        def __init__(self, fh):
+            self._fh = fh
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *exc):
+            self._fh.close()
+            return False
+
+        def read(self, n=-1):
+            data = self._fh.read(n)
+            sink.append(len(data))
+            return data
+
+    def counting_open(file, *a, **k):
+        fh = real_open(file, *a, **k)
+        return _Counting(fh) if str(file) == str(path) else fh
+
+    monkeypatch.setattr(builtins, "open", counting_open)
 
 
 def test_head_read_short_frontmatter_never_reads_the_whole_file(tmp_path, monkeypatch):
@@ -116,6 +155,48 @@ def test_head_read_matches_a_whole_file_parse(tmp_path):
     head_fm, _head_body = parse_frontmatter(read_skill_head(p))
     for field in ("name", "description", "platforms", "environments"):
         assert head_fm.get(field) == full_fm.get(field)
+
+
+def test_frontmatter_closure_predicate_agrees_with_the_parser_on_crlf():
+    """A CRLF file closes with ``---\\r\\n``. ``parse_frontmatter`` accepts that (``\\s*``), so the
+    closure predicate must too — otherwise every CRLF skill is reported unclosed forever and takes
+    the whole-file fallback this module removes."""
+    crlf = "---\r\nname: a\ndescription: d\r\n---\r\nbody\r\n"
+    assert _frontmatter_closed(crlf) is True
+    assert parse_frontmatter(crlf)[0].get("name") == "a"
+    assert _frontmatter_closed("\ufeff---\r\nname: a\r\n---\r\nbody") is True
+    assert _frontmatter_closed("---\nname: a\n---\nbody\n") is True
+    assert _frontmatter_closed("no frontmatter at all") is True
+    assert _frontmatter_closed("---\nname: a\n") is False  # still unclosed: escalation stays live
+
+
+def test_head_read_stops_at_the_fence_on_a_crlf_skill(tmp_path, monkeypatch):
+    p = _make_crlf_skill(tmp_path)
+    _forbid_whole_file_read(monkeypatch)  # a CRLF fence must not trigger the whole-file fallback
+    head = read_skill_head(p)
+    assert parse_frontmatter(head)[0].get("name") == "crlf-sample"
+    assert len(head) < p.stat().st_size
+
+
+def test_head_read_crlf_escalates_but_never_reads_past_the_cap(tmp_path, monkeypatch):
+    """The cap is a ceiling on bytes read, so the fallback warning quotes what was really read."""
+    raw = "---\r\nname: broken\r\n" + ("y" * (SKILL_HEAD_MAX_BYTES + 5000))
+    p = tmp_path / "huge" / "SKILL.md"
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_bytes(raw.encode("utf-8"))
+
+    read_bytes = []
+    _count_bytes_read(monkeypatch, p, read_bytes)
+    out = read_skill_head(p)
+
+    assert len(read_bytes) > 1, "an unclosed frontmatter must still escalate"
+    assert sum(read_bytes) <= SKILL_HEAD_MAX_BYTES, f"read {sum(read_bytes)} B, past the cap"
+    assert len(out) > SKILL_HEAD_MAX_BYTES, "unclosed frontmatter must still resolve in full"
+
+
+def test_validate_frontmatter_accepts_crlf_content():
+    """The write boundary and the read path must agree about CRLF."""
+    assert _validate_frontmatter("---\r\nname: crlf\ndescription: short and fine\r\n---\r\nbody\r\n") is None
 
 
 def test_validate_frontmatter_rejects_oversized_frontmatter(tmp_path):

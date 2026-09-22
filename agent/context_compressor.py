@@ -959,7 +959,11 @@ _ANCHOR_PATTERNS: "list[tuple[str, re.Pattern[str], int]]" = [
     ("branches", re.compile(r"\b(?:fix|feat|docs|refactor|chore|salvage|ent)/[A-Za-z0-9._/-]{3,60}"), 40),
     ("handles", re.compile(r"@[A-Za-z0-9-]{3,30}\b"), 40),
     ("urls", re.compile(r"https?://[^\s)\"']{10,110}"), 30),
-    ("files", re.compile(r"\b[\w./-]+/[^\s/]+\.(?:py|ts|tsx|js|jsx|rs|go|java|rb|php|sql|md|rst|csv|tsv|xlsx|xls|ipynb|html|css|scss|vue|yaml|yml|json|jsonl|toml|ini|cfg|sh|db|sqlite|log)\b"), 80),
+    # Filename segment: path characters incl. CJK names, but never quoting/CJK list punctuation —
+    # unpunctuated prose runs ("`a.py`：`b.py`、`c.py`") otherwise collapse into one unusable value;
+    # the 120-char cap bounds any run that still slips through. Directory part stays \w so
+    # non-ASCII directory names keep working.
+    ("files", re.compile(r"\b[\w./-]+/[^\s/`'\"\u3001\uff0c\u3002\uff1a\uff1b\uff01\uff1f\uff08\uff09\u3010\u3011\{\}\[\]<>*|]{1,120}\.(?:py|ts|tsx|js|jsx|rs|go|java|rb|php|sql|md|rst|csv|tsv|xlsx|xls|ipynb|html|css|scss|vue|yaml|yml|json|jsonl|toml|ini|cfg|sh|db|sqlite|log)\b"), 80),
     ("errors", re.compile(r"\b(?:[A-Z][a-zA-Z]*Error|Exception|ENOSPC|EACCES|SIGKILL|Traceback)\b[^\n]{0,90}"), 40),
 ]
 _ANCHOR_NOISE = frozenset({
@@ -970,9 +974,11 @@ _ANCHOR_NOISE = frozenset({
 def _truncate_anchor_section(line: str, room: int) -> str:
     """Trim a section line to ``room`` characters on a value boundary (never mid-identifier).
 
-    Returns ``""`` when nothing fits. A section that overflows must cost its own tail, not
-    every section behind it — the previous whole-loop ``break`` silently dropped session ids,
-    todo ids, urls and error strings whenever the (greedy) file-path list ran long.
+    Returns ``""`` when nothing fits, which the caller turns into the bare ``label:`` — a
+    scanned class that lost its values must not look like a class that never matched. A
+    section that overflows must cost its own tail, not every section behind it — the previous
+    whole-loop ``break`` silently dropped session ids, todo ids, urls and error strings
+    whenever the (greedy) file-path list ran long.
     """
     if room <= 0:
         return ""
@@ -1022,7 +1028,12 @@ def _build_anchor_index(turns: List[Dict[str, Any]]) -> str:
             continue
         ranked = sorted(counts, key=lambda v: (-counts[v], -last_seen[v]))[:cap]
         line = f"{label}: " + ", ".join(f"{v}(x{counts[v]})" if counts[v] > 1 else v for v in ranked)
-        line = _truncate_anchor_section(line, _LEAN_ANCHOR_BUDGET_CHARS - used)
+        room = _LEAN_ANCHOR_BUDGET_CHARS - used
+        line = _truncate_anchor_section(line, room)
+        if not line:
+            # Cutting a section's values must not delete its label: a missing label reads as
+            # "this class was absent from the region", which is a different and wrong claim.
+            line = f"{label}:" if len(label) + 1 <= room else ""
         if not line:
             continue
         sections.append(line)

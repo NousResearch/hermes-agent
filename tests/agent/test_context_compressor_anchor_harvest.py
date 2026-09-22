@@ -54,3 +54,46 @@ def test_anchor_index_cheap_ids_survive_a_tight_budget(monkeypatch):
     assert "[221791]" in index
     assert "20260920_220503_c78aff58" in index
     assert len(index) <= cc._LEAN_ANCHOR_BUDGET_CHARS + 200  # heading + footer are outside the sections budget
+
+
+# The production table, isolated to one class so the budget tests below assert labels, not counts.
+_PATH_PATTERN = next(entry for entry in cc._ANCHOR_PATTERNS if entry[0] == "files")
+
+
+def test_anchor_index_files_never_span_prose_or_quoting_punctuation():
+    """A "path" value must be one path: an unpunctuated CJK/backtick list must not glue into one value."""
+    turns = [{
+        "role": "user",
+        "content": "产物 tmp/`：`review_a.py`、`arch_b.py`、`wj_c.py`、`out.json` 已归档；另见 src/deep/real_module.py",
+    }]
+
+    index = cc._build_anchor_index(turns)
+    line = next((ln for ln in index.splitlines() if ln.startswith("files:")), "")
+    values = [v.split("(x")[0] for v in line[len("files: "):].split(", ")] if line else []
+
+    assert "src/deep/real_module.py" in values, f"真实路径仍须采集: {values!r}"
+    for value in values:
+        assert not any(ch in value for ch in "`、：，。"), f"路径值吞入散文标点: {value!r}"
+        assert len(value) <= 120, f"路径值长度失控: {len(value)}"
+    assert not any("review_a.py" in v and "arch_b.py" in v for v in values), f"枚举被并成一个值: {values!r}"
+
+
+def test_anchor_index_names_a_class_whose_values_cannot_fit(monkeypatch):
+    """A scanned class that loses its values to the budget must still be named."""
+    monkeypatch.setattr(cc, "_ANCHOR_PATTERNS", [_PATH_PATTERN])
+    monkeypatch.setattr(cc, "_LEAN_ANCHOR_BUDGET_CHARS", 10)  # fits "files:", not the first value
+    turns = [{"role": "user", "content": "见 src/very/deep/nested/module_name.py 与 src/other/second_file.py"}]
+
+    index = cc._build_anchor_index(turns)
+
+    assert "files:" in index  # label survives the cut
+    assert "module_name.py" not in index  # ...without its values pretending to have fit
+
+
+def test_anchor_index_omits_a_class_when_even_its_label_cannot_fit(monkeypatch):
+    """No room for the label either: the section is dropped, not emitted as a stub."""
+    monkeypatch.setattr(cc, "_ANCHOR_PATTERNS", [_PATH_PATTERN])
+    monkeypatch.setattr(cc, "_LEAN_ANCHOR_BUDGET_CHARS", 0)
+    turns = [{"role": "user", "content": "见 src/very/deep/nested/module_name.py"}]
+
+    assert cc._build_anchor_index(turns) == ""

@@ -3465,6 +3465,27 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
     _SAMPLED_INPUT_SLICES = 8
 
     @classmethod
+    def _bound_oversized_record(cls, record: str, limit: int) -> str:
+        """Bound an oversized record with an explicit intra-record truncation marker."""
+        if len(record) <= limit:
+            return record
+        marker_template = "\n...[record truncated: {elided:,} chars elided — recover via session_search]...\n"
+        marker_reserve = len(marker_template.format(elided=len(record)))
+        if limit <= marker_reserve:
+            return record[:limit]
+        remaining = limit - marker_reserve
+        head_len = int(remaining * 0.5)
+        tail_len = remaining - head_len
+        head = record[:head_len].rstrip("\n")
+        tail = record[-tail_len:].lstrip("\n") if tail_len else ""
+        elided = len(record) - len(head) - len(tail)
+        marker = marker_template.format(elided=elided)
+        res = head + marker + tail
+        if len(res) > limit:
+            res = head[:max(0, head_len - (len(res) - limit))] + marker + tail
+        return res
+
+    @classmethod
     def _sample_summary_input(cls, content: str) -> str:
         """Sample complete serialized records while retaining the character bound."""
         if len(content) <= cls._SUMMARY_INPUT_MAX_CHARS:
@@ -3473,46 +3494,68 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         records = content.split("\n\n")
         separator = "\n\n"
         marker_template = "\n\n...[{elided:,} chars elided — recover via session_search]...\n\n"
+        n = max(1, min(cls._SAMPLED_INPUT_SLICES, len(records)))
         marker_len = len(marker_template.format(elided=len(content)))
-        budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (cls._SAMPLED_INPUT_SLICES - 1), 1)
-        target = max(1, budget // cls._SAMPLED_INPUT_SLICES)
-        starts = [round(i * len(records) / cls._SAMPLED_INPUT_SLICES) for i in range(cls._SAMPLED_INPUT_SLICES)]
+        budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (n - 1), 1)
+        target = max(1, budget // n)
+
+        # Oversized records are bounded to slice target with explicit intra-record truncation markers
+        # so they cannot consume other regions' budget or evict the newest record.
+        display_records = [cls._bound_oversized_record(r, target) for r in records]
+
+        starts = [round(i * len(records) / n) for i in range(n)]
         selected: list[tuple[int, int]] = []
         for index, start in enumerate(starts):
-            end = start
-            size = 0
-            while end < len(records) and (size == 0 or size + len(records[end]) + len(separator) <= target):
-                size += len(records[end]) + (len(separator) if end > start else 0)
-                end += 1
             if index == len(starts) - 1:
                 start = max(0, len(records) - 1)
                 end = len(records)
-            selected.append((start, end))
+            else:
+                end = start
+                size = 0
+                while end < len(records) and (size == 0 or size + len(display_records[end]) + len(separator) <= target):
+                    size += len(display_records[end]) + (len(separator) if end > start else 0)
+                    end += 1
+            if end > start:
+                if selected and start <= selected[-1][1]:
+                    prev_start, prev_end = selected.pop()
+                    selected.append((prev_start, max(prev_end, end)))
+                else:
+                    selected.append((start, end))
 
-        parts: list[str] = []
-        cursor = 0
-        for start, end in selected:
-            if start > cursor:
-                parts.append(marker_template.format(elided=sum(map(len, records[cursor:start])) + len(separator) * (start - cursor)))
-            parts.append(separator.join(records[start:end]))
-            cursor = end
-        if cursor < len(records):
-            parts.append(marker_template.format(elided=sum(map(len, records[cursor:])) + len(separator) * (len(records) - cursor - 1)))
-        result = "".join(parts)
+        def _render(slices: list[tuple[int, int]]) -> str:
+            parts: list[str] = []
+            cursor = 0
+            for s, e in slices:
+                if s > cursor:
+                    elided = sum(map(len, records[cursor:s])) + len(separator) * (s - cursor)
+                    parts.append(marker_template.format(elided=elided))
+                parts.append(separator.join(display_records[s:e]))
+                cursor = e
+            if cursor < len(records):
+                elided = sum(map(len, records[cursor:])) + len(separator) * (len(records) - cursor - 1)
+                parts.append(marker_template.format(elided=elided))
+            return "".join(parts)
+
+        result = _render(selected)
         if len(result) <= cls._SUMMARY_INPUT_MAX_CHARS:
             return result
-        # Marker width varies with the omitted count; trim only at record boundaries.
+
+        # Overflow trim: protect newest slice, trim or drop preceding slices first.
         while len(result) > cls._SUMMARY_INPUT_MAX_CHARS and selected:
-            index = max(range(len(selected)), key=lambda i: selected[i][1] - selected[i][0])
-            start, end = selected[index]
-            if end - start > 1:
-                selected[index] = (start, end - 1)
+            if len(selected) > 1:
+                idx = max(range(len(selected) - 1), key=lambda i: selected[i][1] - selected[i][0])
+                s, e = selected[idx]
+                if e - s > 1:
+                    selected[idx] = (s, e - 1)
+                else:
+                    selected.pop(idx)
             else:
-                selected.pop(index)
-            parts = [separator.join(records[a:b]) for a, b in selected]
-            result = marker_template.format(
-                elided=max(0, len(content) - sum(len(p) for p in parts))
-            ).join(parts)
+                s, e = selected[0]
+                if e - s > 1:
+                    selected[0] = (s + 1, e)
+                else:
+                    break
+            result = _render(selected)
         return result
 
     def _fallback_to_main_for_compression(

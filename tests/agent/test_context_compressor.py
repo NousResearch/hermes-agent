@@ -3331,9 +3331,26 @@ class TestSummaryPromptBounding:
         assert "record-4000" in sampled
         assert "record-7999" in sampled
 
+    def test_lean_sampling_preserves_oversized_last_record(self):
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:04d}" for i in range(100)]
+        records.append("[USER]: newest-record-anchor " + ("z" * (cap + 5000)))
+        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        assert len(sampled) <= cap
+        assert "newest-record-anchor" in sampled
+        assert "...[record truncated:" in sampled
 
-
-
+    def test_lean_sampling_oversized_middle_record_does_not_evict_tail(self):
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:04d}" for i in range(50)]
+        records.append("[TOOL RESULT oversized-mid]: " + ("y" * (cap + 5000)))
+        records.extend([f"[USER]: record-{i:04d}" for i in range(51, 100)])
+        records.append("[USER]: newest-tail-record")
+        sampled = ContextCompressor._sample_summary_input("\n\n".join(records))
+        assert len(sampled) <= cap
+        assert "newest-tail-record" in sampled
+        assert "oversized-mid" in sampled
+        assert "...[record truncated:" in sampled
 
     def test_iterative_update_path_is_bounded(self):
         """The iterative prompt (previous summary + new turns) must be bounded

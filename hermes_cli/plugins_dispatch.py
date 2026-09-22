@@ -26,7 +26,9 @@ logger = logging.getLogger("hermes_cli.plugins")
 # abandon without join — joining reintroduced a shutdown hang). Unlisted hooks run synchronously.
 # Intentionally unbounded: on_session_finalize/reset (last-chance flush — abandon can lose state);
 # subagent_start (observer); pre_gateway_dispatch (policy gate — neither fail mode is acceptable);
-# pre/post_approval_* (approval UX has its own timeout); kanban_* (own heartbeat/stale reclaim).
+# pre/post_approval_* (approval UX has its own timeout); kanban_* observers (own heartbeat/stale
+# reclaim). pre_kanban_decompose IS bounded: it gates a decomposer call that runs serially in the
+# dispatcher loop, and failing open (decompose as configured) is always safe there.
 # The goal is to stop a hung Python plugin callback from wedging the conversation loop (#76821) without
 # joining the worker (avoids the #6622 ThreadPoolExecutor shutdown hang). Hooks not listed below run
 # synchronously to completion. (on_session_start/end stay bounded — they sit on the common session-boundary
@@ -41,7 +43,7 @@ logger = logging.getLogger("hermes_cli.plugins")
 _HOOK_TIMEOUT_BOUNDED_HOOKS: Set[str] = {
     "post_tool_call", "transform_terminal_output", "transform_tool_result", "transform_llm_output",
     "pre_llm_call", "post_llm_call", "pre_api_request", "post_api_request", "api_request_error",
-    "pre_verify", "on_session_start", "on_session_end",
+    "pre_verify", "on_session_start", "on_session_end", "pre_kanban_decompose",
 }
 
 # Policy hooks: timeout / still-running must fail closed (block the tool).

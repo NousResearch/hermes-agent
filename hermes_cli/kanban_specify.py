@@ -143,12 +143,15 @@ def _task_prompt_fields(task: kb.Task) -> dict[str, str]:
 
 
 def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
-              max_tokens: int, timeout: int, log: logging.Logger = logger) -> tuple[Optional[str], str]:
+              max_tokens: int, timeout: int, log: logging.Logger = logger,
+              llm_overrides: Optional[dict] = None) -> tuple[Optional[str], str]:
     """One auxiliary LLM call; ``(reply_text, "")`` or ``(None, reason)``.
 
     ``call_llm`` applies all ``auxiliary.<aux_task>.*`` config (provider/model/
-    base_url, extra_body, reasoning_effort, retries). Imported lazily so a
-    missing aux client degrades to a skip instead of an import-time crash.
+    base_url, extra_body, reasoning_effort, retries). ``llm_overrides``
+    (``provider``/``model``/``reasoning_config``) take precedence for this one
+    call only. Imported lazily so a missing aux client degrades to a skip
+    instead of an import-time crash.
     """
     try:
         from agent.auxiliary_client import call_llm
@@ -172,6 +175,7 @@ def _call_aux(verb: str, task_id: str, *, aux_task: str, system: str, user: str,
             temperature=0.3,
             max_tokens=max_tokens,
             timeout=timeout,
+            **(llm_overrides or {}),
         )
     except Exception as exc:
         suffix = " — skipping" if verb == "specify" else ""

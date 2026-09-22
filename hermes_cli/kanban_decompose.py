@@ -20,7 +20,7 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Optional
+from typing import TYPE_CHECKING, Optional
 
 from hermes_cli import kanban_db as kb
 from hermes_cli.kanban_db_graph import decompose_triage_task
@@ -30,6 +30,9 @@ from hermes_cli.kanban_specify import (
     _call_aux, _extract_json_blob, _load_triage_task, _task_prompt_fields, _title_body,
 )
 from hermes_cli.kanban_specify import _profile_author as _specify_author
+
+if TYPE_CHECKING:
+    from hermes_cli.plugins import KanbanDecomposeDirective
 
 logger = logging.getLogger(__name__)
 
@@ -300,20 +303,75 @@ def _apply_fanout(task_id: str, parsed: dict, routing: _Routing, author: str) ->
     )
 
 
+def _apply_skip(task: kb.Task, routing: _Routing, author: str, reason: str) -> DecomposeOutcome:
+    """Plugin ``skip``: promote the task unchanged as one unit, with no LLM call.
+    An unassigned task gets ``default_assignee``, as on the ``fanout=false`` path."""
+    note = f"decomposition skipped by plugin: {reason}"
+    with kbc.connect_closing() as conn:
+        ok = kb.specify_triage_task(
+            conn, task.id, assignee=None if task.assignee else routing.default_assignee,
+            author=author, reason=note,
+        )
+    if not ok:
+        return DecomposeOutcome(task.id, False, "task moved out of triage before promotion")
+    return DecomposeOutcome(task.id, True, note, fanout=False)
+
+
+def _plugin_directive(task: kb.Task, trigger: str) -> Optional["KanbanDecomposeDirective"]:
+    """The ``pre_kanban_decompose`` directive for *task*, or ``None``. Never raises."""
+    try:
+        from hermes_cli.lifecycle import has_hook
+        if not has_hook("pre_kanban_decompose"):
+            return None
+        from hermes_cli.plugins import get_pre_kanban_decompose_directive
+        return get_pre_kanban_decompose_directive(
+            task_id=task.id, board=kb.get_current_board(), title=task.title or "", body=task.body or "",
+            assignee=task.assignee, profile_name=kb._hook_profile_name(), trigger=trigger,
+        )
+    except Exception as exc:
+        logger.warning("decompose: pre_kanban_decompose hook failed for %s (%s); decomposing as configured",
+                       task.id, exc)
+        return None
+
+
 def decompose_task(
     task_id: str,
     *,
     author: Optional[str] = None,
     timeout: Optional[int] = None,
+    trigger: str = "manual",
 ) -> DecomposeOutcome:
     """Decompose a triage task into a graph of child tasks. Expected failures
     (not in triage, no aux client, API error, malformed/empty reply) surface
-    as ``ok=False``."""
+    as ``ok=False``.
+
+    ``trigger`` is ``"auto"`` for the dispatcher's auto-decompose and
+    ``"manual"`` for an explicit CLI/dashboard request. A ``pre_kanban_decompose``
+    plugin may ``route`` either to another decomposer model, but may ``skip``
+    only an automatic run: a user who asked for a decomposition gets one."""
     task, reason = _load_triage_task(task_id)
     if task is None:
         return DecomposeOutcome(task_id, False, reason)
 
+    directive = _plugin_directive(task, trigger)
     routing = _load_routing(root_assignee=task.assignee)
+    audit_author = author or _profile_author()
+    llm_overrides = None
+    if directive is not None and directive.action == "skip":
+        if trigger == "auto":
+            logger.info("decompose: plugin skipped decomposition of %s: %s", task_id, directive.reason)
+            return _apply_skip(task, routing, audit_author, directive.reason)
+        logger.info("decompose: ignoring plugin skip for explicitly requested decomposition of %s", task_id)
+    elif directive is not None:
+        llm_overrides = {
+            key: value for key, value in (
+                ("provider", directive.provider), ("model", directive.model),
+                ("reasoning_config", directive.reasoning_config),
+            ) if value is not None
+        }
+        logger.info("decompose: plugin routed %s to provider=%s model=%s",
+                    task_id, directive.provider or "(configured)", directive.model)
+
     raw, reason = _call_aux(
         "decompose", task_id, aux_task="kanban_decomposer", system=_SYSTEM_PROMPT,
         user=_USER_TEMPLATE.format(
@@ -321,7 +379,7 @@ def decompose_task(
             roster=_format_roster(routing.roster),
             default_assignee=routing.default_assignee,
         ),
-        max_tokens=4000, timeout=timeout or 180, log=logger,
+        max_tokens=4000, timeout=timeout or 180, log=logger, llm_overrides=llm_overrides,
     )
     if raw is None:
         return DecomposeOutcome(task_id, False, reason)
@@ -330,7 +388,6 @@ def decompose_task(
     if parsed is None:
         return DecomposeOutcome(task_id, False, "LLM returned malformed JSON")
 
-    audit_author = author or _profile_author()
     if not parsed.get("fanout"):
         return _apply_single(task, parsed, routing, audit_author)
     return _apply_fanout(task_id, parsed, routing, audit_author)

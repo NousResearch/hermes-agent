@@ -278,7 +278,7 @@ class _KanbanDispatcher:
     def _decompose_one(_decomp: Any, slug: str, tid: str) -> int:
         """Decompose one triage task; returns 1 on success, 0 otherwise."""
         try:
-            outcome = _decomp.decompose_task(tid, author="auto-decomposer")
+            outcome = _decomp.decompose_task(tid, author="auto-decomposer", trigger="auto")
         except Exception:
             logger.exception("kanban auto-decompose: decompose_task crashed on %s", tid)
             return 0
@@ -289,7 +289,7 @@ class _KanbanDispatcher:
         if outcome.fanout and outcome.child_ids:
             logger.info("kanban auto-decompose [%s]: %s → %d children", slug, tid, len(outcome.child_ids))
         else:
-            logger.info("kanban auto-decompose [%s]: %s → single task (no fanout)", slug, tid)
+            logger.info("kanban auto-decompose [%s]: %s → %s", slug, tid, outcome.reason)
         return 1
 
 

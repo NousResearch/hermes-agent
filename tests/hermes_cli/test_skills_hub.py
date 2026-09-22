@@ -293,6 +293,7 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
     from tools.skills_hub_models import SkillBundle, SkillMeta
 
     clients = []
+    client_kwargs = []
 
     class Response:
         status_code = 200
@@ -324,7 +325,8 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
             hub._guarded_http_get("https://example.com/SKILL.md")
             return SkillBundle("example", {"SKILL.md": "# Example"}, "test", "example/id", "community")
 
-    def create_client(**_kwargs):
+    def create_client(**kwargs):
+        client_kwargs.append(kwargs)
         client = Client()
         clients.append(client)
         return client
@@ -340,6 +342,8 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
 
     assert result is not None
     assert len(clients) == 1
+    # The pooled client keeps the one-shot default timeout and never auto-follows redirects.
+    assert client_kwargs == [{"timeout": hub._DEFAULT_HTTP_TIMEOUT, "follow_redirects": False}]
 
 
 

@@ -31,7 +31,17 @@ param(
     [switch]$ForceCommit,
     [string]$Tag = "",
     [string]$HermesHome = $(if ($env:HERMES_HOME) { $env:HERMES_HOME } else { "$env:LOCALAPPDATA\hermes" }),
-    [string]$InstallDir = $(if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
+    # Where the code checkout + venv live.  Independent of $HermesHome on
+    # purpose: the program is large and replaceable (~1 GB of venv) while
+    # config/data must follow the user, so $HERMES_INSTALL_DIR moves the
+    # program without moving $HERMES_HOME (GH #43868).
+    #
+    # This is also the ONLY knob reachable from the canonical one-liner
+    # (`irm ... | iex`): Invoke-Expression passes no arguments, so a user who
+    # installed that way cannot reach -InstallDir at all.  install.sh has
+    # accepted $HERMES_INSTALL_DIR / --dir since it grew that flag, so this is
+    # parity, not a new convention.
+    [string]$InstallDir = $(if ($env:HERMES_INSTALL_DIR) { $env:HERMES_INSTALL_DIR } elseif ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }),
 
     # --- Stage protocol (additive; default invocation behaves as before) ----
     # See the "Stage protocol" section near the bottom of the file for the
@@ -351,8 +361,16 @@ if ($PSBoundParameters.ContainsKey('HermesHome')) {
 if ($PSBoundParameters.ContainsKey('InstallDir')) {
     $InstallDir = ConvertTo-LongPath $InstallDir
 } else {
+    # Same precedence as the parameter default, re-derived here because the
+    # env vars behind the defaults have only now been expanded to long form.
+    # $HermesHome rather than $env:HERMES_HOME for the derived case, so an
+    # explicitly passed -HermesHome carries the checkout with it instead of
+    # splitting data and code across two volumes.
     $InstallDir = ConvertTo-LongPath $(
-        if ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" } else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
+        if ($env:HERMES_INSTALL_DIR) { $env:HERMES_INSTALL_DIR }
+        elseif ($PSBoundParameters.ContainsKey('HermesHome')) { "$HermesHome\hermes-agent" }
+        elseif ($env:HERMES_HOME) { "$env:HERMES_HOME\hermes-agent" }
+        else { "$env:LOCALAPPDATA\hermes\hermes-agent" }
     )
 }
 if ($script:NormalizedProfilePaths) {
@@ -4726,7 +4744,7 @@ function Write-Completion {
     Write-Host "   Data:      " -NoNewline -ForegroundColor Yellow
     Write-Host "$HermesHome\cron\, sessions\, logs\"
     Write-Host "   Code:      " -NoNewline -ForegroundColor Yellow
-    Write-Host "$HermesHome\hermes-agent\"
+    Write-Host "$InstallDir\"
     Write-Host ""
     
     Write-Host "---------------------------------------------------------" -ForegroundColor Cyan

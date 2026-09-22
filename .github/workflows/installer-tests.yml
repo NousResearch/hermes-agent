@@ -37,6 +37,18 @@ jobs:
         shell: powershell
         run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-longpath.ps1
 
+      # Same two lanes for the install-directory contract: $HERMES_INSTALL_DIR
+      # and -HermesHome/-InstallDir precedence. It asserts the resolved paths
+      # install.ps1 reports, so it needs the same 5.1/7 coverage as everything
+      # else that parses the script.
+      - name: Install-directory selection (pwsh 7)
+        shell: pwsh
+        run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-install-dir-precedence.ps1
+
+      - name: Install-directory selection (Windows PowerShell 5.1)
+        shell: powershell
+        run: powershell -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-install-dir-precedence.ps1
+
       - name: System Node and npm compatibility (pwsh 7)
         shell: pwsh
         run: pwsh -NoProfile -ExecutionPolicy Bypass -File scripts/tests/test-install-ps1-node-compatibility.ps1

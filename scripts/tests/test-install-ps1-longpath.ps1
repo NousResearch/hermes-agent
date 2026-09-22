@@ -20,7 +20,8 @@
 # install.ps1's source (AGENTS.md bans source-reading tests: they pass on
 # broken code and fail on correct refactors).
 #
-# HERMETIC ENVIRONMENT: every case sets all five profile variables explicitly.
+# HERMETIC ENVIRONMENT: every case sets all five profile variables explicitly
+# (plus both HERMES_* variables, see Invoke-Normalization).
 # GitHub's own Windows runners hand down a genuinely 8.3-aliased TEMP/TMP
 # (C:\Users\RUNNER~1\AppData\Local\Temp), so an inherited variable is a live
 # instance of the very bug under test and would contaminate any case that
@@ -117,6 +118,11 @@ function Invoke-Normalization {
         APPDATA      = (Join-Parts @($root, 'AppData', 'Roaming'))
         USERPROFILE  = $root
         HERMES_HOME  = ''
+        # InstallDir's default derives from HERMES_HOME, and HERMES_INSTALL_DIR
+        # outranks that derivation. An inherited value would relocate the
+        # checkout under this test and fail assertions that have nothing to do
+        # with it -- the same contamination the profile vars above guard against.
+        HERMES_INSTALL_DIR = ''
     }
     foreach ($key in $Environment.Keys) { $env0[$key] = $Environment[$key] }
 

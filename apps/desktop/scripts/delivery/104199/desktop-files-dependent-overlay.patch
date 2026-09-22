@@ -2,7 +2,10 @@ diff --git a/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.ts
 index 7ec5ccb4d1..f760750b0e 100644
 --- a/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
 +++ b/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
-@@ -14,2 +14,12 @@ vi.mock('@hermes/plugin-sdk', async () => {
+@@ -11,8 +11,18 @@ vi.mock('@hermes/plugin-sdk', async () => {
+   const { pluginSdkMock, createGroupGateway } = await import('./group-test-utils')
+   const base = await pluginSdkMock(createGroupGateway().host)
+ 
 -  const Button = ({ children, onClick, title }: { children?: ReactNode; onClick?: () => void; title?: string }) => (
 -    <button onClick={onClick} title={title}>
 +  const Button = ({
@@ -17,24 +20,61 @@ index 7ec5ccb4d1..f760750b0e 100644
 +    title?: string
 +  }) => (
 +    <button aria-label={ariaLabel} onClick={onClick} title={title}>
-@@ -77 +87 @@ it('renders member replies through the shell message renderer, resolving media o
+       {children}
+     </button>
+   )
+@@ -74,9 +84,10 @@ it('renders member replies through the shell message renderer, resolving media o
+   ] as never
+ 
+   $groupChats.set({ Room: { log, watermarks: {}, sessions: {} } })
 -  const { getAllByTestId } = render(<GroupChatWorkspace group="Room" members={members} />)
 +  const { getAllByTestId, getByRole } = render(<GroupChatWorkspace group="Room" members={members} />)
-@@ -79,0 +90 @@ it('renders member replies through the shell message renderer, resolving media o
+   // The room paints once the async group-driver gate resolves to the legacy workspace.
+   await waitFor(() => expect(getAllByTestId('message-text-content')).toHaveLength(3))
 +  expect(getByRole('button', { name: 'Files' })).toBeTruthy()
+   const bodies = getAllByTestId('message-text-content').map(el => [el.textContent, el.dataset.media])
+ 
+   expect(bodies).toEqual([
 diff --git a/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx b/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
 index 8183b4dbae..abbdd535d3 100644
 --- a/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
 +++ b/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
-@@ -65,0 +66 @@ import type { GroupActivityEntry } from './group-activity'
+@@ -63,6 +63,7 @@ import {
+   groupActivityTone
+ } from './group-activity'
+ import type { GroupActivityEntry } from './group-activity'
 +import { downloadGroupChatAttachment } from './group-attachment-download'
-@@ -85,0 +87 @@ import { storedClassicDesktopAuthority } from './group-desktop-authority'
+ import { filesToGroupAttachments, pickGroupAttachments } from './group-attachments'
+ import {
+   $groupChats,
+@@ -83,6 +84,7 @@ import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group
+ import type { GroupRoomPrompt } from './group-chat-parts'
+ import { GroupMemberPicker } from './group-chat-view-members'
+ import { storedClassicDesktopAuthority } from './group-desktop-authority'
 +import { SharedFilesControl } from './group-files-view'
-@@ -116 +117,0 @@ import {
+ import { GroupHoldStatus } from './group-hold-status'
+ import {
+   botGroups,
+@@ -113,7 +115,6 @@ import {
+   beginHostedRoomMutation,
+   disbandHostedGroupChat,
+   markHostedRoomLocallyDeleted,
 -  readHostedGroupChatAttachment,
-@@ -966,0 +968 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
+   renameHostedGroupChat,
+   retryFailedHostedRoomCommand,
+   retryHostedGroupChat,
+@@ -964,6 +965,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
+           {someUnavailable ? availabilityLabel : b.group.memberCount(members.length)}
+         </span>
+       </Tip>
 +      <SharedFilesControl group={group} room={room} />
-@@ -1343,14 +1345 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
+       <Tip label={b.group.settingsHint(group)}>
+         <Button
+           aria-label={b.group.settingsLabel(group)}
+@@ -1340,20 +1342,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
+ 
+   const downloadAttachment = async (entry: GroupMessage, attachment: Attachment) => {
+     try {
 -      const resolved = attachment.data ? attachment : await readHostedGroupChatAttachment(group, entry, attachment)
 -
 -      if (!resolved.data) {
@@ -50,19 +90,40 @@ index 8183b4dbae..abbdd535d3 100644
 -      link.click()
 -      link.remove()
 +      await downloadGroupChatAttachment(group, entry, attachment)
+     } catch {
+       host.notify({ kind: 'error', message: b.group.attachmentDownloadFailed })
+     }
 diff --git a/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts b/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts
 index 717258ef7d..0cd97136c3 100644
 --- a/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts
 +++ b/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts
-@@ -1272 +1272 @@ async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
+@@ -1269,7 +1269,7 @@ async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
+   return !pending
+ }
+ 
 -async function hostedRouteForRoom(room: GroupChat) {
 +export async function hostedRouteForRoom(room: GroupChat) {
+   const connectionId = String(room?.hostedConnectionId || '')
+   const routes = await hostedDefaultRoutes()
+   const authorityId = groupChatHostedGateway(room)
 diff --git a/apps/desktop/src/plugins/hermes-bots/types.ts b/apps/desktop/src/plugins/hermes-bots/types.ts
 index ad1d8cda37..271f688ec9 100644
 --- a/apps/desktop/src/plugins/hermes-bots/types.ts
 +++ b/apps/desktop/src/plugins/hermes-bots/types.ts
-@@ -11,0 +12 @@
+@@ -9,6 +9,7 @@
+  * required is a claim that every one of those paths supplies it.
+  */
+ 
 +import type { ClassicFileRef } from './classic-output'
-@@ -144,0 +146,2 @@ export interface Attachment {
+ import type { DesktopCommandSettled } from './group-command-receipts'
+ 
+ /**
+@@ -142,6 +143,8 @@ export type GroupMember = Pick<
+ export type AttachmentKind = 'file' | 'image' | 'pdf'
+ 
+ export interface Attachment {
 +  /** Non-secret producer custody reference. Raw bytes stay behind the exact reader. */
 +  classicExport?: ClassicFileRef
+   /** Local composer/preview data URL. Durable replay omits raw bytes. */
+   data?: string
+   /** Opaque gateway identity after durable staging. */

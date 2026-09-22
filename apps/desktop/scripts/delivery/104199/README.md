@@ -12,12 +12,12 @@ The recipe composes these immutable inputs in this order:
    - route parent: `0c19759cd268170214535da5079c602c82fb1159`;
    - published route tip: `e2bfdfa8b8133d39f0380cb016397dedbe5b0e79`;
    - monotonic classic-log owner candidate: `8f0cec384e30a3cef5da31c2e64191c9e7ecf8bd`;
-   - cancellation owner candidate: `7b25b347792ba4f1fea94b57032431ebb2894c86`;
-3. the direct 32-path #104199 owner source at `101128c012a8b16c4bfd003d5ead31aaa9830262`;
-4. `desktop-files-dependent-overlay.patch`, the four dependency-owned consumer insertions needed after the lower owners are present;
-5. the exact #97846-owned `desktop-cancellation-dependent-overlay.patch`, applied only after the prior public composition has reached tree `19b08e1c6be010cbc05716bc24bb4de163313d71`.
+   - cancellation owner: `b0157bd84bd1a082966394907a35ac83c066614b`;
+3. the exact #97846-owned `desktop-cancellation-dependent-overlay.patch`, applied to lower substrate `e76b349554ed86a02f2470c31d3912fcd9b5b332` **before Files**;
+4. the direct 32-path #104199 owner source at `101128c012a8b16c4bfd003d5ead31aaa9830262`;
+5. `desktop-files-dependent-overlay.patch`, the four Files-owned consumer insertions into paths supplied by the lower owners.
 
-Both the monotonic `appendGroupChatEntry` correction and the cancellation correction live in #97846, not in the Files owner source. The lower merge map in `compose.sh` selects exact line slices from the fetched runtime and monotonic #97846 commit. Its 46 literal lines remain only reviewed cross-owner signature/UI adaptations. The cancellation tip adds only a README plus a zero-context five-path patch with SHA-256 `ac5ca70a360d9059d2918c9a9561a60c5091c6e7640026f3c0e79a59839cb39a`; the recipe verifies that two-path owner scope, materializes the patch from the pinned #97846 commit, and applies it after the Files product. No runtime-owned whole source body is copied into #97846 or embedded in this script.
+Both the monotonic `appendGroupChatEntry` correction and the cancellation correction live in #97846, not in the Files owner source. The lower merge map in `compose.sh` selects exact line slices from the fetched runtime and monotonic #97846 commit. Its 46 literal lines remain only reviewed cross-owner signature/UI adaptations. The cancellation package adds only a README plus a contextual six-path patch with SHA-256 `8ad9da6a90a4de55c07b8d7e15054aa67db3c98db3a107dd9374d771550cbb52`; the recipe verifies that two-path package scope and consumes it lower-first. No runtime-owned whole source body is copied into #97846 or embedded in this script. Cancellation has no semantic dependency on Files.
 
 The Files owner source is generated directly with:
 
@@ -27,7 +27,7 @@ git diff --binary \
   101128c012a8b16c4bfd003d5ead31aaa9830262
 ```
 
-The recipe requires that diff to have 32 paths and SHA-256 `ebac33db6267df28a689cc8b6e37bd2a05a262dd7296978b35656f433adb7a20`, applies it exactly once, and only then applies the four-path dependent overlay. That zero-context overlay has SHA-256 `6584161cab98f38fbb21921c1ce8ea64ec201d52c618d27e0f56e522b3033879`; its ordered added/deleted lines equal the reviewed overlay `05ef49ab1f58d3b70ab52dc338dfd2004be8237678030974cc43304c12bf5126` exactly. The recipe next applies the hash-pinned #97846 cancellation overlay with Git's explicit `--unidiff-zero` mode and requires its exact five staged paths and final tree.
+The recipe requires that diff to have 32 paths and SHA-256 `ebac33db6267df28a689cc8b6e37bd2a05a262dd7296978b35656f433adb7a20`, applies it exactly once, and only then applies the four-path dependent overlay. The contextual overlay has SHA-256 `1e0e24264574c65a8500086c6f92d55a16893d7de4cedd289e1884e375341dfd`; its ordered added/deleted lines preserve the accepted Files overlay. Both dependent patches use context, not `--unidiff-zero`, so lower-first application does not misplace test hunks. Every stage requires its exact staged paths and tree.
 
 ## Run from public refs
 
@@ -56,30 +56,39 @@ DESKTOP_FILES_OWNER_REF=refs/heads/local/pr-104199-final-delivery \
 apps/desktop/scripts/delivery/104199/compose.sh /tmp/hermes-desktop-files-104199
 ```
 
-`DESKTOP_FILES_VERIFY=compose` exercises retrieval, pinning, lower conflict resolution, the direct owner delta, both dependent overlays, their exact path/hash gates, and every exact-tree assertion without repeating unchanged suites. The default, `DESKTOP_FILES_VERIFY=full`, additionally executes setup, typecheck, focused lint, the affected cancellation/mailbox/thread regressions, the precise inherited availability check, and the renderer/Electron build. It deliberately does not rerun the unchanged 228-test lower or 36-test Files selections.
+Verification modes:
+
+- `compose`: retrieval, pinning, lower conflict resolution, cancellation lower-first, Files overlays, and exact path/hash/tree checks; no suite replay.
+- `lower`: stop before Files, install dependencies, then run all three TypeScript projects, six-path ESLint and the focused causal regressions on the lower-only state.
+- `focused` (default): compose all stages, install dependencies, run the same changed-path checks on the assembled product, then build renderer/Electron assets.
+- `full`: additionally reproduce the precise inherited availability-test failure below; this is not an all-tests-green mode.
+
+Neither the unchanged 228-test lower selection nor the 36-test Files selection is repeated.
 
 ## Exact trees and verification
 
 The composition asserts these trees:
 
 - lower substrate with the #97846 regression: `e76b349554ed86a02f2470c31d3912fcd9b5b332`;
-- after the direct 32-path owner delta: `994ef94a3afae0adc78259dce6a7a11c0c615157`;
-- Files product before the cancellation correction: `19b08e1c6be010cbc05716bc24bb4de163313d71`;
-- corrected final product: `aa89152f1494fa3a3383481bee5a2a4769bc6037`.
+- corrected lower-only product: `02ef3e6596c87239d6b1076d11b850022e7a1ab4`;
+- after the direct 32-path owner delta: `0c73eccdb65112117ecd5f6826ca33a298eea492`;
+- final Files product: `40eaa689442d786e6a8679c98d75910669c193d4`.
 
-The superseded pre-rejection product tree was `19b08e1c6be010cbc05716bc24bb4de163313d71`; the corrected product differs in exactly five cancellation implementation/regression paths. Tree `aa89152f1494fa3a3383481bee5a2a4769bc6037` received fresh typecheck, zero-warning focused lint, 58 Group-rounds/view tests, nine selected mailbox cancellation tests, and one complete renderer/Electron build. The four new finding regressions were first captured as semantic RED (four failures, two already-green lifecycle/session controls), then all six passed after the correction.
+The earlier candidate was rejected because existing-message recovery bypassed active queue ownership and renamed commands retained stale names. Recovery now uses the same queue as fresh sends, and commands bind stable identity while resolving the current room name for validity, cancellation and settlement. The new tests first reproduced the failures, then passed with exact backend-session interruption assertions.
 
-Full mode runs the exact setup and build path:
+The corrected lower-only state passed 15 selected causal tests (99 excluded by name filter), all three TypeScript projects and six-path ESLint with zero warnings. The actual executable recipe then reproduced the final tree above and passed its own 15 selected tests, all three TypeScript projects, six-path zero-warning ESLint, renderer/Electron build and `assert-dist-built`. These are separate lower-only and assembled-product results, not 30 unique tests. The recipe was exercised using exact local candidate refs before publication; public defaults must retrieve those same immutable pins. No Files/SDK source behavior was changed.
+
+Focused and full modes run the exact setup and build path:
 
 ```bash
 npm ci --ignore-scripts --no-audit --no-fund
 cd apps/desktop
-../../node_modules/.bin/tsc -p . --noEmit
+npm run typecheck
 # focused eslint and vitest selections are listed verbatim in compose.sh
 npm run build
 ```
 
-It also runs `group-availability.test.tsx` separately and requires the inherited exact-pin status to stay visible: 11 pass, 1 fail, status 1. The failing case is `retains classic availability in the chat header`; the fixture expects `2 of 4 available` but the accepted #97846 parent requires durable authority and renders `Group driver unavailable. Update or reconnect the owning gateway.` Status 1 alone is not accepted: the recipe validates the exact 11/1 count, test name, expected text, and actual text before continuing. The result remains a known inherited failure, not a total-suite green claim.
+Only full mode also runs `group-availability.test.tsx` separately and requires the inherited exact-pin status to stay visible: 11 pass, 1 fail, status 1. The failing case is `retains classic availability in the chat header`; the fixture expects `2 of 4 available` but the accepted #97846 parent requires durable authority and renders `Group driver unavailable. Update or reconnect the owning gateway.` Status 1 alone is not accepted: the recipe validates the exact 11/1 count, test name, expected text, and actual text before continuing. This known failure was not rerun during the bounded cancellation correction; focused mode reports `DEPENDENCY_RENDER_TEST_STATUS=not-run`, not a repaired or total-suite-green claim.
 
 ## Four dependent paths
 
@@ -96,13 +105,14 @@ It is intentionally a dependency-applied artifact rather than source copied into
 
 The correction overlay contains only:
 
+- `apps/desktop/src/plugins/hermes-bots/desktop-room-command-runtime.ts`;
 - `apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts`;
 - `apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx`;
 - `apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx`;
 - `apps/desktop/src/plugins/hermes-bots/group-rounds.test.ts`;
 - `apps/desktop/src/plugins/hermes-bots/group-rounds.ts`.
 
-It is stored in the #97846 owner tip because that branch owns the corrected behavior. The recipe consumes it only after reproducing the exact prior #104199 tree, so the Files script contains no literal cancellation implementation.
+It is stored in the #97846 owner tip because that branch owns the corrected behavior. The recipe consumes it on the lower-only substrate before either Files delta, so the Files script contains no literal cancellation implementation.
 
 ## Limits
 

@@ -28,6 +28,7 @@ test('sshConfigFingerprint covers scope and every connection field', () => {
     port: 2222,
     keyPath: '/other',
     remoteHermesPath: '/other-hermes',
+    remoteProfile: 'default',
     effectiveConfigFingerprint: 'changed-config'
   })) {
     assert.notEqual(base, sshConfigFingerprint('', { ...config, [field]: value }))
@@ -110,6 +111,29 @@ test('forceCleanupAll runs registered pending resource cleanup', async () => {
   await promise
 })
 
+test('shutdown cancels active bootstraps and permanently rejects respawn attempts', async () => {
+  const coordinator = createBootstrapCoordinator()
+  const gate = deferred()
+
+  const active = coordinator.start('primary', 'old', async lease => {
+    await gate.promise
+    lease.assertCurrent()
+  })
+
+  coordinator.shutdown()
+  gate.resolve()
+
+  await assert.rejects(active, (error: any) => error.kind === 'superseded')
+  let started = 0
+  await assert.rejects(
+    coordinator.start('primary', 'new', async () => {
+      started += 1
+    }),
+    (error: any) => error.kind === 'superseded'
+  )
+  assert.equal(started, 0)
+})
+
 test('cancelAll invalidates every pending scope and exposes promises for quit', async () => {
   const coordinator = createBootstrapCoordinator()
   const gates = [deferred(), deferred()]
@@ -162,6 +186,66 @@ test('cancelAndWait drains only the requested scope', async () => {
   assert.equal(await second, 'second')
 })
 
+test('cancelAndWait force-cleans pending resources before awaiting rollback', async () => {
+  const coordinator = createBootstrapCoordinator()
+  const gate = deferred()
+  let cleaned = 0
+
+  const pending = coordinator.start('scope', 'x', async lease => {
+    lease.onForceCleanup(async () => {
+      cleaned++
+    })
+    await gate.promise
+    lease.assertCurrent()
+  })
+
+  await Promise.resolve()
+  const drain = coordinator.cancelAndWait('scope')
+  await Promise.resolve()
+  gate.resolve()
+  await drain
+  await assert.rejects(pending, (error: any) => error.kind === 'superseded')
+  assert.equal(cleaned, 1)
+})
+
+test('cancelAndWait keeps the drain up through afterCancel teardown', async () => {
+  const coordinator = createBootstrapCoordinator()
+  const events: string[] = []
+  let releaseAfter: (() => void) | undefined
+
+  const afterGate = new Promise<void>(resolve => {
+    releaseAfter = resolve
+  })
+
+  let teardownStarted: (() => void) | undefined
+
+  const started = new Promise<void>(resolve => {
+    teardownStarted = resolve
+  })
+
+  const drain = coordinator.cancelAndWait('scope', async () => {
+    events.push('teardown-start')
+    teardownStarted?.()
+    await afterGate
+    events.push('teardown-done')
+  })
+
+  await started
+
+  const next = coordinator.start('scope', 'new', async () => {
+    events.push('new-start')
+
+    return 'new'
+  })
+
+  await Promise.resolve()
+  assert.deepEqual(events, ['teardown-start'])
+  releaseAfter?.()
+  await drain
+  assert.equal(await next, 'new')
+  assert.deepEqual(events, ['teardown-start', 'teardown-done', 'new-start'])
+})
+
 test('a generation started during cancelAndWait cannot run before the drain completes', async () => {
   const coordinator = createBootstrapCoordinator()
   const oldGate = deferred()
@@ -189,4 +273,41 @@ test('a generation started during cancelAndWait cannot run before the drain comp
   await assert.rejects(old, (error: any) => error.kind === 'superseded')
   assert.equal(await next, 'new')
   assert.deepEqual(events, ['old-start', 'new-start'])
+})
+
+test('a second cancelAndWait on the same scope composes with the teardown still in flight', async () => {
+  // Pool stop is blocked in SSH teardown; a connection apply cancels the same
+  // scope with no bootstrap left to drain. The apply's drain must not replace
+  // and clear the barrier, or start() runs before the first teardown finishes.
+  const coordinator = createBootstrapCoordinator()
+  const events: string[] = []
+  const teardownGate = deferred()
+  const teardownStarted = deferred()
+
+  const poolStop = coordinator.cancelAndWait('scope', async () => {
+    events.push('teardown-start')
+    teardownStarted.resolve()
+    await teardownGate.promise
+    events.push('teardown-done')
+  })
+
+  await teardownStarted.promise
+  const apply = coordinator.cancelAndWait('scope').then(() => events.push('apply-drained'))
+
+  const next = coordinator.start('scope', 'new', async () => {
+    events.push('new-start')
+
+    return 'new'
+  })
+
+  // A macrotask, not a microtask tick: nothing may run before the first teardown finishes.
+  await new Promise(resolve => setTimeout(resolve, 0))
+  assert.deepEqual(events, ['teardown-start'])
+  teardownGate.resolve()
+  await Promise.all([poolStop, apply])
+  assert.equal(await next, 'new')
+  // Both the apply and the new bootstrap wake on the same drained barrier; only
+  // their position after teardown-done is the contract.
+  assert.deepEqual(events.slice(0, 2), ['teardown-start', 'teardown-done'])
+  assert.deepEqual(events.slice(2).sort(), ['apply-drained', 'new-start'])
 })

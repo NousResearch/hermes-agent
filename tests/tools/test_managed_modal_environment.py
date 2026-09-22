@@ -109,7 +109,6 @@ class _FakeResponse:
 def test_managed_modal_execute_polls_until_completed(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_utils"]
 
     calls = []
     poll_count = {"value": 0}
@@ -135,7 +134,7 @@ def test_managed_modal_execute_polls_until_completed(monkeypatch):
         raise AssertionError(f"Unexpected request: {method} {url}")
 
     monkeypatch.setattr(managed_modal.requests, "request", fake_request)
-    monkeypatch.setattr(modal_common.time, "sleep", lambda _: None)
+    monkeypatch.setattr(managed_modal.time, "sleep", lambda _: None)
 
     env = managed_modal.ManagedModalEnvironment(image="python:3.11")
     result = env.execute("echo hello")
@@ -161,7 +160,6 @@ def test_managed_modal_rejects_host_credential_passthrough():
 def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
     _install_fake_tools_package()
     managed_modal = _load_tool_module("tools.environments.managed_modal", "environments/managed_modal.py")
-    modal_common = sys.modules["tools.environments.modal_utils"]
 
     calls = []
     monotonic_values = iter([0.0, 0.0, 0.0, 12.5, 12.5])
@@ -181,8 +179,8 @@ def test_managed_modal_execute_times_out_and_cancels(monkeypatch):
         raise AssertionError(f"Unexpected request: {method} {url}")
 
     monkeypatch.setattr(managed_modal.requests, "request", fake_request)
-    monkeypatch.setattr(modal_common.time, "monotonic", lambda: next(monotonic_values))
-    monkeypatch.setattr(modal_common.time, "sleep", lambda _: None)
+    monkeypatch.setattr(managed_modal.time, "monotonic", lambda: next(monotonic_values))
+    monkeypatch.setattr(managed_modal.time, "sleep", lambda _: None)
 
     env = managed_modal.ManagedModalEnvironment(image="python:3.11")
     result = env.execute("sleep 30", timeout=2)

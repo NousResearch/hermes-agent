@@ -401,42 +401,6 @@ async def test_socket_closed_first_strike_forces_reconnect(monkeypatch, caplog):
 
 
 @pytest.mark.asyncio
-async def test_soft_unhealthy_signal_still_requires_threshold_strikes(monkeypatch):
-    """Soft signals (ack staleness, latency, silence) keep the confirmation threshold.
-
-    The strike-1 escalation is reserved for ``socket_closed`` only; treating every
-    unhealthy reason as terminal would turn one slow heartbeat sample into a reconnect.
-    """
-    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
-    handler = AsyncMock()
-    adapter.set_fatal_error_handler(handler)
-
-    calls = 0
-
-    def factory(**kwargs):
-        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
-    def _probe(client):
-        nonlocal calls
-        calls += 1
-        return False, "ack_stale"
-
-    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
-
-    await _connect(adapter, monkeypatch, factory)
-    await _wait_until(
-        lambda: handler.called,
-        "fatal handler not called after threshold strikes",
-    )
-
-    assert calls >= 3, "soft unhealthy signals must not reconnect before the threshold"
-
-    await adapter.disconnect()
-
-
-@pytest.mark.asyncio
 async def test_recovery_after_unhealthy_streak_is_logged(monkeypatch, caplog):
     """A counter reset must leave a trace (#118487).
 

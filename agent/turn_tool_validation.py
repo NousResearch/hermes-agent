@@ -18,6 +18,7 @@ from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence, coalesce_tool_call_id
 from agent.turn_failure_copy import site_copy, stamp_failure
 from hermes_constants import FINISH_REASON_LENGTH
+from agent.tool_discovery import invalid_tool_name_error_content
 
 logger = logging.getLogger("agent.conversation_loop")
 
@@ -77,8 +78,6 @@ def validate_tool_calls(
     advance only when a turn has NO valid call, so a degenerate model still halts at
     3; args cut off mid-stream (routers rewrite ``length`` → ``tool_calls``) are refused
     outright rather than retried."""
-    from agent.conversation_loop import _invalid_tool_name_error_content
-
     tool_calls = assistant_message.tool_calls
     valid_names = agent.valid_tool_names
 
@@ -132,11 +131,10 @@ def validate_tool_calls(
             ))
 
         append_message(messages, agent._build_assistant_message(assistant_message, finish_reason))
-        # See _invalid_tool_name_error_content for the blank-name anti-priming rationale (#47967).
         _append_tool_error_results(
             messages, tool_calls,
             lambda tc: (
-                _invalid_tool_name_error_content(tc.function.name, valid_names)
+                invalid_tool_name_error_content(agent, tc.function.name)
                 if tc.function.name not in valid_names
                 else "Skipped: another tool call in this turn used an invalid name. Please retry this tool call."
             ),

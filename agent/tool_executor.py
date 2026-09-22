@@ -1117,6 +1117,11 @@ def _commit_tool_result(
     _record_persisted_path_for_stub(agent, tool_call_id, persisted_result)
     note_tool_result(agent, function_name, tool_call_id, function_result, persisted_result)
 
+    from agent.tool_discovery import process_discovery_hint
+    discovery_hint = process_discovery_hint(agent, function_name, function_result)
+    if discovery_hint:
+        persisted_result += discovery_hint
+
     subdir_hints = agent._subdirectory_hints.check_tool_call(function_name, function_args)
     if subdir_hints:
         if _is_multimodal_tool_result(persisted_result):

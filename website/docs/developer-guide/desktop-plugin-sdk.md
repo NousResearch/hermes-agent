@@ -897,16 +897,23 @@ companion repo.
 
 A loaded plugin is evaluated as ESM in the renderer realm with **full app
 authority** — the React singleton, the whole SDK (`host.request` gateway RPC,
-`ctx.rest`, storage, `navigate`). The isolation the loader provides is **error
+`ctx.rest`, storage, `navigate`) and the `window.hermesDesktop` native bridge
+(files, git, terminal, installs). The isolation the loader provides is **error
 isolation only**: a plugin can't crash the app (contributions are error-bounded,
-listeners isolated), but it can do anything the app can.
+listeners isolated, a throwing `register()` is rolled back and reported on the
+plugin's row), but it can do anything the app can. Plugin storage namespaces
+are a convention, not a wall.
 
 This is acceptable for **local** sources — a disk file can already run code on
 your machine — which is why the disk door only loads local files you (or your
-agent) wrote. The optional `integrity` (`sha256-…`) check only proves the bytes
-match a hash; it does **not** sandbox. A future remote-source door will need a
-real boundary (iframe/worker + CSP + capability gating) before it can land; do
-not treat this pipeline as a trust boundary.
+agent) wrote. For [catalog](../user-guide/features/plugin-catalog.md#trust-model)
+installs the trust comes from admission — a human reviewed the exact pinned
+commit — backed by two tripwires: the `desktop surface` lint at admission and
+the loader's import allowlist (`@hermes/plugin-sdk` and `react*` only; a static
+or dynamic `import` of anything else, including `https:` URLs, fails the load).
+Neither is a sandbox. A future remote-source door will need a real boundary
+(iframe/worker + CSP + capability gating) before it can land; do not treat this
+pipeline as a trust boundary.
 
 ## Pitfalls
 

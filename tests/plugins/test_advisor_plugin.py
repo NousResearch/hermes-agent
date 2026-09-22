@@ -549,3 +549,123 @@ def test_model_picker_open_marshals_from_plugin_thread_to_app_loop():
     scheduled[0]()
     assert setup_threads == [threading.current_thread()]
     assert cli._model_picker_state["current_model"] == "review-model"
+
+
+def test_injected_advisor_turns_are_not_re_reviewed(advisor):
+    marker = advisor.runtime.ADVISOR_INJECTED_MARKER
+    context = _Context(["[NIT] should never be consulted"])
+    runtime = advisor.AdvisorRuntime(context)
+    injected_message = f"{marker}\n\n[NIT] earlier advice"
+
+    runtime.on_post_llm_call(
+        turn_id="turn-after-advice",
+        user_message=injected_message,
+        assistant_response="Addressed it.",
+        conversation_history=[{"role": "user", "content": injected_message}],
+        model="primary-model",
+    )
+    assert runtime.wait_for_idle()
+
+    assert context.llm.calls == []
+    assert context.injected == []
+
+
+def test_delivered_advice_carries_the_skip_marker(advisor):
+    marker = advisor.runtime.ADVISOR_INJECTED_MARKER
+    context = _Context()
+    runtime = advisor.AdvisorRuntime(context)
+
+    runtime.handle_command("test nit sample advice")
+
+    assert context.injected, "test delivery must go through _deliver_advice"
+    assert context.injected[0][0].startswith(marker)
+
+
+def _gate_config(monkeypatch, llm_cfg):
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"plugins": {"entries": {"advisor": {"llm": llm_cfg}}}},
+    )
+
+
+def test_model_override_without_trust_flags_prints_reminder(advisor, monkeypatch):
+    _gate_config(monkeypatch, {})
+    runtime = advisor.AdvisorRuntime(_Context())
+
+    message = runtime.handle_command("model review-model")
+
+    assert "Advisor model set to: review-model" in message
+    assert "plugins.entries.advisor.llm.allow_model_override: true" in message
+    assert "allow_provider_override" not in message
+
+
+def test_model_override_with_trust_flags_prints_no_reminder(advisor, monkeypatch):
+    _gate_config(monkeypatch, {"allow_model_override": True})
+    runtime = advisor.AdvisorRuntime(_Context())
+
+    message = runtime.handle_command("model review-model")
+
+    assert message == "Advisor model set to: review-model"
+
+
+def test_interactive_selection_reminds_about_both_trust_flags(advisor, monkeypatch):
+    _gate_config(monkeypatch, {})
+    context = _Context()
+    runtime = advisor.AdvisorRuntime(context)
+
+    runtime.handle_command("model")
+    assert context.selection_callback is not None
+
+    message = context.selection_callback(
+        SimpleNamespace(
+            success=True,
+            new_model="review-model",
+            target_provider="review-provider",
+            provider_label="Review Provider",
+        )
+    )
+
+    assert "Advisor model set to: review-model" in message
+    assert "plugins.entries.advisor.llm.allow_model_override: true" in message
+    assert "plugins.entries.advisor.llm.allow_provider_override: true" in message
+    assert runtime.state.model == "review-model"
+    assert runtime.state.provider == "review-provider"
+
+
+def test_worker_survives_delivery_failure(advisor):
+    class FailingDeliveryContext(_Context):
+        def inject_message(self, content, role="user"):
+            raise RuntimeError("delivery exploded")
+
+    context = FailingDeliveryContext(["[NIT] one", "[NIT] two"])
+    runtime = advisor.AdvisorRuntime(context)
+
+    _submit(runtime, "turn-1")
+    assert runtime._worker is not None and runtime._worker.is_alive()
+
+    _submit(runtime, "turn-2")
+    assert len(context.llm.calls) == 2
+    assert runtime._worker.is_alive()
+
+
+def test_non_object_state_file_degrades_to_defaults(advisor, tmp_path):
+    (tmp_path / "advisor").mkdir()
+    (tmp_path / "advisor" / "state.json").write_text("[]")
+
+    runtime = advisor.AdvisorRuntime(_Context())
+
+    assert runtime.state.enabled is True
+    assert runtime.state.held_notes == []
+
+
+def test_non_object_session_file_degrades_to_defaults(advisor, tmp_path):
+    import hashlib
+
+    sessions = tmp_path / "advisor" / "sessions"
+    sessions.mkdir(parents=True)
+    digest = hashlib.sha256(b"default").hexdigest()[:24]
+    (sessions / f"{digest}.json").write_text('"corrupt"')
+
+    runtime = advisor.AdvisorRuntime(_Context())
+
+    assert runtime._session_state("default").held_notes == []

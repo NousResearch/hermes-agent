@@ -15,6 +15,11 @@ logger = logging.getLogger(__name__)
 
 # Env var to skip live reviews (keeps /advisor test path for manual testing)
 ADVISOR_NO_REVIEW = "ADVISOR_NO_REVIEW"
+# Prefix of the message _deliver_advice injects. A turn whose user message starts
+# with it is the agent reacting to our own advice; reviewing it again would let a
+# re-raised held note chain advice → auto-turn → review → advice with no user in
+# the loop, so those turns are never enqueued.
+ADVISOR_INJECTED_MARKER = "\u25c6 Advisor review"
 WATCHDOG_FILENAME = "WATCHDOG.md"
 REVIEW_TIMEOUT_SECONDS = 90
 SHUTDOWN_GRACE_SECONDS = 1.0
@@ -63,7 +68,7 @@ class AdvisorRuntime:
                 self.state = state
                 self._save_state()
             return state
-        return AdvisorState(enabled=True)
+        return AdvisorState()
 
     def _save_state(self):
         from utils import atomic_json_write
@@ -94,10 +99,10 @@ class AdvisorRuntime:
                 data = json.loads(self._session_path(key).read_text())
                 state = AdvisorState.deserialize(data)
             except FileNotFoundError:
-                state = AdvisorState(enabled=True)
+                state = AdvisorState()
             except (json.JSONDecodeError, OSError, TypeError, ValueError) as exc:
                 logger.warning("Advisor: could not load session state: %s", exc)
-                state = AdvisorState(enabled=True)
+                state = AdvisorState()
             self._session_states[key] = state
             return state
 
@@ -179,6 +184,11 @@ class AdvisorRuntime:
             if turn_id and turn_key == self.last_turn_key:
                 return
             self.last_turn_key = turn_key
+        if (user_message or "").startswith(ADVISOR_INJECTED_MARKER):
+            logger.debug(
+                "Advisor: turn %s is our own injected advice; not reviewing", turn_id
+            )
+            return
         if os.environ.get(ADVISOR_NO_REVIEW):
             return
 
@@ -269,7 +279,15 @@ class AdvisorRuntime:
         if not advice_list:
             logger.debug("Advisor: nothing to deliver for turn %s", turn.turn_id)
             return
-        self._deliver_advice(advice_list)
+        try:
+            self._deliver_advice(advice_list)
+        except Exception:
+            # Delivery is outside the review contract; a failure here must not
+            # kill the worker thread (it would self-heal on the next enqueue,
+            # but at the cost of a threading-excepthook traceback).
+            logger.warning(
+                "Advisor: delivery failed for turn %s", turn.turn_id, exc_info=True
+            )
 
     def on_session_finalize(self, **_kwargs) -> None:
         """Give an in-flight review a small, fixed shutdown grace period."""
@@ -500,7 +518,7 @@ class AdvisorRuntime:
             lines.append(f"{a.tag()} {a.note}")
 
         advisory_text = "\n".join(lines)
-        full_msg = f"\u25c6 Advisor review\n\n{advisory_text}"
+        full_msg = f"{ADVISOR_INJECTED_MARKER}\n\n{advisory_text}"
 
         ok = self.ctx.inject_message(full_msg, role="user")
         if ok:
@@ -515,6 +533,49 @@ class AdvisorRuntime:
 
     # ── interactive model selector ───────────────────────────────────────
 
+    def _llm_override_flags(self) -> dict:
+        """This plugin's PluginLlm trust flags (``plugins.entries.advisor.llm``)."""
+        try:
+            from hermes_cli.config import load_config_readonly
+
+            cfg = load_config_readonly() or {}
+            entry = (cfg.get("plugins") or {}).get("entries", {}).get("advisor")
+            llm = entry.get("llm") if isinstance(entry, dict) else None
+            return llm if isinstance(llm, dict) else {}
+        except Exception:
+            return {}
+
+    def _override_gate_hint(self, *, model: bool, provider: bool) -> str:
+        """Reminder naming the trust flags a configured override still needs, or ''."""
+        flags = self._llm_override_flags()
+        missing = [
+            name
+            for name, needed in (
+                ("allow_model_override", model),
+                ("allow_provider_override", provider),
+            )
+            if needed and flags.get(name) is not True
+        ]
+        if not missing:
+            return ""
+        keys = " and ".join(
+            f"plugins.entries.advisor.llm.{name}: true" for name in missing
+        )
+        return (
+            f"Reminder: also set {keys} in config.yaml — the PluginLlm trust "
+            "gate blocks the override and reviews would fail silently."
+        )
+
+    def _set_override(self, field: str, value: str) -> str:
+        """Set ``model``/``provider`` under the state lock, persist, hint at the gate."""
+        with self._state_lock:
+            setattr(self.state, field, value)
+            model, provider = self.state.model, self.state.provider
+            self._save_state()
+        message = f"Advisor {field} set to: {value}"
+        hint = self._override_gate_hint(model=bool(model), provider=bool(provider))
+        return f"{message}\n{hint}" if hint else message
+
     def _interactive_select(self) -> str | None:
         """Open Hermes' native provider/model modal for the advisor slot."""
 
@@ -525,10 +586,14 @@ class AdvisorRuntime:
                 self.state.model = result.new_model
                 self.state.provider = result.target_provider
                 self._save_state()
-            return (
+            base = (
                 f"Advisor model set to: {result.new_model} "
                 f"({result.provider_label or result.target_provider})"
             )
+            hint = self._override_gate_hint(
+                model=bool(result.new_model), provider=bool(result.target_provider)
+            )
+            return f"{base}\n{hint}" if hint else base
 
         with self._state_lock:
             current_provider = self.state.provider
@@ -564,15 +629,17 @@ class AdvisorRuntime:
 
         # ── on ──
         if head == "on":
-            self.state.enabled = True
-            self._save_state()
+            with self._state_lock:
+                self.state.enabled = True
+                self._save_state()
             return "Advisor on."
 
         # ── off ──
         if head == "off":
-            self.state.enabled = False
+            with self._state_lock:
+                self.state.enabled = False
+                self._save_state()
             self._clear_held_notes()
-            self._save_state()
             return "Advisor off."
 
         # ── model (no args) — open interactive selector ──
@@ -581,9 +648,7 @@ class AdvisorRuntime:
 
         # ── model <name> ──
         if head == "model":
-            self.state.model = value
-            self._save_state()
-            return f"Advisor model set to: {value}"
+            return self._set_override("model", value)
 
         # Provider is selected as the first stage of /advisor model.
         if head == "provider" and not value:
@@ -591,9 +656,7 @@ class AdvisorRuntime:
 
         # ── provider <name> ──
         if head == "provider":
-            self.state.provider = value
-            self._save_state()
-            return f"Advisor provider set to: {value}"
+            return self._set_override("provider", value)
 
         # ── config <key> <value> ──
         if head == "config":
@@ -601,13 +664,9 @@ class AdvisorRuntime:
             sub = sub_tokens[0].lower() if sub_tokens else ""
             sub_value = sub_tokens[1].strip() if len(sub_tokens) > 1 else ""
             if sub == "model" and sub_value:
-                self.state.model = sub_value
-                self._save_state()
-                return f"Advisor model set to: {sub_value}"
+                return self._set_override("model", sub_value)
             if sub == "provider" and sub_value:
-                self.state.provider = sub_value
-                self._save_state()
-                return f"Advisor provider set to: {sub_value}"
+                return self._set_override("provider", sub_value)
             return "Usage: /advisor config <model|provider> <value>"
 
         # ── providers — list available providers ──

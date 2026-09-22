@@ -95,6 +95,10 @@ plugins:
 Without this, `ctx.llm.complete()` raises `PluginLlmTrustError` and the advisor
 silently produces no output. The error is logged but not visible to the user.
 
+`/advisor model`, `/advisor provider`, and the interactive selector check this
+config when an override is set and print a reminder naming the exact flags
+still missing, so the silent-failure mode is surfaced at the point of cause.
+
 If the advisor inherits the primary model (no `/advisor model` or
 `/advisor provider` set), no trust gate config is needed.
 
@@ -176,10 +180,16 @@ rules, recurring pitfalls — without touching the main agent's prompt.
 
 | Variable | Effect |
 |---|---|
-| `ADVISOR_NO_REVIEW=1` | Skip live model reviews. Keeps the `/advisor test` delivery path for manual testing. |
+| `ADVISOR_NO_REVIEW=1` | Diagnostic/test escape hatch — not a user setting (behaviour belongs in `config.yaml`). Skips live model reviews while keeping the `/advisor test` delivery path for manual testing. |
 
 ## Caveats
 
+- **No advice-to-advice loops.** Delivered advice is injected as a user
+  message, which starts an automatic follow-up turn — and a turn whose user
+  message is the advisor's own injected review (it starts with
+  `◆ Advisor review`) is never reviewed again. Without that cut, a held
+  concern the agent keeps failing to address could chain
+  advice → auto-turn → review → advice indefinitely with no user in the loop.
 - **`inject_message` is CLI only.** On Telegram, Discord, or other gateway
   platforms, deliverable advice is logged but not injected into the
   conversation. Held concerns remain visible through `/advisor status`.

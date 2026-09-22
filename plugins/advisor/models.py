@@ -41,7 +41,7 @@ class TurnDelta:
 class AdvisorState:
     """Persistent state for the advisor plugin."""
 
-    enabled: bool = False
+    enabled: bool = True
     held_notes: list[dict] = field(default_factory=list)
     # Per-advisor model override — empty means inherit primary model
     model: str = ""
@@ -152,6 +152,12 @@ class AdvisorState:
 
     @classmethod
     def deserialize(cls, data: dict) -> "AdvisorState":
+        # A non-object JSON body (list, string, number) raises TypeError here so the
+        # callers' catch tuples degrade to defaults instead of killing plugin load.
+        if not isinstance(data, dict):
+            raise TypeError(
+                f"advisor state must be a JSON object, got {type(data).__name__}"
+            )
         return cls(
             enabled=data.get("enabled", True),
             held_notes=data.get("held_notes", []),

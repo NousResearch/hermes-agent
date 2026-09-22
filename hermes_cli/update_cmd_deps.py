@@ -4,12 +4,14 @@ npm/Desktop rebuilds, self-lock deferral. Names are re-imported by ``update_cmd`
 
 import logging
 from contextlib import suppress
+import ast
 import hashlib
 import json
 import os
 import shutil
 import subprocess
 import sys
+import tomllib
 from pathlib import Path
 from typing import Optional
 from hermes_constants import project_venv_dir, venv_python_path
@@ -22,11 +24,83 @@ logger = logging.getLogger("hermes_cli.update_cmd")
 _INSTALL_DEFINING_FILES = "pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "uv.lock"
 
 
+def _mapping_literal(tree: ast.AST):
+    """The setuptools finder uses ``MAPPING: dict[str, str] = {...}``, not a bare assign."""
+    for node in tree.body:
+        if isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) and node.target.id == "MAPPING":
+            return ast.literal_eval(node.value)
+        if isinstance(node, ast.Assign) and any(
+            isinstance(target, ast.Name) and target.id == "MAPPING" for target in node.targets
+        ):
+            return ast.literal_eval(node.value)
+    return None
+
+
+def _checkout_import_names(root: Path) -> set[str]:
+    """Top-level names an editable install records: root modules plus configured packages."""
+    names = {path.stem for path in root.glob("*.py") if path.name != "setup.py"}
+    with (root / "pyproject.toml").open("rb") as stream:
+        includes = (
+            tomllib.load(stream)
+            .get("tool", {})
+            .get("setuptools", {})
+            .get("packages", {})
+            .get("find", {})
+            .get("include", [])
+        )
+    prefixes = {item.removesuffix(".*") for item in includes if isinstance(item, str)}
+    names.update(
+        path.name
+        for path in root.iterdir()
+        if path.is_dir() and (path / "__init__.py").is_file() and path.name in prefixes
+    )
+    return names
+
+
+def _editable_finder_files(venv: Path) -> list[Path]:
+    sites = [*venv.glob("lib/python*/site-packages"), venv / "Lib" / "site-packages"]
+    return [
+        finder
+        for site in sites
+        if site.is_dir()
+        for finder in site.glob("__editable__*hermes_agent*finder.py")
+    ]
+
+
+def _editable_finder_mapping_current(cwd) -> bool | None:
+    """None when the install venv has no static finder; False when its map misses the checkout.
+
+    Module entries point at the stem (``cli``, not ``cli.py``). Existence of that
+    path is not the contract — the key set is. A dangling path is a different repair.
+    """
+    root = Path(cwd)
+    venv = project_venv_dir(root)
+    if venv is None:
+        return None
+    finders = _editable_finder_files(venv)
+    if not finders:
+        return None
+    try:
+        inventory = _checkout_import_names(root)
+        for finder in finders:
+            mapping = _mapping_literal(ast.parse(finder.read_text(encoding="utf-8")))
+            if not isinstance(mapping, dict) or set(mapping) != inventory:
+                return False
+    except (OSError, SyntaxError, ValueError, TypeError, AttributeError):
+        return False
+    return True
+
+
 def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool:
-    """True when the pulled commits cannot have invalidated the editable install: ``uv pip install
-    -e .`` always rewrites console-script shims (Windows: ``hermes.exe`` quarantine, ``os error 32``
-    on a lost race), so skip it when only non-install files changed. Safe because the editable
-    finder uses a *static* module list. Fails closed: no pre-pull SHA or failed diff -> False."""
+    """True when the pull cannot invalidate the editable install.
+
+    ``uv pip install -e .`` rewrites console-script shims. On Windows that rewrite
+    quarantines the running ``hermes.exe``, and a lost race is the ``os error 32``
+    family, so skip it only when packaging files are unchanged and the installed
+    finder still names every top-level import the checkout exposes. No finder keeps
+    the packaging-file gate. An unreadable finder, or a map that disagrees with the
+    checkout, is not current. No pre-pull SHA or a failed diff fails closed.
+    """
     if not pre_pull_sha:
         return False
     try:
@@ -35,7 +109,10 @@ def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool
             cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except OSError:
         return False
-    return result.returncode == 0 and not result.stdout.strip()
+    if result.returncode != 0 or result.stdout.strip():
+        return False
+    mapping_current = _editable_finder_mapping_current(cwd)
+    return mapping_current is not False
 
 
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are
@@ -1122,6 +1199,7 @@ def _sync_python_dependencies_after_pull(
     # by the next launch (``_recover_from_interrupted_install``). Lazy refresh uses its own marker.
     _write_update_incomplete_marker()
     deps_current = _editable_install_is_current(git_cmd, _m().PROJECT_ROOT, pre_pull_sha)
+    mapping_current = _editable_finder_mapping_current(_m().PROJECT_ROOT)
     print(
         "→ Python dependencies unchanged — skipping reinstall" if deps_current
         else "→ Updating Python dependencies...")
@@ -1154,7 +1232,8 @@ def _sync_python_dependencies_after_pull(
             print("  → Termux/Android detected: prebuilding psutil with Linux source path compatibility...")
             _install_psutil_android_compat(install_prefix, env=lazy_env)
         _m()._install_python_dependencies_with_optional_fallback(
-            install_prefix, env=lazy_env, group=install_group)
+            install_prefix, env=lazy_env, group=install_group,
+            reinstall=mapping_current is False)
 
     # Clear the core breadcrumb before lazy refresh, which uses its own marker so a lazy
     # failure can't be "healed" by a narrow core import probe.

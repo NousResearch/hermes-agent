@@ -13,6 +13,7 @@ git prints rather than what it does.
 """
 
 import subprocess
+from pathlib import Path
 
 import pytest
 
@@ -47,6 +48,96 @@ def _head(cwd):
 def _commit(cwd, message):
     subprocess.run(GIT + ["add", "-A"], cwd=cwd, check=True)
     subprocess.run(GIT + ["commit", "-qm", message], cwd=cwd, check=True)
+
+
+def _finder(repo, mapping, *, layout="lib/python3.11/site-packages", annotated=False):
+    site = repo / "venv" / Path(layout)
+    site.mkdir(parents=True)
+    body = (
+        "MAPPING: dict[str, str] = " + repr(mapping) + "\n"
+        if annotated
+        else "MAPPING = " + repr(mapping) + "\n"
+    )
+    (site / "__editable___hermes_agent_0_21_4_finder.py").write_text(body, encoding="utf-8")
+    return site
+
+
+def _declare_packages(repo, include):
+    (repo / "pyproject.toml").write_text(
+        "[tool.setuptools.packages.find]\ninclude = " + repr(include) + "\n",
+        encoding="utf-8",
+    )
+    _commit(repo, "declare packages")
+
+
+def test_missing_new_top_level_package_forces_reinstall(repo, monkeypatch):
+    _declare_packages(repo, ["agent", "agent.*", "newpkg", "newpkg.*"])
+    before = _head(repo)
+    (repo / "newpkg").mkdir()
+    (repo / "newpkg" / "__init__.py").write_text("")
+    _commit(repo, "add package")
+    _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, annotated=True)
+    monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
+    assert _editable_install_is_current(GIT, repo, before) is False
+
+
+def test_covered_annotated_finder_allows_source_churn(repo, monkeypatch):
+    """A current setuptools map uses annotated assignment and module stems, not cli.py."""
+    _declare_packages(repo, ["agent", "agent.*"])
+    _finder(
+        repo,
+        {"agent": str(repo / "agent"), "cli": str(repo / "cli")},
+        annotated=True,
+    )
+    monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
+    before = _head(repo)
+    (repo / "agent" / "loop.py").write_text("y = 2\n")
+    _commit(repo, "source churn")
+    assert _editable_install_is_current(GIT, repo, before) is True
+
+
+@pytest.mark.parametrize("layout", ["lib/python3.11/site-packages", "Lib/site-packages"])
+def test_windows_and_posix_site_packages_are_both_read(repo, monkeypatch, layout):
+    _declare_packages(repo, ["agent", "agent.*"])
+    _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, layout=layout, annotated=True)
+    monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
+    before = _head(repo)
+    (repo / "agent" / "loop.py").write_text("y = 3\n")
+    _commit(repo, "source churn")
+    assert _editable_install_is_current(GIT, repo, before) is True
+
+
+def test_unreadable_finder_fails_closed(repo, monkeypatch):
+    before = _head(repo)
+    site = repo / "venv" / "lib" / "python3.11" / "site-packages"
+    site.mkdir(parents=True)
+    (site / "__editable___hermes_agent_0_21_4_finder.py").write_text("MAPPING = (\n", encoding="utf-8")
+    monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
+    assert _editable_install_is_current(GIT, repo, before) is False
+
+
+def test_mapping_drift_requests_reinstall_flag():
+    from hermes_cli.main_install_repair import _install_python_dependencies_with_optional_fallback
+
+    recorded = []
+    monkeypatch = pytest.MonkeyPatch()
+    monkeypatch.setattr(
+        "hermes_cli.main_install_repair._run_quarantined_install",
+        lambda cmd, **kwargs: recorded.append(cmd),
+    )
+    monkeypatch.setattr(
+        "hermes_cli.main_install_repair._verify_console_scripts_installed",
+        lambda *args, **kwargs: None,
+    )
+    monkeypatch.setattr("hermes_cli.main_install_repair._is_windows", lambda: False)
+    try:
+        _install_python_dependencies_with_optional_fallback(["uv", "pip"], reinstall=True)
+        assert recorded and "--reinstall" in recorded[0]
+        recorded.clear()
+        _install_python_dependencies_with_optional_fallback(["uv", "pip"], reinstall=False)
+        assert recorded and "--reinstall" not in recorded[0]
+    finally:
+        monkeypatch.undo()
 
 
 def test_source_only_pull_skips_the_reinstall(repo):

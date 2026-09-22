@@ -281,6 +281,10 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
       // message never arrived. The updater is invoked exactly once,
       // synchronously, by updateSessionState.
       let recoveredIncompleteTurn = false
+      // Set when THIS event ends a confirmed live turn, whether or not its
+      // terminal message arrived. Drives the sidebar refresh; the hydrate
+      // below stays gated on recoveredIncompleteTurn.
+      let endedLiveTurn = false
 
       const nextState = updateSessionState(
         sessionId,
@@ -359,7 +363,23 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
           // per-session busy flag is authoritative for isTargetSessionBusy,
           // so submitPrompt and the slash dispatcher silently returned false
           // and the session accepted no further input.
-          recoveredIncompleteTurn = state.turnLive
+          //
+          // A turn whose stream is still OPEN here is NOT incomplete: its
+          // terminal message.complete may simply be reordered behind this
+          // heartbeat (#119569). Treating it as broken finalizes the bubble
+          // early (streamId=null), so the late complete misses its row and
+          // appends a duplicate — or a stored-history hydrate here races
+          // the gateway commit and drops the just-delivered reply from view
+          // until reload. Release the turn flags (running=false is
+          // authoritative) but leave the open stream for the complete frame
+          // to settle; a complete that never arrives leaves visible
+          // streamed text, and the next message.start re-seeds the stream.
+          // A sealed stream (streamId null — interim seal or an already
+          // settled bubble) has no in-flight owner, so the classic
+          // incomplete-turn recovery below still applies in full.
+          endedLiveTurn = state.turnLive
+          const streamOpen = state.streamId !== null
+          recoveredIncompleteTurn = state.turnLive && !streamOpen
 
           return {
             ...state,
@@ -376,7 +396,7 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
             // already settled everything and this is a no-op.
             messages: finalizeInterruptedMessages(state.messages, state.streamId, occurredAt),
             pendingBranchGroup: null,
-            streamId: null,
+            streamId: streamOpen ? state.streamId : null,
             turnStartedAt: null,
             turnLive: false
           }
@@ -384,21 +404,26 @@ export function handleSessionInfoEvent(ctx: GatewayEventContext): boolean {
         payload?.stored_session_id || undefined
       )
 
-      if (recoveredIncompleteTurn) {
+      if (endedLiveTurn) {
         // Stays unscoped, like the settle above: a background session's
         // sidebar row has to drop its working dot without the user opening
         // it. This fires on the recovery edge only — once turnLive is false
         // the `state.busy === busy` guard above short-circuits every later
-        // heartbeat — so it costs one coalesced refresh per broken turn,
+        // heartbeat — so it costs one coalesced refresh per ended turn,
         // not one per tick.
         scheduleSessionsRefresh()
 
-        // The transcript catch-up IS scoped. The stream died, but the turn
-        // itself may have completed and been persisted, so refetch stored
-        // history for the session actually on screen; a background session
-        // reads its history when the user opens it, and hydrating every one
-        // of them here would fan a REST call out per idle session.
-        if (isActiveEvent) {
+        // The transcript catch-up IS scoped, and only for turns with no open
+        // stream. A turn with live output owns its settle: the complete
+        // frame is likely just reordered behind this heartbeat (#119569),
+        // and a hydrate now can race the gateway commit and drop the
+        // just-delivered reply from view until reload. The stream died,
+        // but the turn itself may have completed and been persisted, so
+        // refetch stored history for the session actually on screen; a
+        // background session reads its history when the user opens it, and
+        // hydrating every one of them here would fan a REST call out per
+        // idle session.
+        if (recoveredIncompleteTurn && isActiveEvent) {
           void hydrateFromStoredSession(3, nextState.storedSessionId, sessionId)
         }
       }

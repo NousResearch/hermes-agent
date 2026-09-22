@@ -132,6 +132,13 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
         // Backend accepted the turn — the no-payload settle gate below may
         // now treat a running=false heartbeat as a real turn end.
         turnLive: true,
+        // A new turn owns a new stream. Normally the previous complete
+        // already nulled this; the reset matters when the previous turn
+        // died without its terminal frame (gateway crash) and the
+        // running=false recovery deliberately kept the id so a reordered
+        // late complete can still settle onto its bubble (#119569) — without
+        // the reset the next turn's deltas would append into that stale row.
+        streamId: null,
         // Keep the submit-time seed (submit.ts seedOptimistic) — resetting
         // here would hide the submit→accept round trip from the timer.
         // Backend-originated turns (queue drain elsewhere, goal follow-up)

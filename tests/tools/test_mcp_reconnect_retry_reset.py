@@ -62,6 +62,7 @@ def test_reconnect_counter_resets_after_successful_session(monkeypatch, tmp_path
                     # First connect: succeed (sets _ready), then fail.
                     self.session = object()
                     self._ready.set()
+                    self._ever_connected = True
                     self.session = None
                     raise RuntimeError("blip 1")
 

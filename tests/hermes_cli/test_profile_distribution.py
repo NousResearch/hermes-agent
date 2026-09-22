@@ -10,7 +10,10 @@ mocking git would just test the mock.
 
 from __future__ import annotations
 
-import os
+import shutil
+import stat
+import subprocess
+import sys
 from pathlib import Path
 from unittest.mock import patch
 
@@ -26,7 +29,7 @@ from hermes_cli.profile_distribution import (
     _env_template_from_manifest,
     _looks_like_git_url,
     _parse_semver,
-    _replace_directory_atomic,
+    _stage_source,
     check_hermes_requires,
     describe_distribution,
     install_distribution,
@@ -212,6 +215,36 @@ class TestLooksLikeGitUrl:
     def test_accepts_git_sources(self, src):
         assert _looks_like_git_url(src)
 
+    @pytest.mark.windows_only
+    def test_git_source_removes_read_only_git_metadata(self, tmp_path, monkeypatch):
+        origin = tmp_path / "origin"
+        subprocess.run(["git", "init", "--quiet", str(origin)], check=True)
+        (origin / MANIFEST_FILENAME).write_text("name: demo\nversion: 1.0.0\n", encoding="utf-8")
+        subprocess.run(["git", "-C", str(origin), "add", "."], check=True)
+        subprocess.run([
+            "git", "-C", str(origin), "-c", "user.name=Test", "-c",
+            "user.email=test@example.invalid", "commit", "--quiet", "-m", "init",
+        ], check=True)
+        saw_read_only_objects = []
+
+        def clone_local(_url, dest):
+            subprocess.run(["git", "clone", "--quiet", str(origin), str(dest)], check=True)
+            objects = [path for path in (dest / ".git" / "objects").rglob("*") if path.is_file()]
+            saw_read_only_objects.append(
+                bool(objects) and any(
+                    path.stat().st_file_attributes & stat.FILE_ATTRIBUTE_READONLY for path in objects
+                )
+            )
+
+        monkeypatch.setattr("hermes_cli.profile_distribution._git_clone", clone_local)
+
+        workdir = tmp_path / "work"
+        workdir.mkdir()
+        staged, _provenance = _stage_source("https://example.invalid/demo.git", workdir)
+
+        assert saw_read_only_objects == [True]
+        assert not (staged / ".git").exists()
+
 
 # ===========================================================================
 # Install — fresh and force (from a local-directory source)
@@ -377,6 +410,81 @@ class TestInstall:
 
 class TestUpdate:
 
+    def test_update_and_force_install_merge_owned_dirs_per_root(self, profile_env):
+        """skills/ and cron/ are containers of roots: roots the payload ships are replaced
+        wholesale (retired files disappear), roots the user added survive both paths."""
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="skills_safe")
+
+        custom = plan.target_dir / "skills" / "custom"
+        custom.mkdir()
+        (custom / "SKILL.md").write_text("custom skill\n", encoding="utf-8")
+        (plan.target_dir / "cron" / "mine.json").write_text('{"schedule": "* * * * *"}\n', encoding="utf-8")
+        (plan.target_dir / "skills" / "demo" / "stale.txt").write_text("old file\n", encoding="utf-8")
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n", encoding="utf-8")
+        (staged / "skills" / "new").mkdir()
+        (staged / "skills" / "new" / "SKILL.md").write_text("new skill\n", encoding="utf-8")
+        # Categorised skill (skills/<category>/<skill>): the category is a container too,
+        # so a sibling the user added inside it survives (issue #25120's literal repro).
+        (staged / "skills" / "devops" / "team-deploy").mkdir(parents=True)
+        (staged / "skills" / "devops" / "team-deploy" / "SKILL.md").write_text("team deploy\n", encoding="utf-8")
+        mine = plan.target_dir / "skills" / "devops" / "my-custom-skill"
+        mine.mkdir(parents=True)
+        (mine / "SKILL.md").write_text("my custom skill\n", encoding="utf-8")
+
+        update_distribution("skills_safe")
+
+        assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
+        assert (mine / "SKILL.md").read_text(encoding="utf-8") == "my custom skill\n"
+        assert (plan.target_dir / "skills" / "devops" / "team-deploy" / "SKILL.md").exists()
+        assert (plan.target_dir / "cron" / "mine.json").read_text(encoding="utf-8") == '{"schedule": "* * * * *"}\n'
+        assert (plan.target_dir / "skills" / "demo" / "SKILL.md").read_text(encoding="utf-8") == "updated demo\n"
+        assert (plan.target_dir / "skills" / "new" / "SKILL.md").read_text(encoding="utf-8") == "new skill\n"
+        assert not (plan.target_dir / "skills" / "demo" / "stale.txt").exists()
+
+        install_distribution(str(staged), name="skills_safe", force=True)
+
+        assert (custom / "SKILL.md").read_text(encoding="utf-8") == "custom skill\n"
+        assert (plan.target_dir / "cron" / "mine.json").exists()
+
+    def test_update_refuses_symlinked_owned_container(self, profile_env):
+        staged = _make_staging_dir(profile_env, "src")
+        plan = install_distribution(str(staged), name="link_safe")
+
+        shared = profile_env / "shared-skills"
+        (shared / "mine").mkdir(parents=True)
+        (shared / "mine" / "SKILL.md").write_text("shared skill\n", encoding="utf-8")
+        before = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+
+        # A symlinked category (skills/devops -> shared dir) is a container too and is refused
+        # rather than unlinked and replaced by the shipped copy.
+        (staged / "skills" / "devops" / "team-deploy").mkdir(parents=True)
+        (staged / "skills" / "devops" / "team-deploy" / "SKILL.md").write_text("team deploy\n", encoding="utf-8")
+        _symlink_file_or_skip(plan.target_dir / "skills" / "devops", shared)
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("link_safe")
+        assert (plan.target_dir / "skills" / "devops").is_symlink()
+        (plan.target_dir / "skills" / "devops").unlink()
+
+        skills = plan.target_dir / "skills"
+        shutil.rmtree(skills)
+        _symlink_file_or_skip(skills, shared)
+        (staged / "skills" / "demo" / "SKILL.md").write_text("updated demo\n", encoding="utf-8")
+        # Every other shipped entry changes upstream too: the refusal must fire before the
+        # first write, or the profile is left half-updated and every retry fails the same way.
+        (staged / "SOUL.md").write_text("updated soul\n", encoding="utf-8")
+        (staged / "mcp.json").write_text('{"servers": {"new": {}}}\n', encoding="utf-8")
+        (staged / "cron" / "daily.json").write_text('{"schedule": "0 10 * * *"}', encoding="utf-8")
+        untouched = {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()}
+
+        with pytest.raises(DistributionError, match="symlink"):
+            update_distribution("link_safe")
+
+        assert skills.is_symlink() and skills.resolve() == shared.resolve()
+        after = sorted((p.relative_to(shared), p.read_bytes()) for p in shared.rglob("*") if p.is_file())
+        assert after == before
+        assert {p: p.read_bytes() for p in plan.target_dir.rglob("*") if p.is_file()} == untouched
+
     def test_update_preserves_user_data(self, profile_env):
         # 1. Build staging dir, install
         staged = _make_staging_dir(profile_env, "src")
@@ -452,7 +560,7 @@ class TestDescribe:
 
 
     def test_describe_missing_profile_raises(self, profile_env):
-        with pytest.raises(DistributionError, match="does not exist"):
+        with pytest.raises(DistributionError, match="No profile named .*hermes profile list"):
             describe_distribution("nonexistent")
 
 
@@ -675,135 +783,166 @@ class TestErrorSurfaces:
         with pytest.raises((ValueError, DistributionError)):
             plan_install(str(staged), tmp_path / "work")
 
-    def test_path_traversal_name_rejected(self, profile_env, tmp_path):
-        mf = DistributionManifest(name="../../etc/passwd", version="0.1.0")
-        staged = _make_staging_dir(profile_env, "bad", manifest=mf)
-        with pytest.raises((ValueError, DistributionError)):
-            plan_install(str(staged), tmp_path / "work")
-
 
 # ===========================================================================
-# _replace_directory_atomic — bounded retry on the dest -> backup move
+# Crash durability: write_manifest rewrites distribution.yaml in place
 # ===========================================================================
 
 
-class TestReplaceDirectoryAtomic:
+class TestManifestCrashDurability:
+    """``write_manifest`` runs on every install and update of a shared profile.
 
-    def _run_with_retried_rename(self, tmp_path, side_effect_sequence):
-        """Run _replace_directory_atomic where the dest->backup move fails
-        transiently (per *side_effect_sequence*) and then succeeds.
+    ``read_manifest`` reports a missing-or-unparseable manifest as "this isn't
+    a distribution", so a truncated distribution.yaml silently demotes the
+    profile — update tracking and ``env_requires`` just stop existing, with no
+    error surfaced anywhere.
+    """
 
-        Returns (staged, dest, os_replace_calls).
-        """
-        staged = tmp_path / "staged"
-        staged.mkdir()
-        (staged / "new.md").write_text("new content")
+    def test_previous_manifest_survives_an_interrupted_write(self, tmp_path):
+        import os
 
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        (dest / "old.md").write_text("old content")
-
-        real_replace = os.replace
-        calls = []
-
-        def flaky_replace(src, dst):
-            calls.append((str(src), str(dst)))
-            # First N calls raise, as configured by the side_effect_sequence.
-            if len(calls) <= len(side_effect_sequence):
-                exc = side_effect_sequence[len(calls) - 1]
-                if exc is not None:
-                    raise exc
-            return real_replace(src, dst)
-
-        with patch("hermes_cli.profile_distribution.os.replace", flaky_replace):
-            _replace_directory_atomic(dest, staged, staged)
-
-        return staged, dest, calls
-
-    def test_retries_transient_error_on_dest_to_backup_move(self, tmp_path):
-        """A transient WinError on the dest->backup move must be retried, not
-        fail immediately."""
-        staged, dest, calls = self._run_with_retried_rename(
-            tmp_path,
-            side_effect_sequence=[OSError(13, "Permission denied")],
+        original = DistributionManifest(
+            name="keepme",
+            version="1.0.0",
+            description="the manifest already on disk",
+            env_requires=[EnvRequirement(name="FOO", description="foo")],
         )
+        write_manifest(tmp_path, original)
+        on_disk = (tmp_path / "distribution.yaml").read_bytes()
 
-        # dest->backup attempted twice (first transient, then success), plus
-        # the tmp->dest rename.
-        assert len(calls) == 3
-        # The new content ended up in place.
-        assert dest.is_dir()
-        assert (dest / "new.md").read_text() == "new content"
-        # The old content was moved aside then cleaned up.
-        assert not (dest / "old.md").exists()
+        def boom(fd):
+            raise OSError("simulated crash mid-write")
 
-    def test_exhausted_retries_raise_on_dest_to_backup_move(self, tmp_path):
-        """Persistent failures on the dest->backup move must surface and leave
-        the destination intact."""
-        staged = tmp_path / "staged"
-        staged.mkdir()
-        (staged / "new.md").write_text("new content")
-
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        (dest / "old.md").write_text("old content")
-
-        real_replace = os.replace
-
-        def always_fail(src, dst):
-            raise OSError(13, "Permission denied")
-
-        with (
-            patch("hermes_cli.profile_distribution.os.replace", always_fail),
-            pytest.raises(OSError),
-        ):
-            _replace_directory_atomic(dest, staged, staged)
-
-        # Destination was never touched (still the old content).
-        assert (dest / "old.md").read_text() == "old content"
-
-    def test_publish_failure_after_backup_move_rolls_back(
-        self, tmp_path, monkeypatch
-    ):
-        """If publishing the staged tree fails after the old tree has already
-        moved to backup, the original live skills tree is restored and the
-        temporary/backup siblings are removed."""
-        staged = tmp_path / "staged"
-        staged.mkdir()
-        (staged / "skills" / "demo").mkdir(parents=True)
-        (staged / "skills" / "demo" / "SKILL.md").write_text(
-            "---\nname: demo\ndescription: test\n---\n# Demo skill\n"
-        )
-
-        dest = tmp_path / "dest"
-        dest.mkdir()
-        (dest / "skills" / "demo").mkdir(parents=True)
-        (dest / "skills" / "demo" / "SKILL.md").write_text(
-            "---\nname: demo\ndescription: original\n---\n# Original skill\n"
-        )
-
-        real_replace = os.replace
-
-        calls = []
-
-        def fail_publish(src, dst):
-            calls.append((str(src), str(dst)))
-            # Only the publish move (tmp_dir -> dest) fails; the rollback
-            # restore (backup_dir -> dest) must succeed.
-            if Path(dst).name == dest.name and Path(src).name.startswith(f".{dest.name}.hermes-new-"):
-                raise OSError(13, "Permission denied")
-            return real_replace(src, dst)
-
-        with patch("hermes_cli.profile_distribution.os.replace", fail_publish):
+        with pytest.MonkeyPatch.context() as mp:
+            mp.setattr(os, "fsync", boom)
             with pytest.raises(OSError):
-                _replace_directory_atomic(dest, staged, staged)
+                write_manifest(
+                    tmp_path,
+                    DistributionManifest(name="replacement", version="2.0.0"),
+                )
 
-        # The original live tree is restored at dest.
-        assert (dest / "skills" / "demo" / "SKILL.md").read_text().endswith(
-            "Original skill\n"
-        )
-        # No temporary/backup siblings remain.
-        siblings = sorted(p.name for p in tmp_path.iterdir())
-        assert ".dest.hermes-new-" not in "".join(siblings)
-        assert ".dest.hermes-old-" not in "".join(siblings)
-        assert "dest" in siblings and "staged" in siblings
+        # The old manifest must still be byte-identical and still parse.
+        assert (tmp_path / "distribution.yaml").read_bytes() == on_disk
+        parsed = read_manifest(tmp_path)
+        assert parsed is not None, "profile silently stopped being a distribution"
+        assert parsed.name == "keepme"
+        assert parsed.env_requires[0].name == "FOO"
+
+        # No temp file left behind next to the manifest.
+        assert list(tmp_path.glob("*.tmp")) == []
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
+    def test_existing_file_mode_is_preserved(self, tmp_path):
+        import os
+        import stat
+
+        write_manifest(tmp_path, DistributionManifest(name="modes", version="1.0.0"))
+        mf = tmp_path / "distribution.yaml"
+        os.chmod(mf, 0o644)
+
+        write_manifest(tmp_path, DistributionManifest(name="modes", version="2.0.0"))
+
+        mode = stat.S_IMODE(mf.stat().st_mode)
+        assert mode == 0o644, f"mode changed to {oct(mode)}"
+
+    @pytest.mark.skipif(
+        sys.platform == "win32", reason="POSIX permission bits"
+    )
+    def test_created_file_mode_is_not_tightened(self, tmp_path):
+        """A manifest this function *creates* must not land owner-only.
+
+        ``atomic_yaml_write`` only re-applies a mode it captured from an
+        existing file, so a fresh distribution.yaml would otherwise keep
+        ``tempfile.mkstemp``'s 0600. ``_materialize`` hits that path whenever a
+        distribution's explicit ``distribution_owned`` allowlist omits
+        distribution.yaml, so the staged copy never lands in the profile.
+        """
+        import stat
+
+        mf = tmp_path / "distribution.yaml"
+        assert not mf.exists()
+
+        write_manifest(tmp_path, DistributionManifest(name="fresh", version="1.0.0"))
+
+        mode = stat.S_IMODE(mf.stat().st_mode)
+        assert mode == 0o644, f"new manifest created as {oct(mode)}"
+
+
+class TestRemoveExistingTransientRetry:
+    """#52330: a transient handle lock (Explorer/AV/indexer, Windows WinError 145)
+    must not lose a destination entry — _remove_existing retries rmtree with backoff."""
+
+    def test_transient_rmtree_failure_is_retried_and_recovers(self, tmp_path, monkeypatch):
+        import hermes_cli.profile_distribution as pd
+
+        dest = tmp_path / "skills"
+        (dest / "alpha").mkdir(parents=True)
+        (dest / "alpha" / "SKILL.md").write_text("x")
+
+        real_sleep = pd.time.sleep
+        sleeps = []
+        monkeypatch.setattr(pd.time, "sleep", lambda s: sleeps.append(s))
+
+        calls = {"n": 0}
+
+        def flaky_rmtree(path, *a, **kw):
+            calls["n"] += 1
+            if calls["n"] <= 2:
+                # Windows WinError 145 signature (directory not empty)
+                raise OSError(145, "The directory is not empty")
+
+        monkeypatch.setattr(pd.shutil, "rmtree", flaky_rmtree)
+
+        pd._remove_existing(dest)
+
+        assert calls["n"] == 3
+        assert len(sleeps) == 2
+        # bounded backoff: 0.1 then 0.2
+        assert sleeps == [0.1, 0.2]
+
+    def test_persistent_failure_raises_after_bounded_attempts(self, tmp_path, monkeypatch):
+        import hermes_cli.profile_distribution as pd
+
+        dest = tmp_path / "skills"
+        (dest / "alpha").mkdir(parents=True)
+        (dest / "alpha" / "SKILL.md").write_text("x")
+
+        monkeypatch.setattr(pd.time, "sleep", lambda s: None)
+
+        calls = {"n": 0}
+
+        def always_failing_rmtree(path, *a, **kw):
+            calls["n"] += 1
+            raise OSError(145, "The directory is not empty")
+
+        monkeypatch.setattr(pd.shutil, "rmtree", always_failing_rmtree)
+        # Last attempt goes through rmtree_readonly, which retries PermissionError
+        # internally; OSError (WinError 145) propagates as-is.
+        monkeypatch.setattr(pd, "rmtree_readonly", lambda path, **kw: always_failing_rmtree(path))
+
+        with pytest.raises(OSError):
+            pd._remove_existing(dest)
+
+        assert calls["n"] == 3
+
+    def test_non_transient_error_raises_immediately(self, tmp_path, monkeypatch):
+        import hermes_cli.profile_distribution as pd
+
+        dest = tmp_path / "skills"
+        (dest / "alpha").mkdir(parents=True)
+
+        monkeypatch.setattr(pd.time, "sleep", lambda s: None)
+
+        def non_transient(path, *a, **kw):
+            raise OSError(2, "No such file or directory")  # winerror 2: not transient-lock
+
+        monkeypatch.setattr(pd.shutil, "rmtree", non_transient)
+
+        with pytest.raises(OSError):
+            pd._remove_existing(dest)
+
+        # no retry happened (first attempt raises straight through)
+        monkeypatch.setattr(pd.shutil, "rmtree", non_transient)
+

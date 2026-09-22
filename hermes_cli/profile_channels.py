@@ -440,12 +440,19 @@ def clone_channels_refusal(source_dir: Path, source_label: str) -> Optional[str]
     )
 
 
-def _config_platform_tokens(config_path: Path) -> Dict[str, str]:
-    """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings)."""
+def _config_platform_tokens(config_path: Path, env_dir: Optional[Path] = None) -> Dict[str, str]:
+    """``{platform: token}`` from ``platforms.<p>.token|api_key`` (both nesting spellings).
+
+    Values that are ``${VAR}`` placeholders are expanded against ``env_dir``'s ``.env``
+    (each profile's own), so two profiles that reference the same env-var name but resolve
+    it to different tokens are correctly distinguished. Pass ``env_dir`` from the profile
+    dir that owns ``config_path``.
+    """
     tokens: Dict[str, str] = {}
     if not config_path.is_file():
         return tokens
     from hermes_cli.config import read_user_config_raw
+
     raw = read_user_config_raw(config_path)
     gateway: dict = raw["gateway"] if isinstance(raw.get("gateway"), dict) else {}
     for section in (raw.get("platforms"), gateway.get("platforms")):
@@ -455,7 +462,16 @@ def _config_platform_tokens(config_path: Path) -> Dict[str, str]:
             if isinstance(block, dict):
                 token = block.get("token") or block.get("api_key")
                 if isinstance(token, str) and token.strip():
-                    tokens[str(pid)] = token.strip()
+                    token = token.strip()
+                    # Expand ${VAR} placeholders against the owning profile's own .env
+                    # so two profiles sharing a placeholder name but with different tokens
+                    # are correctly distinguished (fixes #119099).
+                    if token.startswith("${") and token.endswith("}") and env_dir is not None:
+                        env = _env_values(env_dir / ".env", credential_env_keys())
+                        var_name = token[2:-1]
+                        if var_name in env:
+                            token = env[var_name]
+                    tokens[str(pid)] = token
     return tokens
 
 
@@ -467,8 +483,8 @@ def shared_channel_credentials(profile_dir: Path, source_dir: Path) -> List[str]
     mine = _env_values(profile_dir / ".env", wanted)
     theirs = _env_values(source_dir / ".env", wanted)
     shared = {wanted[key] for key in mine if theirs.get(key) == mine[key]}
-    mine_cfg = _config_platform_tokens(profile_dir / "config.yaml")
-    theirs_cfg = _config_platform_tokens(source_dir / "config.yaml")
+    mine_cfg = _config_platform_tokens(profile_dir / "config.yaml", env_dir=profile_dir)
+    theirs_cfg = _config_platform_tokens(source_dir / "config.yaml", env_dir=source_dir)
     shared.update(pid for pid, token in mine_cfg.items() if theirs_cfg.get(pid) == token)
     return sorted(shared)
 

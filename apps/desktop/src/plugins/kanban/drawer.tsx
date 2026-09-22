@@ -1,8 +1,8 @@
 /**
- * Task drawer — the desktop port of the dashboard's task detail, flat-styled:
- * status menu + meta table, DIAGNOSTICS (the "why is this stuck" panel, with
- * reassign recovery), description (editable), result/summary, dependencies,
- * comments (+composer), activity, run history, and the worker log tail.
+ * Task modal — the desktop port of the dashboard's task detail, Linear-style:
+ * a centered two-column dialog (main: diagnostics, description, result,
+ * dependencies, comments, activity, runs, log tail; right sidebar: property
+ * rows with the inline editors), instead of the old cramped right drawer.
  */
 
 import {
@@ -170,12 +170,14 @@ function eventText(event: KanbanEvent, k: KanbanText): { detail?: string; label:
   }
 }
 
+// Sidebar property row: muted label above the value (Linear's property list).
+// The value slot holds the same inline editors the old meta grid had.
 function MetaRow({ children, label }: { children: ReactNode; label: string }) {
   return (
-    <>
-      <span className="text-(--ui-text-quaternary)">{label}</span>
-      <span className="min-w-0 truncate text-(--ui-text-secondary)">{children}</span>
-    </>
+    <div className="flex flex-col gap-0.5">
+      <span className="text-[0.65rem] tracking-wide text-(--ui-text-quaternary) uppercase">{label}</span>
+      <div className="min-w-0 text-[0.75rem] text-(--ui-text-secondary)">{children}</div>
+    </div>
   )
 }
 
@@ -660,6 +662,10 @@ export function TaskDrawer({
 
   const errorMessage = error ? errText(error) : null
 
+  // Linked tasks resolved to titles by the backend (`link_tasks`); absent on
+  // older backends, where the chips fall back to short ids.
+  const linkTitles = new Map((detail?.link_tasks ?? []).map(linked => [linked.id, linked.title]))
+
   const move = (status: string) => {
     if (!task || status === task.status) {
       return
@@ -675,286 +681,314 @@ export function TaskDrawer({
   }
 
   return (
-    <div className="absolute inset-y-0 right-0 z-20 flex w-[26rem] flex-col border-l border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) duration-150 ease-out animate-in fade-in slide-in-from-right-4">
-      <header className="flex flex-col gap-2 px-4 pt-3.5 pb-3">
-        <div className="flex items-center gap-2">
-          {task ? (
-            <StatusMenu columns={columns} onMove={move} status={task.status} />
-          ) : (
-            <span className="font-mono text-sm text-(--ui-text-tertiary)">{shortId(id)}</span>
-          )}
-          {task && (
-            <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
-              {shortId(task.id)}
-            </span>
-          )}
-          <div className="ml-auto flex items-center gap-0.5">
+    <div
+      aria-label={task?.title || shortId(id)}
+      aria-modal="true"
+      className="fixed inset-0 z-(--z-modal-backdrop) flex items-center justify-center bg-black/45 p-6 duration-150 animate-in fade-in-0"
+      onMouseDown={event => event.target === event.currentTarget && onClose()}
+      role="dialog"
+    >
+      <div className="flex h-[min(84vh,54rem)] w-[min(62rem,94vw)] flex-col overflow-hidden rounded-xl border border-(--ui-stroke-tertiary) bg-(--ui-bg-elevated) shadow-nous duration-150 animate-in fade-in-0 zoom-in-95">
+        <header className="flex flex-col gap-2 px-5 pt-4 pb-3">
+          <div className="flex items-center gap-2">
+            {task ? (
+              <StatusMenu columns={columns} onMove={move} status={task.status} />
+            ) : (
+              <span className="font-mono text-sm text-(--ui-text-tertiary)">{shortId(id)}</span>
+            )}
             {task && (
-              <DropdownMenu>
-                <DropdownMenuTrigger asChild>
-                  <button
-                    aria-label={k.taskActions}
-                    className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                    type="button"
-                  >
-                    <Codicon name="ellipsis" size="0.9rem" />
-                  </button>
-                </DropdownMenuTrigger>
-                <DropdownMenuContent align="end">
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      void navigator.clipboard.writeText(task.id)
-                      host.notify({ kind: 'info', message: k.copiedId(task.id) })
-                    }}
-                  >
-                    <Codicon name="copy" size="0.85rem" />
-                    {k.copyTaskId}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem
-                    onSelect={() => {
-                      void navigator.clipboard.writeText(task.title || task.id)
-                      host.notify({ kind: 'info', message: k.copiedTitle })
-                    }}
-                  >
-                    <Codicon name="copy" size="0.85rem" />
-                    {k.copyTitle}
-                  </DropdownMenuItem>
-                  <DropdownMenuSeparator />
-                  <DropdownMenuItem onSelect={mutate(() => patchTask(task.id, { status: 'archived' }), onClose)}>
-                    <Codicon name="archive" size="0.85rem" />
-                    {k.archive}
-                  </DropdownMenuItem>
-                  <DropdownMenuItem className="text-destructive" onSelect={mutate(() => deleteTask(task.id), onClose)}>
-                    <Codicon name="trash" size="0.85rem" />
-                    {k.delete}
-                  </DropdownMenuItem>
-                </DropdownMenuContent>
-              </DropdownMenu>
+              <span className="font-mono text-[0.625rem] text-(--ui-text-quaternary)" data-selectable-text="true">
+                {shortId(task.id)}
+              </span>
             )}
-            <button
-              aria-label={k.close}
-              className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-              onClick={onClose}
-              type="button"
-            >
-              <Codicon name="close" size="0.9rem" />
-            </button>
-          </div>
-        </div>
-        {task && (
-          <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
-            {task.title || task.id}
-          </h2>
-        )}
-      </header>
-
-      <div className="min-h-0 flex-1 overflow-y-auto px-4 pb-4" data-selectable-text="true">
-        {errorMessage ? (
-          <ErrorState title={errorMessage} />
-        ) : !detail || !task ? (
-          <div className="grid h-32 place-items-center">
-            <Loader type="lemniscate-bloom" />
-          </div>
-        ) : (
-          <div className="flex flex-col gap-4 text-sm">
-            <div className="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 text-[0.71rem]">
-              <MetaRow label={k.assignee}>
-                <AssigneeMenu
-                  current={task.assignee}
-                  onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
-                />
-              </MetaRow>
-              {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
-              {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
-              {task.workspace_path && (
-                <MetaRow label={k.workspace}>
-                  {task.workspace_kind ? `${task.workspace_kind}: ` : ''}
-                  {task.workspace_path}
-                </MetaRow>
+            <div className="ml-auto flex items-center gap-0.5">
+              {task && (
+                <DropdownMenu>
+                  <DropdownMenuTrigger asChild>
+                    <button
+                      aria-label={k.taskActions}
+                      className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                      type="button"
+                    >
+                      <Codicon name="ellipsis" size="0.9rem" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end">
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        void navigator.clipboard.writeText(task.id)
+                        host.notify({ kind: 'info', message: k.copiedId(task.id) })
+                      }}
+                    >
+                      <Codicon name="copy" size="0.85rem" />
+                      {k.copyTaskId}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      onSelect={() => {
+                        void navigator.clipboard.writeText(task.title || task.id)
+                        host.notify({ kind: 'info', message: k.copiedTitle })
+                      }}
+                    >
+                      <Codicon name="copy" size="0.85rem" />
+                      {k.copyTitle}
+                    </DropdownMenuItem>
+                    <DropdownMenuSeparator />
+                    <DropdownMenuItem onSelect={mutate(() => patchTask(task.id, { status: 'archived' }), onClose)}>
+                      <Codicon name="archive" size="0.85rem" />
+                      {k.archive}
+                    </DropdownMenuItem>
+                    <DropdownMenuItem
+                      className="text-destructive"
+                      onSelect={mutate(() => deleteTask(task.id), onClose)}
+                    >
+                      <Codicon name="trash" size="0.85rem" />
+                      {k.delete}
+                    </DropdownMenuItem>
+                  </DropdownMenuContent>
+                </DropdownMenu>
               )}
-              <MetaRow label={k.model}>
-                <ModelOverrideField
-                  onChange={next => void mutate(() => patchTask(task.id, overridePatch(next)))()}
-                  value={{
-                    effort: task.reasoning_effort ?? '',
-                    model: task.model_override ?? '',
-                    provider: task.provider_override ?? ''
-                  }}
-                />
-              </MetaRow>
-              {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
-              {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
-              {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
+              <button
+                aria-label={k.close}
+                className="grid size-6 place-items-center rounded text-(--ui-text-tertiary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                onClick={onClose}
+                type="button"
+              >
+                <Codicon name="close" size="0.9rem" />
+              </button>
             </div>
-
-            {task.status === 'ready' && !task.assignee && !defaultAssignee && (
-              <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
-                <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">{k.readyUnassignedBody}</p>
-              </Callout>
-            )}
-
-            {task.diagnostics && task.diagnostics.length > 0 && (
-              <Section label={k.diagnosticsN(task.diagnostics.length)}>
-                <Diagnostics items={task.diagnostics} onReclaim={() => void mutate(() => reclaimTask(task.id))()} />
-              </Section>
-            )}
-
-            <DescriptionSection body={task.body} onSave={body => void mutate(() => patchTask(task.id, { body }))()} />
-
-            <EstimateSection id={task.id} />
-
-            {task.result && (
-              <Section label={k.result}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
-              </Section>
-            )}
-
-            {task.latest_summary && !isAdminSummary(task.latest_summary) && (
-              <Section label={k.latestSummary}>
-                <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.latest_summary}</p>
-              </Section>
-            )}
-
-            {(detail.links.parents.length > 0 || detail.links.children.length > 0) && (
-              <Section label={k.dependencies}>
-                {(['parents', 'children'] as const).map(side =>
-                  detail.links[side].length > 0 ? (
-                    <div className="flex flex-wrap items-center gap-1.5" key={side}>
-                      <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
-                        {side === 'parents' ? k.blockedBy : k.blocks}
-                      </span>
-                      {detail.links[side].map(linked => (
-                        <button
-                          className="rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 font-mono text-[0.625rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
-                          key={linked}
-                          onClick={() => onOpen(linked)}
-                          type="button"
-                        >
-                          {shortId(linked)}
-                        </button>
-                      ))}
-                    </div>
-                  ) : null
-                )}
-              </Section>
-            )}
-
-            <Section
-              action={
-                <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
-                  <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
-                    <Codicon name="question" size="0.8rem" />
-                  </span>
-                </Tip>
-              }
-              label={k.comments(detail.comments.length)}
-            >
-              {detail.comments.length > 0 && (
-                <ul className="flex flex-col gap-2">
-                  {detail.comments.map(comment => (
-                    <li className="text-[0.75rem]" key={comment.id}>
-                      <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
-                      <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">
-                        {ago(comment.created_at)}
-                      </span>
-                      <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
-                    </li>
-                  ))}
-                </ul>
-              )}
-              <CommentComposer
-                onRequeue={body => requeueMut.mutate(body)}
-                onSubmit={body => commentMut.mutate(body)}
-                pending={commentMut.isPending || requeueMut.isPending}
-                running={running}
-              />
-            </Section>
-
-            {detail.events.length > 0 && (
-              <Section label={k.activity(detail.events.length)}>
-                <ScrollFade deps={detail.events.length} max="7rem">
-                  <ul className="flex flex-col gap-1">
-                    {detail.events.map(event => {
-                      const { detail: extra, label } = eventText(event, k)
-
-                      return (
-                        <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
-                          <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
-                          {extra && (
-                            <span
-                              className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)"
-                              title={extra}
-                            >
-                              {extra}
-                            </span>
-                          )}
-                          <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">{ago(event.created_at)}</span>
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {detail.runs.length > 0 && (
-              <Section label={k.runs(detail.runs.length)}>
-                <ScrollFade max="11rem">
-                  <ul className="flex flex-col gap-1.5">
-                    {detail.runs.map(run => {
-                      const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(run.outcome ?? run.status)
-
-                      return (
-                        <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
-                          <div className="flex items-center gap-2">
-                            <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
-                              {run.outcome ?? run.status}
-                            </Badge>
-                            {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
-                            {duration(run.started_at, run.ended_at) && (
-                              <span className="text-(--ui-text-quaternary)">
-                                {duration(run.started_at, run.ended_at)}
-                              </span>
-                            )}
-                            <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
-                              {ago(run.ended_at ?? run.started_at)}
-                            </span>
-                          </div>
-                          {(run.error || run.summary) && (
-                            <p
-                              className={cn(
-                                'line-clamp-2 whitespace-pre-wrap',
-                                run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
-                              )}
-                            >
-                              {run.error ?? run.summary}
-                            </p>
-                          )}
-                        </li>
-                      )
-                    })}
-                  </ul>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {log?.exists && log.content && (
-              <Section label={log.truncated ? k.workerLogTail : k.workerLog}>
-                <ScrollFade deps={log.content.length} max="12rem">
-                  <LogView className="border-0 px-0">{log.content}</LogView>
-                </ScrollFade>
-              </Section>
-            )}
-
-            {Array.isArray(detail.attachments) && (
-              <AttachmentsSection
-                attachments={detail.attachments}
-                onUpload={file => uploadMut.mutate(file)}
-                pending={uploadMut.isPending}
-              />
-            )}
           </div>
-        )}
+          {task && (
+            <h2 className="text-sm leading-snug font-semibold text-foreground" data-selectable-text="true">
+              {task.title || task.id}
+            </h2>
+          )}
+        </header>
+
+        <div className="min-h-0 flex-1" data-selectable-text="true">
+          {errorMessage ? (
+            <ErrorState title={errorMessage} />
+          ) : !detail || !task ? (
+            <div className="grid h-32 place-items-center">
+              <Loader type="lemniscate-bloom" />
+            </div>
+          ) : (
+            <div className="flex h-full min-h-0">
+              <div className="min-w-0 flex-1 overflow-y-auto px-5 pb-5">
+                <div className="flex flex-col gap-4 text-sm">
+                  {task.status === 'ready' && !task.assignee && !defaultAssignee && (
+                    <Callout title={k.readyUnassignedTitle} tone={SEVERITY_TONE.warning}>
+                      <p className="text-[0.71rem] leading-relaxed text-(--ui-text-secondary)">
+                        {k.readyUnassignedBody}
+                      </p>
+                    </Callout>
+                  )}
+
+                  {task.diagnostics && task.diagnostics.length > 0 && (
+                    <Section label={k.diagnosticsN(task.diagnostics.length)}>
+                      <Diagnostics
+                        items={task.diagnostics}
+                        onReclaim={() => void mutate(() => reclaimTask(task.id))()}
+                      />
+                    </Section>
+                  )}
+
+                  <DescriptionSection
+                    body={task.body}
+                    onSave={body => void mutate(() => patchTask(task.id, { body }))()}
+                  />
+
+                  {task.result && (
+                    <Section label={k.result}>
+                      <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">{task.result}</p>
+                    </Section>
+                  )}
+
+                  {task.latest_summary && !isAdminSummary(task.latest_summary) && (
+                    <Section label={k.latestSummary}>
+                      <p className="whitespace-pre-wrap text-[0.8125rem] text-(--ui-text-secondary)">
+                        {task.latest_summary}
+                      </p>
+                    </Section>
+                  )}
+
+                  {(detail.links.parents.length > 0 || detail.links.children.length > 0) && (
+                    <Section label={k.dependencies}>
+                      {(['parents', 'children'] as const).map(side =>
+                        detail.links[side].length > 0 ? (
+                          <div className="flex flex-wrap items-center gap-1.5" key={side}>
+                            <span className="text-[0.6875rem] text-(--ui-text-quaternary)">
+                              {side === 'parents' ? k.blockedBy : k.blocks}
+                            </span>
+                            {detail.links[side].map(linked => (
+                              <button
+                                className="max-w-full truncate rounded bg-(--ui-bg-quaternary) px-1.5 py-0.5 text-[0.6875rem] text-(--ui-text-secondary) transition-colors hover:bg-(--chrome-action-hover) hover:text-foreground"
+                                key={linked}
+                                onClick={() => onOpen(linked)}
+                                title={`${linkTitles.get(linked) ?? ''} (${shortId(linked)})`}
+                                type="button"
+                              >
+                                {linkTitles.get(linked) || shortId(linked)}
+                              </button>
+                            ))}
+                          </div>
+                        ) : null
+                      )}
+                    </Section>
+                  )}
+
+                  <Section
+                    action={
+                      <Tip label={running ? k.commentsHelpRunning : k.commentsHelp}>
+                        <span className="grid size-5 place-items-center rounded text-(--ui-text-quaternary) hover:text-(--ui-text-secondary)">
+                          <Codicon name="question" size="0.8rem" />
+                        </span>
+                      </Tip>
+                    }
+                    label={k.comments(detail.comments.length)}
+                  >
+                    {detail.comments.length > 0 && (
+                      <ul className="flex flex-col gap-2">
+                        {detail.comments.map(comment => (
+                          <li className="text-[0.75rem]" key={comment.id}>
+                            <span className="font-medium text-(--ui-text-secondary)">{comment.author}</span>
+                            <span className="ml-2 text-[0.625rem] text-(--ui-text-quaternary)">
+                              {ago(comment.created_at)}
+                            </span>
+                            <p className="whitespace-pre-wrap text-(--ui-text-tertiary)">{comment.body}</p>
+                          </li>
+                        ))}
+                      </ul>
+                    )}
+                    <CommentComposer
+                      onRequeue={body => requeueMut.mutate(body)}
+                      onSubmit={body => commentMut.mutate(body)}
+                      pending={commentMut.isPending || requeueMut.isPending}
+                      running={running}
+                    />
+                  </Section>
+
+                  {detail.events.length > 0 && (
+                    <Section label={k.activity(detail.events.length)}>
+                      <ScrollFade deps={detail.events.length} max="7rem">
+                        <ul className="flex flex-col gap-1">
+                          {detail.events.map(event => {
+                            const { detail: extra, label } = eventText(event, k)
+
+                            return (
+                              <li className="flex items-baseline gap-2 text-[0.6875rem]" key={event.id}>
+                                <span className="shrink-0 text-(--ui-text-secondary)">{label}</span>
+                                {extra && (
+                                  <span
+                                    className="min-w-0 truncate text-[0.625rem] text-(--ui-text-quaternary)"
+                                    title={extra}
+                                  >
+                                    {extra}
+                                  </span>
+                                )}
+                                <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
+                                  {ago(event.created_at)}
+                                </span>
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </ScrollFade>
+                    </Section>
+                  )}
+
+                  {detail.runs.length > 0 && (
+                    <Section label={k.runs(detail.runs.length)}>
+                      <ScrollFade max="11rem">
+                        <ul className="flex flex-col gap-1.5">
+                          {detail.runs.map(run => {
+                            const failed = ['crashed', 'failed', 'timed_out', 'gave_up'].includes(
+                              run.outcome ?? run.status
+                            )
+
+                            return (
+                              <li className="flex flex-col gap-0.5 text-[0.71rem]" key={run.id}>
+                                <div className="flex items-center gap-2">
+                                  <Badge size="xs" variant={failed ? 'destructive' : 'muted'}>
+                                    {run.outcome ?? run.status}
+                                  </Badge>
+                                  {run.profile && <span className="text-(--ui-text-tertiary)">{run.profile}</span>}
+                                  {duration(run.started_at, run.ended_at) && (
+                                    <span className="text-(--ui-text-quaternary)">
+                                      {duration(run.started_at, run.ended_at)}
+                                    </span>
+                                  )}
+                                  <span className="ml-auto shrink-0 text-(--ui-text-quaternary)">
+                                    {ago(run.ended_at ?? run.started_at)}
+                                  </span>
+                                </div>
+                                {(run.error || run.summary) && (
+                                  <p
+                                    className={cn(
+                                      'line-clamp-2 whitespace-pre-wrap',
+                                      run.error ? 'text-destructive' : 'text-(--ui-text-quaternary)'
+                                    )}
+                                  >
+                                    {run.error ?? run.summary}
+                                  </p>
+                                )}
+                              </li>
+                            )
+                          })}
+                        </ul>
+                      </ScrollFade>
+                    </Section>
+                  )}
+
+                  {log?.exists && log.content && (
+                    <Section label={log.truncated ? k.workerLogTail : k.workerLog}>
+                      <ScrollFade deps={log.content.length} max="12rem">
+                        <LogView className="border-0 px-0">{log.content}</LogView>
+                      </ScrollFade>
+                    </Section>
+                  )}
+                </div>
+              </div>
+              <aside className="flex w-64 shrink-0 flex-col gap-3 overflow-y-auto border-l border-(--ui-stroke-tertiary) px-4 py-4">
+                <MetaRow label={k.assignee}>
+                  <AssigneeMenu
+                    current={task.assignee}
+                    onReassign={profile => void mutate(() => reassignTask(task.id, profile))()}
+                  />
+                </MetaRow>
+                {typeof task.priority === 'number' && <MetaRow label={k.metaPriority}>{task.priority}</MetaRow>}
+                {task.tenant && <MetaRow label={k.metaTenant}>{task.tenant}</MetaRow>}
+                {task.workspace_path && (
+                  <MetaRow label={k.workspace}>
+                    {task.workspace_kind ? `${task.workspace_kind}: ` : ''}
+                    {task.workspace_path}
+                  </MetaRow>
+                )}
+                <MetaRow label={k.model}>
+                  <ModelOverrideField
+                    onChange={next => void mutate(() => patchTask(task.id, overridePatch(next)))()}
+                    value={{
+                      effort: task.reasoning_effort ?? '',
+                      model: task.model_override ?? '',
+                      provider: task.provider_override ?? ''
+                    }}
+                  />
+                </MetaRow>
+                {task.created_by && <MetaRow label={k.metaCreatedBy}>{task.created_by}</MetaRow>}
+                {ago(task.created_at) && <MetaRow label={k.metaCreated}>{ago(task.created_at)}</MetaRow>}
+                {running && task.worker_pid ? <MetaRow label={k.metaWorkerPid}>{task.worker_pid}</MetaRow> : null}
+                <EstimateSection id={task.id} />
+
+                {Array.isArray(detail.attachments) && (
+                  <AttachmentsSection
+                    attachments={detail.attachments}
+                    onUpload={file => uploadMut.mutate(file)}
+                    pending={uploadMut.isPending}
+                  />
+                )}
+              </aside>
+            </div>
+          )}
+        </div>
       </div>
     </div>
   )

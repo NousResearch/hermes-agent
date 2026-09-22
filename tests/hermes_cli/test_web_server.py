@@ -2008,6 +2008,52 @@ class TestWebServerEndpoints:
         assert self.client.request("DELETE", "/api/providers/custom-endpoints/Local%208000").status_code == 200
         assert "local-8000" not in (load_config().get("providers") or {})
 
+    def test_new_custom_endpoint_with_colon_id_survives_round_trip(self):
+        """A new custom endpoint (no pre-existing entry) whose id contains a colon
+        must be stored under the unslugified id so that a subsequent list →
+        activate/edit cycle finds it without a 404.
+
+        Before the fix, ``_write_custom_endpoint`` called
+        ``_custom_endpoint_id(body.id or body.name)`` for new entries, which
+        slugifies ``:`` → ``-``; the lookup path (``find_provider_entry``) used
+        ``coerce_provider_id`` which preserves ``:``, so the saved entry was never
+        found (#117666)."""
+        from hermes_cli.config import get_config_path, load_config
+
+        get_config_path().write_text("providers: {}\n", encoding="utf-8")
+
+        colon_id = "anthropic:claude-4"
+        saved = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": colon_id,
+                "name": "Claude 4 via Anthropic API",
+                "base_url": "https://api.anthropic.com/v1",
+                "model": "claude-4-opus",
+            },
+        )
+        assert saved.status_code == 200, saved.text
+
+        providers = load_config()["providers"]
+        assert colon_id in providers, f"Expected {colon_id!r} in providers, got {list(providers)}"
+        assert "anthropic-claude-4" not in providers
+
+        listed = [e["id"] for e in self.client.get("/api/providers/custom-endpoints").json()["endpoints"]]
+        assert colon_id in listed
+
+        edited = self.client.post(
+            "/api/providers/custom-endpoints",
+            json={
+                "id": colon_id,
+                "name": "Claude 4 via Anthropic API (updated)",
+                "base_url": "https://api.anthropic.com/v1",
+                "model": "claude-4-sonnet",
+            },
+        )
+        assert edited.status_code == 200, edited.text
+        providers = load_config()["providers"]
+        assert providers[colon_id]["model"] == "claude-4-sonnet"
+
 
     def test_custom_endpoint_save_scopes_to_the_requested_profile(self):
         """``?profile=<name>`` must write into that profile's config.yaml.

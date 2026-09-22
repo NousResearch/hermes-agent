@@ -542,7 +542,7 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     # An edit payload carries the stored key verbatim; slugging it first would
     # miss the entry and fork a slugged twin next to the original.
     stored_key, existing = _resolve_custom_endpoint_entry(providers, body.id or body.name)
-    endpoint_id = coerce_provider_id(stored_key) if existing is not None else _custom_endpoint_id(body.id or body.name)
+    endpoint_id = coerce_provider_id(stored_key) if existing is not None else (body.id or body.name)
     if existing is None:
         existing = {}
 

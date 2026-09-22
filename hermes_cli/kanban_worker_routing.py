@@ -163,9 +163,14 @@ def recover_generated_assignee(conn, row, default_assignee, *, dry_run, result):
     assignee = row["assignee"]
     if not assignee or profile_exists(assignee) or not default_assignee:
         return assignee
-    if (row["created_by"] or "").strip().lower() not in {
-        "auto-decomposer", "decomposer", "specialist-routing",
-    } or not profile_exists(default_assignee):
+    # Any persisted assignee is an execution claim, regardless of which
+    # producer wrote it.  Legacy producers have emitted stale aliases and
+    # typos (for example ``ci_general_fixer``); leaving those rows in ready
+    # strands them forever because the dispatcher correctly refuses to spawn
+    # a nonexistent profile.  Normalize every invalid assignee to the
+    # validated intake/default profile, which then applies deterministic
+    # specialist routing before spawn.
+    if not profile_exists(default_assignee):
         return assignee
     if not dry_run:
         with kb.write_txn(conn):

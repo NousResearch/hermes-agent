@@ -1,6 +1,6 @@
 name: nerve
 repo: https://github.com/keeltrace/hermes-nerve
-sha: de219b1875a9943cb81de406c6853caf53496aaf
+sha: a8e117347617ca7d445dcb8483186202a03b28f1
 description: Nerve is a supervisory nervous system for Hermes Agent with provider-neutral Jev, Laya,
   and OpenJev Reflex backends, evidence-backed Kanban supervision, context governance, token-budget
   trajectory control, and durable SSH workers. Disclosure — the default Reflex backend is hosted Jev;

@@ -33,6 +33,7 @@ vi.mock('./desktop-plugins-root', () => ({
   reconcileUnifiedDesktopHalves: vi.fn()
 }))
 
+import { ensureDir } from './desktop-plugins-root'
 import { registerFsIpc } from './fs-ipc'
 
 const scratch = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-fs-ipc-'))
@@ -48,6 +49,7 @@ registerFsIpc({
 })
 
 const reveal = (target: string) => electron.handlers.get('hermes:fs:reveal')!({}, target)
+const logsRoot = (profile?: string) => electron.handlers.get('hermes:fs:logsRoot')!({}, profile)
 
 afterEach(() => {
   electron.showItemInFolder.mockClear()
@@ -91,5 +93,22 @@ describe('hermes:fs:reveal', () => {
 
     await expect(reveal('~/tilde.md')).resolves.toBe(true)
     expect(electron.showItemInFolder).toHaveBeenCalledWith(here)
+  })
+})
+
+describe('hermes:fs:logsRoot', () => {
+  it('uses the requesting chat profile instead of the desktop launch profile', async () => {
+    vi.mocked(ensureDir).mockImplementation(async value => value)
+
+    registerFsIpc({
+      hermesHome: scratch,
+      readActiveDesktopProfile: () => 'werkzeug-oder-wesen',
+      expandUserPath: value => value,
+      resolveRequestedPathForIpc: value => value,
+      directoryExists: value => fs.existsSync(value),
+      resolveGitBinary: () => 'git'
+    })
+
+    await expect(logsRoot('finex')).resolves.toBe(path.join(scratch, 'profiles', 'finex', 'logs'))
   })
 })

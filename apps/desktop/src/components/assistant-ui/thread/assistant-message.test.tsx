@@ -9,6 +9,7 @@ import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-libra
 import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { type ComposerScope, ComposerScopeProvider, MAIN_COMPOSER_SCOPE } from '@/app/chat/composer/scope'
 import { en } from '@/i18n/en'
 import { $displayTimestamps } from '@/store/display-timestamps'
 
@@ -171,11 +172,13 @@ function LocationProbe() {
 function Harness({
   assistant = assistantMessage(),
   onBranchInNewChat,
-  onReload
+  onReload,
+  composerScope = MAIN_COMPOSER_SCOPE
 }: {
   assistant?: ThreadMessage
   onBranchInNewChat?: (messageId: string) => void
   onReload?: () => Promise<void>
+  composerScope?: ComposerScope
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [userMessage(), assistant],
@@ -185,9 +188,11 @@ function Harness({
   })
 
   return (
-    <AssistantRuntimeProvider runtime={runtime}>
-      <Thread onBranchInNewChat={onBranchInNewChat} />
-    </AssistantRuntimeProvider>
+    <ComposerScopeProvider value={composerScope}>
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread onBranchInNewChat={onBranchInNewChat} />
+      </AssistantRuntimeProvider>
+    </ComposerScopeProvider>
   )
 }
 
@@ -233,6 +238,25 @@ describe('ownership refusal recovery (#106217)', () => {
 })
 
 describe('code-keyed error card copy and actions', () => {
+  it('opens logs for the failed chat profile, not the backend launch profile', async () => {
+    const logsRoot = vi.fn(async () => '/hermes/profiles/finex/logs')
+    const openDir = vi.fn(async () => ({ ok: true }))
+
+    Object.assign(window, { hermesDesktop: { logsRoot, openDir } })
+
+    render(
+      <Harness
+        assistant={failedMessage({ code: 'server_error', layer: 'gateway', retryable: true })}
+        composerScope={{ ...MAIN_COMPOSER_SCOPE, profile: 'finex' }}
+      />
+    )
+
+    fireEvent.click(await screen.findByRole('button', { name: 'Open logs' }))
+
+    await waitFor(() => expect(logsRoot).toHaveBeenCalledWith('finex'))
+    expect(openDir).toHaveBeenCalledWith('/hermes/profiles/finex/logs')
+  })
+
   it('hides Retry and offers Edit message for a safety refusal', async () => {
     render(
       <Harness

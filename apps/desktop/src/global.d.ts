@@ -437,8 +437,8 @@ declare global {
       // resolved by Electron independently of the connected backend (#66899).
       // Created on demand; returns the normalized absolute path.
       desktopPluginsRoot?: () => Promise<string>
-      /** LOCAL `<HERMES_HOME>/logs` (profile-aware) — error card "Open Logs". */
-      logsRoot?: () => Promise<string>
+      /** LOCAL `<HERMES_HOME>/logs` for this chat's profile — error card "Open Logs". */
+      logsRoot?: (profile?: string) => Promise<string>
       /** Re-copy unified packages' desktop halves into the app-level root; returns touched paths. */
       reconcileDesktopPlugins?: () => Promise<string[]>
       // Rename a file/folder in place (new base name, same parent dir).

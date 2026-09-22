@@ -417,9 +417,7 @@ class TestDelegateTask(unittest.TestCase):
                 child_db = kwargs["session_db"]
                 self.assertIsInstance(child_db, SessionDB)
                 self.assertIsNot(child_db, parent_db)
-                self.assertEqual(
-                    Path(child_db.db_path).resolve(), Path(parent_db.db_path).resolve()
-                )
+                self.assertTrue(Path(child_db.db_path).samefile(parent_db.db_path))
             finally:
                 if child_db is not None:
                     child_db.close()

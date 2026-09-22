@@ -3585,10 +3585,6 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 cursor = e
             return "".join(parts)
 
-        def _finish(text: str) -> Tuple[str, Dict[str, int]]:
-            shown = [i for s, e in selected for i in range(s, e)]
-            return text, _coverage(sum(len(display_records[i]) for i in shown), len(shown))
-
         # Budget extension: the greedy fill leaves each slice short of `target` by up to one record
         # (5-43% of the cap unused for 8-20K records). Spend the headroom on whole neighbouring
         # records, round-robin one record per slice per round so every region keeps an even share
@@ -3626,7 +3622,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # pre-bounded to `target`), there are <= n-1 markers each <= `marker_len` (widths computed
         # at their maxima), and n*target + (n-1)*marker_len <= _SUMMARY_INPUT_MAX_CHARS by
         # construction; the extension pass above only adds a record when the result stays <= cap.
-        return _finish(_render(selected))
+        shown = [i for s, e in selected for i in range(s, e)]
+        return _render(selected), _coverage(sum(len(display_records[i]) for i in shown), len(shown))
 
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None

@@ -27,6 +27,7 @@ how the shell guard hid for months.
 
 from __future__ import annotations
 
+import json
 import os
 import re
 import shutil
@@ -51,6 +52,7 @@ SIBLING_LOG_GLOBS = ("*-pi*.log", "*-spec*.md", "spec-t_*.md", "pi-t_*.log")
 WORKTREE_ROOT_GLOBS = ("*-worktrees", "*/.worktrees")
 
 _GIT_TIMEOUT = 60
+_GH_TIMEOUT = 30
 
 
 @dataclass
@@ -212,8 +214,20 @@ def _remote_head(repo: Path, branch: str) -> Optional[str]:
     return out.split()[0]
 
 
+#: Refs tried, in order, when looking for "main".
+_MAIN_REFS = ("origin/main", "origin/master", "main", "master")
+
+
+def _main_ref(repo: Path) -> Optional[str]:
+    """First of :data:`_MAIN_REFS` that resolves in ``repo``, else None."""
+    for ref in _MAIN_REFS:
+        if _git(repo, "rev-parse", "--verify", "--quiet", ref).returncode == 0:
+            return ref
+    return None
+
+
 def _is_ancestor_of_main(repo: Path, tip: str) -> bool:
-    for ref in ("origin/main", "origin/master", "main", "master"):
+    for ref in _MAIN_REFS:
         if _git(repo, "rev-parse", "--verify", "--quiet", ref).returncode != 0:
             continue
         if _git(repo, "merge-base", "--is-ancestor", tip, ref).returncode == 0:
@@ -221,25 +235,116 @@ def _is_ancestor_of_main(repo: Path, tip: str) -> bool:
     return False
 
 
-def branch_refusal(path: Path, repo: Optional[Path], branch: Optional[str]) -> Optional[str]:
-    """Reason the checkout at ``path`` must be kept, or None when safe to drop."""
+def _gh_pr_json(path: Path, branch: str) -> Optional[str]:
+    """Raw ``gh pr list`` JSON for ``branch``, or None when the probe failed.
+
+    Module-level and deliberately tiny so tests can replace it wholesale — unit
+    tests must never need the network or a ``gh`` binary.
+    """
+    res = _run(
+        [
+            "gh", "-C", str(path), "pr", "list",
+            "--head", branch, "--state", "merged", "--limit", "10",
+            "--json", "number,state,mergedAt,headRefOid",
+        ],
+        timeout=_GH_TIMEOUT,
+    )
+    if res.returncode != 0:
+        return None
+    return res.stdout
+
+
+def merged_pr_for_tip(path: Path, branch: str, tip: str) -> Optional[str]:
+    """Human string for a MERGED PR whose head sha is exactly ``tip``, else None.
+
+    This is the arm that discriminates squash merges: GitHub deletes the head
+    ref on merge, so ``ls-remote`` goes empty and ``git cherry`` still reports
+    the rewritten commits as non-equivalent — but the PR records the exact sha
+    that was merged. Any failure of the probe (no ``gh``, non-zero exit, network
+    error, malformed JSON, empty list, sha mismatch) returns None: a failed
+    probe is never evidence of a merge.
+    """
+    raw = _gh_pr_json(path, branch)
+    if not raw:
+        return None
+    try:
+        payload = json.loads(raw)
+    except (ValueError, TypeError):
+        return None
+    if not isinstance(payload, list):
+        return None
+    for pr in payload:
+        if not isinstance(pr, dict):
+            continue
+        if pr.get("state") != "MERGED":
+            continue
+        merged_at = pr.get("mergedAt")
+        if not merged_at:
+            continue
+        if pr.get("headRefOid") != tip:
+            continue
+        return f"PR #{pr.get('number')} merged {merged_at}"
+    return None
+
+
+def all_commits_equivalent_on_main(repo_or_path: Path, tip: str) -> bool:
+    """True when every commit on ``tip`` already has an equivalent on main.
+
+    Offline fallback for Arm A. ``git cherry`` marks a commit ``-`` when an
+    equivalent patch is upstream and ``+`` when it is not. Empty output is NOT
+    proof — no commits to compare says nothing, and the ancestor check above
+    already covers that case.
+    """
+    ref = _main_ref(repo_or_path)
+    if ref is None:
+        return False
+    res = _git(repo_or_path, "cherry", ref, tip)
+    if res.returncode != 0:
+        return False
+    lines = [ln for ln in res.stdout.splitlines() if ln.strip()]
+    if not lines:
+        return False
+    return not any(ln.lstrip().startswith("+") for ln in lines)
+
+
+def branch_safety_reason(
+    path: Path, repo: Optional[Path], branch: Optional[str],
+) -> tuple[Optional[str], Optional[str]]:
+    """``(refusal, safe_reason)`` for the checkout at ``path``.
+
+    Exactly one of the two is non-None for a decidable checkout; both are None
+    when there is simply nothing branch-shaped to lose.
+    """
     if repo is None:
-        return None  # not a git checkout — nothing branch-shaped to lose
+        return None, None  # not a git checkout — nothing branch-shaped to lose
     dirty = _git_out(path, "status", "--porcelain")
     if dirty:
-        return f"uncommitted changes in {path.name}"
+        # Uncommitted work always wins, even over a merged PR.
+        return f"uncommitted changes in {path.name}", None
     tip = _git_out(path, "rev-parse", "HEAD")
     if tip is None:
-        return None  # unborn branch, no commits at all
+        return None, None  # unborn branch, no commits at all
     if _is_ancestor_of_main(repo, tip):
-        return None
+        return None, "merged into main"
     if branch is None:
-        return "detached HEAD not merged into origin/main"
+        return "detached HEAD not merged into origin/main", None
     # Defect B: a squash-merged branch is never an ancestor of main, but its
     # tip matches the remote ref, so nothing is unpushed and it is safe to drop.
     if _remote_head(repo, branch) == tip:
-        return None
-    return f"unpushed commits on {branch}"
+        return None, f"tip pushed to origin/{branch}"
+    # Arm A: the PR that carried this exact tip is merged (head ref since gone).
+    pr_reason = merged_pr_for_tip(path, branch, tip)
+    if pr_reason:
+        return None, pr_reason
+    # Arm B: offline patch-equivalence against main.
+    if all_commits_equivalent_on_main(path, tip):
+        return None, "all commits patch-equivalent on main (git cherry)"
+    return f"unpushed commits on {branch}", None
+
+
+def branch_refusal(path: Path, repo: Optional[Path], branch: Optional[str]) -> Optional[str]:
+    """Reason the checkout at ``path`` must be kept, or None when safe to drop."""
+    return branch_safety_reason(path, repo, branch)[0]
 
 
 def current_branch(path: Path) -> Optional[str]:
@@ -413,16 +518,25 @@ def _decide_worktree(
                 repo = hint
                 break
     branch = current_branch(real) if repo is not None else None
-    refusal = branch_refusal(real, repo, branch)
+    refusal, safe_reason = branch_safety_reason(real, repo, branch)
     if refusal:
         return ReclaimDecision(entry, task_id, False, refusal)
+    # Why it was considered safe travels with the decision: a removal whose
+    # justification is invisible is indistinguishable from a bug.
+    why = f"; {safe_reason}" if safe_reason else ""
 
     if dry_run:
-        return ReclaimDecision(entry, task_id, False, f"would remove ({_dir_size_mb(real)} MB, dry run)")
+        return ReclaimDecision(
+            entry, task_id, False, f"would remove ({_dir_size_mb(real)} MB, dry run{why})"
+        )
     candidate = ReclaimCandidate(task_id=task_id, path=real, branch=branch, size_mb=_dir_size_mb(real))
     ok, reason = _remove_path(candidate.path, repo)
     if ok:
-        reason = f"{reason}, {candidate.size_mb} MB reclaimed from {candidate.branch or 'detached HEAD'}"
+        suffix = f" ({safe_reason})" if safe_reason else ""
+        reason = (
+            f"{reason}, {candidate.size_mb} MB reclaimed from "
+            f"{candidate.branch or 'detached HEAD'}{suffix}"
+        )
     return ReclaimDecision(entry, task_id, ok, reason)
 
 

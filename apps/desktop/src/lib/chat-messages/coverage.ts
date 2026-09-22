@@ -1,6 +1,5 @@
+import { normalizeWs as normalizedText } from './parts'
 import type { ChatMessage, ChatMessagePart } from './types'
-
-const normalizedText = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 function sameOccurrencePart(stored: ChatMessagePart, local: ChatMessagePart): boolean {
   if (stored.type === 'tool-call' && local.type === 'tool-call') {

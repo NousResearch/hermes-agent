@@ -1,11 +1,19 @@
 import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart, toChatMessages } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  textPart,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
+import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -78,12 +86,7 @@ function hasStructuralParts(message: ChatMessage): boolean {
  * turn — as opposed to a committed transcript row.
  */
 function isLiveTailRow(message: ChatMessage): boolean {
-  return (
-    message.pending === true ||
-    message.id.startsWith('assistant-stream-') ||
-    message.id.startsWith('inflight-assistant-') ||
-    message.interim === true
-  )
+  return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
 }
 
 /**
@@ -334,6 +337,15 @@ export function preserveEquivalentTranscript(current: ChatMessage[], next: ChatM
   return chatMessageArraysEquivalent(current, next) ? current : next
 }
 
+/** Durable history against the local view: role-ordinal pairing, then the
+ *  local pending turn and local assistant errors the DB cannot know about. */
+export function reconcileDurableHistory(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const reconciled = reconcileResumeMessages(messages, previous)
+  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previous)
+
+  return preserveLocalAssistantErrors(withPendingTurn, previous)
+}
+
 export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
@@ -580,8 +592,7 @@ function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessag
   return messages.slice(lastUser + 1).some(message => {
     if (
       message.role !== 'assistant' ||
-      message.id.startsWith('assistant-stream-') ||
-      message.id.startsWith('inflight-assistant-')
+      isLiveTailReplyId(message.id)
     ) {
       return false
     }
@@ -655,6 +666,7 @@ export function preserveLocalPendingTurnMessages(
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
+  const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
 
   for (const message of previousMessages) {
     if (isGatewaySystemMarker(message)) {
@@ -793,8 +805,6 @@ export function preserveLocalPendingTurnMessages(
         continue
       }
     }
-
-    const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
 
     if (
       isPendingAssistant &&

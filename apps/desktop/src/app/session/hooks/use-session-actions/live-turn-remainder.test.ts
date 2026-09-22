@@ -113,7 +113,7 @@ it('pairs only the queue projection, preserving equal corrections and different 
   }
 
   const reconcile = (previous: ChatMessage[]) =>
-    reconcilePersistedLiveTurn(toChatMessages(rows), previous, rows, projection, messages => messages)!
+    reconcilePersistedLiveTurn(toChatMessages(rows), previous, rows, projection)!
 
   let current = reconcile([])
 

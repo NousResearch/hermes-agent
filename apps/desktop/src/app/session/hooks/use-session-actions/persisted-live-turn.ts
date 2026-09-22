@@ -5,6 +5,7 @@ import { parseErrorSurface } from '@/lib/error-surface'
 import type { SessionMessage, SessionResumeResult } from '@/types/hermes'
 
 import { mergeLiveAssistantRun } from './live-turn-remainder'
+import { reconcileDurableHistory } from './utils'
 
 const rowId = (row: SessionMessage) => row.row_id ?? row.id
 const userText = (text: string) => textWithoutReferenceLines(text).trim()
@@ -68,12 +69,12 @@ function candidateTurn(
 
       // MEDIA rendering and folding change lengths. Only source-row provenance,
       // not equal prose elsewhere in the transcript, proves display coverage.
+      const rendered = renderedText(raw).trim()
+
       if (
         id === undefined ||
         !turnMessages.some(message =>
-          message.parts.some(
-            part => part.type === 'text' && part.sourceRowId === id && part.text.trim() === renderedText(raw).trim()
-          )
+          message.parts.some(part => part.type === 'text' && part.sourceRowId === id && part.text.trim() === rendered)
         )
       ) {
         return null
@@ -162,6 +163,11 @@ function snapshotIntervals(inflight: NonNullable<SessionResumeResult['inflight']
   const text = inflight.assistant ?? ''
   const corrections = inflight.corrections ?? []
   const offsets = inflight.correction_offsets
+
+  if (!corrections.length) {
+    return [text]
+  }
+
   // Python's len() counts Unicode code points, unlike JS string offsets.
   const characters = Array.from(text)
 
@@ -192,8 +198,7 @@ export function reconcilePersistedLiveTurn(
   messages: ChatMessage[],
   previous: ChatMessage[],
   rows: SessionMessage[],
-  projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>,
-  reconcileHistory: (messages: ChatMessage[], previous: ChatMessage[]) => ChatMessage[]
+  projection: Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'>
 ): ChatMessage[] | null {
   const inflight = projection.inflight
 
@@ -233,7 +238,7 @@ export function reconcilePersistedLiveTurn(
   const snapshots = snapshotIntervals(inflight)
   const corrections = inflight.corrections ?? []
 
-  const result = reconcileHistory(
+  const result = reconcileDurableHistory(
     messages.slice(0, turn.start + 1),
     localStart >= 0 ? previous.slice(0, localStart + 1) : previous
   )

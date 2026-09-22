@@ -1,5 +1,11 @@
-import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
+import {
+  type ChatMessage,
+  type ChatMessagePart,
+  chatMessageText,
+  normalizeWs as normalizedText
+} from '@/lib/chat-messages'
 import { withoutCoveredAssistantPrefix } from '@/lib/chat-messages/coverage'
+import { isLiveTailReplyId } from '@/lib/spoken-reply'
 
 /**
  * Crash-survivable in-flight turn journal.
@@ -523,10 +529,6 @@ function cloneMessages(messages: ChatMessage[]): ChatMessage[] {
   }
 }
 
-function normalizedText(value: string): string {
-  return value.replace(/\s+/g, ' ').trim()
-}
-
 function attachmentSignature(message: ChatMessage): string {
   return (message.attachmentRefs ?? []).join('\n')
 }
@@ -556,11 +558,13 @@ function assistantHasRecoverableContent(message: ChatMessage): boolean {
 /** A live-turn projection row (backend `inflight` via appendLiveSessionProjection,
  *  or a still-streaming local bubble) — as opposed to a completed transcript row. */
 function isLiveProjectionRow(message: ChatMessage): boolean {
-  return (
-    Boolean(message.pending) ||
-    message.id.startsWith('assistant-stream-') ||
-    message.id.startsWith('inflight-assistant-')
-  )
+  return Boolean(message.pending) || isLiveTailReplyId(message.id)
+}
+
+/** A row the transcript actually holds: neither a live projection nor a
+ *  journal recovery that is still waiting for its durable counterpart. */
+function isCommittedRow(message: ChatMessage): boolean {
+  return !isLiveProjectionRow(message) && !message.recovered
 }
 
 /** Visible tail of the running turn: the streaming assistant row (plus any
@@ -716,7 +720,7 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
   const lastTurnStart = baseMessages.findLastIndex(message => message.role === 'user' && !message.hidden)
 
   return recoverable.every(message => baseMessages.some((base, index) =>
-    base.role === 'assistant' && !base.hidden && !isLiveProjectionRow(base) && !base.recovered &&
+    base.role === 'assistant' && !base.hidden && isCommittedRow(base) &&
     (base.id === message.id ||
       (message.rowId === undefined ? index > lastTurnStart : base.rowId !== undefined && base.rowId === message.rowId)) &&
     base.error === message.error &&
@@ -806,7 +810,7 @@ export function mergeInFlightMessages(
   const afterUser = baseMessages.slice(matchingUserIndex + 1, end)
 
   const completedReply = afterUser.find(
-    message => assistantHasRecoverableContent(message) && !isLiveProjectionRow(message) && !message.recovered &&
+    message => assistantHasRecoverableContent(message) && isCommittedRow(message) &&
       (message.durableComplete === true || (message.durableComplete === undefined && !message.interim &&
         !message.parts.some(part => part.type === 'tool-call')))
   )
@@ -817,7 +821,7 @@ export function mergeInFlightMessages(
   }
 
   tailAssistants = withoutCoveredAssistantPrefix(
-    afterUser.filter(message => !isLiveProjectionRow(message) && !message.recovered), tailAssistants
+    afterUser.filter(isCommittedRow), tailAssistants
   )
   lastJournalRow = tailAssistants.findLast(assistantHasRecoverableContent) ?? null
 
@@ -961,7 +965,8 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
   }
 
   if (!state.busy && !state.awaitingResponse && !state.streamId &&
-      !recoverableTail(state.messages, null).some(message => message.recovered)) {
+      !(state.messages.some(message => message.recovered) &&
+        recoverableTail(state.messages, null).some(message => message.recovered))) {
     clearInFlightTurnJournal(storedSessionId)
 
     return

@@ -166,7 +166,7 @@ import {
   patchSessionWorkspace,
   preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
-  reconcileResumeMessages,
+  reconcileDurableHistory,
   removeRepresentedLocalLiveProjection,
   resolveResumedBusy,
   resolveSessionProfile,
@@ -266,27 +266,17 @@ function reconcileAuthoritativeChatMessages(
   sourceRows?: SessionMessage[]
 ): ChatMessage[] {
   if (liveProjection && sourceRows) {
-    const reconciled = reconcilePersistedLiveTurn(
-      authoritativeMessages,
-      previousMessages,
-      sourceRows,
-      liveProjection,
-      (messages, previous) => reconcileAuthoritativeChatMessages(messages, previous)
-    )
+    const reconciled = reconcilePersistedLiveTurn(authoritativeMessages, previousMessages, sourceRows, liveProjection)
 
     if (reconciled) {
       return reconciled
     }
   }
 
-  const withLiveProjection = liveProjection
-    ? appendLiveSessionProjection(authoritativeMessages, liveProjection)
-    : authoritativeMessages
-
-  const reconciled = reconcileResumeMessages(withLiveProjection, previousMessages)
-  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previousMessages)
-
-  return preserveLocalAssistantErrors(withPendingTurn, previousMessages)
+  return reconcileDurableHistory(
+    liveProjection ? appendLiveSessionProjection(authoritativeMessages, liveProjection) : authoritativeMessages,
+    previousMessages
+  )
 }
 
 function reconcileAuthoritativeMessages(
@@ -1528,19 +1518,14 @@ export function useSessionActions({
                     persistedMessages,
                     sessionStateByRuntimeIdRef.current.get(cachedRuntimeId)?.messages ?? previousMessages,
                     persisted.messages,
-                    liveProjection,
-                    (messages, previous) => reconcileAuthoritativeChatMessages(messages, previous)
+                    liveProjection
                   )
 
+                  // `null` does not depend on `previous`; retrying the live-turn
+                  // reconcile inside the fallback would return `null` again.
                   reconciledCurrentLiveTurn = currentLiveTurn !== null
                   activatedMessages =
-                    currentLiveTurn ??
-                    reconcileAuthoritativeChatMessages(
-                      persistedMessages,
-                      previousMessages,
-                      liveProjection,
-                      persisted.messages
-                    )
+                    currentLiveTurn ?? reconcileAuthoritativeChatMessages(persistedMessages, previousMessages, liveProjection)
                 }
               }
 

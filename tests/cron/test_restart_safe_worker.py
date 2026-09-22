@@ -194,6 +194,145 @@ def test_external_worker_adopts_execution_and_runs_payload_once(
     assert not stderr_capture.exists()
 
 
+def test_external_worker_registers_profile_shell_hooks_before_running(
+    tmp_path, monkeypatch
+):
+    import agent.outbound_webhooks as outbound_webhooks
+    import agent.shell_hooks as shell_hooks
+    import cron.scheduler as scheduler
+    from hermes_cli import plugins
+    from hermes_constants import get_hermes_home
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    hook_script = profile_home / "mail-hook.sh"
+    hook_script.write_text("#!/usr/bin/env bash\nexit 0\n", encoding="utf-8")
+    hook_script.chmod(0o755)
+    (profile_home / "config.yaml").write_text(
+        "hooks_auto_accept: true\n"
+        "hooks:\n"
+        "  post_tool_call:\n"
+        f"    - command: {json.dumps(str(hook_script))}\n"
+        "      matcher: mcp__agent_mail__send_message\n",
+        encoding="utf-8",
+    )
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(profile_home),
+        }),
+        encoding="utf-8",
+    )
+
+    events = []
+    real_register = shell_hooks.register_from_config
+
+    def discover_plugins():
+        events.append(("plugins", get_hermes_home().resolve()))
+
+    def register_from_config(config, *, accept_hooks):
+        events.append(("shell_hooks", get_hermes_home().resolve(), accept_hooks))
+        return real_register(config, accept_hooks=accept_hooks)
+
+    def run(*_args, **_kwargs):
+        manager = plugins.get_plugin_manager()
+        events.append(("run", get_hermes_home().resolve(), manager.has_hook("post_tool_call")))
+        return True
+
+    plugins._reset_plugin_managers_for_tests()
+    shell_hooks.reset_for_tests()
+    outbound_register = Mock(side_effect=AssertionError("outbound webhooks must remain unregistered"))
+    monkeypatch.setattr(plugins, "discover_plugins", discover_plugins)
+    monkeypatch.setattr(shell_hooks, "register_from_config", register_from_config)
+    monkeypatch.setattr(outbound_webhooks, "register_from_config", outbound_register)
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", lambda _id: {"status": "running"})
+    monkeypatch.setattr(scheduler, "run_one_job", run)
+    try:
+        assert scheduler._run_external_worker_payload(payload, ack) is True
+    finally:
+        shell_hooks.reset_for_tests()
+        plugins._reset_plugin_managers_for_tests()
+
+    expected_home = profile_home.resolve()
+    assert events == [
+        ("plugins", expected_home),
+        ("shell_hooks", expected_home, False),
+        ("run", expected_home, True),
+    ]
+    outbound_register.assert_not_called()
+
+
+@pytest.mark.parametrize("failing_stage", ["plugins", "config", "shell_hooks"])
+def test_external_worker_hook_bootstrap_failure_does_not_block_job(
+    tmp_path, monkeypatch, caplog, failing_stage
+):
+    import agent.shell_hooks as shell_hooks
+    import cron.scheduler as scheduler
+    from hermes_cli import config as config_module
+    from hermes_cli import plugins
+
+    profile_home = tmp_path / "profile"
+    profile_home.mkdir()
+    payload = tmp_path / "payload.json"
+    ack = tmp_path / "exec-1.ready"
+    payload.write_text(
+        json.dumps({
+            "job": {"id": "job-1", "execution_id": "exec-1"},
+            "profile_home": str(profile_home),
+        }),
+        encoding="utf-8",
+    )
+
+    events = []
+    real_load_config = config_module.load_config
+
+    def discover_plugins():
+        events.append("plugins")
+        if failing_stage == "plugins":
+            raise RuntimeError("plugin discovery failed")
+
+    def load_config():
+        events.append("config")
+        if failing_stage == "config":
+            raise RuntimeError("config load failed")
+        return real_load_config()
+
+    def register_from_config(_config, *, accept_hooks):
+        events.append(("shell_hooks", accept_hooks))
+        if failing_stage == "shell_hooks":
+            raise RuntimeError("shell registration failed")
+        return []
+
+    monkeypatch.setattr(plugins, "discover_plugins", discover_plugins)
+    monkeypatch.setattr(config_module, "load_config", load_config)
+    monkeypatch.setattr(shell_hooks, "register_from_config", register_from_config)
+    monkeypatch.setattr("cron.executions.adopt_claimed_execution", lambda _id: {"status": "running"})
+    monkeypatch.setattr(scheduler, "run_one_job", lambda *_a, **_k: events.append("run") or True)
+
+    with caplog.at_level("WARNING", logger=scheduler.logger.name):
+        assert scheduler._run_external_worker_payload(payload, ack) is True
+
+    expected_events = {
+        "plugins": ["plugins", "config", ("shell_hooks", False), "run"],
+        "config": ["plugins", "config", "run"],
+        "shell_hooks": ["plugins", "config", ("shell_hooks", False), "run"],
+    }[failing_stage]
+    assert events == expected_events
+    expected_warning = {
+        "plugins": "Plugin discovery failed",
+        "config": "Shell-hook registration failed",
+        "shell_hooks": "Shell-hook registration failed",
+    }[failing_stage]
+    matching_warnings = [
+        record for record in caplog.records
+        if expected_warning in record.getMessage()
+    ]
+    assert len(matching_warnings) == 1
+    assert matching_warnings[0].levelname == "WARNING"
+
+
 def test_external_worker_ack_is_never_observable_half_written(tmp_path, monkeypatch):
     """The gateway polls ``ack_path.exists()`` then reads it (#107184, #116164 form 1): the ack
     must appear atomically with its full body, or the parent logs "unreadable acknowledgement"

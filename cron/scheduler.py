@@ -3704,6 +3704,27 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
             old_external_execution = os.environ.get("_HERMES_CRON_EXTERNAL_WORKER")
             os.environ["_HERMES_CRON_EXTERNAL_WORKER"] = execution_id
             try:
+                # A restart-safe worker is a fresh process, so it must perform the
+                # declarative hook bootstrap that gateway startup normally owns.
+                # Keep plugin callbacks ahead of config shell hooks, matching the
+                # gateway's dispatch order.
+                try:
+                    from hermes_cli.plugins import discover_plugins
+                    discover_plugins()
+                except Exception:
+                    logger.warning(
+                        "Plugin discovery failed at cron external-worker startup",
+                        exc_info=True,
+                    )
+                try:
+                    from agent.shell_hooks import register_from_config
+                    from hermes_cli.config import load_config
+                    register_from_config(load_config(), accept_hooks=False)
+                except Exception:
+                    logger.warning(
+                        "Shell-hook registration failed at cron external-worker startup",
+                        exc_info=True,
+                    )
                 return run_one_job(job, adapters=None, loop=None, verbose=False)
             finally:
                 if old_external_execution is None:

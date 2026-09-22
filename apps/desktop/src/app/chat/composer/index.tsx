@@ -43,6 +43,7 @@ import { $autoSpeakReplies } from '@/store/voice-prefs'
 import { useTheme } from '@/themes'
 
 import { AttachmentList } from './attachments'
+import { $busyInputMode, resolveBusyComposerAction } from './busy-input-mode'
 import {
   acceptsTriggerCompletion,
   COMPOSER_FADE_BACKGROUND,
@@ -188,6 +189,13 @@ export function ChatBar({
   const scope = useComposerScope()
   const attachments = useStore(scope.attachments.$attachments)
   const compacting = useStore(useMemo(() => sessionCompacting(sessionId ?? null), [sessionId]))
+
+  // `display.busy_input_mode` is the one knob shared with the CLI, the TUI and
+  // the gateway; the desktop never read it, so a busy Enter always redirected.
+  // The config refresh path publishes it into an atom (same pattern as the
+  // other display.* switches the composer reads), so a save in Settings takes
+  // effect on the next keystroke without the composer owning a fetch.
+  const busyInputMode = useStoreSelector($busyInputMode, mode => mode)
   const surfaceId = useComposerSurfaceId()
   const scrollSessionId = sessionId ?? surfaceId
 
@@ -414,27 +422,38 @@ export function ChatBar({
   const hasComposerPayload = hasText || attachments.length > 0
   const canSubmit = busy || hasComposerPayload
 
-  // Steer only makes sense mid-turn, text-only (the gateway can't carry images
-  // into a tool result) and never for a slash command (those execute inline).
-  // A blocking prompt (approval/sudo/secret) also rules it out: the tool batch
-  // is parked on the user, so a steer can't reach the model — text queues.
-  const canSteer = busy && !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
+  // Both mid-turn corrections are text-only (the gateway can't carry images
+  // into a tool result) and never fire for a slash command (those execute
+  // inline). A blocking prompt (approval/sudo/secret) rules them out too: the
+  // tool batch is parked on the user, so neither can reach the model — text
+  // queues behind it (steering there would sit undelivered until the prompt
+  // times out). Compaction owns the turn outright.
+  const canRedirect = !compacting && !blockingPrompt && !!onSteer && attachments.length === 0 && isSteerableText
 
-  // While busy: text redirects the live turn (Cursor-style stop-and-correct),
-  // attachments queue for the next turn, an empty composer stops.
-  const busyAction: 'steer' | 'queue' | 'stop' = canSteer
-    ? 'steer'
-    : compacting || hasComposerPayload
-      ? 'queue'
-      : 'stop'
+  // While busy, the configured mode decides: interrupt redirects the live turn
+  // (Cursor-style stop-and-correct), steer injects into the next tool result
+  // without cancelling, queue waits for the turn to finish. Whatever cannot
+  // ride the chosen RPC (attachments, a blocked prompt, compacting) falls back
+  // to the queue, and an empty composer is always Stop. Both corrections
+  // travel through `onSteer` / `onSteerHidden`, so they share that path's
+  // session-owner routing and stale-runtime resume.
+  const busyAction = resolveBusyComposerAction({
+    busy,
+    canCorrect: canRedirect,
+    compacting,
+    hasPayload: hasComposerPayload,
+    blockingPrompt,
+    mode: busyInputMode
+  })
 
   // The submit engine — the orchestration seam where draft + queue meet. Owns
   // the submit decision tree, the send-with-restore primitive, and steer.
-  const { queueDraft, steerDraft, submitDraft } = useComposerSubmit({
+  const { queueDraft, submitDraft } = useComposerSubmit({
     activeQueueSessionKey,
     activeQueueSessionKeyRef,
     attachments,
     busy,
+    busyInputMode,
     compacting,
     clearDraft,
     disabled,

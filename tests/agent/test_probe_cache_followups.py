@@ -186,6 +186,61 @@ class TestLocalhostIPv4SiblingSites:
 
         assert client.post.call_args[0][0].startswith("http://127.0.0.1:11434")
 
+    def test_fetch_endpoint_model_metadata_generic_probe_uses_ipv4(self):
+        """The generic (non-LM-Studio) /models fetch loop must also rewrite
+        localhost->127.0.0.1 before probing, like the LM Studio branch above."""
+        from agent import model_metadata
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        model_metadata._endpoint_model_metadata_cache.clear()
+        model_metadata._endpoint_model_metadata_cache_time.clear()
+
+        resp = MagicMock()
+        resp.status_code = 200
+        resp.raise_for_status = MagicMock()
+        resp.json.return_value = {"data": []}
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch("agent.model_metadata.requests.get", return_value=resp) as mock_get:
+            fetch_endpoint_model_metadata("http://localhost:8000/v1")
+
+        assert mock_get.call_args[0][0].startswith("http://127.0.0.1:8000")
+
+    def test_fetch_endpoint_model_metadata_llamacpp_props_followup_uses_ipv4(self):
+        """The llama.cpp /props context-length follow-up must also rewrite
+        localhost->127.0.0.1 before probing, not just the initial /models call."""
+        from agent import model_metadata
+        from agent.model_metadata import fetch_endpoint_model_metadata
+
+        model_metadata._endpoint_model_metadata_cache.clear()
+        model_metadata._endpoint_model_metadata_cache_time.clear()
+
+        models_resp = MagicMock()
+        models_resp.status_code = 200
+        models_resp.raise_for_status = MagicMock()
+        models_resp.json.return_value = {
+            "data": [{"id": "llama-3-8b", "owned_by": "llamacpp"}],
+        }
+
+        props_resp = MagicMock()
+        props_resp.ok = True
+        props_resp.json.return_value = {
+            "default_generation_settings": {"n_ctx": 32768},
+            "model_alias": "llama-3-8b",
+        }
+
+        with patch("agent.model_metadata.detect_local_server_type", return_value=None), \
+             patch(
+                 "agent.model_metadata.requests.get",
+                 side_effect=[models_resp, props_resp],
+             ) as mock_get:
+            result = fetch_endpoint_model_metadata("http://localhost:8000/v1")
+
+        assert mock_get.call_count == 2
+        props_call_url = mock_get.call_args_list[1][0][0]
+        assert props_call_url.startswith("http://127.0.0.1:8000")
+        assert result["llama-3-8b"]["context_length"] == 32768
+
 
 
 class TestContextCacheKeyNormalization:
@@ -222,5 +277,68 @@ class TestContextCacheKeyNormalization:
         cache = model_metadata._load_context_cache()
         assert "m1@http://host/v1" not in cache
         assert "m1@http://host/v1/" not in cache
+
+
+class TestDetectServerTypeNegativeCaching:
+    """A failed detect_local_server_type verdict is cached briefly (#89863).
+
+    Previously only positive verdicts were memoized, so a remote endpoint
+    that answered the whole waterfall with 401s (no recognizable server
+    type) was re-probed — 5 requests — on every image-bearing turn.
+    """
+
+    @staticmethod
+    def _client_all_401():
+        client = MagicMock()
+        client.__enter__ = lambda s: client
+        client.__exit__ = MagicMock(return_value=False)
+        resp = MagicMock()
+        resp.status_code = 401
+        client.get.return_value = resp
+        return client
+
+    def test_negative_verdict_is_cached_in_memory(self):
+        from agent.model_metadata import detect_local_server_type
+        from agent import model_metadata
+
+        client = self._client_all_401()
+        with patch("httpx.Client", return_value=client):
+            assert detect_local_server_type("http://remote:8080/v1") is None
+            assert detect_local_server_type("http://remote:8080/v1") is None
+
+        # Second call served from the in-memory negative entry: the
+        # waterfall ran exactly once (5 GETs), not twice.
+        assert client.get.call_count == 5
+        assert "http://remote:8080" in model_metadata._endpoint_probe_path_cache
+
+    def test_negative_verdict_not_written_to_disk(self):
+        from agent.model_metadata import detect_local_server_type
+        from agent import model_metadata
+
+        with patch("httpx.Client", return_value=self._client_all_401()), patch.object(
+            model_metadata, "_local_probe_disk_put"
+        ) as disk_put:
+            assert detect_local_server_type("http://remote2:8080/v1") is None
+        disk_put.assert_not_called()
+
+    def test_negative_verdict_expires_quickly(self):
+        """The short failure TTL keeps a transient failure recoverable."""
+        import time as _time
+        from agent.model_metadata import detect_local_server_type
+        from agent import model_metadata
+
+        client = self._client_all_401()
+        with patch("httpx.Client", return_value=client):
+            assert detect_local_server_type("http://remote3:8080/v1") is None
+            # Age the entry past the failure TTL.
+            model_metadata._endpoint_probe_path_cache["http://remote3:8080"] = (
+                None,
+                _time.monotonic()
+                - model_metadata._ENDPOINT_PROBE_FAILURE_TTL_SECONDS
+                - 1,
+            )
+            assert detect_local_server_type("http://remote3:8080/v1") is None
+
+        assert client.get.call_count == 10  # waterfall re-ran after expiry
 
 

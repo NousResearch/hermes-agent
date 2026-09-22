@@ -15,9 +15,13 @@ jobs:
 
       - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
         with:
-          node-version: 22
+          node-version: 26
           cache: npm
           cache-dependency-path: website/package-lock.json
+
+      - name: grab npm 12
+        run: |
+          npm i -g npm@12
 
       - name: Install website dependencies
         uses: ./.github/actions/retry
@@ -40,10 +44,26 @@ jobs:
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py
 
+      - name: Committed skill docs match the generator
+        # GitHub renders the committed copies, so a regeneration that changes anything
+        # means the published catalogs/pages are stale. Fix: run the generator and commit.
+        run: |
+          git add -N website/docs website/sidebars.ts
+          if ! git diff --exit-code --stat -- website/docs website/sidebars.ts website/i18n; then
+            echo "::error::website/scripts/generate-skill-docs.py output differs from the committed docs; run it and commit the result"
+            exit 1
+          fi
+
+      - name: Check cross-page links resolve on GitHub and on the site
+        run: python3 website/scripts/check_doc_links.py
+
       - name: Lint docs diagrams
         run: npm run lint:diagrams
         working-directory: website
 
       - name: Build Docusaurus
-        run: npm run build
+        # Build only the default (en) locale in CI — the full bilingual
+        # build runs in deploy-site.yml on push-to-main / release.
+        # Same pattern Docusaurus uses internally (build:fast --locale en).
+        run: npm run build:fast
         working-directory: website

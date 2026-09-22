@@ -7,6 +7,8 @@ on.
 """
 from __future__ import annotations
 
+import asyncio
+import os
 import sys
 import time
 from pathlib import Path
@@ -25,7 +27,9 @@ from agent.lsp.servers import (
 MOCK_SERVER = str(Path(__file__).parent / "_mock_lsp_server.py")
 
 
-def _install_mock_server(monkeypatch, script: str = "errors", server_id: str = "pyright"):
+def _install_mock_server(
+    monkeypatch, script: str | list[str] = "errors", server_id: str = "pyright"
+):
     """Replace one registered server with a wrapper that spawns the mock.
 
     We reuse ``pyright`` so .py files route to it.  This keeps the
@@ -33,9 +37,13 @@ def _install_mock_server(monkeypatch, script: str = "errors", server_id: str = "
     """
     target_index = next(i for i, s in enumerate(SERVERS) if s.server_id == server_id)
     original = SERVERS[target_index]
+    scripts = [script] if isinstance(script, str) else script
+    spawn_count = {"value": 0}
 
     def _spawn(root: str, ctx: ServerContext) -> SpawnSpec:
-        env = {"MOCK_LSP_SCRIPT": script}
+        index = min(spawn_count["value"], len(scripts) - 1)
+        spawn_count["value"] += 1
+        env = {"MOCK_LSP_SCRIPT": scripts[index]}
         return SpawnSpec(
             command=[sys.executable, MOCK_SERVER],
             workspace_root=root,
@@ -55,7 +63,7 @@ def _install_mock_server(monkeypatch, script: str = "errors", server_id: str = "
     # Patch the SERVERS list element directly + restore on teardown.
     SERVERS[target_index] = replacement
 
-    yield
+    yield spawn_count
 
     SERVERS[target_index] = original
 
@@ -75,6 +83,95 @@ def mock_pyright(monkeypatch, tmp_path):
         next(gen)
     except StopIteration:
         pass
+
+
+@pytest.fixture
+def mock_pyright_silent(monkeypatch, tmp_path):
+    """Install the silent mock as ``pyright`` (never pushes diagnostics).
+
+    The silent server accepts the open but never publishes diagnostics
+    for the pre-edit content and rejects the pull channel, so the
+    baseline snapshot has to wait out its full budget — exactly the
+    slow-server shape from the wait_timeout report.
+    """
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "pyproject.toml").write_text("")
+    monkeypatch.chdir(str(repo))
+    gen = _install_mock_server(monkeypatch, "silent", "pyright")
+    next(gen)
+    yield repo
+    try:
+        next(gen)
+    except StopIteration:
+        pass
+
+
+def test_snapshot_baseline_honors_wait_timeout(mock_pyright_silent):
+    """``snapshot_baseline`` must wait at most ``lsp.wait_timeout``, not
+    the hardcoded client fallback of 5s.
+
+    Regression for the report that a 2s wait_timeout was ignored by the
+    baseline path: the wait ran without a timeout and fell back to
+    ``DIAGNOSTICS_DOCUMENT_WAIT`` (5s).  The silent mock never pushes,
+    so the elapsed time directly exposes the effective wait budget.
+    """
+    repo = mock_pyright_silent
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=2.0,
+        install_strategy="manual",
+    )
+    try:
+        start = time.monotonic()
+        svc.snapshot_baseline(str(f))
+        elapsed = time.monotonic() - start
+
+        # The wait is deadline-based: it always runs the full budget
+        # (never less than wait_timeout) and the server never pushes,
+        # so both bounds are stable under load.
+        assert elapsed >= 1.5, f"baseline returned before the wait budget: {elapsed:.2f}s"
+        assert elapsed < 4.5, (
+            f"baseline ignored wait_timeout=2.0 and ran the 5s fallback: {elapsed:.2f}s"
+        )
+        assert svc.get_status()["broken"] == []
+        # No fresh data pre-edit -> empty (never stale) baseline.
+        assert svc._delta_baseline[os.path.abspath(str(f))] == []
+    finally:
+        svc.shutdown()
+
+
+def test_snapshot_baseline_honors_wait_timeout_above_default(mock_pyright_silent):
+    """A ``wait_timeout`` above the 5s client default must also reach the
+    baseline wait (it was silently truncated to 5s), and the outer join
+    budget must scale with it so the slow-but-alive server is not marked broken.
+    """
+    repo = mock_pyright_silent
+    f = repo / "x.py"
+    f.write_text("print('hi')\n")
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=7.0,
+        install_strategy="manual",
+    )
+    try:
+        start = time.monotonic()
+        svc.snapshot_baseline(str(f))
+        elapsed = time.monotonic() - start
+
+        assert elapsed >= 6.5, f"baseline truncated to the 5s client default: {elapsed:.2f}s"
+        assert elapsed < 9.5, f"baseline overran the scaled join budget: {elapsed:.2f}s"
+        # A slow-but-alive server must not be marked broken.
+        assert svc.get_status()["broken"] == []
+    finally:
+        svc.shutdown()
 
 
 
@@ -102,6 +199,54 @@ def test_service_e2e_delta_filter(mock_pyright):
         assert new_diags == []
     finally:
         svc.shutdown()
+
+
+@pytest.mark.parametrize("failed_script", ["clean_eof", "malformed_frame"])
+def test_service_replaces_client_after_reader_failure(
+    tmp_path, monkeypatch, failed_script
+):
+    repo = tmp_path / "repo"
+    repo.mkdir()
+    (repo / ".git").mkdir()
+    (repo / "pyproject.toml").write_text("")
+    source = repo / "x.py"
+    source.write_text("print('hi')\n")
+    monkeypatch.chdir(str(repo))
+    server = _install_mock_server(
+        monkeypatch, [failed_script, "clean"], "pyright"
+    )
+    spawn_count = next(server)
+
+    svc = LSPService(
+        enabled=True,
+        wait_mode="document",
+        wait_timeout=0.5,
+        install_strategy="manual",
+    )
+    try:
+        async def _break_first_client():
+            client = await svc._get_or_spawn(str(source))
+            assert client is not None
+            reader_task = client._reader_task
+            assert reader_task is not None
+            await client.open_file(str(source), language_id="python")
+            await asyncio.wait_for(asyncio.shield(reader_task), timeout=3.0)
+            return client
+
+        first = svc._loop.run(_break_first_client(), timeout=5.0)
+        replacement = svc._loop.run(svc._get_or_spawn(str(source)), timeout=5.0)
+
+        assert not first.is_running
+        assert replacement is not None
+        assert replacement is not first
+        assert replacement.is_running
+        assert spawn_count["value"] == 2
+    finally:
+        svc.shutdown()
+        try:
+            next(server)
+        except StopIteration:
+            pass
 
 
 def test_service_e2e_delta_filter_with_line_shift(mock_pyright):

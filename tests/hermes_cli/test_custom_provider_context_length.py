@@ -8,7 +8,10 @@ from __future__ import annotations
 
 from unittest.mock import patch
 
-from hermes_cli.config import get_custom_provider_context_length
+from hermes_cli.config import (
+    get_custom_provider_context_length,
+    get_custom_provider_model_capability,
+)
 
 
 class TestGetCustomProviderContextLength:
@@ -47,6 +50,74 @@ class TestGetCustomProviderContextLength:
         assert get_custom_provider_context_length("m", "", [{"base_url": "", "models": {"m": {"context_length": 1}}}]) is None
         assert get_custom_provider_context_length("m", "http://x", None) is None
         assert get_custom_provider_context_length("m", "http://x", []) is None
+
+
+class TestGetCustomProviderModelCapability:
+    def test_matches_exact_model_on_normalized_route(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/anthropic/",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert get_custom_provider_model_capability(
+            "fable",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is True
+        assert get_custom_provider_model_capability(
+            "opus",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is None
+
+    def test_false_is_preserved_and_non_boolean_is_ignored(self):
+        custom = [
+            {
+                "base_url": "https://example.invalid/anthropic",
+                "models": {
+                    "disabled": {"prompt_caching": False},
+                    "invalid": {"prompt_caching": "true"},
+                },
+            }
+        ]
+
+        assert get_custom_provider_model_capability(
+            "disabled",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is False
+        assert get_custom_provider_model_capability(
+            "invalid",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is None
+
+    def test_capability_is_route_isolated(self):
+        """A declaration for one route must not apply to another route.
+
+        Guards normalize_route_base_url matching: if the URL comparison ever
+        regresses to a model-only (or hostname-only) shortcut, this pins the
+        failure.
+        """
+        custom = [
+            {
+                "base_url": "https://other.example.invalid/anthropic",
+                "models": {"fable": {"prompt_caching": True}},
+            }
+        ]
+
+        assert get_custom_provider_model_capability(
+            "fable",
+            "https://example.invalid/anthropic",
+            "prompt_caching",
+            custom,
+        ) is None
 
 
 
@@ -145,3 +216,28 @@ class TestContextProbeTiers:
             assert a > b, f"tiers must strictly descend, got {a} then {b}"
         # 128K is still a tier (users relying on it probe-down get there)
         assert 128_000 in CONTEXT_PROBE_TIERS
+
+
+def test_override_honored_when_caller_passes_no_custom_providers(tmp_path, monkeypatch):
+    """Step 0c must not be gated on the caller having loaded the route list: aux fallback screening,
+    CLI/TUI context estimators and gateway /status pass ``custom_providers=None`` (#69807)."""
+    from pathlib import Path
+
+    base_url, model, override = "https://cp-ctx-selfresolve.invalid/v1", "router/auto", 999_999
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.setattr(Path, "home", lambda: tmp_path)
+    (tmp_path / "config.yaml").write_text(
+        "custom_providers:\n"
+        "  - name: test-route\n"
+        f"    base_url: {base_url}\n"
+        "    key_env: TEST_FAKE_CONTEXT_ENV\n"
+        f"    model: {model}\n"
+        "    api_mode: chat_completions\n"
+        "    models:\n"
+        f"      {model}:\n"
+        f"        context_length: {override}\n",
+        encoding="utf-8",
+    )
+    from agent.model_metadata import get_model_context_length
+
+    assert get_model_context_length(model, base_url=base_url, api_key="", provider="custom") == override

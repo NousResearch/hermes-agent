@@ -7,6 +7,7 @@ import type { DesktopConnectionProbeResult } from '@/global'
 import { useI18n } from '@/i18n'
 import { deriveRemoteAuthProviderShape } from '@/lib/desktop-remote-auth'
 import { AlertCircle, Check, Loader2, LogIn } from '@/lib/icons'
+import { coerceRemoteUrlScheme } from '@/lib/remote-url'
 
 type AuthMode = 'oauth' | 'token'
 type ProbeStatus = 'idle' | 'probing' | 'done' | 'error'
@@ -36,7 +37,7 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
   const probeSeq = useRef(0)
   const testSeq = useRef(0)
 
-  const trimmedUrl = remoteUrl.trim()
+  const trimmedUrl = coerceRemoteUrlScheme(remoteUrl)
 
   const invalidateTest = useCallback(() => {
     testSeq.current += 1
@@ -258,7 +259,17 @@ export function FirstRunRemoteForm({ onBack }: FirstRunRemoteFormProps) {
           {probeStatus === 'error' ? (
             <div className="flex items-start gap-2 text-sm text-destructive">
               <AlertCircle className="mt-0.5 size-4 shrink-0" />
-              <span>{probe?.error || copy.probeError}</span>
+              <div className="min-w-0">
+                <span>{copy.probeError}</span>
+                {probe?.error ? (
+                  <details className="mt-1 text-xs text-muted-foreground">
+                    <summary className="cursor-pointer select-none">{copy.probeErrorDetails}</summary>
+                    <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem]">
+                      {probe.error}
+                    </pre>
+                  </details>
+                ) : null}
+              </div>
             </div>
           ) : null}
 

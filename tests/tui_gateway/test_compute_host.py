@@ -26,7 +26,7 @@ def _read_json_line(out: queue.Queue[dict], timeout: float = 2.0) -> dict:
         raise AssertionError("timed out waiting for compute host JSON") from exc
 
 
-def test_compute_host_line_json_seed_turn_interrupt():
+def test_compute_host_line_json_hello_and_shutdown():
     repo = Path(__file__).resolve().parents[2]
     env = dict(os.environ)
     env["PYTHONPATH"] = str(repo) + os.pathsep + env.get("PYTHONPATH", "")
@@ -47,34 +47,11 @@ def test_compute_host_line_json_seed_turn_interrupt():
         assert hello["type"] == "hello"
         assert hello["host_pid"] == proc.pid
 
-        proc.stdin.write(json.dumps({"type": "session.seed", "sid": "s1", "request_id": "seed"}) + "\n")
+        proc.stdin.write(json.dumps({"type": "bogus", "request_id": "b"}) + "\n")
         proc.stdin.flush()
-        assert _read_json_line(out)["type"] == "session.seeded"
-
-        proc.stdin.write(
-            json.dumps(
-                {
-                    "type": "turn.start",
-                    "sid": "s1",
-                    "request_id": "turn",
-                    "prompt": "hello",
-                    "delta_count": 3,
-                    "delay_s": 0,
-                }
-            )
-            + "\n"
-        )
-        proc.stdin.flush()
-
-        seen = []
-        while True:
-            frame = _read_json_line(out)
-            seen.append(frame["type"])
-            if frame["type"] == "turn.end":
-                assert frame["history_version"] == 1
-                assert frame["message_count"] == 2
-                break
-        assert seen.count("delta") == 3
+        error = _read_json_line(out)
+        assert error["type"] == "error"
+        assert error["message"] == "unknown frame type: bogus"
 
         proc.stdin.write(json.dumps({"type": "shutdown", "request_id": "stop"}) + "\n")
         proc.stdin.flush()

@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
+from hermes_platform.host import runtime as host_runtime
 from hermes_cli.clipboard import (
     save_clipboard_image,
     has_clipboard_image,
@@ -34,6 +35,8 @@ from hermes_cli.clipboard import (
     _windows_save,
     _windows_has_image,
     _convert_to_png,
+    _pipe_to_file,
+    _probe,
 )
 from cli import _should_auto_attach_clipboard_image_on_paste
 
@@ -54,6 +57,26 @@ class TestSaveClipboardImage:
             with patch("hermes_cli.clipboard._linux_save", return_value=False):
                 save_clipboard_image(dest)
         assert dest.parent.exists()
+
+
+class TestClipboardChildStdin:
+    def test_probe_uses_devnull_stdin(self):
+        with patch("hermes_cli.clipboard.subprocess.run") as mock_run:
+            mock_run.return_value = MagicMock(returncode=0)
+            assert _probe(["clipboard-tool"], 3, lambda result: result.returncode == 0)
+        assert mock_run.call_args.kwargs["stdin"] == subprocess.DEVNULL
+
+    def test_pipe_to_file_uses_devnull_stdin(self, tmp_path):
+        dest = tmp_path / "out.png"
+
+        def fake_run(_argv, **kwargs):
+            assert kwargs["stdin"] == subprocess.DEVNULL
+            kwargs["stdout"].write(FAKE_PNG)
+            return MagicMock(returncode=0)
+
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
+            assert _pipe_to_file(["clipboard-tool"], dest) is True
+        assert dest.read_bytes() == FAKE_PNG
 
 
 # ── macOS ────────────────────────────────────────────────────────────────
@@ -114,22 +137,51 @@ class TestMacosOsascript:
             assert _macos_osascript(dest) is False
 
 
+class TestMacosClipboardFileUrl:
+    """Finder / file-copy puts «class furl» on the clipboard, not PNGf/TIFF.
+
+    Other apps still paste the image; Hermes must treat a local image file-url
+    as a clipboard image too.
+    """
+
+    def _furl_run(self, src: Path):
+        def fake_run(cmd, **kw):
+            joined = " ".join(str(part) for part in cmd)
+            if "clipboard info" in joined:
+                return MagicMock(stdout="«class furl», 28", returncode=0)
+            if "«class furl»" in joined:
+                return MagicMock(stdout=f"{src}\n", returncode=0)
+            return MagicMock(stdout="", returncode=1)
+        return fake_run
+
+    @pytest.mark.parametrize("name, expected", [("shot.png", True), ("notes.txt", False)])
+    def test_only_copied_image_files_are_clipboard_images(self, tmp_path, name, expected):
+        src = tmp_path / name
+        src.write_bytes(FAKE_PNG)
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
+            assert _macos_has_image() is expected
+
+    def test_copied_image_file_saves_as_png(self, tmp_path):
+        src = tmp_path / "shot.png"
+        src.write_bytes(FAKE_PNG)
+        dest = tmp_path / "out.png"
+        with patch("hermes_cli.clipboard.subprocess.run", side_effect=self._furl_run(src)):
+            assert _macos_osascript(dest) is True
+        assert dest.read_bytes().startswith(b"\x89PNG")
+
+
 # ── WSL detection ────────────────────────────────────────────────────────
 
 class TestIsWsl:
     def setup_method(self):
-        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
-        # globals so this stays stable even if hermes_constants was imported
-        # through a different module object earlier in a large xdist run.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
+        # Reset the cache in the module that owns _is_wsl.
+        host_runtime._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
     def teardown_method(self):
         # Reset again after the test so we don't leak a cached value
         # (True/False) into whichever test the xdist worker runs next.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
+        host_runtime._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
     @pytest.mark.parametrize("content, expected", [
@@ -209,7 +261,10 @@ class TestWaylandHasImage:
 class TestWaylandSave:
     def test_png_extraction(self, tmp_path):
         dest = tmp_path / "out.png"
+        calls = []
+
         def fake_run(cmd, **kw):
+            calls.append(kw)
             if "--list-types" in cmd:
                 return MagicMock(stdout="image/png\ntext/plain\n", returncode=0)
             # Extract call — write fake data to stdout file
@@ -219,6 +274,7 @@ class TestWaylandSave:
         with patch("hermes_cli.clipboard.subprocess.run", side_effect=fake_run):
             assert _wayland_save(dest) is True
         assert dest.stat().st_size > 0
+        assert all(kwargs["stdin"] == subprocess.DEVNULL for kwargs in calls)
 
 
     def test_prefers_png_over_bmp(self, tmp_path):
@@ -284,8 +340,7 @@ class TestLinuxSave:
     """Test that _linux_save dispatches correctly to WSL → Wayland → X11."""
 
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
     def test_wsl_tried_first(self, tmp_path):
         dest = tmp_path / "out.png"
@@ -399,27 +454,30 @@ class TestConvertToPng:
 
 class TestHasClipboardImage:
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
+    @pytest.mark.macos_only
     def test_macos_dispatch(self):
-        with patch("hermes_cli.clipboard.sys") as mock_sys:
-            mock_sys.platform = "darwin"
-            with patch("hermes_cli.clipboard._macos_has_image", return_value=True) as m:
-                assert has_clipboard_image() is True
-                m.assert_called_once()
+        """Faking darwin selected the branch but left `_macos_has_image`'s real
+        facility (osascript) absent — only a real macOS host has it."""
+        with patch("hermes_cli.clipboard._macos_has_image", return_value=True) as m:
+            assert has_clipboard_image() is True
+            m.assert_called_once()
 
+    @pytest.mark.linux_only
     def test_wsl_falls_through_to_wayland_when_windows_path_empty(self):
-        """WSLg often bridges images to wl-paste even when powershell.exe check fails."""
-        with patch("hermes_cli.clipboard.sys") as mock_sys:
-            mock_sys.platform = "linux"
-            with patch("hermes_cli.clipboard._is_wsl", return_value=True):
-                with patch("hermes_cli.clipboard._wsl_has_image", return_value=False) as wsl:
-                    with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
-                        with patch("hermes_cli.clipboard._wayland_has_image", return_value=True) as wl:
-                            assert has_clipboard_image() is True
-                            wsl.assert_called_once()
-                            wl.assert_called_once()
+        """WSLg often bridges images to wl-paste even when powershell.exe check fails.
+
+        WSL is Linux, so the host reaches the fallthrough on its own; only the
+        WSL/Wayland environment probes below are stubbed.
+        """
+        with patch("hermes_cli.clipboard._is_wsl", return_value=True):
+            with patch("hermes_cli.clipboard._wsl_has_image", return_value=False) as wsl:
+                with patch.dict(os.environ, {"WAYLAND_DISPLAY": "wayland-0"}):
+                    with patch("hermes_cli.clipboard._wayland_has_image", return_value=True) as wl:
+                        assert has_clipboard_image() is True
+                        wsl.assert_called_once()
+                        wl.assert_called_once()
 
 
 # ═════════════════════════════════════════════════════════════════════════

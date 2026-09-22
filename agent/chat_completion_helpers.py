@@ -1561,6 +1561,12 @@ def _assistant_tool_call_dict(agent, tool_call, index: int) -> dict:
     if not isinstance(call_id, str) or not call_id.strip():
         call_id, _ = agent._split_responses_tool_id(raw_id)
     if not isinstance(call_id, str) or not call_id.strip():
+        # A Responses-shape tool call carries its item id in ``id`` (``fc_…``). Canonicalize it exactly
+        # like the tool-output side does, so both halves of the replayed pair derive ONE call_id: a raw
+        # ``fc_…`` left here makes strict providers reject the request ("No tool call found for tool
+        # output with call_id call_…"), which is non-retryable and sends the session to the fallback.
+        call_id = agent._canonical_call_id_from_fc(raw_id) or ""
+    if not isinstance(call_id, str) or not call_id.strip():
         if isinstance(raw_id, str) and raw_id.strip():
             call_id = raw_id.strip()
         else:

@@ -147,6 +147,7 @@ from agent.message_sanitization import (
     uniquify_tool_call_ids as _sanitize_uniquify_tool_call_ids,
 )
 from agent.codex_responses_adapter import (
+    _canonical_call_id_from_fc as _codex_canonical_call_id_from_fc,
     _derive_responses_function_call_id as _codex_derive_responses_function_call_id,
     _split_responses_tool_id as _codex_split_responses_tool_id,
     _summarize_user_message_for_log,
@@ -1239,6 +1240,7 @@ class AIAgent(
     _deterministic_call_id = staticmethod(_codex_deterministic_call_id)
     _split_responses_tool_id = staticmethod(_codex_split_responses_tool_id)
     _derive_responses_function_call_id = staticmethod(_codex_derive_responses_function_call_id)
+    _canonical_call_id_from_fc = staticmethod(_codex_canonical_call_id_from_fc)
 
     _interruptible_api_call = _forward("agent.chat_completion_helpers", "interruptible_api_call")
     _interruptible_streaming_api_call = _forward("agent.chat_completion_helpers", "interruptible_streaming_api_call")

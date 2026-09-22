@@ -1346,6 +1346,13 @@ def parse_available_output_tokens_from_error(error_msg: str) -> Optional[int]:
         r'supports at most\s+(\d+)\s*(?:completion\s+)?tokens',
         # Scaleway: "max_completion_tokens is limited to 16384 for glm-5.2".
         r'(?:max_tokens|max_completion_tokens) is limited to\s*(\d+)',
+        # Halogen: "max_tokens 8192 exceeds this server's cap of 4096 ... Raise it with
+        # --max-tokens-cap". The cap is server POLICY (batch-1), so the server reports its
+        # live value and the client must come down to it.
+        r"exceeds this server's cap of\s*(\d+)",
+        # Halogen: "max_tokens 8192 does not fit: prompt is 256689 tokens and the context is
+        # 262144, leaving room for 5455." -> available is the trailing "leaving room for N".
+        r'leaving room for\s*(\d+)',
         r'=\s*(\d+)\s*$',
     ):
         match = re.search(pattern, error_lower)
@@ -1402,6 +1409,9 @@ _OUTPUT_CAP_SIGNALS = (
     ("output limit",), ("maximum allowed number of output tokens",),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),  # Scaleway: "max_completion_tokens is limited to 16384 for <model>" (#67453)
+    # Halogen: cap de politica ("exceeds this server's cap of N") y hueco insuficiente
+    # ("leaving room for N"). Both name max_tokens as the binding constraint.
+    ("max_tokens", "cap of"), ("max_tokens", "leaving room for"),
 )
 _INPUT_OVERFLOW_SIGNALS = (
     "prompt is too long", "prompt too long", "input is too long", "input token",
@@ -1420,6 +1430,7 @@ _PARSEABLE_OUTPUT_CAP_SIGNALS = (
     ("output limit",), ("max_tokens", "maximum allowed number of output tokens"),
     ("max_tokens is too large", "supports at most"), ("tokens from the input messages", "tokens for the completion"),
     ("limited to",),
+    ("max_tokens", "cap of"), ("max_tokens", "leaving room for"),
 )
 
 

@@ -2,6 +2,7 @@ import pytest
 from agent.model_metadata import (
     is_output_cap_error,
     parse_available_output_tokens_from_error,
+    parse_context_limit_from_error,
 )
 
 
@@ -263,3 +264,35 @@ class TestParseOpenAiCompletionSplit:
                "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
         assert parse_available_output_tokens_from_error(msg) is None
         assert not is_output_cap_error(msg)
+
+
+class TestParseHalogenOutputCap:
+    """Halogen (peonist-ai flash-server) validates max_tokens BEFORE queueing on its single
+    batch-1 slot, and refuses with a 400 that names the figure. Two distinct wordings, both
+    unrecognised, so the client never stepped its budget down and every turn with a large
+    prompt failed outright.
+
+    The cap one is policy (the server's own live value); the fit one is physics
+    (context - measured prompt). Either way the fix is a smaller max_tokens for this call,
+    never compression: the input itself fits.
+    """
+
+    def test_cap_wording_reports_the_server_cap(self):
+        msg = ("max_tokens 8192 exceeds this server's cap of 4096. The cap is server policy, "
+               "not a model limit: halogen is batch-1, so one long request holds the GPU for "
+               "its whole run and every other client queues behind it. Raise it with "
+               "--max-tokens-cap; /health reports the live value as max_tokens_cap.")
+        assert is_output_cap_error(msg)
+        assert parse_available_output_tokens_from_error(msg) == 4096
+
+    def test_fit_wording_reports_the_remaining_room(self):
+        msg = ("max_tokens 8192 does not fit: prompt is 256689 tokens and the context is "
+               "262144, leaving room for 5455.")
+        assert is_output_cap_error(msg)
+        assert parse_available_output_tokens_from_error(msg) == 5455
+
+    def test_neither_wording_is_mistaken_for_an_input_overflow(self):
+        # The input fits in both; compressing would be the wrong recovery.
+        assert parse_context_limit_from_error(
+            "max_tokens 8192 does not fit: prompt is 256689 tokens and the context is "
+            "262144, leaving room for 5455.") is None

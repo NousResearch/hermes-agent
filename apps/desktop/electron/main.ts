@@ -10543,7 +10543,8 @@ async function effectiveSshConfigFingerprint(sshConfig) {
   }
 
   args.push('--', sshConfig.user ? `${sshConfig.user}@${sshConfig.host}` : sshConfig.host)
-  const output = await execText(ssh, args, { timeout: 10_000 })
+  // Windows OpenSSH hangs when `ssh -G` receives an ended stdin pipe (#118983).
+  const output = await execText(ssh, args, { timeout: 10_000, keepStdinOpen: true })
 
   return crypto.createHash('sha256').update(output).digest('hex')
 }

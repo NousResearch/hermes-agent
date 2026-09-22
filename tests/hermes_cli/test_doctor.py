@@ -76,6 +76,22 @@ class TestProviderEnvDetection:
         content = "TERMINAL_ENV=local\n"
         assert not _has_provider_env_config(content)
 
+    def test_remote_base_url_without_any_key_fails(self):
+        content = "OPENAI_BASE_URL=https://openrouter.ai/api/v1\nTERMINAL_ENV=local\n"
+        assert not _has_provider_env_config(content)
+
+    def test_local_endpoint_without_key_still_counts(self):
+        content = "OPENAI_BASE_URL=http://localhost:1234/v1\n"
+        assert _has_provider_env_config(content)
+
+    def test_commented_out_key_is_not_a_credential(self):
+        content = "# OPENROUTER_API_KEY=sk-old\nACTUAL_BASE_URL=https://actual.local\n"
+        assert not _has_provider_env_config(content)
+
+    def test_empty_key_value_is_not_a_credential(self):
+        content = "OPENROUTER_API_KEY=\n"
+        assert not _has_provider_env_config(content)
+
 
 class TestDoctorToolAvailabilitySummary:
     def test_missing_api_key_summary_ignores_disabled_toolsets(self, monkeypatch):

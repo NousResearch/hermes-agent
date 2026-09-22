@@ -11,10 +11,54 @@ from hermes_cli.doctor_report import (
 )
 
 
+def _env_assignments(content: str) -> dict[str, str]:
+    """``{VAR: value}`` for the assignments a dotenv file actually declares.
+
+    Comments (`# OPENROUTER_API_KEY=...`) and bare mentions inside a value must
+    not count: the file is parsed, not substring-matched.
+    """
+    assignments: dict[str, str] = {}
+    for line in content.splitlines():
+        stripped = line.strip()
+        if not stripped or stripped.startswith("#") or "=" not in stripped:
+            continue
+        name, _, value = stripped.partition("=")
+        name = name.strip().removeprefix("export ").strip()
+        if name:
+            assignments[name] = value.strip().strip("'\"")
+    return assignments
+
+
 def _has_provider_env_config(content: str) -> bool:
-    """Return True when ~/.hermes/.env contains provider auth/base URL settings."""
+    """Return True when ~/.hermes/.env contains provider auth/base URL settings.
+
+    A hosted provider configured with only a base URL has nothing to
+    authenticate with, so a remote base-URL hint alone must not pass the row
+    green while every turn dies on an empty credential pool. A local/loopback
+    endpoint needs no key and still counts, as does any API-key hint.
+    """
     from hermes_cli.doctor import _PROVIDER_ENV_HINTS
-    return any(key in content for key in _PROVIDER_ENV_HINTS)
+
+    assignments = _env_assignments(content)
+    if any(
+        name in assignments and assignments[name]
+        for name in _PROVIDER_ENV_HINTS
+        if not name.endswith("_BASE_URL")
+    ):
+        return True
+
+    loopback_hosts = {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+    for name, value in assignments.items():
+        if name.endswith("_BASE_URL") and name in _PROVIDER_ENV_HINTS and value:
+            try:
+                from urllib.parse import urlparse
+
+                host = (urlparse(value).hostname or "").lower().rstrip(".")
+                if host in loopback_hosts:
+                    return True
+            except Exception:
+                continue
+    return False
 
 
 # Legacy config keys still read for back-compat: warn-only with the modern replacement, never auto-migrated

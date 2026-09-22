@@ -371,16 +371,19 @@ Declarative plugins are symlinked with a `nix-managed-` prefix — they coexist 
 
 ```bash
 hermes plugins                               # unified interactive UI
-hermes plugins list                          # table: enabled / disabled / not enabled
+hermes plugins list                          # table: enabled / disabled / not enabled (bundled backends,
+                                             # platforms and the live memory.provider count as enabled)
 hermes plugins search <term>                 # search the Hermes plugin catalog
 hermes plugins install <name>                # install a catalog entry (repo @ reviewed pinned SHA)
 hermes plugins install user/repo             # install from Git, then prompt Enable? [y/N]
 hermes plugins install user/repo --enable    # install AND enable (no prompt)
 hermes plugins install user/repo --no-enable # install but leave disabled (no prompt)
 hermes plugins update my-plugin              # pull latest (local edits are autostashed and re-applied)
-hermes plugins remove my-plugin              # uninstall
+hermes plugins remove my-plugin              # uninstall; also drops it from plugins.enabled/disabled/entries
+                                             # and resets memory.provider when it was the live provider
 hermes plugins enable my-plugin              # add to allow-list
-hermes plugins disable my-plugin             # remove from allow-list + add to disabled
+hermes plugins disable my-plugin             # remove from allow-list + add to disabled (bundled platforms:
+                                             # either spelling works, e.g. photon-platform or platforms/photon)
 hermes plugins capabilities [my-plugin]      # declared vs granted capabilities
 ```
 

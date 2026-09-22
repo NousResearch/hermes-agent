@@ -349,6 +349,12 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
     assert client_kwargs[0]["timeout"] == hub._DEFAULT_HTTP_TIMEOUT
     assert client_kwargs[0]["follow_redirects"] is False
 
+    # Install runs the same resolve + fetch sequence (plus the per-file fan-out) and must pool too.
+    clients.clear()
+    monkeypatch.setattr(cli_hub, "_resolve_url_bundle_name", lambda *_a, **_k: False)
+    cli_hub.do_install("example/id", console=Console(file=StringIO()))
+    assert len(clients) == 1
+
 
 
 

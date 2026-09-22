@@ -748,3 +748,6 @@ def test_delivery_env_carries_only_the_given_author(monkeypatch):
     assert "HERMES_SESSION_ID" not in env
     assert "HERMES_SESSION_PROFILE" not in env
     assert env["HERMES_SESSION_STALL_TIMEOUT"] == "97"
+    # The same delivery environment is used by the local runner and the relay
+    # receiver, so both finite workers retain durable Bot Chat skill authoring.
+    assert env["HERMES_PERSISTENT_BOT_CHAT_DELIVERY"] == "1"

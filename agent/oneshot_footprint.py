@@ -20,6 +20,14 @@ from typing import Any, Dict, Iterable, List
 
 ONESHOT_HIDDEN_TOOLS = frozenset({"skill_manage"})
 
+# A Bot Mode DM is executed by a finite ``-Q`` worker, but its target is the
+# profile's durable canonical Bot Chat. Keep the marker separate from the
+# single-query marker: approval and session-source policy must remain those of
+# the unattended worker; only the disposable skill-authoring restriction is
+# inapplicable. ``tools.bot_relay.delivery_env`` sets it for local and relay
+# delivery workers.
+PERSISTENT_BOT_CHAT_DELIVERY_ENV = "HERMES_PERSISTENT_BOT_CHAT_DELIVERY"
+
 
 def is_single_query_session() -> bool:
     """The finite ``-q`` marker, read through the session env so gateway-bound sessions never see it."""
@@ -31,10 +39,23 @@ def is_single_query_session() -> bool:
     return str(get_session_env("HERMES_SINGLE_QUERY_SESSION", "") or "") == "1"
 
 
+def has_disposable_skill_authoring_restrictions() -> bool:
+    """Whether a finite turn lacks a persistent Bot Chat to retain skill work."""
+    try:
+        from gateway.session_context import get_session_env
+    except Exception:
+        import os
+        get_session_env = os.environ.get
+    return (
+        is_single_query_session()
+        and str(get_session_env(PERSISTENT_BOT_CHAT_DELIVERY_ENV, "") or "") != "1"
+    )
+
+
 def prune_oneshot_tools(tools: Iterable[Dict[str, Any]]) -> List[Dict[str, Any]]:
     """*tools* minus ``ONESHOT_HIDDEN_TOOLS``; identity when the session is not one-shot."""
     tools = list(tools)
-    if not is_single_query_session():
+    if not has_disposable_skill_authoring_restrictions():
         return tools
     return [t for t in tools if (t.get("function") or {}).get("name") not in ONESHOT_HIDDEN_TOOLS]
 

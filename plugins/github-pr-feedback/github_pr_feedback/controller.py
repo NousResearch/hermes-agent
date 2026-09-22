@@ -1546,7 +1546,9 @@ class ScanController:
                     self._policy.local_ci_audit is not None
                     and self._policy.local_ci_audit.applies_to(repository)
                 ):
-                    if base_refresh_pending:
+                    if pull_request.is_draft:
+                        skipped["local_ci_draft_pr"] += 1
+                    elif base_refresh_pending:
                         pass
                     elif feedback_pending:
                         skipped["feedback_pending"] += 1
@@ -1759,6 +1761,8 @@ class ScanController:
         audit_policy = self._policy.local_ci_audit
         if audit_policy is None or not audit_policy.applies_to(current.base_repository):
             return "local_ci_disabled"
+        if current.is_draft:
+            return "draft_pr"
         try:
             if not audit_policy.required_for_open_prs:
                 checks = (
@@ -1865,6 +1869,8 @@ class ScanController:
         admission = self._policy.admit_pull_request(current)
         if not admission.admitted or admission.target is None:
             return admission.reason or "not_admitted"
+        if current.is_draft:
+            return "draft_pr"
         if current.head_sha.casefold() != audit.identity.head_sha:
             return "head_changed"
         if current.base_sha is None or current.base_sha.casefold() != audit.identity.base_sha:
@@ -1961,6 +1967,8 @@ class ScanController:
         audit_policy = self._policy.local_ci_audit
         if audit_policy is None:
             return "local_ci_disabled"
+        if current is not None and current.is_draft:
+            return "draft_pr"
         if current is None:
             try:
                 current = self._github.get_pull_request(
@@ -1971,6 +1979,8 @@ class ScanController:
         admission = self._policy.admit_pull_request(current)
         if not admission.admitted or admission.target is None:
             return admission.reason or "not_admitted"
+        if current.is_draft:
+            return "draft_pr"
         if current.head_sha != listed.head_sha:
             return "head_changed"
         from .ci_admission import local_ci_admission_blocker
@@ -2825,7 +2835,7 @@ def _required_local_ci_backlog_count(
     admitted = tuple(
         pull
         for pull in pull_requests
-        if policy.admit_pull_request(pull).admitted
+        if policy.admit_pull_request(pull).admitted and not pull.is_draft
     )
     if not admitted:
         return 0
@@ -2889,7 +2899,7 @@ def _select_local_ci_candidates(
 
     backlog: list[tuple[PullRequest, int, datetime, int]] = []
     for pull in pull_requests:
-        if not policy.admit_pull_request(pull).admitted:
+        if pull.is_draft or not policy.admit_pull_request(pull).admitted:
             continue
         if _has_current_passed_ci_receipt(ledger, target, pull):
             continue

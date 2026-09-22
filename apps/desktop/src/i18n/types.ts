@@ -1738,6 +1738,19 @@ export interface Translations {
     durationSeconds: (seconds: string) => string
     durationMinutes: (minutes: number, seconds: number) => string
     tokens: (value: number | string) => string
+    taskOverviewTitle: string
+    taskOverviewSubtitle: string
+    taskOverviewEmpty: string
+    taskOverviewEmptyDesc: string
+    taskOverviewDismiss: string
+    taskOverviewCancel: string
+    taskOverviewCancelled: string
+    taskOverviewProgress: (done: number, total: number) => string
+    taskOverviewShowDone: (count: number) => string
+    taskOverviewHideDone: string
+    backgroundTitle: string
+    backgroundStop: string
+    backgroundDismiss: string
   }
 
   commandCenter: {

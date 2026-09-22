@@ -2178,7 +2178,20 @@ export const zh = defineLocale({
     ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokens: value => `${value} 词元`
+    tokens: value => `${value} 词元`,
+    taskOverviewTitle: '任务总览',
+    taskOverviewSubtitle: '本窗口中打开过的所有会话的待办清单。',
+    taskOverviewEmpty: '暂无追踪中的任务',
+    taskOverviewEmptyDesc: '当会话追踪待办清单时，其进度会显示在这里。',
+    taskOverviewDismiss: '从此面板隐藏',
+    taskOverviewCancel: '取消此任务',
+    taskOverviewCancelled: '已取消',
+    taskOverviewProgress: (done, total) => `${done}/${total}`,
+    taskOverviewShowDone: count => `显示另外 ${count} 个已完成`,
+    taskOverviewHideDone: '隐藏已完成',
+    backgroundTitle: '后台进程',
+    backgroundStop: '停止',
+    backgroundDismiss: '隐藏'
   },
 
   commandCenter: {

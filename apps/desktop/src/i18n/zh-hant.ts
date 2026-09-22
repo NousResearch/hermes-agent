@@ -1667,7 +1667,20 @@ export const zhHant = defineLocale({
     ageDays: days => `${days} 天前`,
     durationSeconds: seconds => `${seconds} 秒`,
     durationMinutes: (minutes, seconds) => `${minutes} 分 ${seconds} 秒`,
-    tokens: value => `${value} 詞元`
+    tokens: value => `${value} 詞元`,
+    taskOverviewTitle: '任務總覽',
+    taskOverviewSubtitle: '本視窗中所開啟的所有工作階段的待辦清單。',
+    taskOverviewEmpty: '尚無追蹤中的任務',
+    taskOverviewEmptyDesc: '當工作階段追蹤待辦清單時，其進度會顯示於此。',
+    taskOverviewDismiss: '從此面板隱藏',
+    taskOverviewCancel: '取消此任務',
+    taskOverviewCancelled: '已取消',
+    taskOverviewProgress: (done, total) => `${done}/${total}`,
+    taskOverviewShowDone: count => `顯示另外 ${count} 個已完成`,
+    taskOverviewHideDone: '隱藏已完成',
+    backgroundTitle: '背景處理程序',
+    backgroundStop: '停止',
+    backgroundDismiss: '隱藏'
   },
 
   commandCenter: {

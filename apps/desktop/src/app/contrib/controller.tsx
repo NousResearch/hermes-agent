@@ -44,11 +44,12 @@ import { registry } from '@/contrib/registry'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { LocalizedTabTitle, translateNow } from '@/i18n'
 import { NEW_SESSION_TITLE, sessionTitle as storedSessionTitle } from '@/lib/chat-runtime'
-import { Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Users, Zap } from '@/lib/icons'
+import { Cpu, Download, FileText, LayoutDashboard, PanelBottom, PanelTop, Terminal, Upload, Users, Zap } from '@/lib/icons'
 import { type KeybindContribution, KEYBINDS_AREA } from '@/lib/keybinds/actions'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { TRANSCRIPT_DIRECTIVE_AREA, type TranscriptDirectiveContribution } from '@/lib/transcript-directives'
 import { setYoloEnabled } from '@/lib/yolo-session'
+import { $agentsPanelOpen } from '@/store/agents-panel'
 import {
   $fileBrowserOpen,
   $panesFlipped,
@@ -78,6 +79,7 @@ import { watchUnreadWriteGuard } from '@/store/session-unread-remote'
 import { $statusbarVisible } from '@/store/statusbar-prefs'
 import { isBrowserWindow, isHudWindow } from '@/store/windows'
 
+import { AgentsPanelContent } from '../agents'
 import { BrowserPopoutShell } from '../chat/browser-popout-shell'
 import type { SessionDragPayload } from '../chat/composer/inline-refs'
 import { watchPreviewTiles } from '../chat/preview-tile'
@@ -622,6 +624,62 @@ registry.register(
     keywords: ['terminal', 'shell', 'console', 'pty'],
     get: () => isPaneVisible('terminal'),
     set: () => togglePaneVisible('terminal')
+  })
+)
+
+// Agents panel is ⌘K/statusbar-summon chrome, mirroring Logs below, but its
+// open state is PERSISTED (unlike Logs) — see store/agents-panel.ts. Default
+// true, so a fresh boot shows it automatically; once the user closes it, that
+// choice is remembered across restarts exactly like Files/Review. The
+// statusbar "Agents" button / palette toggle / ⌘⇧A keybind are the doors in;
+// tab ✕ / ⌘W / the toggle itself remove it again.
+let unregisterAgentsPane: (() => void) | null = null
+
+const syncAgentsPane = (open: boolean) => {
+  if (open) {
+    unregisterAgentsPane ??= registry.register({
+      id: 'agents',
+      area: 'panes',
+      title: 'agents',
+      // Right sidebar, docked beside the workspace like Files/Review — a
+      // live-agent view is exactly that kind of secondary-glance pane.
+      data: {
+        placement: 'right',
+        collapsible: true,
+        dock: { pane: 'workspace', pos: 'right' },
+        width: FILE_BROWSER_DEFAULT_WIDTH,
+        minWidth: FILE_BROWSER_MIN_WIDTH,
+        maxWidth: FILE_BROWSER_MAX_WIDTH
+      },
+      render: () => idle(<AgentsPanelContent />)
+    })
+    revealTreePane('agents')
+  } else {
+    unregisterAgentsPane?.()
+    unregisterAgentsPane = null
+
+    const tree = $layoutTree.get()
+
+    if (tree && allPaneIds(tree).includes('agents')) {
+      removeTreePane('agents')
+    }
+  }
+}
+
+markCollapsePane('agents')
+registerPaneCloser('agents', () => $agentsPanelOpen.set(false))
+registerPaneOpener('agents', () => $agentsPanelOpen.set(true))
+syncAgentsPane($agentsPanelOpen.get())
+$agentsPanelOpen.listen(syncAgentsPane)
+
+registry.register(
+  paletteToggle({
+    id: 'agents.toggle',
+    label: 'Toggle agents panel',
+    icon: Cpu,
+    keywords: ['agents', 'subagents', 'delegation', 'hubot'],
+    get: () => isPaneVisible('agents'),
+    set: () => togglePaneVisible('agents')
   })
 )
 

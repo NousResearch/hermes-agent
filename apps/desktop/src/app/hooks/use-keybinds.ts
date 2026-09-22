@@ -21,6 +21,7 @@ import { contributedKeybindHandler, PROFILE_SLOT_COUNT, SESSION_SLOT_COUNT } fro
 import { handleApprovalKey, releaseApprovalKey } from '@/lib/keybinds/approval-keys'
 import { actionAllowedInInput, comboFromEvent, isEditableTarget } from '@/lib/keybinds/combo'
 import { composerFocusKeysAllowed, isComposerFocusSoftCombo, typeToFocusChar } from '@/lib/keybinds/composer-focus-keys'
+import { toggleAgentsPanel } from '@/store/agents-panel'
 import { openWorktreeDialog } from '@/store/coding-status'
 import { $commandPaletteOpen, openCommandPalettePage, toggleCommandPalette } from '@/store/command-palette'
 import {
@@ -74,7 +75,7 @@ import { handleWindowPaste } from '../chat/composer/paste-to-focus'
 import { openSession } from '../open-session'
 import {
   $workspaceIsPage,
-  AGENTS_ROUTE,
+
   ARTIFACTS_ROUTE,
   CAPABILITIES_ROUTE,
   CRON_ROUTE,
@@ -215,7 +216,7 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     'nav.messaging': () => navigateToWorkspacePage(navigate, MESSAGING_ROUTE),
     'nav.artifacts': () => navigateToWorkspacePage(navigate, ARTIFACTS_ROUTE),
     'nav.cron': () => navigate(CRON_ROUTE),
-    'nav.agents': () => navigate(AGENTS_ROUTE),
+    'nav.agents': () => toggleAgentsPanel(),
 
     'session.new': () => {
       // Match the sidebar New Session button. A plain keyboard new chat should

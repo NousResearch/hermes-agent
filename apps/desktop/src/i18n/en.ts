@@ -2025,7 +2025,20 @@ export const en: Translations = {
     ageDays: days => `${days}d ago`,
     durationSeconds: seconds => `${seconds}s`,
     durationMinutes: (minutes, seconds) => `${minutes}m ${seconds}s`,
-    tokens: value => `${value} tok`
+    tokens: value => `${value} tok`,
+    taskOverviewTitle: 'Task overview',
+    taskOverviewSubtitle: 'Todo lists across every session touched this window.',
+    taskOverviewEmpty: 'No tracked tasks yet',
+    taskOverviewEmptyDesc: 'When a session tracks a todo list, its progress appears here.',
+    taskOverviewDismiss: 'Dismiss from this panel',
+    taskOverviewCancel: 'Cancel this task',
+    taskOverviewCancelled: 'Cancelled',
+    taskOverviewProgress: (done, total) => `${done}/${total}`,
+    taskOverviewShowDone: count => `Show ${count} more finished`,
+    taskOverviewHideDone: 'Hide finished',
+    backgroundTitle: 'Background processes',
+    backgroundStop: 'Stop',
+    backgroundDismiss: 'Dismiss'
   },
 
   commandCenter: {

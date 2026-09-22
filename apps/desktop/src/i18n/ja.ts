@@ -1658,7 +1658,20 @@ export const ja = defineLocale({
     ageDays: days => `${days}日前`,
     durationSeconds: seconds => `${seconds}秒`,
     durationMinutes: (minutes, seconds) => `${minutes}分 ${seconds}秒`,
-    tokens: value => `${value} トーク`
+    tokens: value => `${value} トーク`,
+    taskOverviewTitle: 'タスク概要',
+    taskOverviewSubtitle: 'このウィンドウで確認したすべてのセッションのToDoリストです。',
+    taskOverviewEmpty: '追跡中のタスクはありません',
+    taskOverviewEmptyDesc: 'セッションがToDoリストを追跡すると、ここに進捗が表示されます。',
+    taskOverviewDismiss: 'このパネルから非表示にする',
+    taskOverviewCancel: 'このタスクをキャンセル',
+    taskOverviewCancelled: 'キャンセル済み',
+    taskOverviewProgress: (done, total) => `${done}/${total}`,
+    taskOverviewShowDone: count => `完了済みをさらに${count}件表示`,
+    taskOverviewHideDone: '完了済みを非表示',
+    backgroundTitle: 'バックグラウンド処理',
+    backgroundStop: '停止',
+    backgroundDismiss: '非表示'
   },
 
   commandCenter: {

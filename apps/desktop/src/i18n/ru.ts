@@ -1828,7 +1828,20 @@ export const ru = defineLocale({
     ageDays: days => `${days}д назад`,
     durationSeconds: seconds => `${seconds}с`,
     durationMinutes: (minutes, seconds) => `${minutes}м ${seconds}с`,
-    tokens: value => `${value} ток`
+    tokens: value => `${value} ток`,
+    taskOverviewTitle: 'Обзор задач',
+    taskOverviewSubtitle: 'Списки дел по всем сессиям, открытым в этом окне.',
+    taskOverviewEmpty: 'Пока нет отслеживаемых задач',
+    taskOverviewEmptyDesc: 'Когда сессия отслеживает список дел, его прогресс появится здесь.',
+    taskOverviewDismiss: 'Скрыть из этой панели',
+    taskOverviewCancel: 'Отменить эту задачу',
+    taskOverviewCancelled: 'Отменено',
+    taskOverviewProgress: (done, total) => `${done}/${total}`,
+    taskOverviewShowDone: count => `Показать ещё ${count} завершённых`,
+    taskOverviewHideDone: 'Скрыть завершённые',
+    backgroundTitle: 'Фоновые процессы',
+    backgroundStop: 'Остановить',
+    backgroundDismiss: 'Скрыть'
   },
   commandCenter: {
     close: 'Закрыть командный центр',

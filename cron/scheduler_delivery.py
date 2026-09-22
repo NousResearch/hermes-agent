@@ -220,16 +220,12 @@ def _maybe_mirror_cron_delivery(
         return
     try:
         from gateway.mirror import mirror_to_session
-        # USER role + labelled prefix, NOT assistant: an assistant-role mirror lands
-        # assistant→assistant and breaks strict alternation; consecutive user turns merge safely.
-        # The brief is not the agent speaking; an assistant-role mirror lands as assistant→assistant after
-        # the agent's last turn and breaks strict alternation (issue #2221, the exact failure #2313
-        # removed). A user-role turn collapses safely via repair_message_sequence's consecutive-user merge
-        # on every provider, and the prefix preserves the "this came from cron" context that the dropped
-        # SQLite mirror metadata would otherwise lose on replay.
+        # The delivery is Hermes's response, not a message from the person
+        # who scheduled the job. Keep the label because SQLite replay drops
+        # mirror metadata, but persist the message with its actual speaker.
         ok = mirror_to_session(
             platform_name, str(chat_id), _cron_mirror_message(job, text),
-            source_label="cron", thread_id=thread_id, user_id=user_id, role="user")
+            source_label="cron", thread_id=thread_id, user_id=user_id, role="assistant")
         if ok:
             logger.info(
                 "Job '%s': mirrored delivery into %s:%s session transcript",
@@ -281,7 +277,7 @@ def _seed_cron_session(
     chat_type: str, user_id: Optional[str], user_name: Optional[str] = None,
     chat_name: Optional[str], scope_id: Optional[str], discord_keys_on_thread: bool = False,
 ) -> bool:
-    """Create the session row (so the mirror has a target) and mirror the brief as a USER turn.
+    """Create the session row (so the mirror has a target) and mirror the brief as an assistant turn.
     The seeded key must equal the reply's ``build_session_key``: chat_type, user_id, thread_id and
     scope_id (Slack team id) are all part of it, so callers pass exactly what the reply carries."""
     from gateway.config import Platform
@@ -313,7 +309,7 @@ def _seed_cron_session(
             seeded_session_id = getattr(_entry, "session_id", None)
     return mirror_to_session(
         platform_name, str(chat_id), _cron_mirror_message(job, text),
-        source_label="cron", thread_id=thread_id, user_id=user_id, role="user",
+        source_label="cron", thread_id=thread_id, user_id=user_id, role="assistant",
         session_id=seeded_session_id,
     )
 

@@ -209,7 +209,7 @@ class TestFallbackMirrorEndToEnd:
             "home-channel session (the reply-continuity bug)"
         )
         assert slack_env["mirror"][0]["chat_id"] == "D0HOME"
-        assert slack_env["mirror"][0]["role"] == "user"
+        assert slack_env["mirror"][0]["role"] == "assistant"
 
     def test_all_broadcast_does_not_mirror(self, slack_env):
         job = {"id": "j2", "name": "cast", "deliver": "all", "origin": None}

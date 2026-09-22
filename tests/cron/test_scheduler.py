@@ -2352,11 +2352,10 @@ class TestCronDeliveryMirror:
     """
 
 
-    def test_mirror_writes_user_role_with_label_not_assistant(self):
-        """Regression for #2221 / #2313: the cron brief must mirror as a USER
-        turn (with a [Cron delivery: ...] label), NOT assistant — an
-        assistant-role mirror lands as assistant->assistant after the agent's
-        last turn and breaks strict alternation on non-Anthropic providers."""
+    def test_mirror_writes_assistant_role_with_label(self):
+        """A delivered cron brief is an agent response, not a message from
+        the job's operator. Persist it as an assistant turn so a later reply
+        is addressed to the human who actually sent it."""
         from cron.scheduler_delivery import _maybe_mirror_cron_delivery
 
         with patch("gateway.mirror.mirror_to_session", return_value=True) as m:
@@ -2366,7 +2365,7 @@ class TestCronDeliveryMirror:
             )
         m.assert_called_once()
         args, kwargs = m.call_args
-        assert kwargs.get("role") == "user", "cron mirror must be a user turn, not assistant"
+        assert kwargs.get("role") == "assistant", "cron mirror must be an assistant turn"
         # The brief text is prefixed with a human-readable cron-delivery label
         # so replay (where the mirror metadata is dropped at the SQLite
         # boundary) still distinguishes it from a genuine user message.

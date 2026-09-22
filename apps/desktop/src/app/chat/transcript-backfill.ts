@@ -68,9 +68,11 @@ export function mergeOlderTranscriptPage(existing: ChatMessage[], olderPage: Cha
  * pages. Background refreshes and post-turn rehydrates re-read only the
  * newest page; replacing the store with that page outright would silently
  * drop everything "Show earlier" already loaded. Find where the refreshed
- * tail begins inside the previous transcript and keep the older prefix.
- * When no anchor is found (compaction rewrite, different session), the
- * refreshed tail is authoritative — same behavior as before backfill existed.
+ * tail begins inside the previous transcript and keep the older prefix. A
+ * stale response can have no anchor after retention has released older rows;
+ * in that case, retain the existing rows and add only durable rows absent from
+ * the store. Compaction is reconciled by its explicit resume path rather than
+ * this generic tail refresh.
  */
 export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
   if (refreshedTail.length === 0 || previous.length === 0) {
@@ -86,7 +88,42 @@ export function graftRefreshedTailOntoBackfill(refreshedTail: ChatMessage[], pre
   )
 
   if (anchor <= 0) {
-    return refreshedTail
+    const previousRowIds = new Set<number>()
+    const previousIds = new Set<string>()
+    const refreshedRowIds = new Set<number>()
+    const refreshedIds = new Set<string>()
+
+    for (const message of previous) {
+      if (message.rowId !== undefined) {
+        previousRowIds.add(message.rowId)
+      }
+
+      previousIds.add(message.id)
+    }
+
+    for (const message of refreshedTail) {
+      if (message.rowId !== undefined) {
+        refreshedRowIds.add(message.rowId)
+      }
+
+      refreshedIds.add(message.id)
+    }
+
+    // A page that covers every retained row is a complete authoritative tail.
+    if (
+      previous.every(
+        message =>
+          (message.rowId !== undefined && refreshedRowIds.has(message.rowId)) || refreshedIds.has(message.id)
+      )
+    ) {
+      return refreshedTail
+    }
+
+    const fresh = refreshedTail.filter(
+      message => !(message.rowId !== undefined && previousRowIds.has(message.rowId)) && !previousIds.has(message.id)
+    )
+
+    return fresh.length === 0 ? previous : [...previous, ...fresh]
   }
 
   return [...previous.slice(0, anchor), ...refreshedTail]

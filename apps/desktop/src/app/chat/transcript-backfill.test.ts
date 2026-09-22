@@ -144,11 +144,13 @@ describe('graftRefreshedTailOntoBackfill', () => {
     expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(m => m.rowId)).toEqual([1, 2, 3, 4])
   })
 
-  it('returns the refreshed tail unchanged when no anchor is found', () => {
+  it('keeps retained rows and appends a stale unanchored tail', () => {
     const previous = [chat('x', 90), chat('y', 91), chat('z', 92)]
     const refreshed = [chat('p', 200), chat('q', 201)]
 
-    expect(graftRefreshedTailOntoBackfill(refreshed, previous)).toBe(refreshed)
+    expect(graftRefreshedTailOntoBackfill(refreshed, previous).map(message => message.rowId)).toEqual([
+      90, 91, 92, 200, 201
+    ])
   })
 
   it('returns the refreshed tail when it is not shorter than the previous transcript', () => {

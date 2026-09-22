@@ -522,10 +522,19 @@ _REASONING_REQUIRED_MARKERS = (
     "always enabled", "cannot be turned off",
 )
 
+# Vocabulary rejection: the field is understood but the requested level isn't in the endpoint's
+# allowed set, published as a bracketed list right after the field ("reasoning_effort must be
+# [low, high, max] for glm-5.3", #118627). Same contract as a mandatory route — ``low`` is in
+# the set — so the floor rung answers it; the proximity window keeps unrelated bracketed
+# validations ("temperature must be [0, 2]") from matching.
+_REASONING_VOCABULARY_REJECTION = re.compile(r"must\s+be\s*\[")
+
 
 def is_reasoning_required_rejection(error_msg: str) -> bool:
     """Provider 400 saying the model's reasoning cannot be switched OFF ("Reasoning is mandatory for
-    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra). The opposite of
+    this endpoint and cannot be disabled", the Nous Portal on gpt-6-astra) or cannot be switched to
+    the requested level ("reasoning_effort must be [low, high, max] for glm-5.3", a custom relay
+    whose vocabulary excludes ``none``, #118627). The opposite of
     ``is_reasoning_field_rejection``: the field is understood, the *disable* is refused, so the right
     reaction is to step the effort up to the lowest level rather than drop the field (a dropped field
     also works, but tells the caller nothing about the next call)."""
@@ -534,7 +543,9 @@ def is_reasoning_required_rejection(error_msg: str) -> bool:
     if token is None:
         return False
     near = msg[max(0, token.start() - 48):token.end() + 96]
-    return any(m in near for m in _REASONING_REQUIRED_MARKERS)
+    return any(m in near for m in _REASONING_REQUIRED_MARKERS) or bool(
+        _REASONING_VOCABULARY_REJECTION.search(near)
+    )
 
 
 def is_reasoning_field_rejection(error_msg: str) -> bool:

@@ -10,6 +10,7 @@ from agent.error_classifier import (
     PROVIDER_STREAM_NON_JSON_ERROR_CODE,
     classify_api_error,
     is_reasoning_field_rejection,
+    is_reasoning_required_rejection,
     _extract_status_code,
     _extract_error_body,
     _extract_error_code,
@@ -978,6 +979,21 @@ class TestClassifyApiError:
             provider="custom", model="kimi-k2-thinking",
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
+
+    def test_reasoning_vocabulary_rejection_is_a_required_rejection(self):
+        """A custom relay whose reasoning vocabulary is [low, high, max] rejects the aux thinking-off
+        encoding in plain prose ("reasoning_effort must be [low, high, max] for glm-5.3", #118627):
+        no mandatory marker, no "unsupported", no structured ``param``, so neither existing rule
+        matched and the floor rung never fired. The bracketed allowed-set next to the field token
+        is the same "cannot switch OFF" contract. A bracketed validation on an unrelated field
+        (temperature) stays unclassified by this rule."""
+        glm = ("Error code: 400 - request param validation error, Value error, "
+               "reasoning_effort must be [low, high, max] for glm-5.3")
+        assert is_reasoning_required_rejection(glm)
+        assert not is_reasoning_field_rejection(glm)
+        assert not is_reasoning_required_rejection(
+            "Error code: 400 - Value error, temperature must be [0, 2]"
+        )
 
     def test_structured_invalid_reasoning_effort_400_never_compresses(self):
         """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less

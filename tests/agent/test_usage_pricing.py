@@ -342,6 +342,110 @@ def test_fireworks_router_fast_tier_prices_distinctly():
 
 
 
+def test_azure_foundry_astra_uses_azure_context_tiers(monkeypatch):
+    """The current Azure deployment is ``GPT-6-astra`` and must use Azure's
+    Global Standard rates, including whole-request long-context pricing.
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bundled Azure pricing should not fetch endpoint metadata")
+        ),
+    )
+
+    below = estimate_usage_cost(
+        "GPT-6-astra",
+        CanonicalUsage(
+            input_tokens=100_000,
+            output_tokens=10_000,
+            cache_read_tokens=10_000,
+            cache_write_tokens=10_000,
+        ),
+        provider="azure-foundry",
+        base_url="https://example.openai.azure.com/openai/v1",
+    )
+    above = estimate_usage_cost(
+        "GPT-6-astra",
+        CanonicalUsage(
+            input_tokens=100_000,
+            output_tokens=10_000,
+            cache_read_tokens=100_000,
+            cache_write_tokens=100_001,
+        ),
+        provider="azure-foundry",
+        base_url="https://example.openai.azure.com/openai/v1",
+    )
+
+    assert below.status == "estimated"
+    assert below.source == "official_docs_snapshot"
+    assert below.pricing_version == "azure-foundry-gpt-6-astra-2026-09"
+    assert below.amount_usd == Decimal("1.635")
+    assert above.amount_usd == Decimal("5.450025")
+
+
+def test_azure_foundry_custom_gpt56_deployment_estimates_session_cost(monkeypatch):
+    """Azure uses caller-chosen deployment IDs, so a suffix such as ``-internal``
+    must not hide the underlying GPT-5.6 model from bundled pricing.
+    """
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            AssertionError("bundled Azure pricing should not fetch endpoint metadata")
+        ),
+    )
+
+    entry = get_pricing_entry(
+        "gpt-5.6-sol-internal",
+        provider="azure-foundry",
+        base_url="https://example.openai.azure.com/openai/v1",
+    )
+    assert entry is not None
+    assert entry.input_cost_per_million == Decimal("4.00")
+    assert entry.output_cost_per_million == Decimal("20.00")
+    assert entry.cache_read_cost_per_million == Decimal("0.50")
+    assert entry.cache_write_cost_per_million == Decimal("6.25")
+    result = estimate_usage_cost(
+        "gpt-5.6-sol-internal",
+        CanonicalUsage(
+            input_tokens=1_000_000,
+            output_tokens=1_000_000,
+            cache_read_tokens=1_000_000,
+            cache_write_tokens=1_000_000,
+        ),
+        provider="azure-foundry",
+        base_url="https://example.openai.azure.com/openai/v1",
+    )
+
+    assert result.status == "estimated"
+    assert result.source == "official_docs_snapshot"
+    assert result.pricing_version == "azure-foundry-gpt-5.6-2026-09"
+    assert result.amount_usd == Decimal("30.75")
+
+
+def test_azure_foundry_unknown_deployment_does_not_guess_pricing(monkeypatch):
+    monkeypatch.setattr(
+        "agent.usage_pricing.fetch_endpoint_model_metadata",
+        lambda *_args, **_kwargs: {},
+    )
+
+    for deployment in (
+        "team-internal",
+        "gpt-4o-mini-ft",
+        "gpt-5.6-sol-fast",
+        "gpt-5.6-sol-internal-extra",
+        "gpt-6-astra-internal",
+    ):
+        result = estimate_usage_cost(
+            deployment,
+            CanonicalUsage(input_tokens=1_000, output_tokens=100),
+            provider="azure-foundry",
+            base_url="https://example.openai.azure.com/openai/v1",
+        )
+
+        assert result.status == "unknown", deployment
+        assert result.amount_usd is None, deployment
+
+
 def test_google_and_vertex_routes_share_official_pricing_snapshot():
     """Direct Gemini, Vertex, and Vertex's OpenAI-compatible hostname must
     all normalize to the Google official-pricing route.

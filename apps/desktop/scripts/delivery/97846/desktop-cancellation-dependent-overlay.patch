@@ -1,0 +1,409 @@
+diff --git a/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts b/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts
+index 6ee1688e19..d485462898 100644
+--- a/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts
++++ b/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts
+@@ -997,2 +997,4 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-  it('does not stop or overwrite a newer user thread when the older mailbox lease is lost', async () => {
+-    const loaded = await load()
++  it('removes only a pending mailbox command when its lease is lost behind an active local thread', async () => {
++    let release!: (value: string) => void
++    const held = new Promise<string>(resolve => { release = resolve })
++    const loaded = await load({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+@@ -999,0 +1002,5 @@ describe('classic Desktop mailbox with the real room engine', () => {
++    const activeThread = loaded.rounds.sendToGroupChat('Workshop', members, 'Local work')!
++
++    await vi.advanceTimersByTimeAsync(0)
++    expect(loaded.gateway.calls).toHaveLength(1)
++    const activeSession = loaded.gateway.calls[0].stored
+@@ -1001 +1007,0 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-    let release!: (value: string) => void
+@@ -1003,3 +1009,10 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-    const late = new Promise<string>(resolve => {
+-      release = resolve
+-    })
++    const result = loaded.runtime.executeDesktopRoomCommand(
++      {
++        action: 'send',
++        command_id: 'telegram:pending',
++        room_id: 'room-1',
++        payload: { message: 'Queued mailbox work', recipients: members }
++      },
++      loaded.client.desktopRoomDescriptors({ Workshop: room }),
++      { consumerId: 'desktop:one', request: async () => ({}), route, signal: controller.signal }
++    )
+@@ -1007 +1020 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-    const turns = await import('./group-turns')
++    const outcome = result.catch(error => error as { retryable: boolean })
+@@ -1009,3 +1022,33 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-    const turn = vi
+-      .spyOn(turns, 'runGroupChatMemberTurn')
+-      .mockImplementation(async (_group, _member, _prompt, _thread, _images, fence) => (fence ? late : '(pass)'))
++    await vi.advanceTimersByTimeAsync(0)
++    const beforeLoss = loaded.chat.$groupChats.get().Workshop
++    expect(beforeLoss.turn).toEqual(members[0])
++    expect(beforeLoss.sessions?.[`thread:${activeThread}::reviewer`]).toBe(activeSession)
++    const activeEpoch = beforeLoss.epoch
++    const activeSessions = structuredClone(beforeLoss.sessions)
++
++    controller.abort('lease-lost')
++    await vi.advanceTimersByTimeAsync(0)
++    const afterLoss = loaded.chat.$groupChats.get().Workshop
++    expect(afterLoss.epoch).toBe(activeEpoch)
++    expect(afterLoss.running).toBe(true)
++    expect(afterLoss.turn).toEqual(members[0])
++    expect(afterLoss.sessions).toEqual(activeSessions)
++    expect(loaded.gateway.rpcFor('session.interrupt')).toHaveLength(0)
++
++    release('(pass)')
++
++    for (let index = 0; index < 120 && loaded.chat.$groupChats.get().Workshop.running; index += 1) {
++      await vi.advanceTimersByTimeAsync(250)
++    }
++
++    expect(await outcome).toMatchObject({ retryable: true })
++    expect(loaded.gateway.calls).toHaveLength(1)
++    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(false)
++  })
++
++  it('interrupts only the active mailbox thread when its lease is lost and preserves a later local thread', async () => {
++    let release!: (value: string) => void
++    const held = new Promise<string>(resolve => { release = resolve })
++    const loaded = await load({ turn: ({ n }) => n === 1 ? held : '(pass)' })
++    const room = seed(loaded)
++    const controller = new AbortController()
+@@ -1016 +1059 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-        command_id: 'telegram:old',
++        command_id: 'telegram:active',
+@@ -1018 +1061 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-        payload: { message: 'Old work', recipients: members }
++        payload: { message: 'Mailbox work', recipients: members }
+@@ -1026,17 +1069,28 @@ describe('classic Desktop mailbox with the real room engine', () => {
+-    try {
+-      await vi.advanceTimersByTimeAsync(0)
+-      expect(turn).toHaveBeenCalledTimes(1)
+-      const thread = loaded.rounds.sendToGroupChat('Workshop', members, 'New unrelated work')
+-      const newEpoch = loaded.chat.$groupChats.get().Workshop.epoch
+-      controller.abort('lease-lost')
+-      release('OLD_REPLY')
+-      await vi.advanceTimersByTimeAsync(1_000)
+-      expect(await outcome).toMatchObject({ retryable: true })
+-      expect(loaded.chat.$groupChats.get().Workshop.epoch).toBe(newEpoch)
+-      expect(loaded.chat.$groupChats.get().Workshop.log.map(entry => entry.text)).not.toContain('OLD_REPLY')
+-      expect(loaded.chat.$groupChats.get().Workshop.log.some(entry => entry.thread === thread)).toBe(true)
+-      expect(loaded.chat.$groupChats.get().Workshop.holds || {}).toEqual({})
+-      expect(loaded.gateway.rpcFor('session.interrupt')).toHaveLength(0)
+-      expect(turn).toHaveBeenCalledTimes(2)
+-    } finally {
+-      turn.mockRestore()
++    await vi.advanceTimersByTimeAsync(0)
++    expect(loaded.gateway.calls).toHaveLength(1)
++    const activeThread = loaded.chat.$groupChats.get().Workshop.log.find(entry => entry.id === 'telegram:active')?.thread
++    const activeSession = loaded.gateway.calls[0].stored
++    const laterThread = loaded.rounds.sendToGroupChat('Workshop', members, 'Later local work')!
++    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
++    const idle = await request('session.create', { profile: 'reviewer', title: 'Idle later thread' })
++    const unrelated = await request('session.create', { profile: 'reviewer', title: 'Unrelated thread' })
++
++    loaded.chat.updateGroupChat('Workshop', current => ({
++      ...current,
++      sessions: {
++        ...(current.sessions || {}),
++        [`thread:${laterThread}::reviewer`]: String(idle.stored_session_id),
++        'thread:unrelated::reviewer': String(unrelated.stored_session_id)
++      }
++    }))
++    controller.abort('lease-lost')
++    await vi.advanceTimersByTimeAsync(0)
++    expect(loaded.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual([activeSession])
++    expect(loaded.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(idle.stored_session_id)
++    expect(loaded.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(unrelated.stored_session_id)
++    expect(await settle(outcome)).toMatchObject({ retryable: true })
++
++    release('OLD_REPLY')
++
++    for (let index = 0; index < 120 && loaded.gateway.calls.length < 2; index += 1) {
++      await vi.advanceTimersByTimeAsync(250)
+@@ -1043,0 +1098,15 @@ describe('classic Desktop mailbox with the real room engine', () => {
++
++    for (let index = 0; index < 20; index += 1) {
++      await Promise.resolve()
++    }
++
++    expect(loaded.gateway.calls).toHaveLength(2)
++    expect(loaded.gateway.calls[1]).toMatchObject({ stored: idle.stored_session_id })
++    expect(loaded.gateway.calls[1].prompt).toContain('Later local work')
++    const afterLoss = loaded.chat.$groupChats.get().Workshop
++    expect(afterLoss.log.map(entry => entry.text)).not.toContain('OLD_REPLY')
++    expect(afterLoss.log.some(entry => entry.thread === activeThread)).toBe(true)
++    expect(afterLoss.log.some(entry => entry.thread === laterThread)).toBe(true)
++    expect(afterLoss.holds || {}).toEqual({})
++    expect(afterLoss.running).toBe(true)
++    expect(afterLoss.turn).toEqual(members[0])
+diff --git a/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx b/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
+index f760750b0e..b3721d56a0 100644
+--- a/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
+@@ -1 +1 @@
+-import { cleanup, render, waitFor } from '@testing-library/react'
++import { cleanup, fireEvent, render, waitFor } from '@testing-library/react'
+@@ -4,0 +5 @@ import { afterEach, expect, it, vi } from 'vitest'
++import type * as groupRoundsModule from './group-rounds'
+@@ -6,0 +8,2 @@ import { translateBots } from './i18n-test-helper'
++const { stopGroupThread } = vi.hoisted(() => ({ stopGroupThread: vi.fn(async () => undefined) }))
++
+@@ -61,0 +65,4 @@ vi.mock('./group-chat-parts', () => ({
++vi.mock('./group-rounds', async importOriginal => ({
++  ...(await importOriginal<typeof groupRoundsModule>()),
++  stopGroupThread
++}))
+@@ -98,0 +106,37 @@ it('renders member replies through the shell message renderer, resolving media o
++
++it('does not pass the latest display activity thread as Stop authority', async () => {
++  Element.prototype.scrollIntoView = vi.fn()
++  stopGroupThread.mockClear()
++  const { $groupChats } = await import('./group-chat')
++  const { $groupActivity } = await import('./group-activity')
++  const { GroupChatWorkspace } = await import('./group-chat-view')
++  const members = [{ name: 'reviewer', title: 'Reviewer' }]
++
++  $groupChats.set({
++    Room: {
++      epoch: 4,
++      log: [
++        { id: 'a', thread: 'thread-a', from: { kind: 'user', name: 'You' }, text: 'Active', at: 1 },
++        { id: 'b', thread: 'thread-b', from: { kind: 'user', name: 'You' }, text: 'Queued', at: 2 }
++      ],
++      members,
++      running: true,
++      sessions: {},
++      watermarks: {}
++    }
++  })
++  $groupActivity.set({
++    Room: {
++      events: [
++        { at: 1, epoch: 4, kind: 'working', member: 'reviewer', thread: 'thread-a' },
++        { at: 2, epoch: 4, kind: 'queued', member: 'You', thread: 'thread-b' }
++      ]
++    }
++  })
++  const { getByRole } = render(<GroupChatWorkspace group="Room" members={members} />)
++
++  await waitFor(() => expect(getByRole('button', { name: 'Stop' })).toBeTruthy())
++  fireEvent.click(getByRole('button', { name: 'Stop' }))
++  await waitFor(() => expect(stopGroupThread).toHaveBeenCalledTimes(1))
++  expect(stopGroupThread).toHaveBeenCalledWith('Room', null, expect.any(Array))
++})
+diff --git a/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx b/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
+index abbdd535d3..ae9fa8cbea 100644
+--- a/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
+@@ -1069,2 +1069,2 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
+-  // epoch bump + holds the loop marched on to the next member. Thread scope:
+-  // the run being stopped is the one the latest activity belongs to.
++  // epoch bump + holds the loop marched on to the next member. The room engine
++  // retains the exact active queue thread; activity ordering is display-only.
+@@ -1076 +1076 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
+-    await stopGroupThread(group, latestActivity?.thread || null, memberDescriptors())
++    await stopGroupThread(group, null, memberDescriptors())
+diff --git a/apps/desktop/src/plugins/hermes-bots/group-rounds.test.ts b/apps/desktop/src/plugins/hermes-bots/group-rounds.test.ts
+index 6a3f6868f9..ffb8a2594c 100644
+--- a/apps/desktop/src/plugins/hermes-bots/group-rounds.test.ts
++++ b/apps/desktop/src/plugins/hermes-bots/group-rounds.test.ts
+@@ -1034,0 +1035,118 @@ describe('stopGroupThread (#91868/#94569)', () => {
++  it('uses the active queue thread instead of a newer queued activity thread and clears pending work', async () => {
++    let finish!: (reply: string) => void
++    const held = new Promise<string>(resolve => { finish = resolve })
++    const member: GroupMember = { name: 'alpha', title: '' }
++    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
++    const activeThread = room.rounds.sendToGroupChat('Room', [member], 'Active work')!
++
++    await drain(() => room.gateway.calls.length < 1)
++    const activeSession = room.gateway.calls[0].stored
++    const queuedThread = room.rounds.sendToGroupChat('Room', [member], 'Queued work')!
++    const request = host.request as (method: string, params: Record<string, unknown>) => Promise<Record<string, unknown>>
++    const queuedSession = await request('session.create', { profile: 'alpha', title: 'Queued session' })
++    const unrelatedSession = await request('session.create', { profile: 'alpha', title: 'Unrelated session' })
++
++    room.chat.updateGroupChat('Room', current => ({
++      ...current,
++      sessions: {
++        ...(current.sessions || {}),
++        [`thread:${queuedThread}::alpha`]: String(queuedSession.stored_session_id),
++        'thread:unrelated::alpha': String(unrelatedSession.stored_session_id)
++      }
++    }))
++    await room.rounds.stopGroupThread('Room', queuedThread, [member])
++
++    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual([activeSession])
++    expect(room.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(queuedSession.stored_session_id)
++    expect(room.gateway.rpcFor('session.interrupt')[0]?.params.session_id).not.toBe(unrelatedSession.stored_session_id)
++    const stopped = room.chat.$groupChats.get().Room
++    expect(stopped.holds?.alpha?.thread).toBe(activeThread)
++    expect(stopped.running).toBe(false)
++    expect(stopped.turn).toBeNull()
++
++    finish('LATE_ACTIVE_REPLY')
++    await drain(() => room.gateway.refcount() > 0)
++    expect(room.gateway.calls).toHaveLength(1)
++    expect(log(room, 'Room').map(entry => entry.text)).not.toContain('LATE_ACTIVE_REPLY')
++  })
++
++  it('uses the exact thread-scoped session and falls back to a bare session only for an unmigrated member', async () => {
++    const room = await loadRoom()
++    const member = STOP_MEMBERS[0]
++
++    room.chat.$groupChats.set({
++      Room: {
++        epoch: 3,
++        holds: {},
++        log: [],
++        members: [member],
++        running: true,
++        sessions: {
++          alpha: 'legacy-alpha',
++          'thread:t1::alpha': 'thread-alpha',
++          'thread:t2::alpha': 'newer-alpha'
++        },
++        turn: member,
++        watermarks: {}
++      }
++    } as unknown as Record<string, GroupChat>)
++    await room.rounds.stopGroupThread('Room', 't1', [member])
++    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['thread-alpha'])
++
++    room.gateway.rpc.splice(0)
++    room.chat.$groupChats.set({
++      Room: {
++        epoch: 3,
++        holds: {},
++        log: [],
++        members: [member],
++        running: true,
++        sessions: { alpha: 'legacy-alpha', 'thread:t2::alpha': 'newer-alpha' },
++        turn: member,
++        watermarks: {}
++      }
++    } as unknown as Record<string, GroupChat>)
++    await room.rounds.stopGroupThread('Room', 't1', [member])
++    expect(room.gateway.rpcFor('session.interrupt')).toHaveLength(0)
++
++    seedRoom(room)
++    await room.rounds.stopGroupThread('Room', 't1', [member])
++    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['live-alpha-sid'])
++  })
++
++  it('follows active queue identity through rename and ignores a retired room drive', async () => {
++    let finish!: (reply: string) => void
++    const held = new Promise<string>(resolve => { finish = resolve })
++    const member: GroupMember = { name: 'alpha', title: '' }
++    const room = await loadRoom({ turn: () => held })
++
++    room.chat.$groupChats.set({
++      Before: { epoch: 0, log: [], members: [member], roomId: 'room-old', sessions: {}, watermarks: {} }
++    })
++    const activeThread = room.rounds.sendToGroupChat('Before', [member], 'Before rename')!
++    await drain(() => room.gateway.calls.length < 1)
++    const activeSession = room.gateway.calls[0].stored
++    const activeRoom = room.chat.$groupChats.get().Before
++    room.chat.$groupChats.set({ Renamed: activeRoom })
++    await room.rounds.stopGroupThread('Renamed', activeThread, [member])
++    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual([activeSession])
++
++    finish('(pass)')
++    await drain(() => room.gateway.refcount() > 0)
++    room.gateway.rpc.splice(0)
++    room.chat.$groupChats.set({
++      Renamed: {
++        epoch: 0,
++        log: [],
++        members: [member],
++        roomId: 'room-new',
++        running: true,
++        sessions: { 'thread:new-thread::alpha': 'new-session' },
++        turn: member,
++        watermarks: {}
++      }
++    })
++    await room.rounds.stopGroupThread('Renamed', 'new-thread', [member])
++    expect(room.gateway.rpcFor('session.interrupt').map(call => call.params.session_id)).toEqual(['new-session'])
++  })
++
+diff --git a/apps/desktop/src/plugins/hermes-bots/group-rounds.ts b/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
+index 3ebf668934..288840fe82 100644
+--- a/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
++++ b/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
+@@ -474 +474,3 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+-  groupChatDrives.get(groupChatRoomKey(group, room))?.pending.clear()
++  const drive = liveGroupChatDrive(group, room)
++  const activeThread = drive?.active?.thread || thread
++  drive?.pending.clear()
+@@ -479 +481 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+-    thread: thread || null
++    thread: activeThread || null
+@@ -515 +517 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+-    thread: thread || null
++    thread: activeThread || null
+@@ -525 +527 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+-    ? sessions[groupSessionKey(thread || 'legacy', onTurn)] ||
++    ? sessions[groupSessionKey(activeThread || 'legacy', onTurn)] ||
+@@ -545,0 +548 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
++  const drive = liveGroupChatDrive(group, room)
+@@ -547,2 +550,18 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
+-  // A later user send or replacement room owns a different drive. Cancelling
+-  // this command must not interrupt it or change its running/hold state.
++  // A fence waiting behind another queue item owns no live room state. Remove
++  // only its exact pending item; the active local/mailbox turn keeps its epoch,
++  // turn descriptor and backend session.
++  let removedPending = false
++
++  for (const [pendingThread, pending] of drive?.pending || []) {
++    if (pending.fence === fence) {
++      drive?.pending.delete(pendingThread)
++      removedPending = true
++    }
++  }
++
++  if (removedPending || !drive?.active || drive.active.fence !== fence) {
++    return
++  }
++
++  // Only the exact active queue item may invalidate room execution state. A
++  // rename keeps this drive binding live; replacement/disband retires it.
+@@ -558,0 +578 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
++  const activeThread = drive.active.thread
+@@ -567 +587,7 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
+-  const sessionId = onTurn ? (room.sessions || {})[groupMemberKey(onTurn)] : null
++  const sessions = room.sessions || {}
++  const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
++
++  const sessionId = onTurn
++    ? sessions[groupSessionKey(activeThread || 'legacy', onTurn)] ||
++      (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
++    : null
+@@ -1113,0 +1140 @@ interface GroupChatDrive {
++  active: null | { fence?: GroupCommandFence; members: GroupMember[]; thread: string }
+@@ -1122,0 +1150,6 @@ const groupChatDrives = new Map<string, GroupChatDrive>()
++function liveGroupChatDrive(group: string, room: GroupChatRoom) {
++  const drive = groupChatDrives.get(groupChatRoomKey(group, room))
++
++  return drive?.binding.isLive() ? drive : null
++}
++
+@@ -1143,0 +1177 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
++    active: null,
+@@ -1162,0 +1197,2 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
++        const active = { ...next, thread: nextThread }
++        drive.active = active
+@@ -1164 +1200,8 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
+-        await runGroupChatRounds(group, next.members, nextThread, next.fence, drive.failedMembers)
++
++        try {
++          await runGroupChatRounds(group, next.members, nextThread, next.fence, drive.failedMembers)
++        } finally {
++          if (drive.active === active) {
++            drive.active = null
++          }
++        }
+@@ -1171,0 +1215 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
++      drive.active = null

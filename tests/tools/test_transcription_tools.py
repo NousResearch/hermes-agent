@@ -1357,7 +1357,6 @@ class TestCafConversion:
             "provider": "groq", "cloud_trim_silence": False,
         })
         monkeypatch.setattr(audio, "_find_ffmpeg_binary", lambda: "ffmpeg")
-        monkeypatch.setattr(audio.shutil, "which", lambda _name: None)
 
         def encode(command, **_kwargs):
             output = Path(command[-1])

@@ -155,8 +155,9 @@ def _validate_category(category: Optional[str]) -> Optional[str]:
 
 def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[str]:
     """Validate frontmatter (name + description) and a non-empty body. ``new_skill`` (create
-    only) also enforces SKILL_PROMPT_DESC_LIMIT so new skills never lose routing signal to
-    index truncation; edit/patch skip it so existing over-limit skills stay maintainable."""
+    only) requires strict YAML and enforces SKILL_PROMPT_DESC_LIMIT so new skills never lose
+    routing signal to index truncation. Edit/patch use the loader's compatibility parser so every
+    skill that can be loaded remains maintainable."""
     if not content.strip():
         return "Content cannot be empty."
     content = content.lstrip("\ufeff")  # tolerate a Windows UTF-8 BOM
@@ -165,10 +166,13 @@ def _validate_frontmatter(content: str, *, new_skill: bool = False) -> Optional[
     end_match = _FRONTMATTER_END_RE.search(content[3:])
     if not end_match:
         return "SKILL.md frontmatter is not closed. Ensure you have a closing '---' line."
-    try:
-        parsed = yaml.safe_load(content[3:end_match.start() + 3])
-    except yaml.YAMLError as e:
-        return f"YAML frontmatter parse error: {e}"
+    if new_skill:
+        try:
+            parsed = yaml.safe_load(content[3:end_match.start() + 3])
+        except yaml.YAMLError as e:
+            return f"YAML frontmatter parse error: {e}"
+    else:
+        parsed, _ = _parse_frontmatter(content)
     if not isinstance(parsed, dict):
         return "Frontmatter must be a YAML mapping (key: value pairs)."
     for field in ("name", "description"):
@@ -201,9 +205,8 @@ def _validate_content_size(content: str, label: str = "SKILL.md") -> Optional[st
 def _description_preview(content: str) -> str:
     """First 120 chars of the frontmatter description; '' on any failure."""
     with suppress(Exception):
-        fm_end = _FRONTMATTER_END_RE.search(content[3:])
-        if fm_end:
-            return str(yaml.safe_load(content[3:fm_end.start() + 3]).get("description", ""))[:120]
+        frontmatter, _ = _parse_frontmatter(content)
+        return str(frontmatter.get("description", ""))[:120]
     return ""
 
 

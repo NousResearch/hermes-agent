@@ -548,6 +548,7 @@ class ProfileInfo:
     # Bot Mode title (``profile.yaml`` ``ui_meta['hermes-bots'].title``) — the name
     # the Bots roster shows. Presentation-only, like ``display_name``.
     bot_title: str = ""
+    retired: bool = False
     # Canonical ids this profile was previously known by (``hermes profile rename``
     # appends here). Lets Bot Mode group chats re-link persisted member
     # descriptors to the renamed live profile (#110200).
@@ -792,11 +793,16 @@ def read_profile_meta(profile_dir: Path) -> dict:
             hermes_bots = ui_meta.get("hermes-bots")
             if isinstance(hermes_bots, dict):
                 bot_title = str(hermes_bots.get("title") or "").strip()
+        retired_raw = data.get("retired")
+        retired = retired_raw is True or (
+            isinstance(retired_raw, str) and retired_raw.strip().lower() in {"true", "yes", "1", "on"}
+        )
         return {
             "description": str(data.get("description") or "").strip(),
             "description_auto": bool(data.get("description_auto", False)),
             "display_name": str(data.get("display_name") or "").strip(),
             "bot_title": bot_title,
+            "retired": retired,
             "previous_names": _clean_previous_names(data.get("previous_names")),
         }
 

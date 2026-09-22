@@ -153,7 +153,7 @@ def _resolve_profile_from_cfg(cfg: dict, key: str, *, fallback: Optional[str] = 
         return "default"
 
 
-def _build_roster() -> tuple[list[dict], set[str]]:
+def _build_roster(*, excluded: set[str] | None = None, force_keep: set[str] | None = None) -> tuple[list[dict], set[str]]:
     """``(roster_for_prompt, valid_assignee_names)``; entries are
     ``{name, description, has_description}``."""
     try:
@@ -161,15 +161,21 @@ def _build_roster() -> tuple[list[dict], set[str]]:
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return [], set()
+    excluded = excluded or set()
+    force_keep = force_keep or set()
     roster = []
     for p in all_profiles:
+        if getattr(p, "retired", False):
+            excluded.add(p.name)
+        if p.name in excluded and p.name not in force_keep:
+            continue
         desc = (p.description or "").strip()
         roster.append({
             "name": p.name,
             "description": desc or f"(no description; profile named {p.name!r})",
             "has_description": bool(desc),
         })
-    return roster, {p.name for p in all_profiles}
+    return roster, {entry["name"] for entry in roster}
 
 
 def _format_roster(roster: list[dict]) -> str:
@@ -208,10 +214,20 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
     except Exception:  # decompose_task promises ok=False, never a raise, on config trouble
         cfg = {}
     kanban_cfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
-    roster, valid_names = _build_roster()
+    orchestrator = _resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee)
+    default_assignee = _resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee)
+    raw_excluded = kanban_cfg.get("decompose_exclude_assignees", [])
+    excluded = {
+        item.strip() for item in ([str(n) for n in raw_excluded] if isinstance(raw_excluded, (list, tuple)) else str(raw_excluded).split(","))
+        if item.strip()
+    }
+    force_keep = {name for name in (orchestrator, default_assignee) if name in excluded}
+    for name in sorted(force_keep):
+        logger.warning("decompose: routing target %r is excluded but force-kept", name)
+    roster, valid_names = _build_roster(excluded=excluded, force_keep=force_keep)
     return _Routing(
-        orchestrator=_resolve_profile_from_cfg(cfg, "orchestrator_profile", fallback=root_assignee),
-        default_assignee=_resolve_profile_from_cfg(cfg, "default_assignee", fallback=root_assignee),
+        orchestrator=orchestrator,
+        default_assignee=default_assignee,
         auto_promote=bool(kanban_cfg.get("auto_promote_children", True)),
         roster=roster,
         valid_names=valid_names,
@@ -254,7 +270,7 @@ def _clean_children(task_id: str, raw_tasks: list, routing: _Routing) -> tuple[l
         )
         if isinstance(assignee, str) and assignee.strip() and assignee.strip() not in routing.valid_names:
             logger.info(
-                "decompose: task %s child %d picked unknown assignee %r — "
+                "decompose: task %s child %d picked unknown or excluded assignee %r — "
                 "routing to default_assignee %r",
                 task_id, idx, assignee, routing.default_assignee,
             )

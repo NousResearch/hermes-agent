@@ -990,8 +990,8 @@ def _import_members(
     return restored, restored_external, errors, skipped_runtime, db_shrunk
 
 
-def run_import(args) -> None:
-    """Restore a Hermes backup from a zip file."""
+def run_import(args) -> Optional[int]:
+    """Restore a Hermes backup from a zip file; return 1 when some members were not restored."""
     zip_path = Path(args.zipfile).expanduser().resolve()
     if not zip_path.is_file():
         print(f"Error: File not found: {zip_path}")
@@ -1021,7 +1021,8 @@ def run_import(args) -> None:
         restored, restored_external, errors, skipped_runtime, db_shrunk = _import_members(
             zf, members, prefix, hermes_root, file_count)
         elapsed = time.monotonic() - t0
-        print(f"\nImport complete: {restored} files restored in {elapsed:.1f}s\n  Target: {display_hermes_home()}")
+        print(f"\nImport {'incomplete' if errors else 'complete'}: {restored} files restored in {elapsed:.1f}s\n"
+              f"  Target: {display_hermes_home()}")
         if restored_external:
             print(f"\n  Restored {restored_external} memory-provider file(s) to "
                   f"their original location(s) outside {display_hermes_home()}.")
@@ -1049,6 +1050,12 @@ def run_import(args) -> None:
             for pname in restored_profiles:
                 print(f"  hermes -p {pname} gateway install")
         _revive_gateway_after_import(hermes_root)
+        if errors:
+            # A refused state.db leaves the old sessions in place; exit 0 would let scripts and
+            # the dashboard's "done" badge treat that as a full restore.
+            print(f"Import incomplete: {len(errors)} file(s) were not restored (see Warnings above). "
+                  "Fix the cause and re-run the import.")
+            return 1
         print("Done. Your Hermes configuration has been restored.")
 
 

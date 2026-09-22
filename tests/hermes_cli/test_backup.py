@@ -556,6 +556,47 @@ class TestImport:
         assert "Done. Your Hermes configuration has been restored." in out
         assert "hermes gateway install" in out
 
+    def test_skipped_member_reports_incomplete_and_exits_1(self, tmp_path, monkeypatch, capsys):
+        """A member that could not be written is a partial restore: the CLI must not print
+        "restored" or exit 0, or a script and the dashboard's "done" badge carry on over it.
+        Runtime files the import deliberately keeps are not failures."""
+        hermes_home = tmp_path / ".hermes"
+        locked = hermes_home / "skills" / "demo"
+        locked.mkdir(parents=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        monkeypatch.setattr(Path, "home", lambda: tmp_path)
+
+        zip_path = tmp_path / "backup.zip"
+        self._make_backup_zip(zip_path, {
+            "config.yaml": "model: test\n",
+            "gateway.pid": "123\n",
+            "skills/demo/SKILL.md": "# demo\n",
+        })
+        args = Namespace(zipfile=str(zip_path), force=True)
+
+        from hermes_cli.backup import run_import
+        from hermes_cli.main import cmd_import
+
+        locked.chmod(0o555)
+        try:
+            if os.access(locked, os.W_OK):
+                pytest.skip("root or Windows: chmod 0555 does not make the directory read-only")
+            assert run_import(args) == 1
+            out = capsys.readouterr().out
+            assert "Import incomplete" in out
+            assert "Import complete" not in out
+            assert "skills/demo/SKILL.md" in out
+            assert "has been restored" not in out
+            assert cmd_import(args) == 1
+        finally:
+            locked.chmod(0o755)
+
+        capsys.readouterr()
+        assert cmd_import(args) is None
+        out = capsys.readouterr().out
+        assert "Preserved 1 runtime state file(s)" in out
+        assert "Done. Your Hermes configuration has been restored." in out
+
 
 
 
@@ -2438,11 +2479,12 @@ class TestImportLiveSessionDatabase:
         assert _count_rows(live_db) == (2, 4)
 
     def test_older_backup_reports_replaced_sessions(self, tmp_path, monkeypatch, capsys):
-        """Importing a backup that predates recorded work says what it dropped."""
+        """Importing a backup that predates recorded work says what it dropped; that is a
+        warning, not a failed import."""
         from hermes_cli.backup import run_import
 
         home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
-        run_import(Namespace(zipfile=str(zip_path), force=True))
+        assert run_import(Namespace(zipfile=str(zip_path), force=True)) is None
 
         out = capsys.readouterr().out
         assert "Session data replaced by older backup contents" in out
@@ -2469,11 +2511,12 @@ class TestImportLiveSessionDatabase:
         home, live_db, zip_path = self._prepare(tmp_path, monkeypatch)
         monkeypatch.setattr(backup_mod, "_safe_restore_db", lambda src, dst: False)
 
-        backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True))
+        assert backup_mod.run_import(Namespace(zipfile=str(zip_path), force=True)) == 1
 
         out = capsys.readouterr().out
         assert "files skipped" in out
         assert "state.db" in out
+        assert "has been restored" not in out
         # The pre-import database is still the one on disk.
         assert _count_rows(live_db) == (3, 12)
 

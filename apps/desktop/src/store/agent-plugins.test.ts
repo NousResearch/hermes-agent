@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { $agentPlugins, type AgentPluginRow, isDesktopRelevantPlugin, normalizeAgentPluginRow, saveAgentPluginSettings } from './agent-plugins'
+import {
+  $agentPlugins,
+  type AgentPluginRow,
+  isDesktopRelevantPlugin,
+  normalizeAgentPluginRow,
+  saveAgentPluginSettings
+} from './agent-plugins'
 
 const row = (partial: Partial<AgentPluginRow>): AgentPluginRow =>
   ({ name: partial.key ?? 'x', status: 'enabled', ...partial }) as AgentPluginRow
@@ -14,6 +20,7 @@ describe('normalizeAgentPluginRow', () => {
         source: 'user'
       })
     )
+
     const next = normalizeAgentPluginRow(row({ key: 'example-plugin', source: 'user' }))
 
     expect(previous.servers).toHaveLength(1)

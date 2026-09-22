@@ -1,3 +1,4 @@
+import type { PersistedTurn } from '@hermes/shared'
 import type { QueryClient } from '@tanstack/react-query'
 import { type MutableRefObject, useCallback, useEffect, useRef } from 'react'
 
@@ -9,26 +10,35 @@ import {
   type ChatMessage,
   type ChatMessagePart,
   chatMessageText,
+  completeOpenTimelineParts,
   type GatewayEventPayload,
   mergeFinalAssistantText,
   reasoningPart,
   renderMediaTags,
+  sealOpenToolParts,
+  toolCallOwnerMessageId,
   upsertToolPart
 } from '@/lib/chat-messages'
+import type { ErrorSurface } from '@/lib/error-surface'
 import {
   dedupeGeneratedImageEchoesInParts,
   generatedImageEchoSources,
   stripGeneratedImageEchoes
 } from '@/lib/generated-images'
-import { parseTodos } from '@/lib/todos'
+import { isTodoToolName, nextTodosFromToolEvent, parseTodoRevision } from '@/lib/todos'
+import type { ScopedServerRequest } from '@/store/gateway'
 import { dispatchNativeNotification } from '@/store/native-notifications'
+import { isDiskFullErrorMessage, notifyError } from '@/store/notifications'
 import { broadcastSessionsChanged } from '@/store/session-sync'
 import { upsertSubagent } from '@/store/subagents'
-import { setSessionTodos } from '@/store/todos'
+import { $todosBySession, setSessionTodos } from '@/store/todos'
 
 import type { ClientSessionState } from '../../../types'
 
+import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
+import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
+import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -50,9 +60,10 @@ interface MessageStreamOptions {
   ) => ClientSessionState
 }
 
-interface QueuedStreamDeltas {
-  assistant: string
-  reasoning: string
+interface QueuedStreamDelta {
+  occurredAt: number
+  text: string
+  type: 'assistant' | 'reasoning'
 }
 
 // Date.now() alone can collide when an interim seal and the next segment's
@@ -86,7 +97,13 @@ export function useMessageStream({
       seed: () => ChatMessagePart[],
       opts: {
         pending?: (message: ChatMessage) => boolean
-      } = {}
+        // Resolve the message an event should mutate by payload identity
+        // rather than by the current stream position. A late `tool.complete`
+        // that crosses an interim/settle boundary must attach to the bubble
+        // that still owns the call, wherever that bubble now sits.
+        eventTarget?: (state: ClientSessionState) => string | null
+      } = {},
+      occurredAt = Date.now() / 1000
     ) => {
       const apply = () => {
         updateSessionState(sessionId, state => {
@@ -98,7 +115,13 @@ export function useMessageStream({
             return state
           }
 
-          const streamId = state.streamId ?? nextStreamMessageId('assistant-stream')
+          const reconciledId = opts.eventTarget?.(state) ?? null
+          const streamId = reconciledId ?? state.streamId ?? nextStreamMessageId('assistant-stream')
+          // The event landed on a bubble that is NOT the live stream (sealed
+          // by interim commentary, a mid-turn user message, or turn settle).
+          // It is a patch to history: the bubble keeps its own pending bit
+          // and the turn's stream bookkeeping is neither consulted nor changed.
+          const patchesSealedBubble = reconciledId !== null && reconciledId !== state.streamId
           const groupId = state.pendingBranchGroup ?? undefined
           const prev = state.messages
           let nextMessages: ChatMessage[]
@@ -110,6 +133,7 @@ export function useMessageStream({
                 id: streamId,
                 role: 'assistant',
                 parts: seed(),
+                timestamp: occurredAt,
                 pending: true,
                 branchGroupId: groupId
               }
@@ -120,10 +144,17 @@ export function useMessageStream({
                 ? {
                     ...m,
                     parts: transform(m.parts, m),
-                    pending: opts.pending ? opts.pending(m) : true
+                    pending: patchesSealedBubble ? (m.pending ?? false) : opts.pending ? opts.pending(m) : true
                   }
                 : m
             )
+          }
+
+          if (patchesSealedBubble) {
+            // Later deltas must not append into the bubble the late event
+            // just updated, and a late event from an earlier phase must not
+            // clear the wait state of the turn now in flight.
+            return { ...state, messages: nextMessages }
           }
 
           return {
@@ -181,12 +212,15 @@ export function useMessageStream({
     []
   )
 
-  const queuedDeltasRef = useRef<Map<string, QueuedStreamDeltas>>(new Map())
+  const queuedDeltasRef = useRef<Map<string, QueuedStreamDelta[]>>(new Map())
   const flushHandleRef = useRef<number | null>(null)
   const lastFlushAtRef = useRef<number>(0)
   // What the previous flush cost on the main thread — drives the adaptive
   // flush floor in scheduleDeltaFlush so multi-stream load yields to input.
   const lastFlushCostRef = useRef<number>(0)
+  // The pending commit-cost measurement rAF, so a newer flush (or unmount)
+  // can cancel it instead of letting parked callbacks pile up while hidden.
+  const measureRafRef = useRef<number | null>(null)
   const nativeSubagentSessionsRef = useRef<Set<string>>(new Set())
   // Turns that auto-compacted: skip post-turn hydrate so live scrollback survives.
   const compactedTurnRef = useRef<Set<string>>(new Set())
@@ -208,21 +242,16 @@ export function useMessageStream({
 
         queue.delete(id)
 
-        if (queued.assistant) {
-          mutateStream(
-            id,
-            parts => dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(parts, queued.assistant)),
-            () => [assistantTextPart(queued.assistant)]
+        const applyQueued = (parts: ChatMessagePart[]) =>
+          queued.reduce(
+            (next, delta) =>
+              delta.type === 'assistant'
+                ? dedupeGeneratedImageEchoesInParts(appendAssistantTextPart(next, delta.text, delta.occurredAt))
+                : appendReasoningPart(next, delta.text, delta.occurredAt),
+            parts
           )
-        }
 
-        if (queued.reasoning) {
-          mutateStream(
-            id,
-            parts => appendReasoningPart(parts, queued.reasoning),
-            () => [reasoningPart(queued.reasoning)]
-          )
-        }
+        mutateStream(id, applyQueued, () => applyQueued([]), {}, queued[0]?.occurredAt)
       }
     },
     [mutateStream]
@@ -256,6 +285,8 @@ export function useMessageStream({
     // keeps the thread ~75% idle for input at any load: cheap flushes stay at
     // 30fps of text growth, expensive multi-stream flushes degrade text fps
     // instead of interactivity — capped so text never updates slower than 4/s.
+    // The cost has to include the deferred view-sync frame where the commit
+    // actually happens; see runFlush below.
     const sinceLast = performance.now() - lastFlushAtRef.current
 
     const adaptiveFloor = Math.min(
@@ -268,34 +299,75 @@ export function useMessageStream({
       const startedAt = performance.now()
       lastFlushAtRef.current = startedAt
       flushQueuedDeltas()
-      lastFlushCostRef.current = performance.now() - startedAt
+      // The store write above is only the cheap half of a flush. While a
+      // session streams, syncSessionStateToView defers the $messages publish
+      // (and with it the React commit + Streamdown re-parse the floor is meant
+      // to account for) to its own rAF inside updateSessionState, which runs
+      // after this timer task. Stopping the clock here pins lastFlushCostRef
+      // near zero and collapses the adaptive floor to 33ms no matter the load.
+      // Our rAF is registered after the view-sync one, so it runs in the same
+      // frame right after that commit; its timestamp marks frame start, so
+      // (now - frameStart) counts only work done inside the frame, not the
+      // vsync wait. A hidden renderer never fires rAF, so the write cost
+      // stays as the fallback.
+      const writeCost = performance.now() - startedAt
+      lastFlushCostRef.current = writeCost
+
+      // At most one measurement rAF may be pending: only the newest flush's
+      // measurement matters (the guard below discards stale frames), and a
+      // hidden renderer parks rAF callbacks — without cancellation a long
+      // hidden stream at the floor would accumulate thousands of parked
+      // closures that all fire in the first frame on refocus.
+      if (measureRafRef.current !== null) {
+        window.cancelAnimationFrame(measureRafRef.current)
+      }
+
+      measureRafRef.current = window.requestAnimationFrame(frameStart => {
+        measureRafRef.current = null
+
+        // A newer flush already started; its own measurement wins.
+        if (lastFlushAtRef.current !== startedAt) {
+          return
+        }
+
+        lastFlushCostRef.current = writeCost + Math.max(0, performance.now() - frameStart)
+      })
     }
 
     // Always a timer, never requestAnimationFrame. Chromium pauses rAF for a
     // renderer it considers hidden, and "hidden" is not something this code can
-    // verify: `backgroundThrottling: false` plus the process-level switches in
-    // electron/main.ts cover the blurred and occluded cases, but they don't
-    // cover a minimized window, a fully off-screen one, or a renderer the
-    // compositor has otherwise parked. In those states an rAF-gated flush never
-    // runs, so a finished answer sits in this queue until some later input or
-    // focus event happens to wake a frame — the reply looks stalled, then
-    // arrives all at once on refocus.
+    // verify: while a turn is in flight the main process unthrottles every chat
+    // window (stream-throttle.ts), but that doesn't guarantee frames for a
+    // minimized window, a fully off-screen one, or a renderer the compositor
+    // has otherwise parked. In those states an rAF-gated flush never runs, so a
+    // finished answer sits in this queue until some later input or focus event
+    // happens to wake a frame — the reply looks stalled, then arrives all at
+    // once on refocus.
     //
     // A timer keeps the same coalescing cadence (that's what the floor above is
     // for) while guaranteeing delivery without user interaction. Timers are
-    // clamped in background renderers rather than suspended, and
-    // disable-background-timer-throttling already opts out of that clamp.
+    // clamped in background renderers rather than suspended, and the
+    // stream-aware unthrottle lifts even that clamp for the life of the turn;
+    // in the worst case (a delta arriving before the unthrottle lands) the
+    // clamp only stretches one flush to ~1s in a window nobody can see.
     flushHandleRef.current = window.setTimeout(runFlush, Math.max(0, adaptiveFloor - sinceLast))
   }, [flushQueuedDeltas])
 
   const queueDelta = useCallback(
-    (sessionId: string, key: keyof QueuedStreamDeltas, delta: string) => {
+    (sessionId: string, key: 'assistant' | 'reasoning', delta: string, occurredAt = Date.now() / 1000) => {
       if (!delta) {
         return
       }
 
-      const queued = queuedDeltasRef.current.get(sessionId) ?? { assistant: '', reasoning: '' }
-      queued[key] += delta
+      const queued = queuedDeltasRef.current.get(sessionId) ?? []
+      const tail = queued.at(-1)
+
+      if (tail?.type === key) {
+        tail.text += delta
+      } else {
+        queued.push({ occurredAt, text: delta, type: key })
+      }
+
       queuedDeltasRef.current.set(sessionId, queued)
       scheduleDeltaFlush()
     },
@@ -309,30 +381,65 @@ export function useMessageStream({
       }
 
       flushHandleRef.current = null
+
+      if (measureRafRef.current !== null && typeof window !== 'undefined') {
+        window.cancelAnimationFrame(measureRafRef.current)
+      }
+
+      measureRafRef.current = null
       flushQueuedDeltas()
     },
     [flushQueuedDeltas]
   )
 
+  // Page Visibility does not report every Windows/Linux focus transition.
+  // Flush queued deltas on both signals so returning to a chat cannot leave a
+  // completed chunk waiting for the next throttled timer.
+  // eslint-disable-next-line no-restricted-syntax -- timer-handle clear inside effect, not an atom mirror
+  useEffect(() => {
+    const flushPendingDeltas = () => {
+      if (flushHandleRef.current !== null) {
+        window.clearTimeout(flushHandleRef.current)
+        flushHandleRef.current = null
+      }
+
+      flushQueuedDeltas()
+    }
+
+    const flushWhenVisible = () => {
+      if (document.visibilityState === 'visible') {
+        flushPendingDeltas()
+      }
+    }
+
+    document.addEventListener('visibilitychange', flushWhenVisible)
+    window.addEventListener('focus', flushPendingDeltas)
+
+    return () => {
+      document.removeEventListener('visibilitychange', flushWhenVisible)
+      window.removeEventListener('focus', flushPendingDeltas)
+    }
+  }, [flushQueuedDeltas])
+
   const appendAssistantDelta = useCallback(
-    (sessionId: string, delta: string) => {
+    (sessionId: string, delta: string, occurredAt?: number) => {
       if (!delta) {
         return
       }
 
-      queueDelta(sessionId, 'assistant', delta)
+      queueDelta(sessionId, 'assistant', delta, occurredAt)
     },
     [queueDelta]
   )
 
   const appendReasoningDelta = useCallback(
-    (sessionId: string, delta: string, replace = false) => {
+    (sessionId: string, delta: string, replace = false, occurredAt = Date.now() / 1000) => {
       if (!delta) {
         return
       }
 
       if (!replace) {
-        queueDelta(sessionId, 'reasoning', delta)
+        queueDelta(sessionId, 'reasoning', delta, occurredAt)
 
         return
       }
@@ -347,12 +454,14 @@ export function useMessageStream({
           }
 
           if (replace) {
-            return [...parts.filter(part => part.type !== 'reasoning'), reasoningPart(delta)]
+            return [...parts.filter(part => part.type !== 'reasoning'), reasoningPart(delta, occurredAt)]
           }
 
-          return appendReasoningPart(parts, delta)
+          return appendReasoningPart(parts, delta, occurredAt)
         },
-        () => [reasoningPart(delta)]
+        () => [reasoningPart(delta, occurredAt)],
+        {},
+        occurredAt
       )
     },
     [flushQueuedDeltas, mutateStream, queueDelta]
@@ -363,7 +472,8 @@ export function useMessageStream({
       sessionId: string,
       payload: GatewayEventPayload | undefined,
       phase: 'running' | 'complete',
-      sourceEventType?: string
+      sourceEventType?: string,
+      occurredAt = Date.now() / 1000
     ) => {
       // Text deltas flush on a timer but tool events apply now; flush first so
       // a tool part can't jump ahead of the text that preceded it.
@@ -375,11 +485,11 @@ export function useMessageStream({
 
       // The composer status stack owns todo display now (no inline panel) —
       // mirror every todo state the tool reports into its session store.
-      if (payload?.name === 'todo') {
-        const todos = parseTodos(payload.todos) ?? parseTodos(payload.result) ?? parseTodos(payload.args)
+      if (payload && isTodoToolName(payload.name)) {
+        const todos = nextTodosFromToolEvent($todosBySession.get()[sessionId] ?? [], payload)
 
         if (todos) {
-          setSessionTodos(sessionId, todos)
+          setSessionTodos(sessionId, todos, parseTodoRevision(payload))
         }
       }
 
@@ -396,16 +506,28 @@ export function useMessageStream({
 
       mutateStream(
         sessionId,
-        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase)),
-        () => upsertToolPart([], payload, phase),
-        { pending: m => phase !== 'complete' || (m.pending ?? false) }
+        parts => dedupeGeneratedImageEchoesInParts(upsertToolPart(parts, payload, phase, occurredAt)),
+        () => upsertToolPart([], payload, phase, occurredAt),
+        {
+          pending: m => phase !== 'complete' || (m.pending ?? false),
+          // A tool event belongs to the bubble that owns the call, not to
+          // whatever is streaming now. Long tools (browser scrapes run
+          // minutes) outlive the boundary that seals their bubble (interim
+          // commentary, a message typed mid-turn, turn settle): without this
+          // lookup a completion seeds a new bubble with a duplicate row while
+          // the sealed one keeps reading "Result unavailable", and a running
+          // event for the same id seeds a second live row with its own timer
+          // under the user's message (#113035). Both phases route by id.
+          eventTarget: state => toolCallOwnerMessageId(state.messages, payload)
+        },
+        occurredAt
       )
     },
     [flushQueuedDeltas, mutateStream, sessionInterrupted]
   )
 
   const finalizeInterimAssistantMessage = useCallback(
-    (sessionId: string, text: string) => {
+    (sessionId: string, text: string, occurredAt = Date.now() / 1000) => {
       updateSessionState(sessionId, state => {
         if (state.interrupted) {
           return state
@@ -422,7 +544,16 @@ export function useMessageStream({
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
 
-          return mergeFinalAssistantText(parts, visibleText)
+          // A later response can share this bubble after a suppressed interim.
+          // A seal arriving after its tools, without any newer text, still
+          // confirms the pre-tool response (legacy/delayed seal ordering).
+          const hasNewResponse = currentResponseParts(parts).some(
+            part => (part.type === 'text' || part.type === 'reasoning') && part.text.trim()
+          )
+
+          return hasNewResponse
+            ? mergeCurrentResponseText(parts, visibleText, occurredAt)
+            : mergeFinalAssistantText(parts, visibleText, occurredAt)
         }
 
         let nextMessages = state.messages
@@ -431,7 +562,15 @@ export function useMessageStream({
           // Seal the streaming bubble in place, marked interim so it renders
           // without an action footer (see ChatMessage.interim).
           nextMessages = nextMessages.map(m =>
-            m.id === streamId ? { ...m, parts: replaceTextPart(m.parts), pending: false, interim: true } : m
+            m.id === streamId
+              ? {
+                  ...m,
+                  parts: completeOpenTimelineParts(replaceTextPart(m.parts), occurredAt),
+                  completedAt: occurredAt,
+                  pending: false,
+                  interim: true
+                }
+              : m
           )
         } else {
           // No streaming bubble — create a standalone interim message
@@ -440,7 +579,9 @@ export function useMessageStream({
             {
               id: nextStreamMessageId('assistant-interim'),
               role: 'assistant' as const,
-              parts: [assistantTextPart(authoritativeText)],
+              parts: [{ ...assistantTextPart(authoritativeText, occurredAt), completedAt: occurredAt }],
+              timestamp: occurredAt,
+              completedAt: occurredAt,
               pending: false,
               interim: true,
               branchGroupId: state.pendingBranchGroup ?? undefined
@@ -461,7 +602,14 @@ export function useMessageStream({
   )
 
   const completeAssistantMessage = useCallback(
-    (sessionId: string, text: string, responsePreviewed?: boolean, failure?: { error: string; partial: boolean }) => {
+    (
+      sessionId: string,
+      text: string,
+      responsePreviewed?: boolean,
+      failure?: { error: string; partial: boolean; surface?: ErrorSurface | null },
+      occurredAt = Date.now() / 1000,
+      persistedTurn?: PersistedTurn | null
+    ) => {
       let shouldHydrate = false
 
       const completedState = updateSessionState(sessionId, state => {
@@ -477,7 +625,8 @@ export function useMessageStream({
             needsInput: false,
             pendingBranchGroup: null,
             streamId: null,
-            turnStartedAt: null
+            turnStartedAt: null,
+            turnLive: false
           }
         }
 
@@ -492,50 +641,133 @@ export function useMessageStream({
         const keepFailedPartialText = Boolean(failure?.partial && finalText)
         const interimBoundaryPending = state.interimBoundaryPending
 
-        const replaceTextPart = (parts: ChatMessagePart[]) => {
+        // Wall-clock seconds this turn actually ran (message.start stamped
+        // turnStartedAt). Read BEFORE the state return below nulls it.
+        const durationS = state.turnStartedAt
+          ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
+          : undefined
+
+        const replaceTextPart = (parts: ChatMessagePart[], interim: boolean) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
 
-          return mergeFinalAssistantText(parts, visibleFinalText)
+          // Partial terminal errors carry the whole retained assistant buffer,
+          // not just the response after the last tool (unlike healthy finals).
+          return interim || keepFailedPartialText
+            ? mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
+            : mergeCurrentResponseText(parts, visibleFinalText, occurredAt)
+        }
+
+        const withPersistedIdentity = (message: ChatMessage): ChatMessage => {
+          const finalRowId = persistedTurn?.final_assistant_row_id
+          const hasFinalRow = typeof finalRowId === 'number' && Number.isSafeInteger(finalRowId) && finalRowId > 0
+          const finalPartIndex = message.parts.findLastIndex(part => part.type === 'text')
+
+          return {
+            ...message,
+            durableComplete: persistedTurn?.complete === true,
+            persistedTurn: persistedTurn ?? undefined,
+            // A folded bubble can already address its first source row. Keep
+            // that address and bind the final response's exact source as well.
+            ...(hasFinalRow
+              ? {
+                  rowId: message.rowId ?? finalRowId,
+                  parts: message.parts.map((part, index) =>
+                    index === finalPartIndex ? { ...part, sourceRowId: finalRowId } : part
+                  )
+                }
+              : {})
+          }
         }
 
         // Settling the final response onto a bubble makes it the turn's real
         // reply — clear `interim` so it regains the action footer.
         const completeMessage = (message: ChatMessage): ChatMessage => {
-          const settled = { ...message, pending: false, interim: false }
+          const settled = {
+            ...message,
+            completedAt: occurredAt,
+            parts: completeOpenTimelineParts(message.parts, occurredAt),
+            pending: false,
+            interim: false,
+            recovered: false,
+            ...(durationS !== undefined ? { durationS } : {}),
+            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
+          }
 
           if (completionError && !keepFailedPartialText) {
-            return { ...settled, error: completionError, parts: message.parts.filter(part => part.type !== 'text') }
+            return withPersistedIdentity({
+              ...settled,
+              error: completionError,
+              parts: settled.parts.filter(part => part.type !== 'text')
+            })
           }
 
-          return {
+          return withPersistedIdentity({
             ...settled,
-            parts: replaceTextPart(message.parts),
+            parts: completeOpenTimelineParts(replaceTextPart(settled.parts, Boolean(message.interim)), occurredAt),
             ...(completionError ? { error: completionError } : {})
-          }
+          })
         }
 
-        const newAssistantFromCompletion = (): ChatMessage => ({
-          id: `assistant-${Date.now()}`,
-          role: 'assistant',
-          parts: completionError && !keepFailedPartialText ? [] : [assistantTextPart(finalText)],
-          branchGroupId: state.pendingBranchGroup ?? undefined,
-          ...(completionError && { error: completionError })
-        })
+        const newAssistantFromCompletion = (): ChatMessage =>
+          withPersistedIdentity({
+            id: `assistant-${Date.now()}`,
+            role: 'assistant',
+            parts:
+              completionError && !keepFailedPartialText
+                ? []
+                : [{ ...assistantTextPart(finalText, occurredAt), completedAt: occurredAt }],
+            timestamp: occurredAt,
+            completedAt: occurredAt,
+            branchGroupId: state.pendingBranchGroup ?? undefined,
+            ...(durationS !== undefined ? { durationS } : {}),
+            ...(completionError && { error: completionError }),
+            ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
+          })
 
         const prev = state.messages
         let nextMessages = prev
 
-        if (streamId && prev.some(m => m.id === streamId)) {
-          nextMessages = prev.map(m => (m.id === streamId ? completeMessage(m) : m))
+        // A new prompt or correction starts another occurrence, even when its
+        // text (or answer) repeats. Hidden user rows are boundaries too.
+        // A projected queued prompt is for the NEXT turn while this response
+        // exists. message.start clears payload/interim ownership so a queued
+        // turn completing without deltas still starts its own occurrence.
+        const hasCurrentResponse = Boolean(streamId || state.sawAssistantPayload || interimBoundaryPending)
+
+        const lastUserIndex = prev.findLastIndex(
+          message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
+        )
+
+        const streamIndex = streamId
+          ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)
+          : -1
+
+        const settleAt = (index: number) =>
+          prev.map((message, messageIndex) => (messageIndex === index ? completeMessage(message) : message))
+
+        let collapsed: DuplicateFinalCollapse | null = null
+
+        if (streamIndex >= 0) {
+          collapsed = collapseDuplicateFinalAfterToolInterim(prev, streamIndex, {
+            completeMessage,
+            finalText,
+            hasFailure: Boolean(failure) || Boolean(completionError),
+            interimBoundaryPending
+          })
+          nextMessages = collapsed?.messages ?? settleAt(streamIndex)
         } else {
-          const fallbackIndex = [...prev]
-            .reverse()
-            .findIndex(message => message.role === 'assistant' && !message.hidden)
+          const fallbackIndex = prev.findLastIndex(
+            (message, index) => index > lastUserIndex && message.role === 'assistant' && !message.hidden
+          )
 
           if (fallbackIndex >= 0) {
-            const index = prev.length - 1 - fallbackIndex
+            const index = fallbackIndex
             const existing = prev[index]
-            const existingText = chatMessageText(existing).trim()
+
+            const existingText = chatMessageText({
+              ...existing,
+              parts: existing.interim || keepFailedPartialText ? existing.parts : currentResponseParts(existing.parts)
+            }).trim()
 
             // The last assistant row is a sealed interim (a tool-call turn or a
             // verify-on-stop candidate — `message.interim` fires for BOTH, see
@@ -554,48 +786,124 @@ export function useMessageStream({
             )
 
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
-              nextMessages = prev.map((message, messageIndex) =>
-                messageIndex === index ? completeMessage(message) : message
-              )
-            } else if (interimBoundaryPending && (responsePreviewed || finalContinuesInterim)) {
+              nextMessages = settleAt(index)
+            } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
               // Settle the interim in place instead of creating a duplicate —
-              // the DB has one row, so the live UI must agree. Previously this
-              // was gated on `responsePreviewed` alone, so a NON-previewed
-              // tool-call turn whose final matched its sealed interim appended a
-              // second bubble (the "renders twice: partial first copy + clean
-              // final" bug, #63679). `finalContinuesInterim` closes that gap
-              // for ordinary tool-call turns while `responsePreviewed` still
-              // covers the verify-on-stop continuation-budget case even when the
-              // final text was rewritten and no longer shares a prefix.
-              nextMessages = prev.map((message, messageIndex) =>
-                messageIndex === index ? completeMessage(message) : message
-              )
+              // the DB has one row, so the live UI must agree. Two distinct
+              // settle paths with different boundary requirements:
+              //
+              // • responsePreviewed covers the verify-on-stop continuation-
+              //   budget case, where the final may be a rewrite sharing no
+              //   prefix with the interim. Because there is no continuity
+              //   guarantee, it must stay gated on the session's
+              //   `interimBoundaryPending` flag: after a new `message.start`
+              //   resets the flag, a previewed final is a DISTINCT reply and
+              //   must append its own bubble, never overwrite the interim
+              //   (otherwise interim('old') → message.start →
+              //   complete({response_previewed: true, text: 'new'}) would
+              //   silently destroy 'old').
+              //
+              // • finalContinuesInterim (prefix-either-way continuity, same
+              //   text or one a prefix of the other) is safe to settle
+              //   flag-free within this user occurrence: a `message.start`
+              //   reset between this turn's interim and completion must not
+              //   force an append of a duplicate bubble (#74560). This also
+              //   closes the non-previewed tool-call gap from #63679.
+              nextMessages = settleAt(index)
             } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
-          } else if (finalText) {
-            nextMessages = [...prev, newAssistantFromCompletion()]
+          } else {
+            // Nothing streamed after the boundary and no `message.start` since
+            // the seal: a completion whose text IS the sealed pre-boundary reply
+            // is that reply's own completion (a redirect rejected after the row
+            // was painted, or a steer the model absorbed without new output),
+            // not a second occurrence. Anything else respects the boundary.
+            const sealedIndex =
+              !streamId && interimBoundaryPending && finalText
+                ? prev.findLastIndex(
+                    (message, index) => index < lastUserIndex && message.role === 'assistant' && !message.hidden
+                  )
+                : -1
+
+            const sealed = sealedIndex >= 0 ? prev[sealedIndex] : null
+
+            if (sealed?.interim === true && chatMessageText(sealed).trim() === finalText) {
+              nextMessages = settleAt(sealedIndex)
+            } else if (finalText) {
+              nextMessages = [...prev, newAssistantFromCompletion()]
+            }
           }
         }
 
-        const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
+        // Turn-settle reconciliation: a `tool.complete` event lost to a
+        // degraded websocket leaves its tool row spinning forever. The turn is
+        // provably done here — nothing can still be running — so seal any
+        // tool-call parts that never saw their completion event.
+        nextMessages = sealOpenToolParts(nextMessages)
+
+        const hasInlineError = nextMessages.some(
+          (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden
+        )
+
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
+
+        const sameTurnId = collapsed?.keptId ?? (streamIndex >= 0 ? streamId : null)
+
+        const sameTurnAssistant = sameTurnId
+          ? nextMessages.find(m => m.id === sameTurnId)
+          : nextMessages.findLast((m, index) => index > lastUserIndex && m.role === 'assistant' && !m.hidden)
+
+        const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
+        // Having streamed the reply normally means this window owns the whole
+        // turn and re-reading stored history would be wasted work. That only
+        // holds for a turn it STARTED: an adopted one (resumed onto a session
+        // already running elsewhere) arrives reply-first, with no prompt row,
+        // so it has to hydrate or the user's own message never shows up.
+        // Adopted turns still hydrate so a resume-onto-running session can
+        // pick up the user's prompt row — unless this window already has
+        // visible assistant text and the terminal frame is empty. In that
+        // case hydrate would replace the live bubble with a stored empty
+        // row (#95514; adoptedRunningTurn must not short-circuit).
         shouldHydrate =
-          !completionError && !hasInlineError && !unresolvedUserTail && (!state.sawAssistantPayload || !finalText)
+          !completionError &&
+          !hasInlineError &&
+          // A visible user message with no reply after the terminal frame
+          // means this window never rendered the turn's output. When the
+          // frame also carries no text, the reply only exists in stored
+          // history — hydrate to catch up instead of leaving the transcript
+          // blank until restart (#88036). A non-empty frame still settles
+          // locally, so the user-tail guard keeps applying there.
+          (!unresolvedUserTail || !finalText) &&
+          !(localVisibleText && !finalText) &&
+          (state.adoptedRunningTurn || !state.sawAssistantPayload || !finalText)
 
         return {
           ...state,
           messages: nextMessages,
+          adoptedRunningTurn: false,
           streamId: null,
           pendingBranchGroup: null,
           awaitingResponse: false,
           busy: false,
           needsInput: false,
           interimBoundaryPending: false,
-          turnStartedAt: null
+          turnStartedAt: null,
+          turnLive: false
         }
       })
+
+      // Persistence / mid-turn disk-full failures land as a terminal frame with
+      // an error string, not a rejected prompt.submit. Toast them here so a
+      // full disk never looks like a silent no-reply. Only fire on actual
+      // failure signals — never on a healthy reply that happens to say
+      // "disk full".
+      const diskFullSignal = failure?.error || (failure ? text : '')
+
+      if (diskFullSignal && isDiskFullErrorMessage(diskFullSignal)) {
+        notifyError(new Error(diskFullSignal), translateNow('notifications.errors.diskFull'))
+      }
 
       scheduleSessionsRefresh()
 
@@ -618,20 +926,32 @@ export function useMessageStream({
   )
 
   const failAssistantMessage = useCallback(
-    (sessionId: string, errorMessage: string) => {
+    (sessionId: string, errorMessage: string, occurredAt = Date.now() / 1000, surface?: ErrorSurface | null) => {
       updateSessionState(sessionId, state => {
         const streamId = state.streamId ?? `assistant-error-${Date.now()}`
         const groupId = state.pendingBranchGroup ?? undefined
         const prev = state.messages
         const error = errorMessage.trim() || 'Hermes reported an error'
+        // The `error` event carries no descriptor; the dispatcher may recover
+        // one from the text (SESSION_NOT_OWNED, disk_full) so the card gates
+        // its buttons like a classified turn.
+        const errorSurface = surface ? { errorSurface: surface } : {}
+
+        const durationS = state.turnStartedAt
+          ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
+          : undefined
 
         const nextMessages = prev.some(m => m.id === streamId)
           ? prev.map(message =>
               message.id === streamId
                 ? {
                     ...message,
+                    completedAt: occurredAt,
                     error,
-                    pending: false
+                    ...errorSurface,
+                    parts: completeOpenTimelineParts(message.parts, occurredAt),
+                    pending: false,
+                    ...(durationS !== undefined ? { durationS } : {})
                   }
                 : message
             )
@@ -641,9 +961,13 @@ export function useMessageStream({
                 id: streamId,
                 role: 'assistant' as const,
                 parts: [],
+                timestamp: occurredAt,
+                completedAt: occurredAt,
                 error,
+                ...errorSurface,
                 pending: false,
-                branchGroupId: groupId
+                branchGroupId: groupId,
+                ...(durationS !== undefined ? { durationS } : {})
               }
             ]
 
@@ -657,7 +981,8 @@ export function useMessageStream({
           busy: false,
           needsInput: false,
           interimBoundaryPending: false,
-          turnStartedAt: null
+          turnStartedAt: null,
+          turnLive: false
         }
       })
     },
@@ -676,19 +1001,35 @@ export function useMessageStream({
     failAssistantMessage,
     flushQueuedDeltas,
     finalizeInterimAssistantMessage,
+    hydrateFromStoredSession,
     queryClient,
     refreshHermesConfig,
+    scheduleSessionsRefresh,
     sessionInterrupted,
     sessionStateByRuntimeIdRef,
     updateSessionState,
     upsertToolCall
   })
 
+  // Server→client requests (clarify, approval, sudo, …) from every socket the
+  // registry owns. The request answers itself over the socket it arrived on,
+  // so no owner routing is involved here — only which card to show.
+  const handleServerRequest = useCallback(
+    (request: ScopedServerRequest): boolean =>
+      dispatchServerRequest(
+        request,
+        { activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall },
+        activeSessionIdRef.current
+      ),
+    [activeSessionIdRef, sessionInterrupted, updateSessionState, upsertToolCall]
+  )
+
   return {
     appendAssistantDelta,
     appendReasoningDelta,
     completeAssistantMessage,
     handleGatewayEvent,
+    handleServerRequest,
     finalizeInterimAssistantMessage,
     upsertToolCall
   }

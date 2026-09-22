@@ -17,66 +17,74 @@
  *      the dashboard fanned out.  The sidebar uses it for `session.info`
  *      (live chat title) and `dashboard.new_session_requested`.  The
  *      `channel` id ties this listener to the same chat tab's PTY child —
- *      see `ChatPage.tsx` for where the id is generated.
+ *      see `ChatPage.tsx` for where the id is generated.  Transient drops
+ *      (gateway restart, network blip) auto-reconnect with exponential
+ *      backoff; auth rejections are terminal.  See `lib/events-reconnect`.
  *
  * Best-effort throughout: WS failures show in the badge / banner, the
  * terminal pane keeps working unimpaired.
  */
 
-import { Button } from "@nous-research/ui/ui/components/button";
-import { Badge } from "@nous-research/ui/ui/components/badge";
-import { Card } from "@nous-research/ui/ui/components/card";
+import { Button } from '@nous-research/ui/ui/components/button'
+import { Badge } from '@nous-research/ui/ui/components/badge'
+import { Card } from '@nous-research/ui/ui/components/card'
 
-import { ModelPickerDialog } from "@/components/ModelPickerDialog";
-import { ModelReloadConfirm } from "@/components/ModelReloadConfirm";
-import { ReasoningPicker } from "@/components/ReasoningPicker";
-import { GatewayClient, type ConnectionState } from "@/lib/gatewayClient";
-import { api, buildWsUrl } from "@/lib/api";
-import { titleFromSessionInfoPayload } from "@/lib/chat-title";
+import { ModelPickerDialog } from '@/components/ModelPickerDialog'
+import { ModelReloadConfirm } from '@/components/ModelReloadConfirm'
+import { ReasoningPicker } from '@/components/ReasoningPicker'
+import { GatewayClient, type ConnectionState } from '@/lib/gatewayClient'
+import { EventsFeedClient } from '@/lib/eventsFeedClient'
+import { api } from '@/lib/api'
+import {
+  EVENTS_MAX_RECONNECT_ATTEMPTS,
+  eventsGaveUpMessage,
+  eventsReconnectDelayMs,
+  eventsReconnectingMessage,
+  eventsRejectedMessage,
+  isEventsAuthRejection,
+  isEventsAuthRejectionMessage,
+  isEventsFeedMessage,
+  shouldRetryEventsClose
+} from '@/lib/events-reconnect'
+import { credentialWarning, sidecarErrorMessage } from '@/lib/chat-sidebar-banner'
+import { titleFromSessionInfoPayload } from '@/lib/chat-title'
 
-import { cn } from "@/lib/utils";
-import { AlertCircle, ChevronDown, RefreshCw } from "lucide-react";
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { cn } from '@/lib/utils'
+import { AlertCircle, ChevronDown, KeyRound, RefreshCw } from 'lucide-react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 interface SessionInfo {
-  cwd?: string;
-  model?: string;
-  provider?: string;
-  credential_warning?: string;
-  title?: string;
-}
-
-interface RpcEnvelope {
-  method?: string;
-  params?: { type?: string; payload?: unknown };
+  cwd?: string
+  model?: string
+  provider?: string
+  credential_warning?: string
+  title?: string
 }
 
 const STATE_LABEL: Record<ConnectionState, string> = {
-  idle: "idle",
-  connecting: "connecting",
-  open: "live",
-  closed: "closed",
-  error: "error",
-};
+  idle: 'idle',
+  connecting: 'connecting',
+  open: 'live',
+  closed: 'closed',
+  error: 'error'
+}
 
-const STATE_TONE: Record<
-  ConnectionState,
-  "secondary" | "warning" | "success" | "destructive"
-> = {
-  idle: "secondary",
-  connecting: "warning",
-  open: "success",
-  closed: "secondary",
-  error: "destructive",
-};
+const STATE_TONE: Record<ConnectionState, 'secondary' | 'warning' | 'success' | 'destructive'> = {
+  idle: 'secondary',
+  connecting: 'warning',
+  open: 'success',
+  closed: 'secondary',
+  error: 'destructive'
+}
 
 interface ChatSidebarProps {
-  channel: string;
+  channel: string
   /** Chat profile from the dashboard switcher / URL scope. */
-  profile?: string;
-  className?: string;
-  onDashboardNewSessionRequest?: () => void;
-  onSessionTitleChange?: (title: string | null) => void;
+  profile?: string
+  className?: string
+  onDashboardNewSessionRequest?: () => void
+  onSessionTitleChange?: (title: string | null) => void
 }
 
 /** Build the ``session.create`` params for the sidecar session.
@@ -89,9 +97,9 @@ interface ChatSidebarProps {
 export function sidecarSessionCreateParams(profile?: string): Record<string, unknown> {
   return {
     close_on_disconnect: true,
-    source: "tool",
-    ...(profile ? { profile } : {}),
-  };
+    source: 'tool',
+    ...(profile ? { profile } : {})
+  }
 }
 
 export function ChatSidebar({
@@ -99,20 +107,22 @@ export function ChatSidebar({
   profile,
   className,
   onDashboardNewSessionRequest,
-  onSessionTitleChange,
+  onSessionTitleChange
 }: ChatSidebarProps) {
-  // `version` bumps on reconnect; gw is derived so we never call setState
-  // for it inside an effect (React 19's set-state-in-effect rule). The
-  // counter is the dependency on purpose — it's not read in the memo body,
-  // it's the signal that says "rebuild the client".
-  const [version, setVersion] = useState(0);
-  // eslint-disable-next-line react-hooks/exhaustive-deps
-  const gw = useMemo(() => new GatewayClient(), [version]);
+  const navigate = useNavigate()
+  // `version` bumps on reconnect (manual button, profile/channel switch) and
+  // re-runs the socket effects. The clients themselves live for the whole
+  // component: the shared client keeps per-session seq watermarks and asks
+  // the gateway to replay the gap on the next `connect()`, which only works
+  // when the SAME instance survives the drop.
+  const [version, setVersion] = useState(0)
+  const gw = useMemo(() => new GatewayClient(), [])
+  const feed = useMemo(() => new EventsFeedClient(), [])
 
-  const [state, setState] = useState<ConnectionState>("idle");
-  const [info, setInfo] = useState<SessionInfo>({});
-  const [modelOpen, setModelOpen] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [state, setState] = useState<ConnectionState>('idle')
+  const [info, setInfo] = useState<SessionInfo>({})
+  const [modelOpen, setModelOpen] = useState(false)
+  const [error, setError] = useState<string | null>(null)
   // The badge shows config.yaml's main model (`model.default`) via
   // `/api/model/info` — the same value the Models page writes and a new chat
   // session boots from. We deliberately don't use the sidecar's `session.info`
@@ -121,77 +131,79 @@ export function ChatSidebar({
   // elsewhere, so the badge would go stale. Pass the chat profile explicitly so
   // this card stays scoped to the PTY even if the global dashboard switcher
   // changes while the chat is open.
-  const [effectiveModel, setEffectiveModel] = useState("");
+  const [effectiveModel, setEffectiveModel] = useState('')
   // Whether the effective model supports reasoning effort — gates the
   // ReasoningPicker. Read from the same `/api/model/info` capabilities the
   // (currently unused) ModelInfoCard surfaces, so the dashboard exposes a
   // control to *set* the level, not just a read-only "Reasoning" badge.
-  const [supportsReasoning, setSupportsReasoning] = useState(false);
+  const [supportsReasoning, setSupportsReasoning] = useState(false)
   // Bumped on model change/save so ReasoningPicker re-reads the saved effort
   // (config is profile-scoped the same way the model badge is).
-  const [modelRefreshKey, setModelRefreshKey] = useState(0);
+  const [modelRefreshKey, setModelRefreshKey] = useState(0)
   // Set after the picker saves a model and the user declines the reload: config
   // is updated but the running session keeps its model until rebuilt.
-  const [modelNotice, setModelNotice] = useState<string | null>(null);
+  const [modelNotice, setModelNotice] = useState<string | null>(null)
   // Short name of a just-saved model awaiting confirm to reload (a fresh chat
   // session is how the running chat adopts it; we confirm before discarding it).
-  const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(
-    null,
-  );
+  const [pendingReloadModel, setPendingReloadModel] = useState<string | null>(null)
 
   const refreshEffectiveModel = useCallback(() => {
     void api
       .getModelInfo(profile)
-      .then((r) => {
-        if (r?.model) setEffectiveModel(String(r.model));
-        setSupportsReasoning(!!r?.capabilities?.supports_reasoning);
+      .then(r => {
+        if (r?.model) setEffectiveModel(String(r.model))
+        setSupportsReasoning(!!r?.capabilities?.supports_reasoning)
         // Bump so ReasoningPicker re-reads the saved effort for the new model.
-        setModelRefreshKey((k) => k + 1);
+        setModelRefreshKey(k => k + 1)
       })
       .catch(() => {
         // Best-effort: keep the last known label rather than blanking it.
-      });
-  }, [profile]);
+      })
+  }, [profile])
 
   // Profile or PTY channel change tears down both WebSockets. Bump `version`
   // (same path as the manual Reconnect button) so the gateway client is
   // recreated and the events feed resubscribes — otherwise the old events
   // socket's close handler can leave a stale error banner after a switch.
-  const scopeKey = `${channel}\0${profile ?? ""}`;
-  const prevScopeKey = useRef<string | null>(null);
+  const scopeKey = `${channel}\0${profile ?? ''}`
+  const prevScopeKey = useRef<string | null>(null)
   useEffect(() => {
     if (prevScopeKey.current === null) {
-      prevScopeKey.current = scopeKey;
-      return;
+      prevScopeKey.current = scopeKey
+      return
     }
-    if (prevScopeKey.current === scopeKey) return;
-    prevScopeKey.current = scopeKey;
-    setError(null);
-    setVersion((v) => v + 1);
-  }, [scopeKey]);
+    if (prevScopeKey.current === scopeKey) return
+    prevScopeKey.current = scopeKey
+    setError(null)
+    setVersion(v => v + 1)
+  }, [scopeKey])
 
   useEffect(() => {
-    let cancelled = false;
+    let cancelled = false
     queueMicrotask(() => {
-      if (cancelled) return;
-      setInfo({});
-      setError(null);
-    });
-    const offState = gw.onState(setState);
+      if (cancelled) return
+      setInfo({})
+      setError(null)
+    })
+    const offState = gw.onState(setState)
 
-    const offSessionInfo = gw.on<SessionInfo>("session.info", (ev) => {
-      if (ev.payload) {
-        setInfo((prev) => ({ ...prev, ...ev.payload }));
+    const offSessionInfo = gw.on('session.info', ev => {
+      // session.info is surface-specific on the wire; narrow to the fields this sidebar reads.
+      const payload = ev.payload as SessionInfo | undefined
+
+      if (payload) {
+        setInfo(prev => ({ ...prev, ...payload }))
       }
-    });
+    })
 
-    const offError = gw.on<{ message?: string }>("error", (ev) => {
-      const message = ev.payload?.message;
+    const offError = gw.on('error', ev => {
+      const message = ev.payload?.message
 
       if (message) {
-        setError(message);
+        console.warn(`[chat-sidebar] sidecar error: ${message}`)
+        setError(sidecarErrorMessage(message))
       }
-    });
+    })
 
     // Create the sidecar session so the gateway surfaces session-scoped
     // signals (connection state, credential warnings). It's independent of the
@@ -200,145 +212,188 @@ export function ChatSidebar({
     gw.connect()
       .then(() => {
         if (cancelled) {
-          return;
+          return
         }
         // close_on_disconnect: the gateway reaps this sidecar session (and its
         // slash_worker subprocess) when the WS drops, instead of leaking it.
-        return gw.request<{ session_id: string }>("session.create", sidecarSessionCreateParams(profile));
+        return gw.request<{ session_id: string }>('session.create', sidecarSessionCreateParams(profile))
       })
       .catch((e: Error) => {
         if (!cancelled) {
-          setError(e.message);
+          console.warn(`[chat-sidebar] sidecar connect failed: ${e.message}`)
+          setError(sidecarErrorMessage(e.message))
         }
-      });
+      })
 
     return () => {
-      cancelled = true;
-      offState();
-      offSessionInfo();
-      offError();
-      gw.close();
-    };
-    // `profile` is read from render; scope changes bump `version` → new `gw`.
+      cancelled = true
+      offState()
+      offSessionInfo()
+      offError()
+      gw.close()
+    }
+    // `profile` is read from render; scope changes bump `version` → redial.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [gw]);
+  }, [gw, version])
 
   // Event subscriber WebSocket — receives the rebroadcast of every
   // dispatcher emit from the PTY child's gateway.  See /api/pub +
   // /api/events in hermes_cli/web_server.py for the broadcast hop.
   //
-  // Failures (auth/loopback rejection, server too old to expose the
-  // endpoint, transient drops) surface in the same banner as the
-  // JSON-RPC sidecar so the sidebar matches its documented best-effort
-  // UX and the user always has a reconnect affordance.
+  // Framing, dispatch and connect timeout come from the shared JSON-RPC
+  // client (`EventsFeedClient`); this effect owns only the retry policy and
+  // the banner. Failures (auth/loopback rejection, server too old to expose
+  // the endpoint, transient drops) surface in the same banner as the
+  // JSON-RPC sidecar so the sidebar matches its documented best-effort UX
+  // and the user always has a reconnect affordance.
   useEffect(() => {
     if (!channel) {
-      return;
+      return
     }
-    // In loopback mode the legacy ?token=<session> path is fine; in gated
-    // mode we have to mint a single-use ticket from the cookie. The IIFE
-    // keeps the outer effect synchronous so its ``return cleanup`` stays
-    // at the top level; the local ``ws`` is hoisted to a closed-over
-    // binding the cleanup reads via ``wsRef``.
-    let unmounting = false;
-    let ws: WebSocket | null = null;
-    void (async () => {
-      const url = await buildWsUrl("/api/events", { channel });
-      if (unmounting) {
-        return;
+    let unmounting = false
+    let reconnectTimer: ReturnType<typeof setTimeout> | null = null
+    let attempt = 0
+
+    // The banner is shared with `info.credential_warning` and the JSON-RPC
+    // sidecar, and `error` is those messages' only home — the sidecar does
+    // not re-emit. So the events feed may only write over an empty banner
+    // or one of its own messages, and may only clear its own.
+    const surface = (msg: string) =>
+      !unmounting && setError(current => (isEventsFeedMessage(current) ? msg : (current ?? msg)))
+
+    const clearEventsBanner = () => !unmounting && setError(current => (isEventsFeedMessage(current) ? null : current))
+
+    // Single scheduling path: the client collapses `error` + `close` of one
+    // socket generation into one `closed` transition, so only one timer is
+    // ever queued per drop.
+    const scheduleReconnect = () => {
+      if (unmounting || reconnectTimer) {
+        return
       }
-      ws = new WebSocket(url);
+      if (attempt >= EVENTS_MAX_RECONNECT_ATTEMPTS) {
+        surface(eventsGaveUpMessage())
+        return
+      }
 
-      // `unmounting` suppresses the banner during cleanup — `ws.close()`
-      // from the effect's return fires a close event with code 1005 that
-      // would otherwise look like an unexpected drop.
-      const DISCONNECTED = "events feed disconnected — tool calls may not appear";
-      const surface = (msg: string) => !unmounting && setError(msg);
+      const delay = eventsReconnectDelayMs(attempt)
+      attempt += 1
+      surface(eventsReconnectingMessage(delay))
 
-      ws.addEventListener("error", () => surface(DISCONNECTED));
+      reconnectTimer = setTimeout(() => {
+        reconnectTimer = null
+        void connect()
+      }, delay)
+    }
 
-      ws.addEventListener("close", (ev) => {
-        if (ev.code === 4401 || ev.code === 4403) {
-          surface(`events feed rejected (${ev.code}) — reload the page`);
-        } else if (ev.code !== 1000) {
-          surface(DISCONNECTED);
+    const connect = async () => {
+      if (unmounting) {
+        return
+      }
+      try {
+        // Re-minted every attempt: tickets are single-use with a short TTL,
+        // so a reconnect cannot replay the URL from the first connection.
+        await feed.connect(channel)
+      } catch {
+        // Connect-phase failures (ticket mint, handshake timeout, close
+        // during handshake) reach the reconnect ladder through the close
+        // handler when a socket existed; a pre-socket failure has no close
+        // event, so schedule here. `onClose` de-dupes via `reconnectTimer`.
+        if (!unmounting && feed.lastCloseCode === null) {
+          scheduleReconnect()
         }
-      });
+      }
+    }
 
-      ws.addEventListener("message", (ev) => {
-        let frame: RpcEnvelope;
+    const offClose = feed.onClose(code => {
+      if (unmounting) {
+        return
+      }
+      console.warn(`[chat-sidebar] events feed closed code=${code ?? 'none'}`)
+      if (code !== undefined && isEventsAuthRejection(code)) {
+        surface(eventsRejectedMessage(code))
+        return
+      }
+      // `undefined` = handshake timeout / error without a close frame.
+      if (shouldRetryEventsClose(code)) {
+        scheduleReconnect()
+      }
+    })
 
-        try {
-          frame = JSON.parse(ev.data);
-        } catch {
-          return;
-        }
+    const offState = feed.onState(state => {
+      if (state === 'open') {
+        attempt = 0
+        clearEventsBanner()
+      }
+    })
 
-        if (frame.method !== "event" || !frame.params) {
-          return;
-        }
+    const offSessionInfo = feed.on('session.info', ev => {
+      const title = titleFromSessionInfoPayload(ev.payload)
+      if (title !== undefined) {
+        onSessionTitleChange?.(title)
+      }
+    })
+    const offNewSession = feed.on('dashboard.new_session_requested', () => {
+      onDashboardNewSessionRequest?.()
+    })
 
-        const { type, payload } = frame.params;
-
-        if (type === "session.info") {
-          const title = titleFromSessionInfoPayload(payload);
-          if (title !== undefined) {
-            onSessionTitleChange?.(title);
-          }
-        } else if (type === "dashboard.new_session_requested") {
-          onDashboardNewSessionRequest?.();
-        }
-      });
-    })();
+    void connect()
 
     return () => {
-      unmounting = true;
-      ws?.close();
-    };
-  }, [channel, onDashboardNewSessionRequest, onSessionTitleChange, version]);
+      unmounting = true
+      if (reconnectTimer) {
+        clearTimeout(reconnectTimer)
+        reconnectTimer = null
+      }
+      offClose()
+      offState()
+      offSessionInfo()
+      offNewSession()
+      feed.close()
+    }
+  }, [channel, feed, onDashboardNewSessionRequest, onSessionTitleChange, version])
 
   // Seed the badge on mount and re-read it whenever the sockets are rebuilt
   // (a profile/channel switch bumps `version`).
   useEffect(() => {
-    refreshEffectiveModel();
-  }, [refreshEffectiveModel, version]);
+    refreshEffectiveModel()
+  }, [refreshEffectiveModel, version])
 
   const reconnect = useCallback(() => {
-    setError(null);
-    setModelNotice(null);
-    setPendingReloadModel(null);
-    setVersion((v) => v + 1);
-  }, []);
+    setError(null)
+    setModelNotice(null)
+    setPendingReloadModel(null)
+    setVersion(v => v + 1)
+  }, [])
 
   // The picker writes config.yaml over REST and reloads — it doesn't ride the
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
-  const modelName = effectiveModel || info.model || "—";
-  const modelLabel = modelName.split("/").slice(-1)[0] ?? "—";
-  const banner = error ?? info.credential_warning ?? null;
+  const modelName = effectiveModel || info.model || '—'
+  const modelLabel = modelName.split('/').slice(-1)[0] ?? '—'
+  const credential = credentialWarning(info.credential_warning)
+  const banner = error ?? credential?.message ?? null
+  const showReload = isEventsAuthRejectionMessage(error)
 
   return (
     <aside
       className={cn(
-        "flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1",
-        className,
+        'flex h-full w-full min-w-0 shrink-0 flex-col gap-3 overflow-y-auto overflow-x-hidden pr-1',
+        className
       )}
     >
       <Card className="flex items-center justify-between gap-2 px-3 py-2">
         <div className="min-w-0 flex-1">
-          <div className="text-display text-xs tracking-wider text-text-tertiary">
-            model
-          </div>
+          <div className="text-display text-xs tracking-wider text-text-tertiary">model</div>
 
           <Button
             ghost
             size="sm"
             onClick={() => setModelOpen(true)}
             className={cn(
-              "max-w-full min-w-0 px-0 py-0",
-              "self-start normal-case tracking-normal text-sm font-medium",
-              "hover:underline disabled:no-underline",
+              'max-w-full min-w-0 px-0 py-0',
+              'self-start normal-case tracking-normal text-sm font-medium',
+              'hover:underline disabled:no-underline'
             )}
-            title={modelName === "—" ? "switch model" : modelName}
+            title={modelName === '—' ? 'switch model' : modelName}
           >
             <span className="flex min-w-0 max-w-full items-center gap-1">
               <span className="truncate">{modelLabel}</span>
@@ -359,9 +414,9 @@ export function ChatSidebar({
             currentModel={modelName}
             profile={profile}
             refreshKey={modelRefreshKey}
-            onChanged={(effort) =>
+            onChanged={effort =>
               setModelNotice(
-                `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`,
+                `Reasoning effort set to ${effort}. Run /new or refresh the page to apply it to this chat.`
               )
             }
           />
@@ -372,9 +427,7 @@ export function ChatSidebar({
         <Card className="flex items-start gap-2 border-warning/40 bg-warning/5 px-3 py-2 text-xs">
           <AlertCircle className="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" />
 
-          <div className="wrap-break-word min-w-0 flex-1 text-text-secondary">
-            {modelNotice}
-          </div>
+          <div className="wrap-break-word min-w-0 flex-1 text-text-secondary">{modelNotice}</div>
         </Card>
       )}
 
@@ -385,16 +438,39 @@ export function ChatSidebar({
           <div className="min-w-0 flex-1">
             <div className="wrap-break-word text-destructive">{banner}</div>
 
-            {error && (
+            {error && showReload && (
               <Button
                 size="sm"
                 outlined
                 className="mt-1"
-                onClick={reconnect}
+                onClick={() => window.location.reload()}
                 prefix={<RefreshCw />}
               >
-                reconnect tools feed
+                Reload page
               </Button>
+            )}
+            {error && !showReload && (
+              <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
+                Reconnect side panel
+              </Button>
+            )}
+            {!error && credential && (
+              <div className="mt-1 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  outlined
+                  prefix={<KeyRound />}
+                  // Router navigation: a full page load would tear down the
+                  // xterm scrollback and the chat sockets. (The mobile portal
+                  // still lives under ChatPage, so router context is present.)
+                  onClick={() => navigate('/env')}
+                >
+                  Add key
+                </Button>
+                <Button size="sm" outlined onClick={() => setModelOpen(true)}>
+                  Switch model
+                </Button>
+              </div>
             )}
           </div>
         </Card>
@@ -408,29 +484,29 @@ export function ChatSidebar({
           loader={() => api.getModelOptions(profile)}
           alwaysGlobal
           onApply={async ({ provider, model, confirmExpensiveModel }) => {
-            setModelNotice(null);
-            setPendingReloadModel(null);
+            setModelNotice(null)
+            setPendingReloadModel(null)
             const result = await api.setModelAssignment(
               {
                 confirm_expensive_model: confirmExpensiveModel,
-                scope: "main",
+                scope: 'main',
                 provider,
-                model,
+                model
               },
-              profile,
-            );
+              profile
+            )
             // confirm_required => the dialog shows the expensive-model prompt
             // and calls back; don't announce until the user confirms.
             if (!result.confirm_required) {
-              refreshEffectiveModel();
+              refreshEffectiveModel()
               // Ask before reloading: applying the model starts a fresh chat.
-              setPendingReloadModel(model.split("/").slice(-1)[0]);
+              setPendingReloadModel(model.split('/').slice(-1)[0])
             }
-            return result;
+            return result
           }}
           onClose={() => {
-            setModelOpen(false);
-            refreshEffectiveModel();
+            setModelOpen(false)
+            refreshEffectiveModel()
           }}
         />
       )}
@@ -438,13 +514,11 @@ export function ChatSidebar({
       <ModelReloadConfirm
         model={pendingReloadModel}
         onCancel={() => {
-          const m = pendingReloadModel;
-          setPendingReloadModel(null);
-          setModelNotice(
-            `Model set to ${m}. Run /new or refresh the page to apply it to this chat.`,
-          );
+          const m = pendingReloadModel
+          setPendingReloadModel(null)
+          setModelNotice(`Model set to ${m}. Run /new or refresh the page to apply it to this chat.`)
         }}
       />
     </aside>
-  );
+  )
 }

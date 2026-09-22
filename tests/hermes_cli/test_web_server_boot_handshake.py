@@ -32,6 +32,7 @@ from unittest.mock import patch
 import pytest
 
 import hermes_cli.web_server as web_server_mod
+import hermes_cli.web_server_lifecycle as _web_server_lifecycle
 
 SLOW_SECONDS = 1  # represents the Defender worst-case (scaled down for CI speed)
 
@@ -84,6 +85,57 @@ def test_lifespan_warmup_is_synchronous():
     )
 
 
+def test_hosted_room_recovery_cannot_block_or_abort_backend_startup(monkeypatch):
+    from fastapi.testclient import TestClient
+    from tui_gateway import methods_groups
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def blocked_failure():
+        started.set()
+        release.wait(timeout=2.0)
+        raise RuntimeError("state.db is locked")
+
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(methods_groups, "start_hosted_room_service", blocked_failure)
+    monkeypatch.setattr(methods_groups, "stop_hosted_room_service", lambda **_kwargs: True)
+
+    before = time.perf_counter()
+    with TestClient(web_server_mod.app, raise_server_exceptions=False):
+        assert started.wait(timeout=1.0)
+        assert time.perf_counter() - before < 1.0
+        release.set()
+
+
+def test_lifespan_shutdown_joins_statedb_reconcile_worker(monkeypatch):
+    """The eager state.db reconcile runs off the startup path but never outlives
+    the lifespan: shutdown joins it, so its sqlite connection is only ever closed
+    by the thread stepping it (a daemon copy left running had its connection
+    closed cross-thread by teardown and segfaulted the interpreter)."""
+    from fastapi.testclient import TestClient
+
+    started = threading.Event()
+    finished = threading.Event()
+
+    def slow_reconcile():
+        started.set()
+        time.sleep(SLOW_SECONDS)
+        finished.set()
+
+    monkeypatch.setattr(web_server_mod, "_warm_gateway_module", lambda: None)
+    monkeypatch.setattr(web_server_mod, "_eager_reconcile_own_session_db", slow_reconcile)
+
+    before = time.perf_counter()
+    with TestClient(web_server_mod.app, raise_server_exceptions=False):
+        assert started.wait(timeout=1.0)
+        # Off the startup path: the socket is up long before the worker is done.
+        assert time.perf_counter() - before < SLOW_SECONDS * 0.8
+
+    assert finished.is_set(), "lifespan shutdown returned before the reconcile worker finished"
+    assert not any(t.name == "statedb-eager-reconcile" for t in threading.enumerate())
+
+
 # ---------------------------------------------------------------------------
 # Test 2 — get_status run_in_executor keeps event loop free for other requests
 # ---------------------------------------------------------------------------
@@ -126,7 +178,7 @@ def test_get_status_does_not_block_event_loop():
                 tg.create_task(_version())
 
     with patch.object(
-        web_server_mod, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
+        _web_server_lifecycle, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
     ):
         asyncio.run(_run())
 
@@ -181,7 +233,7 @@ def test_concurrent_status_probes_all_respond():
                     responses.append(r.status_code)
 
     with patch.object(
-        web_server_mod, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
+        _web_server_lifecycle, "_resolve_restart_drain_timeout", _make_slow_drain(SLOW_SECONDS)
     ):
         asyncio.run(_run())
 

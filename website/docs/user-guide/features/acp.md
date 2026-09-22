@@ -89,7 +89,7 @@ This is the standalone command. The terminal-auth flow (`hermes acp --setup`) al
 
 What it does:
 
-- Installs Node.js 22 LTS into `~/.hermes/node/` if missing
+- Installs Node.js 26 into `~/.hermes/node/` if missing
 - `npm install -g agent-browser @askjo/camofox-browser` into that prefix (no sudo needed — `npm`'s `--prefix` points at the user-writable Hermes-managed Node)
 - Installs Playwright Chromium, or uses a detected system Chrome/Chromium when available
 
@@ -323,7 +323,16 @@ Each session stores:
 - current conversation history
 - cancel event
 
-The underlying `AIAgent` still uses Hermes' normal persistence/logging paths, but ACP `list/load/resume/fork` are scoped to the currently running ACP server process.
+Conversations are persisted to Hermes' session database and can be listed, loaded,
+resumed, or forked after the ACP server restarts. Opening a new session without a
+prompt keeps it in memory only: model-discovery probes do not create empty history
+rows. A nonempty fork is persisted immediately, and existing session metadata can
+still be updated even when its current history is empty.
+
+Existing empty rows from older versions are not automatically deleted. An open ACP
+row does not prove its client has disconnected. After closing the relevant editor
+sessions, inspect unwanted rows with `hermes sessions show <id>` and remove only
+confirmed unwanted sessions with `hermes sessions delete <id>`.
 
 ## Working directory behavior
 
@@ -342,7 +351,9 @@ request programmatically instead of showing it to you, in which case these
 options exist on the wire but never reach a human. Buzz Desktop does this, so
 treat that path as unattended execution regardless of your `approvals` setting.
 
-On timeout or error, the approval bridge denies the request.
+On timeout or error, the approval bridge denies the request. The wait is
+`approvals.timeout` from `config.yaml` (default 300 s), the same knob the CLI and
+gateway prompts use — raise it if your editor keeps approval cards open longer.
 
 ### Session-scoped edit auto-approval
 

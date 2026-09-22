@@ -10,6 +10,7 @@ from agent.display import (
     capture_local_edit_snapshot,
     extract_edit_diff,
     get_cute_tool_message,
+    prepare_tool_preview,
     redact_tool_args_for_display,
     set_tool_preview_max_len,
     _render_inline_unified_diff,
@@ -104,6 +105,59 @@ class TestBuildToolPreview:
         assert build_tool_preview("terminal", 0) is None
         assert build_tool_preview("terminal", "") is None
         assert build_tool_preview("terminal", []) is None
+
+    @pytest.mark.parametrize("max_len", [1, 2, 3, 4])
+    def test_tiny_max_len_never_exceeded(self, max_len):
+        """max_len is a hard cap on every preview path — dedicated builder (terminal), generic
+        fallback key (web_search), and the cute head-truncated path (#9439)."""
+        from agent.display import _cute_path, set_tool_preview_max_len
+        long = "abcdefghijklmnopqrstuvwxyz"
+        for tool, args in (("terminal", {"command": long}), ("web_search", {"query": long})):
+            preview = build_tool_preview(tool, args, max_len=max_len)
+            assert preview and len(preview) <= max_len, (tool, preview)
+        set_tool_preview_max_len(max_len)
+        try:
+            assert len(_cute_path("/" + long + "/file.py")) <= max_len
+        finally:
+            set_tool_preview_max_len(0)
+
+
+class TestPrepareToolPreview:
+    def test_recovers_and_describes_truncated_url(self):
+        url = "https://example.com/a/very/long/path/to/a/page"
+        set_tool_preview_max_len(20)
+
+        preview = prepare_tool_preview(
+            "web_extract",
+            {"urls": [url]},
+            fallback=url[:17] + "...",
+            max_len=20,
+        )
+
+        assert preview.text == url[:17] + "..."
+        assert preview.truncated is True
+        assert preview.url == url
+
+    def test_untruncated_url_has_no_link_target(self):
+        url = "https://example.com/page"
+        preview = prepare_tool_preview(
+            "browser_navigate", None, fallback=url, max_len=40
+        )
+
+        assert preview.text == url
+        assert preview.truncated is False
+        assert preview.url is None
+
+    def test_truncated_non_url_has_no_link_target(self):
+        preview = prepare_tool_preview(
+            "web_search",
+            {"query": "how to parse a URL"},
+            fallback="how to parse a URL",
+            max_len=12,
+        )
+
+        assert preview.truncated is True
+        assert preview.url is None
 
 
 class TestCuteToolMessagePreviewLength:
@@ -275,4 +329,3 @@ class TestBuildStatusPhrase:
             assert build_status_phrase("terminal", {"command": "ls"}) is None
         finally:
             set_friendly_tool_labels(True)
-

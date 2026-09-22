@@ -10,7 +10,17 @@ const MAX_SNAPSHOT_BYTES = 8 * 1024 * 1024
 const MAX_PAGE_SIZE = 50
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
 
-export type ManagedRolloutIpcMethod = 'capabilities' | 'activeRevision' | 'get' | 'command' | 'history' | 'events'
+export type ManagedRolloutIpcMethod =
+  | 'capabilities'
+  | 'inventory'
+  | 'resolveTarget'
+  | 'preflight'
+  | 'start'
+  | 'activeRevision'
+  | 'get'
+  | 'command'
+  | 'history'
+  | 'events'
 
 export interface ManagedRolloutIpcCapabilities {
   protocol: 1
@@ -30,6 +40,10 @@ export interface ManagedRolloutIpcCommand {
 
 export interface ManagedRolloutIpcAdapter {
   capabilities: () => Promise<ManagedRolloutIpcCapabilities>
+  inventory?: () => Promise<unknown>
+  resolveTarget?: (request: { connectionIds: string[]; inventoryRevision: string; retryOf: string | null }) => Promise<unknown>
+  preflight?: (draft: unknown) => Promise<unknown>
+  start?: (request: { token: string; requestId: string }) => Promise<unknown>
   activeRevision: () => Promise<number | null>
   get: (id: string) => Promise<unknown | null>
   command: (command: ManagedRolloutIpcCommand) => Promise<{ ok: boolean; id: string; revision: number; code?: string }>
@@ -100,6 +114,32 @@ function command(value: unknown): ManagedRolloutIpcCommand | null {
   return { id, revision: value.revision as number, requestId, kind: kind as ManagedRolloutIpcCommand['kind'], ...(installId ? { installId } : {}) }
 }
 
+function exactString(value: unknown, maxLength: number): value is string {
+  return typeof value === 'string' && value.length > 0 && value.length <= maxLength && !/[\x00-\x1f\x7f]/.test(value)
+}
+
+function resolveTargetRequest(value: unknown): { connectionIds: string[]; inventoryRevision: string; retryOf: string | null } | null {
+  if (!isObject(value) || !exactKeys(value, ['connectionIds', 'inventoryRevision', 'retryOf'])) return null
+  if (!Array.isArray(value.connectionIds) || value.connectionIds.length === 0 || value.connectionIds.length > 500) return null
+  const connectionIds = value.connectionIds.map(identifier)
+  if (connectionIds.some(id => id === null) || new Set(connectionIds).size !== connectionIds.length) return null
+  if (!exactString(value.inventoryRevision, 256)) return null
+  if (value.retryOf !== null && !identifier(value.retryOf)) return null
+  return { connectionIds: connectionIds as string[], inventoryRevision: value.inventoryRevision, retryOf: value.retryOf as string | null }
+}
+
+function preflightDraft(value: unknown): unknown | null {
+  if (!isObject(value) || !exactKeys(value, ['draft']) || !isObject(value.draft)) return null
+  return value.draft
+}
+
+function startRequest(value: unknown): { token: string; requestId: string } | null {
+  if (!isObject(value) || !exactKeys(value, ['token', 'requestId'])) return null
+  const requestId = identifier(value.requestId)
+  if (!requestId || !exactString(value.token, 4096)) return null
+  return { token: value.token, requestId }
+}
+
 function rejected(code: Extract<ManagedRolloutIpcResult, { ok: false }>['code'], message: string): ManagedRolloutIpcResult {
   return { ok: false, code, message }
 }
@@ -111,14 +151,42 @@ export function createManagedRolloutIpcHandler(
   return async (context: ManagedRolloutIpcContext, method: unknown, payload: unknown): Promise<ManagedRolloutIpcResult> => {
     if (!isTrustedSender(context.sender)) return rejected('forbidden', 'Managed rollout IPC requires a trusted sender.')
     if (byteLength(payload) > MAX_REQUEST_BYTES) return rejected('invalid-request', 'Managed rollout IPC request exceeds 256 KiB.')
-    if (typeof method !== 'string' || !['capabilities', 'activeRevision', 'get', 'command', 'history', 'events'].includes(method)) {
+    if (typeof method !== 'string' || ![
+      'capabilities', 'inventory', 'resolveTarget', 'preflight', 'start',
+      'activeRevision', 'get', 'command', 'history', 'events'
+    ].includes(method)) {
       return rejected('invalid-request', 'Managed rollout IPC method is not allowed.')
     }
 
     try {
-      if (method === 'capabilities' || method === 'activeRevision') {
+      if (method === 'capabilities' || method === 'inventory' || method === 'activeRevision') {
         if (payload !== undefined) return rejected('invalid-request', 'This managed rollout IPC method does not accept a payload.')
+        if (method === 'inventory') {
+          if (!adapter.inventory) throw new Error('Managed rollout service is unavailable.')
+          return { ok: true, value: await adapter.inventory() }
+        }
         return { ok: true, value: method === 'capabilities' ? await adapter.capabilities() : await adapter.activeRevision() }
+      }
+
+      if (method === 'resolveTarget') {
+        const parsed = resolveTargetRequest(payload)
+        if (!parsed) return rejected('invalid-request', 'Managed rollout target-resolution request is invalid.')
+        if (!adapter.resolveTarget) throw new Error('Managed rollout service is unavailable.')
+        return { ok: true, value: await adapter.resolveTarget(parsed) }
+      }
+
+      if (method === 'preflight') {
+        const draft = preflightDraft(payload)
+        if (draft === null) return rejected('invalid-request', 'Managed rollout preflight request is invalid.')
+        if (!adapter.preflight) throw new Error('Managed rollout service is unavailable.')
+        return { ok: true, value: await adapter.preflight(draft) }
+      }
+
+      if (method === 'start') {
+        const parsed = startRequest(payload)
+        if (!parsed) return rejected('invalid-request', 'Managed rollout start request is invalid.')
+        if (!adapter.start) throw new Error('Managed rollout service is unavailable.')
+        return { ok: true, value: await adapter.start(parsed) }
       }
 
       if (method === 'get') {

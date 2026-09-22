@@ -58,6 +58,28 @@ test('pages and snapshots are bounded while revision reads carry no arbitrary pa
   assert.equal((await handler({ sender: {} }, 'get', { id: ID })).ok, true)
 })
 
+test('new provider routes are explicit and fail closed when the provider method is unavailable', async () => {
+  const fixture = adapter()
+  const handler = createManagedRolloutIpcHandler(fixture.value, () => true)
+
+  const inventory = await handler({ sender: {} }, 'inventory', undefined)
+  const target = await handler(
+    { sender: {} },
+    'resolveTarget',
+    { connectionIds: [ID], inventoryRevision: 'inventory-1', retryOf: null }
+  )
+  const preflight = await handler({ sender: {} }, 'preflight', { draft: {} })
+  const start = await handler({ sender: {} }, 'start', { token: 'token-1', requestId: REQUEST })
+
+  for (const result of [inventory, target, preflight, start]) {
+    assert.deepEqual(result, {
+      ok: false,
+      code: 'unavailable',
+      message: 'Managed rollout service is unavailable.'
+    })
+  }
+})
+
 test('oversized requests fail before an adapter can mutate state', async () => {
   const fixture = adapter()
   const handler = createManagedRolloutIpcHandler(fixture.value, () => true)

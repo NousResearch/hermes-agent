@@ -2,6 +2,7 @@ import { contextBridge, ipcRenderer, webFrame, webUtils } from 'electron'
 
 import type { DesktopProfileRoute } from './desktop-profile'
 import type { HudModifierApi, HudModifierStatus } from './hud-modifier-types'
+import { createManagedRolloutsBridge } from './preload-managed-rollouts'
 import { customWindowControlsEnabled } from './window-controls'
 
 // Which translucency the OS can back. Asked synchronously because the renderer
@@ -273,9 +274,8 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setSecretStorageEncryption: (on: boolean) => ipcRenderer.invoke('hermes:secret-storage:set', on),
   // v2 multi-connection registry: named agent sources (local / remote / cloud / ssh).
   connections: {
-    managedRollouts: {
-      capabilities: () => ipcRenderer.invoke('hermes:managed-rollouts:capabilities')
-    },
+    managedRollouts: createManagedRolloutsBridge(ipcRenderer),
+
     list: () => ipcRenderer.invoke('hermes:connections:list'),
     save: payload => ipcRenderer.invoke('hermes:connections:save', payload),
     remove: id => ipcRenderer.invoke('hermes:connections:remove', id),

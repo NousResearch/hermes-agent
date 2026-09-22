@@ -295,6 +295,7 @@ import {
   waitForManagedSshBootstrapFence
 } from './managed-ssh-update'
 import { createManagedSshUpdateService } from './managed-ssh-update-service'
+import { registerManagedRolloutIpc } from './managed-rollout-ipc-runtime'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
@@ -16327,16 +16328,13 @@ async function requestManagedSshUpdate(rawId) {
 
 ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
 
-// T12.3 intentionally exports no rollout mutation surface until main owns the
-// trusted #92618 source, inventory, and assurance readers. A present bridge is
-// therefore an explicit fail-closed capability, not a legacy fallback.
-ipcMain.handle('hermes:managed-rollouts:capabilities', async () => ({
-  protocol: 1,
-  available: false,
-  reason: 'trusted-assurance-provider-unavailable',
-  maxConcurrency: 0,
-  maxInstallations: 0
-}))
+// Managed rollout routes stay behind the main-window sender gate. The default
+// adapter is fail-closed until trusted source, inventory, and assurance readers
+// are available; it never delegates to the single-install updater.
+registerManagedRolloutIpc(
+  ipcMain,
+  sender => Boolean(mainWindow && !mainWindow.isDestroyed() && sender === mainWindow.webContents)
+)
 
 // Fan out `hermes update` to every eligible registered connection at once.
 // Cloud entries are excluded (platform-managed); each dispatch reports

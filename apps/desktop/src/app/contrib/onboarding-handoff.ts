@@ -27,7 +27,7 @@ import { requestGatewayForAgent } from '@/store/gateway'
 import { dismissNotification, notify } from '@/store/notifications'
 import { $onboardingAnswers } from '@/store/onboarding-answers'
 import { beginOnboardingHandoff, completeOnboardingFlow } from '@/store/onboarding-gate'
-import { $activeGatewayProfile, $newChatProfile, $newChatRoute, ensureGatewayAgent } from '@/store/profile'
+import { $activeGatewayProfile, $newChatProfile, $newChatRoute, $profiles, ensureGatewayAgent } from '@/store/profile'
 import {
   $activeSessionId,
   $selectedStoredSessionId,
@@ -38,7 +38,6 @@ import {
   setSessionOwnerHint
 } from '@/store/session'
 import { patchSessionTile } from '@/store/session-states'
-import { isSetupProfile } from '@/store/setup-profile'
 
 import { BUILD_PROFILE, type HandoffDeps, type HandoffReceipt, paintHandoffBrief, startHandoff } from './handoff-leg'
 import { saveHandoffReceipt } from './handoff-receipt'
@@ -75,7 +74,7 @@ export function useOnboardingHandoff({
       !isOnboardingEnabled() ||
       $setupHandoff.get() ||
       !selectedStoredId ||
-      !isSetupProfile($activeGatewayProfile.get())
+      $profiles.get().find(p => p.name === $activeGatewayProfile.get())?.role !== 'setup'
     ) {
       return
     }

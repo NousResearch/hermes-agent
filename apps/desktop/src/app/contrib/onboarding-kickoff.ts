@@ -1,3 +1,4 @@
+import type { OnboardingEnsureSetupProfileResult } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
@@ -24,7 +25,6 @@ import {
   ensureGatewayProfile
 } from '@/store/profile'
 import { $activeSessionId, $selectedStoredSessionId } from '@/store/session'
-import { ensureSetupProfile } from '@/store/setup-profile'
 
 import type { AmbientGatewayRequest } from './session-rpc-dispatcher'
 
@@ -96,7 +96,10 @@ export function useOnboardingKickoff({
     let swapped = false
 
     try {
-      const setupProfile = await ensureSetupProfile(requestGateway)
+      const { name: setupProfile } = await requestGateway<OnboardingEnsureSetupProfileResult>(
+        'onboarding.ensure_setup_profile',
+        {}
+      )
 
       // Probe the guide's own socket before switching profiles so a refusal
       // leaves classic onboarding on the user's current backend.

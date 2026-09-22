@@ -1,8 +1,8 @@
 /**
  * The welcome chat that guided onboarding runs in, and the seed prompts for the first build session.
  *
- * The chat belongs to the backend-owned setup profile (`store/setup-profile.ts`), so it survives onboarding and can be
- * found again. `setup` is the internal name throughout this module (the atoms, the hidden `[setup]` notes); the user
+ * The chat belongs to the setup profile, which the backend creates and marks (`onboarding.ensure_setup_profile`), so it
+ * survives onboarding and can be found again. `setup` is the internal name throughout this module (the atoms, the hidden `[setup]` notes); the user
  * sees only Hermes and the title `Welcome to Hermes`.
  *
  * This module holds the pure pieces: names, souls, seed prompts, and the handoff request atom. The side effects

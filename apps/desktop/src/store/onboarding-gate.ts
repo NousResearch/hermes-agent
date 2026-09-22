@@ -6,7 +6,6 @@ import { readKey, writeKey } from '@/lib/storage'
 import { $gateway } from './gateway'
 import { hasSeenIntroReveal, markIntroRevealSeen } from './intro-reveal'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
-import { $setupProfileName } from './setup-profile'
 
 const PHASE_KEY = 'hermes-onboarding-phase-v1'
 
@@ -168,7 +167,6 @@ export async function devResetOnboardingFlow(): Promise<void> {
   }
 
   await $gateway.get()?.request('onboarding.reset_setup_profile', {})
-  $setupProfileName.set(null)
   guideKickoff = { status: 'idle' }
   setPhase('idle')
   setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [...DEFAULT_ANSWERS.connectors] })

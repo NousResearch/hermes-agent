@@ -1818,6 +1818,25 @@ def _lazy_attr(obj: Any, name: str, factory: Callable[[], Any]) -> Any:
 _strip_media_directives = _strip_media_tag_directives
 
 
+def format_clarify_prompt(question: str, choices: "list | None", multi_select: bool = False) -> str:
+    """Plain-text clarify rendering: ``❓ question``, the numbered choices, then the reply hint.
+
+    ``BasePlatformAdapter.send_clarify`` sends this text, and the gateway's origin relay
+    (``TurnRunner._relay_clarify_question``) posts the same text to the messaging chat that
+    ORIGINATED a session rendered on another surface (a Desktop-driven turn inside a Telegram
+    topic, #103209). One formatter keeps both views of the question identical — the relay is
+    only useful if the topic shows what the card actually offers.
+    """
+    if not choices:
+        return f"❓ {question}"
+    hint = "Reply with the number, the option text, or your own answer."
+    if multi_select:
+        hint = ("Multiple selections allowed — reply with the numbers separated by commas "
+                "or spaces (e.g. \"1, 3\"), the option text, or your own answer.")
+    numbered = [f"  {i}. {choice}" for i, choice in enumerate(choices, start=1)]
+    return "\n".join([f"❓ {question}", "", *numbered, "", hint])
+
+
 class BasePlatformAdapter(ABC):
     """Base class for platform adapters: connect/auth, receive, send, handle media."""
 
@@ -2800,25 +2819,19 @@ class BasePlatformAdapter(ABC):
         ``mark_awaiting_text``. Adapters whose prompt is a persistent card MAY define
         ``async retire_clarify_card(clarify_id, notice)``; the gateway calls it when the clarify
         ends without a click (timeout, session reset, superseding free prose)."""
+        is_multi = False
         if choices:
             # Multi-select flag lives on the pending entry (signature stays adapter-compatible).
             try:
                 from tools import clarify_gateway as _cg
                 with _cg._lock:
-                    _is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
+                    is_multi = bool(getattr(_cg._entries.get(clarify_id), "multi_select", False))
             except Exception:
-                _is_multi = False
-            hint = "Reply with the number, the option text, or your own answer."
-            if _is_multi:
-                hint = ("Multiple selections allowed — reply with the numbers separated by commas "
-                        "or spaces (e.g. \"1, 3\"), the option text, or your own answer.")
-            numbered = [f"  {i}. {choice}" for i, choice in enumerate(choices, start=1)]
-            text = "\n".join([f"❓ {question}", "", *numbered, "", hint])
+                is_multi = False
             # Text fallback: let the gateway intercept capture the typed reply.
             from tools.clarify_gateway import mark_awaiting_text
             mark_awaiting_text(clarify_id)
-        else:
-            text = f"❓ {question}"
+        text = format_clarify_prompt(question, choices, multi_select=is_multi)
         return await self.send(chat_id=chat_id, content=text, metadata=metadata)
 
     async def send_private_notice(

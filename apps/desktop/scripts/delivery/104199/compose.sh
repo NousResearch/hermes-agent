@@ -23,17 +23,17 @@ CONTINUITY_SHA=68f92bbf8e4b3cc6b9eff5f5dff2c28704958b48
 ROUTE_PARENT_SHA=0c19759cd268170214535da5079c602c82fb1159
 ROUTE_SHA=e2bfdfa8b8133d39f0380cb016397dedbe5b0e79
 LOWER_SHA=8f0cec384e30a3cef5da31c2e64191c9e7ecf8bd
-CANCELLATION_OWNER_SHA=b0157bd84bd1a082966394907a35ac83c066614b
+CANCELLATION_OWNER_SHA=937b08778122ca5e250adc8072e4cb20209d8303
 OWNER_SHA=101128c012a8b16c4bfd003d5ead31aaa9830262
 DIRECT_OWNER_PATCH_SHA=ebac33db6267df28a689cc8b6e37bd2a05a262dd7296978b35656f433adb7a20
 DEPENDENT_OVERLAY_SHA=1e0e24264574c65a8500086c6f92d55a16893d7de4cedd289e1884e375341dfd
-CANCELLATION_OVERLAY_SHA=8ad9da6a90a4de55c07b8d7e15054aa67db3c98db3a107dd9374d771550cbb52
+CANCELLATION_OVERLAY_SHA=a25a14f89aa0961b38318ccd5f08d2237d329805eb75f42cafed7bf6900d775f
 EXPECTED_LOWER_TREE=e76b349554ed86a02f2470c31d3912fcd9b5b332
-EXPECTED_CORRECTED_LOWER_TREE=02ef3e6596c87239d6b1076d11b850022e7a1ab4
-EXPECTED_DIRECT_OWNER_TREE=0c73eccdb65112117ecd5f6826ca33a298eea492
-EXPECTED_FILES_TREE=40eaa689442d786e6a8679c98d75910669c193d4
-EXPECTED_FINAL_TREE=40eaa689442d786e6a8679c98d75910669c193d4
-TESTED_OWNER_TREE=40eaa689442d786e6a8679c98d75910669c193d4
+EXPECTED_CORRECTED_LOWER_TREE=74868e3bd713445e192eb19efa298785c63fc616
+EXPECTED_DIRECT_OWNER_TREE=c8b4bc45f1bd439594d399d7cfcdc3b249ad1c76
+EXPECTED_FILES_TREE=a9f73b2ced6d620803adf701dfa6938b8c7db39a
+EXPECTED_FINAL_TREE=a9f73b2ced6d620803adf701dfa6938b8c7db39a
+TESTED_OWNER_TREE=a9f73b2ced6d620803adf701dfa6938b8c7db39a
 
 case "$VERIFY" in
   compose|lower|focused|full) ;;
@@ -94,7 +94,7 @@ verify_cancellation() {
     src/plugins/hermes-bots/group-rounds.test.ts \
     src/plugins/hermes-bots/group-chat-view.render.test.tsx \
     --maxWorkers=2 --retry=0 \
-    -t 'interrupts recovered mailbox work|follows an in-flight mailbox rename|pending mailbox command|active mailbox thread|lease abort|replacement during Stop|delayed mailbox drive|post-turn commit|follows a rename|uses the active queue item|resolves session-scoped|follows queue identity|does not pass the latest display'
+    -t 'keeps recovery queued behind a cancelled predecessor|queues recovered work behind an unrelated active thread|interrupts recovered mailbox work|follows an in-flight mailbox rename|pending mailbox command|active mailbox thread|lease abort|replacement during Stop|delayed mailbox drive|post-turn commit|follows a rename|uses the active queue item|resolves session-scoped|follows queue identity|does not pass the latest display'
 }
 
 test ! -e "$TARGET"
@@ -122,7 +122,7 @@ pin_reachable_commit owner "$OWNER_SHA" refs/inputs/owner-tip
 test "$(git rev-parse "$ROUTE_PARENT_SHA^")" = "$CONTINUITY_SHA"
 test "$(git rev-parse "$ROUTE_SHA^")" = "$ROUTE_PARENT_SHA"
 test "$(git rev-parse "$LOWER_SHA^")" = "$ROUTE_SHA"
-test "$(git rev-parse "$CANCELLATION_OWNER_SHA^^")" = "$LOWER_SHA"
+git merge-base --is-ancestor "$LOWER_SHA" "$CANCELLATION_OWNER_SHA"
 expected_cancellation_owner_paths=$(printf '%s\n' \
   apps/desktop/scripts/delivery/97846/README.md \
   "$CANCELLATION_OVERLAY_PATH" | LC_ALL=C sort)

@@ -12,12 +12,12 @@ The recipe composes these immutable inputs in this order:
    - route parent: `0c19759cd268170214535da5079c602c82fb1159`;
    - published route tip: `e2bfdfa8b8133d39f0380cb016397dedbe5b0e79`;
    - monotonic classic-log owner candidate: `8f0cec384e30a3cef5da31c2e64191c9e7ecf8bd`;
-   - cancellation owner: `b0157bd84bd1a082966394907a35ac83c066614b`;
+   - cancellation owner: `937b08778122ca5e250adc8072e4cb20209d8303`;
 3. the exact #97846-owned `desktop-cancellation-dependent-overlay.patch`, applied to lower substrate `e76b349554ed86a02f2470c31d3912fcd9b5b332` **before Files**;
 4. the direct 32-path #104199 owner source at `101128c012a8b16c4bfd003d5ead31aaa9830262`;
 5. `desktop-files-dependent-overlay.patch`, the four Files-owned consumer insertions into paths supplied by the lower owners.
 
-Both the monotonic `appendGroupChatEntry` correction and the cancellation correction live in #97846, not in the Files owner source. The lower merge map in `compose.sh` selects exact line slices from the fetched runtime and monotonic #97846 commit. Its 46 literal lines remain only reviewed cross-owner signature/UI adaptations. The cancellation package adds only a README plus a contextual six-path patch with SHA-256 `8ad9da6a90a4de55c07b8d7e15054aa67db3c98db3a107dd9374d771550cbb52`; the recipe verifies that two-path package scope and consumes it lower-first. No runtime-owned whole source body is copied into #97846 or embedded in this script. Cancellation has no semantic dependency on Files.
+Both the monotonic `appendGroupChatEntry` correction and the cancellation correction live in #97846, not in the Files owner source. The lower merge map in `compose.sh` selects exact line slices from the fetched runtime and monotonic #97846 commit. Its 46 literal lines remain only reviewed cross-owner signature/UI adaptations. The cancellation package adds only a README plus a contextual six-path patch with SHA-256 `a25a14f89aa0961b38318ccd5f08d2237d329805eb75f42cafed7bf6900d775f`; the recipe verifies that two-path package scope and consumes it lower-first. No runtime-owned whole source body is copied into #97846 or embedded in this script. Cancellation has no semantic dependency on Files.
 
 The Files owner source is generated directly with:
 
@@ -70,13 +70,13 @@ Neither the unchanged 228-test lower selection nor the 36-test Files selection i
 The composition asserts these trees:
 
 - lower substrate with the #97846 regression: `e76b349554ed86a02f2470c31d3912fcd9b5b332`;
-- corrected lower-only product: `02ef3e6596c87239d6b1076d11b850022e7a1ab4`;
-- after the direct 32-path owner delta: `0c73eccdb65112117ecd5f6826ca33a298eea492`;
-- final Files product: `40eaa689442d786e6a8679c98d75910669c193d4`.
+- corrected lower-only product: `74868e3bd713445e192eb19efa298785c63fc616`;
+- after the direct 32-path owner delta: `c8b4bc45f1bd439594d399d7cfcdc3b249ad1c76`;
+- final Files product: `a9f73b2ced6d620803adf701dfa6938b8c7db39a`.
 
-The earlier candidate was rejected because existing-message recovery bypassed active queue ownership and renamed commands retained stale names. Recovery now uses the same queue as fresh sends, and commands bind stable identity while resolving the current room name for validity, cancellation and settlement. The new tests first reproduced the failures, then passed with exact backend-session interruption assertions.
+Earlier candidates were rejected because existing-message recovery bypassed active queue ownership, renamed commands retained stale names, and recovery could release its fence while queued behind a cancelled predecessor. Recovery now uses the same queue as fresh sends; settlement observes its exact active/pending ownership rather than only the room's `running` flag. Pending work is removed before fence release, expired work is discarded before activation, and teardown respects the current authority and epoch. Stop retires its active/pending command fences rather than allowing a delayed retry. Commands bind stable identity while resolving the current room name for validity, cancellation and settlement. The new tests first reproduced the failures, then passed with exact interruption, queue-survival and subsequent-usability assertions.
 
-The corrected lower-only state passed 15 selected causal tests (99 excluded by name filter), all three TypeScript projects and six-path ESLint with zero warnings. The actual executable recipe then reproduced the final tree above and passed its own 15 selected tests, all three TypeScript projects, six-path zero-warning ESLint, renderer/Electron build and `assert-dist-built`. These are separate lower-only and assembled-product results, not 30 unique tests. The recipe was exercised using exact local candidate refs before publication; public defaults must retrieve those same immutable pins. No Files/SDK source behavior was changed.
+The corrected lower-only state passed 19 selected causal tests (99 excluded by name filter), all three TypeScript projects and changed-source ESLint with zero warnings. The actual executable recipe then reproduced the final tree above and passed its own 19 selected tests, all three TypeScript projects, six-path zero-warning ESLint, renderer/Electron build and `assert-dist-built`. These are separate lower-only and assembled-product results over the same selected cases, not additive unique coverage. The recipe was exercised using exact local candidate refs before publication; public defaults must retrieve those same immutable pins. No Files/SDK source behavior was changed.
 
 Focused and full modes run the exact setup and build path:
 

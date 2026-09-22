@@ -32,6 +32,35 @@ def test_real_read_tool_binaries_confirm_option_ownership(
     assert completed.stdout == expected_output
 
 
+def _sort_is_gnu():
+    """GNU sort owns --buffer-size/--compress-program; BSD (macOS) sort does not."""
+    if shutil.which("sort") is None:
+        return False
+    try:
+        completed = subprocess.run(
+            ["sort", "--version"], capture_output=True, text=True, timeout=10
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return "GNU" in completed.stdout
+
+
+def _script_supports_dash_c():
+    """util-linux script takes -c; BSD (macOS) script rejects it."""
+    if shutil.which("script") is None:
+        return False
+    try:
+        completed = subprocess.run(
+            ["script", "-qec", "true", "/dev/null"],
+            capture_output=True,
+            text=True,
+            timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return False
+    return completed.returncode == 0
+
+
 @pytest.mark.parametrize(
     ("tool", "args", "stdin", "needs_tty"),
     [
@@ -49,6 +78,10 @@ def test_real_binaries_execute_leading_dash_program_payload(
     """A PATH marker proves these binaries do not reparse '-program' as an option."""
     if shutil.which(tool) is None or (needs_tty and shutil.which("script") is None):
         pytest.skip(f"{tool} or script is not installed")
+    if tool == "sort" and not _sort_is_gnu():
+        pytest.skip("sort is not GNU; --buffer-size/--compress-program are GNU options")
+    if needs_tty and not _script_supports_dash_c():
+        pytest.skip("script does not support -c (BSD script); cannot allocate a tty here")
 
     marker = tmp_path / "executed"
     payload = tmp_path / "-payload-marker"

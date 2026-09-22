@@ -358,6 +358,43 @@ async def test_disconnect_cancels_liveness_task(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unexpected_probe_exit_logs_warning(monkeypatch, caplog):
+    """A probe that dies while the adapter is still running must say so at WARNING (#118487).
+
+    Teardown exits (stopped / disconnecting) are routine INFO; a still-running
+    adapter losing its client mid-flight leaves the gateway with no watchdog,
+    and an operator must be able to spot that in a default log level.
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
+    adapter.set_fatal_error_handler(AsyncMock())
+    bots = []
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        bots.append(bot)
+        return bot
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", lambda client: (True, "healthy"))
+
+    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+        await _connect(adapter, monkeypatch, factory)
+        task = adapter._liveness_task
+        assert task is not None and not task.done()
+        caplog.clear()
+        adapter._client = None  # client vanishes while the adapter keeps running
+        await _wait_until(task.done, "liveness probe did not exit after losing its client")
+
+    exits = [r for r in caplog.records if "probe exiting" in r.getMessage()]
+    assert len(exits) == 1
+    assert exits[0].levelname == "WARNING"
+    assert "probe exiting (running=True, client=False" in exits[0].getMessage()
+
+    adapter._client = bots[0]
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
 @pytest.mark.parametrize("reason", ["socket_closed", "client_closed"])
 async def test_closed_transport_first_strike_forces_reconnect(monkeypatch, caplog, reason):
     """A closed transport is a confirmed death — strike 1 must reconnect (#118487).

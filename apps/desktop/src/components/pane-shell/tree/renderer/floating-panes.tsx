@@ -26,6 +26,7 @@ import { $hiddenTreePanes } from '../store'
 import {
   anchoredRect,
   clampFloatingRect,
+  clampFloatingRectSize,
   FLOATING_PLACEMENT,
   floatingPx,
   type FloatingRect,
@@ -41,6 +42,8 @@ const DEFAULT_SIZE = { width: 240, height: 180 }
 interface StoredRect {
   x: number
   y: number
+  width?: number
+  height?: number
   collapsed?: boolean
 }
 
@@ -56,10 +59,18 @@ function FloatingPane({ pane }: { pane: Contribution }) {
   const chrome = paneChrome(pane)
   const anchor = chrome.anchor ?? 'top-right'
 
-  const size = {
+  const authored = {
     width: floatingPx(chrome.width, DEFAULT_SIZE.width),
     height: floatingPx(chrome.height, DEFAULT_SIZE.height)
   }
+
+  const [size, setSize] = useState(() => {
+    const stored = readStored()[pane.id]
+
+    return { width: stored?.width ?? authored.width, height: stored?.height ?? authored.height }
+  })
+  const sizeRef = useRef(size)
+  sizeRef.current = size
 
   const [rect, setRect] = useState<FloatingRect>(() => {
     const stored = readStored()[pane.id]
@@ -67,17 +78,35 @@ function FloatingPane({ pane }: { pane: Contribution }) {
 
     return stored ? { ...spawned, x: stored.x, y: stored.y } : spawned
   })
+  const rectRef = useRef(rect)
+  rectRef.current = rect
 
   const [collapsed, setCollapsed] = useState(() => readStored()[pane.id]?.collapsed ?? false)
 
   const drag = useRef<{ x: number; y: number } | null>(null)
+  const resize = useRef<{ x: number; y: number } | null>(null)
   const viewport = useRef<FloatingViewport>(viewportNow())
 
   const persist = useCallback(
-    (next: FloatingRect, nextCollapsed: boolean) => {
-      writeJson(POSITIONS_KEY, { ...readStored(), [pane.id]: { x: next.x, y: next.y, collapsed: nextCollapsed } })
+    (next: FloatingRect, nextSize: { width: number; height: number }, nextCollapsed: boolean) => {
+      const { width, height } = nextSize
+      const widthUnchanged = width === authored.width
+      const heightUnchanged = height === authored.height
+
+      // Size is persisted only once the user changed it — authored dimensions
+      // stay the contribution's contract (a later default change applies).
+      writeJson(POSITIONS_KEY, {
+        ...readStored(),
+        [pane.id]: {
+          x: next.x,
+          y: next.y,
+          ...(widthUnchanged ? {} : { width }),
+          ...(heightUnchanged ? {} : { height }),
+          collapsed: nextCollapsed
+        }
+      })
     },
-    [pane.id]
+    [authored.height, authored.width, pane.id]
   )
 
   // Track the viewport so an edge-anchored pane rides its edge on resize.
@@ -132,7 +161,7 @@ function FloatingPane({ pane }: { pane: Contribution }) {
       drag.current = null
       event.currentTarget.releasePointerCapture?.(event.pointerId)
       setRect(current => {
-        persist(current, collapsed)
+        persist(current, sizeRef.current, collapsed)
 
         return current
       })
@@ -142,10 +171,66 @@ function FloatingPane({ pane }: { pane: Contribution }) {
 
   const toggleCollapsed = () =>
     setCollapsed(current => {
-      persist(rect, !current)
+      persist(rect, size, !current)
 
       return !current
     })
+
+  const onResizeDown = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    event.stopPropagation()
+    event.currentTarget.setPointerCapture(event.pointerId)
+    resize.current = { x: event.clientX, y: event.clientY }
+    event.preventDefault()
+  }, [])
+
+  const onResizeMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    const from = resize.current
+
+    if (!from) {
+      return
+    }
+
+    resize.current = { x: event.clientX, y: event.clientY }
+
+    // Compute the next size from the committed rect (read via ref, never a
+    // stale closure), then commit BOTH mirrors in one pass. The far corner
+    // stays put: a bottom-right handle grows the card right/down, so x/y do
+    // not move with the size. clampFloatingRectSize already re-clamps the
+    // position with the NEW size for the rare case the card outgrows the
+    // viewport.
+    const next = clampFloatingRectSize(
+      {
+        ...rectRef.current,
+        width: sizeRef.current.width + (event.clientX - from.x),
+        height: sizeRef.current.height + (event.clientY - from.y)
+      },
+      viewport.current
+    )
+    const nextRect = clampFloatingRect(
+      { ...rectRef.current, width: next.width, height: next.height },
+      viewport.current
+    )
+
+    sizeRef.current = { width: next.width, height: next.height }
+    rectRef.current = nextRect
+    setSize({ width: next.width, height: next.height })
+    setRect(nextRect)
+  }, [])
+
+  const onResizeUp = useCallback(
+    (event: ReactPointerEvent<HTMLDivElement>) => {
+      if (!resize.current) {
+        return
+      }
+
+      resize.current = null
+      event.currentTarget.releasePointerCapture?.(event.pointerId)
+      // The refs are committed synchronously in onResizeMove (exact size and
+      // rect, no lag) — persist that pair, not a stale React closure.
+      persist(rectRef.current, sizeRef.current, collapsed)
+    },
+    [collapsed, persist]
+  )
 
   return (
     <div
@@ -181,6 +266,21 @@ function FloatingPane({ pane }: { pane: Contribution }) {
         <div className="min-h-0 flex-1 overflow-auto">
           <ContribBoundary id={pane.id}>{pane.render && <ContribRender render={pane.render} />}</ContribBoundary>
         </div>
+      )}
+
+      {/* Corner resize handle — the pane's counterpart to a docked sash. The
+          body can scroll beneath it; only grabbing the handle resizes. */}
+      {!collapsed && (
+        <div
+          aria-label="Resize"
+          className="absolute right-0 bottom-0 z-1 cursor-nwse-resize"
+          data-floating-no-drag=""
+          onPointerDown={onResizeDown}
+          onPointerMove={onResizeMove}
+          onPointerUp={onResizeUp}
+          role="separator"
+          style={{ height: 16, touchAction: 'none', width: 16 }}
+        />
       )}
     </div>
   )

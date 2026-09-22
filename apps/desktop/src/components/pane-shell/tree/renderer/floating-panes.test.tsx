@@ -21,6 +21,8 @@ const card = () => document.querySelector<HTMLElement>('[data-floating-pane="hud
 
 const grab = () => card()!.querySelector('header')!
 
+const resizeHandle = () => card()!.querySelector('[aria-label="Resize"]')!
+
 /** jsdom has no real pointer events; PointerEvent falls back to MouseEvent. */
 function pointer(target: Element, type: string, x: number, y: number) {
   const event = new MouseEvent(type, { bubbles: true, clientX: x, clientY: y })
@@ -186,5 +188,66 @@ describe('FloatingPanes (live DOM)', () => {
     mount.render(<FloatingPanes />)
 
     expect(document.querySelectorAll('[data-floating-pane]').length).toBe(2)
+  })
+
+  it('resizes with a real pointer drag on the corner handle', () => {
+    registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
+    mount.render(<FloatingPanes />)
+
+    expect(card()!.style.width).toBe('224px')
+
+    pointer(resizeHandle(), 'pointerdown', 224, 132)
+    pointer(resizeHandle(), 'pointermove', 324, 232)
+    pointer(resizeHandle(), 'pointerup', 324, 232)
+
+    expect(card()!.style.width).toBe('324px')
+    expect(card()!.style.height).toBe('232px')
+  })
+
+  it('persists the resized size across a remount', () => {
+    registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
+    mount.render(<FloatingPanes />)
+
+    pointer(resizeHandle(), 'pointerdown', 224, 132)
+    pointer(resizeHandle(), 'pointermove', 300, 200)
+    pointer(resizeHandle(), 'pointerup', 300, 200)
+
+    const resized = { width: card()!.style.width, height: card()!.style.height }
+
+    mount.unmount()
+    mount.render(<FloatingPanes />)
+
+    expect(card()!.style.width).toBe(resized.width)
+    expect(card()!.style.height).toBe(resized.height)
+  })
+
+  it('does not start a header drag from the resize handle', () => {
+    registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
+    mount.render(<FloatingPanes />)
+
+    const before = { left: card()!.style.left, top: card()!.style.top }
+
+    // Small delta: no edge clamp counter-moves the card, so a header drag
+    // would show up as a position change while the size stays put. The
+    // opposite proves the pointer sequence ran through the resize handler.
+    pointer(resizeHandle(), 'pointerdown', 224, 132)
+    pointer(resizeHandle(), 'pointermove', 234, 142)
+    pointer(resizeHandle(), 'pointerup', 234, 142)
+
+    expect(card()!.style.left).toBe(before.left)
+    expect(card()!.style.top).toBe(before.top)
+    expect(card()!.style.width).toBe('234px')
+    expect(card()!.style.height).toBe('142px')
+  })
+
+  it('shows no resize handle while collapsed', () => {
+    registerHud({ anchor: 'top-left', height: '132px', placement: 'floating', width: '224px' })
+    mount.render(<FloatingPanes />)
+
+    act(() => {
+      card()!.querySelector('button')!.click()
+    })
+
+    expect(resizeHandle()).toBeNull()
   })
 })

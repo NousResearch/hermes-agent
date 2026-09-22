@@ -1,0 +1,25 @@
+name: jev-adaptive-effort
+repo: https://github.com/kirkins/hermes-jev-adaptive-effort
+sha: 60cce3fd3a0ab419453e60f34d75ac054307bab9
+description: >-
+  Cache-safe per-turn reasoning-effort selection with TypeSafe Jev through
+  OpenRouter. It never changes the selected model and only runs on transports
+  that Hermes marks safe for in-band effort updates. Disclosure — each
+  supported turn in shadow or enforce mode sends the redacted, length-bounded
+  current user message and route metadata to OpenRouter's experimental
+  Decisions API using your OPENROUTER_API_KEY, spending your credits; the full
+  conversation transcript is not sent.
+maintainer: kirkins
+tier: community
+category: models
+requires_hermes: ">=0.21.5"
+docs_url: https://github.com/kirkins/hermes-jev-adaptive-effort#readme
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware:
+    - reasoning_effort
+  requires_env:
+    - OPENROUTER_API_KEY

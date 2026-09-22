@@ -25,6 +25,7 @@ import { SearchField } from '@/components/ui/search-field'
 import { registry } from '@/contrib/registry'
 import { connectorIconUrl, connectorTitle } from '@/lib/connector-tools'
 import { useConnectorCatalog } from '@/store/connector-catalog'
+import { setInterfaceMode } from '@/store/interface-mode'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
 import { useTheme } from '@/themes'
 import { setAccentOverride } from '@/themes/accent-override'
@@ -204,6 +205,14 @@ export function LayoutCard({ locked }: CardProps) {
     $chatLayoutPicked.set(true)
     setOnboardingAnswers({ layout: id })
 
+    // The pick answers "how much of the machinery do you want to see" too;
+    // Skip leaves the mode alone, so only an actual choice sets it.
+    const layout = LAYOUTS.find(candidate => candidate.id === id)
+
+    if (layout) {
+      setInterfaceMode(layout.mode)
+    }
+
     const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
 
     if (!preset?.data) {
@@ -233,6 +242,7 @@ export function LayoutCard({ locked }: CardProps) {
         {LAYOUTS.map(layout => (
           <LayoutPreviewCard
             active={picked && answers.layout === layout.id}
+            description={layout.description}
             key={layout.id}
             name={layout.name}
             onSelect={() => pickLayout(layout.id)}

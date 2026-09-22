@@ -8,6 +8,7 @@ should_compress() / compress() -> on_session_end() at real session boundaries on
 (CLI exit, /reset, gateway expiry), never per-turn.
 """
 
+import copy
 import json
 from abc import ABC, abstractmethod
 from typing import Any, Dict, List, Optional
@@ -221,6 +222,13 @@ class ContextEngine(ABC):
             "usage_percent": min(100, last_prompt / self.context_length * 100) if self.context_length else 0,
             "compression_count": self.compression_count,
         }
+
+    def clone_for_agent(self) -> "ContextEngine":
+        """Per-agent instance of a plugin-registered engine (the plugin system holds ONE shared
+        instance; every AIAgent gets its own so a child's update_model() cannot mutate the parent's).
+        Override when the engine holds uncopyable state (locks, DB connections): return a fresh
+        engine sharing the durable backend and copying only mutable budget state."""
+        return copy.deepcopy(self)
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: str = "",

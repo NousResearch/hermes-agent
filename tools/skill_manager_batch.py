@@ -181,6 +181,9 @@ def _rollback(snapshots, find_skill):
     return ("; ".join(notes) if notes else "all touched skills rolled back"), bool(notes)
 
 
+_ADVISORY_KEYS = ("lint_warnings", "lint_hint", "org_sharing")
+
+
 def _skill_manage_batch(operations, default_name: str = None, task_id: str = None,
                         session_id: str = None) -> str:
     """Apply operations atomically: every touched skill is snapshotted first and any
@@ -249,8 +252,12 @@ def _skill_manage_batch(operations, default_name: str = None, task_id: str = Non
                         if k not in ("success", "error") and v is not None:
                             fail.setdefault(k, v)
                     return json.dumps(fail, ensure_ascii=False)
-                results.append({"name": names[i], "action": op["action"],
-                                "file_path": op.get("file_path"), "success": True})
+                entry = {"name": names[i], "action": op["action"],
+                         "file_path": op.get("file_path"), "success": True}
+                # Advisory payloads (linter findings, org-sharing note) ride on the op result; the
+                # compact success row otherwise hides them and the model never sees a finding.
+                entry.update({k: parsed[k] for k in _ADVISORY_KEYS if parsed.get(k) is not None})
+                results.append(entry)
         finally:
             _smt._skill_gate_bypass.reset(token)
             if rollback_failed:

@@ -32,6 +32,7 @@ import { browseBackward, browseForward, deriveUserHistory, isBrowsingHistory } f
 import { POPOUT_WIDTH_REM } from '@/store/composer-popout'
 import { parkQueuedPrompts, removeQueuedPrompt, unparkQueuedPrompts } from '@/store/composer-queue'
 import { $hudMode } from '@/store/hud'
+import { $showsAdvancedChrome } from '@/store/interface-mode'
 import { sessionBlockingPrompt } from '@/store/prompts'
 import { toggleReview } from '@/store/review'
 import { $gatewayState } from '@/store/session'
@@ -219,6 +220,10 @@ export function ChatBar({
   const onboardingThreadIds = useStore($chatOnboardingThreadIds)
   const chatOnboardingSolo = useStore($chatOnboardingSolo)
   const guidedChat = chatOnboardingSolo || (sessionId != null && onboardingThreadIds.includes(sessionId))
+  // The git row (branch / worktree / PR / review) is the coding instrument the
+  // guide already hides; Simple mode hides it for the same reason, everywhere.
+  const showsAdvancedChrome = useStore($showsAdvancedChrome)
+  const codingRowShown = !guidedChat && showsAdvancedChrome
 
   const composerTourMarker = useTourMarker('composer')
 
@@ -1438,7 +1443,7 @@ export function ChatBar({
                 ref={composerSurfaceRef}
               >
                 <div aria-hidden className={composerInputBacking} />
-                {!guidedChat && (
+                {codingRowShown && (
                   <StatusDrawerContent collapsed={statusDrawerCollapsed} id={codingDrawerId}>
                     <CodingStatusRow
                       onBranchOff={handleBranchOff}

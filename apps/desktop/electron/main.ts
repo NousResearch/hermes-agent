@@ -13150,12 +13150,6 @@ function startHermes({ supervisorRecovery = false }: { supervisorRecovery?: bool
   return start
 }
 
-// A ready primary child died. When its exit leaves the primary slot with no
-// owner and no start in flight (outside an intentional teardown), the
-// supervisor owns the respawn (#112344): the stale-classified exit used to
-// "log and return", and recovery then hinged on the renderer noticing its
-// socket drop — a 9 h engine-less window when it did not. Pool children are
-// deliberately not consulted: they never own the window backend.
 function primaryRecoveryState() {
   return {
     hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
@@ -13200,6 +13194,12 @@ function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
   })
 }
 
+// A ready primary child died. When its exit leaves the primary slot with no
+// owner and no start in flight (outside an intentional teardown), the
+// supervisor owns the respawn (#112344): the stale-classified exit used to
+// "log and return", and recovery then hinged on the renderer noticing its
+// socket drop — a 9 h engine-less window when it did not. Pool children are
+// deliberately not consulted: they never own the window backend.
 function scheduleUnexpectedPrimaryRecovery({
   code = null,
   signal = null,

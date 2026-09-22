@@ -46,8 +46,11 @@ export type ManagedRolloutIpcResult =
   | { ok: false; code: 'forbidden' | 'invalid-request' | 'snapshot-too-large' | 'unavailable'; message: string }
 
 function byteLength(value: unknown): number {
+  if (value === undefined) return 0
+
   try {
-    return Buffer.byteLength(JSON.stringify(value), 'utf8')
+    const encoded = JSON.stringify(value)
+    return encoded === undefined ? 0 : Buffer.byteLength(encoded, 'utf8')
   } catch {
     return Number.POSITIVE_INFINITY
   }

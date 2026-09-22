@@ -245,6 +245,30 @@ describe('AttachmentList', () => {
     expect(onRemove).toHaveBeenCalledWith('a')
   })
 
+  it('shows a generated paste excerpt, a visible preview action, and an always-visible dismiss control', async () => {
+    const onRemove = vi.fn()
+
+    const pasted: ComposerAttachment = {
+      id: 'pasted-content',
+      kind: 'file',
+      label: 'Pasted content (3.1 KB)',
+      path: '/tmp/composer-pastes/pasted-content.txt',
+      titlePreview: 'Database migration incident\nThe replica queue is blocked.'
+    }
+
+    await renderWithI18n(<AttachmentList attachments={[pasted]} onRemove={onRemove} />)
+
+    expect(screen.getByText(/Database migration incident/)).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Preview Pasted content (3.1 KB)' })).toBeDefined()
+
+    const remove = screen.getByRole('button', { name: 'Remove Pasted content (3.1 KB)' })
+    expect(remove.className).not.toContain('opacity-0')
+    expect(remove.tagName).toBe('BUTTON')
+
+    fireEvent.click(remove)
+    expect(onRemove).toHaveBeenCalledWith('pasted-content')
+  })
+
   it('still routes a non-image attachment to the preview rail', async () => {
     $previewTabs.set([])
 

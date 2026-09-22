@@ -281,8 +281,21 @@ async def test_registered_classic_admission_shares_and_reads_exact_bytes(
         generation=status["generation"],
     )
     assert "result" in downloaded, downloaded
+    assert downloaded["result"]["session_id"] == fixture.session_id
+    assert downloaded["result"]["generation"] == status["generation"]
     assert downloaded["result"]["item"] == item
     assert base64.b64decode(downloaded["result"]["content_base64"], validate=True) == expected
+    stale_generation = await rpc(
+        fixture,
+        "session.export.read",
+        session_id=fixture.session_id,
+        installation=installation,
+        group_id=request["group_id"],
+        export_id=status["export_id"],
+        artifact_id=item["artifact_id"],
+        generation=status["generation"] + 1,
+    )
+    assert stale_generation["error"]["message"] == "classic_export_unavailable"
     missing_generation = await rpc(
         fixture,
         "session.export.read",

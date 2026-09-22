@@ -1,0 +1,67 @@
+diff --git a/gateway/hosted_room_artifacts.py b/gateway/hosted_room_artifacts.py
+index cb4011fa138076c5d1e1fdb6079b3dbaac33c040..53dd3813c367be280122effe485b300000d144a6 100644
+--- a/gateway/hosted_room_artifacts.py
++++ b/gateway/hosted_room_artifacts.py
+@@ -290 +290,3 @@ def _lineage_identity_sql(scope_json: str) -> str:
+-    return f"json_object({arguments})"
++    return (f"CASE WHEN json_extract({scope_json}, '$.kind')='classic' THEN "
++            f"json_object('export_id',json_extract({scope_json}, '$.export_id'),'kind','classic') "
++            f"ELSE json_object({arguments}) END")
+@@ -500,0 +503 @@ class RoomArtifactOutbox:
++                      AND json_extract(scope_json, '$.kind') IS NULL
+@@ -673,0 +677,7 @@ class RoomArtifactOutbox:
++        trigger_sql = conn.execute(
++            "SELECT sql FROM sqlite_master WHERE name='hosted_room_output_generation_track_insert'"
++        ).fetchone()
++        if trigger_sql and "$.kind" not in trigger_sql[0]:
++            for name in trigger_names:
++                conn.execute(f"DROP TRIGGER IF EXISTS {name}")
++            installed_triggers = set()
+@@ -838,0 +849,4 @@ class RoomArtifactOutbox:
++        if scope.as_mapping().get("kind") == "classic":
++            from gateway.classic_output_exports import validate_write
++            validate_write(conn, scope)
++
+@@ -1245 +1259,9 @@ class RoomArtifactOutbox:
+-                scope = RoomArtifactScope.from_mapping(json.loads(row["scope_json"]))
++                stored = json.loads(row["scope_json"])
++                scope: Any
++                if isinstance(stored, dict) and stored.get("kind") == "classic":
++                    from gateway.hosted_room_artifacts_classic import ClassicExportScope
++                    scope = ClassicExportScope(
++                        stored["export_id"], stored["execution_generation"]
++                    )
++                else:
++                    scope = RoomArtifactScope.from_mapping(stored)
+diff --git a/gateway/session_finite.py b/gateway/session_finite.py
+index f23868c6628f55b8b4bee81c1d4722bf601aef98..7a7de88754698bc7ad38642a71c2ebd329339aca 100644
+--- a/gateway/session_finite.py
++++ b/gateway/session_finite.py
+@@ -38,0 +39 @@ async def execute_finite_admission(authority, ref, row):
++    from gateway.session_classic_output import classic_output_scope
+@@ -41 +42,2 @@ async def execute_finite_admission(authority, ref, row):
+-            hosted_output_scope(authority, ref, row) as output:
++            hosted_output_scope(authority, ref, row) as output, \
++            classic_output_scope(authority, ref, row):
+diff --git a/tools/hosted_room_artifact.py b/tools/hosted_room_artifact.py
+index 3e0380af2adf4a903db6acc8dc554f9afc0a5fda..d138adfcd34345d543a106c66da91e201ced8881 100644
+--- a/tools/hosted_room_artifact.py
++++ b/tools/hosted_room_artifact.py
+@@ -176,2 +176,3 @@ def _active_room_artifact_scope() -> RoomArtifactScope | None:
+-    # fall back to a legacy hosted binding. Standalone hosted producers retain
+-    # their existing explicit scope; no classic export scope is consulted.
++    # fall back to a legacy hosted binding. A classic scope is accepted only
++    # from its current canonical admission; standalone hosted producers retain
++    # their existing explicit scope.
+@@ -181 +182,5 @@ def _active_room_artifact_scope() -> RoomArtifactScope | None:
+-        return binding.scope if binding is not None else None
++        if binding is not None:
++            return binding.scope
++        from gateway.session_classic_output import current_classic_output_binding
++        classic = current_classic_output_binding()
++        return classic.scope if classic is not None else None
+@@ -262,0 +268,4 @@ def _output_outbox(scope: RoomArtifactScope) -> RoomArtifactOutbox:
++    from gateway.session_classic_output import current_classic_output_binding
++    classic = current_classic_output_binding()
++    if classic is not None and classic.scope == scope:
++        return classic.outbox()

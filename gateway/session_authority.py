@@ -282,11 +282,12 @@ class SessionAuthority:
                 results[sid] = exc.reason
         return results
 
-    async def submit(self, actor: Principal, request: Submission):
+    async def submit(self, actor: Principal, request: Submission, *, _payload_capture=None):
         self.authorize(actor, request.ref, 'session:submit')
         self._require_admission_open()
         if (request.intent != 'queue' or not {'text'} <= set(request.payload) <= {
-                'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted'}
+                'text', 'attachments', 'finite', 'surface', 'voice_context', 'interrupted',
+                'classic_export_v1'}
                 or not isinstance(request.payload['text'], str)):
             raise RuntimeStoreError('invalid_params')
         from gateway.session_ingress_media import admit_attachments
@@ -295,6 +296,21 @@ class SessionAuthority:
         finite = admit_finite(request.payload)
         payload = {'text': request.payload['text'], **finite, **admit_surface(request.payload),
                    **admit_attachments(request.payload.get('attachments'))}
+        if 'classic_export_v1' in request.payload:
+            from gateway.classic_output_exports import (
+                CANONICAL_BINDING_VERSION,
+                CANONICAL_MARKER_FIELDS,
+            )
+            marker = request.payload['classic_export_v1']
+            if (not isinstance(marker, dict) or set(marker) != CANONICAL_MARKER_FIELDS
+                    or not isinstance(marker['export_id'], str) or not marker['export_id']
+                    or type(marker['generation']) is not int or marker['generation'] < 1
+                    or not isinstance(marker['group_id'], str) or not marker['group_id']
+                    or not isinstance(marker['principal_id'], str) or not marker['principal_id']
+                    or marker['principal_id'] != actor.subject
+                    or marker['binding_version'] != CANONICAL_BINDING_VERSION):
+                raise RuntimeStoreError('invalid_params')
+            payload['classic_export_v1'] = dict(marker)
         from gateway.config import Platform
         source = self.sessions[request.ref.session_id].source
         if source is not None and source.platform == Platform.LOCAL and source.user_id != actor.subject:
@@ -303,6 +319,8 @@ class SessionAuthority:
             payload['local_operator_v1'] = {
                 'profile_id': self.profile_id, 'session_id': request.ref.session_id,
                 'principal_id': actor.subject}
+        if _payload_capture is not None:
+            _payload_capture(payload)
         row = admit_session_input(self.db, epoch=self.epoch, principal_id=actor.subject,
                                   session_id=request.ref.session_id, request_id=request.request_id,
                                   payload=payload, intent=request.intent)

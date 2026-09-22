@@ -664,55 +664,125 @@ def test_list_authenticated_providers_refresh_busts_cache():
         assert clear.call_count == 1
 
 
-def test_picker_payload_reads_metadata_config_once_for_all_models():
-    """Badges and featured ordering share one config snapshot per picker payload (#119044)."""
-    from agent.models_dev import ModelCapabilities
+def test_picker_metadata_uses_one_config_read_for_real_models_dev_lookups(tmp_path, monkeypatch):
+    """Custom-provider metadata stays constant-read as its model count grows (#119048).
+
+    ``get_model_capabilities`` and ``get_model_info`` deliberately stay real:
+    each lookup resolves ``providers.lab.catalog_provider`` before consulting
+    the seeded models.dev catalog.  Removing snapshot threading from that
+    path makes the larger payload re-open config.yaml once per lookup.
+    """
+    from agent import models_dev
     from hermes_cli import config as config_module
 
-    rows = [{
-        "slug": "openrouter",
-        "name": "OpenRouter",
-        "models": ["openai/model-a", "anthropic/model-b", "openai/model-c"],
-        "total_models": 3,
-        "is_current": False,
-        "is_user_defined": False,
-        "source": "built-in",
-    }]
-    snapshot = {"model_overrides": {}}
+    home = tmp_path / "hermes"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "providers:\n"
+        "  lab:\n"
+        "    catalog_provider: openrouter\n"
+        "model_overrides: {}\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    config_module._LOAD_CONFIG_CACHE.clear()
+    config_module._RAW_CONFIG_CACHE.clear()
 
-    def _capabilities(_provider, _model, *, config=None):
-        if config is None:
-            config = config_module.load_config_readonly()
-        assert config is snapshot
-        return ModelCapabilities(supports_reasoning=False)
-
-    def _info(_provider, model, *, config=None):
-        if config is None:
-            config = config_module.load_config_readonly()
-        assert config is snapshot
-        return _FakeInfo({"openai/model-a": "2026-01-01", "anthropic/model-b": "2026-02-01",
-                          "openai/model-c": "2026-03-01"}[model])
-
-    with (
-        _list_auth_returning(rows),
-        patch("hermes_cli.inventory._local_runtime_row", return_value=None),
-        patch("hermes_cli.inventory._moa_provider_row", return_value=None),
-        patch("hermes_cli.config.load_config_readonly", return_value=snapshot) as load_config,
-        patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
-        patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
-        patch("agent.models_dev.get_model_capabilities", side_effect=_capabilities),
-        patch("agent.models_dev.get_model_info", side_effect=_info),
-    ):
-        payload = build_models_payload(_empty_ctx(), capabilities=True, featured=True)
-
-    row = payload["providers"][0]
-    # One read is the metadata snapshot; the other is the existing provider
-    # normalization read outside the models.dev metadata path.
-    assert load_config.call_count == 2
-    assert row["capabilities"] == {
-        model: {"fast": False, "reasoning": False} for model in row["models"]
+    models = [
+        "openai/model-a", "anthropic/model-b", "openai/model-c",
+        "anthropic/model-d", "openai/model-e", "anthropic/model-f",
+        "openai/model-g", "anthropic/model-h",
+    ]
+    registry = {
+        "openrouter": {
+            "models": {
+                model: {
+                    "id": model,
+                    "tool_call": True,
+                    "reasoning": model.startswith("openai/"),
+                    "release_date": f"2026-01-{index:02d}",
+                    "limit": {"context": 200000, "output": 8192},
+                }
+                for index, model in enumerate(models, start=1)
+            },
+        },
     }
-    assert row["featured_models"] == row["models"]
+    monkeypatch.setattr(models_dev, "_models_dev_cache", registry)
+    monkeypatch.setattr(models_dev, "_models_dev_cache_time", float("inf"))
+
+    snapshot = config_module.load_config_readonly()
+    baseline = [
+        (
+            models_dev.get_model_capabilities("custom:lab", model),
+            models_dev.get_model_info("custom:lab", model),
+        )
+        for model in models
+    ]
+    snapshot_result = [
+        (
+            models_dev.get_model_capabilities("custom:lab", model, config=snapshot),
+            models_dev.get_model_info("custom:lab", model, config=snapshot),
+        )
+        for model in models
+    ]
+    assert snapshot_result == baseline
+
+    def _rows(model_ids):
+        return [{
+            "slug": "custom:lab",
+            "name": "Lab",
+            "models": model_ids,
+            "total_models": len(model_ids),
+            "is_current": False,
+            "is_user_defined": True,
+            "source": "user-config",
+        }]
+
+    def _build_and_count(model_ids):
+        cfg_get_calls = 0
+        real_cfg_get = models_dev._cfg_get
+
+        def counted_cfg_get(*keys, **kwargs):
+            nonlocal cfg_get_calls
+            cfg_get_calls += 1
+            return real_cfg_get(*keys, **kwargs)
+
+        with (
+            _list_auth_returning(_rows(model_ids)),
+            patch("hermes_cli.inventory._local_runtime_row", return_value=None),
+            patch("hermes_cli.inventory._moa_provider_row", return_value=None),
+            patch("hermes_cli.models.model_supports_fast_mode", return_value=False),
+            patch("hermes_cli.inventory._reasoning_catalog_reader", return_value=None),
+            patch.object(models_dev, "_cfg_get", side_effect=counted_cfg_get),
+            patch.object(
+                config_module, "load_config_readonly",
+                wraps=config_module.load_config_readonly,
+            ) as readonly_load,
+            patch.object(
+                config_module, "_load_config_impl", wraps=config_module._load_config_impl,
+            ) as config_impl,
+        ):
+            payload = build_models_payload(
+                _empty_ctx(), capabilities=True, featured=True,
+            )
+        return payload, cfg_get_calls, readonly_load.call_count, config_impl.call_count
+
+    small_payload, small_cfg_get, small_reads, small_impls = _build_and_count(models[:3])
+    large_payload, large_cfg_get, large_reads, large_impls = _build_and_count(models)
+
+    # Snapshot threading leaves _cfg_get's cheap dict traversals proportional
+    # to model count, while eliminating config/signature reads from the hot path.
+    assert small_cfg_get < large_cfg_get
+    assert (small_reads, large_reads) == (1, 1)
+    assert (small_impls, large_impls) == (1, 1)
+
+    small_row = small_payload["providers"][0]
+    large_row = large_payload["providers"][0]
+    assert small_row["capabilities"] == {
+        model: {"fast": False, "reasoning": model.startswith("openai/")}
+        for model in models[:3]
+    }
+    assert large_row["featured_models"] == models
 
 
 # ─── _apply_featured (one-flagship-per-lab shortlist) ──────────────────

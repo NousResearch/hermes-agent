@@ -72,6 +72,17 @@ def test_compact_rewrites_legacy_full_manifests_in_place(ledger_home):
     assert "not json" in path.read_text(encoding="utf-8")
 
 
+def test_compact_leaves_an_undecodable_ledger_untouched(ledger_home, caplog):
+    """Compaction must not replace a ledger it could not decode (gate mutation M2)."""
+    from tools import skill_ledger
+    ledger = skill_ledger.ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff")
+    assert skill_ledger.compact_ledger() == (0, 0, 0)
+    assert ledger.read_bytes() == b"\xff"
+    assert "compaction skipped" in caplog.text
+
+
 def test_gc_blobs_removes_only_unreferenced(ledger_home):
     """The blob store was write-only (#107539): after compaction, blobs no entry references are
     deleted; every referenced blob survives so any entry can still roll back."""

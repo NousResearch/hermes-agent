@@ -35,6 +35,12 @@ def baseline_home(tmp_path, monkeypatch, isolated_update_runtime):
     monkeypatch.setenv("HERMES_HOME", str(home))
     monkeypatch.setenv("HOME", str(home))
     monkeypatch.setenv("USERPROFILE", str(home))
+    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(home / "gateway-locks"))
+    # These tests exercise the legacy per-home marker reader.  Force the
+    # current host-scoped writer down its documented compatibility fallback so
+    # the assertion targets the marker format it names, not a shared host file.
+    from hermes_cli import update_host_obligation
+    monkeypatch.setattr(update_host_obligation, "write_host_obligation", lambda **_: False)
     monkeypatch.setattr(Path, "home", lambda: home)
     monkeypatch.setattr(receipt, "_current", None)
     yield home

@@ -23,6 +23,7 @@ _GATES = {
     "DISCORD_ALLOW_BOTS": "all", "TELEGRAM_GROUP_ALLOWED_CHATS": "-100", "SLACK_ALLOWED_CHANNELS": "C1",
     "WHATSAPP_GROUP_ALLOW_FROM": "+1555", "GATEWAY_ALLOW_ALL_USERS": "true",
 }
+_OPERATOR_ENV = {"DEPLOYMENT_ALLOWED_REGIONS": "us-east-1,eu-west-1"}
 _PROBE = "import json,os;print(json.dumps({k:os.environ.get(k) for k in %r}))" % sorted(_GATES)
 
 
@@ -52,6 +53,16 @@ def test_routed_child_drops_gates_and_same_home_child_keeps_them(homes):
     a, b = homes
     assert _seen_by_child(served_profile_child_env(base=os.environ, target_home=b)) == set()
     assert _seen_by_child(served_profile_child_env(base=os.environ, target_home=a)) == set(_GATES)
+
+
+def test_routed_child_keeps_unrelated_operator_allowlist_env(homes, monkeypatch):
+    """Only documented platform gates are profile-scoped; operator allowlists survive routing."""
+    _, b = homes
+    for key, value in _OPERATOR_ENV.items():
+        monkeypatch.setenv(key, value)
+
+    routed = served_profile_child_env(base=os.environ, target_home=b)
+    assert {key: routed[key] for key in _OPERATOR_ENV} == _OPERATOR_ENV
 
 
 def test_update_recovery_child_env_drops_gates_only_for_other_profiles(homes):

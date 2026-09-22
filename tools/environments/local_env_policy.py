@@ -199,9 +199,17 @@ def _is_hermes_internal_secret(key: str) -> bool:
 # no secret scrub touches them, and most profiles' ``.env`` files do not define them, so the
 # child's own dotenv load never overwrites an inherited value: a child spawned FOR profile B
 # from a process that loaded profile A's gates (or a unit-file ``Environment=``) would enforce
-# A's channel/user/role list as its own (#113270). Matched by shape so a gate added to any
-# adapter is covered without a second edit; ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``,
-# ``HERMES_ALLOW_PRIVATE_URLS`` are process settings, not adapter gates).
+# A's channel/user/role list as its own (#113270). Match the documented messaging-platform
+# namespaces as well as a gate shape: an arbitrary operator allowlist (for example,
+# ``DEPLOYMENT_ALLOWED_REGIONS``) must remain available to a routed ``no_agent`` child.
+# ``HERMES_*`` never counts (``HERMES_MEDIA_ALLOW_DIRS``, ``HERMES_ALLOW_PRIVATE_URLS`` are process
+# settings, not adapter gates). Add a namespace here when adding a platform gate.
+_PROFILE_GATE_ENV_PREFIXES = (
+    "A2A_", "BLUEBUBBLES_", "BUZZ_", "DINGTALK_", "DISCORD_", "EMAIL_", "FEISHU_",
+    "GATEWAY_", "GOOGLE_CHAT_", "IRC_", "LINE_", "MATRIX_", "MATTERMOST_", "NTFY_",
+    "PHOTON_", "QQ_", "RELAY_", "SIGNAL_", "SIMPLEX_", "SLACK_", "SMS_", "TEAMS_",
+    "TELEGRAM_", "WECOM_", "WEIXIN_", "WHATSAPP_", "YUANBAO_",
+)
 _PROFILE_GATE_ENV_MARKERS = (
     "_ALLOWED_", "_ALLOW_ALL_", "_ALLOW_FROM", "_ALLOW_BOTS", "_ALLOW_PUBLIC_", "_IGNORED_CHANNELS",
     "_NO_THREAD_CHANNELS", "_FREE_RESPONSE_CHANNELS", "_BACKFILL_CHANNELS", "_GROUP_ALLOWED",
@@ -215,7 +223,8 @@ def is_profile_gate_env(name: str) -> bool:
     upper = name.upper()
     if upper.startswith("HERMES_") or upper.startswith("_"):
         return False
-    return any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS)
+    return (upper.startswith(_PROFILE_GATE_ENV_PREFIXES)
+            and any(marker in upper for marker in _PROFILE_GATE_ENV_MARKERS))
 
 
 def strip_profile_gate_env(env: dict) -> dict:

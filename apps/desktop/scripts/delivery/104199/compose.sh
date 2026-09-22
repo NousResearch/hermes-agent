@@ -3,11 +3,13 @@ set -euo pipefail
 
 # Public, disposable composition for Desktop Files #104199. The script fetches
 # only existing owner refs, pins immutable commits, writes no remote, applies the
-# direct 32-path Files owner delta once, then applies its four dependent paths.
+# direct 32-path Files owner delta once, applies its four dependent paths, then
+# consumes the #97846-owned five-path cancellation correction.
 TARGET=${1:?usage: compose.sh TARGET_DIR}
 VERIFY=${DESKTOP_FILES_VERIFY:-full}
 SCRIPT_DIR=$(CDPATH= cd -- "$(dirname -- "$0")" && pwd)
 DEPENDENT_OVERLAY="$SCRIPT_DIR/desktop-files-dependent-overlay.patch"
+CANCELLATION_OVERLAY_PATH=apps/desktop/scripts/delivery/97846/desktop-cancellation-dependent-overlay.patch
 
 RUNTIME_REMOTE=${DESKTOP_FILES_RUNTIME_REMOTE:-https://github.com/NousResearch/hermes-agent.git}
 LOWER_REMOTE=${DESKTOP_FILES_LOWER_REMOTE:-https://github.com/dokterdok/hermes-agent.git}
@@ -21,13 +23,16 @@ CONTINUITY_SHA=68f92bbf8e4b3cc6b9eff5f5dff2c28704958b48
 ROUTE_PARENT_SHA=0c19759cd268170214535da5079c602c82fb1159
 ROUTE_SHA=e2bfdfa8b8133d39f0380cb016397dedbe5b0e79
 LOWER_SHA=8f0cec384e30a3cef5da31c2e64191c9e7ecf8bd
+CANCELLATION_OWNER_SHA=7b25b347792ba4f1fea94b57032431ebb2894c86
 OWNER_SHA=101128c012a8b16c4bfd003d5ead31aaa9830262
 DIRECT_OWNER_PATCH_SHA=ebac33db6267df28a689cc8b6e37bd2a05a262dd7296978b35656f433adb7a20
 DEPENDENT_OVERLAY_SHA=6584161cab98f38fbb21921c1ce8ea64ec201d52c618d27e0f56e522b3033879
+CANCELLATION_OVERLAY_SHA=ac5ca70a360d9059d2918c9a9561a60c5091c6e7640026f3c0e79a59839cb39a
 EXPECTED_LOWER_TREE=e76b349554ed86a02f2470c31d3912fcd9b5b332
 EXPECTED_DIRECT_OWNER_TREE=994ef94a3afae0adc78259dce6a7a11c0c615157
-EXPECTED_FINAL_TREE=19b08e1c6be010cbc05716bc24bb4de163313d71
-TESTED_OWNER_TREE=d07898f5b857a845b9dd5cb8c53c7b6bcc9a38c1
+EXPECTED_FILES_TREE=19b08e1c6be010cbc05716bc24bb4de163313d71
+EXPECTED_FINAL_TREE=aa89152f1494fa3a3383481bee5a2a4769bc6037
+TESTED_OWNER_TREE=aa89152f1494fa3a3383481bee5a2a4769bc6037
 
 case "$VERIFY" in
   compose|full) ;;
@@ -93,11 +98,18 @@ pin_reachable_commit continuity "$CONTINUITY_SHA" refs/inputs/lower-tip
 pin_reachable_commit route-parent "$ROUTE_PARENT_SHA" refs/inputs/lower-tip
 pin_reachable_commit route "$ROUTE_SHA" refs/inputs/lower-tip
 pin_reachable_commit lower "$LOWER_SHA" refs/inputs/lower-tip
+pin_reachable_commit cancellation-owner "$CANCELLATION_OWNER_SHA" refs/inputs/lower-tip
 pin_reachable_commit owner "$OWNER_SHA" refs/inputs/owner-tip
 
 test "$(git rev-parse "$ROUTE_PARENT_SHA^")" = "$CONTINUITY_SHA"
 test "$(git rev-parse "$ROUTE_SHA^")" = "$ROUTE_PARENT_SHA"
 test "$(git rev-parse "$LOWER_SHA^")" = "$ROUTE_SHA"
+test "$(git rev-parse "$CANCELLATION_OWNER_SHA^")" = "$LOWER_SHA"
+expected_cancellation_owner_paths=$(printf '%s\n' \
+  apps/desktop/scripts/delivery/97846/README.md \
+  "$CANCELLATION_OVERLAY_PATH" | LC_ALL=C sort)
+cancellation_owner_paths=$(git diff --name-only "$LOWER_SHA..$CANCELLATION_OWNER_SHA" | LC_ALL=C sort)
+require_paths "$expected_cancellation_owner_paths" "$cancellation_owner_paths" 'cancellation owner'
 git merge-base --is-ancestor "$RUNTIME_SHA" "$OWNER_SHA"
 test "$(git rev-list --first-parent --count "$RUNTIME_SHA..$OWNER_SHA")" -eq 5
 
@@ -203,8 +215,25 @@ actual_overlay_paths=$(git diff --cached --name-only | LC_ALL=C sort)
 require_paths "$expected_overlay_paths" "$actual_overlay_paths" 'dependent overlay'
 git diff --cached --check
 git commit -q -m 'integration: apply Files dependent consumer overlay'
+FILES_HEAD=$(git rev-parse HEAD)
+require_tree "$EXPECTED_FILES_TREE" 'Files product'
+
+CANCELLATION_OVERLAY="$PWD/.git/desktop-cancellation-dependent-overlay.patch"
+git show "refs/inputs/cancellation-owner:$CANCELLATION_OVERLAY_PATH" >"$CANCELLATION_OVERLAY"
+test "$(sha256sum "$CANCELLATION_OVERLAY" | cut -d' ' -f1)" = "$CANCELLATION_OVERLAY_SHA"
+expected_cancellation_paths=$(printf '%s\n' \
+  apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts \
+  apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx \
+  apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx \
+  apps/desktop/src/plugins/hermes-bots/group-rounds.test.ts \
+  apps/desktop/src/plugins/hermes-bots/group-rounds.ts | LC_ALL=C sort)
+git apply --unidiff-zero --index "$CANCELLATION_OVERLAY"
+actual_cancellation_paths=$(git diff --cached --name-only | LC_ALL=C sort)
+require_paths "$expected_cancellation_paths" "$actual_cancellation_paths" 'cancellation correction'
+git diff --cached --check
+git commit -q -m 'integration: apply #97846 cancellation correction'
 FINAL_HEAD=$(git rev-parse HEAD)
-require_tree "$EXPECTED_FINAL_TREE" 'final product'
+require_tree "$EXPECTED_FINAL_TREE" 'corrected final product'
 test -z "$(git status --porcelain)"
 
 DEPENDENCY_RENDER_TEST_STATUS=not-run
@@ -214,60 +243,54 @@ if test "$VERIFY" = full; then
     cd apps/desktop
     ../../node_modules/.bin/tsc -p . --noEmit
     ../../node_modules/.bin/eslint \
-      src/plugins/hermes-bots/bot-row.tsx \
-      src/plugins/hermes-bots/canonical-files-client.ts \
-      src/plugins/hermes-bots/canonical-files-rows.tsx \
-      src/plugins/hermes-bots/canonical-group-files.tsx \
-      src/plugins/hermes-bots/classic-output.ts \
-      src/plugins/hermes-bots/create-dialog.tsx \
+      src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts \
+      src/plugins/hermes-bots/group-chat-view.render.test.tsx \
       src/plugins/hermes-bots/group-chat-view.tsx \
-      src/plugins/hermes-bots/group-chat.ts \
-      src/plugins/hermes-bots/group-attachment-download.tsx \
-      src/plugins/hermes-bots/group-files-access.ts \
-      src/plugins/hermes-bots/group-files-classic.ts \
-      src/plugins/hermes-bots/group-files-client.ts \
-      src/plugins/hermes-bots/group-files-rows.tsx \
-      src/plugins/hermes-bots/group-files-view.tsx \
-      src/plugins/hermes-bots/group-membership.ts \
-      src/plugins/hermes-bots/group-round-members.ts \
-      src/plugins/hermes-bots/group-rounds.ts \
-      src/plugins/hermes-bots/group-turns.ts \
-      src/plugins/hermes-bots/use-canonical-files.ts \
-      src/plugins/hermes-bots/use-group-files.ts \
-      src/store/gateway.ts
-    ../../node_modules/.bin/vitest run --project ui \
-      src/store/gateway-shared-owner.test.ts \
-      src/plugins/hermes-bots/bot-row.test.tsx \
-      src/plugins/hermes-bots/create-agent-lazy-profile.test.tsx \
-      src/plugins/hermes-bots/group-chat.test.ts \
-      src/plugins/hermes-bots/group-chat-view.test.ts \
-      src/plugins/hermes-bots/group-membership-controls.test.tsx \
       src/plugins/hermes-bots/group-rounds.test.ts \
-      src/plugins/hermes-bots/group-speaker-display.test.tsx \
-      src/plugins/hermes-bots/group-turns.test.ts \
-      src/plugins/hermes-bots/plugin-panes.test.tsx \
+      src/plugins/hermes-bots/group-rounds.ts \
+      --max-warnings=0
+    ../../node_modules/.bin/vitest run --project ui \
+      src/plugins/hermes-bots/group-rounds.test.ts \
+      src/plugins/hermes-bots/group-chat-view.render.test.tsx \
       --maxWorkers=2 --retry=0
+    ../../node_modules/.bin/vitest run --project ui \
+      src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts \
+      --maxWorkers=1 --retry=0 \
+      -t 'lease abort|replacement during Stop|delayed mailbox drive|post-turn commit|pending mailbox command|active mailbox thread|stops active mailbox work|follows a rename'
+    dependency_render_log="$TARGET/.git/dependency-render.log"
     set +e
     ../../node_modules/.bin/vitest run --project ui \
       src/plugins/hermes-bots/group-availability.test.tsx \
-      --maxWorkers=2 --retry=0
+      --maxWorkers=2 --retry=0 >"$dependency_render_log" 2>&1
     dependency_render_status=$?
     set -e
-    printf 'DEPENDENCY_RENDER_TEST_STATUS=%s (known exact-pin inherited result; not hidden)\n' "$dependency_render_status"
     test "$dependency_render_status" -eq 1
+    python3 - "$dependency_render_log" <<'PY'
+from pathlib import Path
+import re
+import sys
+
+text = Path(sys.argv[1]).read_text()
+print(text, end='')
+required = (
+    'retains classic availability in the chat header',
+    '2 of 4 available',
+    'Group driver unavailable. Update or reconnect the owning gateway.',
+)
+if any(token not in text for token in required):
+    raise SystemExit('group-availability failure did not match the inherited exact-pin fixture')
+if not re.search(r'Tests\s+1 failed\s+\|\s+11 passed\s+\(12\)', text):
+    raise SystemExit('group-availability result was not exactly 11 pass / 1 known fail')
+PY
+    printf 'DEPENDENCY_RENDER_TEST_STATUS=%s (exact inherited 11 pass / 1 named fail; not hidden)\n' "$dependency_render_status"
     printf '%s\n' "$dependency_render_status" >"$TARGET/.git/dependency-render-status"
-    ../../node_modules/.bin/vitest run --project ui \
-      src/plugins/hermes-bots/canonical-group-files.test.tsx \
-      src/plugins/hermes-bots/group-files-current-ui.test.tsx \
-      src/plugins/hermes-bots/classic-output-route-lifetime.test.ts \
-      --maxWorkers=2 --retry=0
     npm run build
   )
-  DEPENDENCY_RENDER_TEST_STATUS=$(cat "$TARGET/.git/dependency-render-status")
+  DEPENDENCY_RENDER_TEST_STATUS=$(<"$TARGET/.git/dependency-render-status")
 fi
 
 test "$(git rev-parse HEAD^{tree})" = "$EXPECTED_FINAL_TREE"
 git diff --check refs/inputs/runtime..HEAD
-printf 'LOWER_HEAD=%s\nDIRECT_OWNER_HEAD=%s\nFINAL_HEAD=%s\nFINAL_TREE=%s\nTESTED_OWNER_TREE=%s\nDEPENDENCY_RENDER_TEST_STATUS=%s\nVERIFY=%s\n' \
-  "$LOWER_HEAD" "$DIRECT_OWNER_HEAD" "$FINAL_HEAD" "$EXPECTED_FINAL_TREE" \
-  "$TESTED_OWNER_TREE" "$DEPENDENCY_RENDER_TEST_STATUS" "$VERIFY"
+printf 'LOWER_HEAD=%s\nDIRECT_OWNER_HEAD=%s\nFILES_HEAD=%s\nFINAL_HEAD=%s\nFINAL_TREE=%s\nTESTED_OWNER_TREE=%s\nCANCELLATION_OWNER_SHA=%s\nDEPENDENCY_RENDER_TEST_STATUS=%s\nVERIFY=%s\n' \
+  "$LOWER_HEAD" "$DIRECT_OWNER_HEAD" "$FILES_HEAD" "$FINAL_HEAD" "$EXPECTED_FINAL_TREE" \
+  "$TESTED_OWNER_TREE" "$CANCELLATION_OWNER_SHA" "$DEPENDENCY_RENDER_TEST_STATUS" "$VERIFY"

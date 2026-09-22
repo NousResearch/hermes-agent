@@ -774,15 +774,36 @@ def _repair_current_checkout(
 
 
 def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
-    """Fast-forward failed: merge on a custom branch (local commits survive) or reset --hard on the
-    same branch (rescue ref first when histories share no ancestor). ``sys.exit(1)`` on failure."""
+    """Fast-forward failed: merge whenever local commits exist (custom branch OR local commits
+    sitting directly on the tracked branch) so they survive; reset --hard only for a genuine
+    upstream force-push/rebase with no local commits to lose (rescue ref first when histories
+    share no ancestor). ``sys.exit(1)`` on failure."""
     # A custom branch (local commits atop origin/<branch>) also can't ff, and reset --hard
     # would discard that work: merge instead, stop on conflict.
     _cur_branch = (_git_run(git_cmd, ["branch", "--show-current"]).stdout or "").strip()
-    if _cur_branch and _cur_branch != branch:
-        print(
-            f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
-            f"merging origin/{branch} instead of resetting so local commits survive...")
+    on_custom_branch = bool(_cur_branch) and _cur_branch != branch
+    # #113940: local commits made directly ON the tracked branch (e.g. `git am` of a patch onto
+    # `main`, the documented single-file-patch workflow) look identical to a pure upstream
+    # force-push here — both fail the ff-only merge. The old code treated "same branch name" as
+    # proof there was nothing local to lose and went straight to `reset --hard origin/<branch>`,
+    # silently destroying those commits on every desktop auto-update. Ahead-count tells the two
+    # cases apart: if HEAD has commits origin/<branch> lacks, there IS local work to preserve, so
+    # take the same merge-preserving path as the custom-branch case regardless of branch name.
+    has_local_commits_ahead = False
+    if not on_custom_branch:
+        ahead_result = _git_run(git_cmd, ["rev-list", "--count", f"origin/{branch}..HEAD"])
+        ahead_count = (ahead_result.stdout or "").strip()
+        has_local_commits_ahead = (
+            ahead_result.returncode == 0 and ahead_count.isdigit() and int(ahead_count) > 0)
+    if on_custom_branch or has_local_commits_ahead:
+        if on_custom_branch:
+            print(
+                f"  ⚠ Checkout is on custom branch '{_cur_branch}' — "
+                f"merging origin/{branch} instead of resetting so local commits survive...")
+        else:
+            print(
+                f"  ⚠ Local commits sit on '{branch}' ahead of origin/{branch} — "
+                f"merging instead of resetting so they survive...")
         # Best-effort safety tag as a recovery anchor.
         _git_run(git_cmd, ["tag", f"pre-update-{_time.strftime('%Y%m%d-%H%M%S')}"])
         if _git_run(git_cmd, ["merge", "--no-edit", f"origin/{branch}"]).returncode != 0:
@@ -792,9 +813,9 @@ def _reconcile_diverged_checkout(git_cmd, branch: str, pre_pull_sha) -> None:
             print("  Then re-run the update. Local work is untouched.")
             sys.exit(1)
         return
-    # Same branch: a true upstream force-push/rebase; local changes are stashed, so reset.
-    # Orphan divergence (no common ancestor: corrupted HEAD, re-init) would lose the whole
-    # local graph, so park pre_pull_sha behind a rescue ref first.
+    # No local commits on either side: a true upstream force-push/rebase with nothing of ours to
+    # lose, so reset is safe. Orphan divergence (no common ancestor: corrupted HEAD, re-init)
+    # would still lose the whole local graph, so park pre_pull_sha behind a rescue ref first.
     merge_base_result = _git_run(git_cmd, ["merge-base", "HEAD", f"origin/{branch}"])
     has_common_ancestor = merge_base_result.returncode == 0 and merge_base_result.stdout.strip()
     if not has_common_ancestor and pre_pull_sha:

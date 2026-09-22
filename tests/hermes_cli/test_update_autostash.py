@@ -121,6 +121,7 @@ def test_refresh_active_memory_provider_dependencies_reinstalls_active_provider(
 def _make_update_side_effect(
     current_branch="main",
     commit_count="3",
+    local_commits_ahead="0",
     ff_only_fails=False,
     reset_fails=False,
     fetch_fails=False,
@@ -149,6 +150,12 @@ def _make_update_side_effect(
     ``existing_rescue_refs`` simulates the refs already present under
     ``refs/hermes-update-backups/orphan-<branch>-*`` (oldest first) so the
     ``_prune_orphan_rescue_refs`` cleanup pass has something to trim.
+
+    ``local_commits_ahead`` controls ``git rev-list --count origin/<branch>..HEAD``
+    (#113940's same-branch-local-commits guard) — "0" (default) means no local
+    commits sit ahead of origin on the current branch, so ordinary-divergence
+    tests keep exercising the reset path unchanged; set it >0 to simulate local
+    commits (e.g. a ``git am``'d patch) that must be merge-preserved instead.
     """
     recorded = []
     head_sha_calls = []
@@ -181,6 +188,11 @@ def _make_update_side_effect(
         if "checkout" in joined and "main" in joined:
             return SimpleNamespace(stdout="", stderr="", returncode=0)
         if "rev-list" in joined:
+            # Direction matters: "HEAD..origin/<branch>" counts upstream commits we
+            # lack (the check path); "origin/<branch>..HEAD" counts local commits
+            # origin lacks (#113940's merge-preserve guard).
+            if "origin/" in joined and joined.index("origin/") < joined.index("HEAD"):
+                return SimpleNamespace(stdout=f"{local_commits_ahead}\n", stderr="", returncode=0)
             return SimpleNamespace(stdout=f"{commit_count}\n", stderr="", returncode=0)
         if "merge-base" in joined:
             if merge_base_exists:
@@ -418,6 +430,73 @@ def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, 
     out = capsys.readouterr().out
     assert "orphan divergence" not in out
     assert "Fast-forward not possible (history diverged), resetting to match remote" in out
+
+
+def test_cmd_update_local_commits_on_tracked_branch_are_merged_not_reset(
+    monkeypatch, tmp_path, capsys
+):
+    """#113940 regression: local commits sitting directly on the tracked branch
+    (e.g. a ``git am``'d patch on ``main``) fail the ff-only merge just like an
+    upstream force-push — the old code went straight to ``reset --hard origin/main``
+    and silently destroyed them on every desktop auto-update. With commits ahead
+    of origin, the updater must take the merge-preserving path instead."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, merge_base_exists=True, local_commits_ahead="1",
+    )
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    hermes_main.cmd_update(SimpleNamespace())
+
+    reset_calls = [
+        c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c
+    ]
+    assert reset_calls == [], "reset --hard must never run when local commits are ahead"
+    merge_calls = [c for c in recorded if "merge" in " ".join(str(x) for x in c)]
+    assert any("origin/main" in " ".join(str(x) for x in c) for c in merge_calls)
+
+    out = capsys.readouterr().out
+    assert "Local commits sit on 'main' ahead of origin/main" in out
+    assert "Fast-forward not possible (history diverged), resetting to match remote" not in out
+
+
+def test_cmd_update_local_commits_ahead_merge_conflict_stops_update(
+    monkeypatch, tmp_path, capsys
+):
+    """#113940 variant: the preserve-merge conflicts with upstream → abort the
+    merge, exit 1, leave the checkout untouched (same contract as the
+    custom-branch path). No reset, so the local commits survive for manual
+    resolution."""
+    _setup_update_mocks(monkeypatch, tmp_path)
+
+    conflicting_side_effect, recorded = _make_update_side_effect(
+        ff_only_fails=True, merge_base_exists=True, local_commits_ahead="1",
+    )
+
+    def side_effect(cmd, **kwargs):
+        joined = " ".join(str(c) for c in cmd)
+        if "merge" in joined and "--no-edit" in cmd and joined.startswith("git"):
+            # The preserve-merge itself conflicts.
+            return SimpleNamespace(stdout="", stderr="CONFLICT (content)\n", returncode=1)
+        return conflicting_side_effect(cmd, **kwargs)
+
+    monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
+
+    with pytest.raises(SystemExit) as exc_info:
+        hermes_main.cmd_update(SimpleNamespace())
+    assert exc_info.value.code == 1
+
+    reset_calls = [
+        c for c in recorded if "reset" in " ".join(str(x) for x in c) and "--hard" in c
+    ]
+    assert reset_calls == []
+    abort_calls = [c for c in recorded if "abort" in " ".join(str(x) for x in c)]
+    assert abort_calls, "a failed preserve-merge must be aborted"
+
+    out = capsys.readouterr().out
+    assert "Merge conflict between local commits and upstream" in out
+    assert "Local work is untouched" in out
 
 
 def test_cmd_update_orphan_rescue_ref_write_failure_is_non_fatal(monkeypatch, tmp_path, capsys):

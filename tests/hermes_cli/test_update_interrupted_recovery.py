@@ -7,12 +7,12 @@ finished automatically on the next launch instead of leaving a half-built venv.
 
 from __future__ import annotations
 
-from pathlib import Path
+import sys
+
+import pytest
 
 import hermes_cli.main as m
-import hermes_cli.main_install_repair as hermes_cli_main_install_repair
-from hermes_cli import main_install_repair
-from hermes_cli import update_cmd
+from hermes_cli import _install_repair, main_install_repair
 
 
 def test_marker_round_trip(tmp_path, monkeypatch):
@@ -31,88 +31,79 @@ def test_marker_round_trip(tmp_path, monkeypatch):
     assert not marker.exists()
 
 
-
-
-
-
-def _stub_install_env(monkeypatch, m, seen):
-    """Common stubs so recovery's install path is inert and observable."""
-    import hermes_cli.main_install_repair as hermes_cli_main_install_repair
-
-    class R:
-        returncode = 0
-
-    monkeypatch.setattr(m.subprocess, "run", lambda *a, **k: R())
-    monkeypatch.setattr(m, "_is_termux_env", lambda *a, **k: False)
-    monkeypatch.setattr(hermes_cli_main_install_repair, "_is_termux_env", lambda *a, **k: False)
-    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
-    # The install executor moved to hermes_cli._install_repair (shared between
-    # the pre-import early pass and this late recovery path) — stub WHERE it
-    # is executed, not the legacy main.py wrapper it replaced.
-    import hermes_cli._install_repair as ir
-
-    monkeypatch.setattr(
-        ir, "run_core_install", lambda _root: seen.__setitem__("install", True)
-    )
-
-
+@pytest.mark.windows_only
 def test_recovery_self_lock_does_not_clear_core_marker_via_import_probes(
     tmp_path, monkeypatch
 ):
-    # ``.update-incomplete`` is the generic core-install marker. Healthy
-    # lazy-refresh import probes alone must NOT clear it and skip full
-    # reinstall — a missing dep outside the 7-probe set would look healthy
-    # (#58004 review blocker).
+    # Healthy package-only probes are first aid, not proof that the full core
+    # install finished (#58004). Exercise the real native self-lock predicate.
     monkeypatch.setattr(m, "PROJECT_ROOT", tmp_path)
     (tmp_path / "pyproject.toml").write_text("[project]\nname='x'\n")
     m._write_update_incomplete_marker()
+    marker = m._update_marker_path()
+    original_marker = marker.read_bytes()
 
     scripts_dir = tmp_path / "venv" / "Scripts"
     scripts_dir.mkdir(parents=True)
     shim = scripts_dir / "hermes.exe"
     shim.write_text("")
-
-    monkeypatch.setattr(m, "_is_windows", lambda: True)
-    monkeypatch.setattr(hermes_cli_main_install_repair, "_is_windows", lambda: True)
-    monkeypatch.setattr(m, "_venv_scripts_dir", lambda: scripts_dir)
-    monkeypatch.setattr(hermes_cli_main_install_repair, "_venv_scripts_dir", lambda: scripts_dir)
+    monkeypatch.setattr(main_install_repair, "_venv_scripts_dir", lambda: scripts_dir)
     monkeypatch.setattr(main_install_repair, "_hermes_exe_shims", lambda d: [shim])
-    monkeypatch.setattr(main_install_repair, "_default_venv_install_target",
-        lambda: (["uv", "pip"], {"VIRTUAL_ENV": str(tmp_path / "venv")}),
-    )
+    install_prefix = ["uv", "pip"]
+    install_env = {"VIRTUAL_ENV": str(tmp_path / "venv")}
     monkeypatch.setattr(
-        m, "_repair_venv_via_import_probes", lambda *a, **k: "healthy"
-    )
-    monkeypatch.setattr(
-        hermes_cli_main_install_repair, "_repair_venv_via_import_probes", lambda *a, **k: "healthy"
+        main_install_repair, "_default_venv_install_target",
+        lambda: (install_prefix, install_env),
     )
 
     class FakeProc:
-        def __init__(self, exe_path):
+        def __init__(self, pid, exe_path, parents=()):
+            self.pid = pid
             self._exe = exe_path
+            self._parents = parents
 
         def exe(self):
             return self._exe
 
         def parents(self):
-            return [FakeProc(str(shim))]
+            return list(self._parents)
 
-    monkeypatch.setattr("psutil.Process", lambda: FakeProc(sys_executable_path()))
+    launcher = FakeProc(101, str(shim))
+    interpreter = FakeProc(102, sys.executable, (launcher,))
+    monkeypatch.setattr("psutil.Process", lambda: interpreter)
 
-    seen = {"install": False}
-    _stub_install_env(monkeypatch, m, seen)
+    # Only the package and full-install executors are replaced: no real
+    # installer, uv bootstrap, or host process inventory may run in this test.
+    def unexpected_subprocess(*args, **kwargs):
+        pytest.fail("recovery escaped the inert install seams")
 
+    monkeypatch.setattr(main_install_repair.subprocess, "run", unexpected_subprocess)
+    monkeypatch.setattr("hermes_cli.managed_uv.ensure_uv", lambda: None)
+    events = []
+    install_succeeds = False
+
+    def first_aid(prefix, *, env):
+        assert prefix == install_prefix
+        assert env == install_env
+        events.append(("first-aid", marker.read_bytes()))
+        return "healthy"
+
+    def full_install(root):
+        assert root == tmp_path
+        events.append(("full-install", marker.read_bytes()))
+        if not install_succeeds:
+            raise RuntimeError("fixture full install failed")
+
+    monkeypatch.setattr(main_install_repair, "_repair_venv_via_import_probes", first_aid)
+    monkeypatch.setattr(_install_repair, "run_core_install", full_install)
+
+    assert main_install_repair._windows_running_hermes_launcher_locked() is True
     m._recover_from_interrupted_install()
+    assert events == [("first-aid", original_marker), ("full-install", original_marker)]
+    assert marker.read_bytes() == original_marker, "failed full install must retain core marker"
 
-    assert seen["install"] is True, "core marker still requires full reinstall"
-    assert not m._update_marker_path().exists(), "cleared only after full reinstall"
-
-
-
-
-def sys_executable_path():
-    import sys
-
-    return sys.executable
-
-
+    install_succeeds = True
+    events.clear()
+    m._recover_from_interrupted_install()
+    assert events == [("first-aid", original_marker), ("full-install", original_marker)]
+    assert not marker.exists(), "cleared only after successful full reinstall"

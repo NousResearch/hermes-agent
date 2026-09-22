@@ -13,19 +13,20 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     """Attach the ``update`` subcommand to ``subparsers``."""
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
-        description="Pull the latest changes from git and reinstall dependencies")
+        description="Pull the latest changes from git and reinstall dependencies",
+    )
     update_parser.add_argument(
         "--revision", default=None, metavar="HEX",
         help="Pinned target revision (40 lowercase hexadecimal characters). "
-            "Must be supplied with --install-id and --current-sha.")
+            "Must be supplied with --expected-install-id and --expected-current-sha.")
     update_parser.add_argument(
-        "--install-id", default=None, metavar="HEX",
+        "--expected-install-id", default=None, metavar="HEX",
         help="Pinned installation identity (32 lowercase hexadecimal characters). "
-            "Must be supplied with --revision and --current-sha.")
+            "Must be supplied with --revision and --expected-current-sha.")
     update_parser.add_argument(
-        "--current-sha", default=None, metavar="HEX",
+        "--expected-current-sha", default=None, metavar="HEX",
         help="Pinned current checkout SHA (40 lowercase hexadecimal characters). "
-            "Must be supplied with --revision and --install-id.")
+            "Must be supplied with --revision and --expected-install-id.")
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
@@ -105,12 +106,44 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     # the mutating handler.  This makes --check/--plan fail before any
     # collaborator can be reached while preserving the normal handler seam.
     _parse_known_args = update_parser.parse_known_args
+    _pinned_options = {
+        "--revision",
+        "--expected-install-id",
+        "--expected-current-sha",
+    }
+
+    # Reject only abbreviations of the new flags, at argparse's option
+    # resolution boundary. Let argparse own values, '--', sys.argv and legacy
+    # abbreviations rather than pre-scanning tokens with different semantics.
+    _get_option_tuples = update_parser._get_option_tuples
+
+    def _get_update_option_tuples(parser, option_string):
+        matches = _get_option_tuples(option_string)
+        if any(option in _pinned_options for _, option, *_ in matches):
+            parser.error(
+                f"unrecognized arguments: {option_string}; use exact pinned options: "
+                "--revision, --expected-install-id, --expected-current-sha"
+            )
+        return matches
+
+    update_parser._get_option_tuples = MethodType(
+        _get_update_option_tuples, update_parser
+    )
 
     def _parse_update_known_args(parser, args=None, namespace=None):
         parsed, remainder = _parse_known_args(args, namespace)
-        parsed.target_request = validate_target_request(
-            parsed.revision, parsed.install_id, parsed.current_sha
-        )
+        try:
+            parsed.target_request = validate_target_request(
+                parsed.revision,
+                parsed.expected_install_id,
+                parsed.expected_current_sha,
+            )
+        except ValueError as exc:
+            parser.error(
+                f"{exc}; supply --revision, --expected-install-id and "
+                "--expected-current-sha together as 40/32/40 lowercase hexadecimal "
+                "characters respectively, or omit all three for a legacy update"
+            )
         return parsed, remainder
 
     update_parser.parse_known_args = MethodType(_parse_update_known_args, update_parser)

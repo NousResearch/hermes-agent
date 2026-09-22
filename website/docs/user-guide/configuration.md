@@ -839,7 +839,9 @@ memory:
   write_approval: false     # true = require approval before any memory write
 ```
 
-With `memory.write_approval: true`, memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+With `memory.write_approval: true`, ordinary memory writes need your approval before they land: interactive CLI turns prompt inline; messaging sessions and the background self-improvement review stage the write for `/memory pending` → `/memory approve <id>` / `/memory reject <id>` review. Toggle at runtime with `/memory approval on|off`. See [Controlling memory writes](./features/memory.md#controlling-memory-writes-write_approval).
+
+Independently of this setting, unattended background-review `replace` and `remove` operations are always staged for review; they are never applied automatically. Background-review additions follow `memory.write_approval`.
 
 ## Context File Truncation
 

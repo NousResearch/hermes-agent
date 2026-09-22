@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Mapping
 
-from hermes_cli.github_identity import GitHubAutomationIdentity, GitHubIdentityError
+from .github_identity import GitHubAutomationIdentity, GitHubIdentityError
 
 from .github_client import GitHubClient, GitHubClientError
 from .policy import PluginPolicy, PullRequest, hermes_attribution_line

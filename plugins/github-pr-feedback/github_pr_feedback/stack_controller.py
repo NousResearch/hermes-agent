@@ -6,7 +6,7 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from hermes_cli.github_identity import GitHubAutomationIdentity, GitHubIdentityError
+from .github_identity import GitHubAutomationIdentity, GitHubIdentityError
 
 from .git_stack import GitStackRunner
 from .github_client import GitHubClient, GitHubClientError

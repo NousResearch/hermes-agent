@@ -18,7 +18,7 @@ from pathlib import Path
 from typing import Any, Callable, Mapping, Protocol
 from urllib.parse import quote
 
-from hermes_cli.github_identity import GitHubAutomationIdentity, GitHubIdentityError
+from .github_identity import GitHubAutomationIdentity, GitHubIdentityError
 
 try:
     import fcntl

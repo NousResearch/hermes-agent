@@ -1091,6 +1091,13 @@ def max_retries_exhausted_result(
     )
     if api_kwargs is not None:
         agent._dump_api_request_debug(api_kwargs, reason="max_retries_exhausted", error=api_error)
+    # A prior stream may have delivered text and entered the continuation path before
+    # this request failed without producing a token. The truncation ceiling is not
+    # reached in that sequence, so finalize its tagged trail before persistence.
+    from agent.turn_truncation import finalize_continuation_partial
+    _partial_response = finalize_continuation_partial(messages)
+    if _partial_response:
+        agent._session_messages = messages
     agent._persist_session(messages, conversation_history)
     _billing_block = None
     _billing_unverified = False
@@ -1127,7 +1134,8 @@ def max_retries_exhausted_result(
             "happens when it writes a very large file in one go. Ask me to write the file in "
             "smaller sections (or via execute_code with Python's open())."
         )
-    result = _failed_turn_result(_final_response, messages, api_call_count, _final_summary)
+    result = _failed_turn_result(
+        _partial_response or _final_response, messages, api_call_count, _final_summary)
     result.update({
         # Classified reason so callers (kanban worker in cli.py) can tell a quota wall
         # (``rate_limit`` / ``billing``) from a task failure.
@@ -1139,6 +1147,11 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    if _partial_response:
+        # Surfaces render final_response as the already-delivered text and use the
+        # structured error fields for the retry affordance. Keeping the two separate
+        # avoids appending failure copy to (or duplicating) the partial response.
+        result["partial"] = True
     _stamp_limit_reset(result, agent, api_error)
     if _free_tier_kind:
         _stamp_free_tier(result, _free_tier_kind, (

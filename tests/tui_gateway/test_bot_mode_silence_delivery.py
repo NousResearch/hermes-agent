@@ -44,6 +44,31 @@ def test_live_bot_chat_completion_empties_marker_only_for_successful_turns(monke
     assert payload["text"] == "NO_REPLY"
 
 
+def test_failed_turn_payload_marks_persisted_partial_for_the_renderer(monkeypatch):
+    monkeypatch.setattr(srv, "_get_usage", lambda _agent: {})
+    monkeypatch.setattr(srv, "render_message", lambda _text, _cols: None)
+    monkeypatch.setattr(srv, "_fail_inflight_turn", lambda *_args, **_kwargs: None)
+    session = {
+        "pending_title": None,
+        "session_key": "k",
+        "history_lock": contextlib.nullcontext(),
+        "agent": SimpleNamespace(_session_title_hint="Scratch"),
+    }
+    result = {
+        "final_response": "partial answer",
+        "error": "connection reset",
+        "failed": True,
+        "partial": True,
+    }
+
+    payload, raw, status = srv._complete_turn_payload(session, _turn(result), None, 80)
+
+    assert (raw, status) == ("partial answer", "error")
+    assert payload["text"] == "partial answer"
+    assert payload["error"] == "connection reset"
+    assert payload["partial"] is True
+
+
 def test_live_bot_chat_stream_holds_back_partial_silence_marker(monkeypatch):
     """Mirror of stream_consumer's hold-back: a marker never reaches message.delta, prose that
     diverges from every marker is flushed intact once it diverges."""

@@ -791,6 +791,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if status == "error":
         payload["error"] = str(error_value or raw)
         payload["recoverable"] = True
+        if result.get("partial") and raw:
+            payload["partial"] = True
         if _error_surface:
             payload["error_surface"] = _error_surface
     if st.terminal_callback is not None:

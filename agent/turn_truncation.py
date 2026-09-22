@@ -42,6 +42,45 @@ _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
     "chats are reset automatically)."
 )
 
+
+def finalize_continuation_partial(messages: List[Dict[str, Any]]) -> str:
+    """Collapse an unfinished continuation trail into one durable assistant row.
+
+    A stream drop appends tagged assistant fragments and synthetic user nudges while it
+    tries to continue. If a later request exhausts transport retries before another token,
+    the normal truncation ceiling never cleans that trail. Persist the text the user
+    already saw without leaving an unanswered synthetic user message in history.
+    """
+    parts: List[str] = []
+    retained: List[Dict[str, Any]] = []
+    found_trail = False
+    for message in messages:
+        if not isinstance(message, dict):
+            retained.append(message)
+            continue
+        if message.get("_length_continuation_fragment"):
+            found_trail = True
+            content = message.get("content")
+            if isinstance(content, str) and content:
+                parts.append(content)
+            continue
+        if message.get("_length_continuation_nudge"):
+            found_trail = True
+            continue
+        retained.append(message)
+
+    if not found_trail:
+        return ""
+
+    messages[:] = retained
+    from agent.conversation_loop import _join_truncated_parts
+    partial = _join_truncated_parts(parts).strip()
+    if partial:
+        append_message(messages, {
+            "role": "assistant", "content": partial, "finish_reason": "error",
+        })
+    return partial
+
 _THINKING_EXHAUSTED = (
     "💭 Reasoning exhausted the output token budget — no visible response was produced.",
     "⚠️ **Thinking Budget Exhausted**\n\nThe model used all its output tokens on reasoning "

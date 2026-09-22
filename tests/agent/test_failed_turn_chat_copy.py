@@ -122,6 +122,51 @@ def test_max_retries_exhausted_chat_text_has_next_step_and_no_mechanism_lead():
     assert result["failure_retryable"] is True
 
 
+def test_exhausted_retry_collapses_stream_continuation_into_durable_partial():
+    error = _Http(503, "HTTP 503: upstream unavailable")
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    messages = [
+        {"role": "user", "content": "Write a long answer"},
+        {
+            "role": "assistant",
+            "content": "First half",
+            "_length_continuation_fragment": True,
+        },
+        {
+            "role": "user",
+            "content": "Continue exactly where you left off",
+            "_length_continuation_nudge": True,
+        },
+        {
+            "role": "assistant",
+            "content": "second half",
+            "_length_continuation_fragment": True,
+        },
+        {
+            "role": "user",
+            "content": "Continue exactly where you left off",
+            "_length_continuation_nudge": True,
+        },
+    ]
+
+    result = max_retries_exhausted_result(
+        _Agent(), error, classified, max_retries=3, is_rate_limited=False,
+        error_msg=str(error).lower(), api_kwargs=None, api_messages=[], messages=messages,
+        conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", model="m",
+    )
+
+    assert result["partial"] is True
+    assert result["final_response"] == "First half\nsecond half"
+    assert result["messages"][-1]["role"] == "assistant"
+    assert result["messages"][-1]["content"] == "First half\nsecond half"
+    assert result["messages"][-1]["finish_reason"] == "error"
+    assert not any(
+        message.get("_length_continuation_fragment") or message.get("_length_continuation_nudge")
+        for message in result["messages"]
+    )
+
+
 def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
     """The real usage-limit envelope: ``_summarize_api_error`` reduces the body to ``HTTP 429: The
     usage limit has been reached``, so the reset must travel through the classifier, not the text (#89401)."""

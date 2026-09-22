@@ -7,12 +7,49 @@ import {
   claimDecision,
   createBackendOutputTail,
   DEFAULT_OUTPUT_TAIL_LIMIT,
+  execText,
   formatBackendExitLine,
   isPidOnlyStartMarker,
   pidOnlyStartMarker,
   probeStartMarker,
   processStartMarker
 } from './backend-claim'
+
+// --- execText: real-child invariants (regression for #118983) ---------------
+
+test('execText resolves trimmed stdout from a real child', async () => {
+  const out = await execText(process.execPath, ['-e', 'process.stdout.write("  ok\\n")'])
+
+  assert.equal(out, 'ok')
+})
+
+test('execText rejects with stderr context on nonzero exit', async () => {
+  await assert.rejects(
+    execText(process.execPath, ['-e', 'process.stderr.write("boom"); process.exit(3)']),
+    (error: any) => error.code === 3 && /boom/.test(String(error.stderr))
+  )
+})
+
+test('execText kills and rejects when the child outlives its timeout', async () => {
+  const start = Date.now()
+
+  await assert.rejects(
+    execText(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'], { timeout: 300 }),
+    /timed out after 300ms/
+  )
+
+  // The child must actually be killed, not left running until the 30s timer.
+  assert.ok(Date.now() - start < 5000, 'timed-out child was not reaped promptly')
+})
+
+test('execText never leaves stdin open — probes are noninteractive', async () => {
+  // A command that exits successfully only when stdin was never a live pipe
+  // it could block on. With stdio ['ignore', ...] this passes instantly; the
+  // old execFile + stdin.end() path wedged Windows OpenSSH's `ssh -G`.
+  const out = await execText(process.execPath, ['-e', 'process.stdin.isTTY === null; console.log("done")'])
+
+  assert.equal(out, 'done')
+})
 
 // --- claimDecision: the #93608 policy ---------------------------------------
 

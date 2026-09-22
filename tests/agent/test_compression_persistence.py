@@ -211,9 +211,14 @@ class TestFlushAfterCompression:
             awaiting_real_usage_after_compression = False
 
             def compress(self, _messages, **_kwargs):
+                # Conforming-engine shape (#118900): the retained tail row is
+                # the transcript's own last reply, kept verbatim — the commit
+                # guard reinserts a dropped last reply, so inventing a new
+                # tail row here would (correctly) come back with the original
+                # alongside it.
                 return [
                     {"role": "user", "content": "[summary] earlier state"},
-                    {"role": "assistant", "content": "retained tail"},
+                    {"role": "assistant", "content": "old answer"},
                 ]
 
         class AbortCompressor:
@@ -269,7 +274,7 @@ class TestFlushAfterCompression:
                 agent.session_id
             )] == [
                 "[summary] earlier state",
-                "retained tail",
+                "old answer",
                 "new request",
                 "new answer",
             ]

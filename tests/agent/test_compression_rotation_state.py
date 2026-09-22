@@ -221,6 +221,12 @@ class TestRotationChildFlushDedup:
         db.create_session(parent, source="cli")
         db.append_message(parent, "user", "persisted question")
         db.append_message(parent, "assistant", "persisted answer")
+        # Bulk middle so the stub fold genuinely shrinks: the commit guard
+        # keeps a dropped last reply live (#118900), and without real middle
+        # to reclaim the no-growth guard correctly refuses the attempt.
+        for i in range(10):
+            db.append_message(parent, "user", f"bulk question {i} " + "x" * 60)
+            db.append_message(parent, "assistant", f"bulk answer {i} " + "y" * 60)
 
         loaded = db.get_messages_as_conversation(parent)
         messages = [*loaded, {"role": "user", "content": "live question"}]
@@ -1297,11 +1303,21 @@ class TestTodoSnapshotMergedNotDuplicated:
                 "image_url": {"url": "https://example.com/context.png"},
             },
         ]
-        agent.context_compressor.compress.return_value = [
-            {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "assistant", "content": "ok"},
-            {"role": "user", "content": list(original_parts)},
-        ]
+        agent.context_compressor.compress.return_value = None
+
+        def _keep_last_reply(messages, **_kwargs):
+            # Conforming-engine shape (#118900): the retained tail assistant
+            # row is the transcript's own last reply, kept verbatim — the
+            # commit guard reinserts a dropped last reply, so a stub that
+            # invents a new tail row would (correctly) come back with the
+            # original alongside it.
+            return [
+                {"role": "user", "content": "[CONTEXT COMPACTION] summary"},
+                {"role": "assistant", "content": messages[-1]["content"]},
+                {"role": "user", "content": list(original_parts)},
+            ]
+
+        agent.context_compressor.compress.side_effect = _keep_last_reply
         agent._todo_store._todos = [
             {"id": "t1", "content": "inspect image", "status": "in_progress"}
         ]

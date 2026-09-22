@@ -259,14 +259,26 @@ def clear_session(session_key: str) -> int:
 def resolve_clarify_timeout(config: dict) -> int:
     """Clarify timeout (seconds): legacy ``clarify.timeout`` if explicitly set, else
     ``agent.clarify_timeout``, else 3600 — the single source of truth for every surface
-    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600."""
+    (gateway, CLI, TUI). ``<= 0`` is kept verbatim (unlimited); non-numeric -> 3600.
+
+    A positive value is capped at ``agent.deadline.MAX_SAFE_TIMEOUT_S``: it is handed
+    straight to ``Event.wait`` / ``Thread.join`` (tui_gateway/server_requests.py), which
+    raise ``OverflowError: timeout value is too large`` past the platform wait limit — only
+    ~49.7 days on Windows. An operator writing "effectively never" (e.g. 10 years) got that
+    crash instead of a long wait. ``<= 0`` still means unlimited and is NOT capped: that path
+    never passes a number to the wait at all."""
     raw = (config.get("clarify") or {}).get("timeout")
     if raw is None:
         raw = (config.get("agent") or {}).get("clarify_timeout", 3600)
     try:
-        return int(raw)
-    except (TypeError, ValueError):
+        value = int(raw)
+    except (OverflowError, TypeError, ValueError):
         return 3600
+    if value <= 0:
+        return value
+    from agent.deadline import MAX_SAFE_TIMEOUT_S
+
+    return min(value, int(MAX_SAFE_TIMEOUT_S))
 
 
 def get_clarify_timeout() -> int:

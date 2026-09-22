@@ -148,8 +148,9 @@ def _authorization_gate_lock_timeout() -> float:
     try:
         from tools.approval_human_wait import human_wait_ceiling
 
-        # human_wait_ceiling is platform-safety-capped (agent/deadline.py MAX_SAFE_TIMEOUT_S): a huge
-        # approvals.timeout can no longer overflow Lock.acquire's time_t on macOS (#83220). Deliberately NOT
+        # human_wait_ceiling derives from agent.deadline.MAX_SAFE_TIMEOUT_S and caps the final
+        # timeout-plus-margin at threading.TIMEOUT_MAX, so a huge approvals.timeout cannot overflow
+        # Lock.acquire on any supported platform (#83220). Deliberately NOT
         # min()'d with _AUTHORIZATION_GATE_LOCK_TIMEOUT_S — the gate must never give up while a legitimate
         # approval prompt is still answerable (#79719), so a configured approvals.timeout above 360s must
         # extend the gate.

@@ -78,7 +78,7 @@ Earlier candidates were rejected because existing-message recovery bypassed acti
 
 A subsequent review identified that one pending entry per thread conflated a local reply with a reclaimed mailbox command. The queue now keeps local-reply entries by thread and mailbox entries by fence generation. Either insertion order preserves both owners: a lease abort removes only its claimant, while explicit Stop cancels all queued claimants and prevents a lost fence from requeuing.
 
-The corrected lower-only state passed 21 selected causal tests (99 excluded by name filter), all three TypeScript projects and changed-source ESLint with zero warnings. The actual executable recipe then reproduced the final tree above and passed its own 21 selected tests, all three TypeScript projects, six-path zero-warning ESLint, renderer/Electron build and `assert-dist-built`. These are separate lower-only and assembled-product results over the same selected cases, not additive unique coverage. The two same-thread collision tests first failed against the previous representation. The recipe was exercised using exact local candidate refs before publication; public defaults must retrieve those same immutable pins. No Files/SDK source behavior was changed. The structural correction has not received independent acceptance; publication remains withheld.
+The corrected lower-only state passed 21 selected causal tests (99 excluded by name filter), all three TypeScript projects and changed-source ESLint with zero warnings. The actual executable recipe then reproduced the final tree above and passed its own 21 selected tests, all three TypeScript projects, six-path zero-warning ESLint, renderer/Electron build and `assert-dist-built`. These are separate lower-only and assembled-product results over the same selected cases, not additive unique coverage. The two same-thread collision tests first failed against the previous representation. The recipe was exercised using exact local candidate refs before publication; public defaults must retrieve those same immutable pins. No Files/SDK source behavior was changed. Independent source/composition review accepted the owner-distinct correction and these exact lower/final trees, including both enqueue orders, recovery/rename continuity and exact Stop/lease-loss cancellation. Public-ref retrieval is a separate delivery check recorded on the PR; this acceptance is not native Desktop or hosted-CI proof.
 
 Focused and full modes run the exact setup and build path:
 
@@ -119,6 +119,6 @@ It is stored in the #97846 owner tip because that branch owns the corrected beha
 ## Limits
 
 - #104199 is an owner-only dependent branch, not a standalone green branch.
-- The default public invocation cannot succeed until the parent publishes and reads back the new normal-forward #97846 pin and the replacement #104199 candidate on their existing refs.
+- The default public invocation requires the named immutable pins to remain reachable from the existing #97846 and #104199 refs; it refuses absent or substituted inputs.
 - No new PR or branch is required for the lower stack, and this recipe performs no public write, merge to main, deployment, restart, or native action.
 - Backend #104198 is an independent already-published input and is neither copied nor retested here.

@@ -1,11 +1,14 @@
 """Mechanical salvage for compression candidates that would grow."""
 
+from unittest.mock import MagicMock
+
 from agent.context_compressor import (
     COMPRESSED_SUMMARY_METADATA_KEY,
     _SUMMARY_END_MARKER,
     salvage_grown_transcript,
 )
 from agent.model_metadata import estimate_messages_tokens_rough
+from tools.todo_tool import TODO_INJECTION_HEADER
 
 
 def test_salvage_stubs_old_tools_and_keeps_todo_when_stubbing_suffices():
@@ -51,7 +54,7 @@ def test_salvage_drops_todo_only_as_last_resort():
         {"role": "assistant", "content": "ok"},
         {
             "role": "user",
-            "content": "Current todos:\n- [ ] " + ("t" * 800),
+            "content": f"{TODO_INJECTION_HEADER}\n- [ ] " + ("t" * 800),
             "_todo_snapshot_synthetic": True,
         },
     ]
@@ -81,7 +84,7 @@ def test_salvage_last_resort_preserves_pruned_skill_reload_notice():
         {"role": "assistant", "content": "ok"},
         {
             "role": "user",
-            "content": "Current todos:\n- [ ] " + ("t" * 4000) + f"\n\n{notice}",
+            "content": f"{TODO_INJECTION_HEADER}\n- [ ] " + ("t" * 4000) + f"\n\n{notice}",
             "_todo_snapshot_synthetic": True,
         },
     ]
@@ -94,7 +97,58 @@ def test_salvage_last_resort_preserves_pruned_skill_reload_notice():
     snapshot_rows = [m for m in out if m.get("_todo_snapshot_synthetic")]
     assert len(snapshot_rows) == 1
     assert snapshot_rows[0]["content"].startswith(_PRUNED_SKILL_RELOAD_NOTICE_HEADER)
-    assert "Current todos" not in snapshot_rows[0]["content"]
+    assert TODO_INJECTION_HEADER not in snapshot_rows[0]["content"]
+
+
+def test_salvage_preserves_recovery_nudge_around_folded_todo():
+    """Last-resort TODO removal must retain other content sharing its user row."""
+    from agent.context_compressor import _skill_pruned_marker
+    from agent.conversation_compression import (
+        _PRUNED_SKILL_RELOAD_NOTICE_HEADER,
+        _durable_compaction_messages,
+        _fold_todo_snapshot,
+    )
+    from agent.conversation_loop import _EMPTY_TOOL_RESPONSE_NUDGE
+
+    original = [
+        {"role": "user", "content": "please continue " + ("o" * 3000)},
+        {"role": "assistant", "content": "ok"},
+    ]
+    candidate = [
+        {"role": "user", "content": f"summary of the ask\n{_skill_pruned_marker('example-skill')}"},
+        {
+            "role": "assistant",
+            "content": "(empty)",
+            "_empty_recovery_synthetic": True,
+        },
+        {
+            "role": "user",
+            "content": _EMPTY_TOOL_RESPONSE_NUDGE,
+            "_empty_recovery_synthetic": True,
+        },
+    ]
+    agent = MagicMock()
+    agent._todo_store.has_items.return_value = True
+    agent._todo_store.format_for_injection.return_value = (
+        f"{TODO_INJECTION_HEADER}\n- [ ] " + ("t" * 4000)
+    )
+    _fold_todo_snapshot(agent, candidate)
+    assert estimate_messages_tokens_rough(candidate) > estimate_messages_tokens_rough(original)
+
+    out = salvage_grown_transcript(original, candidate)
+
+    assert out is not None
+    recovery_rows = [m for m in out if _EMPTY_TOOL_RESPONSE_NUDGE in str(m.get("content"))]
+    assert len(recovery_rows) == 1
+    assert TODO_INJECTION_HEADER not in str(recovery_rows[0]["content"])
+    assert _PRUNED_SKILL_RELOAD_NOTICE_HEADER in str(recovery_rows[0]["content"])
+
+    durable = _durable_compaction_messages(out)
+    assert _EMPTY_TOOL_RESPONSE_NUDGE not in str(durable)
+    assert not any(
+        previous.get("role") == current.get("role")
+        for previous, current in zip(durable, durable[1:])
+    )
 
 
 def test_salvage_returns_none_when_nothing_can_shrink():

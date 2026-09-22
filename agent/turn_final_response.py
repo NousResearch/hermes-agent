@@ -282,11 +282,14 @@ def finish_text_response(
 
     # Pop prefill / empty-retry scaffolding before the final response or
     # verification follow-up; it must not become durable transcript.
+    from agent.conversation_compression import _cleanup_ephemeral_todo_tail
     while (
         messages
         and isinstance(messages[-1], dict)
         and any(messages[-1].get(flag) for flag in _EPHEMERAL_SCAFFOLDING_FLAGS)
     ):
+        if _cleanup_ephemeral_todo_tail(messages, _EPHEMERAL_SCAFFOLDING_FLAGS):
+            break
         messages.pop()
 
     _sg = apply_stop_gates(

@@ -2332,6 +2332,158 @@ def _todo_snapshot_is_only_content(content: Any, stripped: Any) -> bool:
     return False
 
 
+_EPHEMERAL_TODO_SCAFFOLDING_FLAGS = (
+    "_empty_recovery_synthetic", "_verification_stop_synthetic", "_pre_verify_synthetic",
+    "_dropped_toolcall_nudge",
+)
+
+
+def _retain_durable_todo_from_ephemeral(message: Any) -> bool:
+    """Detach a folded TODO snapshot from ephemeral scaffolding in ``message``.
+
+    Folding keeps strict role alternation while a retry/verification nudge is live. At a cleanup or
+    persistence boundary the nudge must disappear without taking the durable snapshot with it.
+    """
+    if not (
+        isinstance(message, dict)
+        and message.get("_todo_snapshot_synthetic")
+        and any(message.get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+    ):
+        return False
+    from tools.todo_tool import TODO_INJECTION_HEADER
+    content = message.get("content")
+    snapshot = None
+    if isinstance(content, str):
+        marker = content.find(TODO_INJECTION_HEADER)
+        if marker >= 0:
+            snapshot = content[marker:].strip()
+    elif isinstance(content, list):
+        for part in content:
+            text = str(part.get("text") or "") if isinstance(part, dict) and part.get("type") == "text" else ""
+            marker = text.find(TODO_INJECTION_HEADER)
+            if marker >= 0:
+                snapshot = text[marker:].strip()
+                break
+    if not snapshot:
+        return False
+    _replace_message_content(message, snapshot)
+    for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS:
+        message.pop(flag, None)
+    return True
+
+
+def _durable_compaction_projection(messages: list) -> tuple[list, set[int]]:
+    """Return durable TODO-only rows plus source ids of adjacent ephemeral rows removed."""
+    from agent.context_compressor import _append_text_to_content
+    projected: list[tuple[Any, Any]] = []
+    removed_source_ids: set[int] = set()
+    changed = False
+    for message in messages:
+        candidate = dict(message) if isinstance(message, dict) else message
+        if _retain_durable_todo_from_ephemeral(candidate):
+            while (
+                projected
+                and isinstance(projected[-1][0], dict)
+                and any(projected[-1][0].get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+            ):
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
+            while projected and isinstance(projected[-1][1], dict) and projected[-1][1].get("role") == "tool":
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
+            if (
+                projected
+                and isinstance(projected[-1][1], dict)
+                and projected[-1][1].get("role") == "assistant"
+                and projected[-1][1].get("tool_calls")
+            ):
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
+            if (
+                projected
+                and isinstance(projected[-1][1], dict)
+                and projected[-1][1].get("role") == candidate.get("role") == "user"
+            ):
+                source, previous = projected[-1]
+                previous = dict(previous)
+                separator = "\n\n" if _message_text(previous).strip() else ""
+                _replace_message_content(
+                    previous,
+                    _append_text_to_content(previous.get("content"), f"{separator}{candidate['content']}"),
+                )
+                projected[-1] = (source, previous)
+                removed_source_ids.add(id(message))
+            else:
+                projected.append((message, candidate))
+            changed = True
+        elif (
+            isinstance(candidate, dict)
+            and candidate.get("_todo_snapshot_synthetic")
+            and any(candidate.get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+        ):
+            # Last-resort salvage may remove the durable TODO payload while retaining the
+            # live retry nudge. Do not publish that now-ephemeral-only carrier, or the next
+            # session replays recovery scaffolding as user intent. Drop its paired synthetic
+            # assistant too so the durable transcript still alternates roles.
+            while (
+                projected
+                and isinstance(projected[-1][0], dict)
+                and any(projected[-1][0].get(flag) for flag in _EPHEMERAL_TODO_SCAFFOLDING_FLAGS)
+            ):
+                source, _ = projected.pop()
+                removed_source_ids.add(id(source))
+            removed_source_ids.add(id(message))
+            changed = True
+        else:
+            projected.append((message, message))
+    return ([value for _, value in projected] if changed else messages), removed_source_ids
+
+
+def _cleanup_ephemeral_todo_tail(messages: list, ephemeral_flags: tuple[str, ...]) -> bool:
+    """Keep a folded TODO at cleanup while removing its ephemeral pair without breaking alternation."""
+    from agent.context_compressor import _append_text_to_content
+    if not messages or not _retain_durable_todo_from_ephemeral(messages[-1]):
+        return False
+    while (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and any(messages[-2].get(flag) for flag in ephemeral_flags)
+    ):
+        messages.pop(-2)
+    while (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and messages[-2].get("role") == "tool"
+    ):
+        messages.pop(-2)
+    if (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and messages[-2].get("role") == "assistant"
+        and messages[-2].get("tool_calls")
+    ):
+        messages.pop(-2)
+    if (
+        len(messages) > 1
+        and isinstance(messages[-2], dict)
+        and messages[-2].get("role") == messages[-1].get("role") == "user"
+    ):
+        snapshot = messages[-1].get("content")
+        previous = messages[-2]
+        separator = "\n\n" if _message_text(previous).strip() else ""
+        _replace_message_content(
+            previous,
+            _append_text_to_content(previous.get("content"), f"{separator}{snapshot}"),
+        )
+        messages.pop()
+    return True
+
+
+def _durable_compaction_messages(messages: list) -> list:
+    """Project ephemeral+TODO carriers to their durable TODO-only form without mutating live context."""
+    return _durable_compaction_projection(messages)[0]
+
+
 def _replace_message_content(message: dict, content: Any) -> None:
     """Rewrite message content without allowing an old API sidecar to replay."""
     from agent.turn_context import drop_stale_api_content
@@ -3077,14 +3229,13 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
         _reload_notice = _pruned_skill_reload_notice(compressed)
         if _reload_notice:
             todo_snapshot = f"{todo_snapshot}\n\n{_reload_notice}"
-        # Fold the snapshot into a trailing REAL user msg (no synthetic user/user pair);
-        # strip old snapshots first. Scaffolding tails must not absorb it (provenance).
+        # Fold the snapshot into a trailing user msg (no synthetic user/user pair) and strip old snapshots first.
         # Any snapshot merged at an earlier boundary is stripped first so repeated compactions refresh
         # rather than accumulate todo state (#26981). Scaffolding tails (continuation marker, summary
-        # handoff, a bare stale snapshot row) must never absorb the snapshot: merging would upgrade them to
-        # "real user" evidence and break zero-user provenance (#69292), so those keep the flagged standalone
-        # append and the real-user preservation pass continues to see todo scaffolding, not human intent.
-        from agent.context_compressor import _append_text_to_content
+        # handoff, a bare stale snapshot row) must never become "real user" evidence when absorbing the
+        # snapshot (#69292), so those retain synthetic provenance; a separate user row would violate strict
+        # role alternation.
+        from agent.context_compressor import ContextCompressor, _append_text_to_content
         merged = False
         _tail = compressed[-1] if compressed and isinstance(compressed[-1], dict) else None
         if _tail is not None and _tail.get("role") == "user":
@@ -3101,6 +3252,30 @@ def _fold_todo_snapshot(agent: Any, compressed: list) -> None:
                 # The tail was nothing but an earlier snapshot row —
                 # refresh it in place instead of stacking a duplicate.
                 _replace_message_content(_tail, todo_snapshot)
+                _tail["_todo_snapshot_synthetic"] = True
+                merged = True
+            else:
+                # Keep synthetic user scaffolding synthetic, but fold the snapshot into it so
+                # strict providers never receive adjacent user rows. Summary carriers must keep
+                # their prefix first; other scaffolding keeps the durable todo marker first because
+                # SessionDB intentionally drops the private provenance flags.
+                if ContextCompressor._is_context_summary_message(_probe):
+                    _snapshot_text = f"\n\n{todo_snapshot}" if _message_text(_probe).strip() else todo_snapshot
+                    _merged_content = _append_text_to_content(_stripped, _snapshot_text)
+                elif isinstance(_stripped, list):
+                    _merged_content = _append_text_to_content(
+                        _stripped, f"{todo_snapshot}\n\n", prepend=True
+                    )
+                elif isinstance(_stripped, str) and _stripped:
+                    # Separate text blocks let the next snapshot refresh remove only the old
+                    # marker block while retaining the synthetic scaffolding that follows it.
+                    _merged_content = [
+                        {"type": "text", "text": todo_snapshot},
+                        {"type": "text", "text": _stripped},
+                    ]
+                else:
+                    _merged_content = todo_snapshot
+                _replace_message_content(_tail, _merged_content)
                 _tail["_todo_snapshot_synthetic"] = True
                 merged = True
         if not merged:
@@ -3276,8 +3451,9 @@ def _compression_child_source(agent: Any, parent_session_id: str) -> str:
 
 
 def _publish_rotated_compaction(
-    agent: Any, messages: list, compressed: list, *, new_system_prompt: str, lease: _CompressionLease,
-    old_session_id: str, compressed_user_turn_outcome: str,
+    agent: Any, messages: list, compressed: list, *, durable_compressed: list,
+    new_system_prompt: str, lease: _CompressionLease, old_session_id: str,
+    compressed_user_turn_outcome: str,
 ) -> None:
     """Rotate the session: flush the parent, publish the child, re-point the agent.
     Flushes current-turn msgs to the OLD session, passing the durable prefix (messages[:persist idx]) so
@@ -3314,7 +3490,8 @@ def _publish_rotated_compaction(
     agent._session_db.publish_compression_child(
         parent_session_id=old_session_id, child_session_id=new_session_id,
         source=_compression_child_source(agent, old_session_id), model=agent.model,
-        model_config=agent._session_init_model_config, system_prompt=new_system_prompt, messages=compressed,
+        model_config=agent._session_init_model_config, system_prompt=new_system_prompt,
+        messages=durable_compressed,
         cwd=getattr(agent, "working_directory", None), profile_name=_profile_for_child,
         compression_lock_holder=lease.holder, require_compression_lease=lease.holder is not None,
         require_lease_refresh=lease.holder is not None, lease_ttl_seconds=lease.ttl,
@@ -3613,6 +3790,7 @@ def _commit_compaction(
                 return _CommitOutcome(
                     compressed=messages, refused_prompt=_refused_sp, commit_started_at=commit_started_at
                 )
+            durable_compressed, removed_durable_source_ids = _durable_compaction_projection(compressed)
             if in_place:
                 # In-place compaction: same session_id; soft-archive old turns (active=0, still
                 # searchable) + insert `compressed` atomically; no pre-flush (tail already in).
@@ -3620,9 +3798,13 @@ def _commit_compaction(
                 # Tail rows tagged by compress() are archived as superseded duplicates, not
                 # compacted=1. Count against the FINAL list — salvage may have dropped rows.
                 agent._session_db.archive_and_compact(
-                    agent.session_id, compressed, model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
+                    agent.session_id, durable_compressed,
+                    model_config_patch={PROACTIVE_PRUNE_REARM_MODEL_CONFIG_KEY: None},
                     watermark=lease.watermark, lock_holder=lease.holder,
-                    tail_count=sum(1 for m in compressed if id(m) in _tail_tagged_ids),
+                    tail_count=sum(
+                        1 for m in compressed
+                        if id(m) in _tail_tagged_ids and id(m) not in removed_durable_source_ids
+                    ),
                 )
                 split_status = "in_place_committed"
                 # compress() returned marker-swept copies; stamp them as persisted or the next
@@ -3653,7 +3835,8 @@ def _commit_compaction(
                 # instead of leaving the failed attempt's compacted snapshot in place.
                 old_session_id = agent.session_id
                 _publish_rotated_compaction(
-                    agent, messages, compressed, new_system_prompt=new_system_prompt, lease=lease,
+                    agent, messages, compressed, durable_compressed=durable_compressed,
+                    new_system_prompt=new_system_prompt, lease=lease,
                     old_session_id=old_session_id, compressed_user_turn_outcome=compressed_user_turn_outcome,
                 )
                 split_status = "rotated_committed"

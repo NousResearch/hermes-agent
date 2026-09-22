@@ -186,6 +186,53 @@ def test_multiple_verification_retries_publish_each_candidate_once(agent, monkey
 
 
 
+def test_verification_cleanup_preserves_folded_todo_and_repairs_repeated_candidates():
+    """Removing repeated verification nudges keeps one valid candidate/TODO sequence."""
+    from agent.conversation_compression import _fold_todo_snapshot
+    from agent.turn_finalizer import _drop_verification_continuation_scaffolding
+    from tools.todo_tool import TODO_INJECTION_HEADER
+
+    todo_agent = MagicMock()
+    todo_agent._todo_store.format_for_injection.return_value = (
+        f"{TODO_INJECTION_HEADER}\n- [ ] t1. verify the fix (pending)"
+    )
+    todo_agent._todo_store.has_items.return_value = True
+    messages = [
+        {"role": "user", "content": "ship the fix"},
+        {
+            "role": "assistant",
+            "content": "candidate one",
+            "finish_reason": "verification_required",
+        },
+        {
+            "role": "user",
+            "content": "verify it",
+            "_verification_stop_synthetic": True,
+        },
+        {
+            "role": "assistant",
+            "content": "candidate two",
+            "finish_reason": "verification_required",
+        },
+        {
+            "role": "user",
+            "content": "verify it again",
+            "_verification_stop_synthetic": True,
+        },
+    ]
+    _fold_todo_snapshot(todo_agent, messages)
+
+    _drop_verification_continuation_scaffolding(messages)
+
+    assert [message["role"] for message in messages] == ["user", "assistant", "user"]
+    assert messages[1]["content"] == "candidate two"
+    assert TODO_INJECTION_HEADER in messages[2]["content"]
+    assert not any(
+        previous["role"] == current["role"]
+        for previous, current in zip(messages, messages[1:])
+    )
+
+
 def test_verify_on_stop_emits_interim_response_to_ui(agent, monkeypatch):
     """The verify-on-stop path must emit the full response to the UI callback.
 

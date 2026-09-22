@@ -202,6 +202,15 @@ def _response_refusal_text(response: Any) -> str:
     return refusal.strip() if isinstance(refusal, str) else ""
 
 
+def _is_refusal_response(response: Any, content: str) -> bool:
+    """Single refusal predicate for both summarizer paths.
+
+    An explicit provider ``message.refusal`` wins even when ``content`` looks like a
+    summary; otherwise fall back to the prose detector on the extracted content.
+    """
+    return bool(_response_refusal_text(response)) or _is_summary_refusal(content)
+
+
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
     """Return True for non-retryable summary auth, permission, or quota errors."""
 
@@ -3633,7 +3642,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # error, rather than replacing real context with an empty summary.
         if not content.strip():
             raise RuntimeError(f"Context compression LLM returned empty content {where}")
-        if _response_refusal_text(response) or _is_summary_refusal(content):
+        if _is_refusal_response(response, content):
             # Treat a refusal as unusable content. This deliberately reuses the
             # established fallback/cooldown/abort path for an empty body, so it
             # can never be committed as `_previous_summary`.

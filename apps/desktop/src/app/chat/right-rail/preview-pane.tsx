@@ -290,11 +290,22 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
   // Artifacts have no URL to load — they render from the registry, never in a
   // webview.
   const isWebPreview =
-    target.kind !== 'artifact' &&
-    (target.kind === 'url' || (target.previewKind === 'html' && renderMode !== 'source'))
+    target.kind !== 'artifact' && (target.kind === 'url' || (target.previewKind === 'html' && renderMode !== 'source'))
 
   const isRemoteHtmlTarget =
     target.kind === 'file' && target.previewKind === 'html' && Boolean(target.dataUrl || target.transient)
+
+  // A remote HTML file whose data URL failed validation arrives as a
+  // source-only transient target; it has no rendered path to offer.
+  const canRenderHtmlFile = isHtmlFileTarget && (!isRemoteHtmlTarget || Boolean(target.dataUrl))
+
+  const selectRenderMode = (next: 'preview' | 'source') => {
+    if (tabId) {
+      setPreviewRenderMode(tabId, next)
+    } else {
+      setLocalRenderMode(next)
+    }
+  }
 
   // Hand the live address to storage when this guest is about to go away
   // (pop-out, dock-back, tab close). The other renderer builds from
@@ -1325,18 +1336,11 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
           </div>
         )}
 
-        {isHtmlFileTarget && (
+        {canRenderHtmlFile && renderMode !== 'source' && (
           <PreviewModeSwitcher
-            active={renderMode === 'source' ? 'source' : 'rendered'}
+            active="rendered"
             modes={['rendered', 'source']}
-            onSelect={mode => {
-              const next = mode === 'source' ? 'source' : 'preview'
-              if (tabId) {
-                setPreviewRenderMode(tabId, next)
-              } else {
-                setLocalRenderMode(next)
-              }
-            }}
+            onSelect={mode => selectRenderMode(mode === 'source' ? 'source' : 'preview')}
           />
         )}
 
@@ -1400,7 +1404,11 @@ export function PreviewPane({ embedded = false, onRestartServer, reloadRequest =
             (target.kind === 'artifact' ? (
               <ArtifactPreview target={target} />
             ) : (
-              <LocalFilePreview reloadKey={localReloadKey} target={target} />
+              <LocalFilePreview
+                onSelectRendered={canRenderHtmlFile ? () => selectRenderMode('preview') : undefined}
+                reloadKey={localReloadKey}
+                target={target}
+              />
             ))}
           {isBlankPage && (
             <div className="absolute inset-0 grid bg-background">

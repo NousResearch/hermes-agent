@@ -521,9 +521,7 @@ export function setPreviewRenderMode(tabId: string, renderMode: 'preview' | 'sou
     return
   }
 
-  $previewTabs.set(
-    current.map((item, i) => (i === index ? { ...item, target: { ...item.target, renderMode } } : item))
-  )
+  $previewTabs.set(current.map((item, i) => (i === index ? { ...item, target: { ...item.target, renderMode } } : item)))
 }
 
 /** Open (or re-front) the tab for `target`. Re-opening an existing tab refreshes

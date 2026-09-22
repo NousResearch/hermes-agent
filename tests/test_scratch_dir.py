@@ -1,6 +1,7 @@
 """Scratch dir contract: TMPDIR/TMP/TEMP follow HERMES_HOME/cache/scratch unless the user set them."""
 
 import os
+from pathlib import Path
 import stat
 import subprocess
 import sys
@@ -225,8 +226,9 @@ def test_prune_reaps_process_living_in_idle_entry_and_spares_live_tree(tmp_path)
 
 
 def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
-    """Deleting a scratch entry that held a linked worktree leaves the repo with no
-    dangling registration (10 sat in one repo's ``git worktree list`` after cleanup)."""
+    """Deleting a scratch entry that held a relative-path linked worktree leaves
+    the repo with no dangling registration (10 sat in one repo's
+    ``git worktree list`` after cleanup)."""
     import subprocess
 
     def git(*args, cwd):
@@ -241,10 +243,12 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     (repo / "f").write_text("x", encoding="utf-8")
     git("add", "f", cwd=repo)
     git("commit", "-q", "-m", "init", cwd=repo)
+    git("config", "worktree.useRelativePaths", "true", cwd=repo)
     scratch = get_scratch_dir(tmp_path, prune=False)
     tree = scratch / "lane" / "abwt"
     tree.parent.mkdir()
     git("worktree", "add", "-q", "--detach", str(tree), cwd=repo)
+    assert not Path((tree / ".git").read_text().removeprefix("gitdir:").strip()).is_absolute()
     ancient = time.time() - 30 * 3600
     for dirpath, dirnames, filenames in os.walk(tree.parent):
         for name in dirnames + filenames:

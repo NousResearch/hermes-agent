@@ -137,6 +137,9 @@ def _linked_worktree_repos(entry: Path) -> set[str]:
                             continue
                         if line.startswith("gitdir:"):
                             gitdir = Path(line[len("gitdir:"):].strip())
+                            if not gitdir.is_absolute():
+                                gitdir = Path(child.path).parent / gitdir
+                            gitdir = Path(os.path.realpath(gitdir))
                             # <repo>/.git/worktrees/<name> -> <repo>
                             if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
                                 repos.add(str(gitdir.parent.parent.parent))

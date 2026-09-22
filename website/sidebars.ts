@@ -30,6 +30,7 @@ const sidebars: SidebarsConfig = {
         'user-guide/cli',
         'user-guide/tui',
         'user-guide/desktop',
+        'user-guide/managed-ssh-rollouts',
         'user-guide/bot-mode',
         'user-guide/windows-native',
         'user-guide/windows-wsl-quickstart',
@@ -788,6 +789,7 @@ const sidebars: SidebarsConfig = {
           label: 'Architecture',
           items: [
             'developer-guide/architecture',
+            'developer-guide/managed-ssh-rollouts',
             'developer-guide/codebase-ownership',
             'developer-guide/agent-loop',
             'developer-guide/prompt-assembly',

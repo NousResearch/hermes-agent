@@ -61,6 +61,24 @@ async def test_reply_prefix_injected_when_text_absent_from_history():
 
 
 @pytest.mark.asyncio
+async def test_reply_prefix_renders_reference_metadata_and_attachments():
+    runner = _make_runner()
+    source = _source()
+    event = MessageEvent(
+        text="Explain this", source=source, reply_to_message_id="42", reply_to_text="quoted",
+        reply_to_channel_id="source-channel", reply_to_origin_channel_id="forward-origin",
+        reply_to_author_id="author-1", reply_to_author_name="Ava",
+        reply_to_attachments=[{"filename": "report.pdf", "content_type": "application/pdf", "url": "/cache/report.pdf"}],
+    )
+
+    result = await runner._prepare_inbound_message_text(event=event, source=source, history=[])
+
+    assert result is not None
+    assert "[Reply context: message_id=42; channel_id=source-channel; origin_channel_id=forward-origin; author=Ava (author-1); attachments=report.pdf (application/pdf): /cache/report.pdf]" in result
+    assert result.endswith("Explain this")
+
+
+@pytest.mark.asyncio
 async def test_telegram_long_reply_reaches_prompt_without_losing_later_items():
     """The native reply already has the full message; preparation must not trim it."""
     from gateway.platforms.event import MessageType
@@ -150,5 +168,4 @@ async def test_reply_prefix_still_injected_when_text_in_history():
     assert result is not None
     assert result.startswith(f'[Replying to: "{quoted}"]')
     assert result.endswith("What's the best time to go?")
-
 

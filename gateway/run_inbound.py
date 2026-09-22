@@ -1585,6 +1585,38 @@ class GatewayInboundMixin:
             _who = " your previous message" if getattr(event, "reply_to_is_own_message", False) else ""
             message_text = f'[Replying to{_who}: "{reply_text}"]\n\n{message_text}'
 
+        has_structured_reply_context = bool(
+            getattr(event, "reply_to_channel_id", None)
+            or getattr(event, "reply_to_origin_channel_id", None)
+            or getattr(event, "reply_to_author_id", None)
+            or getattr(event, "reply_to_author_name", None)
+            or getattr(event, "reply_to_attachments", None)
+        )
+        reply_details = [f"message_id={event.reply_to_message_id}"] if has_structured_reply_context and event.reply_to_message_id else []
+        if getattr(event, "reply_to_channel_id", None):
+            reply_details.append(f"channel_id={event.reply_to_channel_id}")
+        if getattr(event, "reply_to_origin_channel_id", None):
+            reply_details.append(f"origin_channel_id={event.reply_to_origin_channel_id}")
+        author_id = getattr(event, "reply_to_author_id", None)
+        author_name = getattr(event, "reply_to_author_name", None)
+        if author_id or author_name:
+            reply_details.append(f"author={author_name or 'unknown'}" + (f" ({author_id})" if author_id else ""))
+        attachments = getattr(event, "reply_to_attachments", None) or []
+        rendered_attachments = []
+        for attachment in attachments:
+            if not isinstance(attachment, dict):
+                continue
+            label = attachment.get("filename") or attachment.get("id") or "attachment"
+            content_type = attachment.get("content_type")
+            url = attachment.get("url")
+            rendered_attachments.append(
+                f"{label}" + (f" ({content_type})" if content_type else "") + (f": {url}" if url else "")
+            )
+        if rendered_attachments:
+            reply_details.append("attachments=" + ", ".join(rendered_attachments))
+        if reply_details:
+            message_text = f"[Reply context: {'; '.join(reply_details)}]\n\n{message_text}"
+
         # Discord: the triggering message id goes on the per-turn user message, never the cached
         # system prompt — it changes every turn and would bust the agent-cache signature. It is
         # the OUTERMOST prefix so strip_discord_triggering_note can peel exactly it off the

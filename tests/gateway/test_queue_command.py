@@ -122,8 +122,11 @@ async def test_queue_preserves_reply_context():
         message_id="q-reply",
         reply_to_message_id="orig-7",
         reply_to_text="the original message",
+        reply_to_channel_id="source-channel",
+        reply_to_origin_channel_id="forward-origin",
         reply_to_author_id="a1",
         reply_to_author_name="alice",
+        reply_to_attachments=[{"filename": "evidence.txt", "url": "/cache/evidence.txt"}],
     )
     result = await runner._handle_message(event)
 
@@ -131,8 +134,11 @@ async def test_queue_preserves_reply_context():
     queued = adapter._pending_messages[sk]
     assert queued.reply_to_message_id == "orig-7"
     assert queued.reply_to_text == "the original message"
+    assert queued.reply_to_channel_id == "source-channel"
+    assert queued.reply_to_origin_channel_id == "forward-origin"
     assert queued.reply_to_author_id == "a1"
     assert queued.reply_to_author_name == "alice"
+    assert queued.reply_to_attachments == [{"filename": "evidence.txt", "url": "/cache/evidence.txt"}]
 
 
 if __name__ == "__main__":  # pragma: no cover

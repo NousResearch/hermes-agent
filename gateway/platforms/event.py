@@ -67,8 +67,15 @@ class MessageEvent:
     media_text_inlined: List[Optional[bool]] = field(default_factory=list)
     reply_to_message_id: Optional[str] = None
     reply_to_text: Optional[str] = None  # Text of the replied-to message (for context injection)
+    # Provenance of the referenced message. These describe the reply target, never the
+    # inbound message that anchors the gateway's outbound response.
+    reply_to_channel_id: Optional[str] = None
+    reply_to_origin_channel_id: Optional[str] = None
     reply_to_author_id: Optional[str] = None
     reply_to_author_name: Optional[str] = None
+    # Connector-rehosted URLs (or native adapter cache paths) and display metadata
+    # for media on the referenced message, kept separate from this turn's media_urls.
+    reply_to_attachments: List[Dict[str, str]] = field(default_factory=list)
     reply_to_is_own_message: bool = False  # True when the user replied to this bot/assistant's message
     # Structured interactive-prompt reply (relay only): {prompt_id, option_id, label?,
     # prompt_message_id?}; routed to the approval/slash-confirm/clarify resolvers BEFORE dispatch.

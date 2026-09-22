@@ -258,6 +258,51 @@ class TestReplyToText:
         assert event.reply_to_message_id == "555"
         assert event.reply_to_text is None
 
+    @pytest.mark.asyncio
+    async def test_reference_keeps_channel_author_and_rehosted_attachment_context(self, reply_text_adapter, monkeypatch):
+        attachment = SimpleNamespace(id=77, filename="evidence.png", content_type="image/png", url="https://cdn.invalid/evidence.png")
+        resolved_msg = SimpleNamespace(
+            id=555, content="forwarded evidence", channel=SimpleNamespace(id=444),
+            author=SimpleNamespace(id=12, display_name="Ava", name="ava"), attachments=[attachment],
+            message_snapshots=[SimpleNamespace(channel_id=333, attachments=[])],
+        )
+        ref = SimpleNamespace(message_id=555, resolved=resolved_msg, channel_id=444)
+        message = _make_message(reference=ref)
+        monkeypatch.setattr(
+            reply_text_adapter, "_collect_attachment_media",
+            AsyncMock(side_effect=[([], [], [], None), (["/cache/evidence.png"], ["image/png"], [False], None)]),
+        )
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.message_id == "999"
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_channel_id == "444"
+        assert event.reply_to_origin_channel_id == "333"
+        assert event.reply_to_author_id == "12"
+        assert event.reply_to_author_name == "Ava"
+        assert event.reply_to_attachments == [{
+            "id": "77", "filename": "evidence.png", "content_type": "image/png",
+            "url": "/cache/evidence.png",
+        }]
+
+    @pytest.mark.asyncio
+    async def test_reference_to_bot_keeps_reply_context_and_own_marker(self, reply_text_adapter, monkeypatch):
+        resolved_msg = SimpleNamespace(
+            id=555, content="previous answer", channel=SimpleNamespace(id=444),
+            author=SimpleNamespace(id=999, display_name="Hermes", name="hermes"), attachments=[],
+        )
+        message = _make_message(reference=SimpleNamespace(message_id=555, resolved=resolved_msg, channel_id=444))
+        monkeypatch.setattr(reply_text_adapter, "_collect_attachment_media", AsyncMock(return_value=([], [], [], None)))
+
+        await reply_text_adapter._handle_message(message)
+
+        event = reply_text_adapter.handle_message.await_args.args[0]
+        assert event.reply_to_message_id == "555"
+        assert event.reply_to_author_id == "999"
+        assert event.reply_to_is_own_message is True
+
 
 class TestYamlConfigLoading:
     """Tests for reply_to_mode loaded from config.yaml discord section."""

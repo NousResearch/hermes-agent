@@ -213,6 +213,53 @@ def test_event_from_wire_reply_to_absent_and_partial():
     assert partial.reply_to_text is None
 
 
+def test_event_from_wire_preserves_structured_discord_reply_context():
+    """A connector-resolved reply must not replace the inbound reply anchor."""
+    event = _event_from_wire(
+        {
+            "text": "@Hermes explain this",
+            "message_id": "incoming-9",
+            "message_type": "text",
+            "source": {"platform": "discord", "chat_id": "reply-channel", "chat_type": "group"},
+            "reply_to": {
+                "message_id": "referenced-7",
+                "text": "forwarded report",
+                "channel_id": "source-channel",
+                "origin_channel_id": "forward-origin",
+                "author": {"id": "author-3", "name": "Ava"},
+                "attachments": [{
+                    "id": "attachment-1", "filename": "report.pdf",
+                    "content_type": "application/pdf", "url": "https://relay.invalid/report.pdf",
+                }],
+            },
+        }
+    )
+
+    assert event.message_id == "incoming-9"
+    assert event.reply_to_message_id == "referenced-7"
+    assert event.reply_to_channel_id == "source-channel"
+    assert event.reply_to_origin_channel_id == "forward-origin"
+    assert event.reply_to_author_id == "author-3"
+    assert event.reply_to_author_name == "Ava"
+    assert event.reply_to_attachments == [{
+        "id": "attachment-1", "filename": "report.pdf",
+        "content_type": "application/pdf", "url": "https://relay.invalid/report.pdf",
+    }]
+
+
+def test_event_from_wire_keeps_bot_reply_author_identity():
+    event = _event_from_wire({
+        "text": "clarify", "message_type": "text",
+        "source": {"platform": "discord", "chat_id": "1", "chat_type": "group"},
+        "reply_to": {"message_id": "bot-1", "text": "previous answer", "is_own": True,
+                     "author": {"id": "bot-id", "name": "Hermes"}},
+    })
+
+    assert event.reply_to_is_own_message is True
+    assert event.reply_to_author_id == "bot-id"
+    assert event.reply_to_author_name == "Hermes"
+
+
 # ── hello command manifest ───────────────────────────────────────────────
 
 

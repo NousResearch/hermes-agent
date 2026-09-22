@@ -86,7 +86,7 @@ class TestNvidiaProfileWiring:
 
 
 class TestDeepSeekProfileWiring:
-    def test_deepseek_no_forced_max_tokens(self, transport):
+    def test_deepseek_declares_default_output_cap(self, transport):
         profile = get_provider_profile("deepseek")
         kwargs = transport.build_kwargs(
             model="deepseek-chat",
@@ -101,7 +101,26 @@ class TestDeepSeekProfileWiring:
             session_id="test",
             ollama_num_ctx=None,
         )
-        # DeepSeek has no default_max_tokens
+        # The profile declares a request-level default output cap (issue #110126
+        # layer 1): with no explicit max_tokens the request still carries it, so
+        # a thinking-heavy turn cannot silently truncate at the server's low cap.
         assert kwargs["model"] == "deepseek-chat"
-        assert kwargs.get("max_tokens") is None or "max_tokens" not in kwargs
+        assert kwargs.get("max_tokens") == 65536
+
+    def test_deepseek_explicit_max_tokens_wins_over_default(self, transport):
+        profile = get_provider_profile("deepseek")
+        kwargs = transport.build_kwargs(
+            model="deepseek-chat",
+            messages=_msgs(),
+            tools=None,
+            provider_profile=profile,
+            max_tokens=32000,
+            max_tokens_param_fn=lambda x: {"max_tokens": x} if x else {},
+            timeout=300,
+            reasoning_config=None,
+            request_overrides=None,
+            session_id="test",
+            ollama_num_ctx=None,
+        )
+        assert kwargs.get("max_tokens") == 32000
 

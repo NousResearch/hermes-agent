@@ -1137,11 +1137,6 @@ del _name, _method
 _HOOK_TIMEOUT_CACHE: Dict[str, Tuple[Any, float]] = {}
 
 
-def _reset_hook_callback_timeout_cache() -> None:
-    """Drop the memoized hook-callback timeouts (test-only; production relies on the sig check)."""
-    _HOOK_TIMEOUT_CACHE.clear()
-
-
 def _resolve_hook_callback_timeout() -> float:
     """Effective hook-callback timeout from ``plugins.hook_callback_timeout`` (default 30s; ``<= 0``
     disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``).

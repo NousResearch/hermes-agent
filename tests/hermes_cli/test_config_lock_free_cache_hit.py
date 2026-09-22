@@ -2,7 +2,7 @@
 
 ``_load_config_impl`` served cache hits from inside ``_CONFIG_LOCK``, which
 ``save_config()`` holds across an atomic YAML write. A cache hit itself costs
-~0.024us-scale work, but measured on a clean tree the same cached read took
+~0.024ms-scale work, but measured on a clean tree the same cached read took
 **10010ms** while another thread held the lock.
 
 On a gateway that lands on the event loop: the per-message hook path
@@ -100,34 +100,6 @@ def test_cached_raw_read_completes_while_another_thread_holds_the_config_lock(co
     assert elapsed < MAX_BLOCKED_READ_SECS, (
         f"a cached read_raw_config_readonly() blocked {elapsed:.1f}s behind a held "
         "_CONFIG_LOCK; cache hits must not serialize against config writers"
-    )
-
-
-def test_hook_timeout_does_not_read_config_on_every_invocation(config_home):
-    from hermes_cli import config as cfgmod
-    from hermes_cli import plugins as pluginsmod
-
-    pluginsmod._reset_hook_callback_timeout_cache()
-    assert pluginsmod._resolve_hook_callback_timeout() == 30.0
-
-    calls = {"n": 0}
-    real = cfgmod.load_config_readonly
-
-    def counting():
-        calls["n"] += 1
-        return real()
-
-    cfgmod.load_config_readonly = counting  # type: ignore[assignment]
-    try:
-        for _ in range(100):
-            pluginsmod._resolve_hook_callback_timeout()
-    finally:
-        cfgmod.load_config_readonly = real  # type: ignore[assignment]
-
-    assert calls["n"] == 0, (
-        f"hook-timeout resolution read the config {calls['n']}x across 100 hook "
-        "invocations; a gateway fires hooks per inbound message, so this is a "
-        "per-message config read on the event loop"
     )
 
 

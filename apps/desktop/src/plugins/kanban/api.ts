@@ -152,28 +152,41 @@ export function bindApi(
     close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
   }
 
-  // Board selection is per-connection: hydrate under the connection's storage
-  // key, and re-hydrate + reopen the socket when the connection changes (the
-  // outgoing gateway's slug may 404 on the next one).
-  const slugStorageKey = () => `${BOARD_SLUG_KEY}.${kanbanConnectionScope()}`
+  // The local connection keeps the BARE key (same rule as lib/connection-scoped
+  // for single-backend users: byte-identical storage, and the slug they picked
+  // before per-connection keys existed survives the upgrade). Remotes are
+  // suffixed by registry id.
+  const slugStorageKey = () => {
+    const scope = kanbanConnectionScope()
 
-  const hydrateSlug = () => {
-    $boardSlug.set(storage.get(slugStorageKey(), ''))
+    return scope === 'local' ? BOARD_SLUG_KEY : `${BOARD_SLUG_KEY}.${scope}`
   }
 
-  hydrateSlug()
+  $boardSlug.set(storage.get(slugStorageKey(), ''))
   unsubs.push($boardSlug.listen(slug => storage.set(slugStorageKey(), slug)))
-  unsubs.push(
-    host.state.connectionId.listen(() => {
-      // Query keys embed the connection scope (kanbanConnectionScope), so the
-      // new connection is already a clean React Query cache miss — no
-      // invalidation needed here. Only the LIVE bindings (socket, slug) follow.
-      hydrateSlug()
-      open($boardSlug.get())
-    })
-  )
   open($boardSlug.get())
   unsubs.push($boardSlug.listen(open))
+  let scope = kanbanConnectionScope()
+  unsubs.push(
+    host.state.connectionId.listen(() => {
+      // Query keys embed the scope, so the new connection is already a cache
+      // miss; only the LIVE bindings (socket, slug) follow it. The boot-time
+      // null → 'local' publish is the same scope, not a switch. A changed slug
+      // reopens the socket through the $boardSlug listener above; an unchanged
+      // slug still needs a dial because the backend behind it changed.
+      if (kanbanConnectionScope() === scope) {
+        return
+      }
+
+      scope = kanbanConnectionScope()
+      const previous = $boardSlug.get()
+      $boardSlug.set(storage.get(slugStorageKey(), ''))
+
+      if ($boardSlug.get() === previous) {
+        open(previous)
+      }
+    })
+  )
 
   return () => {
     unsubs.forEach(unsub => unsub())

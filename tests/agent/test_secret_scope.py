@@ -8,8 +8,10 @@ from agent import secret_scope as ss
 def _reset_multiplex():
     """Ensure each test starts and ends with multiplexing off (it's a global)."""
     ss.set_multiplex_active(False)
+    ss.set_deployment_secret_names(())
     yield
     ss.set_multiplex_active(False)
+    ss.set_deployment_secret_names(())
 
 
 class TestMultiplexInactiveBackwardCompat:
@@ -250,6 +252,39 @@ class TestEnvFileParsing:
         )
 
         assert ss.build_profile_secret_scope(profile) == {}
+
+    def test_declared_deployment_secrets_are_available_without_opening_scope(self, tmp_path, monkeypatch):
+        """An explicit gateway declaration is the only process-env inheritance path.
+
+        Current main is RED here: both declared process credentials are absent
+        from the secondary scope, so multiplexed ``get_secret`` returns None.
+        """
+        monkeypatch.setenv("OLLAMA_API_KEY", "deployment-provider-key")
+        monkeypatch.setenv("API_SERVER_KEY", "deployment-api-key")
+        secondary = tmp_path / "profiles" / "secondary"
+        secondary.mkdir(parents=True)
+        from gateway.config import GatewayConfig
+        config = GatewayConfig.from_dict({"gateway": {
+            "deployment_secret_env": ["OLLAMA_API_KEY", "API_SERVER_KEY"],
+        }})
+        ss.set_deployment_secret_names(config.deployment_secret_env)
+
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(ss.build_profile_secret_scope(secondary))
+        try:
+            assert ss.get_secret("OLLAMA_API_KEY") == "deployment-provider-key"
+            assert ss.get_secret("API_SERVER_KEY") == "deployment-api-key"
+            assert ss.get_secret("UNDECLARED_PROVIDER_KEY") is None
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_profile_value_wins_over_declared_deployment_secret(self, tmp_path, monkeypatch):
+        """Opt-in inheritance must not merge credentials between profiles."""
+        monkeypatch.setenv("OPENAI_API_KEY", "deployment-key")
+        (tmp_path / ".env").write_text("OPENAI_API_KEY=profile-key\n", encoding="utf-8")
+        ss.set_deployment_secret_names(("OPENAI_API_KEY",))
+
+        assert ss.build_profile_secret_scope(tmp_path)["OPENAI_API_KEY"] == "profile-key"
 
 
 class TestApiServerListenerGlobals:

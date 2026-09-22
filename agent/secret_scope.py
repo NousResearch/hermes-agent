@@ -28,6 +28,31 @@ from utils import file_signature
 _MULTIPLEX_ACTIVE: bool = False
 
 
+# Explicit deployment credentials may be shared with every profile scope. This
+# is intentionally separate from ``_GLOBAL_ENV_EXACT``: inherited values remain
+# entries in each profile's mapping, so an undeclared credential still fails
+# closed rather than becoming readable from ``os.environ`` everywhere.
+_DEPLOYMENT_SECRET_NAMES: frozenset[str] = frozenset()
+
+
+def set_deployment_secret_names(names: object) -> None:
+    """Set explicitly opted-in process credentials for profile scopes.
+
+    Called by the gateway after parsing ``gateway.deployment_secret_env``.
+    Invalid config is already filtered by ``GatewayConfig``; this defensive
+    normalization keeps direct callers from accidentally widening the scope.
+    """
+    global _DEPLOYMENT_SECRET_NAMES
+    if not isinstance(names, (list, tuple, set, frozenset)):
+        _DEPLOYMENT_SECRET_NAMES = frozenset()
+        return
+    _DEPLOYMENT_SECRET_NAMES = frozenset(
+        name for name in names
+        if isinstance(name, str) and re.fullmatch(r"[A-Z_][A-Z0-9_]*", name)
+        and not _is_global_env(name)
+    )
+
+
 def set_multiplex_active(active: bool) -> None:
     """Mark whether the process is a profile multiplexer (get_secret fails closed)."""
     global _MULTIPLEX_ACTIVE
@@ -319,7 +344,9 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
 def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     """Build a profile's secret mapping from ``<home>/.env`` plus its external
     secret sources. Global vars are NOT copied in — ``get_secret`` reads those
-    from ``os.environ`` — so the scope holds only profile secrets."""
+    from ``os.environ`` — so the scope holds only profile secrets. A gateway
+    may explicitly configure deployment credentials to inherit; they fill only
+    missing names and never turn into globally readable environment variables."""
     secrets = load_env_file(Path(hermes_home) / ".env")
     try:
         from hermes_cli.env_loader import get_secret_source_values
@@ -327,6 +354,10 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     except Exception:
         external_secrets = {}
     secrets.update((k, v) for k, v in external_secrets.items() if not _is_global_env(k))
+    for name in _DEPLOYMENT_SECRET_NAMES:
+        value = os.environ.get(name)
+        if value is not None:
+            secrets.setdefault(name, value)
     # The DEFAULT profile's config.yaml allow_all_users grant lives only in os.environ (bridged by
     # gateway.config_loader); scoped gate readers under multiplex never fall to os.environ, so seed it
     # into that profile's own mapping. A secondary never inherits it (#80099 class).

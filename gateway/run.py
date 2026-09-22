@@ -3488,8 +3488,12 @@ class GatewayRunner(
         # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
         # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
         try:
-            from agent.secret_scope import set_multiplex_active
+            from agent.secret_scope import set_deployment_secret_names, set_multiplex_active
             set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
+            set_deployment_secret_names(
+                getattr(self.config, "deployment_secret_env", ())
+                if getattr(self.config, "multiplex_profiles", False) else ()
+            )
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}

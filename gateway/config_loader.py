@@ -89,6 +89,7 @@ _TOPLEVEL_BRIDGE: tuple = (
     ("stt", "stt", "presence", lambda v: isinstance(v, dict), None),
     *_presence("stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user"),
     ("multiplex_profiles", "multiplex_profiles", "gwdata", None, None),
+    ("deployment_secret_env", "deployment_secret_env", "presence", lambda v: isinstance(v, list), None),
     *_presence("room_link_url"),
     ("profile_routes", "profile_routes", "none", lambda v: isinstance(v, list), None),
     *_presence("max_concurrent_sessions"),

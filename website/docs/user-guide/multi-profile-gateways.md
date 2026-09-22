@@ -160,6 +160,28 @@ keys** — credentials are never shared across profiles.
 You do **not** run `hermes gateway start` for the secondary profiles — the
 default gateway serves them. See the contract changes below.
 
+### Sharing a deployment credential deliberately
+
+Profiles normally need their own provider and API-server credentials. That
+fail-closed boundary prevents a profile with a missing key from borrowing the
+launch profile's environment. If a host intentionally uses one deployment-wide
+credential, declare its environment-variable name on the host gateway:
+
+```yaml
+gateway:
+  deployment_secret_env:
+    - OLLAMA_API_KEY
+    - API_SERVER_KEY
+```
+
+At gateway startup Hermes copies only the listed, present process-environment
+values into each profile's secret scope. A value in a profile's `.env` or secret
+source still wins. Names not listed remain unavailable on a scope miss, and this
+setting does not add names to the global environment allowlist. Restart the
+host gateway after changing it. Treat every listed name as a credential shared
+by every served profile; do not use it for profile-specific bot tokens or
+authorization settings.
+
 ### No new per-profile gateways
 
 Because one host gateway serves every profile, a named profile never gets a

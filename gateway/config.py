@@ -105,6 +105,19 @@ def _coerce_optional_positive_int(value: Any, key: str) -> Optional[int]:
     return parsed if parsed > 0 else None
 
 
+_ENV_VAR_NAME = re.compile(r"[A-Z_][A-Z0-9_]*\Z")
+
+
+def _coerce_deployment_secret_env(value: Any) -> list[str]:
+    """Accept only explicit, portable environment-variable names."""
+    if not isinstance(value, list):
+        return []
+    return list(dict.fromkeys(
+        name for name in value
+        if isinstance(name, str) and _ENV_VAR_NAME.fullmatch(name)
+    ))
+
+
 _SYSTEMD_WATCHDOG_MAX_SECONDS = 2_147_483_647
 
 
@@ -605,6 +618,9 @@ class GatewayConfig:
     # An explicit value (config.yaml, GATEWAY_MULTIPLEX_PROFILES, a constructor argument) is honoured
     # verbatim. Every reader tests truthiness, so an unresolved ``None`` never multiplexes by accident.
     multiplex_profiles: Optional[bool] = None
+    # Explicit process credentials copied into each multiplexed profile scope.
+    # They remain scoped values; this is never an os.environ allowlist.
+    deployment_secret_env: list[str] = field(default_factory=list)
     # Public HTTPS endpoint for scoped RoomLink calls (an API key alone must never advertise a
     # route); HERMES_ROOM_LINK_URL overrides.
     room_link_url: Optional[str] = None
@@ -634,7 +650,7 @@ class GatewayConfig:
     _SCALAR_DICT_FIELDS = (
         "write_sessions_json", "always_log_local", "filter_silence_narration", "stt_enabled",
         "stt_echo_transcripts", "group_sessions_per_user", "thread_sessions_per_user",
-        "max_concurrent_sessions", "multiplex_profiles",
+        "max_concurrent_sessions", "multiplex_profiles", "deployment_secret_env",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
         "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
@@ -779,6 +795,7 @@ class GatewayConfig:
             stt_enabled=_coerce_bool(stt_setting("stt_enabled", "enabled"), True),
             stt_echo_transcripts=_coerce_bool(stt_setting("stt_echo_transcripts", "echo_transcripts"), True),
             multiplex_profiles=None if multiplex_profiles is None else _coerce_bool(multiplex_profiles, True),
+            deployment_secret_env=_coerce_deployment_secret_env(pick("deployment_secret_env")),
             room_link_url=room_link_url if isinstance(room_link_url, str) else None,
             systemd_watchdog_seconds=systemd_watchdog_seconds,
             loop_watchdog=_coerce_bool(pick("loop_watchdog"), True),

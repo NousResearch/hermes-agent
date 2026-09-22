@@ -7,9 +7,10 @@ protocol-aware code can reach it without widening the shared type.
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from typing import Any
+
+import orjson
 
 
 @dataclass
@@ -87,10 +88,27 @@ class NormalizedResponse:
     codex_message_items = property(lambda self: self._pd("codex_message_items"))
 
 
-def build_tool_call(id: str | None, name: str, arguments: Any, **provider_fields: Any) -> ToolCall:
-    """Build a ``ToolCall``; dict *arguments* are JSON-serialised, extra kwargs become ``provider_data``."""
-    args_str = json.dumps(arguments) if isinstance(arguments, dict) else str(arguments)
-    return ToolCall(id=id, name=name, arguments=args_str, provider_data=dict(provider_fields) if provider_fields else None)
+# ---------------------------------------------------------------------------
+# Factory helpers
+# ---------------------------------------------------------------------------
+
+
+def build_tool_call(
+    id: str | None,
+    name: str,
+    arguments: Any,
+    **provider_fields: Any,
+) -> ToolCall:
+    """Build a ``ToolCall``, auto-serialising *arguments* if it's a dict.
+
+    Any extra keyword arguments are collected into ``provider_data``.
+    """
+    if isinstance(arguments, dict):
+        args_str = orjson.dumps(arguments).decode()
+    else:
+        args_str = str(arguments)
+    pd = dict(provider_fields) if provider_fields else None
+    return ToolCall(id=id, name=name, arguments=args_str, provider_data=pd)
 
 
 def map_finish_reason(reason: str | None, mapping: dict[str, str]) -> str:

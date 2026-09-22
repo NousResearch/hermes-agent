@@ -312,6 +312,8 @@ class SessionMessagesMixin:
         def _do(conn):
             self._check_transcript_write_guards(conn, session_id, compression_lock_holder,
                 turn_lease_holder=turn_lease_holder, turn_lease_ttl_seconds=turn_lease_ttl_seconds)
+            if self._active_platform_message_exists(conn, session_id, platform_message_id):
+                return 0
             msg_id = conn.execute(_INSERT_MESSAGE_SQL, params).lastrowid
             self._bump_session_counters(conn, session_id, 1, _tool_calls_count(tool_calls), unit=True)
             return msg_id
@@ -511,6 +513,12 @@ class SessionMessagesMixin:
         inserted = tool_calls_total = 0
         for msg in messages:
             role = msg.get("role", "unknown")
+            platform_message_id = msg.get("platform_message_id") or msg.get("message_id")
+            if self._active_platform_message_exists(conn, session_id, platform_message_id):
+                # The same Telegram (or other platform) turn is already the live row.
+                # Inserting it again is how one photo message was stored on every
+                # compaction pass and then replayed.
+                continue
             tool_calls = _parse_tool_calls(msg.get("tool_calls"))
             message_timestamp = _coerce_timestamp(msg.get("timestamp"), now_ts)
             cur = conn.execute(_INSERT_MESSAGE_SQL, self._message_row_params(
@@ -529,6 +537,16 @@ class SessionMessagesMixin:
         if carrier >= 0 and isinstance(messages[carrier].get("_row_id"), int):
             self._drop_shadowed_checkpoint_rows(conn, session_id, messages[carrier]["_row_id"])
         return inserted, tool_calls_total
+
+    @staticmethod
+    def _active_platform_message_exists(conn, session_id: str, platform_message_id: Any) -> bool:
+        """True when an active row in this session already has this platform message id."""
+        if not session_id or not isinstance(platform_message_id, str) or not platform_message_id:
+            return False
+        return conn.execute(
+            "SELECT 1 FROM messages WHERE session_id = ? AND platform_message_id = ? AND active = 1 LIMIT 1",
+            (session_id, platform_message_id),
+        ).fetchone() is not None
 
     def _drop_shadowed_checkpoint_rows(self, conn, session_id: str, carrier_row_id: int) -> int:
         """Rewrite older active assistant rows so only the row *carrier_row_id* keeps a ``type: "compaction"``
@@ -647,10 +665,23 @@ class SessionMessagesMixin:
         rows = conn.execute(sql, params).fetchall()
         return [int(r["id"]) for r in rows], sum(_tool_calls_len(r["tool_calls"]) for r in rows)
 
-    def _clone_message_rows(self, conn, tail_ids: List[int], *, session_id: Optional[str] = None) -> None:
+    def _clone_message_rows(self, conn, tail_ids: List[int], *, session_id: Optional[str] = None) -> int:
         """Pure-SQL clone of *tail_ids* as fresh live rows (new id/display order, active=1, compacted=0;
         message payload columns stay byte-exact and FTS triggers index the clones), into *session_id* when given."""
         retarget = session_id is not None
+        target_session = session_id if retarget else None
+        kept_ids = []
+        for row in conn.execute(
+            f"SELECT id, session_id, platform_message_id FROM messages WHERE id IN ({_placeholders(tail_ids)})",
+            tail_ids,
+        ).fetchall():
+            owner = target_session or row["session_id"]
+            if self._active_platform_message_exists(conn, owner, row["platform_message_id"]):
+                continue
+            kept_ids.append(int(row["id"]))
+        if not kept_ids:
+            return 0
+        tail_ids = kept_ids
         # A clone is a newly positioned display generation. Copy its indexed
         # identity, but let the insert trigger assign order from rows that are
         # still display-visible (the source may just have become rewind-only).
@@ -661,6 +692,7 @@ class SessionMessagesMixin:
             f"SELECT {col_list}, {'?, ' if retarget else ''}1, 0 FROM messages "
             f"WHERE id IN ({_placeholders(tail_ids)}) ORDER BY id",
             [session_id, *tail_ids] if retarget else tail_ids)
+        return len(tail_ids)
 
     def archive_and_compact(self, session_id: str, compacted_messages: List[Dict[str, Any]],
         model_config_patch: Optional[Dict[str, Any]] = None, watermark: Optional[int] = None,
@@ -716,9 +748,10 @@ class SessionMessagesMixin:
                 conn.execute(_ARCHIVE_ACTIVE_SQL, (session_id,))
             inserted, tool_calls_total = self._insert_message_rows(conn, session_id, compacted_messages)
             if tail_ids:
-                self._clone_message_rows(conn, tail_ids)
-                inserted += len(tail_ids)
-                tool_calls_total += tail_tool_calls
+                cloned = self._clone_message_rows(conn, tail_ids)
+                inserted += cloned
+                if cloned:
+                    tool_calls_total += tail_tool_calls
             conn.execute(f"{_SET_COUNTERS_SQL}{', model_config = ?' if patch else ''} WHERE id = ?",
                 (inserted, tool_calls_total, *((patched_model_config,) if patch else ()), session_id))
             return inserted

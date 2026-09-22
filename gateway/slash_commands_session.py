@@ -112,6 +112,24 @@ def _strip_resume_name(parts: list[str]) -> str:
     return name
 
 
+def forum_general_sibling_source(source: SessionSource) -> Optional[SessionSource]:
+    """Forum topic ``/new`` also resets General (thread ``1``) in the same chat.
+
+    Telegram pins a forum message with no ``message_thread_id`` to thread ``1``.
+    ``/new`` in another topic of that chat leaves General's transcript and memory
+    live. Named topics other than General are not touched. DMs and a
+    ``/new`` that is already on General return ``None``.
+    """
+    if getattr(source, "platform", None) != Platform.TELEGRAM:
+        return None
+    if str(getattr(source, "chat_type", "") or "").lower() != "group":
+        return None
+    thread = str(getattr(source, "thread_id", "") or "")
+    if thread in {"", "1"}:
+        return None
+    return dataclasses.replace(source, thread_id="1", message_id=None)
+
+
 class GatewaySessionCommandsMixin:
     """Session-transcript slash commands (/new, /resume, /sessions, /branch, /title, /save, /undo, /retry, /topic, /compress)."""
 
@@ -152,10 +170,12 @@ class GatewaySessionCommandsMixin:
         await self.hooks.emit("session:end", dict(hook_payload))
         await self.hooks.emit("session:reset", dict(hook_payload))
 
-    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
-        """Handle /new or /reset command."""
-        source = event.source
-        session_key = self._session_key_for_source(source)
+    async def _apply_explicit_new(self, source: SessionSource, session_key: str):
+        """End one session key and tell plugins this ``/new`` must drop its memory.
+
+        Returns ``(old_session_id, new_entry)``. ``new_entry`` is ``None`` when the
+        key had no session to rotate.
+        """
         self._invalidate_session_run_generation(session_key, reason="session_reset")
         # Evict the running-agent slot now that the generation is bumped: the in-flight run's own
         # guarded release (old generation) returns False and would leave a zombie slot that silently
@@ -184,6 +204,51 @@ class GatewaySessionCommandsMixin:
         _old_sid = old_entry.session_id if old_entry else None
         await self._fire_session_reset_hooks(source, session_key, _old_sid,
                                              new_entry.session_id if new_entry else None)
+        # Telegram DM topic lane: rebind (chat_id, thread_id) → session_id so the next message uses
+        # the fresh session instead of switching back to the old one.
+        if await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
+            try:
+                await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
+            except Exception:
+                logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
+        _new_sid = new_entry.session_id if new_entry else None
+        # Plugin on_session_reset hook (new session guaranteed to exist); best-effort.
+        # session_key is the LCM conversation id. Without it, /new rotates the Hermes
+        # transcript and leaves the predecessor summary graph to be carried back.
+        try:
+            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
+            _invoke_hook(
+                "on_session_reset",
+                session_id=_new_sid,
+                reason="new_session",
+                platform=source.platform.value if source.platform else "",
+                old_session_id=_old_sid,
+                new_session_id=_new_sid,
+                session_key=session_key,
+                conversation_id=session_key,
+            )
+        except Exception:
+            pass
+        return _old_sid, new_entry
+
+    async def _handle_reset_command(self, event: MessageEvent) -> Union[str, EphemeralReply]:
+        """Handle /new or /reset command."""
+        source = event.source
+        session_key = self._session_key_for_source(source)
+        _unused_old_sid, new_entry = await self._apply_explicit_new(source, session_key)
+        # A /new in another forum topic of this chat also resets General. Unthreaded
+        # messages land there, so leaving it live keeps the session /new was meant to wipe.
+        sibling = forum_general_sibling_source(source)
+        if sibling is not None:
+            sibling_key = self._session_key_for_source(sibling)
+            if isinstance(sibling_key, str) and sibling_key and sibling_key != session_key:
+                try:
+                    await self._apply_explicit_new(sibling, sibling_key)
+                except Exception:
+                    logger.warning(
+                        "Forum /new reset the topic session %s but failed to reset General %s",
+                        session_key, sibling_key, exc_info=True,
+                    )
         # Scoped to the profile serving this source so a multiplexed /new banner reports the
         # profile's model, not the base config's.
         try:
@@ -199,22 +264,6 @@ class GatewaySessionCommandsMixin:
         _title_arg = event.get_command_args().strip()
         if _title_arg and self._session_db and new_entry:
             header = await self._reset_titled_header(header, new_entry.session_id, _title_arg)
-        # Telegram DM topic lane: rebind (chat_id, thread_id) → session_id so the next message uses
-        # the fresh session instead of switching back to the old one.
-        if await asyncio.to_thread(self._is_telegram_topic_lane, source) and new_entry is not None:
-            try:
-                await asyncio.to_thread(self._record_telegram_topic_binding, source, new_entry)
-            except Exception:
-                logger.debug("Failed to rebind Telegram topic after /new", exc_info=True)
-        _new_sid = new_entry.session_id if new_entry else None
-        # Plugin on_session_reset hook (new session guaranteed to exist); best-effort.
-        try:
-            from hermes_cli.lifecycle import invoke_hook as _invoke_hook
-            _invoke_hook("on_session_reset", session_id=_new_sid, reason="new_session",
-                         platform=source.platform.value if source.platform else "",
-                         old_session_id=_old_sid, new_session_id=_new_sid)
-        except Exception:
-            pass
         try:
             from hermes_cli.tips import get_random_tip
             _tip_line = t("gateway.reset.tip", tip=get_random_tip())

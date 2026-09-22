@@ -1873,6 +1873,13 @@ class GatewayTurnMixin:
                             sid, {"role": "assistant", "content": response, "timestamp": ts},
                             skip_db=agent_persisted,
                         )
+                elif agent_result.get("compacted_in_place") and history_len == 0:
+                    # In-place archive_and_compact already wrote this transcript under the
+                    # same session id. history_offset 0 means "the list is the compacted
+                    # set", not "append it again".
+                    logger.info(
+                        "Skipping in-place compaction transcript append for session %s", sid,
+                    )
                 else:
                     # Attach the inbound platform message_id to the first user entry so platform-level
                     # quote-resolution (e.g. Yuanbao) can find earlier @bot messages by original id.
@@ -1889,6 +1896,13 @@ class GatewayTurnMixin:
                         ):
                             entry["message_id"] = str(event.message_id)
                             _user_msg_id_attached = True
+                        platform_message_id = entry.get("message_id") or entry.get("platform_message_id")
+                        if platform_message_id and await store.has_platform_message_id(sid, str(platform_message_id)):
+                            logger.info(
+                                "Skipping duplicate user turn (message_id=%s) in session %s",
+                                platform_message_id, sid,
+                            )
+                            continue
                         await store.append_to_transcript(sid, entry, skip_db=agent_persisted)
 
         # The agent persists token counts/model itself; keep only last_prompt_tokens for hygiene.

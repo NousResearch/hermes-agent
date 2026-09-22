@@ -3185,6 +3185,23 @@ def _salvage_or_refuse_grown_transcript(
                 )
                 compressed = _salvaged
                 _rough_out = _salv_est
+    if _rough_out == _rough_in:
+        # A pass that does not shrink must not be committed. Committing it rewrites the
+        # same transcript (and replays a platform message that was already stored) and
+        # the post-commit latch then blocks the next real compress while the thread is
+        # still over the threshold.
+        logger.info(
+            "Compression made no progress (session=%s, ~%s tokens unchanged); "
+            "leaving the transcript in place and not waiting on usage",
+            agent.session_id or "none", f"{_rough_in:,}",
+        )
+        with contextlib.suppress(Exception):
+            agent.context_compressor._last_compression_made_progress = False
+            agent.context_compressor.awaiting_real_usage_after_compression = False
+        with _swallow('could not record no-progress compaction strike', exc_info=True):
+            agent.context_compressor.record_rejected_compaction()
+        _restore_prune_rearm_tokens(agent.context_compressor, attempt_snapshot)
+        return None, _existing_system_prompt(agent, system_message)
     if _rough_out > _rough_in:
         logger.warning(
             "Compression refused: compressed transcript would be larger than the original (session=%s, ~%s -> ~%s "
@@ -3467,7 +3484,12 @@ def _finish_compaction_boundary(
     compressor.last_compression_rough_tokens = _compressed_est
     compressor.last_prompt_tokens = -1
     compressor.last_completion_tokens = 0
-    compressor.awaiting_real_usage_after_compression = True
+    # Only a commit that actually shrank the thread waits for the next provider
+    # usage. A no-op that still reaches here must not latch, or the next real
+    # compress is skipped while the request stays over the threshold.
+    compressor.awaiting_real_usage_after_compression = bool(
+        compression_made_progress and session_commit_succeeded
+    )
     # Transcript rewritten: invalidate the usage anchor's base snapshot explicitly
     # (its structural check would fail closed anyway); estimate until re-anchored.
     set_usage_anchor(agent, None)
@@ -4072,8 +4094,9 @@ def compress_context(
             compression_feasibility_skip=_compression_feasibility_skip, task_id=task_id,
         )
         logger.info(
-            "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=true",
+            "context compression done: session=%s messages=%d->%d rough_tokens=~%s awaiting_real_usage=%s",
             agent.session_id or "none", _pre_msg_count, len(compressed), f"{_compressed_est:,}",
+            str(bool(getattr(agent.context_compressor, "awaiting_real_usage_after_compression", False))).lower(),
         )
         lifecycle.commit_status = (
             "committed" if split_status in {"not_applicable", "in_place_committed", "rotated_committed"} else "aborted"

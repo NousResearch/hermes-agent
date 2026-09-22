@@ -13182,6 +13182,13 @@ function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
   startHermes({ supervisorRecovery: true }).catch(respawnError => {
     rememberLog(`[supervisor] backend respawn failed: ${respawnError.message}`)
 
+    // Terminal boot failures still own their existing recovery UI. Only a
+    // supervisor-owned respawn that failed transiently before ready may spend
+    // another bounded recovery slot.
+    if (bootstrapFailure || backendStartFailure || remoteReauthFailure) {
+      return
+    }
+
     if (primaryExitRecovery.retryAfterFailedStart(primaryRecoveryState())) {
       rememberLog('[supervisor] backend respawn failed before ready; retrying within crash-loop budget')
       runPrimaryRecoverySpawn(code, signal)
@@ -13694,6 +13701,10 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // child 'exit' handler to clear the cache — latching it would wedge the app
     // on "session expired" until a full restart, defeating reconnect, the
     // "Sign out & sign in" reload, and the wake-recovery revalidate path.
+    // A supervisor-owned respawn already has its own bounded crash-loop
+    // budget. Do not turn a pre-ready child exit into a permanent local boot
+    // latch before that budget can run; initial/user-driven starts keep the
+    // existing fail-closed latch.
     if (!supervisorRecovery && shouldLatchBackendStartFailure({ attemptedRemote })) {
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }

@@ -29,6 +29,7 @@ import {
 } from '@/store/layout'
 import { sessionPinId } from '@/store/session'
 import { $sessionDotStateById, hasLiveTurn } from '@/store/session-dot-state'
+import { $sessionSectionMembership, $sessionSections, groupSessionsBySection } from '@/store/session-sections'
 
 import { SidebarDateDivider, SidebarSectionMeta } from './chrome'
 import { GatewayProfileGroups } from './gateway-groups'
@@ -44,6 +45,7 @@ import {
 import { WorkspaceAddButton } from './projects/workspace-header'
 import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionSkeletons } from './section-states'
+import { SessionFolderAddButton, type SessionFolderRow, SidebarSessionFolderList } from './session-folders'
 import { SidebarSessionRow } from './session-row'
 import { VirtualSessionList } from './virtual-session-list'
 
@@ -157,6 +159,11 @@ interface SidebarSessionsSectionProps {
   // When false the section header is static (no caret/toggle) and always open.
   collapsible?: boolean
   sortable?: boolean
+  // File the flat list's rows into the user-made folders
+  // (store/session-sections). Only the flat Sessions list passes it: the other
+  // modes answer "where is this session" with their own structure, and with no
+  // folders made this changes nothing at all.
+  folders?: boolean
   // The persisted drag order, applied WITHIN each date group (see
   // orderRowsWithinGroups). Chronology decides the groups; this decides the
   // sequence inside one, so a reorder no longer costs the whole list its
@@ -228,6 +235,7 @@ export function SidebarSessionsSection({
   labelIcon,
   collapsible = true,
   sortable = false,
+  folders = false,
   manualOrderIds,
   onReorderSessions,
   onReorderProjects,
@@ -244,6 +252,8 @@ export function SidebarSessionsSection({
   const statusDividerLabels = t.sidebar.statusDivider
   const dotStates = useStore($sessionDotStateById)
   const nodeOpen = useStore($sidebarWorkspaceNodeOpen)
+  const sections = useStore($sessionSections)
+  const membership = useStore($sessionSectionMembership)
   const isListGroupOpen = useCallback((key: string) => nodeOpen[listGroupNodeId(key)] ?? true, [nodeOpen])
   const sectionOpen = collapsible ? open : true
   const hasGroupedSessions = Boolean(groups?.some(group => group.sessions.length > 0))
@@ -263,6 +273,15 @@ export function SidebarSessionsSection({
   // The flat recents/pinned list is the only place sessions reorder by hand;
   // grouped/tree views always sort by creation date and never drag.
   const sessionsDraggable = sortable && !!onReorderSessions
+
+  // Folders are the flat list's second axis. A grouped, project-overview,
+  // entered-project or pinned surface answers "where is this session" with its
+  // own structure, and folders drawn over it would fight that structure — so
+  // they stay out of the way there and change nothing. With no folders made,
+  // `folderView` is false and the list renders exactly as it did before.
+  const foldersEnabled = folders && !pinned && !groups?.length && !projectOverview?.length && !projectContent
+
+  const folderView = foldersEnabled && sections.length > 0
 
   // Only Pinned arrives pre-ordered as a flat sequence. Recents keeps its
   // recency sort — the drag order is layered on per date group below, so the
@@ -451,6 +470,48 @@ export function SidebarSessionsSection({
     [allSortableRowIds, onReorderSessions]
   )
 
+  // The flat list's own rows, as folder input: one cluster per root session row
+  // (its branch children ride with it), in the order the flat list renders them
+  // — so a folder's rows are sorted exactly like the main list, whatever the
+  // sort key or the hand-picked rank did to that order. Nothing here re-sorts.
+  const folderRows = useMemo<SessionFolderRow[]>(() => {
+    if (!folderView) {
+      return []
+    }
+
+    const clusters: SessionFolderRow[] = []
+
+    for (const row of flatRows) {
+      if (row.kind === 'divider') {
+        continue
+      }
+
+      const node = renderListRow(row, sessionsDraggable)
+      const last = clusters[clusters.length - 1]
+
+      if (row.entry.branchStem && last) {
+        last.nodes.push(node)
+      } else {
+        clusters.push({ id: row.entry.session.id, nodes: [node] })
+      }
+    }
+
+    return clusters
+  }, [flatRows, folderView, renderListRow, sessionsDraggable])
+
+  const folderGroups = useMemo(() => {
+    if (!folderView) {
+      return []
+    }
+
+    const filed = groupSessionsBySection(folderRows, sections, membership)
+
+    // The store omits an empty Unassigned bucket. The sidebar still draws its
+    // heading, because that heading IS the un-file drop target — with every
+    // session filed there would otherwise be no way to drag one back out.
+    return filed.some(group => group.id === null) ? filed : [...filed, { id: null, name: null, rows: [] }]
+  }, [folderRows, folderView, membership, sections])
+
   useEffect(() => {
     if (grouping !== 'date' && grouping !== 'status') {
       return
@@ -466,7 +527,10 @@ export function SidebarSessionsSection({
   // Pinned never virtualizes. Virtualization needs a bounded viewport to
   // measure against, and Pinned deliberately has none — however many chats you
   // pin, all of them render and the sidebar's own scroll carries the length.
+  // Folders never virtualize either: their rows are grouped under headings the
+  // virtualizer's flat row model has no shape for.
   const flatVirtualized =
+    !folderView &&
     !pinned &&
     !showEmptyState &&
     !groups?.length &&
@@ -509,6 +573,18 @@ export function SidebarSessionsSection({
     )
   } else if (showEmptyState) {
     inner = emptyState
+  } else if (folderView) {
+    // The flat list, filed: folders in order, Unassigned last. The section's
+    // own label is the Unassigned bucket's — Unassigned is not a folder and
+    // never gets a name of its own.
+    inner = (
+      <SidebarSessionFolderList
+        groups={folderGroups}
+        label={label}
+        onReorder={persistSessionOrder}
+        sensors={dndSensors}
+      />
+    )
   } else if (projectOverview?.length) {
     // The model is already ordered (Home leads; then the default sort groups
     // explicit-before-auto, with a manual drag-order winning when present).
@@ -622,7 +698,19 @@ export function SidebarSessionsSection({
   return (
     <SidebarGroup className={rootClassName}>
       <SidebarSectionHeader
-        action={headerAction}
+        action={
+          foldersEnabled ? (
+            // One cluster, not a fragment: the header is justify-between, so
+            // two children would park the new-session "+" in the middle as a
+            // blank hole until hover.
+            <div className="flex shrink-0 items-center gap-0.5">
+              <SessionFolderAddButton />
+              {headerAction}
+            </div>
+          ) : (
+            headerAction
+          )
+        }
         collapsible={collapsible}
         icon={labelIcon}
         label={label}

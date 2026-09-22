@@ -3173,6 +3173,18 @@ export const en: Translations = {
       showAllCount: count => `Show all ${count} sessions`,
       back: 'All projects'
     },
+    folders: {
+      newFolder: 'New folder',
+      renameTitle: 'Rename folder',
+      nameLabel: 'Folder name',
+      namePlaceholder: 'e.g. Billing work',
+      create: 'Create',
+      menu: 'Folder actions',
+      menuRename: 'Rename…',
+      toggle: (label, open) => `${open ? 'Show' : 'Hide'} ${label} sessions`,
+      deleted: label => `Folder “${label}” deleted`,
+      undo: 'Undo'
+    },
     newSessionIn: label => `New session in ${label}`,
     showMoreIn: (count, label) => `Show ${count} more in ${label}`,
     loading: 'Loading…',

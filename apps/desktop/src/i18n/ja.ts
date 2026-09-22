@@ -2403,6 +2403,18 @@ export const ja = defineLocale({
       forceRemove: '強制削除',
       enter: label => `${label} を開く`
     },
+    folders: {
+      newFolder: '新しいフォルダ',
+      renameTitle: 'フォルダ名を変更',
+      nameLabel: 'フォルダ名',
+      namePlaceholder: '例: 請求関連の作業',
+      create: '作成',
+      menu: 'フォルダの操作',
+      menuRename: '名前を変更…',
+      toggle: (label, open) => `${open ? '表示' : '非表示'} ${label} のセッション`,
+      deleted: label => `フォルダ「${label}」を削除しました`,
+      undo: '元に戻す'
+    },
     newSessionIn: label => `${label} で新しいセッション`,
     showMoreIn: (count, label) => `${label} でさらに ${count} 件を表示`,
     loading: '読み込み中…',

@@ -71,6 +71,7 @@ import {
   type SessionOwnerScope,
   type SessionProfileRoute
 } from './session-request-router'
+import { dropSessionSectionsForProfile, migrateSessionSectionsForProfile } from './session-sections'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
@@ -2082,6 +2083,9 @@ export function dropTilesForProfile(
   const name = normalizeProfileKey(profile)
   dropPreviewArtifactsForProfile(name, route)
   dropStatusDrawersForProfile(name, route)
+  // Sibling profile-keyed family: a deleted profile's folders must not outlive
+  // it, or a later profile of the same name inherits its section ids.
+  dropSessionSectionsForProfile(name)
   // Route fields go through the SAME canonicalization as `name` below — a
   // source-scoped delete must not be defeated by stray whitespace around a
   // profile name that a non-route delete trims away.
@@ -2225,6 +2229,10 @@ export function migrateTilesForProfile(oldProfile: string, newProfile: string): 
   migrateSessionOwnerHintsForProfile(from, to)
   migratePreviewArtifactsForProfile(from, to)
   migrateStatusDrawersForProfile(from, to)
+  // Sibling family: the sidebar's user-made folders are profile-keyed, so they
+  // move with the rename instead of coming back empty (and pointed at a backend
+  // that no longer exists).
+  migrateSessionSectionsForProfile(from, to)
   // Sibling family: the rail's profile-keyed buckets move with the rename, or
   // the renamed profile opens with an empty rail and the old name keeps them.
   migratePreviewTabsForProfile(from, to)

@@ -3039,6 +3039,18 @@ export const zh = defineLocale({
       showAllCount: count => `显示全部 ${count} 个会话`,
       back: '全部项目'
     },
+    folders: {
+      newFolder: '新建文件夹',
+      renameTitle: '重命名文件夹',
+      nameLabel: '文件夹名称',
+      namePlaceholder: '例如：账单相关工作',
+      create: '创建',
+      menu: '文件夹操作',
+      menuRename: '重命名…',
+      toggle: (label, open) => `${open ? '展开' : '收起'} ${label} 会话`,
+      deleted: label => `已删除文件夹“${label}”`,
+      undo: '撤销'
+    },
     newSessionIn: label => `在 ${label} 中新建会话`,
     showMoreIn: (count, label) => `在 ${label} 中再显示 ${count} 个`,
     loading: '加载中…',

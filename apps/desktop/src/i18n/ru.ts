@@ -2656,6 +2656,18 @@ export const ru = defineLocale({
       showAllCount: count => `Показать все сессии (${count})`,
       back: 'Все проекты'
     },
+    folders: {
+      newFolder: 'Новая папка',
+      renameTitle: 'Переименовать папку',
+      nameLabel: 'Название папки',
+      namePlaceholder: 'например, Работа по счетам',
+      create: 'Создать',
+      menu: 'Действия с папкой',
+      menuRename: 'Переименовать…',
+      toggle: (label, open) => `${open ? 'Показать' : 'Скрыть'} сеансы ${label}`,
+      deleted: label => `Папка «${label}» удалена`,
+      undo: 'Отменить'
+    },
     newSessionIn: label => `Новый сеанс в ${label}`,
     showMoreIn: (count, label) => `Показать ещё ${count} в ${label}`,
     loading: 'Загрузка…',

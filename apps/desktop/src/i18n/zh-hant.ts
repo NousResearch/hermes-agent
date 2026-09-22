@@ -2382,6 +2382,18 @@ export const zhHant = defineLocale({
       forceRemove: '強制移除',
       enter: label => `開啟 ${label}`
     },
+    folders: {
+      newFolder: '新增資料夾',
+      renameTitle: '重新命名資料夾',
+      nameLabel: '資料夾名稱',
+      namePlaceholder: '例如：帳務工作',
+      create: '建立',
+      menu: '資料夾操作',
+      menuRename: '重新命名…',
+      toggle: (label, open) => `${open ? '顯示' : '隱藏'} ${label} 工作階段`,
+      deleted: label => `已刪除資料夾「${label}」`,
+      undo: '復原'
+    },
     newSessionIn: label => `在 ${label} 中新建工作階段`,
     showMoreIn: (count, label) => `在 ${label} 中再顯示 ${count} 個`,
     loading: '載入中…',

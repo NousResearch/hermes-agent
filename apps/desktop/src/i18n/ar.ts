@@ -2081,6 +2081,18 @@ export const ar = defineLocale({
       showAllCount: count => `إظهار كل الجلسات (${count})`,
       back: 'كل المشاريع'
     },
+    folders: {
+      newFolder: 'مجلد جديد',
+      renameTitle: 'إعادة تسمية المجلد',
+      nameLabel: 'اسم المجلد',
+      namePlaceholder: 'مثال: أعمال الفواتير',
+      create: 'إنشاء',
+      menu: 'إجراءات المجلد',
+      menuRename: 'إعادة تسمية…',
+      toggle: (label, open) => `${open ? 'إظهار' : 'إخفاء'} جلسات ${label}`,
+      deleted: label => `تم حذف المجلد «${label}»`,
+      undo: 'تراجع'
+    },
     newSessionIn: label => `جلسة جديدة في ${label}`,
     showMoreIn: (count, label) => `إظهار ${count} أخرى في ${label}`,
     loading: 'جار التحميل...',

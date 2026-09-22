@@ -53,11 +53,16 @@ const HEADER_ACTION_BTN =
 // composer instead).
 export function SidebarSectionAddButton({
   ariaLabel,
+  icon = 'add',
   onNewProjectDrag,
   onNewSessionSplit,
   onPlainClick
 }: {
   ariaLabel: string
+  /** Codicon for the affordance — the folder variant uses `new-folder`, so two
+   *  "+"s in one header (new session, new folder) don't read as the same
+   *  button. */
+  icon?: string
   /** Present when this header "+" creates a PROJECT (the project-overview
    *  mode's "New project" button): dragging it arms where that project should
    *  start and a valid drop opens the same "New project" dialog. `onArm` also
@@ -97,7 +102,7 @@ export function SidebarSectionAddButton({
         size="icon-xs"
         variant="ghost"
       >
-        <Codicon name="add" size="0.75rem" />
+        <Codicon name={icon} size="0.75rem" />
       </Button>
     </Tip>
   )

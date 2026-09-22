@@ -2687,6 +2687,19 @@ export interface Translations {
       showAllCount: (count: number) => string
       back: string
     }
+    folders: {
+      /** The Sessions header's "New folder" "+", and the create dialog's title. */
+      newFolder: string
+      renameTitle: string
+      nameLabel: string
+      namePlaceholder: string
+      create: string
+      menu: string
+      menuRename: string
+      toggle: (label: string, open: boolean) => string
+      deleted: (label: string) => string
+      undo: string
+    }
     newSessionIn: (label: string) => string
     showMoreIn: (count: number, label: string) => string
     loading: string

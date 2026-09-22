@@ -754,7 +754,18 @@ def _cmd_claim(args: argparse.Namespace) -> int:
 
 
 def _cmd_comment(args: argparse.Namespace) -> int:
-    body = " ".join(args.text).strip()
+    positional = list(getattr(args, "text", None) or [])
+    body_flag = getattr(args, "body", None)
+    # ``task comment <id> "text"`` and ``task comment <id> --body text`` are the same request; a
+    # caller that passes both is picking two bodies, so refuse rather than silently dropping one.
+    if positional and body_flag is not None:
+        return _err("kanban: pass the comment body either positionally or with --body, not both", 2)
+    if body_flag is not None:
+        body = body_flag.strip()
+    elif positional:
+        body = " ".join(positional).strip()
+    else:
+        return _err("kanban: a comment body is required (positionally or with --body)", 2)
     if args.max_len is not None:
         if args.max_len < 1:
             return _err("kanban: --max-len must be positive", 2)

@@ -267,7 +267,8 @@ _SPECS = [
     ], help="Atomically claim a ready task (prints resolved workspace path)"),
     _cmd("comment", [
         _TASK_ID,
-        _arg("text", nargs="+", help="Comment body"),
+        _arg("text", nargs="*", help="Comment body (positional form; mutually exclusive with --body)"),
+        _arg("--body", help="Comment body (alias for the positional text; mutually exclusive with it)"),
         _arg("--author", help="Author name (default: $HERMES_PROFILE or 'user')"),
         _arg("--max-len", type=int, help="Trim the stored comment body to this many characters"),
     ], help="Append a comment"),

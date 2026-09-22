@@ -951,7 +951,7 @@ hermes kanban diagnostics [--json]                     # board health snapshot (
 hermes kanban link <parent_id> <child_id>
 hermes kanban unlink <parent_id> <child_id>
 hermes kanban claim <id> [--ttl SECONDS]
-hermes kanban comment <id> "<text>" [--author NAME]
+hermes kanban comment <id> "<text>" [--author NAME]       # --body TEXT works in place of the text
 
 # Bulk verbs — accept multiple ids:
 hermes kanban complete <id>... [--result "..."] [--force]

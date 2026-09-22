@@ -1650,21 +1650,55 @@ _PROVIDER_API_MODE_OVERRIDES: dict[str, Any] = {
     **dict.fromkeys(("nous", "nous-portal", "nousresearch"), _nous_api_mode)}
 
 
-def model_derived_api_mode(provider: str, model: str, api_key: str = "") -> Optional[str]:
+def model_derived_api_mode(
+        provider: str, model: str, api_key: str = "", *, base_url: str = "",
+        user_providers: Optional[dict] = None, custom_providers: Optional[list] = None) -> Optional[str]:
     """api_mode re-derived from the FINAL model for providers that serve several wire formats behind one
-    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous); None when the
-    provider's wire is fixed by its endpoint. A persisted api_mode from an earlier model of such a provider
-    is never authoritative — resume paths must call this instead of honoring the row (#96066)."""
+    endpoint (OpenCode Zen/Go and custom providers extending a family slug, Copilot, Nous — and any
+    configured custom entry declaring ``models.<model>.transport``); None when the provider's wire is
+    fixed by its endpoint. A persisted api_mode from an earlier model of such a provider is never
+    authoritative — resume paths must call this instead of honoring the row (#96066).
+
+    ``base_url`` (with the caller's ``providers:`` / ``custom_providers:`` when it has them, else the
+    config on disk) is the route identity for the per-model lookup; a host-mandated wire
+    (``host_mandated_api_mode``) is applied by the caller before this and still wins."""
     from hermes_cli.models import opencode_provider_family
     key = str(provider or "").strip().lower()
     override = _PROVIDER_API_MODE_OVERRIDES.get(opencode_provider_family(key) or key)
-    return override(key, model, api_key) if override is not None else None
+    if override is not None:
+        return override(key, model, api_key)
+    if not base_url or not (key == "custom" or key.startswith("custom:")):
+        return None
+    if host_mandated_api_mode(base_url) is not None:
+        return None  # the endpoint accepts exactly one wire; config cannot argue with it
+    return _configured_model_api_mode(model, base_url, user_providers, custom_providers) or None
+
+
+def _configured_model_api_mode(
+        model: str, base_url: str, user_providers: Optional[dict], custom_providers: Optional[list]) -> str:
+    """Wire of the configured custom entry serving *base_url* for *model*:
+    ``models.<model>.transport`` when declared, else the entry-level ``transport`` (so a model
+    without a per-model wire returns to the entry's, never inheriting the previous model's), else
+    ``""`` when no entry serves the route or it declares no wire at all."""
+    from hermes_cli.config_providers import (
+        _normalize_custom_provider_entry, get_custom_provider_api_mode, get_custom_provider_model_api_mode)
+    entries: list = [_normalize_custom_provider_entry(cfg) or cfg for cfg in _custom_entries(custom_providers)]
+    for slug, cfg in (user_providers or {}).items():
+        if isinstance(cfg, dict):
+            entries.append(_normalize_custom_provider_entry(cfg, provider_key=str(slug)) or cfg)
+    try:
+        return (get_custom_provider_model_api_mode(model, base_url, custom_providers=entries or None)
+                or get_custom_provider_api_mode(base_url, custom_providers=entries or None))
+    except Exception:
+        return ""
 
 
 def _build_switch_result(st: _Switch) -> ModelSwitchResult:
     """COMMON PATH part 3: final api_mode / base_url shaping, metadata, warnings."""
-    derived = model_derived_api_mode(st.target_provider, st.new_model, st.api_key)
-    if derived is not None:
+    derived = model_derived_api_mode(
+        st.target_provider, st.new_model, st.api_key, base_url=st.base_url,
+        user_providers=st.user_providers, custom_providers=st.custom_providers)
+    if derived is not None and st.api_mode != "codex_app_server":
         st.api_mode = derived
     if not st.api_mode:
         st.api_mode = determine_api_mode(st.target_provider, st.base_url, model=st.new_model)

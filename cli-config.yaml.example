@@ -180,6 +180,18 @@ model:
 #     api_key: ${MY_GATEWAY_KEY}
 #     extra_body:
 #       service_tier: priority   # whatever tier value your gateway documents
+# One endpoint, several wire protocols: a gateway may serve claude-* on a native
+# Messages door and gpt-* on the Responses API while the rest stays on
+# chat/completions. Declare the wire per model; the entry-level transport is the
+# default for models that say nothing. Same base_url and key for all of them.
+# providers:
+#   my-gateway:
+#     base_url: https://gateway.example.com/v1
+#     key_env: GATEWAY_API_KEY
+#     transport: chat_completions
+#     models:
+#       claude-sonnet-5: { transport: anthropic_messages }
+#       gpt-5.4-mini: { transport: codex_responses }
 # providers:
 #   router:
 #     base_url: https://api.router.com/v1

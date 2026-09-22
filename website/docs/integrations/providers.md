@@ -1347,7 +1347,7 @@ providers:
     transport: anthropic_messages  # for Anthropic-compatible proxies
 ```
 
-Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
+Each entry accepts: `api` (the endpoint base URL — `base_url`/`url` are accepted aliases), `name` (optional display name; defaults to the dict key), `key_env` or inline `api_key` or `key_cmd` (see below), `transport` (`chat_completions` / `anthropic_messages` / `codex_responses`; overridable per model via `models.<id>.transport`, see below), `default_model`, `models`, `context_length`, `discover_models`, `extra_body`, `extra_headers`, `session_affinity_header` (name of a header that carries the conversation id, for session-aware proxies; off unless set), `ssl_ca_cert` / `ssl_verify`, `catalog_provider` (see below), and `enabled: false` to hide an entry without deleting it.
 
 #### Command-minted credentials (`key_cmd`)
 
@@ -1452,6 +1452,22 @@ providers:
 ```
 
 `catalog_provider` accepts a Hermes provider id (`deepseek`, `anthropic`, `openai`, …) or a models.dev id. It affects metadata lookups only — requests still go to your `api` URL with your credentials — and an explicit `model_overrides` entry for the same model still wins.
+
+**One endpoint, several wire protocols (`models.<id>.transport`).** Some gateways serve models behind different API surfaces on the same base URL — `claude-*` on a native Anthropic Messages door, `gpt-*` on the Responses API, everything else on chat/completions. Declare the wire per model and the entry-level `transport` stays the default for every model that says nothing:
+
+```yaml
+providers:
+  my-gateway:
+    api: https://gateway.example.com/v1
+    key_env: GATEWAY_API_KEY
+    transport: chat_completions            # default wire for models not listed below
+    models:
+      claude-sonnet-5: { transport: anthropic_messages }
+      gpt-5.4-mini:    { transport: codex_responses }
+      glm-5.3:         { context_length: 200000 }   # no transport → chat_completions
+```
+
+`/model custom:my-gateway:claude-sonnet-5` then speaks Messages, `/model custom:my-gateway:gpt-5.4-mini` speaks Responses, and switching back to `glm-5.3` returns to chat/completions — one entry, one credential, no per-transport duplicates or alias tables. The same `api` URL serves all three: the Anthropic client strips a trailing `/v1` and appends `/v1/messages` itself, the other two append their own path. Precedence: a host that accepts exactly one wire (`api.anthropic.com`, `api.openai.com`, …) is never overridden; otherwise per-model `transport` beats the entry-level one. `api_mode` is accepted as an alias of `transport` here as on the entry.
 
 Switch between them mid-session with the triple syntax:
 

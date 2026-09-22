@@ -570,6 +570,50 @@ def get_custom_provider_context_length(
     return None
 
 
+def custom_provider_model_api_mode(entry: Dict[str, Any], model: str) -> str:
+    """Canonical per-model wire protocol declared on ONE custom-provider entry, or ``""``.
+
+    ``providers.<id>.models.<model>.transport`` (``api_mode`` is accepted as an alias, as on the
+    entry itself) lets a single named endpoint serve models behind different API surfaces — a
+    gateway that routes ``claude-*`` through a native Messages door and ``gpt-*`` through the
+    Responses API while everything else stays on chat/completions. Exact runtime model id, no
+    alias expansion; a per-model value overrides the entry-level ``transport``.
+    """
+    model_cfg = _route_model_cfg(entry, model) if isinstance(entry, dict) and model else None
+    if not model_cfg:
+        return ""
+    for field in ("transport", "api_mode"):
+        value = model_cfg.get(field)
+        if isinstance(value, str) and value.strip():
+            return _canonical_api_mode(value)
+    return ""
+
+
+def get_custom_provider_model_api_mode(
+    model: str,
+    base_url: str,
+    custom_providers: Optional[List[Dict[str, Any]]] = None,
+    config: Optional[Dict[str, Any]] = None) -> str:
+    """Per-model ``transport`` of the first custom entry serving *base_url* that declares one for
+    *model* (see :func:`custom_provider_model_api_mode`), or ``""``. Same route identity as
+    :func:`get_custom_provider_api_mode`: the URL, not the hostname."""
+    from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    if not model or not base_url:
+        return ""
+    if custom_providers is None:
+        try:
+            if config is None:
+                config = load_config_readonly()
+            custom_providers = get_compatible_custom_providers(config)
+        except Exception:
+            return ""
+    for entry in _entries_for_route(base_url, custom_providers, config):
+        mode = custom_provider_model_api_mode(entry, model)
+        if mode:
+            return mode
+    return ""
+
+
 def get_custom_provider_model_capability(
     model: str,
     base_url: str,

@@ -112,6 +112,12 @@ def _lift_common_custom_fields(entry: Dict[str, Any], result: Dict[str, Any], *,
     _lift_extra_headers(entry, result)
     if api_mode:
         result["api_mode"] = api_mode
+    # Per-model declarations (``models.<id>.transport`` / capabilities) ride along so the target
+    # model, known only later, can refine the runtime (``_apply_custom_provider_extras``).
+    from hermes_cli.config_providers import _normalize_provider_models
+    models, _discovered = _normalize_provider_models(entry.get("models"))
+    if models:
+        result["models"] = models
 
     _lift_model_capabilities(entry, None, result)
 
@@ -407,6 +413,21 @@ def _custom_provider_request_overrides(custom_provider: Dict[str, Any]) -> Dict[
     return {"extra_body": dict(extra_body)}
 
 
+def _apply_model_api_mode(custom_provider: Dict[str, Any], model: Optional[str], result: Dict[str, Any]) -> None:
+    """``providers.<id>.models.<model>.transport`` overrides the entry-level wire for that model.
+
+    One endpoint, several API surfaces: a gateway serving ``claude-*`` on a native Messages door
+    and ``gpt-*`` on the Responses API needs the wire decided per model, not per entry. The
+    explicit ``codex_app_server`` opt-in (``model.openai_runtime``) is a runtime, not a wire, and
+    keeps precedence."""
+    from hermes_cli.config_providers import custom_provider_model_api_mode
+    if result.get("api_mode") == "codex_app_server":
+        return
+    mode = custom_provider_model_api_mode(custom_provider, model or "")
+    if mode:
+        result["api_mode"] = mode
+
+
 def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model: Optional[str], result: Dict[str, Any]) -> None:
     """Copy model / capabilities / extra_headers / request_overrides onto a
     resolved custom runtime. An explicit ``target_model`` wins over the provider's configured
@@ -416,6 +437,7 @@ def _apply_custom_provider_extras(custom_provider: Dict[str, Any], target_model:
     if model_name:
         result["model"] = model_name
     _lift_model_capabilities(custom_provider, model_name, result)
+    _apply_model_api_mode(custom_provider, model_name, result)
 
     if custom_provider.get("extra_headers"):
         result["extra_headers"] = dict(custom_provider["extra_headers"])
@@ -582,9 +604,10 @@ def _resolve_named_custom_runtime(*, requested_provider: str, explicit_api_key: 
     # api_mode from the model and normalize /v1 like the built-in paths.
     family = _opencode_family_for_custom(requested_provider, base_url)
     if family is not None and not custom_provider.get("api_mode"):
+        from hermes_cli.config_providers import custom_provider_model_api_mode
         from hermes_cli.models import normalize_opencode_base_url, opencode_model_api_mode
         effective_model = str(target_model or custom_provider.get("model") or rp._get_model_config().get("default") or "").strip()
-        if effective_model:
+        if effective_model and not custom_provider_model_api_mode(custom_provider, effective_model):
             result["api_mode"] = opencode_model_api_mode(family, effective_model)
         result["base_url"] = normalize_opencode_base_url(family, result["api_mode"], result["base_url"])
     return result

@@ -370,6 +370,15 @@ _EXPLICIT_API_MODES = {
 }
 
 
+def _configured_model_api_mode(model: Optional[str], base_url: Optional[str]) -> str:
+    """``providers.<id>.models.<model>.transport`` for the configured custom entry at *base_url*, or ``""``."""
+    try:
+        from hermes_cli.config_providers import get_custom_provider_model_api_mode
+        return get_custom_provider_model_api_mode(str(model or ""), str(base_url or ""))
+    except Exception:
+        return ""
+
+
 def _resolve_api_mode(agent, api_mode, provider_name, base_url):
     """Set ``agent.api_mode`` (and provider rewrites) — ordered ladder, first match wins."""
     from hermes_cli.providers import is_actual_route
@@ -404,6 +413,10 @@ def _resolve_api_mode(agent, api_mode, provider_name, base_url):
         # AIAgent construction without a resolved runtime.
         from hermes_cli.providers import nous_api_mode
         agent.api_mode = nous_api_mode(agent.model)
+    elif (configured_mode := _configured_model_api_mode(agent.model, base_url)):
+        # Direct construction of a configured custom route (no resolved runtime): honor the entry's
+        # ``models.<model>.transport`` so one endpoint can serve several wire formats per model.
+        agent.api_mode = configured_mode
     else:
         # Host-mandated wire check — LAST, so the provider-slug rewrites above always win.
         # Covers api.meta.ai → codex_responses (prompt caching: 0% on chat vs 93-99%).

@@ -642,9 +642,11 @@ from hermes_cli.config_providers import (  # noqa: E402,F401  (re-exported; call
     _entries_for_route, _normalize_custom_provider_entry, _normalize_provider_models,
     _pick_provider_base_url, _route_model_cfg, _warn_once_per_provider,
     apply_custom_provider_extra_headers_to_client_kwargs,
-    apply_custom_provider_tls_to_client_kwargs, coerce_provider_id, find_provider_entry,
+    apply_custom_provider_tls_to_client_kwargs, coerce_provider_id, custom_provider_model_api_mode,
+    find_provider_entry,
     get_compatible_custom_providers, get_custom_provider_api_mode, get_custom_provider_context_length,
-    get_custom_provider_extra_headers, get_custom_provider_model_capability,
+    get_custom_provider_extra_headers, get_custom_provider_model_api_mode,
+    get_custom_provider_model_capability,
     get_custom_provider_session_affinity_header,
     get_custom_provider_tls_settings, is_provider_enabled, normalize_extra_headers,
     providers_dict_to_custom_providers, stringify_provider_map)

@@ -379,6 +379,7 @@ class TestCreateThread:
         )
 
 
+@patch("tools.discord_tool._discord_request")
 class TestEnsureSubissueContext:
     def test_creates_then_recovers_exactly_one_text_thread(self, mock_req, monkeypatch, tmp_path):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")

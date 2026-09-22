@@ -228,6 +228,24 @@ providers:
       openai_native_compaction: true
 ```
 
+**`reasoning_effort_updates`** — opt a custom Responses endpoint into OpenAI-compatible
+`configuration_update` input items. Enable this only after verifying that the endpoint accepts
+them. GPT-6 Astra on the OpenAI API and known compatible ChatGPT Responses models are detected
+automatically; unknown endpoints fail closed and retain the existing top-level effort behavior:
+
+```yaml
+providers:
+  trusted-responses:
+    api: https://llm.internal.example.com/v1
+    transport: codex_responses
+    capabilities:
+      reasoning_effort_updates: true
+```
+
+When a conversation contains an in-band effort update, Hermes omits automatic native compaction
+from that request because OpenAI does not support combining the two mechanisms. A model or provider
+change starts a new effort lineage; it never reuses another model's baseline.
+
 For a gateway that resolves a bare model alias only after receiving the
 request, opt the alias into prompt-cache markers with the per-model
 `prompt_caching` capability:

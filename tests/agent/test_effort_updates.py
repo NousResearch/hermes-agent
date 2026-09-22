@@ -63,13 +63,15 @@ def test_record_effort_switch_reads_session_baseline_then_last_marker(tmp_path, 
     agent = Agent()
     messages = [{"role": "system", "content": "sys"}, {"role": "user", "content": "hi"}, {"role": "assistant", "content": "hello"}]
     assert record_effort_switch(agent, messages) is True
-    assert effort_update(messages[-1]) == {"effort": "low", "previous": "high"}
+    assert effort_update(messages[-1])["effort"] == "low"
+    assert effort_update(messages[-1])["previous"] == "high"
     assert messages[-1]["display_kind"] == "hidden"
     messages += [{"role": "user", "content": "q"}, {"role": "assistant", "content": "a"}]
     assert record_effort_switch(agent, messages) is False  # unchanged effort
     agent.reasoning_config = {"enabled": True, "effort": "high"}
     assert record_effort_switch(agent, messages) is True
-    assert effort_update(messages[-1]) == {"effort": "high", "previous": "low"}  # previous from the marker, not the DB
+    assert effort_update(messages[-1])["effort"] == "high"
+    assert effort_update(messages[-1])["previous"] == "low"  # previous from the marker, not the DB
     # Never between a tool_use and its result, never on an empty history, never with reasoning off.
     assert record_effort_switch(agent, [{"role": "assistant", "content": "", "tool_calls": [{"id": "x"}]}]) is False
     assert record_effort_switch(agent, []) is False

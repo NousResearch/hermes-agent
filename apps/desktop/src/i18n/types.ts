@@ -849,6 +849,8 @@ export interface Translations {
       description: string
       permission: string
       unavailable: string
+      missingHelper: string
+      unsupportedSession: string
     }
     screenshot: {
       enabledTitle: string

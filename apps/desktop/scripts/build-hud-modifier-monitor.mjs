@@ -1,12 +1,21 @@
 #!/usr/bin/env node
-// Optional, host-native helper. No compiler or development headers at runtime.
+// Host-built helper. Windows uses its in-box .NET Framework compiler; no SDK download.
 import { execFileSync } from 'node:child_process'
-import { chmodSync, mkdirSync, renameSync, rmSync } from 'node:fs'
+import { chmodSync, existsSync, mkdirSync, renameSync, rmSync } from 'node:fs'
 import { dirname, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
 
 const script = fileURLToPath(import.meta.url)
 const root = resolve(dirname(script), '..')
+
+export function resolveWindowsFrameworkCompiler() {
+  const framework = resolve(process.env.SystemRoot || 'C:\\Windows', 'Microsoft.NET')
+  const compiler = ['Framework64', 'Framework']
+    .map(dir => resolve(framework, dir, 'v4.0.30319', 'csc.exe'))
+    .find(existsSync)
+  if (!compiler) throw new Error('The Windows HUD helper needs the .NET Framework included with Windows.')
+  return compiler
+}
 
 export function hudModifierBinaryRelativePath(platform = process.platform, arch = process.arch) {
   return `native/${platform}-${platform === 'darwin' ? 'universal' : arch}/hud-modifier-monitor${platform === 'win32' ? '.exe' : ''}`
@@ -19,7 +28,8 @@ export function buildHudModifierMonitor({
 } = {}) {
   // Cross-packaging must not ship a host binary under the target's name. The
   // capability stays unavailable unless that target was built on its own host.
-  if (platform !== process.platform || (platform !== 'darwin' && arch !== process.arch)) {
+  if (platform !== process.platform || (platform === 'linux' && arch !== process.arch)) {
+    if (platform === 'win32') throw new Error('Build Windows packages on Windows so the HUD helper is included.')
     console.warn(`[hud-modifier] ${platform}-${arch} needs a native build; modifier tap unavailable for this target`)
     return null
   }
@@ -56,19 +66,24 @@ export function buildHudModifierMonitor({
         ],
         { stdio: 'pipe', timeout: 120_000 }
       )
+    } else if (platform === 'win32') {
+      execFileSync(resolveWindowsFrameworkCompiler(), [
+        '/nologo', '/target:exe', '/platform:anycpu', '/optimize+', '/warnaserror+',
+        '/reference:System.Windows.Forms.dll', `/out:${staging}`,
+        source('hud-modifier-monitor-win.cs'), source('hud-modifier-gesture.cs')
+      ], { stdio: 'pipe', timeout: 120_000 })
     } else {
-      const windows = platform === 'win32'
       execFileSync(
-        process.env.CC || (windows ? 'clang' : 'cc'),
+        process.env.CC || 'cc',
         [
           '-std=gnu11',
           '-O2',
           '-Wall',
           '-Wextra',
-          source(windows ? 'hud-modifier-monitor-win.c' : 'hud-modifier-monitor-x11.c'),
+          source('hud-modifier-monitor-x11.c'),
           '-o',
           staging,
-          ...(windows ? ['-luser32'] : ['-lX11', '-lXi'])
+          '-lX11', '-lXi'
         ],
         { stdio: 'pipe', timeout: 120_000 }
       )
@@ -79,9 +94,8 @@ export function buildHudModifierMonitor({
     return output
   } catch (error) {
     rmSync(output, { force: true }) // Never keep a stale helper after a failed rebuild.
-    if (platform === 'darwin') throw error // The existing macOS build already requires Xcode.
-    const prerequisite = platform === 'linux' ? 'a C compiler, libx11-dev and libxi-dev' : 'Clang and the Windows SDK'
-    console.warn(`[hud-modifier] unavailable: native build needs ${prerequisite}; desktop packaging continues`)
+    if (platform !== 'linux') throw error
+    console.warn('[hud-modifier] unavailable: native build needs a C compiler, libx11-dev and libxi-dev; desktop packaging continues')
     console.warn(String(error.stderr || error.message))
     return null
   } finally {

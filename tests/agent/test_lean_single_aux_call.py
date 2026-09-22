@@ -152,7 +152,6 @@ class TestSampledSummaryInput:
         # Distinct decade markers let us verify oldest-to-newest order and
         # uniform coverage across the whole region.
         records = [f"<seg{i:02d}>" + ("x" * 50_000) for i in range(10)]
-        content = "\n\n".join(records)
         out, _coverage = ContextCompressor._sample_summary_records(records)
         assert len(out) <= ContextCompressor._SUMMARY_INPUT_MAX_CHARS
         assert "chars elided" in out
@@ -160,7 +159,8 @@ class TestSampledSummaryInput:
         # Coverage reaches past the head AND includes the newest end.
         assert seen == sorted(seen)
         assert any(i >= 5 for i in seen)
-        assert ("<seg09>" in out) or (content[-500:] in out)
+        # The newest record anchors the last slice, so its token must be present outright.
+        assert "<seg09>" in out
 
     def test_legacy_mode_keeps_head_tail_bound(self):
         c = _mk_compressor(tail_mode="legacy")

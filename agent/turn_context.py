@@ -32,6 +32,75 @@ from agent.turn_author import parse_turn_author
 logger = logging.getLogger(__name__)
 
 
+def _apply_reasoning_effort_policy(
+    agent: Any, messages: List[Dict[str, Any]], user_message: Any, *, task_id: str, turn_id: str,
+) -> None:
+    """Apply a policy-selected effort before the durable marker and user row land."""
+    from agent.effort_updates import effort_update, requested_effort
+
+    current = requested_effort(getattr(agent, "reasoning_config", None))
+    if current is None:
+        return
+    try:
+        from hermes_cli.middleware import apply_reasoning_effort_middleware
+
+        policy_input = (
+            user_message.get("content") if isinstance(user_message, dict) else user_message
+        )
+        api_mode = str(getattr(agent, "api_mode", "") or "")
+        route_context = {
+            "model": str(getattr(agent, "model", "") or ""),
+            "provider": str(getattr(agent, "provider", "") or ""),
+            "base_url": str(getattr(agent, "base_url", "") or ""),
+            "capabilities": dict(getattr(agent, "capabilities", None) or {}),
+        }
+        from agent.transports import get_transport
+
+        transport = get_transport(api_mode)
+        update_levels = () if transport is None else transport.reasoning_effort_update_levels(
+            **route_context,
+        )
+        updates_supported = bool(transport is not None and update_levels) and (
+            transport.supports_reasoning_effort_updates(**route_context)
+        )
+        previous_effort = None
+        for message in reversed(messages):
+            update = effort_update(message)
+            if update is not None:
+                previous_effort = update["effort"]
+                break
+        if previous_effort is None and messages:
+            previous_effort = current
+        selected = apply_reasoning_effort_middleware(
+            current,
+            user_message=policy_input,
+            has_conversation_history=bool(messages),
+            previous_effort=previous_effort,
+            session_id=str(getattr(agent, "session_id", "") or ""),
+            task_id=task_id,
+            turn_id=turn_id,
+            platform=str(getattr(agent, "platform", "") or ""),
+            **route_context,
+            api_mode=api_mode,
+            reasoning_effort_updates_supported=updates_supported,
+            supported_reasoning_efforts=tuple(update_levels),
+        )
+    except Exception:
+        logger.warning("reasoning-effort middleware failed; keeping %s", current, exc_info=True)
+        return
+    if not selected or selected == current:
+        return
+    config = dict(getattr(agent, "reasoning_config", None) or {})
+    config.update({"enabled": True, "effort": selected})
+    agent.reasoning_config = config
+    # With no prior transcript there is no prefix to preserve. Make the selected
+    # effort the real first-request baseline instead of recording a synthetic change.
+    if not messages:
+        from agent.effort_updates import set_initial_effort_baseline
+
+        set_initial_effort_baseline(agent)
+
+
 def _str_attr(agent: Any, name: str) -> str:
     """``getattr(agent, name, "") or ""`` — route facts read off partial agents/doubles."""
     return getattr(agent, name, "") or ""
@@ -1053,6 +1122,9 @@ def build_turn_context(
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
+    _apply_reasoning_effort_policy(
+        agent, messages, user_msg, task_id=effective_task_id, turn_id=turn_id,
+    )
     # A mid-session effort switch lands as a hidden marker BEFORE the user message so routes with a
     # native per-message effort update keep the cached prefix (agent.effort_updates).
     record_effort_switch(agent, messages)

@@ -149,6 +149,42 @@ def _write_baseline_record(agent: Any, record: Dict[str, Any]) -> None:
             logger.debug("effort baseline: session model_config write failed", exc_info=True)
 
 
+def set_initial_effort_baseline(agent: Any) -> None:
+    """Make a policy-selected first-turn effort the session's durable baseline.
+
+    There is no cached conversation prefix before the first user turn, so selecting a
+    different effort does not need a marker.  Persist both the legacy
+    ``reasoning_config`` and the route-aware baseline record: a session row may have
+    been created eagerly with the configured default, and leaving that value behind
+    would make the next turn's marker name the wrong previous effort.
+    """
+    config = dict(getattr(agent, "reasoning_config", None) or {})
+    effort = requested_effort(config)
+    if effort is None:
+        return
+    record = {
+        "route": _effort_route(agent),
+        "effort": effort,
+        "lineage": str(uuid.uuid4()),
+    }
+    initial = getattr(agent, "_session_init_model_config", None)
+    if isinstance(initial, dict):
+        initial["reasoning_config"] = dict(config)
+        initial[EFFORT_BASELINE_KEY] = dict(record)
+    db = getattr(agent, "_session_db", None)
+    session_id = getattr(agent, "session_id", None)
+    if db is not None and session_id:
+        try:
+            db.patch_session_model_config(session_id, {
+                "reasoning_config": config,
+                EFFORT_BASELINE_KEY: record,
+            })
+        except Exception:
+            # A not-yet-created first-turn row is expected; _session_init_model_config
+            # carries the same values into its later creation.
+            logger.debug("initial effort baseline: session model_config write skipped", exc_info=True)
+
+
 def record_effort_switch(agent: Any, messages: List[Dict[str, Any]]) -> bool:
     """Append a marker to ``messages`` when this turn's effort differs from the effort the history
     was sent with. Called right before the new user message lands so the marker sits at a fixed

@@ -1178,6 +1178,7 @@ The canonical list of kinds is `VALID_MIDDLEWARE` in `hermes_cli/middleware.py`:
 
 | Kind | Receives | Return contract |
 |------|----------|-----------------|
+| `reasoning_effort` | `effort`, `user_message`, `previous_effort`, `has_conversation_history`, route context, `reasoning_effort_updates_supported`, `supported_reasoning_efforts` | Return `{"effort": "..."}` to select one transport-supported level for this user turn. Hermes invokes this only for routes that can persist the change in band without rewriting the cached prefix. It cannot change the model or disable reasoning. |
 | `tool_request` | `tool_name`, `args`, `original_args`, context kwargs | Return `{"args": {...}}` to replace the effective tool arguments before hooks, guardrails, approvals, and execution see them. Return `None` to leave the call unchanged. |
 | `llm_request` | `request`, `original_request`, context kwargs | Return `{"request": {...}}` to replace the effective provider kwargs before Hermes sends them. |
 | `tool_execution` | the payload plus `next_call` | Wraps tool execution. Call `next_call(payload)` exactly once to run the downstream chain (or skip it to short-circuit) and return the result. |

@@ -131,6 +131,24 @@ class AnthropicTransport(ProviderTransport):
         written = getattr(usage, "cache_creation_input_tokens", 0) or 0
         return {"cached_tokens": cached, "creation_tokens": written} if cached or written else None
 
+    def supports_reasoning_effort_updates(
+        self, *, model: Any, provider: Any = None, base_url: Any = None,
+        capabilities: Any = None,
+    ) -> bool:
+        from agent.anthropic_adapter import supports_reasoning_effort_updates
+
+        return supports_reasoning_effort_updates(str(model or ""), str(base_url or "") or None)
+
+    def reasoning_effort_update_levels(
+        self, *, model: Any, provider: Any = None, base_url: Any = None,
+        capabilities: Any = None,
+    ) -> tuple[str, ...]:
+        if not self.supports_reasoning_effort_updates(
+            model=model, provider=provider, base_url=base_url, capabilities=capabilities,
+        ):
+            return ()
+        return ("low", "medium", "high", "max")
+
 
 from agent.transports import register_transport  # noqa: E402
 

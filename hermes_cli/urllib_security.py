@@ -82,19 +82,10 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
     https_request = _sanitize
 
 
-# Loading a CA bundle parses every certificate in it (certifi is ~230 KB / ~119 certs, ~4 ms), and
-# this runs for EVERY Hermes-owned request: no opener is ever installed globally, so the branch in
-# _secure_opener_from_installed_policy that builds one is taken every time. The result depends only
-# on which bundle files get read, so it is memoised on their (path, mtime, size) — resolving that
-# is a stat, not a parse, so an edited, rotated or reconfigured bundle is still picked up on the
-# next request.
-#
-# The context is SHARED, never handed out for mutation: callers that need different TLS settings
-# pass their own ``ssl_context`` (see _secure_opener_from_installed_policy), and the only in-tree
-# mutator (``hermes_cli.models``) builds its own context. Reusing one context across connections is
-# the same thing requests/httpx do — ``agent.ssl_verify._context_for_ca_bundle`` already shares one
-# per bundle for the httpx clients; this is the urllib half of it. No lock: a race costs one
-# duplicate parse, and either context is equally valid.
+# Building the context parses the whole CA bundle (~4 ms for certifi) on EVERY Hermes-owned request,
+# since no opener is ever installed globally. Memoise on the bundles' (path, mtime_ns, size) so a
+# rotated/reconfigured bundle is still picked up. The context is shared and never mutated by callers.
+# No lock: a race costs one duplicate parse.
 _HTTPS_CONTEXT_CACHE: tuple[tuple, ssl.SSLContext | None] | None = None
 
 
@@ -152,7 +143,9 @@ def _resolved_https_context() -> ssl.SSLContext | None:
     if cached is not None and cached[0] == key:
         return cached[1]
     context = _build_https_context(candidates)
-    _HTTPS_CONTEXT_CACHE = (key, context)
+    if context is not None:
+        # A failed (possibly transient) load must not pin default certs until the file changes.
+        _HTTPS_CONTEXT_CACHE = (key, context)
     return context
 
 

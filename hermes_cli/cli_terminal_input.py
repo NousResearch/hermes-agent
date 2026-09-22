@@ -567,6 +567,17 @@ def _estimate_tui_input_height(
     return min(max(visual_lines, 1), max(1, int(max_height or 1)))
 
 
+def _composer_max_lines(config: Optional[Dict[str, Any]] = None) -> int:
+    """Return the bounded visible-line limit for the interactive composer."""
+    from cli import _int_or
+
+    display = config.get("display", {}) if isinstance(config, dict) else {}
+    value = display.get("composer_max_lines", 8) if isinstance(display, dict) else 8
+    if isinstance(value, bool):
+        return 8
+    return min(max(_int_or(value, 8), 1), 50)
+
+
 def _status_bar_visible_from_display_config(display_config: object) -> bool:
     """Initial status-bar visibility; both YAML ``off`` (False) and strings like ``"hidden"`` mean off."""
     if not isinstance(display_config, dict):

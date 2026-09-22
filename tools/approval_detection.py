@@ -11,6 +11,7 @@ import re
 import shlex
 import tempfile
 import unicodedata
+from pathlib import Path
 
 logger = logging.getLogger("tools.approval")
 
@@ -1513,11 +1514,128 @@ def _is_shell_token_spliced_gateway_lifecycle(command: str) -> bool:
     return contains_gateway_lifecycle_command(command)
 
 
+_SAFE_GATEWAY_SYSTEMCTL_FLAGS = frozenset({"--user", "--no-ask-password"})
+_PROFILE_SERVICE_RE = re.compile(r"^hermes-gateway(?:-([a-z0-9][a-z0-9_-]{0,63}))?(?:\.service)?$")
+
+
+def _unit_pinned_hermes_home(unit_path: Path) -> Path | None:
+    """Return the HERMES_HOME pinned in a systemd user unit, or None when uncertain."""
+    try:
+        text = unit_path.read_text(encoding="utf-8", errors="replace")
+    except OSError:
+        return None
+    for line in text.splitlines():
+        stripped = line.strip()
+        if not stripped.startswith("Environment") or "HERMES_HOME=" not in stripped:
+            continue
+        match = re.search(r'HERMES_HOME=([^"\s]+)', stripped)
+        if match:
+            try:
+                return Path(match.group(1)).expanduser().resolve(strict=False)
+            except (OSError, RuntimeError, ValueError):
+                return None
+    return None
+
+
+def _systemd_user_unit_path(service_name: str) -> Path:
+    config_home = os.environ.get("XDG_CONFIG_HOME", "").strip()
+    base = Path(config_home).expanduser() if config_home else Path.home() / ".config"
+    return base / "systemd" / "user" / f"{service_name}.service"
+
+
+def _service_profile_name(service_name: str) -> str | None:
+    match = _PROFILE_SERVICE_RE.fullmatch(service_name)
+    if not match:
+        return None
+    return match.group(1) or "default"
+
+
+def _expected_profile_home(default_root: Path, profile_name: str) -> Path:
+    return default_root if profile_name == "default" else default_root / "profiles" / profile_name
+
+
+def _is_safe_direct_sibling_gateway_restart(command: str) -> bool:
+    """Allow one exact systemd user restart of a different Hermes profile gateway.
+
+    Fail closed unless the command is a bare ``systemctl --user restart`` with a
+    single exact ``hermes-gateway[-profile][.service]`` target, the current
+    process profile is known, the target is not self, no gateway multiplexing is
+    active, and the installed user unit pins HERMES_HOME to the expected sibling
+    profile home. Shell carriers, wildcards, template units, fleet operations,
+    and missing/ambiguous units fall through to the normal dangerous-command
+    prompt.
+    """
+    try:
+        argv = shlex.split(command, posix=True)
+    except ValueError:
+        return False
+    if not argv or os.path.basename(argv[0]) != "systemctl":
+        return False
+
+    index = 1
+    saw_user_scope = False
+    while index < len(argv) and argv[index].startswith("-"):
+        flag = argv[index]
+        if flag not in _SAFE_GATEWAY_SYSTEMCTL_FLAGS:
+            return False
+        if flag == "--user":
+            saw_user_scope = True
+        index += 1
+    if not saw_user_scope:
+        return False
+    if index >= len(argv) or argv[index] != "restart":
+        return False
+    targets = argv[index + 1:]
+    if len(targets) != 1:
+        return False
+
+    target_token = targets[0]
+    if any(ch in target_token for ch in "*?[]{}@/"):
+        return False
+    match = _PROFILE_SERVICE_RE.fullmatch(target_token)
+    if not match:
+        return False
+    service_name = target_token[:-8] if target_token.endswith(".service") else target_token
+    target_profile = _service_profile_name(service_name)
+    if not target_profile:
+        return False
+
+    try:
+        from agent.secret_scope import is_multiplex_active
+        if is_multiplex_active():
+            return False
+    except Exception:
+        return False
+
+    try:
+        from hermes_constants import get_default_hermes_root, get_hermes_home, profile_name_for_home
+
+        current_profile = profile_name_for_home(get_hermes_home())
+        default_root = get_default_hermes_root().resolve(strict=False)
+    except Exception:
+        return False
+    if not current_profile or current_profile == target_profile:
+        return False
+
+    expected_home = _expected_profile_home(default_root, target_profile).resolve(strict=False)
+    try:
+        from hermes_constants import named_profile_has_identity
+        if target_profile != "default" and not named_profile_has_identity(expected_home):
+            return False
+    except Exception:
+        return False
+
+    pinned_home = _unit_pinned_hermes_home(_systemd_user_unit_path(service_name))
+    return pinned_home == expected_home
+
+
 def detect_dangerous_command(command: str) -> tuple:
     """Check dangerous patterns -> (is_dangerous, pattern_key, description)."""
     if _command_parser_limit_exceeded(command):
         return (True, _PARSER_LIMIT_DESCRIPTION, _PARSER_LIMIT_DESCRIPTION)
     if _is_verification_artifact_cleanup(command):
+        return (False, None, None)
+    if _is_safe_direct_sibling_gateway_restart(command):
         return (False, None, None)
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)

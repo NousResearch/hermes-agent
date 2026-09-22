@@ -222,6 +222,8 @@ def test_only_private_plan_denial_preserves_graphql_policy(github, private, erro
         [{"id": 11, "context": "legacy", "state": "failure"}]]}, "success"),
     pytest.param({"rules_error": (500, PLAN_ERROR)}, "infra", id="http-status-mismatch"),
     pytest.param({"rules_error": None, "rules_pages": None}, "infra", id="null-rules-response"),
+    *[pytest.param({"protection": {"requiredStatusChecks": checks}}, "infra", id=f"malformed-policy-{index}")
+      for index, checks in enumerate(({}, "", [None], [{}]))],
 ])
 def test_plan_limited_completion_requires_all_observed_head_evidence(github, changes, classification):
     github.update(private=True, protection=None, rules_error=(403, PLAN_ERROR), optional_conclusion="success")

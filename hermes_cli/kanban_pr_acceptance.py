@@ -81,8 +81,11 @@ def collect_acceptance(contract: str, published_pr: str | None) -> dict:
         if not re.fullmatch(r"[0-9a-f]{40}", sha) or pr["state"] not in {"OPEN", "MERGED"}:
             raise ValueError("PR is closed or current head is unavailable")
         protection = pr["baseRef"]["branchProtectionRule"]
+        required_checks = protection["requiredStatusChecks"] if protection is not None else []
+        if not isinstance(required_checks, list):
+            raise ValueError("Incomplete classic branch protection evidence")
         required = {(r["context"], (r.get("app") or {}).get("databaseId"))
-                    for r in (protection["requiredStatusChecks"] if protection is not None else [])}
+                    for r in required_checks}
         rules = _branch_rules(repo, branch, repository.get("isPrivate"))
         receipt["rules_status"] = "plan_unavailable" if rules is None else "available"
         receipt["policy_source"] = "required_checks"

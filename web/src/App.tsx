@@ -128,10 +128,11 @@ function RootRedirect() {
   return <Navigate to="/sessions" replace />;
 }
 
-function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
+export function UnknownRouteFallback({ pluginsLoading }: { pluginsLoading: boolean }) {
   if (pluginsLoading) {
-    // Render nothing during the plugin-load window — a spinner here would just flash.
-    return null;
+    // A deep-linked plugin route is unknown until its manifests arrive. Keep
+    // the dashboard non-blank while a slow manifest request resolves.
+    return <RouteFallback />;
   }
   return <Navigate to="/sessions" replace />;
 }

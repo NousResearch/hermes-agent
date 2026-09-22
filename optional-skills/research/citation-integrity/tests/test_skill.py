@@ -62,9 +62,13 @@ class SkillPublicationTest(unittest.TestCase):
         for term in forbidden:
             self.assertNotIn(term.lower(), lowered, term)
 
-    def test_is_self_contained(self):
+    def test_is_self_contained_and_related_without_dependency(self):
         self.assertIn("tool-agnostic", self.text)
-        self.assertNotIn("grounded-citations", self.text)
+        frontmatter = self.text.split("---\n", 2)[1]
+        body = self.text.split("---\n", 2)[2]
+        self.assertIn("related_skills: [grounded-citations]", frontmatter)
+        self.assertIn("grounded-citations", body)
+        self.assertIn("neither is a hard dependency", body)
         self.assertNotIn("sources.py", self.text)
 
 

@@ -21,6 +21,7 @@ Use when verifying citation ledgers, quotes, and evidence.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `research`, `citations`, `evidence`, `verification`, `provenance` |
+| Related skills | [`grounded-citations`](../../bundled/research/research-grounded-citations.md) |
 
 ## Reference: full SKILL.md
 
@@ -39,6 +40,11 @@ This skill is tool-agnostic. It does not require a particular retrieval service,
 ledger implementation, shell environment, or private workflow. Apply the rules
 manually or implement them in any citation-ledger tool that records sources,
 archived evidence, and draft citations.
+
+**Catalogue boundary:** This skill covers source identity, duplicate detection,
+quote fidelity, and digest hygiene. The related `grounded-citations` skill covers
+ledger mechanics. They are complementary, and neither is a hard dependency of
+the other.
 
 ## Core model
 

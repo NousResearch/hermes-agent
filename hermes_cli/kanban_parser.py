@@ -47,7 +47,7 @@ def _nonnegative_int(value: str) -> int:
     that matches every row, so reject it at the CLI boundary before any sweep."""
     try:
         parsed = int(value)
-    except (TypeError, ValueError) as exc:
+    except ValueError as exc:
         raise argparse.ArgumentTypeError("must be an integer") from exc
     if parsed < 0:
         raise argparse.ArgumentTypeError("retention days must be >= 0 (0 disables that sweep)")

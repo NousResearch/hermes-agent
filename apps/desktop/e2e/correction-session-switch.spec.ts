@@ -10,7 +10,7 @@ import { type TestInfo } from '@playwright/test'
 import { expect, test, type Page } from './test'
 
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
-import { CORRECTION_SWITCH_TRIGGER, MOCK_REPLY } from './mock-server'
+import { CORRECTION_SWITCH_TRIGGER, MOCK_REPLY } from '../../../tests-js/scripts/mock-server'
 
 const OTHER_SESSION_PROMPT = 'E2E persisted session used for a warm resume.'
 const ORIGINAL_PROMPT = `${CORRECTION_SWITCH_TRIGGER}: original prompt must remain singular after a correction.`
@@ -21,8 +21,16 @@ const INFERENCE_SWITCH_TRIGGER = 'E2E_INFERENCE_SWITCH_TRIGGER'
 const INFERENCE_PROMPT = `${INFERENCE_SWITCH_TRIGGER}: original inference prompt must remain singular.`
 const INFERENCE_CORRECTION = `${INFERENCE_SWITCH_TRIGGER}: correction sent while inference is live.`
 
+// Inactive tabs stay mounted under a data-pane-hidden ancestor. Match the
+// renderer's keep-alive visibility policy instead of relying on DOM order.
+const SURFACE = '[data-composer-target]:not([data-pane-hidden] [data-composer-target])'
+
+function activeSurface(page: Page) {
+  return page.locator(SURFACE).last()
+}
+
 async function send(page: Page, text: string): Promise<void> {
-  const composer = page.locator('[contenteditable="true"]').first()
+  const composer = activeSurface(page).locator('[contenteditable="true"]').first()
   await composer.waitFor({ state: 'visible', timeout: 15_000 })
   await composer.click()
   await composer.type(text, { delay: 5 })
@@ -30,67 +38,95 @@ async function send(page: Page, text: string): Promise<void> {
 }
 
 async function steer(page: Page, text: string): Promise<void> {
-  const composer = page.locator('[contenteditable="true"]').first()
-  const primary = page.locator('[data-slot="composer-root"] button[type="submit"]')
+  const surface = activeSurface(page)
+  const composer = surface.locator('[contenteditable="true"]').first()
+  const primary = surface.locator('[data-slot="composer-root"] button[type="submit"]')
 
   await composer.waitFor({ state: 'visible', timeout: 15_000 })
   await composer.click()
   await composer.type(text, { delay: 5 })
-  await expect(primary).toHaveAttribute('aria-label', /Steer/)
+  // Since "running is not busy" (3bc52fb9df) the primary keeps the Send label
+  // mid-turn; the submit engine still routes a text payload to steer.
+  await expect(primary).toHaveAttribute('aria-label', 'Send')
   await primary.click()
 }
 
 async function waitForTranscriptText(page: Page, text: string): Promise<void> {
   await page.waitForFunction(
-    (expected: string) => (document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected),
-    text,
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const active = surfaces[surfaces.length - 1]
+
+      return (active?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(expected)
+    },
+    [text, SURFACE] as [string, string],
     { timeout: 30_000 },
   )
 }
 
 async function textNodeOccurrences(page: Page, text: string): Promise<number> {
-  return page.evaluate((expected: string) => {
-    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
-    if (!viewport) return 0
+  return page.evaluate(
+    ([expected, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
+      if (!viewport) return 0
 
-    const walker = document.createTreeWalker(viewport, NodeFilter.SHOW_TEXT)
-    let count = 0
-    while (walker.nextNode()) {
-      if (walker.currentNode.textContent?.includes(expected)) {
-        count += 1
+      const walker = document.createTreeWalker(viewport, NodeFilter.SHOW_TEXT)
+      let count = 0
+      while (walker.nextNode()) {
+        if (walker.currentNode.textContent?.includes(expected)) {
+          count += 1
+        }
       }
-    }
-    return count
-  }, text)
+      return count
+    },
+    [text, SURFACE] as [string, string],
+  )
 }
 
 async function transcriptTextOrder(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
-    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+  return page.evaluate((surfaceSelector: string) => {
+    const surfaces = document.querySelectorAll(surfaceSelector)
+    const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) return []
 
     return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="message"], [data-message-id]'))
       .map(message => message.textContent?.trim() ?? '')
       .filter(Boolean)
-  })
+  }, SURFACE)
 }
 
 async function transcriptMessageOrder(page: Page): Promise<string[]> {
-  return page.evaluate(() => {
-    const viewport = document.querySelector('[data-slot="aui_thread-viewport"]')
+  return page.evaluate((surfaceSelector: string) => {
+    const surfaces = document.querySelectorAll(surfaceSelector)
+    const viewport = surfaces[surfaces.length - 1]?.querySelector('[data-slot="aui_thread-viewport"]')
     if (!viewport) return []
 
-    return Array.from(viewport.querySelectorAll<HTMLElement>('[data-role="user"], [data-role="assistant"]'))
+    return Array.from(
+      viewport.querySelectorAll<HTMLElement>('[data-role="user"], [data-role="assistant"], [data-role="system"]'),
+    )
       .map(message => message.textContent?.trim() ?? '')
       .filter(Boolean)
-  })
+  }, SURFACE)
 }
 
+/**
+ * The sidebar "+" opens a NEW TAB beside the current chat rather than
+ * replacing it, so the prior session stays mounted in its own surface. Wait
+ * for the newly-mounted surface to show an empty transcript instead of waiting
+ * for the old text to disappear from the page (it never will).
+ */
 async function openFreshDraft(page: Page, priorSessionText: string): Promise<void> {
   await page.locator('[data-slot="sidebar"] button[aria-label="New session"]').first().click()
   await page.waitForFunction(
-    (priorText: string) => !(document.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? '').includes(priorText),
-    priorSessionText,
+    ([priorText, surfaceSelector]: [string, string]) => {
+      const surfaces = document.querySelectorAll(surfaceSelector)
+      const active = surfaces[surfaces.length - 1]
+      const transcript = active?.querySelector('[data-slot="aui_thread-viewport"]')?.textContent ?? ''
+
+      return surfaces.length > 0 && !transcript.includes(priorText)
+    },
+    [priorSessionText, SURFACE] as [string, string],
     { timeout: 15_000 },
   )
 }
@@ -116,7 +152,12 @@ async function reopenInferenceSession(page: Page): Promise<void> {
 }
 
 function relevantOrder(messages: string[]): string[] {
-  return messages.filter(message => message.includes(ORIGINAL_PROMPT) || message.includes(CORRECTION))
+  return messages.flatMap(message => {
+    if (message.includes(ORIGINAL_PROMPT)) return [ORIGINAL_PROMPT]
+    if (message.includes(CORRECTION)) return [CORRECTION]
+
+    return []
+  })
 }
 
 function steerTurnOrder(messages: string[]): string[] {
@@ -170,17 +211,36 @@ test.describe('correction session switch', () => {
 
     // Reproduce the observed race: switch to another persisted session while
     // the foreground tool is live, then return before its redirect settles.
-    await openSidebarSession(page, MOCK_REPLY, OTHER_SESSION_PROMPT)
+    // Sidebar rows title by the session's first user prompt (auto-title is
+    // disabled in the e2e fixture config).
+    await openSidebarSession(page, OTHER_SESSION_PROMPT, OTHER_SESSION_PROMPT)
     await reopenOriginalSession(page)
-    await page.waitForTimeout(500)
+    // The warm resume first paints the persisted history and then reconciles
+    // the live turn (including a steer whose persistence may lag on a loaded
+    // runner) back in. Poll to the converged order instead of sampling one
+    // arbitrary mid-reconcile frame; the duplicate checks then pin the
+    // regression (the prompt/correction must appear exactly once).
+    await expect
+      .poll(async () => relevantOrder(await transcriptTextOrder(page)), {
+        message: 'correction should stay in place after the warm resume',
+        timeout: 30_000,
+      })
+      .toEqual(orderBeforeSwitch)
     await page.screenshot({ path: testInfo.outputPath('correction-after-warm-resume.png') })
 
-    expect(relevantOrder(await transcriptTextOrder(page))).toEqual(orderBeforeSwitch)
     expect(await textNodeOccurrences(page, ORIGINAL_PROMPT)).toBe(1)
     expect(await textNodeOccurrences(page, CORRECTION)).toBe(1)
 
     await waitForTranscriptText(page, CORRECTED_REPLY)
-    expect(steerTurnOrder(await transcriptMessageOrder(page))).toEqual([ORIGINAL_PROMPT, CORRECTION, CORRECTED_REPLY])
+    // The post-turn stored-history reconcile can momentarily repaint from a
+    // snapshot in which the steer's user row hasn't been folded back in yet —
+    // poll to the converged order instead of sampling one frame.
+    await expect
+      .poll(async () => steerTurnOrder(await transcriptMessageOrder(page)), {
+        message: 'steered turn should settle as prompt → correction → corrected reply',
+        timeout: 30_000,
+      })
+      .toEqual([ORIGINAL_PROMPT, CORRECTION, CORRECTED_REPLY])
   })
 
   test('keeps an inference-time correction visible through a warm session switch', async ({}, testInfo: TestInfo) => {
@@ -197,7 +257,7 @@ test.describe('correction session switch', () => {
     await send(page, INFERENCE_CORRECTION)
     await waitForTranscriptText(page, INFERENCE_CORRECTION)
 
-    await openSidebarSession(page, MOCK_REPLY, OTHER_SESSION_PROMPT)
+    await openSidebarSession(page, OTHER_SESSION_PROMPT, OTHER_SESSION_PROMPT)
     await reopenInferenceSession(page)
 
     expect(await textNodeOccurrences(page, INFERENCE_PROMPT)).toBe(1)

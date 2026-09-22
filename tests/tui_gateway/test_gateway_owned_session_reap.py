@@ -8,9 +8,12 @@ drops the ended-but-routed entry, recovers hours-old parent context, and
 loops.  The TUI is only a viewer of those sessions.
 """
 
+import threading
 from unittest.mock import MagicMock, patch
 
-from tui_gateway.server import _finalize_session, _is_gateway_owned_source
+import pytest
+
+from tui_gateway.server import _finalize_session, _is_gateway_owned_source, _teardown_session
 
 
 class TestIsGatewayOwnedSource:
@@ -49,6 +52,45 @@ def _make_session(session_id="sess_1"):
     }
 
 
+def _make_real_session(tmp_path, monkeypatch, *, source, session_id):
+    from hermes_state import SessionDB
+    from run_agent import AIAgent
+
+    hermes_home = tmp_path / "hermes_home"
+    hermes_home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    db_path = hermes_home / "state.db"
+    db = SessionDB(db_path=db_path)
+    db.create_session(session_id, source=source)
+
+    # Exercise the production close path without constructing a model provider.
+    agent = AIAgent.__new__(AIAgent)
+    agent.session_id = session_id
+    agent._session_db = db
+    agent._owns_session_db = True
+    agent._end_session_on_close = True
+    agent._session_messages = []
+    agent._active_children_lock = threading.Lock()
+    agent._active_children = []
+    agent._memory_manager = None  # close() reads it directly; a stub must not rely on _quietly swallowing
+
+    session = _make_session(session_id)
+    session["agent"] = agent
+    session["profile_home"] = str(hermes_home)
+    session["source"] = source
+    return db_path, session, agent
+
+
+def _read_real_row(db_path, session_id):
+    from hermes_state import SessionDB
+
+    db = SessionDB(db_path=db_path)
+    try:
+        return db.get_session(session_id)
+    finally:
+        db.close()
+
+
 class TestFinalizeSkipsGatewaySessions:
     @patch("tui_gateway.server._get_db")
     def test_gateway_session_not_ended(self, mock_get_db):
@@ -60,15 +102,6 @@ class TestFinalizeSkipsGatewaySessions:
 
         db.end_session.assert_not_called()
 
-    @patch("tui_gateway.server._get_db")
-    def test_tui_session_still_ended(self, mock_get_db):
-        db = MagicMock()
-        db.get_session.return_value = {"id": "sess_1", "source": "tui"}
-        mock_get_db.return_value = db
-
-        _finalize_session(_make_session(), end_reason="ws_orphan_reap")
-
-        db.end_session.assert_called_once_with("sess_1", "ws_orphan_reap")
 
     @patch("tui_gateway.server._get_db")
     def test_missing_row_still_ended(self, mock_get_db):
@@ -81,3 +114,51 @@ class TestFinalizeSkipsGatewaySessions:
         _finalize_session(_make_session(), end_reason="tui_close")
 
         db.end_session.assert_called_once_with("sess_1", "tui_close")
+
+
+class TestGatewayOwnedSessionTeardown:
+    def test_viewer_teardown_leaves_gateway_owned_row_open(self, tmp_path, monkeypatch):
+        session_id = "gateway-owned-session"
+        db_path, session, agent = _make_real_session(
+            tmp_path, monkeypatch, source="telegram", session_id=session_id
+        )
+
+        _teardown_session(session, end_reason="ws_orphan_reap")
+
+        row = _read_real_row(db_path, session_id)
+        assert row["ended_at"] is None
+        assert row["end_reason"] is None
+        assert agent._end_session_on_close is False
+        assert agent._owns_session_db is False  # close() reached _finalize_owned_session_row
+
+
+class TestDesktopAutomaticReclaimTeardown:
+    """#105588: automatic Desktop cleanup reclaims runtime but leaves the durable row open THROUGH the full
+    teardown — ``_finalize_session`` skipping ``end_session`` is not enough, ``agent.close()`` ends the row
+    as ``agent_close`` unless the spare decision reaches the agent."""
+
+    @pytest.mark.parametrize("reason", ["ws_orphan_reap", "idle_timeout", "lru_evict"])
+    def test_automatic_reclaim_leaves_desktop_row_open(self, tmp_path, monkeypatch, reason):
+        db_path, session, agent = _make_real_session(
+            tmp_path, monkeypatch, source="desktop", session_id=f"desktop-{reason}"
+        )
+
+        _teardown_session(session, end_reason=reason)
+
+        row = _read_real_row(db_path, f"desktop-{reason}")
+        assert (row["ended_at"], row["end_reason"]) == (None, None)
+        assert agent._end_session_on_close is False
+        assert agent._owns_session_db is False  # close() reached _finalize_owned_session_row
+
+    @pytest.mark.parametrize("source,reason", [("desktop", "tui_close"), ("tui", "ws_orphan_reap")])
+    def test_explicit_close_and_non_desktop_reap_still_end_row(self, tmp_path, monkeypatch, source, reason):
+        db_path, session, agent = _make_real_session(
+            tmp_path, monkeypatch, source=source, session_id=f"{source}-{reason}"
+        )
+
+        _teardown_session(session, end_reason=reason)
+
+        row = _read_real_row(db_path, f"{source}-{reason}")
+        assert row["ended_at"] is not None
+        assert row["end_reason"] == reason
+        assert agent._end_session_on_close is True  # flag untouched when the row was ended here

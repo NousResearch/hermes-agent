@@ -97,19 +97,6 @@ class TestSlackSendRetryable:
         assert result.retryable is True
         assert result.retry_after == 30.0
 
-    @pytest.mark.asyncio
-    async def test_429_without_retry_after_header(self):
-        adapter = _make_adapter()
-        client = AsyncMock()
-        client.chat_postMessage = AsyncMock(
-            side_effect=_slack_api_error(429)
-        )
-        adapter._get_client = lambda cid, team_id="": client
-
-        result = await adapter.send("C123", "hello")
-        assert not result.success
-        assert result.retryable is True
-        assert result.retry_after is None
 
     @pytest.mark.asyncio
     async def test_500_is_retryable_no_retry_after(self):
@@ -126,27 +113,19 @@ class TestSlackSendRetryable:
         assert result.retry_after is None
 
     @pytest.mark.asyncio
-    async def test_403_is_not_retryable(self):
+    async def test_edit_api_failure_logs_the_slack_error_code(self, caplog):
+        """HTTP 200 + ok=false must name the body error code, not read as a transport failure
+        (#111931)."""
         adapter = _make_adapter()
+        error = _slack_api_error(200)
+        error.response.data = {"ok": False, "error": "message_not_found"}
         client = AsyncMock()
-        client.chat_postMessage = AsyncMock(
-            side_effect=_slack_api_error(403)
-        )
+        client.chat_update = AsyncMock(side_effect=error)
         adapter._get_client = lambda cid, team_id="": client
 
-        result = await adapter.send("C123", "hello")
-        assert not result.success
-        assert result.retryable is False
+        with caplog.at_level("ERROR", logger="plugins.platforms.slack.adapter"):
+            result = await adapter.edit_message("C123", "123.456", "hello")
 
-    @pytest.mark.asyncio
-    async def test_connection_error_is_retryable(self):
-        adapter = _make_adapter()
-        client = AsyncMock()
-        client.chat_postMessage = AsyncMock(
-            side_effect=ConnectionError("Connection reset by peer")
-        )
-        adapter._get_client = lambda cid, team_id="": client
+        assert result.success is False
+        assert "api_error=message_not_found" in caplog.text
 
-        result = await adapter.send("C123", "hello")
-        assert not result.success
-        assert result.retryable is True

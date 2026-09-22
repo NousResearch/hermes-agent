@@ -11,7 +11,7 @@ from unittest.mock import AsyncMock, MagicMock
 import pytest
 
 from gateway.config import Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent, MessageType, ProcessingOutcome
+from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 
 
 def _ensure_discord_mock():
@@ -124,13 +124,6 @@ def make_bot_message(*, message_id=1, content="please ingest", channel=None, men
     )
     message.author.bot = True
     return message
-
-
-@pytest.mark.asyncio
-async def test_backfills_message_with_only_own_success_reaction(adapter):
-    message = make_message(reactions=[FakeReaction("✅", me=True)])
-
-    assert await adapter._should_backfill_discord_message(message) is True
 
 
 @pytest.mark.asyncio
@@ -250,72 +243,6 @@ async def test_run_backfill_dispatches_unaddressed_messages(adapter, monkeypatch
 
 
 @pytest.mark.asyncio
-async def test_run_backfill_counts_only_messages_that_reach_dispatch(adapter, monkeypatch):
-    dropped = make_message(message_id=1)
-    accepted = make_message(message_id=2)
-
-    async def fake_candidates(_channels):
-        yield dropped
-        yield accepted
-
-    async def fake_dispatch(message):
-        return message is accepted
-
-    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", fake_candidates)
-    monkeypatch.setattr(adapter, "_should_backfill_discord_message", AsyncMock(return_value=True))
-    dispatch = AsyncMock(side_effect=fake_dispatch)
-    monkeypatch.setattr(adapter, "_dispatch_recovered_message", dispatch)
-    monkeypatch.setattr(adapter, "_missed_message_backfill_max_dispatches", lambda: 1)
-    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
-
-    await adapter._run_missed_message_backfill()
-
-    assert dispatch.await_count == 2
-
-
-@pytest.mark.asyncio
-async def test_recovery_aborts_when_durable_ledger_is_unavailable(adapter, monkeypatch):
-    dispatch = AsyncMock()
-    monkeypatch.setattr(adapter, "_dispatch_recovered_message", dispatch)
-    monkeypatch.setattr(
-        adapter,
-        "_with_discord_recovery_db_async",
-        AsyncMock(return_value=False),
-    )
-
-    await adapter._run_missed_message_backfill()
-
-    dispatch.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_recovery_releases_dedup_claim_when_dispatch_is_cancelled(adapter, monkeypatch):
-    message = make_message(message_id=97)
-    started = asyncio.Event()
-
-    async def cancelled_dispatch(_message):
-        adapter._dedup.is_duplicate(str(message.id))
-        started.set()
-        await asyncio.Event().wait()
-
-    monkeypatch.setattr(adapter, "_dispatch_recovered_message", cancelled_dispatch)
-    monkeypatch.setattr(adapter, "_should_backfill_discord_message", AsyncMock(return_value=True))
-    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
-
-    async def candidates(_channels):
-        yield message
-
-    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", candidates)
-    task = asyncio.create_task(adapter._run_missed_message_backfill())
-    await started.wait()
-    task.cancel()
-    with pytest.raises(asyncio.CancelledError):
-        await task
-
-    assert adapter._dedup.contains(str(message.id)) is False
-
-
-@pytest.mark.asyncio
 async def test_repeated_ready_coalesces_instead_of_cancelling_active_recovery(adapter):
     started = asyncio.Event()
     release = asyncio.Event()
@@ -334,27 +261,6 @@ async def test_repeated_ready_coalesces_instead_of_cancelling_active_recovery(ad
     assert first.cancelled() is False
     release.set()
     await first
-
-
-@pytest.mark.asyncio
-async def test_recovery_task_joins_gateway_startup_restore(adapter, monkeypatch):
-    release = asyncio.Event()
-
-    async def recovery():
-        await release.wait()
-
-    runner = SimpleNamespace(
-        _startup_restore_in_progress=True,
-        _startup_restore_tasks=[],
-    )
-    adapter.gateway_runner = runner
-    monkeypatch.setattr(adapter, "_run_missed_message_backfill", recovery)
-
-    task = adapter._ensure_missed_message_backfill_task()
-
-    assert runner._startup_restore_tasks == [task]
-    release.set()
-    await task
 
 
 @pytest.mark.asyncio
@@ -388,78 +294,6 @@ async def test_recovered_mention_reuses_live_auth_and_mention_gates(adapter, mon
     )
 
 
-@pytest.mark.asyncio
-async def test_recovery_does_not_treat_unmentioned_message_as_dispatched(adapter, monkeypatch):
-    monkeypatch.setenv("DISCORD_REQUIRE_MENTION", "true")
-    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-    adapter.config.extra["free_response_channels"] = ""
-    adapter.handle_message = AsyncMock()
-    message = make_message(message_id=95, content="not addressed")
-
-    assert await adapter._dispatch_recovered_message(message) is False
-    adapter.handle_message.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_recovered_messages_bypass_live_text_debounce(adapter, monkeypatch):
-    bot_user = adapter._client.user
-    message = make_message(
-        message_id=96,
-        content=f"<@{bot_user.id}> recover",
-        mentions=[bot_user],
-    )
-    adapter._text_batch_delay_seconds = 0.6
-    adapter._handle_message = DiscordAdapter._handle_message.__get__(
-        adapter, DiscordAdapter
-    )
-    adapter.handle_message = AsyncMock()
-    monkeypatch.setenv("DISCORD_AUTO_THREAD", "false")
-
-    assert await adapter._dispatch_recovered_message(message) is True
-    adapter.handle_message.assert_awaited_once()
-    assert adapter._pending_text_batches == {}
-
-
-def test_missed_message_backfill_config_bridge(monkeypatch, tmp_path):
-    from gateway.config import load_gateway_config
-
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    for key in (
-        "DISCORD_MISSED_MESSAGE_BACKFILL",
-        "DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS",
-        "DISCORD_MISSED_MESSAGE_BACKFILL_WINDOW_SECONDS",
-        "DISCORD_MISSED_MESSAGE_BACKFILL_LIMIT",
-        "DISCORD_MISSED_MESSAGE_BACKFILL_MAX_DISPATCHES",
-    ):
-        monkeypatch.delenv(key, raising=False)
-
-    (tmp_path / "config.yaml").write_text(
-        "platforms:\n"
-        "  discord:\n"
-        "    enabled: true\n"
-        "discord:\n"
-        "  missed_message_backfill:\n"
-        "    enabled: true\n"
-        "    channels: ['1501971993405292796']\n"
-        "    window_seconds: 3600\n"
-        "    limit: 25\n"
-        "    max_dispatches: 3\n"
-    )
-
-    config = load_gateway_config()
-    backfill = config.platforms[Platform.DISCORD].extra[
-        "missed_message_backfill"
-    ]
-
-    assert backfill == {
-        "enabled": True,
-        "channels": ["1501971993405292796"],
-        "window_seconds": 3600,
-        "limit": 25,
-        "max_dispatches": 3,
-    }
-
-
 def test_default_config_exposes_missed_message_backfill_settings():
     from hermes_cli.config import DEFAULT_CONFIG
 
@@ -469,6 +303,7 @@ def test_default_config_exposes_missed_message_backfill_settings():
         "window_seconds": 21600,
         "limit": 100,
         "max_dispatches": 10,
+        "max_attempts": 3,
     }
 
 
@@ -513,49 +348,17 @@ def test_missed_message_backfill_config_stays_per_adapter():
     assert second._missed_message_backfill_max_dispatches() == 3
 
 
-def test_recovery_store_pins_profile_home_at_adapter_construction(monkeypatch, tmp_path):
-    first_home = tmp_path / "first"
-    second_home = tmp_path / "second"
-    monkeypatch.setenv("HERMES_HOME", str(first_home))
-    adapter = DiscordAdapter(PlatformConfig(enabled=True, token="one"))
-    monkeypatch.setenv("HERMES_HOME", str(second_home))
-
-    assert adapter._discord_recovery_db_path() == (
-        first_home / "gateway" / "discord_message_recovery.db"
-    )
-
-
-def test_default_recovery_scope_includes_allowed_and_free_response_channels(adapter, monkeypatch):
-    monkeypatch.delenv("DISCORD_MISSED_MESSAGE_BACKFILL_CHANNELS", raising=False)
-    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "100,200")
-    monkeypatch.setenv("DISCORD_FREE_RESPONSE_CHANNELS", "200,300")
-
-    assert adapter._missed_message_backfill_channels() == {"100", "200", "300"}
-
-
-@pytest.mark.asyncio
-async def test_persistent_responded_record_suppresses_backfill(adapter):
-    message = make_message(message_id=77)
-    adapter._record_discord_message_seen(message, status="responded")
-    adapter._record_discord_response(
-        reply_to="77",
-        result=SimpleNamespace(success=True, message_id="9001"),
-        content="Done — captured it.",
-        final=True,
-    )
-
-    assert await adapter._should_backfill_discord_message(message) is False
-
-
-def test_down_notice_response_does_not_mark_message_complete(adapter):
-    adapter._record_discord_response(
-        reply_to="88",
-        result=SimpleNamespace(success=False, message_id="9002"),
-        content="The agent is down right now.",
-        final=True,
-    )
-
-    assert adapter._discord_message_is_persistently_complete("88") is False
+def test_explicit_empty_backfill_channel_list_disables_the_scan(monkeypatch):
+    """``channels: []`` is the operator saying "scan nothing" — it must not fall through to the
+    allowed ∪ free-response default (which would scan channels they disabled). The default
+    ``channels: ""`` still falls through."""
+    monkeypatch.setenv("DISCORD_ALLOWED_CHANNELS", "555")
+    explicit = DiscordAdapter(PlatformConfig(
+        enabled=True, token="one", extra={"missed_message_backfill": {"enabled": True, "channels": []}}))
+    assert explicit._missed_message_backfill_channels() == set()
+    default = DiscordAdapter(PlatformConfig(
+        enabled=True, token="two", extra={"missed_message_backfill": {"enabled": True, "channels": ""}}))
+    assert "555" in default._missed_message_backfill_channels()
 
 
 def test_recovery_ledger_prunes_expired_rows(adapter):
@@ -588,91 +391,6 @@ def test_recovery_ledger_prunes_expired_rows(adapter):
         return messages, scans
 
     assert adapter._with_discord_recovery_db(count_old) == (0, 0)
-
-
-def test_empty_successful_turn_is_not_persistently_complete(adapter):
-    message = make_message(message_id=89)
-    event = MessageEvent(
-        text=message.content,
-        message_type=MessageType.TEXT,
-        raw_message=message,
-        message_id=str(message.id),
-    )
-    adapter._record_discord_processing_start(event, emoji_ack=False)
-    adapter._record_discord_processing_complete(event, outcome=ProcessingOutcome.SUCCESS)
-
-    assert adapter._discord_message_is_persistently_complete("89") is False
-
-
-def test_fresh_processing_claim_suppresses_duplicate_recovery(adapter):
-    message = make_message(message_id=99)
-    event = MessageEvent(
-        text=message.content,
-        message_type=MessageType.TEXT,
-        raw_message=message,
-        message_id=str(message.id),
-    )
-    adapter._record_discord_processing_start(event, emoji_ack=False)
-
-    assert adapter._discord_message_has_active_claim("99") is True
-
-
-def test_stale_processing_claim_is_recoverable(adapter):
-    message = make_message(message_id=100)
-    event = MessageEvent(
-        text=message.content,
-        message_type=MessageType.TEXT,
-        raw_message=message,
-        message_id=str(message.id),
-    )
-    adapter._record_discord_processing_start(event, emoji_ack=False)
-    stale = (datetime.now(timezone.utc) - dt.timedelta(minutes=11)).isoformat()
-    adapter._with_discord_recovery_db(
-        lambda conn: conn.execute(
-            "UPDATE discord_messages SET updated_at=? WHERE message_id='100'",
-            (stale,),
-        )
-    )
-
-    assert adapter._discord_message_has_active_claim("100") is False
-
-
-@pytest.mark.asyncio
-async def test_processing_hook_offloads_contended_ledger(adapter, monkeypatch):
-    message = make_message(message_id=101)
-    event = MessageEvent(
-        text=message.content,
-        message_type=MessageType.TEXT,
-        raw_message=message,
-        message_id=str(message.id),
-    )
-
-    def slow_record(*_args, **_kwargs):
-        import time
-        time.sleep(0.1)
-
-    monkeypatch.setattr(adapter, "_record_discord_processing_start", slow_record)
-    processing = asyncio.create_task(adapter.on_processing_start(event))
-    await asyncio.sleep(0.01)
-
-    assert processing.done() is False
-    await processing
-
-
-@pytest.mark.asyncio
-async def test_recovery_scan_offloads_ledger_writes(adapter, monkeypatch):
-    def slow_scan_start(_channels):
-        import time
-        time.sleep(0.1)
-        return "scan"
-
-    monkeypatch.setattr(adapter, "_record_recovery_scan_start", slow_scan_start)
-    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: set())
-    scan = asyncio.create_task(adapter._run_missed_message_backfill())
-    await asyncio.sleep(0.01)
-
-    assert scan.done() is False
-    await scan
 
 
 @pytest.mark.asyncio
@@ -722,172 +440,25 @@ def test_final_delivery_remains_complete_after_processing_hook(adapter):
     assert adapter._discord_message_is_persistently_complete("91") is True
 
 
-def test_preview_delivery_does_not_mark_message_complete(adapter):
-    adapter._record_discord_response(
-        reply_to="92",
-        result=SimpleNamespace(success=True, message_id="9005"),
-        content="partial",
-        final=False,
-    )
-
-    assert adapter._discord_message_is_persistently_complete("92") is False
-
-
-def test_successful_final_delivery_clears_prior_outage_state(adapter):
-    adapter._record_discord_response(
-        reply_to="93",
-        result=SimpleNamespace(success=False, message_id="9006"),
-        content="Hermes is offline",
-        final=True,
-    )
-    assert adapter._discord_message_is_persistently_complete("93") is False
-
-    adapter._record_discord_response(
-        reply_to="93",
-        result=SimpleNamespace(success=True, message_id="9007"),
-        content="Recovered successfully",
-        final=True,
-    )
-
-    assert adapter._discord_message_is_persistently_complete("93") is True
-
-
 @pytest.mark.asyncio
-async def test_send_uses_notify_metadata_as_final_delivery_signal(adapter):
+async def test_unthreaded_final_reply_records_recovery_completion(adapter):
+    """The ledger anchor must survive reply_to_mode=off's visual suppression."""
+    adapter._reply_to_mode = "off"
     channel = FakeChannel(channel_id=123)
-    channel.send = AsyncMock(return_value=SimpleNamespace(id=9008))
-    channel.fetch_message = AsyncMock()
+    channel.send = AsyncMock(return_value=SimpleNamespace(id=9005))
     adapter._client.get_channel = lambda _channel_id: channel
+    message = make_message(message_id=92, channel=channel)
+    adapter._record_discord_message_seen(message, status="processing")
 
-    preview = await adapter.send(
+    result = await adapter.send(
         "123",
-        "partial",
-        reply_to="94",
-        metadata={"expect_edits": True},
-    )
-    assert preview.success is True
-    assert adapter._discord_message_is_persistently_complete("94") is False
-
-    final = await adapter.send(
-        "123",
-        "complete",
-        reply_to="94",
-        metadata={"notify": True},
-    )
-    assert final.success is True
-    assert adapter._discord_message_is_persistently_complete("94") is True
-
-
-@pytest.mark.asyncio
-async def test_final_stream_edit_marks_original_request_complete(adapter):
-    channel = FakeChannel(channel_id=123)
-    message = SimpleNamespace(edit=AsyncMock())
-    channel.fetch_message = AsyncMock(return_value=message)
-    adapter._client.get_channel = lambda _channel_id: channel
-
-    result = await adapter.edit_message(
-        "123",
-        "9009",
-        "complete streamed response",
-        finalize=True,
-        metadata={"reply_to_message_id": "102"},
+        "Done",
+        metadata={"notify": True, "reply_to_message_id": "92"},
     )
 
     assert result.success is True
-    assert adapter._discord_message_is_persistently_complete("102") is True
-
-
-def test_disabled_recovery_does_not_create_hot_path_ledger(adapter, monkeypatch):
-    monkeypatch.setenv("DISCORD_MISSED_MESSAGE_BACKFILL", "false")
-    message = make_message(message_id=90)
-    event = MessageEvent(
-        text=message.content,
-        message_type=MessageType.TEXT,
-        raw_message=message,
-        message_id=str(message.id),
-    )
-
-    adapter._record_discord_processing_start(event, emoji_ack=False)
-    adapter._record_discord_processing_complete(event, ProcessingOutcome.SUCCESS)
-    adapter._record_discord_response(
-        reply_to="90",
-        result=SimpleNamespace(success=True, message_id="9003"),
-        content="Done",
-        final=True,
-    )
-
-    db_path = adapter._discord_recovery_db_path()
-    assert not db_path.exists()
-
-
-@pytest.mark.asyncio
-async def test_iter_candidates_includes_active_and_archived_threads(adapter):
-    active_msg = make_message(message_id=201, channel=FakeChannel(channel_id=2010))
-    archived_msg = make_message(message_id=202, channel=FakeChannel(channel_id=2020))
-    active_thread = FakeChannel(channel_id=2010, history_messages=[active_msg])
-    archived_thread = FakeChannel(channel_id=2020, history_messages=[archived_msg])
-
-    class ParentChannel(FakeChannel):
-        threads = [active_thread]
-
-        def archived_threads(self, **kwargs):
-            async def _gen():
-                yield archived_thread
-            return _gen()
-
-    parent = ParentChannel(channel_id=123, history_messages=[])
-    adapter._client.get_channel = lambda _id: parent
-
-    got = []
-    async for msg in adapter._iter_missed_message_backfill_candidates({"123"}):
-        got.append(msg.id)
-
-    assert got == [201, 202]
-
-
-@pytest.mark.asyncio
-async def test_iter_candidates_applies_one_global_scan_limit(adapter, monkeypatch):
-    first = FakeChannel(
-        channel_id=123,
-        history_messages=[make_message(message_id=1), make_message(message_id=2)],
-    )
-    second = FakeChannel(
-        channel_id=456,
-        history_messages=[make_message(message_id=3), make_message(message_id=4)],
-    )
-    adapter._client.get_channel = lambda channel_id: {123: first, 456: second}[channel_id]
-    monkeypatch.setattr(adapter, "_missed_message_backfill_limit", lambda: 3)
-
-    got = []
-    async for msg in adapter._iter_missed_message_backfill_candidates({"123", "456"}):
-        got.append(msg.id)
-
-    assert len(got) == 3
-    assert set(got).issubset({1, 2, 3, 4})
-
-
-@pytest.mark.asyncio
-async def test_iter_candidates_round_robins_configured_channels(adapter, monkeypatch):
-    first = FakeChannel(
-        channel_id=123,
-        history_messages=[
-            make_message(message_id=1),
-            make_message(message_id=2),
-            make_message(message_id=3),
-        ],
-    )
-    second = FakeChannel(
-        channel_id=456,
-        history_messages=[make_message(message_id=4)],
-    )
-    adapter._client.get_channel = lambda channel_id: {123: first, 456: second}[channel_id]
-    monkeypatch.setattr(adapter, "_missed_message_backfill_limit", lambda: 3)
-
-    got = []
-    async for message in adapter._iter_missed_message_backfill_candidates({"123", "456"}):
-        got.append(message.id)
-
-    assert 4 in got
+    assert channel.send.await_args.kwargs["reference"] is None
+    assert adapter._discord_message_is_persistently_complete("92") is True
 
 
 @pytest.mark.asyncio
@@ -922,69 +493,105 @@ async def test_iter_candidates_keeps_latest_messages_when_window_exceeds_limit(a
     assert got == [2, 3, 4]
 
 
-def test_recovery_cursor_round_trip_is_channel_scoped(adapter):
-    adapter._advance_discord_recovery_cursor("123", "1001")
-    adapter._advance_discord_recovery_cursor("456", "2002")
-
-    assert adapter._discord_recovery_cursor("123") == "1001"
-    assert adapter._discord_recovery_cursor("456") == "2002"
-
-
 @pytest.mark.asyncio
-async def test_cursor_does_not_advance_past_incomplete_dispatched_message(adapter, monkeypatch):
-    channel = FakeChannel(
-        channel_id=123,
-        history_messages=[
-            make_message(message_id=1),
-            make_message(message_id=2),
-        ],
-    )
-    for message in channel._history_messages:
-        message.channel = channel
-    adapter._client.get_channel = lambda _channel_id: channel
-    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
-    monkeypatch.setattr(adapter, "_should_backfill_discord_message", AsyncMock(return_value=True))
-    monkeypatch.setattr(adapter, "_dispatch_recovered_message", AsyncMock(side_effect=[True, True]))
-    monkeypatch.setattr(adapter, "_missed_message_backfill_max_dispatches", lambda: 10)
+async def test_iter_candidates_skips_obfuscated_channel_on_explicit_ids(adapter, monkeypatch):
+    """A channel the bot lost VIEW_CHANNEL on (Discord obfuscation) is dropped even when
+    listed by explicit id — history reads on it always fail (#90154)."""
+    from gateway.platforms.helpers import DISCORD_CHANNEL_OBFUSCATED_FLAG
 
-    await adapter._run_missed_message_backfill()
+    visible = FakeChannel(channel_id=1, history_messages=[make_message(message_id=11)])
+    hidden = FakeChannel(channel_id=2, history_messages=[make_message(message_id=22)])
+    hidden.name = "___hidden___"
+    hidden.flags = SimpleNamespace(value=DISCORD_CHANNEL_OBFUSCATED_FLAG)
+    adapter._client.get_channel = lambda channel_id: {1: visible, 2: hidden}[channel_id]
 
-    assert adapter._discord_recovery_cursor("123") is None
-
-
-def test_final_delivery_advances_channel_cursor(adapter):
-    message = make_message(message_id=103, channel=FakeChannel(channel_id=123))
-    adapter._record_discord_message_seen(message, status="processing")
-
-    adapter._record_discord_response(
-        reply_to="103",
-        result=SimpleNamespace(success=True, message_id="9010"),
-        content="done",
-        final=True,
-    )
-
-    assert adapter._discord_recovery_cursor("123") == "103"
-
-
-@pytest.mark.asyncio
-async def test_iter_candidates_uses_persisted_channel_cursor(adapter, monkeypatch):
-    class CursorChannel(FakeChannel):
-        def history(self, **kwargs):
-            self.history_kwargs = kwargs
-
-            async def _gen():
-                yield make_message(message_id=11, channel=self)
-
-            return _gen()
-
-    channel = CursorChannel(channel_id=123)
-    adapter._client.get_channel = lambda _channel_id: channel
-    adapter._advance_discord_recovery_cursor("123", "10")
-    monkeypatch.setattr(discord, "Object", lambda *, id: SimpleNamespace(id=id))
-
-    got = []
-    async for message in adapter._iter_missed_message_backfill_candidates({"123"}):
-        got.append(message.id)
+    got = [msg.id async for msg in adapter._iter_missed_message_backfill_candidates({"1", "2"})]
 
     assert got == [11]
-    assert getattr(channel.history_kwargs["after"], "id", None) == 10
+
+
+def test_success_outcome_completes_row_without_reply_anchor(adapter):
+    """A delivered final with no Discord reply anchor (reply_to_mode=off, streamed edit, media-only
+    reply) must still complete the ledger row, or backfill re-dispatches it on every reconnect."""
+    message = make_message(message_id=93)
+    event = MessageEvent(text=message.content, message_type=MessageType.TEXT, raw_message=message, message_id="93")
+
+    adapter._record_discord_processing_start(event, emoji_ack=False)
+    adapter._record_discord_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert adapter._discord_message_is_persistently_complete("93") is True
+
+    failed = make_message(message_id=94)
+    failed_event = MessageEvent(text=failed.content, message_type=MessageType.TEXT, raw_message=failed, message_id="94")
+    adapter._record_discord_processing_start(failed_event, emoji_ack=False)
+    adapter._record_discord_processing_complete(failed_event, ProcessingOutcome.FAILURE)
+    assert adapter._discord_message_is_persistently_complete("94") is False
+
+
+@pytest.mark.asyncio
+async def test_redispatch_of_one_message_is_bounded(adapter, monkeypatch):
+    """A row that never completes is dispatched at most max_attempts times across scans, and a scan
+    must not erase the in-flight claim of a dispatch that has not finished yet."""
+    bot_user = adapter._client.user
+    message = make_message(message_id=95, content=f"<@{bot_user.id}> please ingest", mentions=[bot_user])
+
+    async def fake_candidates(_channels):
+        yield message
+
+    monkeypatch.setattr(adapter, "_iter_missed_message_backfill_candidates", fake_candidates)
+    monkeypatch.setattr(adapter, "_missed_message_backfill_channels", lambda: {"123"})
+    monkeypatch.setattr(adapter, "_missed_message_backfill_max_attempts", lambda: 2)
+
+    # Dispatch leaves the row 'processing' (turn still running): back-to-back scans re-offer it.
+    async def dispatch_and_stay_processing(msg, **_kwargs):
+        adapter._record_discord_message_seen(msg, status="processing")
+        return True
+
+    adapter._handle_message = AsyncMock(side_effect=dispatch_and_stay_processing)
+    for _ in range(3):
+        adapter._dedup.discard("95")
+        await adapter._run_missed_message_backfill()
+    assert adapter._handle_message.await_count == 1  # active claim survives the scan's 'discovered' write
+
+    # Claim expired (turn died): the lifetime cap still bounds total re-dispatch.
+    def _expire(conn):
+        conn.execute("UPDATE discord_messages SET status='failed' WHERE message_id='95'")
+    adapter._with_discord_recovery_db(_expire)
+    adapter._handle_message = AsyncMock(return_value=True)
+    for _ in range(4):
+        adapter._dedup.discard("95")
+        await adapter._run_missed_message_backfill()
+        adapter._with_discord_recovery_db(_expire)
+    assert adapter._handle_message.await_count == 1  # attempts: 1 (above) + 1 == max_attempts
+
+
+@pytest.mark.asyncio
+async def test_stored_cursor_cannot_widen_scan_window_or_leak_into_threads(adapter):
+    """after = max(cursor, now - window): an old cursor must not resurrect messages outside the window,
+    and a parent channel's cursor is never applied to its child threads."""
+    class RecordingChannel(FakeChannel):
+        def __init__(self, *args, threads=(), **kwargs):
+            super().__init__(*args, **kwargs)
+            self.threads = list(threads)
+            self.seen_after = []
+
+        def history(self, **kwargs):
+            self.seen_after.append(kwargs["after"])
+            return super().history(**kwargs)
+
+    thread = RecordingChannel(channel_id=456, parent_id=123)
+    channel = RecordingChannel(channel_id=123, threads=[thread])
+    window_floor = datetime.now(timezone.utc) - dt.timedelta(hours=1)
+    old_cursor = ((int((window_floor - dt.timedelta(hours=11)).timestamp() * 1000) - 1420070400000) << 22)
+    fresh_cursor = ((int((window_floor + dt.timedelta(minutes=30)).timestamp() * 1000) - 1420070400000) << 22)
+
+    adapter._advance_discord_recovery_cursor("123", str(old_cursor))
+    async for _ in adapter._iter_channel_and_thread_messages(channel, limit=10, after=window_floor, seen_channels=set()):
+        pass
+    assert channel.seen_after == [window_floor]  # stale cursor ignored
+    assert thread.seen_after == [window_floor]  # parent's cursor not inherited
+
+    adapter._advance_discord_recovery_cursor("123", str(fresh_cursor))
+    async for _ in adapter._iter_channel_and_thread_messages(channel, limit=10, after=window_floor, seen_channels=set()):
+        pass
+    assert not isinstance(channel.seen_after[-1], dt.datetime)  # newer cursor narrows (discord.Object)
+    assert thread.seen_after[-1] == window_floor

@@ -9,9 +9,12 @@ const SOURCE_LABELS: Record<string, string> = {
   discord: 'Discord',
   email: 'Email',
   gateway: 'Gateway',
+  kanban: 'Kanban',
   local: 'Local',
   matrix: 'Matrix',
   mattermost: 'Mattermost',
+  oneshot: 'One-shot',
+  photon: 'Photon',
   qqbot: 'QQ',
   signal: 'Signal',
   slack: 'Slack',
@@ -26,6 +29,7 @@ const SOURCE_LABELS: Record<string, string> = {
 
 const SOURCE_ALIASES: Record<string, string[]> = {
   bluebubbles: ['apple messages', 'imessage'],
+  photon: ['imessage', 'messages'],
   cli: ['terminal'],
   desktop: ['app', 'gui'],
   local: ['machine'],
@@ -40,7 +44,7 @@ const SOURCE_ALIASES: Record<string, string[]> = {
 // platform. A handoff *from* one of these isn't a platform origin worth a badge.
 // Exported so the recents fetch can keep these in the main list while the
 // messaging fetch excludes them.
-export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'local', 'tui']
+export const LOCAL_SESSION_SOURCE_IDS = ['cli', 'codex', 'desktop', 'gateway', 'kanban', 'local', 'oneshot', 'tui']
 const LOCAL_SOURCE_IDS = new Set(LOCAL_SESSION_SOURCE_IDS)
 
 // External messaging platforms that each get their own self-managed sidebar
@@ -55,6 +59,7 @@ export const MESSAGING_SESSION_SOURCE_IDS = [
   'signal',
   'whatsapp',
   'bluebubbles',
+  'photon',
   'homeassistant',
   'email',
   'sms',

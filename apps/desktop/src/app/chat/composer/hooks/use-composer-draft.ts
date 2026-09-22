@@ -1,9 +1,31 @@
+// Register the built-in draft providers with the suggestion bus (side-effect
+// import — the bus itself is provider-agnostic). The repair provider is
+// event-driven and registers through the gateway stream instead.
+import '@/store/suggestion-providers/cron'
+import '@/store/suggestion-providers/github'
+import '@/store/suggestion-providers/mcp'
+import '@/store/suggestion-providers/skill'
+
 import { useAui, useAuiState, useComposerRuntime } from '@assistant-ui/react'
+import { SLASH_COMMAND_RE } from '@hermes/shared'
 import { type RefObject, useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
-import { SLASH_COMMAND_RE } from '@/lib/chat-runtime'
-import { type ComposerAttachment, stashSessionDraft, takeSessionDraft } from '@/store/composer'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
+import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
+import { useStoreSelector } from '@/lib/use-session-slice'
+import {
+  adoptGoneSessionDraft,
+  adoptNewSessionDraft,
+  type ComposerAttachment,
+  type ComposerDraftSyncMode,
+  onComposerDraftSyncRequest,
+  reloadPersistedDrafts,
+  stashSessionDraft,
+  takeSessionDraft
+} from '@/store/composer'
 import { isBrowsingHistory } from '@/store/composer-input-history'
+import { $composerPopout } from '@/store/composer-popout'
+import { clearDraftSuggestions, sampleComposerDraft } from '@/store/composer-suggestions'
 
 import {
   cloneAttachments,
@@ -14,15 +36,24 @@ import {
 import {
   type ComposerInsertMode,
   focusComposerInput,
+  getActiveComposer,
   markActiveComposer,
   onComposerFocusRequest,
   onComposerInsertRefsRequest,
-  onComposerInsertRequest
+  onComposerInsertRequest,
+  releaseActiveComposer
 } from '../focus'
 import { type InlineRefInput, insertInlineRefsIntoEditor } from '../inline-refs'
-import { composerPlainText, placeCaretEnd, REF_RE, renderComposerContents } from '../rich-editor'
+import {
+  composerPlainText,
+  normalizeComposerEditorDom,
+  placeCaretEnd,
+  REF_RE,
+  renderComposerContents
+} from '../rich-editor'
 import { useComposerScope } from '../scope'
 import type { ChatBarProps } from '../types'
+import { useComposerVisible } from '../visibility'
 
 interface UseComposerDraftArgs {
   activeQueueSessionKey: string | null
@@ -51,6 +82,10 @@ export function useComposerDraft({
 }: UseComposerDraftArgs) {
   const aui = useAui()
   const composerRuntime = useComposerRuntime()
+  const paneVisible = useComposerVisible()
+  const visibleRef = useRef(paneVisible)
+  visibleRef.current = paneVisible
+  const floating = useStoreSelector($composerPopout, state => state.poppedOut)
   // Which composer this is on the focus bus + which attachment set it owns.
   const { attachments: attachmentScope, target } = useComposerScope()
 
@@ -100,6 +135,12 @@ export function useComposerDraft({
   const [focusRequestId, setFocusRequestId] = useState(0)
 
   const focusInput = useCallback(() => {
+    const editor = editorRef.current
+
+    if (!visibleRef.current || (editor && (!editor.isConnected || isElementInHiddenPane(editor)))) {
+      return
+    }
+
     focusComposerInput(editorRef.current)
     markActiveComposer(target)
   }, [target])
@@ -120,15 +161,23 @@ export function useComposerDraft({
       const editor = editorRef.current
 
       if (editor) {
-        renderComposerContents(editor, next)
-        placeCaretEnd(editor)
+        renderComposerContents(editor, next, { trailingCommitted: true })
+
+        // Selection is document-global: a keep-alive composer in a hidden tab
+        // may repaint when its background session updates, but moving its caret
+        // here steals the selection from the visible composer without changing
+        // document.activeElement. The foreground then still looks focused while
+        // printable keydowns produce no input.
+        if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editor)) {
+          placeCaretEnd(editor)
+        }
       }
 
-      if (focus) {
+      if (focus && visibleRef.current) {
         requestMainFocus()
       }
     },
-    [requestMainFocus, setComposerText]
+    [requestMainFocus, setComposerText, target]
   )
 
   const appendExternalText = useCallback(
@@ -136,6 +185,16 @@ export function useComposerDraft({
       const value = text.trim()
 
       if (!value) {
+        return
+      }
+
+      // 'prefix' puts the value at the START of the draft — slash commands
+      // (the skill-suggestion pill) only route when they lead the message.
+      if (mode === 'prefix') {
+        const rest = draftRef.current.trimStart()
+
+        paintDraft(`${value} ${rest}`.trimEnd())
+
         return
       }
 
@@ -147,11 +206,38 @@ export function useComposerDraft({
     [paintDraft]
   )
 
+  // Keep-alive tabs keep this composer mounted. A background session whose
+  // turn finished or recovered from a reconnect would otherwise re-run this
+  // effect and steal the caret. usePaneVisible defaults true outside a tab
+  // stack, so tiles, pop-outs, and secondary windows still auto-focus.
   useEffect(() => {
-    if (!inputDisabled) {
+    if (!inputDisabled && paneVisible && !floating) {
       focusInput()
     }
-  }, [focusInput, focusKey, focusRequestId, inputDisabled])
+  }, [floating, focusInput, focusKey, inputDisabled, paneVisible])
+
+  const previousFocusRequest = useRef(focusRequestId)
+  // eslint-disable-next-line no-restricted-syntax -- handled request token, not a mirrored atom
+  useEffect(() => {
+    if (previousFocusRequest.current === focusRequestId) {
+      return
+    }
+
+    previousFocusRequest.current = focusRequestId
+
+    if (!inputDisabled && paneVisible) {
+      focusInput()
+    }
+  }, [focusInput, focusRequestId, inputDisabled, paneVisible])
+
+  // The mirror of the `markActiveComposer` above: give the key back when this
+  // composer goes away (a session tile closing, a pane unmounting). Covers both
+  // claim sites for this composer — `focusInput` here and ChatBar's `onFocus` —
+  // since they mark the same scope target. Without it `'active'` keeps
+  // resolving to a dead tile and every routed focus/insert request is dropped.
+  // (Heal-to-visible in focus.ts covers the keep-alive-tab case where the pane
+  // stays mounted behind the front tab; this covers true unmounts.)
+  useEffect(() => () => releaseActiveComposer(target), [target])
 
   useEffect(() => {
     if (inputDisabled) {
@@ -165,7 +251,8 @@ export function useComposerDraft({
 
       // Type-to-focus appends at end; bare Enter just focuses.
       if (typeChar) {
-        paintDraft(`${draftRef.current}${typeChar}`, true)
+        paintDraft(`${draftRef.current}${typeChar}`, false)
+        focusInput()
 
         return
       }
@@ -183,7 +270,7 @@ export function useComposerDraft({
       offFocus()
       offInsert()
     }
-  }, [appendExternalText, inputDisabled, paintDraft, target])
+  }, [appendExternalText, focusInput, inputDisabled, paintDraft, target])
 
   const stashAt = (scope: string | null, text = draftRef.current, attachments = attachmentScope.$attachments.get()) =>
     stashSessionDraft(scope, text, attachments)
@@ -213,9 +300,13 @@ export function useComposerDraft({
     draftRef.current = ''
 
     if (editorRef.current) {
-      editorRef.current.replaceChildren()
+      renderComposerContents(editorRef.current, '')
+
+      if (visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editorRef.current)) {
+        placeCaretEnd(editorRef.current)
+      }
     }
-  }, [setComposerText])
+  }, [setComposerText, target])
 
   // Read the editor's current plain text into draftRef + composer state. This
   // closes the "queued rAF flush hasn't run yet" window so scope-swap/pagehide
@@ -227,7 +318,13 @@ export function useComposerDraft({
       return draftRef.current
     }
 
-    const text = composerPlainText(editor)
+    // Same normalize-then-sanitize the rAF flush does. An emptied editor still
+    // holds the placeholder <br> that keeps the contenteditable from collapsing
+    // to a sliver, and that serializes as "\n" — so an editor the user just
+    // cleared would otherwise stash a one-newline draft and come back non-empty.
+    normalizeComposerEditorDom(editor)
+
+    const text = sanitizeComposerInput(composerPlainText(editor))
 
     if (text !== draftRef.current) {
       draftRef.current = text
@@ -246,15 +343,19 @@ export function useComposerDraft({
   // source otherwise), and (3) schedule the debounced per-session stash.
   // Browsing history / editing a queued prompt suppress the stash so recalled
   // text never clobbers the draft.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const sync = () => {
       const text = composerRuntime.getState().text
       draftRef.current = text
+      // Composer suggestion pills for THIS session's draft (debounced +
+      // change-gated in the bus — this is just a timer reset).
+      sampleComposerDraft(sessionIdRef.current ?? null, text)
 
       const editor = editorRef.current
 
       if (editor && document.activeElement !== editor && composerPlainText(editor) !== text) {
-        renderComposerContents(editor, text)
+        renderComposerContents(editor, text, { trailingCommitted: true })
       }
 
       if (isBrowsingHistory(sessionIdRef.current) || queueEditRef.current) {
@@ -304,7 +405,8 @@ export function useComposerDraft({
       return false
     }
 
-    const nextDraft = insertInlineRefsIntoEditor(editor, refs)
+    const interactive = visibleRef.current && getActiveComposer() === target && !isElementInHiddenPane(editor)
+    const nextDraft = insertInlineRefsIntoEditor(editor, refs, { interactive })
 
     if (nextDraft === null) {
       return false
@@ -312,7 +414,10 @@ export function useComposerDraft({
 
     draftRef.current = nextDraft
     setComposerText(nextDraft)
-    requestMainFocus()
+
+    if (interactive) {
+      requestMainFocus()
+    }
 
     return true
   }
@@ -342,6 +447,7 @@ export function useComposerDraft({
   // window (e.g. a fast session switch immediately followed by Enter) would
   // ship A's attachments into B's turn (#59305). useLayoutEffect closes the
   // window by running before paint.
+
   useLayoutEffect(() => {
     // A pending debounce timer from the outgoing session is now stale — its
     // scope was correct when scheduled, but the authoritative stash below
@@ -349,6 +455,26 @@ export function useComposerDraft({
     // fire later would just clobber with an older snapshot.
     window.clearTimeout(draftPersistTimerRef.current)
     pendingDraftPersistRef.current = null
+
+    // A new chat writes to the shared pre-session bucket until its stored id
+    // arrives; the assigning site announces that id (store/composer.ts). Move
+    // the bucket at this handoff — after the outgoing cleanup stashed the live
+    // editor text under it, before the incoming scope is restored — so the
+    // text the user kept typing follows the chat instead of vanishing.
+    // Keyed on the scope alone: the runtime id can land a resume later than
+    // the route flips the scope, so it is not a usable signal here.
+    if (!draftScopeRef.current && activeQueueSessionKey) {
+      adoptNewSessionDraft(activeQueueSessionKey)
+    } else if (!activeQueueSessionKey) {
+      // The reverse handoff: a session the user was typing into turned out
+      // to be gone and the window dropped to a fresh draft (#111868). The
+      // outgoing composer's cleanup has already stashed the live text under
+      // the dead key — whether that was this instance's previous scope or an
+      // unmounted one's — so move it into the fresh draft when the gone
+      // verdict announced it. No announcement, no-op.
+      adoptGoneSessionDraft()
+    }
+
     draftScopeRef.current = activeQueueSessionKey
 
     const { attachments, text } = takeSessionDraft(activeQueueSessionKey)
@@ -363,11 +489,50 @@ export function useComposerDraft({
       } else if (!isBrowsingHistory(sessionId)) {
         stashAt(activeQueueSessionKey, latestText)
       }
+
+      // Withdraw the outgoing session's draft suggestions (and any pending
+      // sample timer). The incoming session re-earns its own from the draft
+      // restore above — without this a leaving session's "Add GitHub" pill
+      // lingers in the map and re-appears stale on the way back.
+      clearDraftSuggestions(sessionIdRef.current)
     }
   }, [activeQueueSessionKey]) // eslint-disable-line react-hooks/exhaustive-deps
 
+  // The HUD handoff's two verbs. Entering HUD mode flushes this editor's text
+  // into the shared stash so the HUD's composer boots with it; leaving repaints
+  // from the stash so whatever the HUD typed (or sent, clearing it) is what the
+  // app window shows. The per-session swap effect above can't cover either one:
+  // the session scope doesn't change, so it never re-consults the stash.
+  const syncDraft = (mode: ComposerDraftSyncMode) => {
+    if (mode === 'flush') {
+      window.clearTimeout(draftPersistTimerRef.current)
+      pendingDraftPersistRef.current = null
+      stashAt(draftScopeRef.current, syncDraftFromEditor())
+
+      return
+    }
+
+    reloadPersistedDrafts()
+    const stashed = takeSessionDraft(draftScopeRef.current)
+    loadIntoComposer(stashed.text, stashed.attachments)
+  }
+
+  const syncDraftRef = useRef(syncDraft)
+  syncDraftRef.current = syncDraft
+
+  useEffect(
+    () =>
+      onComposerDraftSyncRequest(({ mode, target: requested }) => {
+        if (requested === target) {
+          syncDraftRef.current(mode)
+        }
+      }),
+    [target]
+  )
+
   // pagehide is load-bearing: React skips effect cleanups on reload, so Cmd+R
   // inside the debounce/rAF window would drop trailing keystrokes without this.
+  // eslint-disable-next-line no-restricted-syntax -- legitimate non-atom ref write (see eslint rule comment)
   useEffect(() => {
     const flushPendingDraftPersist = () => {
       const scope = draftScopeRef.current
@@ -405,6 +570,7 @@ export function useComposerDraft({
     requestMainFocus,
     sessionIdRef,
     setComposerText,
-    stashAt
+    stashAt,
+    syncDraftFromEditor
   }
 }

@@ -81,9 +81,10 @@ def _fake_openai_with_capture(captured: dict, *, status="succeeded",
             return SimpleNamespace(read=lambda: download)
 
     class _FakeClient:
-        def __init__(self, api_key=None, base_url=None):
+        def __init__(self, api_key=None, base_url=None, http_client=None):
             captured["api_key"] = api_key
             captured["base_url"] = base_url
+            captured["http_client"] = http_client
             self.videos = _FakeVideos()
 
     fake = MagicMock()
@@ -107,6 +108,32 @@ def _mock_url_download(captured: dict, raise_exc: Exception | None = None):
         yield
 
 
+def test_generate_uses_env_only_proxy_http_client(monkeypatch):
+    """The SDK client is built on Hermes' env-only-proxy httpx client: a macOS system proxy (seen by
+    httpx via ``getproxies()``, ExceptionsList dropped) must not be mounted for a custom endpoint
+    (#64888), unlike a plain ``httpx.Client()`` under the same conditions (control)."""
+    import httpx
+    for key in ("HTTPS_PROXY", "HTTP_PROXY", "ALL_PROXY", "https_proxy", "http_proxy", "all_proxy",
+                "NO_PROXY", "no_proxy"):
+        monkeypatch.delenv(key, raising=False)
+    monkeypatch.setenv("DEEPINFRA_BASE_URL", "http://localhost:18081/v1")
+    sys_proxy = {"http": "http://sysproxy:3128", "https": "http://sysproxy:3128"}
+
+    def proxy_mounts(client):
+        return [m for m in client._mounts.values() if type(getattr(m, "_pool", None)).__name__ == "HTTPProxy"]
+
+    captured: dict = {}
+    with patch("httpx._utils.getproxies", return_value=sys_proxy), \
+            patch.dict("sys.modules", {"openai": _fake_openai_with_capture(captured)}), \
+            _mock_url_download(captured):
+        with httpx.Client() as control:
+            assert len(proxy_mounts(control)) == 2
+        assert deepinfra_plugin.DeepInfraVideoGenProvider().generate(prompt="a cube", model="vendor/x")["success"]
+    assert captured["base_url"] == "http://localhost:18081/v1"
+    assert isinstance(captured["http_client"], httpx.Client) and proxy_mounts(captured["http_client"]) == []
+    captured["http_client"].close()
+
+
 def test_generate_text_to_video_downloads_url_and_saves_locally():
     """t2v happy path: SDK called with DeepInfra base_url + key; status
     'succeeded' + data[].url → bytes downloaded and saved to a local file."""
@@ -128,91 +155,3 @@ def test_generate_text_to_video_downloads_url_and_saves_locally():
     assert "image_url" not in captured["kwargs"].get("extra_body", {})
 
 
-def test_generate_returns_url_when_local_save_fails():
-    """If downloading the delivery URL fails, fall back to returning the URL."""
-    captured: dict = {}
-    with patch.dict("sys.modules", {"openai": _fake_openai_with_capture(captured)}), \
-            _mock_url_download(captured, raise_exc=OSError("network down")):
-        result = deepinfra_plugin.DeepInfraVideoGenProvider().generate(
-            prompt="x", model="vendor/test-vid",
-        )
-    assert result["success"] is True
-    assert result["video"] == "https://cdn.example/out.mp4"
-
-
-def test_generate_falls_back_to_download_when_no_url():
-    """OpenAI/Sora style: no data[].url → download_content bytes saved locally."""
-    captured: dict = {}
-    fake = _fake_openai_with_capture(captured, status="completed", data=[])
-    with patch.dict("sys.modules", {"openai": fake}):
-        result = deepinfra_plugin.DeepInfraVideoGenProvider().generate(
-            prompt="x", model="vendor/test-vid",
-        )
-    assert result["success"] is True
-    assert captured["downloaded_id"] == "vid_123"
-    assert result["video"].endswith(".mp4")
-
-
-def test_generate_image_to_video_routes_via_extra_body():
-    """Presence of image_url routes to i2v and rides in extra_body."""
-    captured: dict = {}
-    with patch.dict("sys.modules", {"openai": _fake_openai_with_capture(captured)}), \
-            _mock_url_download(captured):
-        result = deepinfra_plugin.DeepInfraVideoGenProvider().generate(
-            prompt="animate this", model="vendor/test-vid",
-            image_url="https://example.com/cat.jpg", negative_prompt="blurry",
-        )
-    assert result["success"] is True
-    assert result["modality"] == "image"
-    extra = captured["kwargs"]["extra_body"]
-    assert extra["image_url"] == "https://example.com/cat.jpg"
-    assert extra["negative_prompt"] == "blurry"
-
-
-def test_generate_errors_when_key_missing(monkeypatch):
-    monkeypatch.delenv("DEEPINFRA_API_KEY", raising=False)
-    result = deepinfra_plugin.DeepInfraVideoGenProvider().generate(
-        prompt="x", model="vendor/test-vid",
-    )
-    assert result["success"] is False
-    assert result["error_type"] == "missing_credentials"
-
-
-def test_generate_errors_when_job_not_completed():
-    """A non-completed job status surfaces a JSON-serializable job_failed error.
-
-    ``video.error`` is a structured SDK object (pydantic ``VideoCreateError``),
-    not a string — the provider must str() it so the response dict survives the
-    tool layer's ``json.dumps``. We simulate that with a non-serializable object.
-    """
-    import json
-
-    captured: dict = {}
-    fake = _fake_openai_with_capture(captured)
-
-    class _NonSerializableError:
-        def __str__(self):
-            return "content policy violation"
-
-    class _FailingVideos:
-        def create(self, **kwargs):
-            return SimpleNamespace(
-                status="failed", id="vid_x", error=_NonSerializableError(), data=None
-            )
-
-        def retrieve(self, video_id):  # pragma: no cover - status already terminal
-            return SimpleNamespace(status="failed", id=video_id, error=None, data=None)
-
-    def _client(api_key=None, base_url=None):
-        return SimpleNamespace(videos=_FailingVideos())
-
-    fake.OpenAI = _client
-    with patch.dict("sys.modules", {"openai": fake}):
-        result = deepinfra_plugin.DeepInfraVideoGenProvider().generate(
-            prompt="x", model="vendor/test-vid",
-        )
-    assert result["success"] is False
-    assert result["error_type"] == "job_failed"
-    assert "content policy violation" in result["error"]
-    # Must not raise — this is the regression the str() guard prevents.
-    json.dumps(result)

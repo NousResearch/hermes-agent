@@ -1,8 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useStore } from '@nanostores/react'
+import { useEffect, useRef, useState } from 'react'
 
 import { Button } from '@/components/ui/button'
 import { Checkbox } from '@/components/ui/checkbox'
 import { Input } from '@/components/ui/input'
+import { SegmentedControl } from '@/components/ui/segmented-control'
 import {
   activateCustomEndpoint,
   deleteCustomEndpoint,
@@ -10,13 +12,22 @@ import {
   saveCustomEndpoint,
   validateCustomEndpoint
 } from '@/hermes'
+import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { Check, Globe, Loader2, Plus, Save, Trash2, Zap } from '@/lib/icons'
 import { cn } from '@/lib/utils'
+import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import type { CustomEndpoint, CustomEndpointUpdate } from '@/types/hermes'
+import { $settingsRequestProfile } from '@/store/settings-scope'
+import type {
+  CustomEndpoint,
+  CustomEndpointApiMode,
+  CustomEndpointModelDetail,
+  CustomEndpointUpdate
+} from '@/types/hermes'
 
 import { EmptyState, Pill, SectionHeading, SettingsContent, SettingsSkeleton } from './primitives'
+import { SettingsProfileScope } from './profile-scope'
 
 interface CustomEndpointsSettingsProps {
   onConfigSaved?: () => void
@@ -25,6 +36,7 @@ interface CustomEndpointsSettingsProps {
 
 interface EndpointForm {
   apiKey: string
+  apiMode: CustomEndpointApiMode
   baseUrl: string
   contextLength: string
   discoverModels: boolean
@@ -34,8 +46,18 @@ interface EndpointForm {
   name: string
 }
 
+// Same choices as `hermes model`'s custom-provider setup; '' = runtime auto-detect.
+// This panel is not internationalized — keep the literals it has.
+const API_MODE_OPTIONS: readonly { id: CustomEndpointApiMode; label: string }[] = [
+  { id: '', label: 'Auto-detect' },
+  { id: 'chat_completions', label: 'Chat Completions' },
+  { id: 'codex_responses', label: 'Responses API' },
+  { id: 'anthropic_messages', label: 'Anthropic Messages' }
+]
+
 const EMPTY_FORM: EndpointForm = {
   apiKey: '',
+  apiMode: '',
   baseUrl: '',
   contextLength: '',
   discoverModels: true,
@@ -48,6 +70,7 @@ const EMPTY_FORM: EndpointForm = {
 function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   return {
     apiKey: '',
+    apiMode: endpoint.api_mode ?? '',
     baseUrl: endpoint.base_url,
     contextLength: endpoint.context_length ? String(endpoint.context_length) : '',
     discoverModels: endpoint.discover_models,
@@ -58,7 +81,11 @@ function formFromEndpoint(endpoint: CustomEndpoint): EndpointForm {
   }
 }
 
-function toPayload(form: EndpointForm): CustomEndpointUpdate {
+function toPayload(
+  form: EndpointForm,
+  models?: string[],
+  modelDetails?: CustomEndpointModelDetail[]
+): CustomEndpointUpdate {
   const contextLength = Number.parseInt(form.contextLength, 10)
 
   return {
@@ -67,13 +94,22 @@ function toPayload(form: EndpointForm): CustomEndpointUpdate {
     base_url: form.baseUrl.trim(),
     model: form.model.trim(),
     api_key: form.apiKey.trim() || undefined,
+    api_mode: form.apiMode,
     context_length: Number.isFinite(contextLength) && contextLength > 0 ? contextLength : undefined,
     discover_models: form.discoverModels,
-    make_default: form.makeDefault
+    make_default: form.makeDefault,
+    models: models?.length ? models : undefined,
+    model_details: modelDetails?.length ? modelDetails : undefined
   }
 }
 
 export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: CustomEndpointsSettingsProps) {
+  const { t } = useI18n()
+  // Shared settings "Applies to" scope: read/write this profile's endpoints,
+  // not whichever Bot is active in the left rail. Undefined follows the
+  // active profile (request-shaped — never pass null, which retargets primary).
+  const scopeProfile = useStore($settingsRequestProfile)
+  const mounted = useRef(false)
   const [loading, setLoading] = useState(true)
   const [saving, setSaving] = useState(false)
   const [testing, setTesting] = useState(false)
@@ -82,18 +118,31 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
   const [endpoints, setEndpoints] = useState<CustomEndpoint[]>([])
   const [form, setForm] = useState<EndpointForm>(EMPTY_FORM)
   const [discoveredModels, setDiscoveredModels] = useState<string[]>([])
+  // Alias metadata from the last Test; the backend resolves a picked alias to its
+  // canonical model + reasoning effort on Save (#93622).
+  const [discoveredDetails, setDiscoveredDetails] = useState<CustomEndpointModelDetail[]>([])
 
   async function refresh() {
-    const data = await getCustomEndpoints()
-    setEndpoints(data.endpoints)
+    const data = await getCustomEndpoints(scopeProfile)
+
+    if (mounted.current) {
+      setEndpoints(data.endpoints)
+    }
   }
 
+  // eslint-disable-next-line no-restricted-syntax -- lifecycle guard drops stale async completions; it does not mirror an atom
   useEffect(() => {
     let cancelled = false
+    mounted.current = true
+    setLoading(true)
+    setForm(EMPTY_FORM)
+    setDiscoveredModels([])
+    setDiscoveredDetails([])
+    setEndpoints([])
 
     async function load() {
       try {
-        const data = await getCustomEndpoints()
+        const data = await getCustomEndpoints(scopeProfile)
 
         if (cancelled) {
           return
@@ -119,13 +168,19 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
     return () => {
       cancelled = true
+      mounted.current = false
     }
-  }, [])
+  }, [scopeProfile])
 
   async function handleSave() {
     try {
       setSaving(true)
-      const response = await saveCustomEndpoint(toPayload(form))
+      const response = await saveCustomEndpoint(toPayload(form, discoveredModels, discoveredDetails), scopeProfile)
+
+      if (!mounted.current) {
+        return
+      }
+
       setEndpoints(response.endpoints)
       const saved = response.endpoints.find(endpoint => endpoint.id === response.id)
 
@@ -142,28 +197,49 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
       onConfigSaved?.()
       notify({ kind: 'success', message: 'Custom endpoint saved.' })
     } catch (err) {
-      notifyError(err, 'Save failed')
+      if (mounted.current) {
+        notifyError(err, 'Save failed')
+      }
     } finally {
-      setSaving(false)
+      if (mounted.current) {
+        setSaving(false)
+      }
     }
   }
 
   async function handleValidate() {
     try {
       setTesting(true)
-      const response = await validateCustomEndpoint(toPayload(form))
+      const response = await validateCustomEndpoint(toPayload(form), scopeProfile)
+
+      if (!mounted.current) {
+        return
+      }
+
       setDiscoveredModels(response.models)
+      setDiscoveredDetails(response.model_details ?? [])
 
       if (response.ok) {
+        // Persist the URL that actually served /models (e.g. "<root>/v1" when the user typed the
+        // bare root): chat POSTs {base_url}/chat/completions verbatim, so saving the typed root
+        // would 404 every request even though the test looked green (#65488).
+        const resolvedBaseUrl = response.resolved_base_url?.trim()
+
         if (!form.model && response.models[0]) {
           setForm(current => ({ ...current, model: response.models[0] }))
         }
 
+        if (resolvedBaseUrl && resolvedBaseUrl !== form.baseUrl.trim().replace(/\/+$/, '')) {
+          setForm(current => ({ ...current, baseUrl: resolvedBaseUrl }))
+        }
+
+        // The backend also POSTed the transport the runtime will use; name it so an
+        // auto-detected mode is visible before Save (#93622).
+        const transport = API_MODE_OPTIONS.find(option => option.id === response.transport_checked)?.label
+        const reachable = transport ? `Endpoint is reachable (${transport} route served).` : 'Endpoint is reachable.'
         notify({
           kind: 'success',
-          message: response.models.length
-            ? `Endpoint is reachable. Found ${response.models.length} models.`
-            : 'Endpoint is reachable.'
+          message: response.models.length ? `${reachable} Found ${response.models.length} models.` : reachable
         })
       } else {
         notify({
@@ -172,53 +248,87 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
         })
       }
     } catch (err) {
-      notifyError(err, 'Validation failed')
+      if (mounted.current) {
+        notifyError(err, 'Validation failed')
+      }
     } finally {
-      setTesting(false)
+      if (mounted.current) {
+        setTesting(false)
+      }
     }
   }
 
   async function handleActivate(endpoint: CustomEndpoint) {
     try {
       setActivating(endpoint.id)
-      const response = await activateCustomEndpoint(endpoint.id)
+      const response = await activateCustomEndpoint(endpoint.id, scopeProfile)
+
+      if (!mounted.current) {
+        return
+      }
+
       await refresh()
+
+      if (!mounted.current) {
+        return
+      }
+
       onConfigSaved?.()
       onMainModelChanged?.(response.provider, response.model)
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Activation failed')
+      if (mounted.current) {
+        notifyError(err, 'Activation failed')
+      }
     } finally {
-      setActivating(null)
+      if (mounted.current) {
+        setActivating(null)
+      }
     }
   }
 
   async function handleDelete(endpoint: CustomEndpoint) {
-    if (!window.confirm(`Delete ${endpoint.name}?`)) {
+    // This panel is not internationalized at all — keep the literal it had.
+    if (!(await confirm({ destructive: true, title: `Delete ${endpoint.name}?` }))) {
       return
     }
 
     try {
       setDeleting(endpoint.id)
-      const response = await deleteCustomEndpoint(endpoint.id)
+      const response = await deleteCustomEndpoint(endpoint.id, scopeProfile)
+
+      if (!mounted.current) {
+        return
+      }
+
       setEndpoints(response.endpoints)
 
       if (form.id === endpoint.id) {
         setForm(EMPTY_FORM)
         setDiscoveredModels([])
+        setDiscoveredDetails([])
       }
 
       onConfigSaved?.()
       triggerHaptic('success')
     } catch (err) {
-      notifyError(err, 'Delete failed')
+      if (mounted.current) {
+        notifyError(err, 'Delete failed')
+      }
     } finally {
-      setDeleting(null)
+      if (mounted.current) {
+        setDeleting(null)
+      }
     }
   }
 
   if (loading) {
-    return <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
+    return (
+      <SettingsContent>
+        <SettingsProfileScope className="mb-5" />
+        <SettingsSkeleton sections={[{ heading: true, rows: 3 }]} />
+      </SettingsContent>
+    )
   }
 
   const allModelOptions = Array.from(new Set([...discoveredModels, form.model].filter(Boolean)))
@@ -226,9 +336,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
 
   return (
     <SettingsContent>
+      <SettingsProfileScope className="mb-5" />
       <div className="space-y-6">
         <section>
-          <SectionHeading icon={Globe} meta={`${endpoints.length}`} title="Custom Endpoints" />
+          <SectionHeading icon={Globe} meta={`${endpoints.length}`} page title={t.settings.customEndpoints.title} />
           <div className="divide-y divide-border/40 rounded-md border border-border/50">
             {endpoints.length ? (
               endpoints.map(endpoint => (
@@ -238,6 +349,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     onClick={() => {
                       setForm(formFromEndpoint(endpoint))
                       setDiscoveredModels(endpoint.models)
+                      setDiscoveredDetails([])
                     }}
                     type="button"
                   >
@@ -271,11 +383,11 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                     </Button>
                     {endpoint.source !== 'direct-config' && (
                       <Button
+                        aria-label={t.settings.customEndpoints.deleteEndpoint}
                         className="hover:text-destructive"
                         disabled={deleting === endpoint.id}
                         onClick={() => void handleDelete(endpoint)}
                         size="icon-sm"
-                        title="Delete endpoint"
                         variant="ghost"
                       >
                         {deleting === endpoint.id ? <Loader2 className="animate-spin" /> : <Trash2 />}
@@ -285,7 +397,10 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 </div>
               ))
             ) : (
-              <EmptyState description="Add an OpenAI-compatible endpoint below." title="No custom endpoints" />
+              <EmptyState
+                description={t.settings.customEndpoints.emptyDescription}
+                title={t.settings.customEndpoints.emptyTitle}
+              />
             )}
           </div>
         </section>
@@ -298,7 +413,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 Name
                 <Input
                   onChange={event => setForm(current => ({ ...current, name: event.target.value }))}
-                  placeholder="Axet Proxy"
+                  placeholder={t.settings.customEndpoints.namePlaceholder}
                   value={form.name}
                 />
               </label>
@@ -319,6 +434,15 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 value={form.baseUrl}
               />
             </label>
+            <fieldset className="grid min-w-0 gap-1.5 text-xs text-muted-foreground">
+              <legend className="mb-1.5">API Mode</legend>
+              <SegmentedControl
+                className="w-full max-w-full"
+                onChange={apiMode => setForm(current => ({ ...current, apiMode }))}
+                options={API_MODE_OPTIONS}
+                value={form.apiMode}
+              />
+            </fieldset>
             <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_12rem]">
               <label className="grid gap-1.5 text-xs text-muted-foreground">
                 Default Model
@@ -339,7 +463,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 <Input
                   inputMode="numeric"
                   onChange={event => setForm(current => ({ ...current, contextLength: event.target.value }))}
-                  placeholder="Auto"
+                  placeholder={t.settings.customEndpoints.contextPlaceholder}
                   value={form.contextLength}
                 />
               </label>
@@ -387,6 +511,7 @@ export function CustomEndpointsSettings({ onConfigSaved, onMainModelChanged }: C
                 onClick={() => {
                   setForm(EMPTY_FORM)
                   setDiscoveredModels([])
+                  setDiscoveredDetails([])
                 }}
                 type="button"
                 variant="ghost"

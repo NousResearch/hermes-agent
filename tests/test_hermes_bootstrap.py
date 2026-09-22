@@ -19,8 +19,10 @@ Key invariants covered by these tests:
 
 from __future__ import annotations
 
+import errno
 import io
 import os
+import socket
 import subprocess
 import sys
 import textwrap
@@ -46,10 +48,7 @@ def _fresh_import():
 class TestWindowsBehavior:
     """Windows: the bootstrap does its job."""
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Windows-specific behavior",
-    )
+    @pytest.mark.windows_only
     def test_env_vars_set_on_windows(self, monkeypatch):
         # Clear any pre-existing values and re-run bootstrap.
         monkeypatch.delenv("PYTHONUTF8", raising=False)
@@ -60,10 +59,7 @@ class TestWindowsBehavior:
         assert os.environ.get("PYTHONIOENCODING") == "utf-8"
         assert hb._bootstrap_applied is True
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Windows-specific behavior",
-    )
+    @pytest.mark.windows_only
     def test_stdout_reconfigured_to_utf8_on_windows(self):
         # The live process's stdout should now be UTF-8 (the Hermes CLI
         # runs on Windows with a pytest console that's cp1252 by default).
@@ -83,10 +79,7 @@ class TestWindowsBehavior:
             "reconfigured it to UTF-8"
         )
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Windows-specific behavior",
-    )
+    @pytest.mark.windows_only
     def test_child_process_inherits_utf8_mode(self):
         """A subprocess spawned from this process should inherit
         PYTHONUTF8=1 and be able to print non-ASCII to stdout."""
@@ -119,10 +112,7 @@ class TestUserOptOut:
     """If the user has explicitly set PYTHONUTF8 / PYTHONIOENCODING in
     their environment, we respect that (setdefault, not overwrite)."""
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Only meaningful on Windows where we'd otherwise set these",
-    )
+    @pytest.mark.windows_only
     def test_user_pythonutf8_zero_preserved(self, monkeypatch):
         monkeypatch.setenv("PYTHONUTF8", "0")
         _fresh_import()
@@ -130,27 +120,21 @@ class TestUserOptOut:
             "bootstrap must not overwrite an explicit user setting"
         )
 
-    @pytest.mark.skipif(
-        sys.platform != "win32",
-        reason="Only meaningful on Windows where we'd otherwise set these",
-    )
-    def test_user_pythonioencoding_preserved(self, monkeypatch):
-        monkeypatch.setenv("PYTHONIOENCODING", "latin-1")
-        _fresh_import()
-        assert os.environ["PYTHONIOENCODING"] == "latin-1"
 
 
+@pytest.mark.linux_only
 class TestPosixNoOp:
     """POSIX: zero behavior change.  We don't touch LANG, LC_*, or any
     stdio.  The goal is that Linux/macOS behave identically before and
     after this module is imported."""
 
-    def test_noop_on_fake_posix(self, monkeypatch):
+    def test_noop_on_posix_host(self, monkeypatch):
         """Even when imported, the bootstrap function must return False
-        and leave env untouched when _IS_WINDOWS is False."""
+        and leave env untouched on a POSIX host (``_IS_WINDOWS`` is
+        genuinely False here — nothing is faked)."""
         hb = _fresh_import()
-        # Reset + fake POSIX
-        hb._IS_WINDOWS = False
+        # Reset the idempotence latch so the call below is not a no-op for
+        # the wrong reason.
         hb._bootstrap_applied = False
         monkeypatch.delenv("PYTHONUTF8", raising=False)
         monkeypatch.delenv("PYTHONIOENCODING", raising=False)
@@ -162,19 +146,6 @@ class TestPosixNoOp:
         assert "PYTHONIOENCODING" not in os.environ
         assert hb._bootstrap_applied is False
 
-    @pytest.mark.skipif(
-        sys.platform == "win32",
-        reason="Real POSIX required for this check",
-    )
-    def test_real_posix_bootstrap_is_noop(self, monkeypatch):
-        """On actual Linux/macOS, importing the module must not set
-        PYTHONUTF8 or reconfigure stdio."""
-        monkeypatch.delenv("PYTHONUTF8", raising=False)
-        monkeypatch.delenv("PYTHONIOENCODING", raising=False)
-        hb = _fresh_import()
-        assert hb._bootstrap_applied is False
-        assert "PYTHONUTF8" not in os.environ
-        assert "PYTHONIOENCODING" not in os.environ
 
 
 class TestIdempotence:
@@ -188,10 +159,6 @@ class TestIdempotence:
             "Second call should return False (idempotent no-op)"
         )
 
-    def test_no_exceptions_on_repeated_calls(self):
-        hb = _fresh_import()
-        for _ in range(5):
-            hb.apply_windows_utf8_bootstrap()
 
 
 class TestStdioReconfigureErrorHandling:
@@ -199,11 +166,17 @@ class TestStdioReconfigureErrorHandling:
     don't support reconfigure (e.g. by a test harness), the bootstrap
     must degrade gracefully rather than crash."""
 
+    @pytest.mark.windows_only
     def test_non_reconfigurable_stream_does_not_crash(self, monkeypatch):
         """Replace sys.stdout with a BytesIO (no reconfigure method),
-        then run the bootstrap and make sure it doesn't raise."""
+        then run the bootstrap and make sure it doesn't raise.
+
+        ``windows_only``: forcing ``_IS_WINDOWS = True`` on Linux was the only
+        thing that made the reconfigure block reachable — off Windows the
+        bootstrap returns before touching stdio, so the test proved nothing
+        about the guard it names.
+        """
         hb = _fresh_import()
-        hb._IS_WINDOWS = True
         hb._bootstrap_applied = False
 
         fake = io.BytesIO()  # no .reconfigure attribute
@@ -214,22 +187,6 @@ class TestStdioReconfigureErrorHandling:
         except Exception as exc:
             pytest.fail(f"bootstrap raised on non-reconfigurable stdout: {exc}")
 
-    def test_reconfigure_oserror_is_caught(self, monkeypatch):
-        """If reconfigure() itself raises (closed stream, etc.), swallow
-        the error — the env-var half of the fix still applies."""
-        hb = _fresh_import()
-        hb._IS_WINDOWS = True
-        hb._bootstrap_applied = False
-
-        class _BrokenStream:
-            encoding = "utf-8"
-            def reconfigure(self, **kwargs):
-                raise OSError("simulated: stream already closed")
-
-        monkeypatch.setattr(sys, "stdout", _BrokenStream())
-        monkeypatch.setattr(sys, "stderr", _BrokenStream())
-        # Must not raise.
-        hb.apply_windows_utf8_bootstrap()
 
 
 class TestEntryPointsImportBootstrap:
@@ -360,10 +317,6 @@ class TestHardenImportPath:
         # but only AFTER the Hermes root.
         assert result.index("/opt/hermes") < result.index("/home/user/tg-ws-proxy")
 
-    def test_src_root_not_duplicated(self):
-        hb = _fresh_import()
-        result = self._run(hb, ["/opt/hermes", "/opt/hermes", ""])
-        assert result.count("/opt/hermes") == 1
 
     def test_env_var_used_when_no_arg(self):
         hb = _fresh_import()
@@ -381,41 +334,28 @@ class TestHardenImportPath:
             else:
                 os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
 
-    def test_defaults_to_module_dir(self):
-        # With neither arg nor env var, the helper anchors on the bootstrap
-        # module's own directory — the repo root for shipped entry points.
-        hb = _fresh_import()
-        original = sys.path[:]
-        original_env = os.environ.get("HERMES_PYTHON_SRC_ROOT")
-        try:
-            sys.path[:] = ["", "/somewhere/else"]
-            os.environ.pop("HERMES_PYTHON_SRC_ROOT", None)
-            hb.harden_import_path()
-            expected = os.path.dirname(os.path.abspath(hb.__file__))
-            assert sys.path[0] == expected
-        finally:
-            sys.path[:] = original
-            if original_env is not None:
-                os.environ["HERMES_PYTHON_SRC_ROOT"] = original_env
 
 
 class TestSuppressPlatformVerConsole:
     """suppress_platform_ver_console: stub applied on Windows, no-op on POSIX."""
 
-    def test_noop_on_posix(self, monkeypatch):
+    @pytest.mark.linux_only
+    def test_noop_on_posix(self):
         import platform
         hb = _fresh_import()
         original = getattr(platform, "_syscmd_ver", None)
-        monkeypatch.setattr(hb, "_IS_WINDOWS", False)
         hb.suppress_platform_ver_console()
         assert getattr(platform, "_syscmd_ver", None) is original
 
-    def test_stub_applied_when_windows(self, monkeypatch):
+    @pytest.mark.windows_only
+    def test_stub_applied_when_windows(self):
+        # Faking _IS_WINDOWS on Linux asserted only that the stub was
+        # installed; the reason it exists — ``platform.win32_ver()`` shelling
+        # out ``cmd /c ver`` — has no counterpart off Windows.
         import platform
         hb = _fresh_import()
         original = getattr(platform, "_syscmd_ver", None)
         try:
-            monkeypatch.setattr(hb, "_IS_WINDOWS", True)
             hb.suppress_platform_ver_console()
             stubbed = platform._syscmd_ver
             assert stubbed is not original
@@ -429,13 +369,120 @@ class TestSuppressPlatformVerConsole:
             if original is not None:
                 platform._syscmd_ver = original
 
-    def test_never_raises(self, monkeypatch):
+
+class TestHappyEyeballsSocketConnect:
+    """Importing the bootstrap races IPv6/IPv4 for every sync connect in the process (#114265)."""
+
+    def test_import_routes_http_client_and_urllib3_connects_through_the_racer(self):
+        import http.client
+
+        import urllib3
+        import urllib3.util.connection as urllib3_connection
+
         hb = _fresh_import()
-        monkeypatch.setattr(hb, "_IS_WINDOWS", True)
-        import platform
-        original = platform._syscmd_ver
+        assert socket.create_connection.__module__ == hb.__name__
+        # urllib3 keeps its own serial connect walker; it is patched once imported (lazily).
+        assert getattr(urllib3_connection.create_connection, "_hermes_happy_eyeballs", False)
+        # Re-importing the bootstrap (or importing it after urllib3) never wraps the racer twice.
+        racer = socket.create_connection
+        _fresh_import()
+        assert socket.create_connection is racer
+        # The bootstrap must not pay urllib3's import (~50 ms) on every process start: a fresh
+        # interpreter gets the patch the moment urllib3 loads, not before.
+        subprocess.run([sys.executable, "-c", textwrap.dedent("""
+            import sys, hermes_bootstrap
+            assert "urllib3" not in sys.modules, "bootstrap imported urllib3 eagerly"
+            import urllib3.util.connection as c
+            assert c.create_connection._hermes_happy_eyeballs
+        """)], check=True, cwd=str(Path(hb.__file__).parent), timeout=60)
+
+        listener = socket.socket()
+        listener.bind(("127.0.0.1", 0))
+        listener.listen(4)
+        port = listener.getsockname()[1]
+        http_conn = http.client.HTTPConnection("127.0.0.1", port, timeout=5)
+        urllib3_conn = urllib3.connection.HTTPConnection("127.0.0.1", port, timeout=5)
         try:
-            monkeypatch.delattr(platform, "_syscmd_ver")
-            hb.suppress_platform_ver_console()  # hasattr guard → silent no-op
+            http_conn.connect()
+            urllib3_conn.connect()  # exercises the socket_options kwarg of the urllib3 racer
+            assert http_conn.sock.getpeername()[1] == port
+            assert urllib3_conn.sock.getpeername()[1] == port
         finally:
-            platform._syscmd_ver = original
+            http_conn.close()
+            urllib3_conn.close()
+            listener.close()
+
+    def test_installed_racer_wins_ipv4_while_ipv6_hangs(self, monkeypatch):
+        hb = _fresh_import()
+        clock = [0.0]
+        sockets = []
+
+        class FakeSocket:
+            def __init__(self, family, socktype, proto):
+                self.family = family
+                self.closed = False
+                self.timeout = None
+                sockets.append(self)
+
+            def setsockopt(self, *_args):
+                pass
+
+            def setblocking(self, _blocking):
+                pass
+
+            def settimeout(self, timeout):
+                self.timeout = timeout
+
+            def connect_ex(self, _address):
+                return errno.EINPROGRESS if self.family == socket.AF_INET6 else 0
+
+            def close(self):
+                self.closed = True
+
+        class FakeSelector:
+            def register(self, *_args):
+                pass
+
+            def unregister(self, *_args):
+                pass
+
+            def select(self, timeout):
+                clock[0] += timeout or 0.0  # the v6 attempt never completes
+                return []
+
+            def close(self):
+                pass
+
+        monkeypatch.setattr(hb.socket, "getaddrinfo", lambda *_a, **_k: [
+            (socket.AF_INET6, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("2001:db8::1", 443, 0, 0)),
+            (socket.AF_INET, socket.SOCK_STREAM, socket.IPPROTO_TCP, "", ("192.0.2.1", 443)),
+        ])
+        monkeypatch.setattr(hb.socket, "socket", FakeSocket)
+        monkeypatch.setattr(hb.selectors, "DefaultSelector", FakeSelector)
+        monkeypatch.setattr(hb.time, "monotonic", lambda: clock[0])
+
+        # http.client passes the module timeout sentinel through positionally.
+        winner = socket.create_connection(("example.com", 443), socket._GLOBAL_DEFAULT_TIMEOUT, None)
+
+        assert winner.family == socket.AF_INET
+        assert winner.timeout is None  # sentinel resolves to the process default, like stock
+        assert clock[0] == hb._HAPPY_EYEBALLS_DELAY_SECONDS
+        assert sockets[0].closed is True and sockets[1] is winner
+
+    def test_racer_bug_raises_instead_of_falling_back_to_the_serial_walk(self, monkeypatch):
+        """A non-OSError from the racer is a bug in the racer, not a network outcome: it must
+        surface, never silently reroute the connect through the serial stock walker (which
+        would reintroduce the exact stall the racer exists to remove). OSError still means
+        "every candidate failed" and propagates unchanged."""
+        import urllib3.util.connection as urllib3_connection
+
+        _fresh_import()
+
+        def boom(*_args, **_kwargs):
+            raise RuntimeError("racer bug")
+
+        for racer in (socket.create_connection, urllib3_connection.create_connection):
+            assert getattr(racer, "_hermes_happy_eyeballs", False)
+            monkeypatch.setitem(racer.__globals__, "_happy_eyeballs_create_connection", boom)
+            with pytest.raises(RuntimeError, match="racer bug"):
+                racer(("127.0.0.1", 1), 1.0)

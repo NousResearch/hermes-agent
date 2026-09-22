@@ -2,6 +2,7 @@
 /venv/
 /venv.old/
 /venv.stale.runtime-*/
+/bin/
 /.hermes-runtime/
 /_pycache/
 *.pyc*
@@ -31,6 +32,12 @@ __pycache__/model_tools.cpython-310.pyc
 __pycache__/web_tools.cpython-310.pyc
 logs/
 data/
+# Bundled community plugin index seed (shipped as package data) — the bare
+# `data/` pattern above would otherwise swallow it.
+!hermes_cli/data/
+# The Connectors page's wire layer (apps/desktop/src/app/capabilities/connectors/data/)
+# — same reason: the bare `data/` pattern above would otherwise swallow it.
+!apps/desktop/src/app/capabilities/connectors/data/
 .pytest_cache/
 test_durations.json
 .pytest-cache/
@@ -46,6 +53,7 @@ run_datagen_sonnet.sh
 source-data/*
 run_datagen_megascience_glm4-6.sh
 data/*
+MagicMock/
 # No trailing slash: also matches node_modules SYMLINKS (worktrees often
 # symlink node_modules to the main checkout; the dir-only pattern let one
 # slip into a commit and break `npm ci` on CI with ENOTDIR).
@@ -87,12 +95,26 @@ apps/desktop/dist/
 apps/desktop/src/**/*.js
 apps/desktop/src/**/*.js.map
 apps/desktop/src/**/*.d.ts
+# EXCEPT bundled plain-ESM plugin entries (adopted SDK-consumer plugins,
+# e.g. hermes-bots): plugin.js IS the source, not tsc output. No .tsx
+# sibling exists, so the stale-shadow hazard above cannot apply.
+!apps/desktop/src/plugins/*/plugin.js
 !apps/desktop/src/global.d.ts
 !apps/desktop/src/vite-env.d.ts
+
+# Build/debug artifacts that must never be committed
+/log.txt
+/sqlite_leak_fix.png
+/*.png.bak
+*.tar.gz
+*.tgz
 apps/shared/src/**/*.js
 apps/shared/src/**/*.js.map
 apps/shared/src/**/*.d.ts
 apps/desktop/release/
+# stage-and-swap Desktop rebuild output (#86443); removed after the swap, but
+# a killed build must not leave the checkout dirty
+apps/desktop/.staging-*/
 *.tsbuildinfo
 
 # Web UI assets — synced from @nous-research/ui at build time via
@@ -115,6 +137,12 @@ website/static/api/skills-index.json
 # every build).
 website/static/api/skills.json
 website/static/api/skills-meta.json
+# plugins.json + plugins-meta.json are build artifacts emitted by
+# website/scripts/extract-plugins.py during prebuild (Plugin Catalog page).
+website/static/api/plugins.json
+website/static/api/plugin-stars.json
+website/static/api/plugin-catalog.json
+website/static/api/plugins-meta.json
 # automation-blueprints-index.json is a build artifact emitted by
 # website/scripts/extract-automation-blueprints.py during prebuild.
 website/static/api/automation-blueprints-index.json
@@ -143,8 +171,86 @@ docs/superpowers/*
 # treat it as a local edit and autostash it on every run (#38529).
 .hermes-bootstrap-complete
 
+# Flat-install runtime state (checkout root == $HERMES_HOME, e.g. installs made
+# with HERMES_INSTALL_DIR=$HERMES_HOME or by older installers): every root-level
+# SQLite store (state.db, kanban.db, response_store.db, ...) with its
+# WAL/SHM/journal sidecars and every dot-suffixed `<db>.db.*` runtime artifact
+# (retired-WAL capture dirs, quarantine/repair/rebuild/maintenance/init/dispatch
+# lock files, the repair-attempts ledger, malformed-backup copies — a swept lock
+# path is re-created on a new inode and a second exclusive flock succeeds while
+# the first holder is still live, #112974), the legacy transcripts,
+# the cron job store (jobs.json), its lock/heartbeat/output files and all three
+# cron SQLite stores (executions/deliveries/notepad, WAL-mode like the root
+# ones), gateway lock/pid/state files and per-launch markers, cache/spill
+# directories, and the profile's own config/credential/
+# memory/profile/pairing roots, the pre-update backups (the very copies a
+# swept state.db is restored from) and the secret vault are Hermes-managed
+# runtime state, never code changes. (`*-snapshots/` above already covers state-snapshots/.)
+# Ignore them so `hermes update`'s `git stash push --include-untracked` cannot
+# sweep the live state.db/-wal into the stash and unlink it under the running
+# gateway (#110648). Nested installs keep all of this under $HERMES_HOME outside
+# the checkout, where the `.hermes/` rule above already applies.
+/*.db
+/*.db-wal
+/*.db-shm
+/*.db-journal
+/*.db.*
+/gateway/discord_message_recovery.db*
+/sessions/
+/browser-profile/
+/cron/*.db
+/cron/*.db-wal
+/cron/*.db-shm
+/cron/*.db-journal
+/cron/*.db.*
+/cron/jobs.json
+/cron/.jobs.lock
+/cron/ticker_heartbeat
+/cron/output/
+/cron.pid
+/gateway.lock
+/gateway.pid
+/gateway_state.json
+/gateway-starts.log
+/processes.json
+/.update_check
+/.clean_shutdown
+/active_profile
+/.hermes_history
+/slack_tokens.json
+/hook_outputs/
+/hooks/
+/cache/
+/checkpoints/
+/pending_messages/
+/plugin-data/
+/kanban/
+/config.yaml
+/auth.json
+/auth.lock
+/auth/
+/.anthropic_oauth.json
+/google_token.json
+/google_oauth_pending.json
+/webhook_subscriptions.json
+/channel_directory.json
+/channel_aliases.json
+/feishu_comment_pairing.json
+/memories/
+/profiles/
+/credentials/
+/mcp-tokens/
+/pairing/
+/platforms/
+/backups/
+/vault.key
+/vault.json.enc
+
 # Persistent dev sandbox dir (scripts/dev-sandbox.sh --persistent)
 .hermes-sandbox/
+# Sandbox dirs used by the install/update E2E (tests/install/). The suffix is
+# the route name, so each route gets its own tree and two can run at once.
+.hermes-sandbox-e2e*/
 
 # Interrupted-update breadcrumb + recovery lock written next to the shared venv
 # by `hermes update` / launch-time self-heal. Runtime state, never a code change
@@ -152,14 +258,19 @@ docs/superpowers/*
 .update-incomplete
 .update-incomplete.lock
 
+# Checkout fingerprint the __pycache__ tree was last validated against
+# (launch-time stale-bytecode sweep). Runtime state, never a code change.
+.bytecode-fingerprint
+.bytecode-fingerprint.tmp
+
 # Installer-written method stamp in the managed checkout root (scripts/install.sh).
 # Runtime metadata only — never a code change. Ignore so `git status` stays clean
 # and `hermes update`'s untracked autostash does not treat it as a local edit (#66189 / #54855).
 /.install_method
 
 # Tool Search live-test harness output — non-deterministic model transcripts,
-# regenerated by scripts/tool_search_livetest.py. Never an artifact of the repo.
-scripts/out/
+# regenerated by evals/tool_search/tool_search_livetest*.py. Never an artifact of the repo.
+evals/tool_search/out*/
 
 # Per-release changelog drafts. These exist only transiently during a release
 # cut (passed to `gh release create --notes-file`); the GitHub Release itself
@@ -175,5 +286,21 @@ apps/desktop/demo/
 # image-provider (fal.media) URL — they are NEVER committed to the repo. The
 # PR body is the archive. See the hermes-agent-dev skill's
 # pr-infographic-workflow reference (storage rule + lapse #8 / #COMMIT-1).
+#
+# Spelling variants are listed because a single `infographic/` pattern was
+# sidestepped by an `infograficos/` directory (#70552). .gitignore is only
+# the first line of defence and cannot stop `git add -f` at all — the
+# infographic-check CI job is what actually enforces this.
 infographic/
+infographics/
+infograficos/
+infografico/
 native/fts5_cjk/*.so
+# Runtime marker written by hermes update when a lazy dependency refresh is
+# interrupted; consumed by launch-time recovery. Never commit it (was tracked
+# by accident via 3a69e34702, removed in the #72002 salvage).
+.lazy-refresh-incomplete
+.skills_prompt_snapshot.json
+
+# Disposable profile created by scripts/probe_active_session_exclusivity.py
+.probe-home/

@@ -26,7 +26,11 @@ def agent():
         compression_enabled=True,
         _compression_warning=None,
         _emitted=[],
+        # Upstream renamed the emit seam to `_emit_diagnostic_status` and routes
+        # it through `_emit_feasibility_notice`. Stub both so the warning branch
+        # runs to the logger call this test is actually about.
         _emit_status=lambda msg: None,
+        _emit_diagnostic_status=lambda msg: None,
         _current_main_runtime=lambda: None,
     )
 

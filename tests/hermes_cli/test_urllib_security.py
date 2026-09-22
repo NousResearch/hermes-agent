@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import json
+import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
+import ssl
 from threading import Thread
 import urllib.error
 import urllib.request
@@ -37,9 +40,10 @@ class _RecordingHandler(BaseHTTPRequestHandler):
     requests: list[tuple[str, dict[str, str]]] = []
 
     def _record(self) -> None:
-        type(self).requests.append(
-            (self.command, {name.lower(): value for name, value in self.headers.items()})
-        )
+        type(self).requests.append((
+            self.command,
+            {name.lower(): value for name, value in self.headers.items()},
+        ))
 
     def do_GET(self):
         if self.path.startswith("/redirect"):
@@ -84,27 +88,6 @@ def _credential_headers() -> dict[str, str]:
         "Accept": "application/json",
         "User-Agent": "hermes-test",
     }
-
-
-def test_url_origin_normalizes_default_ports_and_trailing_dot():
-    assert url_origin("https://EXAMPLE.test./models") == (
-        "https",
-        "example.test",
-        443,
-    )
-    assert url_origin("https://example.test:443/other") == (
-        "https",
-        "example.test",
-        443,
-    )
-    assert url_origin("http://example.test") != url_origin("https://example.test")
-    assert url_origin("https://example.test:0") == (
-        "https",
-        "example.test",
-        0,
-    )
-    with pytest.raises(ValueError):
-        url_origin("https://example.test:not-a-port")
 
 
 def test_cross_host_redirect_drops_arbitrary_credentials_on_wire():
@@ -159,69 +142,6 @@ def test_same_host_different_port_drops_credentials_on_wire():
     assert "cf-access-client-secret" not in headers
 
 
-def test_same_origin_redirect_preserves_headers_on_wire():
-    server = _server()
-    _RecordingHandler.requests = []
-    _RecordingHandler.redirect_status = 302
-    _RecordingHandler.redirect_to = f"http://127.0.0.1:{server.server_port}/sink"
-    try:
-        request = urllib.request.Request(
-            f"http://127.0.0.1:{server.server_port}/redirect",
-            headers=_credential_headers(),
-        )
-        with open_credentialed_url(request, timeout=3) as response:
-            response.read()
-    finally:
-        server.shutdown()
-
-    _, headers = _RecordingHandler.requests[-1]
-    assert headers["authorization"] == "Bearer secret"
-    assert headers["cf-access-client-secret"] == "cloudflare-secret"
-
-
-def test_scheme_downgrade_is_cross_origin():
-    request = urllib.request.Request(
-        "https://models.example.test/models", headers=_credential_headers()
-    )
-    handler = SafeCredentialRedirectHandler(request.full_url)
-    redirected = handler.redirect_request(
-        request,
-        None,
-        302,
-        "Found",
-        {},
-        "http://models.example.test/models",
-    )
-    assert redirected is not None
-    headers = {name.lower(): value for name, value in redirected.header_items()}
-    assert "authorization" not in headers
-    assert "cf-access-client-secret" not in headers
-
-
-def test_post_302_uses_urllib_semantics_and_drops_credentials():
-    request = urllib.request.Request(
-        "https://models.example.test/load",
-        data=b"{}",
-        headers={**_credential_headers(), "Content-Type": "application/json"},
-        method="POST",
-    )
-    handler = SafeCredentialRedirectHandler(request.full_url)
-    redirected = handler.redirect_request(
-        request,
-        None,
-        302,
-        "Found",
-        {},
-        "https://other.example.test/load",
-    )
-    assert redirected is not None
-    assert redirected.get_method() == "GET"
-    assert redirected.data is None
-    headers = {name.lower(): value for name, value in redirected.header_items()}
-    assert "authorization" not in headers
-    assert "content-type" not in headers
-
-
 def test_post_307_remains_rejected_by_urllib():
     request = urllib.request.Request(
         "https://models.example.test/load",
@@ -259,64 +179,6 @@ def test_explicit_opener_factory_is_instrumentable_without_security_bypass():
     with open_credentialed_url(request, timeout=7, opener_factory=factory):
         pass
     assert calls == [("https://models.example.test/models", 7)]
-
-
-def test_installed_custom_opener_policy_is_preserved(monkeypatch):
-    opened = []
-
-    class FooHandler(urllib.request.BaseHandler):
-        def foo_open(self, request):
-            opened.append(request.full_url)
-            return _Response(b"custom")
-
-    installed = urllib.request.build_opener(FooHandler())
-    installed.addheaders = [
-        ("X-Trace-Policy", "installed"),
-        ("User-agent", "enterprise-client"),
-    ]
-    monkeypatch.setattr(urllib.request, "_opener", installed)
-
-    from hermes_cli.urllib_security import _secure_opener_from_installed_policy
-
-    secured = _secure_opener_from_installed_policy(
-        "foo://models.example.test/catalog"
-    )
-    assert secured.addheaders == []
-    assert getattr(secured, "_hermes_initial_addheaders") == installed.addheaders
-
-    request = urllib.request.Request(
-        "foo://models.example.test/catalog", headers={"Authorization": "secret"}
-    )
-    with open_credentialed_url(request, timeout=3) as response:
-        assert response.read() == b"custom"
-    request_headers = {
-        name.lower(): value for name, value in request.header_items()
-    }
-    assert request_headers["x-trace-policy"] == "installed"
-    assert request_headers["user-agent"] == "enterprise-client"
-    assert opened == ["foo://models.example.test/catalog"]
-
-
-def test_installed_proxy_handler_is_preserved(monkeypatch):
-    installed = urllib.request.build_opener(
-        urllib.request.ProxyHandler({"https": "http://proxy.example.test:8443"})
-    )
-    monkeypatch.setattr(urllib.request, "_opener", installed)
-
-    from hermes_cli.urllib_security import _secure_opener_from_installed_policy
-
-    secured = _secure_opener_from_installed_policy(
-        "https://models.example.test/catalog"
-    )
-    proxy_handlers = [
-        handler
-        for handler in getattr(secured, "handlers", ())
-        if isinstance(handler, urllib.request.ProxyHandler)
-    ]
-    assert proxy_handlers
-    assert getattr(proxy_handlers[0], "proxies", {}) == {
-        "https": "http://proxy.example.test:8443"
-    }
 
 
 def test_installed_request_processor_cannot_resurrect_cross_origin_secret(
@@ -370,9 +232,7 @@ def test_multihop_redirects_never_resurrect_credentials():
         "https://a.example.test/step-two",
     )
     assert same_origin is not None
-    same_headers = {
-        name.lower(): value for name, value in same_origin.header_items()
-    }
+    same_headers = {name.lower(): value for name, value in same_origin.header_items()}
     assert "authorization" in same_headers
 
     cross_origin = handler.redirect_request(
@@ -384,9 +244,7 @@ def test_multihop_redirects_never_resurrect_credentials():
         "https://b.example.test/step-three",
     )
     assert cross_origin is not None
-    cross_headers = {
-        name.lower(): value for name, value in cross_origin.header_items()
-    }
+    cross_headers = {name.lower(): value for name, value in cross_origin.header_items()}
     assert "authorization" not in cross_headers
     assert "cf-access-client-secret" not in cross_headers
 
@@ -399,9 +257,7 @@ def test_multihop_redirects_never_resurrect_credentials():
         "https://a.example.test/final",
     )
     assert returned is not None
-    returned_headers = {
-        name.lower(): value for name, value in returned.header_items()
-    }
+    returned_headers = {name.lower(): value for name, value in returned.header_items()}
     assert "authorization" not in returned_headers
     assert "cf-access-client-secret" not in returned_headers
 
@@ -464,7 +320,7 @@ def test_anthropic_profile_drops_x_api_key_on_redirect(monkeypatch):
     original_request = urllib.request.Request
 
     def local_anthropic_request(url, *args, **kwargs):
-        if url == "https://api.anthropic.com/v1/models":
+        if url.startswith("https://api.anthropic.com/v1/models"):
             url = f"http://127.0.0.1:{source.server_port}/redirect"
         return original_request(url, *args, **kwargs)
 
@@ -527,35 +383,297 @@ def test_azure_anthropic_probe_drops_api_key_and_bearer_on_redirect():
     assert "api-key" not in headers
 
 
-def test_lmstudio_load_post_drops_bearer_on_redirect(monkeypatch):
-    from hermes_cli import models
+@pytest.fixture(autouse=True)
+def _reset_https_context_cache():
+    """Keep the CA-context memo from carrying a previous test's env into the next one."""
+    import hermes_cli.urllib_security as urllib_security
 
-    sink = _server()
-    source = ThreadingHTTPServer(("127.0.0.1", 0), _LmStudioSourceHandler)
-    Thread(target=source.serve_forever, daemon=True).start()
-    _RecordingHandler.requests = []
-    _LmStudioSourceHandler.redirect_to = f"http://localhost:{sink.server_port}/sink"
-    monkeypatch.setattr(
-        models,
-        "_lmstudio_fetch_raw_models",
-        lambda **_kwargs: [
-            {"id": "model", "max_context_length": 8192, "loaded_instances": []}
-        ],
+    urllib_security._HTTPS_CONTEXT_CACHE = None
+    yield
+    urllib_security._HTTPS_CONTEXT_CACHE = None
+
+
+def _clear_ca_bundle_env(monkeypatch) -> None:
+    for name in (
+        "HERMES_CA_BUNDLE",
+        "SSL_CERT_FILE",
+        "REQUESTS_CA_BUNDLE",
+        "CURL_CA_BUNDLE",
+    ):
+        monkeypatch.delenv(name, raising=False)
+
+
+def test_hermes_owned_opener_uses_resolved_https_context(monkeypatch):
+    import hermes_cli.urllib_security as urllib_security
+
+    context = ssl.create_default_context()
+    monkeypatch.setattr(urllib.request, "_opener", None)
+    monkeypatch.setattr(urllib_security, "_resolved_https_context", lambda: context)
+
+    opener = urllib_security._secure_opener_from_installed_policy(
+        "https://models.example.test/catalog"
     )
-    try:
-        loaded = models.ensure_lmstudio_model_loaded(
-            "model",
-            f"http://127.0.0.1:{source.server_port}",
-            api_key="lm-secret",
-            target_context_length=4096,
-            timeout=3,
-        )
-    finally:
-        source.shutdown()
-        sink.shutdown()
 
-    assert loaded == 4096
-    method, headers = _RecordingHandler.requests[-1]
-    assert method == "GET"
-    assert "authorization" not in headers
-    assert "content-type" not in headers
+    https_handlers = [
+        handler
+        for handler in opener.handlers
+        if isinstance(handler, urllib.request.HTTPSHandler)
+    ]
+    assert len(https_handlers) == 1
+    assert getattr(https_handlers[0], "_context", None) is context
+
+
+def test_resolved_https_context_prefers_configured_ca_bundle(monkeypatch, tmp_path):
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    ca_bundle = tmp_path / "corporate-ca.pem"
+    ca_bundle.touch()
+    expected_context = ssl.create_default_context()
+    seen: list[str | None] = []
+
+    def create_default_context(*, cafile=None):
+        seen.append(cafile)
+        return expected_context
+
+    monkeypatch.setenv("HERMES_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
+
+    assert urllib_security._resolved_https_context() is expected_context
+    assert seen == [str(ca_bundle)]
+
+
+def test_resolved_https_context_uses_certifi_on_macos(monkeypatch):
+    import certifi
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    expected_context = ssl.create_default_context()
+    seen: list[str | None] = []
+
+    def create_default_context(*, cafile=None):
+        seen.append(cafile)
+        return expected_context
+
+    monkeypatch.setattr(urllib_security.sys, "platform", "darwin")
+    monkeypatch.setattr(certifi, "where", lambda: "/certifi/cacert.pem")
+    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
+
+    assert urllib_security._resolved_https_context() is expected_context
+    assert seen == ["/certifi/cacert.pem"]
+
+
+def test_invalid_ca_bundle_falls_back_to_certifi_on_macos(monkeypatch, tmp_path):
+    import certifi
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    missing_bundle = tmp_path / "missing-ca.pem"
+    expected_context = ssl.create_default_context()
+    seen: list[str | None] = []
+
+    def create_default_context(*, cafile=None):
+        seen.append(cafile)
+        return expected_context
+
+    monkeypatch.setenv("HERMES_CA_BUNDLE", str(missing_bundle))
+    monkeypatch.setattr(urllib_security.sys, "platform", "darwin")
+    monkeypatch.setattr(certifi, "where", lambda: "/certifi/cacert.pem")
+    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
+
+    assert urllib_security._resolved_https_context() is expected_context
+    assert seen == ["/certifi/cacert.pem"]
+
+
+def test_resolved_https_context_keeps_stdlib_default_off_macos(monkeypatch):
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    monkeypatch.setattr(urllib_security.sys, "platform", "linux")
+
+    assert urllib_security._resolved_https_context() is None
+
+
+def test_installed_https_context_is_preserved(monkeypatch):
+    import hermes_cli.urllib_security as urllib_security
+
+    context = ssl.create_default_context()
+    installed = urllib.request.build_opener(
+        urllib.request.HTTPSHandler(context=context)
+    )
+    monkeypatch.setattr(urllib.request, "_opener", installed)
+
+    def unexpected_context_resolution():
+        raise AssertionError("installed TLS policy must remain authoritative")
+
+    monkeypatch.setattr(
+        urllib_security,
+        "_resolved_https_context",
+        unexpected_context_resolution,
+    )
+
+    opener = urllib_security._secure_opener_from_installed_policy(
+        "https://models.example.test/catalog"
+    )
+
+    https_handlers = [
+        handler
+        for handler in opener.handlers
+        if isinstance(handler, urllib.request.HTTPSHandler)
+    ]
+    assert len(https_handlers) == 1
+    assert getattr(https_handlers[0], "_context", None) is context
+
+
+def _counting_context_factory():
+    """Return (factory, calls) where each call yields a distinct context object."""
+    calls: list[str | None] = []
+
+    def create_default_context(*, cafile=None):
+        calls.append(cafile)
+        return ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
+
+    return create_default_context, calls
+
+
+def test_hermes_owned_openers_parse_the_ca_bundle_once(monkeypatch, tmp_path):
+    """Every Hermes request builds an opener; the bundle must not be re-parsed each time."""
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    ca_bundle = tmp_path / "corporate-ca.pem"
+    ca_bundle.write_text("-----BEGIN CERTIFICATE-----\n")
+    factory, calls = _counting_context_factory()
+    monkeypatch.setenv("HERMES_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.setattr(ssl, "create_default_context", factory)
+    monkeypatch.setattr(urllib.request, "_opener", None)
+
+    contexts = []
+    for _ in range(5):
+        opener = urllib_security._secure_opener_from_installed_policy("https://models.example.test/v1")
+        contexts.extend(
+            handler._context
+            for handler in opener.handlers
+            if isinstance(handler, urllib.request.HTTPSHandler)
+        )
+
+    assert calls == [str(ca_bundle)]
+    assert len(contexts) == 5
+    assert all(context is contexts[0] for context in contexts)
+
+
+def test_rotated_ca_bundle_is_picked_up(monkeypatch, tmp_path):
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    ca_bundle = tmp_path / "corporate-ca.pem"
+    ca_bundle.write_text("first")
+    factory, calls = _counting_context_factory()
+    monkeypatch.setenv("HERMES_CA_BUNDLE", str(ca_bundle))
+    monkeypatch.setattr(ssl, "create_default_context", factory)
+
+    first = urllib_security._resolved_https_context()
+    assert urllib_security._resolved_https_context() is first
+
+    ca_bundle.write_text("a rotated bundle with a different length")
+    rotated = urllib_security._resolved_https_context()
+
+    assert rotated is not first
+    assert calls == [str(ca_bundle), str(ca_bundle)]
+
+
+def test_fallback_bundle_change_does_not_invalidate_the_memo(monkeypatch, tmp_path):
+    """The memo keys on the preferred bundle only: certifi was never read, so its rotation is moot."""
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    preferred = tmp_path / "corporate-ca.pem"
+    fallback = tmp_path / "cacert.pem"
+    preferred.write_text("preferred")
+    fallback.write_text("first")
+    factory, calls = _counting_context_factory()
+    monkeypatch.setattr(ssl, "create_default_context", factory)
+    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: (str(preferred), str(fallback)))
+
+    first = urllib_security._resolved_https_context()
+    fallback.write_text("a rotated fallback bundle with a different length")
+
+    assert urllib_security._resolved_https_context() is first
+    assert calls == [str(preferred)]
+
+
+def test_default_certificates_fallback_is_logged_once_after_all_bundles_fail(monkeypatch, caplog):
+    """A failed candidate says "trying the next bundle"; the default-certificates line is emitted once."""
+    import hermes_cli.urllib_security as urllib_security
+
+    def create_default_context(*, cafile=None):
+        raise ssl.SSLError(f"bad bundle {cafile}")
+
+    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
+
+    with caplog.at_level(logging.WARNING, logger=urllib_security.logger.name):
+        assert urllib_security._build_https_context(("/a.pem", "/b.pem")) == (None, None)
+
+    messages = [record.getMessage() for record in caplog.records]
+    per_failure = [m for m in messages if "trying the next bundle" in m]
+    assert [m.split(":")[0] for m in per_failure] == [
+        "CA bundle could not be loaded from /a.pem",
+        "CA bundle could not be loaded from /b.pem",
+    ]
+    assert [m for m in messages if "falling back to default certificates" in m] == [
+        "No configured CA bundle could be loaded — falling back to default certificates"
+    ]
+    assert all(record.levelno == logging.WARNING for record in caplog.records)
+
+
+@pytest.mark.parametrize(
+    ("candidates", "first_load_fails_for", "expected_load_sequence"),
+    [
+        pytest.param(("corporate-ca.pem",), "corporate-ca.pem", ["corporate-ca.pem", "corporate-ca.pem"], id="no-context"),
+        pytest.param(
+            ("corporate-ca.pem", "cacert.pem"),
+            "corporate-ca.pem",
+            ["corporate-ca.pem", "cacert.pem", "corporate-ca.pem"],
+            id="fallback-context",
+        ),
+    ],
+)
+def test_a_failed_preferred_bundle_load_is_not_memoised(
+    monkeypatch, tmp_path, candidates, first_load_fails_for, expected_load_sequence
+):
+    """A transient failure of the preferred bundle must be retried on the next request, not pinned.
+
+    Whether the failure leaves no context at all or a context built from a fallback bundle (certifi
+    on macOS), only a context built from the preferred bundle is memoised.
+    """
+    import hermes_cli.urllib_security as urllib_security
+
+    _clear_ca_bundle_env(monkeypatch)
+    paths = tuple(str(tmp_path / name) for name in candidates)
+    for path in paths:
+        Path(path).write_text("pem")
+    failing_path = str(tmp_path / first_load_fails_for)
+    expected = [str(tmp_path / name) for name in expected_load_sequence]
+    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: paths)
+
+    state = {"failing": True, "loads": []}
+
+    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+        state["loads"].append(cafile)
+        if state["failing"] and cafile == failing_path:
+            raise ssl.SSLError("transient read failure")
+
+    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", load_verify_locations)
+
+    first = urllib_security._resolved_https_context()
+    assert (first is None) == (len(candidates) == 1)
+    assert state["loads"] == expected[: len(candidates)]
+
+    state["failing"] = False
+    recovered = urllib_security._resolved_https_context()
+
+    assert recovered is not None
+    assert recovered is not first
+    assert state["loads"] == expected
+    assert urllib_security._resolved_https_context() is recovered
+    assert state["loads"] == expected

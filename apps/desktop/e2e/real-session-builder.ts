@@ -28,11 +28,18 @@ interface CreatedSession {
   stored_session_id: string
 }
 
+export interface RealSessionTurn {
+  /** Local image paths attached before the prompt, as the composer would. */
+  images?: readonly string[]
+  text: string
+}
+
 export interface RealSessionSpec {
-  /** Human-visible sidebar title, persisted by the first completed turn. */
+  /** Session label. The durable row stores no title, so clients fall back to
+   * the preview (the first 60 characters of the first user message). */
   title: string
   /** Each item becomes one real user prompt followed by the mock provider's reply. */
-  turns: readonly string[]
+  turns: readonly (RealSessionTurn | string)[]
 }
 
 export interface RealSession {
@@ -107,7 +114,13 @@ export class RealSessionBuilder {
     const runtimeId = requireString(created, 'session_id')
     const sessionId = requireString(created, 'stored_session_id')
 
-    for (const text of spec.turns) {
+    for (const turn of spec.turns) {
+      const { images = [], text } = typeof turn === 'string' ? { text: turn } : turn
+
+      for (const image of images) {
+        await this.request('image.attach', { session_id: runtimeId, path: image })
+      }
+
       const completion = this.waitForEvent(
         frame => frame.params?.type === 'message.complete' && frame.params.session_id === runtimeId,
       )

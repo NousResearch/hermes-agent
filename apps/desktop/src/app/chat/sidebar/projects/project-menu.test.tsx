@@ -29,7 +29,7 @@ vi.mock('@/i18n', () => ({
         projects: {
           copyPath: 'Copy path',
           deleteConfirm: 'This cannot be undone.',
-          menu: 'Project actions',
+          menu: 'Actions',
           menuAddFolder: 'Add folder',
           menuAppearance: 'Appearance',
           menuDelete: 'Delete',
@@ -88,34 +88,20 @@ const openTriggerMenu = (trigger: HTMLElement) => {
 }
 
 describe('ProjectMenu', () => {
-  it('wraps the kebab trigger in a Tip', () => {
+  it('does not wrap the kebab trigger in a Tip', () => {
     render(<ProjectMenu isActive={false} project={project} />)
 
-    const button = screen.getByRole('button', { name: 'Project actions' })
-    expect(tipTrigger(button)).toBeTruthy()
+    const button = screen.getByRole('button', { name: 'Actions' })
+    expect(tipTrigger(button)).toBeNull()
   })
 
-  // #67500 (Gille, second pass): when anchorRef is absent, the trigger used to
-  // be `<PopoverAnchor asChild>{trigger}</PopoverAnchor>` where `trigger` was
-  // ALREADY wrapped in <Tip> — so PopoverAnchor's asChild cloned Tip itself
-  // (Tip doesn't forward extra props to its children), and the popover's
-  // real-DOM anchor ref never reached the button. Composing Tip OUTSIDE
-  // PopoverAnchor (Tip > PopoverAnchor > DropdownMenuTrigger > button) fixes
-  // that ref delivery.
-  //
-  // What this test can't verify: jsdom has no layout engine, so the actual
-  // POSITIONING the anchor ref enables isn't observable here — same
-  // limitation already noted above for the icon grid. What it does verify:
-  // the 3-deep asChild chain doesn't regress into the same silent-drop
-  // failure as the original bug (#67500, first pass) — the trigger stays a
-  // real, clickable element that opens the menu and reaches the Appearance
-  // popover end-to-end, for the anchorRef-absent path specifically (the
-  // anchorRef-present path never touches PopoverAnchor and is covered by the
-  // kebab test above).
+  // When anchorRef is absent, PopoverAnchor wraps the dropdown trigger so the
+  // appearance popover positions against the kebab. asChild must still reach
+  // the real button (no non-forwarding wrappers inside the chain — #67500).
   it('opens the appearance popover through the kebab trigger when anchorRef is absent', async () => {
     render(<ProjectMenu isActive={false} project={project} />)
 
-    const trigger = screen.getByRole('button', { name: 'Project actions' })
+    const trigger = screen.getByRole('button', { name: 'Actions' })
 
     openTriggerMenu(trigger)
 

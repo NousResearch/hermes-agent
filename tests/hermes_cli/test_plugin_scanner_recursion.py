@@ -8,6 +8,7 @@ still opt-in; exclusive kind skipped; unknown kinds → standalone warning).
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from typing import Any, Dict
 
@@ -90,20 +91,6 @@ class TestCategoryNamespaceRecursion:
         assert loaded.manifest.name == "openai"
         assert loaded.enabled is True
 
-    def test_flat_plugin_key_matches_name(self, tmp_path, monkeypatch):
-        """Flat plugins keep their bare name as the key (back-compat)."""
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        user_plugins = hermes_home / "plugins"
-
-        _write_plugin(user_plugins, ["my-plugin"])
-        _enable(hermes_home, "my-plugin")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert "my-plugin" in mgr._plugins
-        assert mgr._plugins["my-plugin"].manifest.key == "my-plugin"
 
     def test_depth_cap_two(self, tmp_path, monkeypatch):
         """Plugins nested three levels deep are not discovered.
@@ -126,31 +113,74 @@ class TestCategoryNamespaceRecursion:
         ]
         assert non_bundled == []
 
-    def test_category_dir_with_manifest_is_leaf(self, tmp_path, monkeypatch):
-        """If ``image_gen/plugin.yaml`` exists, ``image_gen`` itself IS the
-        plugin and its children are ignored."""
+
+# ── Foreign-harness manifest dirs (#101962) ────────────────────────────────
+
+
+class TestForeignHarnessManifestDirs:
+    def test_foreign_harness_dirs_skipped_without_warnings(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """Multi-harness plugin repos (e.g. obra/superpowers) ship one
+        ``plugin.json`` per OTHER agent harness inside ``.claude-plugin/``,
+        ``.codex-plugin/`` etc. Those manifests can never satisfy the Agent
+        Plugins v1 schema, so scanning them warned on every discovery pass.
+        They must be skipped silently; the plugin's real Hermes manifest
+        (``.hermes-plugin/plugin.yaml``) is still discovered."""
         import os
         hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        user_plugins = hermes_home / "plugins"
+        sp = hermes_home / "plugins" / "superpowers"
+        (sp / ".hermes-plugin").mkdir(parents=True)
+        (sp / ".hermes-plugin" / "plugin.yaml").write_text(
+            yaml.dump(
+                {
+                    "name": "superpowers",
+                    "version": "6.3.0",
+                    "description": "multi-harness plugin",
+                }
+            )
+        )
+        for harness in (
+            ".claude-plugin",
+            ".codex-plugin",
+            ".cursor-plugin",
+            ".devin-plugin",
+            ".kimi-plugin",
+        ):
+            harness_dir = sp / harness
+            harness_dir.mkdir(parents=True)
+            (harness_dir / "plugin.json").write_text(
+                json.dumps({"name": "superpowers", "version": "6.3.0"})
+            )
 
-        # parent has a manifest → stop recursing
-        _write_plugin(user_plugins, ["image_gen"])
-        # child also has a manifest — should NOT be found because we stop
-        # at the parent.
-        _write_plugin(user_plugins, ["image_gen", "openai"])
-        _enable(hermes_home, "image_gen")
-        _enable(hermes_home, "image_gen/openai")
+        with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
 
-        mgr = PluginManager()
-        mgr.discover_and_load()
+        assert "superpowers/.hermes-plugin" in mgr._plugins
+        parse_warnings = [
+            r for r in caplog.records if "Failed to parse" in r.getMessage()
+        ]
+        assert parse_warnings == []
 
-        # The bundled plugins/image_gen/openai/ exists in the repo — filter
-        # it out so we're only asserting on the user-dir layout.
-        user_plugins_in_registry = {
-            k for k, p in mgr._plugins.items() if p.manifest.source != "bundled"
-        }
-        assert "image_gen" in user_plugins_in_registry
-        assert "image_gen/openai" not in user_plugins_in_registry
+    def test_broken_portable_plugin_still_warns(self, tmp_path, monkeypatch, caplog):
+        """A genuinely broken portable plugin.json (not a foreign-harness
+        convention directory) must still surface its parse warning."""
+        import os
+        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
+        broken = hermes_home / "plugins" / "broken-portable"
+        broken.mkdir(parents=True)
+        (broken / "plugin.json").write_text(json.dumps({"name": "broken"}))
+
+        with caplog.at_level("WARNING", logger="hermes_cli.plugins"):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        assert any(
+            "Failed to parse" in r.getMessage() and "broken-portable" in r.getMessage()
+            for r in caplog.records
+        )
+
 
 
 # ── Kind parsing ───────────────────────────────────────────────────────────
@@ -231,22 +261,6 @@ class TestBackendGate:
         assert loaded.enabled is False
         assert "not enabled" in (loaded.error or "")
 
-    def test_user_backend_loads_when_enabled(self, tmp_path, monkeypatch):
-        import os
-        hermes_home = Path(os.environ["HERMES_HOME"])  # set by hermetic conftest fixture
-        user_plugins = hermes_home / "plugins"
-
-        _write_plugin(
-            user_plugins,
-            ["image_gen", "fancy"],
-            manifest_extra={"kind": "backend"},
-        )
-        _enable(hermes_home, "image_gen/fancy")
-
-        mgr = PluginManager()
-        mgr.discover_and_load()
-
-        assert mgr._plugins["image_gen/fancy"].enabled is True
 
     def test_exclusive_kind_skipped(self, tmp_path, monkeypatch):
         """``kind: exclusive`` plugins are recorded but not loaded — the

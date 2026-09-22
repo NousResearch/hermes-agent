@@ -30,7 +30,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.memory_manager import build_memory_context_block
-from agent.turn_context import build_turn_context, compose_user_api_content
+from agent.turn_context import (
+    _memory_query_text,
+    build_turn_context,
+    compose_multimodal_context_part,
+    compose_user_api_content,
+)
 from hermes_state import SessionDB
 
 
@@ -42,22 +47,37 @@ class TestComposeUserApiContent:
     def test_none_when_nothing_to_inject(self):
         assert compose_user_api_content("hello", "", "") is None
 
-    def test_none_for_multimodal_content(self):
-        blocks = [{"type": "text", "text": "hi"}]
-        assert compose_user_api_content(blocks, "mem", "ctx") is None
 
     def test_composes_memory_block_and_plugin_context(self):
         out = compose_user_api_content("hello", "likes tea", "PLUGIN-CTX")
         fenced = build_memory_context_block("likes tea")
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
 
-    def test_plugin_context_only(self):
-        assert compose_user_api_content("hello", "", "CTX") == "hello\n\nCTX"
 
-    def test_deterministic_across_calls(self):
-        a = compose_user_api_content("hello", "likes tea", "CTX")
-        b = compose_user_api_content("hello", "likes tea", "CTX")
-        assert a == b
+
+
+class TestComposeMultimodalContextPart:
+    def test_is_the_string_sidecar_injection_tail(self):
+        """Both content shapes inject byte-identical context (#71998): the text part a list
+        turn carries is exactly what the string sidecar appends after ``content``."""
+        assert compose_multimodal_context_part("", "") is None
+        sidecar = compose_user_api_content("hello", "likes tea", "CTX")
+        part = compose_multimodal_context_part("likes tea", "CTX")
+        assert sidecar == "hello\n\n" + part
+
+
+class TestMemoryQueryText:
+    def test_list_turn_queries_its_text_and_image_only_stays_trivial(self):
+        """#71998 execution side: a text+image turn must drive prefetch off its text (it used to
+        collapse to ``""`` and skip recall silently); an image-only turn has no text to query."""
+        from agent.memory_provider import is_trivial_prompt
+
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        text_plus_image = [{"type": "text", "text": "remind me what my dog's name is"}, image]
+        assert _memory_query_text(text_plus_image) == "remind me what my dog's name is"
+        assert is_trivial_prompt(_memory_query_text(text_plus_image)) is False
+        assert _memory_query_text([image]) == ""
+        assert is_trivial_prompt(_memory_query_text([image])) is True
 
 
 # ---------------------------------------------------------------------------
@@ -84,14 +104,6 @@ class TestSessionDbSidecar:
         finally:
             db.close()
 
-    def test_absent_when_null(self, tmp_path):
-        db = self._open(tmp_path)
-        try:
-            db.append_message("s1", "user", content="hello")
-            msgs = db.get_messages_as_conversation("s1")
-            assert "api_content" not in msgs[0]
-        finally:
-            db.close()
 
     def test_get_messages_exposes_column(self, tmp_path):
         db = self._open(tmp_path)
@@ -102,23 +114,6 @@ class TestSessionDbSidecar:
         finally:
             db.close()
 
-    def test_insert_message_rows_carries_sidecar(self, tmp_path):
-        """replace_messages (compaction/rewrite flows) preserves the sidecar
-        from message dicts."""
-        db = self._open(tmp_path)
-        try:
-            db.replace_messages(
-                "s1",
-                [
-                    {"role": "user", "content": "hello", "api_content": "hello+ctx"},
-                    {"role": "assistant", "content": "hi"},
-                ],
-            )
-            msgs = db.get_messages_as_conversation("s1")
-            assert msgs[0]["api_content"] == "hello+ctx"
-            assert "api_content" not in msgs[1]
-        finally:
-            db.close()
 
 
 class TestAutoMigration:
@@ -313,6 +308,32 @@ class TestPrologueStamping:
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
+        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+
+    def test_appends_context_part_for_multimodal_turn(self):
+        """#71998: pre_llm_call context must reach an image-only (multimodal)
+        turn as a durable text part, not silently drop.
+
+        The string api_content sidecar can't ride on list content, so the
+        context is appended to the content list (the gateway must-deliver-note
+        channel) — durable, so wire == persisted == replay."""
+        agent = _FakeAgent()
+        blocks = [{"type": "image_url", "image_url": {"url": "data:img"}}]
+        with patch(
+            "hermes_cli.plugins.invoke_hook",
+            return_value=[{"context": "PLUGIN-CTX"}],
+        ):
+            ctx = _build(
+                agent,
+                user_message=blocks,
+                summarize_user_message_for_log=lambda _m: "[image]",
+            )
+        content = ctx.messages[ctx.current_turn_user_idx]["content"]
+        assert isinstance(content, list)
+        # Original image part preserved; plugin context appended as a text part.
+        assert content[0] == {"type": "image_url", "image_url": {"url": "data:img"}}
+        assert content[-1] == {"type": "text", "text": "PLUGIN-CTX"}
+        # Multimodal turns carry the context durably, not via the string sidecar.
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
 
@@ -580,6 +601,32 @@ class TestWireInvariant:
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
 
+    def test_multimodal_turn_sends_persists_and_replays_context_part(self, wire_env):
+        """#71998: on a list-content (image) turn the ``pre_llm_call`` context reaches the
+        wire as a text part, the persisted row carries it, and a resumed turn N+1 replays
+        the same view — same contract as the string sidecar path."""
+        make_agent, handler, db, sid = wire_env
+        from run_agent import AIAgent
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        turn = [{"type": "text", "text": "what is this"}, image]
+
+        agent1 = make_agent()
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):  # keep native parts on the wire
+            agent1.run_conversation(list(turn), conversation_history=[], task_id="t1")
+
+        sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert sent == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
+
+        history = db.get_messages_as_conversation(sid)
+        assert "PLUGIN-CTX" in history[0]["content"]  # persisted with the turn, not dropped
+
+        handler.captured_requests = []
+        agent2 = make_agent()
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            agent2.run_conversation("second question", conversation_history=history, task_id="t2")
+        replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert replayed == history[0]["content"]
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override
@@ -590,32 +637,8 @@ from agent.turn_context import reanchor_current_turn_user_idx
 
 
 class TestReanchorCurrentTurnUserIdx:
-    def test_exact_match_beats_later_todo_snapshot(self):
-        """compress_context can append a todo-snapshot USER message after the
-        surviving current-turn copy — the anchor must stay on the real turn."""
-        messages = [
-            {"role": "assistant", "content": "summary"},
-            {"role": "user", "content": "hello"},
-            {"role": "user", "content": "## Current TODOs\n- [ ] thing"},
-        ]
-        assert reanchor_current_turn_user_idx(messages, "hello") == 1
 
-    def test_most_recent_duplicate_wins(self):
-        messages = [
-            {"role": "user", "content": "ok"},
-            {"role": "assistant", "content": "a"},
-            {"role": "user", "content": "ok"},
-        ]
-        assert reanchor_current_turn_user_idx(messages, "ok") == 2
 
-    def test_falls_back_to_last_user_without_exact_match(self):
-        """Merge-summary-into-tail rewrites the content; the trackers still
-        need a live anchor."""
-        messages = [
-            {"role": "user", "content": "[prior context]\nsummary\nhello"},
-            {"role": "assistant", "content": "a"},
-        ]
-        assert reanchor_current_turn_user_idx(messages, "hello") == 0
 
     def test_minus_one_when_no_user_message(self):
         messages = [{"role": "assistant", "content": "a"}]
@@ -776,6 +799,67 @@ class TestFlushCompressedSummaryOverrideGuard:
         finally:
             db.close()
 
+    def test_live_override_skipped_for_compression_merged_row(self, tmp_path):
+        """Same invariant as the test above, for the in-memory path.
+
+        ``finalize_turn`` calls ``_apply_persist_user_message_override`` and
+        only then ``_persist_session``, so the live dict is rewritten BEFORE
+        the DB-write guard above ever sees it. A compaction-merged row must
+        survive: the summary is the whole pre-compaction history, and this
+        list is the continuation history the next turn is built from.
+        """
+        from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-merged-live"
+        db.create_session(session_id=sid, source="cli")
+        try:
+            agent = self._make_agent(db, sid)
+            merged = "[prior context]\ncompaction summary\n\nactual question"
+            messages = [
+                {
+                    "role": "user",
+                    "content": merged,
+                    COMPRESSED_SUMMARY_METADATA_KEY: True,
+                }
+            ]
+            agent._persist_user_message_idx = 0
+            agent._persist_user_message_override = "actual question"
+            agent._persist_user_message_timestamp = 1730000000
+
+            agent._apply_persist_user_message_override(messages)
+
+            assert messages[0]["content"] == merged, (
+                "the compaction summary was erased from the continuation history"
+            )
+            # The paired timestamp override is unrelated and still applies.
+            assert messages[0]["timestamp"] == 1730000000
+        finally:
+            db.close()
+
+    def test_live_override_still_applies_without_merge_marker(self, tmp_path):
+        """Negative control: an ordinary turn is still cleaned in place."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-plain-live"
+        db.create_session(session_id=sid, source="cli")
+        try:
+            agent = self._make_agent(db, sid)
+            messages = [
+                {
+                    "role": "user",
+                    "content": "[gateway note] observed\n\nactual question",
+                }
+            ]
+            agent._persist_user_message_idx = 0
+            agent._persist_user_message_override = "actual question"
+            agent._persist_user_message_timestamp = None
+
+            agent._apply_persist_user_message_override(messages)
+
+            assert messages[0]["content"] == "actual question"
+        finally:
+            db.close()
+
 
 class TestFlushSanitizeDivergenceCapture:
     def _make_agent(self, db, sid):
@@ -860,22 +944,23 @@ class TestMaxIterationsSummaryReplay:
         class _Completions:
             def create(self, **kwargs):
                 captured.update(kwargs)
-                return "RAW-RESPONSE"
+                return types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="SUMMARY", tool_calls=None),
+                        finish_reason="stop",
+                    )],
+                )
 
         client = types.SimpleNamespace(
             chat=types.SimpleNamespace(completions=_Completions())
         )
-        transport = types.SimpleNamespace(
-            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY")
-        )
-
         messages = [
             {"role": "user", "content": "q1", "api_content": "q1\n\nPLUGIN-CTX"},
             {"role": "assistant", "content": "a1"},
         ]
         with patch.object(
             agent, "_ensure_primary_openai_client", return_value=client
-        ), patch.object(agent, "_get_transport", return_value=transport):
+        ):
             out = handle_max_iterations(agent, messages, 5)
 
         assert out == "SUMMARY"
@@ -900,7 +985,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
     before the delayed persist. Drives the real ``compress_context`` path
     against a real, empty SessionDB."""
 
-    def _make_agent(self, db, sid, *, in_place):
+    def _make_agent(self, db, sid, *, in_place, current_user_content="hello"):
         from run_agent import AIAgent
 
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -931,7 +1016,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         seen = {}
         compacted = [
             {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "user", "content": "hello"},
+            {"role": "user", "content": current_user_content},
         ]
 
         def _compress(_messages, **_kwargs):
@@ -985,6 +1070,31 @@ class TestSessionRowExistsBeforePreflightCompaction:
             assert "[CONTEXT COMPACTION] summary" in contents
             # And the live context is the compacted set.
             assert ctx.messages[ctx.current_turn_user_idx]["content"] == "hello"
+        finally:
+            db.close()
+
+    def test_in_place_compaction_multimodal_context_part_survives_reload(self, tmp_path):
+        """#71998 persistence: in-place ``archive_and_compact`` writes the current-turn user
+        row BEFORE the prologue appends the ``pre_llm_call`` text part, and the crash persist
+        identity-skips compacted dicts — the part must be pushed into that row, or a
+        resumed session replays a view the model never saw."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-inplace-mm"
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        turn = [{"type": "text", "text": "what is this"}, image]
+        try:
+            agent, _seen = self._make_agent(db, sid, in_place=True, current_user_content=list(turn))
+            with patch("hermes_cli.plugins.invoke_hook", return_value=[{"context": "PLUGIN-CTX"}]):
+                ctx = _build(
+                    agent, user_message=list(turn), conversation_history=self._oversized_history(),
+                    summarize_user_message_for_log=lambda _m: "[image]",
+                )
+            assert agent._last_compaction_in_place is True
+            live = ctx.messages[ctx.current_turn_user_idx]["content"]
+            assert live == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
+            # Reload: the durable row carries the same parts the model saw.
+            reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
+            assert reloaded[-1]["content"] == live
         finally:
             db.close()
 

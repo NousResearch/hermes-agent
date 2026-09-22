@@ -4,9 +4,10 @@ import { useEffect, useRef } from 'react'
 import { playSpeechText } from '@/lib/voice-playback'
 import { ownsAmbientCue } from '@/store/ambient'
 import { notifyError } from '@/store/notifications'
-import { $messages } from '@/store/session'
 import { $voicePlayback } from '@/store/voice-playback'
 import { $autoSpeakReplies } from '@/store/voice-prefs'
+
+import { useComposerScope } from '../scope'
 
 interface AutoSpeakReply {
   id: string
@@ -40,8 +41,11 @@ export function useAutoSpeakReplies({
   sessionId
 }: UseAutoSpeakReplies) {
   const enabled = useStore($autoSpeakReplies)
-  const latest = useRef({ conversationActive, failureLabel, markSpoken, pendingReply })
-  latest.current = { conversationActive, failureLabel, markSpoken, pendingReply }
+  // Wake on THIS composer's transcript: a tile subscribed to the primary's
+  // would never fire on its own replies (and would fire on someone else's).
+  const { $messages, connectionId, profile } = useComposerScope()
+  const latest = useRef({ connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile })
+  latest.current = { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile }
 
   useEffect(() => {
     if (!enabled) {
@@ -53,7 +57,7 @@ export function useAutoSpeakReplies({
     latest.current.markSpoken()
 
     const speakLatest = () => {
-      const { conversationActive, failureLabel, markSpoken, pendingReply } = latest.current
+      const { connectionId, conversationActive, failureLabel, markSpoken, pendingReply, profile } = latest.current
 
       if (conversationActive || $voicePlayback.get().status !== 'idle') {
         return
@@ -71,8 +75,8 @@ export function useAutoSpeakReplies({
       // ran in every window, so peers just stay quiet.
       void ownsAmbientCue(`speak:${reply.id}`).then(owns => {
         if (owns) {
-          void playSpeechText(reply.text, { messageId: reply.id, source: 'read-aloud' }).catch(error =>
-            notifyError(error, failureLabel)
+          void playSpeechText(reply.text, { connectionId, messageId: reply.id, profile, source: 'read-aloud' }).catch(
+            error => notifyError(error, failureLabel)
           )
         }
       })
@@ -83,5 +87,5 @@ export function useAutoSpeakReplies({
     const stops = [$messages.subscribe(speakLatest), $voicePlayback.listen(speakLatest)]
 
     return () => stops.forEach(f => f())
-  }, [enabled, sessionId])
+  }, [$messages, enabled, sessionId])
 }

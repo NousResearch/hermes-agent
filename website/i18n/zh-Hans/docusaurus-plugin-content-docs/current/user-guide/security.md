@@ -144,7 +144,7 @@ approvals:
 | `gateway run` 配合 `&`/`disown`/`nohup`/`setsid` | 防止在服务管理器外启动 gateway |
 
 :::info
-**容器绕过**：在 `docker`、`singularity`、`modal` 或 `daytona` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
+**容器绕过**：在 `docker`、`singularity`、`modal`、`daytona` 或 `vercel_sandbox` 后端运行时，危险命令检查会被**跳过**，因为容器本身就是安全边界。容器内的破坏性命令不会危害宿主机。
 :::
 
 ### 审批流程（CLI）
@@ -340,7 +340,7 @@ terminal:
 - **临时模式**（`container_persistent: false`）：工作区使用 tmpfs——清理后所有内容丢失
 
 :::tip
-对于生产 gateway 部署，使用 `docker`、`modal` 或 `daytona` 后端，将 Agent 命令与宿主机系统隔离。这样可以完全消除危险命令审批的需要。
+对于生产 gateway 部署，使用 `docker`、`modal`、`daytona` 或 `vercel_sandbox` 后端，将 Agent 命令与宿主机系统隔离。这样可以完全消除危险命令审批的需要。
 :::
 
 :::warning
@@ -357,6 +357,7 @@ terminal:
 | **singularity** | 容器 | ❌ 跳过 | HPC 环境 |
 | **modal** | 云沙箱 | ❌ 跳过 | 可扩展的云隔离 |
 | **daytona** | 云沙箱 | ❌ 跳过 | 持久化云工作区 |
+| **vercel_sandbox** | 云微虚拟机 | ❌ 跳过 | 带快照持久化的云执行 |
 
 ## 环境变量透传 {#environment-variable-passthrough}
 
@@ -494,7 +495,7 @@ security:
 
 当请求被阻止的 URL 时，工具会返回一条错误，说明该域名已被策略阻止。黑名单在 `web_search`、`web_extract`、`browser_navigate` 及所有支持 URL 的工具中均强制执行。
 
-完整详情请参见配置指南中的[网站黑名单](/user-guide/configuration#website-blocklist)。
+完整详情请参见配置指南中的[网站黑名单](./configuration.md#website-blocklist)。
 
 ### SSRF 防护
 
@@ -521,6 +522,24 @@ security:
 开启后，Web 工具、浏览器、视觉 URL 获取和 gateway 媒体下载不再拒绝 RFC 1918 / 回环 / 链路本地 / CGNAT / 云元数据目标。**这是一个有意为之的信任边界**——仅在 Agent 针对本地网络执行任意 prompt 注入 URL 属于可接受风险的机器上启用。面向公众的 gateway 应保持关闭。
 
 主机子字符串防护（即使底层 IP 是公共的，也能阻止 Unicode 同形字域名欺骗）无论此设置如何均保持开启。
+
+#### 本地代理的 fake-ip 地址段
+
+以 fake-ip 模式工作的 TUN 代理（Mihomo/Clash `fake-ip`、Surge 增强模式）会对不在其过滤器内的
+每个域名返回自己地址段中的地址——默认是 `198.18.0.0/15`（RFC 2544 基准测试段）。这些地址是代理
+的哨兵地址，而不是内网主机，因此私网 IP 守卫会在这种机器上拦掉全部出网抓取：`web_extract`、平台
+附件下载、浏览器链路都会以 *URL targets a private or internal network address* 失败，而请求根本
+没有发出。声明该地址段即可放行哨兵地址：
+
+```yaml
+security:
+  fake_ip_ranges:
+    - 198.18.0.0/15
+```
+
+默认为空，且比 `allow_private_urls` 更窄：只有被声明的地址段获得豁免，且应当是本地代理自己拥有的
+地址段（连接仍然发往代理，由代理自行解析真实目标），回环、RFC 1918、链路本地、CGNAT 和云元数据
+目标依然被拦截。
 
 ### Tirith 预执行安全扫描
 

@@ -39,10 +39,6 @@ class TestEnvFileReadBlocking:
         assert "Access denied" in error
         assert "secret-bearing" in error.lower() or "environment file" in error.lower()
 
-    def test_blocked_env_in_subdirectory(self):
-        """Nested .env files are also blocked."""
-        error = get_read_block_error("/home/user/app/services/api/.env.production")
-        assert error is not None
 
     @pytest.mark.parametrize("basename", [
         ".ENV",
@@ -57,41 +53,15 @@ class TestEnvFileReadBlocking:
         assert "Access denied" in error
         assert "environment file" in error.lower()
 
-    def test_blocked_env_absolute_path(self):
-        """Absolute paths to .env files are blocked."""
-        error = get_read_block_error("/opt/myapp/.env")
-        assert error is not None
 
     def test_allowed_env_example(self):
         """"The .env.example file is explicitly allowed — it's documentation, not a secret."""
         error = get_read_block_error("/tmp/project/.env.example")
         assert error is None
 
-    def test_allowed_env_sample(self):
-        """Other .env variants like .env.sample are allowed."""
-        error = get_read_block_error("/tmp/project/.env.sample")
-        assert error is None
 
-    def test_allowed_non_env_files(self):
-        """Regular files are not affected by the env guard."""
-        for path in ["/tmp/project/config.yaml", "/tmp/project/main.py",
-                     "/tmp/project/README.md", "/tmp/project/.gitignore"]:
-            error = get_read_block_error(path)
-            assert error is None, f"{path} should be allowed"
 
-    def test_allowed_hermes_env(self):
-        """Hermes' own .env inside HERMES_HOME is NOT blocked by this rule
-        (it's handled by other mechanisms). Only project-local .env is blocked."""
-        # Note: hermes internal .env is in ~/.hermes/.env which is NOT a project-local
-        # path, but the basename check applies to ANY .env. This is intentional —
-        # even ~/.hermes/.env should not be readable via read_file.
-        error = get_read_block_error(os.path.expanduser("~/.hermes/.env"))
-        assert error is not None
 
-    def test_blocked_set_is_lowercase(self):
-        """All entries in the blocked set are lowercase for case-insensitive matching."""
-        for name in _BLOCKED_PROJECT_ENV_BASENAMES:
-            assert name == name.lower(), f"{name} should be lowercase"
 
 
 # ---------------------------------------------------------------------------

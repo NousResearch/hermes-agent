@@ -49,7 +49,6 @@ import {
   PanelListRow,
   PanelMeta,
   PanelPill,
-  PanelRowMenu,
   PanelSectionLabel
 } from '../overlays/panel'
 import { ListRow } from '../settings/primitives'
@@ -148,19 +147,21 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
   const restartGatewayNow = useCallback(async () => {
     setRestarting(true)
 
-    try {
-      await runGatewayRestart()
+    // runGatewayRestart never rejects (it toasts its own failure); the boolean
+    // is the only signal that the receiver actually came back.
+    const ok = await runGatewayRestart()
+
+    if (ok) {
       setRestartNeeded(false)
       setRestartError(null)
       // Give the receiver a moment to bind before re-reading state.
       window.setTimeout(() => void reload(true), 4000)
-    } catch (err) {
+    } else {
       setRestartNeeded(true)
-      setRestartError(String(err))
-      notifyError(err, w.restartFailed(''))
-    } finally {
-      setRestarting(false)
+      setRestartError(w.restartFailed(''))
     }
+
+    setRestarting(false)
   }, [reload, w])
 
   const handleEnable = useCallback(async () => {
@@ -266,7 +267,7 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
         void reload(true)
       } catch (err) {
         await reload(true)
-        notifyError(err, w.toggleFailed(subName))
+        notifyError(err, w.toggleFailed(subName, nextEnabled))
       }
     },
     [queryClient, queryKey, reload, w]
@@ -387,18 +388,14 @@ export function WebhooksView({ onClose }: WebhooksViewProps) {
                   active={selectedSub?.name === sub.name}
                   dotClassName={sub.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/50'}
                   key={sub.name}
-                  menu={
-                    <PanelRowMenu
-                      items={[
-                        {
-                          icon: sub.enabled ? 'circle-slash' : 'check',
-                          label: sub.enabled ? w.disableRow : w.enableRow,
-                          onSelect: () => void handleToggle(sub.name, !sub.enabled)
-                        },
-                        { icon: 'trash', label: w.delete, onSelect: () => setPendingDelete(sub.name), tone: 'danger' }
-                      ]}
-                    />
-                  }
+                  menuItems={[
+                    {
+                      icon: sub.enabled ? 'circle-slash' : 'check',
+                      label: sub.enabled ? w.disableRow : w.enableRow,
+                      onSelect: () => void handleToggle(sub.name, !sub.enabled)
+                    },
+                    { icon: 'trash', label: w.delete, onSelect: () => setPendingDelete(sub.name), tone: 'danger' }
+                  ]}
                   onSelect={() => setSelectedName(sub.name)}
                   title={sub.name}
                 />

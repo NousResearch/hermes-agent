@@ -81,7 +81,9 @@ def redact_registered_vault_values(text: str) -> str:
 # (e.g. opaque tokens, short OAuth codes).
 _SENSITIVE_QUERY_PARAMS = frozenset({
     "access_token", "refresh_token", "id_token", "token", "api_key", "apikey",
+    "access_key",   # Lark/Feishu WS gateway auth
     "client_secret", "password", "auth", "jwt", "session", "secret", "key",
+    "ticket",       # Lark/Feishu WS connection ticket
     "code", "signature", "x-amz-signature",
 })
 
@@ -1332,4 +1334,9 @@ class RedactingFormatter(logging.Formatter):
     """Log formatter that redacts secrets from all log messages."""
 
     def format(self, record: logging.LogRecord) -> str:
-        return redact_sensitive_text(super().format(record))
+        original = super().format(record)
+        # Logs are an egress boundary with no round-trip workflow semantics —
+        # credential-shaped URL query params (e.g. Lark WS access_key/ticket)
+        # must be masked here even though tool flows keep actionable OAuth
+        # URLs intact.
+        return redact_sensitive_text(original, redact_url_credentials=True)

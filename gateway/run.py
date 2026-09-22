@@ -5219,6 +5219,47 @@ def _start_gateway_configure_logging(verbosity: Optional[int]) -> None:
     from hermes_logging import setup_logging, _safe_stderr
     setup_logging(hermes_home=_hermes_home, mode="gateway")
 
+    # The lark_oapi SDK creates its own
+    # "Lark" logger with a bare StreamHandler at import time — those records
+    # (e.g. `connected to wss://...?access_key=...&ticket=...`) bypass our
+    # RedactingFormatter file handlers. Re-formatter whatever handlers exist
+    # on that logger now, and stamp any handler the SDK adds later via a
+    # record-level filter. Same redaction as hermes_logging: URL credential
+    # params masked.
+    def _redact_lark_sdk_logger() -> None:
+        try:
+            from agent.redact import RedactingFormatter
+
+            lark_logger = logging.getLogger("Lark")
+            sdk_fmt = "[Lark] [%(asctime)s] [%(levelname)s] %(message)s"
+            for _handler in list(lark_logger.handlers):
+                _handler.setFormatter(RedactingFormatter(sdk_fmt))
+        except Exception:
+            pass
+
+        class _LarkMsgRedact(logging.Filter):
+            def filter(self, record: logging.LogRecord) -> bool:
+                try:
+                    from agent.redact import redact_sensitive_text
+
+                    msg = record.getMessage()
+                    redacted = redact_sensitive_text(
+                        msg, redact_url_credentials=True
+                    )
+                    if redacted != msg:
+                        record.msg = redacted
+                        record.args = ()
+                except Exception:
+                    pass
+                return True
+
+        _filter = _LarkMsgRedact()
+        existing = [f for f in lark_logger.filters if isinstance(f, _LarkMsgRedact)]
+        if not existing:
+            lark_logger.addFilter(_filter)
+
+    _best_effort(_redact_lark_sdk_logger, "Lark SDK logger redaction patch failed (non-fatal): %s")
+
     def _security_audit() -> None:
         # Warn-on-load, never blocks: surfaces root / weak-SSH / unauthenticated-listener exposure.
         from hermes_cli.security_audit_startup import log_startup_security_warnings

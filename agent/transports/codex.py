@@ -15,7 +15,7 @@ from agent.reasoning_effort import (
     XAI_GROK46_EFFORTS, XAI_LEGACY_EFFORTS, clamp_effort, is_astra_model,
     # Same declared vocabulary + shared clamp as the main Codex transport (agent.reasoning_effort):
     # per-model — "max" availability varies; "minimal"/"ultra" clamp to a listed level.
-    codex_supported_efforts,
+    codex_supported_efforts, is_gpt6_model,
 )
 from agent.transports.base import ProviderTransport
 from agent.transports.types import NormalizedResponse, ToolCall
@@ -371,12 +371,18 @@ def _is_openai_api_origin(base_url: Any) -> bool:
 
 
 def _is_official_openai_responses_route(model: Any, base_url: Any) -> bool:
-    """Astra on the canonical API origin only."""
-    return is_astra_model(model) and _is_openai_api_origin(base_url)
+    """GPT-6 on the canonical API origin only.
+
+    OpenAI documents ``configuration_update`` for the GPT-6 family in standard,
+    single-agent Responses requests. Exact-origin matching keeps compatible proxies
+    fail-closed unless they opt in through route capabilities.
+    """
+    return is_gpt6_model(model) and _is_openai_api_origin(base_url)
 
 
 _CHATGPT_EFFORT_UPDATE_MODELS = (
-    "gpt-6-astra", "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
+    "gpt-6-astra", "gpt-6-luna", "gpt-6-terra", "gpt-6-sol",
+    "gpt-5.6-luna", "gpt-5.6-terra", "gpt-5.6-sol",
 )
 
 
@@ -453,7 +459,7 @@ def _sanitize_astra_request_kwargs(kwargs: dict[str, Any], model: Any, base_url:
     400), sampling and logprob knobs are rejected, and cache lifetime is fixed server-side (the
     pre-5.6 ``prompt_cache_retention`` knob is dropped here; ``prompt_cache_options`` is already
     stripped on every route by ``build_kwargs``)."""
-    if not _is_official_openai_responses_route(model, base_url):
+    if not (is_astra_model(model) and _is_openai_api_origin(base_url)):
         return
     reasoning = kwargs.get("reasoning")
     if isinstance(reasoning, dict):

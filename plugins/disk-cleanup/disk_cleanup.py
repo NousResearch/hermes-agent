@@ -90,7 +90,11 @@ _EMPTY_DIR_PROTECTED_TOP_LEVEL = frozenset({
     "workspace", "plans", "home"})
 
 _EMPTY_DIR_SWEEP_PRUNE_DIRS = frozenset({
-    ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__"})
+    ".git", "node_modules", "venv", ".venv", "site-packages", "__pycache__",
+    # pg0/PostgreSQL: each instance's ``data/`` holds required-but-normally-empty
+    # maintenance dirs (pg_logical/snapshots, pg_wal/archive_status, ...);
+    # removing them breaks checkpoints and blocks pg0 startup (#113673).
+    ".pg0"})
 
 # Top-level HERMES_HOME entries guess_category() never auto-tracks: state, logs, memory,
 # sessions, config/secrets, and user project trees (test_* inside projects/ is not disposable).

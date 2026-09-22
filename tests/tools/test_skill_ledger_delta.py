@@ -102,8 +102,8 @@ def test_trim_collects_only_blobs_owned_by_removed_entries(ledger_home, monkeypa
     monkeypatch.setattr(skill_ledger, "_LEDGER_TRIM_BYTES", 700)
     skills = ledger_home / "skills"
     old = _manifest(skills, "old", **{"SKILL.md": "old"})[0]
-    kept = _manifest(skills, "kept", **{"SKILL.md": "kept"})[0]
     skill_ledger.append_entry("patch", "old", before=[old], evidence={"detail": "x" * 900})
+    kept = _manifest(skills, "kept", **{"SKILL.md": "kept"})[0]
     skill_ledger.append_entry("patch", "kept", before=[kept], evidence={"detail": "y" * 900})
 
     assert not (skill_ledger.blobs_dir() / old["sha256"]).exists()
@@ -113,15 +113,20 @@ def test_trim_collects_only_blobs_owned_by_removed_entries(ledger_home, monkeypa
 def test_gc_waits_for_blob_capture_to_be_published(ledger_home, monkeypatch):
     from tools import skill_ledger
 
-    monkeypatch.setattr(skill_ledger, "_LEDGER_MAX_BYTES", 1_200)
+    monkeypatch.setattr(skill_ledger, "_LEDGER_MAX_BYTES", 1_400)
     monkeypatch.setattr(skill_ledger, "_LEDGER_TRIM_BYTES", 700)
+    skill_ledger.append_entry("patch", "old", evidence={"detail": "o" * 800})
     skills = ledger_home / "skills"
-    captured = _manifest(skills, "pending", **{"SKILL.md": "pending"})
+    pending = skills / "pending" / "SKILL.md"
+    pending.parent.mkdir()
+    pending.write_text("pending", encoding="utf-8")
+    captured = []
     entered = threading.Event()
     release = threading.Event()
 
     def publish():
         with skill_ledger.ledger_mutation():
+            captured.extend(skill_ledger.snapshot_paths(pending.parent))
             entered.set()
             assert release.wait(timeout=5)
             skill_ledger.append_entry("patch", "pending", before=captured)
@@ -131,7 +136,7 @@ def test_gc_waits_for_blob_capture_to_be_published(ledger_home, monkeypatch):
     assert entered.wait(timeout=5)
     contender = threading.Thread(
         target=lambda: skill_ledger.append_entry(
-            "patch", "trim", evidence={"detail": "z" * 1_500}))
+            "patch", "trim", evidence={"detail": "z" * 100}))
     contender.start()
     assert contender.is_alive()
     release.set()

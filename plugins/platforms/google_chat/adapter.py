@@ -279,7 +279,7 @@ def _load_sa_credentials_from(sa_value: Optional[str]) -> Any:
 
 
 class _ThreadCountStore:
-    """Persisted per-(chat_id, thread_name) inbound counter driving the DM main-flow vs
+    """Persisted per-(chat_id, thread_name) inbound counter driving the main-flow vs
     side-thread heuristic (0: Chat auto-created the thread for a top-level message; >=1:
     user engaged an existing thread). Persisted because a restart that wiped counts would
     demote active side-threads to main flow and leak context. Format
@@ -402,8 +402,9 @@ class GoogleChatAdapter(BasePlatformAdapter):
         self._shutting_down = False
         self._typing_messages: Dict[str, str] = {}
         self._clarify_state, self._rate_limit_hits = {}, {}
-        # Last inbound thread per space: DMs get a NEW thread per top-level message but users
-        # see one conversation, so thread_id leaves the source (stable session key) and is cached here.
+        # Last inbound side-thread per space: Chat gives every top-level message (DM or space) a NEW thread
+        # but users see one conversation, so main-flow messages drop thread_id (stable session key) and
+        # only side-threads are cached here.
         self._last_inbound_thread: Dict[str, str] = {}
         from hermes_constants import get_hermes_home as _get_hermes_home
         self._thread_count_store = _ThreadCountStore(_get_hermes_home() / "google_chat_thread_counts.json")
@@ -1191,7 +1192,7 @@ class GoogleChatAdapter(BasePlatformAdapter):
                            chat_id: Optional[str] = None) -> Optional[str]:
         """Thread to reply under, or None: ``metadata['thread_id']`` → ``thread_name`` /
         ``thread_ts`` aliases → ``reply_to`` when already a ``spaces/X/threads/Y`` name →
-        ``_last_inbound_thread[chat_id]`` (else DM replies land top-level). Cron deliveries
+        ``_last_inbound_thread[chat_id]`` (else main-flow replies land top-level). Cron deliveries
         (``job_id`` in metadata) skip the last fallback so output is not buried in a stale thread."""
         if metadata:
             for key in ("thread_id", "thread_name", "thread_ts"):

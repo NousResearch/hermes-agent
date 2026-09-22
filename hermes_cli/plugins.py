@@ -1131,21 +1131,18 @@ for _name, _method in list(vars(PluginContext).items()):
 del _name, _method
 
 
-_HOOK_TIMEOUT_CACHE_LOCK = threading.Lock()
 # Sentinel distinct from every real signature AND from None (which
 # _load_config_cache_sig returns when there is no config file to key on).
 _UNRESOLVED_HOOK_TIMEOUT_SIG: Any = object()
-_HOOK_TIMEOUT_CACHE: Dict[str, Any] = {
-    "sig": _UNRESOLVED_HOOK_TIMEOUT_SIG,
-    "value": None,
-}
+# Published as ONE ``(sig, value)`` tuple swapped atomically (a module-global rebind is a single
+# STORE under the GIL), so a lock-free reader can never observe a new sig paired with an old value.
+_HOOK_TIMEOUT_CACHE: Tuple[Any, Optional[float]] = (_UNRESOLVED_HOOK_TIMEOUT_SIG, None)
 
 
 def _reset_hook_callback_timeout_cache() -> None:
     """Drop the memoized hook-callback timeout. For tests and config reloads."""
-    with _HOOK_TIMEOUT_CACHE_LOCK:
-        _HOOK_TIMEOUT_CACHE["sig"] = _UNRESOLVED_HOOK_TIMEOUT_SIG
-        _HOOK_TIMEOUT_CACHE["value"] = None
+    global _HOOK_TIMEOUT_CACHE
+    _HOOK_TIMEOUT_CACHE = (_UNRESOLVED_HOOK_TIMEOUT_SIG, None)
 
 
 def _resolve_hook_callback_timeout() -> float:
@@ -1164,16 +1161,14 @@ def _resolve_hook_callback_timeout() -> float:
     except Exception:
         sig = None
 
-    if sig is not None and _HOOK_TIMEOUT_CACHE["sig"] == sig:
-        value = _HOOK_TIMEOUT_CACHE["value"]
-        if isinstance(value, float):
-            return value
+    global _HOOK_TIMEOUT_CACHE
+    cached_sig, cached_value = _HOOK_TIMEOUT_CACHE  # one read of the published tuple
+    if sig is not None and cached_sig == sig and isinstance(cached_value, float):
+        return cached_value
 
     resolved = _resolve_hook_callback_timeout_uncached()
     if sig is not None:
-        with _HOOK_TIMEOUT_CACHE_LOCK:
-            _HOOK_TIMEOUT_CACHE["sig"] = sig
-            _HOOK_TIMEOUT_CACHE["value"] = resolved
+        _HOOK_TIMEOUT_CACHE = (sig, resolved)
     return resolved
 
 

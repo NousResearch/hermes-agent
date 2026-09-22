@@ -12,6 +12,7 @@ tier: community
 version: "1.0.6"
 category: voice
 docs_url: https://github.com/cruzlxyz/gemini-live-bridge#readme
+image: https://raw.githubusercontent.com/cruzlxyz/gemini-live-bridge/a0016e33244ff2f74fd33bae1869e4a8c06f5034/docs/banner.png
 platforms: []
 capabilities:
   provides_tools: []

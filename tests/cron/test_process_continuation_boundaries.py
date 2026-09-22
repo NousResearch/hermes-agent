@@ -375,7 +375,8 @@ def test_async_ticks_do_not_duplicate_an_inflight_continuation(monkeypatch, quie
     try:
         assert scheduler.tick(verbose=False, sync=False) == 1
         assert entered.wait(15)
-        future = scheduler._running_futures[job["id"]]
+        key = scheduler._inflight_key(job["id"], get_hermes_home())
+        future = scheduler._running_futures[key]
         assert scheduler.tick(verbose=False, sync=False) == 0
         assert job["id"] in scheduler.get_running_job_ids()
     finally:

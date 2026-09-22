@@ -93,6 +93,17 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
     assert "openrouter.ai" in domains  # comes from the mapping
 
 
+def test_build_proxy_config_disables_unused_dns_server(tmp_path):
+    """Explicit-proxy clients must not start iron-proxy's DNS listener (#118734)."""
+    cfg = ip.build_proxy_config(
+        mappings=[_sample_mapping()],
+        ca_cert=tmp_path / "ca.crt",
+        ca_key=tmp_path / "ca.key",
+    )
+
+    assert cfg["dns"] == {"enabled": False}
+
+
 # ---------------------------------------------------------------------------
 # Default SSRF deny list (regression: docs promise cloud metadata is denied)
 # ---------------------------------------------------------------------------
@@ -120,14 +131,14 @@ def test_build_proxy_config_custom_allowed_hosts(tmp_path):
 
 
 # ---------------------------------------------------------------------------
-# audit_log file pre-creation (parameter still accepted; v0.39 doesn't
+# audit_log file pre-creation (parameter still accepted; v0.50 doesn't
 # wire it into the binary config but ensure_audit_log() still creates
 # the file at 0o600 as a logrotate / monitoring sentinel)
 # ---------------------------------------------------------------------------
 
 
-def test_audit_log_kwarg_does_not_inject_audit_path_v039(tmp_path):
-    """v0.39 of iron-proxy rejects ``log.audit_path`` (not a struct
+def test_audit_log_kwarg_does_not_inject_audit_path_v050(tmp_path):
+    """v0.50 of iron-proxy rejects ``log.audit_path`` (not a struct
     field).  build_proxy_config still accepts the audit_log kwarg for
     forward compatibility but MUST NOT emit it into the rendered yaml
     until the upstream binary supports it.  See the kwarg's docstring
@@ -140,7 +151,7 @@ def test_audit_log_kwarg_does_not_inject_audit_path_v039(tmp_path):
         audit_log=tmp_path / "audit.log",
     )
     assert "audit_path" not in cfg["log"], (
-        "iron-proxy v0.39 has no log.audit_path field; emitting it "
+        "iron-proxy v0.50 has no log.audit_path field; emitting it "
         "causes 'field audit_path not found in type config.Log' at "
         "daemon start.  ensure_audit_log() still creates the file as "
         "an operator-facing logrotate target."
@@ -812,5 +823,3 @@ def test_bitwarden_importerror_raise_without_fallback(
         ip._build_proxy_subprocess_env(
             refresh_from_bitwarden=True, bitwarden_config=bw_cfg,
         )
-
-

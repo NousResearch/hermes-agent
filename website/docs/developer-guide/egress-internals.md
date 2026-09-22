@@ -173,7 +173,7 @@ Regression: `test_subprocess_env_strips_unrelated_secrets`, `test_subprocess_env
 
 `_detect_docker_bridge_ip` validates via `ipaddress.IPv4Address` and rejects `is_unspecified` / `is_loopback` / `is_multicast` / `is_reserved` / `is_link_local` / `is_global`.  A hostile `ip` shim on PATH cannot inject `0.0.0.0`.
 
-**v0.39 schema constraint and listener roles (verified live against the binary):** the binary's `config.Proxy` struct has only singular listener fields — there is no `http_listens` (plural) list.  `tunnel_listen` is the CONNECT + MITM listener (what `HTTPS_PROXY` traffic hits); `http_listen` only handles absolute-form plain-HTTP forwards (a CONNECT sent to it is relayed upstream as a regular request and 400s).  `build_proxy_config` therefore binds `tunnel_listen` on `tunnel_port` and `http_listen` on `tunnel_port + 1`, both on the platform bind host.  The Docker backend sets `HTTPS_PROXY` to `tunnel_port` and `HTTP_PROXY` to `tunnel_port + 1`.
+**v0.50 schema constraint and listener roles (verified against the upstream schema):** the binary's `config.Proxy` struct has only singular listener fields — there is no `http_listens` (plural) list.  `tunnel_listen` is the CONNECT + MITM listener (what `HTTPS_PROXY` traffic hits); `http_listen` only handles absolute-form plain-HTTP forwards (a CONNECT sent to it is relayed upstream as a regular request and 400s).  `build_proxy_config` therefore binds `tunnel_listen` on `tunnel_port` and `http_listen` on `tunnel_port + 1`, both on the platform bind host.  The Docker backend sets `HTTPS_PROXY` to `tunnel_port` and `HTTP_PROXY` to `tunnel_port + 1`.
 
 The liveness probes (`start_proxy` poll loop, `get_status`) read the configured bind host via `_read_http_listen_from_config()` and probe THAT host — a hardcoded loopback probe would report a healthy bridge-bound daemon as dead.
 
@@ -181,7 +181,7 @@ Regression: `test_default_bind_is_loopback_not_zero_zero` (asserts no INADDR_ANY
 
 ### Metrics port collision
 
-`metrics.listen` defaults to `:9090` in iron-proxy v0.39 — the SAME port as Hermes's default `tunnel_port: 9090`.  `build_proxy_config` MUST explicitly pin `metrics.listen: 127.0.0.1:0` so the metrics binding gets an ephemeral loopback port that can never collide with the proxy listener regardless of operator-chosen `tunnel_port`.
+`metrics.listen` defaults to `:9090` in iron-proxy v0.50 — the SAME port as Hermes's default `tunnel_port: 9090`.  `build_proxy_config` MUST explicitly pin `metrics.listen: 127.0.0.1:0` so the metrics binding gets an ephemeral loopback port that can never collide with the proxy listener regardless of operator-chosen `tunnel_port`.
 
 Regression: `test_metrics_listener_pinned_to_loopback_ephemeral`.
 
@@ -193,11 +193,11 @@ Regression: `test_default_deny_cidrs_present_when_unspecified`, `test_default_de
 
 ### Audit log fail-loud
 
-`ensure_audit_log` raises `RuntimeError` on any `OSError`.  On the pinned v0.39 the daemon never writes this file (no `log.audit_path` field), so `cmd_setup` treats the failure as a WARNING (the file is non-load-bearing until the version bump) and qualifies the success line as "reserved".  When the pin moves to a version with `log.audit_path`, revisit: the pre-create becomes load-bearing for the 0o600-from-first-byte guarantee and the wizard should fail loud again.
+`ensure_audit_log` raises `RuntimeError` on any `OSError`.  On the pinned v0.50 the daemon never writes this file (no `log.audit_path` field), so `cmd_setup` treats the failure as a WARNING (the file is non-load-bearing until the version bump) and qualifies the success line as "reserved".  When the pin moves to a version with `log.audit_path`, revisit: the pre-create becomes load-bearing for the 0o600-from-first-byte guarantee and the wizard should fail loud again.
 
-**v0.39 schema constraint:** `log.audit_path` is NOT a field in iron-proxy v0.39's `config.Log` struct, so `build_proxy_config` accepts the `audit_log` kwarg but does NOT emit it into the rendered yaml.  Per-request records on v0.39 land in `iron-proxy.log` alongside daemon-level events.  The `audit.log` file is still pre-created at `0o600` with `O_NOFOLLOW` so the privacy contract holds when the pinned version is bumped to one that supports the separate stream.
+**v0.50 schema constraint:** `log.audit_path` is NOT a field in iron-proxy v0.50's `config.Log` struct, so `build_proxy_config` accepts the `audit_log` kwarg but does NOT emit it into the rendered yaml.  Per-request records on v0.50 land in `iron-proxy.log` alongside daemon-level events.  The `audit.log` file is still pre-created at `0o600` with `O_NOFOLLOW` so the privacy contract holds when the pinned version is bumped to one that supports the separate stream.
 
-Regression: `test_ensure_audit_log_raises_on_immutable_parent`, `test_audit_log_kwarg_does_not_inject_audit_path_v039`.
+Regression: `test_ensure_audit_log_raises_on_immutable_parent`, `test_audit_log_kwarg_does_not_inject_audit_path_v050`.
 
 ### Bitwarden mode fail-loud
 
@@ -292,7 +292,7 @@ The Docker implementation is ~150 lines; expect similar volume for Modal / Dayto
 
 ### Subscribing to per-request audit events
 
-iron-proxy writes line-delimited JSON to `~/.hermes/proxy/iron-proxy.log` on the currently pinned v0.39 (daemon + per-request records combined; see "Logging on iron-proxy v0.39" in the user guide).  A plugin / external watcher can tail that file and react to allowlist denials, secret swaps, or upstream errors.  When the pinned version is bumped to one that supports `log.audit_path`, the per-request stream moves to `audit.log` and watchers wired to that path go live without operator action.  The schema is documented at [docs.iron.sh/audit](https://docs.iron.sh/audit) (link).
+iron-proxy writes line-delimited JSON to `~/.hermes/proxy/iron-proxy.log` on the currently pinned v0.50 (daemon + per-request records combined; see "Logging on iron-proxy v0.50" in the user guide).  A plugin / external watcher can tail that file and react to allowlist denials, secret swaps, or upstream errors.  When the pinned version is bumped to one that supports `log.audit_path`, the per-request stream moves to `audit.log` and watchers wired to that path go live without operator action.  The schema is documented at [docs.iron.sh/audit](https://docs.iron.sh/audit) (link).
 
 ## Testing
 

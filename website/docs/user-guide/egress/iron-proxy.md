@@ -64,6 +64,8 @@ proxy:
   tunnel_port: 9090
 
   # Auto-download the pinned iron-proxy binary on first use.
+  # Hermes currently pins v0.50.0; the release checksum is verified before
+  # installation.
   auto_install: true
 
   # Where iron-proxy looks up the real upstream secrets at egress time.
@@ -134,7 +136,7 @@ To override: set `proxy.upstream_deny_cidrs` to your own list. To opt out entire
 
 ### Bind policy
 
-The proxy never binds `0.0.0.0`. The default bind is platform-specific because iron-proxy v0.39 supports only a **single bind per daemon process**:
+The proxy never binds `0.0.0.0`. The default bind is platform-specific because iron-proxy v0.50 supports only a **single bind per daemon process**:
 
 - **Linux:** the docker bridge gateway (`172.17.0.1:<tunnel_port>` by default). Containers reach the proxy via `host.docker.internal`, which `--add-host=host.docker.internal:host-gateway` resolves to exactly this bridge gateway IP — a loopback-only bind would be unreachable from inside sandboxes. The bridge IP is an address on the host's `docker0` interface, so it is not exposed to the LAN; it IS reachable by other containers on the default bridge network, but requests still require a minted proxy token and an allowlisted upstream. If no docker bridge is detected (docker not installed/running), the bind falls back to loopback with a warning.
 - **macOS / Windows Docker Desktop:** loopback (`127.0.0.1:<tunnel_port>`). Desktop's VPNkit routes `host.docker.internal` to the host, so loopback is reachable from containers and is the least-exposed choice.
@@ -289,19 +291,19 @@ Everything iron-proxy maintains lives in `~/.hermes/proxy/`:
 | `mappings.json.rotated-*` | `0o600` | Backups created by `--rotate-tokens` |
 | `iron-proxy.pid` | `0o600` | PID of the running daemon |
 | `iron-proxy.nonce` | `0o600` | Per-start nonce for PID-recycle defense |
-| `iron-proxy.log` | `0o600` | Daemon stdout/stderr — **includes per-request records on v0.39** |
+| `iron-proxy.log` | `0o600` | Daemon stdout/stderr — **includes per-request records on v0.50** |
 | `audit.log` | `0o600` | Reserved for the dedicated per-request audit stream on future binary versions; pre-created so the privacy contract holds when upstream wires it in |
 
 The CA private key is the most sensitive file. It's created with `0o600` from the first byte (no umask-window TOCTOU) and `O_NOFOLLOW` so a same-uid attacker can't redirect it via a planted symlink. The pidfile, nonce file, daemon log, and audit log get the same treatment.
 
-### Logging on iron-proxy v0.39
+### Logging on iron-proxy v0.50
 
-On the currently pinned binary version (**v0.39.0**) iron-proxy writes ALL output — daemon-level diagnostics AND per-request records — to **`~/.hermes/proxy/iron-proxy.log`**. v0.39's `config.Log` struct doesn't have a separate `audit_path` field, so we can't route per-request records to a dedicated stream there.
+On the currently pinned binary version (**v0.50.0**) iron-proxy writes ALL output — daemon-level diagnostics AND per-request records — to **`~/.hermes/proxy/iron-proxy.log`**. v0.50's `config.Log` struct doesn't have a separate `audit_path` field, so we can't route per-request records to a dedicated stream there.
 
 We still pre-create `~/.hermes/proxy/audit.log` at `0o600` with `O_NOFOLLOW` because:
 
-1. It reserves the path for the future version bump: when the pinned version moves to one that supports `log.audit_path`, per-request records will start flowing there without operator-side reconfiguration. **Until then the file stays at 0 bytes — do not point monitoring, alerting, or forensics tooling at it yet.** Use `iron-proxy.log` for everything today.
-2. The 0o600-from-first-byte guarantee defends against the upstream-fix-day where v0.40+ creates the file under its default umask if it doesn't already exist.
+1. It reserves the path for a future version bump: when the pinned version moves to one that supports `log.audit_path`, per-request records will start flowing there without operator-side reconfiguration. **Until then the file stays at 0 bytes — do not point monitoring, alerting, or forensics tooling at it yet.** Use `iron-proxy.log` for everything today.
+2. The 0o600-from-first-byte guarantee defends against the upstream-fix-day where a future release creates the file under its default umask if it doesn't already exist.
 
 Until that version bump lands, treat `iron-proxy.log` as the source of truth for both audiences:
 
@@ -323,10 +325,10 @@ Both files are appended to across restarts. Rotate them with logrotate if you ca
 │ - HTTPS_PROXY│               │ swaps secret  │                │             │
 └──────────────┘               └──────────────┘                └─────────────┘
                                        │
-                                       │ daemon + per-request log (combined on v0.39)
+                                       │ daemon + per-request log (combined on v0.50)
                                        ▼
                               ~/.hermes/proxy/iron-proxy.log
-                              (~/.hermes/proxy/audit.log reserved for v0.40+ split stream)
+                              (~/.hermes/proxy/audit.log reserved for a future split stream)
 ```
 
 1. Sandbox makes an HTTPS request, e.g. `POST https://openrouter.ai/v1/chat/completions` with `Authorization: Bearer hermes-proxy-openrouter-…` (the proxy token, not the real key).
@@ -335,7 +337,7 @@ Both files are appended to across restarts. Rotate them with logrotate if you ca
 4. iron-proxy mints a leaf cert signed by our CA for `openrouter.ai`, terminates the TLS connection, inspects the request.
 5. The `secrets` transform matches the proxy-token string in the `Authorization` header and substitutes the real `OPENROUTER_API_KEY` value, sourced from iron-proxy's own environment.
 6. Request is re-encrypted and forwarded to OpenRouter.
-7. The request is logged to `~/.hermes/proxy/iron-proxy.log` on v0.39. When the pinned binary version supports the split stream (v0.40+), per-request records will flow to `~/.hermes/proxy/audit.log` and daemon-level diagnostics will stay in `iron-proxy.log`. See [Logging on iron-proxy v0.39](#logging-on-iron-proxy-v039).
+7. The request is logged to `~/.hermes/proxy/iron-proxy.log` on v0.50. When the pinned binary version supports the split stream, per-request records will flow to `~/.hermes/proxy/audit.log` and daemon-level diagnostics will stay in `iron-proxy.log`. See [Logging on iron-proxy v0.50](#logging-on-iron-proxy-v050).
 
 A request to a non-allowlisted host (e.g. `https://attacker.example.com/leak?key=...`) is rejected with HTTP 403 before any bytes leave the host. The denial is recorded in `iron-proxy.log` with the upstream host and the source sandbox.
 
@@ -537,7 +539,7 @@ hermes egress start
 
 ### Inspecting per-request behavior
 
-On the pinned binary version (**v0.39**) both daemon-level events and per-request records land in `~/.hermes/proxy/iron-proxy.log`. The format is line-delimited JSON. Grep for a specific upstream:
+On the pinned binary version (**v0.50**) both daemon-level events and per-request records land in `~/.hermes/proxy/iron-proxy.log`. The format is line-delimited JSON. Grep for a specific upstream:
 
 ```bash
 grep '"upstream":"openrouter.ai"' ~/.hermes/proxy/iron-proxy.log | tail -20
@@ -549,7 +551,7 @@ Or watch in real-time:
 tail -f ~/.hermes/proxy/iron-proxy.log | jq
 ```
 
-When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-request records will move to `~/.hermes/proxy/audit.log` and `iron-proxy.log` will hold only daemon-level events. Until that bump, `audit.log` is an empty placeholder (pre-created at `0o600` so the future daemon inherits tight permissions) — wire your logrotate / monitoring tooling to `iron-proxy.log` today and plan to add `audit.log` after the version bump.
+When the pinned version moves to a release that adds `log.audit_path`, per-request records will move to `~/.hermes/proxy/audit.log` and `iron-proxy.log` will hold only daemon-level events. Until that bump, `audit.log` is an empty placeholder (pre-created at `0o600` so the future daemon inherits tight permissions) — wire your logrotate / monitoring tooling to `iron-proxy.log` today and plan to add `audit.log` after the version bump.
 
 ## Limitations (v1)
 
@@ -559,7 +561,7 @@ When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-reque
 - The CA is a 10-year self-signed cert on first generation. Rotation requires `openssl genrsa ...` by hand (or wait for a follow-up that adds `hermes egress rotate-ca`).
 - Re-running setup stops a running daemon after rewriting config or mappings; restart (or `hermes egress reload` for ruleset-only changes) and restart already-running sandboxes after token rotation.
 - iron-proxy in-memory secret zeroisation is upstream-controlled. Same-uid attackers with `/proc/<pid>/mem` read access can read swapped-in secrets from the daemon's memory.
-- iron-proxy v0.39 only supports a **single bind per daemon** (we bind the docker bridge gateway on Linux, loopback on Docker Desktop) and combines daemon + per-request records into a single log stream. When upstream adds `proxy.http_listens` (plural) and `log.audit_path`, a version bump can wire in multi-bind and the dedicated audit stream.
+- iron-proxy v0.50 only supports a **single bind per daemon** (we bind the docker bridge gateway on Linux, loopback on Docker Desktop) and combines daemon + per-request records into a single log stream. When upstream adds `proxy.http_listens` (plural) and `log.audit_path`, a version bump can wire in multi-bind and the dedicated audit stream.
 
 ## See also
 

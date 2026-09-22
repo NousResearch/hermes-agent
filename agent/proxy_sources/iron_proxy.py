@@ -34,7 +34,7 @@ from utils import atomic_json_write, atomic_write_text
 logger = logging.getLogger(__name__)
 
 # Pinned: never auto-resolve "latest" — the YAML schema may change between releases.
-_IRON_PROXY_VERSION = "0.39.0"
+_IRON_PROXY_VERSION = "0.50.0"
 _IRON_PROXY_RELEASE_BASE = f"https://github.com/ironsh/iron-proxy/releases/download/v{_IRON_PROXY_VERSION}"
 _IRON_PROXY_CHECKSUM_NAME = "checksums.txt"
 # Optional GPG verification of checksums.txt (SHA-256 alone trusts the release channel).
@@ -512,9 +512,9 @@ def build_proxy_config(
     *, mappings: List[TokenMapping], ca_cert: Path, ca_key: Path, tunnel_port: int = _DEFAULT_TUNNEL_PORT, audit_log: Optional[Path] = None,
     allowed_hosts: Optional[List[str]] = None, upstream_deny_cidrs: Optional[List[str]] = None, http_listen: Optional[List[str]] = None,
 ) -> Dict:
-    """iron-proxy YAML config dict (v0.39.0 schema).  Real secrets come from iron-proxy's OWN env (``source: {type: env}``);
+    """iron-proxy YAML config dict (v0.50.0 schema).  Real secrets come from iron-proxy's OWN env (``source: {type: env}``);
     the sandbox never sees them.  ``upstream_deny_cidrs=None`` = default SSRF deny list, ``[]`` opts out.
-    ``audit_log`` is forward-compat only (v0.39 rejects ``audit_path``)."""
+    ``audit_log`` is forward-compat only (v0.50 rejects ``audit_path``)."""
     hosts: List[str] = list(allowed_hosts or _DEFAULT_ALLOWED_HOSTS)
     for h in (h for m in mappings for h in m.upstream_hosts):
         if h not in hosts:
@@ -537,8 +537,8 @@ def build_proxy_config(
     primary_listen = (list(http_listen) if http_listen else _default_http_listen(tunnel_port) or [f"127.0.0.1:{tunnel_port}"])[0]
     bind_host = primary_listen.rsplit(":", 1)[0] or "127.0.0.1"
     return {
-        # Required by the parser; tunnel-only mode never binds an exposed DNS port.
-        "dns": {"listen": "127.0.0.1:0", "proxy_ip": "127.0.0.1"},
+        # Sandboxes use explicit HTTP(S)_PROXY settings; do not start the unused DNS service.
+        "dns": {"enabled": False},
         "proxy": {
             # Both bind the docker bridge on Linux / loopback on Docker Desktop — NEVER 0.0.0.0.
             "tunnel_listen": primary_listen, "http_listen": f"{bind_host}:{tunnel_port + 1}",
@@ -546,7 +546,7 @@ def build_proxy_config(
             "max_request_body_bytes": 16 * 1024 * 1024, "max_response_body_bytes": 0,
             "upstream_response_header_timeout": "120s", "upstream_deny_cidrs": deny_cidrs,
         },
-        # v0.39 defaults metrics to :9090 (our default tunnel_port) — pin to an ephemeral loopback port.
+        # v0.50 defaults metrics to :9090 (our default tunnel_port) — pin to an ephemeral loopback port.
         "metrics": {"listen": "127.0.0.1:0"},
         # Loopback only: sandboxes must never reach the management surface.
         "management": {"listen": f"127.0.0.1:{tunnel_port + _MGMT_PORT_OFFSET}", "api_key_env": _MGMT_API_KEY_ENV},
@@ -570,7 +570,7 @@ def _open_private_append(path: Path, *, strict_chmod: bool) -> int:
 
 
 def ensure_audit_log(audit_path: Path) -> None:
-    """Pre-create the audit log 0o600 (forward-compat: v0.39 never writes it); RuntimeError on any OSError."""
+    """Pre-create the audit log 0o600 (forward-compat: v0.50 never writes it); RuntimeError on any OSError."""
     try:
         os.close(_open_private_append(audit_path, strict_chmod=True))
     except OSError as exc:

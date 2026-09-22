@@ -417,7 +417,9 @@ def _transcribe_prepared_audio(
                 return error
             # Never overwrite a neighboring WAV or leave converted voice notes behind.
             if Path(file_path).suffix.lower() == ".caf":
-                work_dir = cleanup.enter_context(TemporaryDirectory(prefix="hermes-caf-"))
+                work_dir = cleanup.enter_context(
+                    TemporaryDirectory(prefix="hermes-caf-", ignore_cleanup_errors=True)
+                )
                 file_path = _convert_caf_to_wav(file_path, work_dir)
                 if not file_path:
                     return _error_result("CAF audio could not be converted to WAV.")

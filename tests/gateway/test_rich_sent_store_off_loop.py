@@ -36,9 +36,8 @@ def test_record_async_runs_off_the_loop_thread(isolated_store, monkeypatch):
 def test_concurrent_record_async_calls_lose_no_entry(isolated_store, monkeypatch):
     """Two off-loop RMWs for different keys must both land in the durable file.
 
-    ``atomic_json_write`` makes each write atomic, not load/merge/save. Slowing the
-    write forces the second caller to load the same pre-state unless ``_update`` is
-    serialized, in which case the later ``os.replace`` drops the other key.
+    Slowing the write forces the lost-update race described on
+    ``rich_sent_store._LOCK`` unless ``_update`` is serialized.
     """
     real_write = rich_sent_store.atomic_json_write
 

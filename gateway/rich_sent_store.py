@@ -57,7 +57,7 @@ def _update(chat_id, message_id, fields: dict) -> None:
             if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
                 for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
                     data.pop(k, None)
-            atomic_json_write(path, data, indent=None)  # atomic write; the lock makes the triple atomic
+            atomic_json_write(path, data, indent=None)  # see _LOCK
         except Exception:
             return
 

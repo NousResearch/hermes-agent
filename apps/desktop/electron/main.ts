@@ -473,6 +473,7 @@ import {
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
+  waitForUpdaterHandoffStart,
   windowsUpdatePrerequisiteError,
   wrapHandoffForDetachedConsole
 } from './updater-process'
@@ -4401,9 +4402,20 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // path unchanged.
     const scriptHandoff = resolveUpdateScriptHandoff(updateRoot)
     let child
+    let handoffStart: Promise<boolean> | undefined
 
     if (scriptHandoff) {
       const updateStartedAt = Math.floor(Date.now() / 1000)
+      // `cmd start /b` can exit 0 even when its PowerShell child never starts.
+      // Give this individual launch a unique acknowledgement path so an old
+      // hand-off cannot make a later failed launch look healthy (#119174).
+      const handoffAckPath = path.join(HERMES_HOME, `.hermes-update-handoff-${process.pid}-${updateStartedAt}.ack`)
+
+      try {
+        fs.unlinkSync(handoffAckPath)
+      } catch {
+        // A missing acknowledgement is the normal first-launch case.
+      }
 
       // A bare detached+hidden powershell spawn silently dies before -File
       // processing (console-subsystem init failure — see
@@ -4439,6 +4451,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         env: {
           ...process.env,
           HERMES_HOME,
+          HERMES_UPDATE_HANDOFF_ACK: handoffAckPath,
           HERMES_UPDATE_STARTED_AT: String(updateStartedAt),
           PATH: pathWithHermesManagedNode(venvBin)
         },
@@ -4456,6 +4469,11 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       if (Number.isInteger(child.pid)) {
         writeUpdateMarker(HERMES_HOME, child.pid, { startedAt: updateStartedAt })
       }
+
+      handoffStart = waitForUpdaterHandoffStart(
+        () => fileExists(handoffAckPath),
+        UPDATE_HANDOFF_DWELL_MS
+      )
 
       rememberLog(
         `[updates] launched repo hand-off script: ${scriptHandoff.scriptPath} (branch ${branch}); exiting desktop to release venv shim`
@@ -4514,11 +4532,18 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
     // pid, so readLiveUpdateMarker self-heals it; no cleanup needed.
     const dwellStartedAt = Date.now()
     const handoffOutcome = await observeUpdaterHandoff(child, UPDATE_HANDOFF_DWELL_MS)
+    const scriptStarted = handoffStart ? await handoffStart : true
 
-    if (!handoffOutcome.ok) {
-      const message = describeUpdaterHandoffFailure(handoffOutcome)
+    if (!handoffOutcome.ok || !scriptStarted) {
+      const message = handoffOutcome.ok
+        ? "The updater couldn't start, so nothing was changed and Hermes keeps running as before. Try again; if it keeps failing, open the logs and send them to support."
+        : describeUpdaterHandoffFailure(handoffOutcome)
 
-      rememberLog(`[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`)
+      rememberLog(
+        handoffOutcome.ok
+          ? '[updates] hand-off script did not acknowledge launch, aborting quit'
+          : `[updates] hand-off not viable, aborting quit: ${handoffOutcome.message}`
+      )
       emitUpdateProgress({ stage: 'error', message, percent: null })
       startHermes().catch(() => {})
 

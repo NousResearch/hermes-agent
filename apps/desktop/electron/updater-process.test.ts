@@ -15,6 +15,7 @@ import {
   sandboxFallbackFromEnv,
   spawnUpdaterProcess,
   stagedUpdaterSupportsPrewrittenMarker,
+  waitForUpdaterHandoffStart,
   wrapHandoffForDetachedConsole
 } from './updater-process'
 
@@ -254,6 +255,43 @@ test('wrapHandoffForDetachedConsole runs the script inside a non-detached hidden
     '-Branch',
     'main'
   ])
+})
+
+test('waitForUpdaterHandoffStart rejects a wrapper that exits cleanly without starting PowerShell (#119174)', async () => {
+  let now = 0
+  let acknowledgements = 0
+
+  const started = await waitForUpdaterHandoffStart(
+    () => acknowledgements > 0,
+    250,
+    {
+      now: () => now,
+      sleep: async ms => {
+        now += ms
+      }
+    }
+  )
+
+  assert.equal(started, false)
+})
+
+test('waitForUpdaterHandoffStart accepts the script acknowledgement within the hand-off dwell', async () => {
+  let now = 0
+  let acknowledgements = 0
+
+  const started = await waitForUpdaterHandoffStart(
+    () => acknowledgements > 0,
+    250,
+    {
+      now: () => now,
+      sleep: async ms => {
+        now += ms
+        acknowledgements += 1
+      }
+    }
+  )
+
+  assert.equal(started, true)
 })
 
 test('resolvePosixScriptHandoff returns the bash recipe when the script exists', () => {

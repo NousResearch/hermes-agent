@@ -88,6 +88,15 @@ $MarkerPath = Join-Path $HermesHome ".hermes-update-in-progress"
 $LogDir = Join-Path $HermesHome "logs"
 $LogPath = Join-Path $LogDir "desktop-update-handoff.log"
 $ResultPath = Join-Path $HermesHome ".hermes-update-result.json"
+
+# A unique acknowledgement supplied by Electron. The `cmd start /b` wrapper
+# exits successfully before PowerShell runs, so Electron must not quit merely
+# because that wrapper returned 0 (#119174). Write before the first hand-off
+# log or update gate; a failure to create this optional file must never block
+# a real update.
+if ($env:HERMES_UPDATE_HANDOFF_ACK) {
+    try { [System.IO.File]::WriteAllText($env:HERMES_UPDATE_HANDOFF_ACK, "$PID") } catch {}
+}
 $script:Ui = $null
 $script:UiStage = "Hermes will open once done."   # until the first gate; matches ui.html
 $script:UiStopwatch = [System.Diagnostics.Stopwatch]::StartNew()

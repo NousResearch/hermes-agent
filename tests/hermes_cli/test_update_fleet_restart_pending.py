@@ -1115,3 +1115,113 @@ def test_catchup_settles_failed_receipt_from_live_fleet_instead_of_exit_1(monkey
     assert settled["gateway_restart"]["incomplete"] is False
     assert update_cmd._pending_fleet_restart_needed() is False
     assert update_cmd_fleet._update_owes_fleet_restart() is False
+
+
+# ── Out-of-band HEAD movement: ancestry discharge, not equality (#119367) ──
+
+EXPECTED = "a" * 40
+CARRIED = "c" * 40  # HEAD after a hotfix cherry-pick on top of the pulled SHA
+
+
+def _arm_gateway_obligation(expected_sha):
+    """Arm a fully inventoried HOST obligation: one gateway owed, at expected_sha."""
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=expected_sha,
+        runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+
+
+def _live_fleet_on(monkeypatch, sha):
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": sha, "code_version": "0.21.4", "state": "current"}
+        ],
+    )
+
+
+def _patch_ancestry(monkeypatch, contains: bool):
+    """Stub the merge-base probe: does HEAD contain expected_sha?"""
+    monkeypatch.setattr(update_cmd_fleet, "_head_contains_sha", lambda rev: contains)
+
+
+def test_marker_discharges_when_carried_commit_keeps_expected_sha_an_ancestor(monkeypatch):
+    """Bug 1, happy path: the update completed, a hotfix was cherry-picked on top, and the
+    gateway restarted onto that HEAD. HEAD != expected_sha but CONTAINS it — the obligation
+    must discharge against the code the gateway actually serves, not strand forever."""
+    _arm_gateway_obligation(EXPECTED)
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+    _patch_marker_sha(monkeypatch, CARRIED)
+    _patch_ancestry(monkeypatch, contains=True)
+    _live_fleet_on(monkeypatch, CARRIED)
+
+    assert update_cmd_fleet._marker_only_restart_obsolete() is True
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_marker_stays_armed_when_head_moved_off_expected_history(monkeypatch):
+    """Fail-closed preserved: HEAD moved by something that does NOT contain the pulled SHA
+    (rebase, reset, unrelated history) — the probe cannot prove the pulled code is served,
+    so the obligation stays armed exactly as before."""
+    _arm_gateway_obligation(EXPECTED)
+    moved_off = "9" * 40
+    _patch_marker_sha(monkeypatch, moved_off)
+    _patch_ancestry(monkeypatch, contains=False)
+    _live_fleet_on(monkeypatch, moved_off)
+
+    assert update_cmd_fleet._marker_only_restart_obsolete() is False
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_marker_stays_armed_when_fleet_serves_genuinely_stale_code(monkeypatch):
+    """Ancestry is necessary, not sufficient: a gateway still on PRE-pull code must keep the
+    obligation armed even though HEAD contains expected_sha."""
+    _arm_gateway_obligation(EXPECTED)
+    pre_pull = "1" * 40
+    _patch_marker_sha(monkeypatch, CARRIED)
+    _patch_ancestry(monkeypatch, contains=True)
+    _live_fleet_on(monkeypatch, pre_pull)
+
+    assert update_cmd_fleet._marker_only_restart_obsolete() is False
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_ancestor_probe_failure_stays_fail_closed(monkeypatch):
+    """A git error in the merge-base probe must not discharge the obligation."""
+    _arm_gateway_obligation(EXPECTED)
+    _patch_marker_sha(monkeypatch, CARRIED)
+    monkeypatch.setattr(update_cmd_fleet, "_head_contains_sha", lambda rev: False)
+    _live_fleet_on(monkeypatch, CARRIED)
+
+    assert update_cmd_fleet._marker_only_restart_obsolete() is False
+
+
+def test_catchup_no_op_update_exits_clean_once_ancestry_discharges(monkeypatch, capsys, tmp_path):
+    """End-to-end #119367 fix, no-op update path: the wedged state (armed obligation whose
+    expected_sha is an ancestor of the carried-commit HEAD, gateway serving HEAD) used to
+    make every no-op `hermes update` exit 1. With the ancestry discharge, the catch-up's
+    pending-restart gate sees nothing owed and returns early — no restart, no warning, no
+    exit. The receipt from the original failed update stays byte-identical (the #117051
+    settle only runs when a restart actually ran)."""
+    _arm_gateway_obligation(EXPECTED)
+    _patch_marker_sha(monkeypatch, CARRIED)
+    _patch_ancestry(monkeypatch, contains=True)  # HEAD contains the pulled SHA
+    _live_fleet_on(monkeypatch, CARRIED)
+
+    receipt_dir = get_hermes_home() / "logs" / "update_receipts"
+    receipt_dir.mkdir(parents=True, exist_ok=True)
+    latest = receipt_dir / "latest.json"
+    receipt_before = b'{"outcome": "failed"}\n'
+    latest.write_bytes(receipt_before)
+
+    restarted = []
+    monkeypatch.setattr(update_cmd, "_run_pending_fleet_restart", lambda: restarted.append(True) or True)
+    monkeypatch.setattr(update_cmd_fleet, "_run_pending_fleet_restart", lambda: restarted.append(True) or True)
+
+    update_cmd._apply_pending_fleet_restart_catchup()  # must not raise SystemExit
+
+    out = capsys.readouterr().out
+    assert "incomplete" not in out and "still off the checkout code" not in out
+    assert restarted == []
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+    assert latest.read_bytes() == receipt_before

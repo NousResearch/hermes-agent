@@ -324,6 +324,25 @@ def _live_fleet_covers_receipt(expected_sha: str | None, receipt: dict, owed: se
         return False
 
 
+def _head_contains_sha(rev: str) -> bool:
+    """True when ``rev`` is an ancestor of (or equal to) checkout HEAD.
+
+    Wraps ``git merge-base --is-ancestor <rev> HEAD`` — the probe ``banner._tips_behind``
+    inlines for the same local-ahead question (and ``gitlock.is_ancestor_of_head``
+    documents; that module is PLUGIN-COMPAT, revert-scheduled, so not imported here).
+    False on any probe failure: fail-closed keeps the obligation armed.
+    """
+    try:
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", rev, "HEAD"],
+            cwd=str(_m().PROJECT_ROOT), capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        logger.debug("merge-base --is-ancestor probe failed for %s", rev, exc_info=True)
+        return False
+
+
 def _marker_only_restart_obsolete() -> bool:
     """Settle only the inventory stored with this marker's target SHA.
 
@@ -388,8 +407,18 @@ def _marker_only_restart_obsolete() -> bool:
         return False
     checkout_sha = _current_checkout_sha()
     if owed is not None and checkout_sha != expected_sha:
-        return False  # a newer pull moved HEAD; it owns a fresh obligation
-    target_sha = expected_sha if owed is not None else checkout_sha
+        # HEAD moved since the pull (carried cherry-pick, local commit, or a later pull that
+        # died before arming its own obligation — a completed newer pull would have replaced
+        # this record outright) but still CONTAINS expected_sha: the gateway running checkout
+        # HEAD is exactly what this obligation armed for, so it targets the code on disk now
+        # (#119367). Fail closed when HEAD moved elsewhere (rebase, reset, unrelated history) —
+        # the probe cannot prove the pulled code is what is being served.
+        if checkout_sha and _head_contains_sha(expected_sha):
+            target_sha = checkout_sha
+        else:
+            return False  # a newer pull moved HEAD; it owns a fresh obligation
+    else:
+        target_sha = expected_sha if owed is not None else checkout_sha
     if not target_sha:
         return False
     try:

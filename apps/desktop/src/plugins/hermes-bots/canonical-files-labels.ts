@@ -19,6 +19,7 @@ export const CANONICAL_FILES_LOCALES = {
     newerFiles: 'Newer',
     returnToLatest: 'Show latest',
     showLatest: 'Show latest',
+    filesClassicDescription: 'Files available on this Desktop.',
     filesReconnected: 'Reconnected',
     filesClearSearch: 'Clear search',
     filesRefresh: 'Refresh list',
@@ -44,6 +45,7 @@ export const CANONICAL_FILES_LOCALES = {
     newerFiles: '新しいファイル',
     returnToLatest: '最新に戻る',
     showLatest: '最新を表示',
+    filesClassicDescription: 'このDesktopで利用できるファイルです。',
     filesReconnected: '再接続しました',
     filesClearSearch: '検索をクリア',
     filesRefresh: '一覧を更新',
@@ -69,6 +71,7 @@ export const CANONICAL_FILES_LOCALES = {
     newerFiles: '较新的文件',
     returnToLatest: '返回最新内容',
     showLatest: '显示最新内容',
+    filesClassicDescription: '此 Desktop 上可用的文件。',
     filesReconnected: '已重新连接',
     filesClearSearch: '清除搜索',
     filesRefresh: '刷新列表',
@@ -94,6 +97,7 @@ export const CANONICAL_FILES_LOCALES = {
     newerFiles: '較新的檔案',
     returnToLatest: '返回最新內容',
     showLatest: '顯示最新內容',
+    filesClassicDescription: '此 Desktop 上可用的檔案。',
     filesReconnected: '已重新連線',
     filesClearSearch: '清除搜尋',
     filesRefresh: '重新整理清單',
@@ -119,6 +123,7 @@ export const CANONICAL_FILES_LOCALES = {
     newerFiles: 'ملفات أحدث',
     returnToLatest: 'العودة إلى الأحدث',
     showLatest: 'عرض الأحدث',
+    filesClassicDescription: 'الملفات المتاحة على هذا Desktop.',
     filesReconnected: 'تمت إعادة الاتصال',
     filesClearSearch: 'مسح البحث',
     filesRefresh: 'تحديث القائمة',
@@ -144,6 +149,7 @@ export const CANONICAL_FILES_LOCALES = {
     newerFiles: 'Более новые файлы',
     returnToLatest: 'Вернуться к последним',
     showLatest: 'Показать последние',
+    filesClassicDescription: 'Файлы, доступные на этом Desktop.',
     filesReconnected: 'Соединение восстановлено',
     filesClearSearch: 'Очистить поиск',
     filesRefresh: 'Обновить список',
@@ -171,6 +177,7 @@ export const CANONICAL_FILES_LOCALES = {
     | 'newerFiles'
     | 'returnToLatest'
     | 'showLatest'
+    | 'filesClassicDescription'
     | 'filesReconnected'
     | 'filesClearSearch'
     | 'filesRefresh'
@@ -184,10 +191,11 @@ export const CANONICAL_FILES_LOCALES = {
 
 export function useCanonicalFilesLabels() {
   const { locale, t } = useI18n()
+  const labels = CANONICAL_FILES_LOCALES[locale as keyof typeof CANONICAL_FILES_LOCALES] ?? CANONICAL_FILES_LOCALES.en
 
   return {
-    ...(CANONICAL_FILES_LOCALES[locale as keyof typeof CANONICAL_FILES_LOCALES] ?? CANONICAL_FILES_LOCALES.en),
-    download: t.fileMenu.download,
-    locale
+    ...labels,
+    download: t.fileMenu?.download ?? 'Download',
+    locale: locale || 'en'
   }
 }

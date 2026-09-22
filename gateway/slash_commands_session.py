@@ -55,6 +55,8 @@ def _manual_compression_reply_lines(summary: dict, compressor, focus_topic) -> l
     lines.append(summary["token_line"])
     if summary["note"]:
         lines.append(summary["note"])
+    if summary.get("receipt_line"):
+        lines.append(summary["receipt_line"])
     summary_err = getattr(compressor, "_last_summary_error", None)
     if summary_err:
         from agent.redact import redact_sensitive_text

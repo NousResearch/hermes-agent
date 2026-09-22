@@ -85,6 +85,15 @@ def summarize_manual_compression(
         # preference expose credentials embedded in provider exception text.
         note = f"{note} Reason: {redact_sensitive_text(failure_reason.strip(), force=True)}"
 
+    telemetry = getattr(compression_state, "_last_compression_telemetry", None)
+    receipt_line = None
+    if isinstance(telemetry, dict):
+        provider = str(telemetry.get("aux_provider") or "").strip()
+        model = str(telemetry.get("aux_model") or "").strip()
+        duration_ms = telemetry.get("aux_call_duration_ms")
+        if provider and model and isinstance(duration_ms, int) and duration_ms >= 0:
+            receipt_line = f"Summary route: {provider} / {model} · {duration_ms / 1000:.1f}s"
+
     return {
         "noop": noop,
         "aborted": aborted,
@@ -93,4 +102,5 @@ def summarize_manual_compression(
         "headline": headline,
         "token_line": token_line,
         "note": note,
+        "receipt_line": receipt_line,
     }

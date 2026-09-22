@@ -207,6 +207,37 @@ def test_exhausted_retry_preserves_prior_turn_continuation_marker():
     )
 
 
+def test_exhausted_partial_429_keeps_reset_metadata_out_of_answer_text():
+    error = _Http(429, "HTTP 429: Rate limit exceeded")
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    agent = _Agent()
+    resets_at = 1_800_000_000
+    agent._extract_api_error_context = lambda _error: {"reset_at": resets_at}
+    messages = [
+        {"role": "user", "content": "Write a long answer"},
+        {
+            "role": "assistant",
+            "content": "Visible partial",
+            "_length_continuation_fragment": True,
+        },
+        {
+            "role": "user",
+            "content": "Continue exactly where you left off",
+            "_length_continuation_nudge": True,
+        },
+    ]
+
+    result = max_retries_exhausted_result(
+        agent, error, classified, max_retries=3, is_rate_limited=True,
+        error_msg=str(error).lower(), api_kwargs=None, api_messages=[], messages=messages,
+        conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", model="m", current_turn_user_idx=0,
+    )
+
+    assert result["final_response"] == "Visible partial"
+    assert result["failure_resets_at"] == resets_at
+
+
 def test_exhausted_plan_quota_429_names_the_reset_window_not_wait_a_minute():
     """The real usage-limit envelope: ``_summarize_api_error`` reduces the body to ``HTTP 429: The
     usage limit has been reached``, so the reset must travel through the classifier, not the text (#89401)."""

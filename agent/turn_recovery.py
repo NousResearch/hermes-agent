@@ -733,14 +733,17 @@ def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
         return None
 
 
-def _stamp_limit_reset(result: Dict[str, Any], agent: Any, api_error: Exception) -> None:
+def _stamp_limit_reset(
+    result: Dict[str, Any], agent: Any, api_error: Exception, *, append_copy: bool = True,
+) -> None:
     """``failure_resets_at`` for structured clients (Desktop card: "Limit resets at HH:mm") and the
-    same sentence appended to the chat text every plain surface (CLI/TUI/gateway) renders (#98852)."""
+    same sentence appended to the chat text plain surfaces render (#98852), unless answer text must
+    remain an exact partial emitted by the model."""
     resets_at = limit_reset_epoch(agent, api_error)
     if resets_at is None:
         return
     result["failure_resets_at"] = resets_at
-    if line := limit_reset_copy(resets_at):
+    if append_copy and (line := limit_reset_copy(resets_at)):
         result["final_response"] = f"{result['final_response']}\n\n{line}"
 
 
@@ -1152,7 +1155,7 @@ def max_retries_exhausted_result(
         # structured error fields for the retry affordance. Keeping the two separate
         # avoids appending failure copy to (or duplicating) the partial response.
         result["partial"] = True
-    _stamp_limit_reset(result, agent, api_error)
+    _stamp_limit_reset(result, agent, api_error, append_copy=not bool(_partial_response))
     if _free_tier_kind:
         _stamp_free_tier(result, _free_tier_kind, (
             _welcome_tier_guidance(classified, model=model, in_chat=True, door=False)

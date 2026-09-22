@@ -985,6 +985,20 @@ def _xai_reasoning_only_response(reasoning_text):
         ],
     )
 
+def test_typed_developer_event_preserves_original_responses_input_order():
+    import copy
+    from agent.codex_responses_adapter import _chat_messages_to_responses_input
+    messages = [
+        {"role": "user", "content": "original ask"},
+        {"role": "assistant", "content": "original answer"},
+        {"role": "developer", "content": "host-authored event metadata", "display_kind": "internal_notification"},
+    ]
+    original = copy.deepcopy(messages)
+    converted = _chat_messages_to_responses_input(messages)
+    assert [row["role"] for row in converted] == ["user", "assistant", "developer"]
+    assert converted[-1] == {"role": "developer", "content": "host-authored event metadata"}
+    assert messages == original
+
 def test_codex_preflight_passes_text_verbosity_through():
     """The preflight whitelist must let the Responses ``text`` block reach the wire (#20203).
 

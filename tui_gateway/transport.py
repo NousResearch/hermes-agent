@@ -12,6 +12,8 @@ from __future__ import annotations
 from collections import deque
 from dataclasses import dataclass, field
 import contextlib
+import concurrent.futures
+import time
 import contextvars
 import errno
 import json
@@ -178,6 +180,9 @@ class FanoutTransport:
         # Membership lock held; identity fences a stale writer from removing
         # a later attachment of the same transport.
         peer.attached = False
+        for _, _, receipt in peer.pending:
+            if receipt is not None and not receipt.done():
+                receipt.set_result(False)
         peer.pending.clear()
         peer.pending_bytes = 0
         if not peer.writing and peer in self._peers:
@@ -211,7 +216,7 @@ class FanoutTransport:
                         self._remove(peer)
                     return
                 generation = peer.generation
-                frame, size = peer.pending.popleft()
+                frame, size, receipt = peer.pending.popleft()
                 peer.pending_bytes -= size
             try:
                 from tui_gateway.ws import WSTransport
@@ -228,6 +233,9 @@ class FanoutTransport:
             except Exception:
                 logger.debug("fanout write failed; pruning peer", exc_info=True)
                 ok = False
+            if receipt is not None and not receipt.done():
+                with self._lock:
+                    receipt.set_result(bool(ok and peer.attached and peer.generation == generation))
             if not ok:
                 with self._lock:
                     if peer.generation != generation:
@@ -237,6 +245,23 @@ class FanoutTransport:
                 return
 
     def write(self, obj: dict) -> bool:
+        return self._enqueue(obj, {})
+
+    def write_confirmed(self, obj: dict, *, peers=None, timeout: float = 5.0) -> bool:
+        """Queue in normal order; acknowledge an actual send to a pinned peer."""
+        targets = self.transports() if peers is None else list(peers)
+        receipts = {id(peer): concurrent.futures.Future() for peer in targets}
+        if not receipts or not self._enqueue(obj, receipts):
+            return False
+        pending = set(receipts.values())
+        deadline = time.monotonic() + timeout
+        while pending and (remaining := deadline - time.monotonic()) > 0:
+            done, pending = concurrent.futures.wait(pending, timeout=remaining, return_when=concurrent.futures.FIRST_COMPLETED)
+            if any(future.result() is True for future in done):
+                return True
+        return False
+
+    def _enqueue(self, obj: dict, receipts: dict) -> bool:
         # Freeze the queued frame so a caller cannot mutate it after admission. Same serialization
         # guard as the single-peer transports: an unserializable frame reaches every peer as -32603.
         encoded = serialize_frame(obj, "fanout", logger)
@@ -251,7 +276,7 @@ class FanoutTransport:
                     logger.warning("fanout subscriber backlog full; detaching peer")
                     self._remove(peer)
                     continue
-                peer.pending.append((frame, size))
+                peer.pending.append((frame, size, receipts.get(id(peer.transport))))
                 peer.pending_bytes += size
                 if not peer.writing:
                     peer.writing = True

@@ -384,6 +384,14 @@ class GatewayTurnMixin:
         """Resolve ``source`` to its session entry (topic recovery, internal-route guards, Telegram
         topic-binding heal). Returns ``(source, session_entry, session_key)`` or ``None`` to drop
         the event."""
+        if getattr(event, "gateway_system_event", None) is not None:
+            from gateway.internal_events import resolve_message_event_receipt
+            status, entry, routed_source = await self._gateway_system_event_target(event.gateway_system_event)
+            if status is not None:
+                resolve_message_event_receipt(event, status)
+                return None
+            self._cache_session_source(entry.session_key, routed_source)
+            return routed_source, entry, entry.session_key
         # Topic-mode DMs: rewrite a stale/foreign thread_id to the user's last-active topic so a
         # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
@@ -1793,6 +1801,9 @@ class GatewayTurnMixin:
         # transcript that reflects what was said. The caller pairs it with a stable assistant safety
         # boundary rather than the provider error text. Hidden-reasoning-only incomplete turns follow the
         # same persistence rule so peer-agent channels don't ingest provider details. (#7100, #51628)
+        if getattr(event, "gateway_system_event", None) is not None:
+            from gateway.internal_events import gateway_system_event_message
+            return gateway_system_event_message(event.gateway_system_event, event.text)
         _user_entry = {
             "role": "user",
             "content": (
@@ -2039,6 +2050,10 @@ class GatewayTurnMixin:
         ``(_PreparedTurn, env_tokens)``; a ``str`` first element is a reply to send instead of
         running (history unreadable); ``None`` drops the turn (inbound text rejected)."""
         from gateway.run import _load_gateway_config
+        if getattr(event, "gateway_system_event", None) is not None:
+            return await self._prepare_gateway_system_event(
+                event, source, session_entry, session_key, _quick_key, run_generation,
+            )
         _was_auto_reset, _is_new_session = await self._hmwa_open_session(session_entry, session_key, source)
         context = build_session_context(source, self.config, session_entry)
         # Session context variables for tools (task-local, concurrency-safe)
@@ -2069,7 +2084,7 @@ class GatewayTurnMixin:
 
         # A turn becomes durable recovery work only after it owns the per-session lease; marking
         # earlier would falsely recover a message that never began processing.
-        await self._mark_durable_active_turn(event, session_entry.session_key)
+        await self._mark_durable_active_turn(event, session_entry.session_key, session_entry.session_id)
 
         # An unreadable store is not an empty conversation: stop before the agent invents continuity
         # from []. Restore task-local context here (before the broad cleanup finally).
@@ -2165,6 +2180,11 @@ class GatewayTurnMixin:
             from gateway.run_heartbeat_acceptance import heartbeat_owner_is_current
             if not heartbeat_owner_is_current(self, event, session_key):
                 return
+            if getattr(event, "gateway_system_event", None) is not None:
+                current_source = await self._admit_gateway_system_event_turn(event, session_entry)
+                if current_source is None:
+                    return None
+                source = event.source = current_source
             _run_start_session_id = session_entry.session_id
             _turn_started_monotonic = time.monotonic()
             # Admission/typing is not execution. All routing, authorization and
@@ -2182,9 +2202,22 @@ class GatewayTurnMixin:
                 persist_user_display_metadata={
                     "gateway_input_owner": prepared.persistence_owner, **diagnostic_metadata(event)},
                 message_type=event.message_type,
+                gateway_system_event=getattr(event, "gateway_system_event", None),
+
                 scheduled_heartbeat=bool(getattr(event, "_heartbeat_session_id", None)),
             )
             _turn_seconds = time.monotonic() - _turn_started_monotonic
+            if getattr(event, "gateway_system_event", None) is not None:
+                from gateway.internal_events import resolve_message_event_receipt
+                if agent_result.get("gateway_system_event_error"):
+                    resolve_message_event_receipt(event, "agent_error")
+                    return None
+                if agent_result.get("interrupted"):
+                    event._gateway_event_terminal_status = "cancelled"
+                elif agent_result.get("failed") or agent_result.get("completed") is not True:
+                    event._gateway_event_terminal_status = "agent_error"
+                else:
+                    event._gateway_event_terminal_status = "completed"
 
             # A queued (/queue) chain answered the LAST message of the chain, so the outer final
             # send (bracketed by the adapter against this event) must be ledgered under that
@@ -2202,6 +2235,9 @@ class GatewayTurnMixin:
             await self._hmwa_stop_typing_for_turn(event, source)
 
             if not self._is_session_run_current(_quick_key, run_generation):
+                if getattr(event, "gateway_system_event", None) is not None:
+                    from gateway.internal_events import resolve_message_event_receipt
+                    resolve_message_event_receipt(event, "cancelled")
                 self._hmwa_discard_stale_result(source, _quick_key, run_generation)
                 return None
 
@@ -2222,9 +2258,10 @@ class GatewayTurnMixin:
             )
             if agent_failed_early and not is_context_overflow_failure:
                 response = self._hmwa_add_failed_turn_notice(response, self._hmwa_failed_turn_notice(agent_result))
-            response, session_entry = await self._hmwa_compression_exhaustion_reset(
-                agent_result, response, session_entry, session_key, source,
-            )
+            if getattr(event, "gateway_system_event", None) is None:
+                response, session_entry = await self._hmwa_compression_exhaustion_reset(
+                    agent_result, response, session_entry, session_key, source,
+                )
             await self._hmwa_persist_turn_transcript(
                 event=event, source=source, session_entry=session_entry, session_key=session_key,
                 agent_result=agent_result, agent_messages=agent_messages, prepared=prepared,
@@ -2238,6 +2275,8 @@ class GatewayTurnMixin:
             )
 
         except Exception as e:
+            if getattr(event, "gateway_system_event", None) is not None:
+                event._gateway_event_terminal_status = "agent_error"
             return await self._hmwa_agent_error_reply(e, event, source, session_entry, session_key, prepared)
         finally:
             # Restore session context variables to their pre-handler state
@@ -4183,12 +4222,14 @@ class GatewayTurnMixin:
         channel_prompt: Optional[str] = None, moa_config: Optional[dict] = None,
         persist_user_message: Optional[Any] = None, persist_user_timestamp: Optional[float] = None,
         persist_user_display_kind: Optional[str] = None, message_type: Optional[str] = None,
-        persist_user_display_metadata: Optional[dict] = None,
+        persist_user_display_metadata: Optional[dict] = None, gateway_system_event=None,
         scheduled_heartbeat: bool = False,
     ) -> Dict[str, Any]:
         """Run the agent; returns the full run_conversation result dict.
 
         Keys: "final_response", "messages", "api_calls", "completed"."""
+        if gateway_system_event is not None and self._get_proxy_url():
+            return {"gateway_system_event_error": "unsupported_transport"}
         if self._get_proxy_url():
             return await self._run_agent_via_proxy(
                 message=message, context_prompt=context_prompt, history=history, source=source,
@@ -4221,6 +4262,8 @@ class GatewayTurnMixin:
             persist_user_timestamp=persist_user_timestamp,
             persist_user_display_kind=persist_user_display_kind,
             persist_user_display_metadata=persist_user_display_metadata,
+            gateway_system_event=gateway_system_event,
+
             scheduled_heartbeat=scheduled_heartbeat,
         )
         _status_thread_metadata = self._run_agent_bind_turn_wiring(
@@ -4261,7 +4304,9 @@ class GatewayTurnMixin:
             result = turn_ctx.result_holder[0]
             adapter = self._delivery_adapter_for(source)
             await self._run_agent_finalize_streaming_tts(turn_ctx, adapter)
-            pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
+            pending_event, pending = (None, None)
+            if gateway_system_event is None:
+                pending_event, pending = await self._run_agent_drain_pending(result, adapter, source, session_key)
             if pending_event or pending:
                 return await self._run_agent_queued_followup(
                     turn_ctx, adapter, pending, pending_event, response, result, stream_task,

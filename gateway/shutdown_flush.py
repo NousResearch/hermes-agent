@@ -191,6 +191,11 @@ def _json_safe(value: Any) -> bool:
 
 def _serialise_value(value: Any) -> Optional[dict]:
     """Convert a pending message value to a JSON-serialisable dict."""
+    from gateway.internal_events import GatewaySystemEvent
+
+    if isinstance(getattr(value, "gateway_system_event", None), GatewaySystemEvent):
+        # The plugin ledger owns uncertain recovery; a legacy text spool would forge a user turn.
+        return None
     if hasattr(value, "text"):  # MessageEvent-like object
         result: Dict[str, Any] = {"text": getattr(value, "text", "")}
         for attr in ("session_id", "platform", "sender_id", "sender_name", "reply_to", "media",

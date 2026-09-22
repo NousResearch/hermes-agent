@@ -15,10 +15,53 @@ import pytest
 
 from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner
+from gateway.session_lifecycle import TYPED_EVENT_RECOVERY_METADATA_KEY
+from gateway.internal_events import create_gateway_system_event, new_gateway_event_receipt
+from gateway.platforms.event import MessageEvent
 from gateway.session import SessionEntry, SessionSource, SessionStore
 
 
 ACTIVE_TURN_MAX_AGE_SECONDS = 60 * 60
+
+
+def test_direct_user_turn_without_session_store_keeps_pending_notes():
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    runner = object.__new__(GatewayRunner)
+    runner._pending_model_notes = {"direct": "Model changed"}
+    ctx = TurnContext(message="Hello", session_key="direct", history=[])
+
+    assert TurnRunner(runner, ctx)._prepare_turn_message([]) == (None, None)
+    assert ctx.message == "Model changed\n\nHello"
+    assert runner._pending_model_notes == {}
+
+
+@pytest.mark.parametrize("malformed", [False, True])
+def test_typed_recovery_owner_blocks_generic_tool_recovery(tmp_path, malformed):
+    from gateway.run_turn_runner import TurnRunner
+    from gateway.turn_context import TurnContext
+
+    store = _make_store(tmp_path)
+    entry = store.get_or_create_session(_make_source())
+    assert store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt"
+    )
+    if malformed:
+        with store._lock:
+            store._entries[entry.session_key].metadata[TYPED_EVENT_RECOVERY_METADATA_KEY] = {}
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._pending_model_notes = {entry.session_key: "Model changed"}
+    history = [{"role": "tool", "content": "Pending output"}]
+    ctx = TurnContext(
+        message="Hello", session_key=entry.session_key, session_id=entry.session_id,
+        history=history,
+    )
+
+    assert TurnRunner(runner, ctx)._prepare_turn_message(history) == (None, None)
+    assert ctx.message == "Hello"
+    assert runner._pending_model_notes == {entry.session_key: "Model changed"}
 
 
 def _make_source(chat_id: str = "active-turn-chat") -> SessionSource:
@@ -513,3 +556,202 @@ async def test_unclean_recovery_promotes_exact_markers_before_legacy_fallback(
 
     assert await runner._recover_unclean_sessions() == (1, 2)
     assert calls == ["exact", "fallback"]
+
+
+def test_typed_event_recovery_owner_survives_crash_and_generic_recovery(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    assert store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt-1"
+    )
+
+    reloaded = _make_store(tmp_path)
+    assert reloaded.typed_event_recovery_owner_state(
+        entry.session_key, entry.session_id
+    ) == "owned"
+    assert reloaded.mark_resume_pending(entry.session_key) is False
+    assert reloaded.suspend_recently_active() == 0
+
+    # Even if an internal turn left a generic active token, the typed owner
+    # suppresses both exact-token and recency restart recovery.
+    assert reloaded.mark_turn_active(entry.session_key) is not None
+    assert reloaded.recover_interrupted_turns() == 0
+    assert reloaded.suspend_recently_active() == 0
+    assert _entry_for(reloaded, source).resume_pending is False
+
+    assert reloaded.discard_active_turn_markers() == 1
+    assert reloaded.clear_resume_pending(entry.session_key) is False
+    assert (
+        TYPED_EVENT_RECOVERY_METADATA_KEY
+        in _entry_for(reloaded, source).metadata
+    )
+
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("receipt_state", ["pending", "running"])
+async def test_native_db_typed_crash_suppression_before_and_after_admission(
+    tmp_path, receipt_state
+):
+    store = _make_db_store(tmp_path)
+    source = _make_source(f"typed-{receipt_state}")
+    entry = store.get_or_create_session(source)
+    content, marker = create_gateway_system_event(
+        content="[T3 continuation] completed",
+        session_key=entry.session_key,
+        expected_session_id=entry.session_id,
+        event_id=f"event-{receipt_state}",
+        event_kind="external_tool_completed",
+        plugin_id="notify-plugin",
+        expected_route={
+            "profile_name": "default",
+            "platform": source.platform.value,
+            "user_id": str(source.user_id),
+            "chat_id": str(source.chat_id),
+            "topic_id": str(source.thread_id),
+        },
+        eligibility_check=lambda: True,
+    )
+    receipt = new_gateway_event_receipt()
+    if receipt_state == "running":
+        assert receipt.set_running_or_notify_cancel()
+    event = MessageEvent(
+        text=content,
+        source=source,
+        internal=True,
+        allow_gateway_control=False,
+        gateway_system_event=marker,
+        gateway_event_receipt=receipt,
+    )
+    runner = object.__new__(GatewayRunner)
+    runner.session_store = store
+    runner._gateway_system_event_target = AsyncMock(
+        return_value=(None, entry, source)
+    )
+
+    assert await runner._mark_durable_active_turn(
+        event,
+        entry.session_key,
+        entry.session_id,
+        turn_lease_acquired=True,
+    )
+    _close_store_db(store)
+
+    reloaded = _make_db_store(tmp_path)
+    assert reloaded.typed_event_recovery_owner_state(
+        entry.session_key, entry.session_id
+    ) == "owned"
+    assert reloaded.recover_interrupted_turns() == 0
+    assert reloaded.suspend_recently_active() == 0
+    assert reloaded._entries[entry.session_key].resume_pending is False
+    _close_store_db(reloaded)
+
+
+
+def test_typed_owner_replaces_sequential_event_and_real_user_clears_aliases(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    alias_key = f"{entry.session_key}:alias"
+    with store._lock:
+        store._entries[alias_key] = SessionEntry.from_dict(
+            {**entry.to_dict(), "session_key": alias_key}
+        )
+        store._save()
+
+    assert store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt-1"
+    )
+    assert store.mark_typed_event_recovery_owner(
+        alias_key, entry.session_id, "receipt-2"
+    )
+    for candidate in store._entries.values():
+        assert candidate.metadata[TYPED_EVENT_RECOVERY_METADATA_KEY]["owner_id"] == (
+            "receipt-2"
+        )
+
+    assert store.mark_turn_active(
+        entry.session_key,
+        expected_session_id="stale-session-id",
+        clear_typed_event_recovery=True,
+    ) is None
+    assert all(
+        TYPED_EVENT_RECOVERY_METADATA_KEY in candidate.metadata
+        for candidate in store._entries.values()
+    )
+
+    token = store.mark_turn_active(
+        entry.session_key,
+        expected_session_id=entry.session_id,
+        clear_typed_event_recovery=True,
+    )
+    assert token is not None
+    assert all(
+        TYPED_EVENT_RECOVERY_METADATA_KEY not in candidate.metadata
+        for candidate in store._entries.values()
+    )
+    assert store.recover_interrupted_turns() == 1
+
+
+
+def test_typed_owner_refuses_resume_suspension_wrong_session_and_malformed(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+
+    assert not store.mark_typed_event_recovery_owner(
+        entry.session_key, "wrong-session", "receipt"
+    )
+    with store._lock:
+        store._entries[entry.session_key].resume_pending = True
+    assert not store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt"
+    )
+    with store._lock:
+        current = store._entries[entry.session_key]
+        current.resume_pending = False
+        current.suspended = True
+    assert not store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt"
+    )
+    with store._lock:
+        current.suspended = False
+        current.metadata[TYPED_EVENT_RECOVERY_METADATA_KEY] = {"broken": True}
+    assert store.typed_event_recovery_owner_state(
+        entry.session_key, entry.session_id
+    ) == "conflict"
+    assert not store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt"
+    )
+    assert store.mark_resume_pending(entry.session_key) is False
+
+
+
+def test_typed_owner_and_real_user_clear_are_failure_atomic(tmp_path):
+    store = _make_store(tmp_path)
+    source = _make_source()
+    entry = store.get_or_create_session(source)
+    real_persist = store._persist_routing_data
+    store._persist_routing_data = MagicMock(side_effect=OSError("disk unavailable"))
+
+    with pytest.raises(OSError, match="disk unavailable"):
+        store.mark_typed_event_recovery_owner(
+            entry.session_key, entry.session_id, "receipt"
+        )
+    assert TYPED_EVENT_RECOVERY_METADATA_KEY not in _entry_for(store, source).metadata
+
+    store._persist_routing_data = real_persist
+    assert store.mark_typed_event_recovery_owner(
+        entry.session_key, entry.session_id, "receipt"
+    )
+    store._persist_routing_data = MagicMock(side_effect=OSError("disk unavailable"))
+    with pytest.raises(OSError, match="disk unavailable"):
+        store.mark_turn_active(
+            entry.session_key,
+            expected_session_id=entry.session_id,
+            clear_typed_event_recovery=True,
+        )
+    current = _entry_for(store, source)
+    assert TYPED_EVENT_RECOVERY_METADATA_KEY in current.metadata
+    assert current.active_turn_token is None

@@ -235,9 +235,141 @@ def _durable_session_exists(db, session_id: str) -> bool:
         return True
 
 
+def _committed_history_id(message) -> Optional[int]:
+    if not isinstance(message, dict) or message.get("_db_persisted") is not True:
+        return None
+    row_id = message.get("_row_id")
+    return row_id if type(row_id) is int and row_id > 0 else None
+
+
+def _desktop_replay_projection(db, session_id):
+    from agent.replay_cleanup import sanitize_replay_history
+    from agent.turn_context import drop_stale_api_content
+
+    native, _display = db.get_resume_conversations(session_id)
+    native_by_id = {_committed_history_id(message): message for message in native}
+    if None in native_by_id:
+        raise ValueError("session_history_conflict: unanchored native projection")
+    projected = sanitize_replay_history(native)
+    rewritten = set()
+    for message in projected:
+        row_id = _committed_history_id(message)
+        if row_id is not None and message != native_by_id[row_id]:
+            # A stale sidecar must never override the native UNKNOWN-effect rewrite.
+            drop_stale_api_content(message)
+            rewritten.add(row_id)
+    return native_by_id, projected, rewritten
+
+
+def _native_recovery_rows(parent, rows):
+    from agent.replay_cleanup import sanitize_replay_history
+
+    # Native dangling-tail notices are synthetic, so have no DB identity. Validate
+    # them against their ALREADY anchored call, using the native producer. Its fresh
+    # timestamp is not provenance; all other generated fields must match exactly.
+    generated = sanitize_replay_history([parent])[1:]
+    clean = lambda message: {key: value for key, value in message.items() if key != "timestamp"}
+    return len(rows) <= len(generated) and all(
+        clean(row) == clean(expected) for row, expected in zip(rows, generated)
+    )
+
+
+def _hydrate_immediate_history(db, session_id: str, history):
+    """Reconcile an anchored Desktop cache against its native sanitized model projection.
+
+    Row identity authorizes reuse of richer cached objects; replay safety rewrites take
+    precedence. Client-owned/marker-only histories are excluded by the admission caller.
+    """
+    native_by_id, projected, rewritten = _desktop_replay_projection(db, session_id)
+    safe_by_id = {_committed_history_id(message): message for message in projected
+                  if _committed_history_id(message) is not None}
+    removed = set(native_by_id) - set(safe_by_id)
+    cached_ids = [_committed_history_id(message) for message in history
+                  if _committed_history_id(message) is not None]
+    if len(set(cached_ids)) != len(cached_ids):
+        raise ValueError("session_history_conflict: duplicate cached anchors")
+    if any(row_id not in native_by_id for row_id in cached_ids):
+        raise ValueError("session_history_conflict: removed or foreign cached anchors")
+    if cached_ids != [row_id for row_id in native_by_id if row_id in set(cached_ids)]:
+        raise ValueError("session_history_conflict: reordered cached anchors")
+    # Only the canonical sanitizer may remove an anchored cached block here. DB rewind,
+    # wrong-session rows and alternation-repair ambiguity still fail closed above.
+    working = [message for message in history if _committed_history_id(message) not in removed]
+    anchors = [(index, row_id) for index, message in enumerate(working)
+               if (row_id := _committed_history_id(message)) is not None]
+    if not anchors:
+        raise ValueError("session_history_conflict: sanitization removed every cached anchor")
+    cached = {row_id: working[index] for index, row_id in anchors}
+    projected_ids = list(safe_by_id)
+    if next(iter(cached)) != projected_ids[0]:
+        raise ValueError("session_history_conflict: cached prefix is incomplete")
+
+    unrepaired = db.get_messages_as_conversation(
+        session_id, repair_alternation=False, include_row_ids=True
+    )
+    if [_committed_history_id(message) for message in unrepaired] != list(native_by_id):
+        for row_id, message in cached.items():
+            if row_id not in rewritten and message != safe_by_id[row_id]:
+                raise ValueError("session_history_conflict: native replay repair changed anchors")
+    for row_id in rewritten:
+        if row_id in cached:
+            safe = safe_by_id[row_id]
+            current = cached[row_id]
+            if (any(current.get(key) != safe.get(key)
+                    for key in ("content", "effect_disposition", "tool_call_id"))
+                    or "api_content" in current):
+                cached[row_id] = safe
+
+
+    extras = {}
+    parent_id = None
+    for message in projected:
+        row_id = _committed_history_id(message)
+        if row_id is not None:
+            parent_id = row_id
+        else:
+            extras.setdefault(parent_id, []).append(message)
+    for row_id, rows in extras.items():
+        if row_id is None or not _native_recovery_rows(safe_by_id[row_id], rows):
+            raise ValueError("session_history_conflict: unsupported native synthetic projection")
+
+    prefix = working[:anchors[0][0]]
+    suffix = []
+    for offset, (index, row_id) in enumerate(anchors):
+        stop = anchors[offset + 1][0] if offset + 1 < len(anchors) else len(working)
+        following = working[index + 1:stop]
+        if not following:
+            continue
+        notices = []
+        for message in following:
+            if message.get("role") == "tool" and _native_recovery_rows(safe_by_id[row_id], notices + [message]):
+                notices.append(message)
+            else:
+                if message.get("role") == "tool" and safe_by_id[row_id].get("tool_calls"):
+                    raise ValueError("session_history_conflict: ambiguous recovery result")
+                break
+        if notices:
+            native_notices = extras.get(row_id, [])
+            if native_notices and len(native_notices) != len(notices):
+                raise ValueError("session_history_conflict: changed native recovery notices")
+            extras[row_id] = notices
+        remainder = following[len(notices):]
+        if remainder:
+            if offset + 1 < len(anchors):
+                raise ValueError("session_history_conflict: interleaved caller-only history")
+            suffix = remainder
+
+    result = list(prefix)
+    for row_id, message in safe_by_id.items():
+        result.append(cached.get(row_id, message))
+        result.extend(extras.get(row_id, []))
+    result.extend(suffix)
+    return history if len(result) == len(history) and all(a is b for a, b in zip(result, history)) else result
+
+
 def admit_durable_turn_lease(
     agent, *, session_id: str, relay_turn_id: str, task_context: Dict[str, Any],
-    conversation_history: Optional[List[Dict[str, Any]]],
+    conversation_history: Optional[List[Dict[str, Any]]], gateway_system_event: Optional[Any] = None,
 ) -> TurnLeaseAdmission:
     """Acquire the session turn lease when the session is durable; build (not start) its threads.
 
@@ -287,10 +419,27 @@ def admit_durable_turn_lease(
     agent._active_session_turn_lease_holder = holder
     agent._active_session_turn_lease_ttl_seconds = LEASE_TTL_SECONDS
     try:
+        if gateway_system_event is not None:
+            from gateway.internal_events import GatewaySystemEvent
+            if (not isinstance(gateway_system_event, GatewaySystemEvent)
+                    or gateway_system_event.expected_session_id != session_id):
+                raise ValueError("typed gateway event has an invalid physical session")
+            # Process-local receipt caches and Desktop history can be stale. Check
+            # committed admission rows only after owning the physical DB lease,
+            # before staging the next event or entering the model loop.
+            durable = db.get_messages_as_conversation(
+                session_id, repair_alternation=False, include_row_ids=True
+            )
+            for message in durable:
+                metadata = message.get("display_metadata") or {}
+                if (message.get("role") == "developer" and isinstance(metadata, dict)
+                        and metadata.get("plugin_id") == gateway_system_event.plugin_id
+                        and metadata.get("event_id") == gateway_system_event.event_id):
+                    raise ValueError("typed gateway event was already admitted to this session")
         if waited:
             agent._emit_status("Session is free; loading the latest transcript...")
             # The holder may have compressed/rotated the session while we waited: reload only
-            # AFTER admission; an immediate acquisition skips this (needless prompt-cache miss).
+            # AFTER admission. Preserve the existing waited resume/compression policy.
             latest_session_id = db.resolve_resume_session_id(session_id)
             if latest_session_id:
                 agent.session_id = latest_session_id
@@ -307,6 +456,56 @@ def admit_durable_turn_lease(
                 and "_row_id" not in m
             )
             admission.conversation_history = reloaded
+        elif (task_context["platform"] == "desktop"
+              and conversation_history
+              and any(_committed_history_id(message) is not None for message in conversation_history)
+              and all(isinstance(message, dict) for message in conversation_history)
+              and not any(message.get("_db_persisted") and _committed_history_id(message) is None
+                          for message in conversation_history)
+              and all(callable(getattr(type(db), name, None)) for name in (
+                  "get_messages_as_conversation", "get_resume_conversations",
+                  "resolve_resume_session_id", "_session_turn_lease_key",
+              ))):
+            # Only the native Desktop DB-owned cache opts in. Gateway/API/client-owned
+            # histories keep their existing immediate-admission semantics.
+            admission.conversation_history = _hydrate_immediate_history(
+                db, session_id, conversation_history
+            )
+            # A compression tip can move before an uncontended acquisition, too. Ordinary
+            # continuation/branch rows do not necessarily share this lease; refuse those here.
+            latest_session_id = db.resolve_resume_session_id(session_id)
+            if latest_session_id and latest_session_id != session_id:
+                if db._session_turn_lease_key(latest_session_id) != db._session_turn_lease_key(session_id):
+                    raise ValueError("session_history_conflict: resume target outside acquired lease")
+                history = admission.conversation_history or []
+                persisted = [i for i, message in enumerate(history) if message.get("_db_persisted")]
+                # Native recovery notices belong to the old anchored call's context, even
+                # though they have no persisted row. They must leave with it on adoption.
+                context_indices = set(persisted)
+                for index in persisted:
+                    notices = []
+                    for offset in range(index + 1, len(history)):
+                        if offset in context_indices:
+                            break
+                        message = history[offset]
+                        if message.get("role") != "tool" or not _native_recovery_rows(
+                            history[index], notices + [message]
+                        ):
+                            break
+                        notices.append(message)
+                        context_indices.add(offset)
+                if context_indices and any(index not in context_indices
+                                           for index in range(min(context_indices), max(context_indices) + 1)):
+                    raise ValueError("session_history_conflict: interleaved compression history")
+                if history and not persisted:
+                    raise ValueError("session_history_conflict: unanchored compression history")
+                _, latest, _ = _desktop_replay_projection(db, latest_session_id)
+                admission.conversation_history = (
+                    history[:persisted[0]] + latest + history[max(context_indices) + 1:]
+                    if persisted else latest
+                )
+                agent.session_id = latest_session_id
+                task_context["session_id"] = latest_session_id
         lease.build_threads()
     except BaseException:
         # The façade never saw this lease; release here so an admitted row is not leaked.

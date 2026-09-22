@@ -222,7 +222,10 @@ class LoadedPlugin:
     deferred: bool = False
 
 
-class PluginContext:
+from hermes_cli.plugins_gateway import PluginGatewayContextMixin, PluginGatewayManagerMixin
+
+
+class PluginContext(PluginGatewayContextMixin):
     """Facade given to plugins so they can register tools and hooks."""
 
     def __init__(self, manifest: PluginManifest, manager: "PluginManager"):
@@ -638,12 +641,8 @@ class PluginContext:
             return False
 
     def _gateway_injection_allowed(self) -> bool:
-        """Return whether this plugin may trigger gateway session turns."""
-        try:
-            cfg = load_config_readonly() or {}
-        except Exception:
-            return False
-        return (_plugin_settings_entry(cfg, self.plugin_id) or {}).get("allow_gateway_injection") is True
+        """Return this plugin's current grant in its owning profile."""
+        return self._manager.gateway_injection_allowed(self.plugin_id)
 
     @_serialized_replacement
     def register_cli_command(
@@ -1131,7 +1130,7 @@ def _resolve_hook_callback_timeout() -> float:
     return timeout
 
 
-class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
+class PluginManager(PluginGatewayManagerMixin, PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     """Central manager that discovers, loads, and invokes plugins."""
 
     def __init__(self, scope_key: Optional[str] = None) -> None:
@@ -1142,6 +1141,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
+        self._gateway_task_factories = {}
+        self._gateway_tasks = {}
+        self._gateway_task_loop = None
         self._gateway_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
         # Manager-local registries keyed by name (see the matching ``PluginContext.register_*``):

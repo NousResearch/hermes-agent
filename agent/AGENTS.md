@@ -60,6 +60,10 @@ Adding one: register in that table (no `if name == ...` chain); `tools/todo_tool
   commands (`agent/skill_commands.py`) inject as a user message; subdirectory `AGENTS.md` hints
   (`agent/subdirectory_hints.py`) append to the tool result (head+tail truncated past `_MAX_HINT_CHARS = 32_000`;
   the truncation is logged, never queued as a chat status warning — `context_file_max_chars` does not raise that cap).
+- **Typed plugin completions** (`gateway/internal_events.py`) append a closed developer event
+  at a new turn boundary on the supported Codex Responses path. They are not human input and
+  cannot grant new authority. Preserve the physical-session lease, durable event deduplication,
+  eligibility checks and cached prefix; fail closed when compression or rotation would be needed.
 - **Strict role alternation.** Never two same-role messages in a row; never a synthetic user
   message injected mid-loop. The one exception is `/steer`, delivered as a standalone user row
   after a tool result (`assistant(tool_calls) → tool → user` is legal on every provider path) —

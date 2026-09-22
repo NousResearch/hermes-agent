@@ -511,12 +511,17 @@ async def get_session_latest_descendant(session_id: str, profile: Optional[str] 
 
 
 def _project_for_display(messages: list) -> list:
-    """Replace compaction summaries with their display-only projection."""
+    """Project model-only rows for display without changing physical audit history."""
     from agent.compaction_display import project_compaction_message_for_display
     from agent.context_compressor import is_compaction_summary_message
 
     projected_messages = []
     for message in messages:
+        if message.get("role") == "developer" and message.get("display_kind") == "internal_notification":
+            # Older Desktop builds know "hidden", not the host's internal event kind.
+            # Keep content, metadata and row identity for inspection and pagination.
+            projected_messages.append({**message, "display_kind": "hidden"})
+            continue
         if not is_compaction_summary_message(message):
             projected_messages.append(message)
             continue

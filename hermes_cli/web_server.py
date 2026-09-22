@@ -258,9 +258,12 @@ async def _lifespan(app: "FastAPI"):
 
     start_background_bootstrap()
 
+    from tui_gateway.plugin_events import start_desktop_plugins, stop_desktop_plugins
+    desktop_plugins = await start_desktop_plugins()
     try:
         yield
     finally:
+        await stop_desktop_plugins(desktop_plugins)
         hosted_room_start_cancel.set()
         _hosted_groups.stop_hosted_room_service(timeout=5.0)
         hosted_room_start_thread.join(timeout=1.0)

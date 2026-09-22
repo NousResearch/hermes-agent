@@ -667,6 +667,34 @@ method("session.events.stats", params=SessionEventsStatsParams, result=SessionEv
        doc="Replay-buffer occupancy telemetry (ops/debug).")
 
 
+# ── typed plugin continuation ────────────────────────────────────────────────────────────────
+
+
+class DesktopContinuationDestination(Result):
+    profile_name: str
+    session_id: str
+
+
+class SessionContinuationReadinessParams(ProfileParams):
+    plugin_id: str | None = None
+    # Invalid or absent destinations produce a fail-closed readiness result.
+    destination: JsonValue = None
+
+
+class SessionContinuationReadinessResult(Result):
+    ready: bool
+    status: str
+    generation: str | None = None
+    native_session_id: str | None = None
+    destination: DesktopContinuationDestination | None = None
+    busy: bool | None = None
+
+
+method("session.continuation.readiness", params=SessionContinuationReadinessParams,
+       result=SessionContinuationReadinessResult,
+       doc="Probe an authorized plugin's exact connected native continuation destination.")
+
+
 # ── one-shot LLM ──────────────────────────────────────────────────────────────────────────────
 
 

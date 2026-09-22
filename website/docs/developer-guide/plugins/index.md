@@ -1636,6 +1636,132 @@ mcp_servers:
 
 Hermes connects to each server at startup, lists its tools, and registers them alongside built-ins. The LLM sees them exactly like any other tool. **Full guide:** [MCP](../../user-guide/features/mcp.md).
 
+### Typed external completion handoffs
+
+A standalone plugin observing an external worker can return its result to the
+existing Hermes conversation without synthesizing a user message. Use the typed
+continuation methods on `PluginContext`; `inject_message()` retains its existing
+user-input semantics.
+
+This capability currently supports `openai-codex` with `codex_responses`. Messaging
+gateway sessions need a durable session record and currently authorized stored
+route. Desktop/dashboard sessions must be connected to the authenticated `serve`
+runtime in the default profile. Other providers, proxy execution, detached
+sessions, CLI-only sessions, rotated sessions and ambiguous destinations fail
+closed. There is no public HTTP endpoint and no session-discovery API.
+
+The concrete consumer is a standalone external-work observer: a tool captures its
+current destination while the user is commissioning work, persists its own finite
+authorization and external event ID, then an async observer submits the completion.
+The plugin owns external subscriptions, authentication, task deadlines, a finite
+continuation budget, cancellation state and durable retry bookkeeping. Installed
+plugins are trusted code; external task output remains untrusted evidence and
+must not be used as new instructions or authorization.
+
+#### Capture the destination during the originating turn
+
+`ctx.current_gateway_destination()` returns a fresh dictionary containing
+`profile_name`, `session_id`, `session_key`, `platform`, `user_id`, `chat_id`, and
+`topic_id`. `ctx.current_desktop_destination()` returns `profile_name` and
+`session_id`. Both return `None` outside a live originating turn, in delegated
+children, or during a typed continuation. Do not construct a destination from
+process environment variables or a remembered chat ID.
+
+`ctx.gateway_continuation_readiness(destination)` and
+`ctx.desktop_continuation_readiness(destination)` return a dictionary with `ready`
+and `status`. A positive answer also requires a live registered observer, its
+published readiness, and the explicit per-plugin grant:
+
+```yaml
+plugins:
+  entries:
+    my-plugin:
+      allow_gateway_injection: true
+```
+
+Readiness is a probe, not reserved capacity or permission for an unbounded loop.
+Messaging readiness is called from the originating tool worker, not the gateway
+event loop.
+
+#### Register a host-owned observer
+
+Register a coroutine factory synchronously from `register(ctx)`:
+
+```python
+def register(ctx):
+    async def observe():
+        try:
+            # Connect the plugin's authenticated external subscription here.
+            ctx.set_continuation_observer_ready(True, surface="gateway")
+            await observe_external_events(ctx)
+        finally:
+            ctx.set_continuation_observer_ready(False, surface="gateway")
+
+    ctx.register_gateway_task(observe, name="external-completions")
+```
+
+Use `register_desktop_task(factory, name=...)` and `surface="desktop"` for the
+serve runtime. These return disposable registration handles. Factories start on
+the owning runtime's loop; shutdown or disposal cancels their tasks. Observers
+must release their resources on cancellation. They are not restarted after a
+failure; the plugin should surface the failure and wait for operator recovery.
+
+#### Submit one bounded completion
+
+```python
+receipt = ctx.inject_gateway_system_event(
+    content,  # Trusted plugin envelope; quote external output as untrusted data.
+    session_key=destination["session_key"],
+    expected_session_id=destination["session_id"],
+    expected_route={key: destination[key] for key in (
+        "profile_name", "platform", "user_id", "chat_id", "topic_id"
+    )},
+    event_id=external_event_id,
+    event_kind="external_tool_completed",
+    eligibility_check=still_authorized,
+)
+```
+
+For Desktop use
+`ctx.inject_desktop_system_event(content, destination=destination,
+event_id=external_event_id, event_kind="external_tool_completed",
+eligibility_check=still_authorized, completion_check=may_deliver_result)`.
+`completion_check` must retain the cancellation/deadline boundary after the plugin
+has charged its single admission against the finite budget.
+
+Supported kinds are `external_tool_completed`, `external_tool_error`, and
+`external_tool_pending_decision`. Content is bounded to 16,384 characters.
+Predicates must be synchronous, process-local and return the boolean `True` only
+while the originating user authorization remains valid. They must not perform
+I/O. The host rechecks them along with route/session identity and current grants.
+External evidence never authorizes another continuation by itself.
+
+A malformed gateway request returns `None`; malformed Desktop arguments raise
+`ValueError`. Otherwise a `concurrent.futures.Future` resolves to a mapping with
+`status` and an opaque `receipt_id` (Desktop may refuse before creating one).
+Async observers can await it through `asyncio.wrap_future(receipt)`.
+
+- `completed`: the agent completed and the relevant platform/native transport
+  accepted the terminal output. This does not prove a person saw it.
+- `busy`, `stopping`: nothing was admitted; the plugin may retry only within its
+  existing deadline/budget, using the same event ID and destination.
+- `unauthorized`, `cancelled`, `route_mismatch`, `session_mismatch`, `agent_error`:
+  stop and reconcile; do not blindly retry an uncertain outcome.
+
+The host serializes against the physical session's turn lease and reconciles
+persisted history after acquiring it. Each event is persisted as an append-only
+`developer` row with `display_kind="internal_notification"` and event metadata;
+it does not increment human-turn counters or invoke human gateway controls.
+Event-ID deduplication rejects a replay already present in durable history.
+Generic restart recovery cannot resurrect an interrupted typed event as a user
+turn. The plugin must reconcile its durable event ledger after restart; this is
+not an exactly-once guarantee for arbitrary external side effects.
+
+Typed turns cannot rotate or compress the captured session, replace its selected
+context engine, or change to an unsupported provider. A context-budget failure
+ends the attempt and requires an ordinary user turn to resolve it. The cached
+system prompt and already committed message prefix remain intact.
+
 ### Gateway event hooks — fire on lifecycle events
 
 Drop a manifest + handler into `~/.hermes/hooks/<name>/`:

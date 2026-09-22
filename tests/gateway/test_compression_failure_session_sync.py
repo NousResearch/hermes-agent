@@ -15,6 +15,7 @@ SESSION_KEY = "agent:main:telegram:dm:12345"
 
 class _SessionStore:
     def __init__(self):
+        self._lock = threading.RLock()
         self.entry = SimpleNamespace(
             session_key=SESSION_KEY,
             session_id="session-before-compression",
@@ -22,6 +23,12 @@ class _SessionStore:
         self._entries = {SESSION_KEY: self.entry}
         self.save_calls = 0
         self.peer_records = []
+
+    def _ensure_loaded_locked(self):
+        pass
+
+    def _typed_event_recovery_state_locked(self, session_id):
+        return "none"
 
     def _save(self):
         self.save_calls += 1

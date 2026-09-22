@@ -757,6 +757,15 @@ The default for a newly-installed or bundled plugin is `not enabled`. `hermes pl
 
 In a running session, `/plugins` shows which plugins are currently loaded.
 
+## External completion handoffs
+
+Standalone plugins can report completed external work to the originating
+conversation through the [typed handoff API](/developer-guide/plugins#typed-external-completion-handoffs).
+This is opt-in per plugin and currently limited to Codex Responses sessions on
+the messaging gateway or a connected default-profile Desktop/dashboard. Plugins
+must retain the user's original deadline, cancellation and finite turn budget;
+an external result does not grant new authority.
+
 ## Injecting Messages
 
 Plugins can inject messages into a CLI conversation or a known gateway session using `ctx.inject_message()`:

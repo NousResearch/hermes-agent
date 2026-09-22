@@ -2285,6 +2285,18 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, event_replay.replay_stats())
 
 
+@method("session.continuation.readiness")
+def _(rid, params: dict) -> dict:
+    """Read-only exact native destination probe through the authenticated serve transport."""
+    from hermes_cli.plugins import get_plugin_manager
+    manager = get_plugin_manager()
+    plugin_id = params.get("plugin_id")
+    ctx = getattr(manager, "_desktop_contexts", {}).get(plugin_id)
+    if ctx is None:
+        return _ok(rid, {"ready": False, "status": "host_unsupported"})
+    return _ok(rid, ctx.desktop_continuation_readiness(params.get("destination")))
+
+
 def register(server) -> None:
     """Publish this module's helpers onto ``server`` (rebound to its globals) and install handlers."""
     bind_module(globals(), server, skip=("_",))

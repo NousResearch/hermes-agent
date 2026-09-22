@@ -1625,6 +1625,14 @@ class TurnRunner:
         )
         ctx = self._ctx
         persist_override: Optional[Any] = ctx.persist_user_message
+        if ctx.gateway_system_event is not None:
+            return None, None
+        session_store = getattr(self._runner, "session_store", None)
+        if ctx.session_key and session_store is not None:
+            with session_store._lock:
+                session_store._ensure_loaded_locked()
+                if session_store._typed_event_recovery_state_locked(ctx.session_id) != "none":
+                    return persist_override, ctx.persist_user_timestamp
         self._prepend_pending_note("_pending_model_notes")
         # Auto-continue: history ending with a tool result means the previous turn was cut off
         # (restart, crash, SIGTERM). Session-level resume_pending (drain-timeout shutdown) uses
@@ -1697,6 +1705,11 @@ class TurnRunner:
         token = set_current_session_key(session_key)
         register_gateway_notify(session_key, self._approval_notify_sync)
         try:
+            if ctx.gateway_system_event is not None:
+                return agent.run_conversation(
+                    ctx.message, conversation_history=agent_history, task_id=ctx.session_id,
+                    gateway_system_event=ctx.gateway_system_event,
+                )
             api_message = _wrap_current_message_with_observed_context(self._native_image_run_message(), observed_group_context)
             kwargs = {"conversation_history": agent_history, "task_id": ctx.session_id}
             if _accepts_keyword(agent.run_conversation, "turn_author"):
@@ -1936,6 +1949,11 @@ class TurnRunner:
                     "failing, run `hermes doctor` on the host."),
                 "messages": [], "api_calls": 0, "tools": [],
             }
+        if ctx.gateway_system_event is not None and (
+            runtime_kwargs.get("api_mode") != "codex_responses"
+            or runtime_kwargs.get("provider") != "openai-codex"
+        ):
+            return {"gateway_system_event_error": "unsupported_transport"}
         pr = runner._provider_routing
         reasoning_config = runner._resolve_session_reasoning_config(source=ctx.source, session_key=ctx.session_key, model=model)
         runner._reasoning_config = reasoning_config
@@ -1951,7 +1969,9 @@ class TurnRunner:
         self._wire_turn_agent_callbacks(agent, turn_route, reasoning_config, stream_delta_cb, interim_cb, want_interim)
         agent_history, observed_group_context, history_media_paths = self._load_turn_history(agent, reused_cached_agent)
         persist_msg, persist_ts = self._prepare_turn_message(agent_history)
-        result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
+        from gateway.session_context import plugin_gateway_turn
+        with plugin_gateway_turn(runner, ctx, agent):
+            result = self._run_conversation_with_approval(agent, agent_history, observed_group_context, persist_msg, persist_ts)
         self._finish_stream_consumer(result, agent_history, stream_consumer)
         # The streaming-TTS consumer's finish() runs on the outer loop thread after the executor
         # returns, so early run_sync returns are also finalised.

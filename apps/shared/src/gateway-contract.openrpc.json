@@ -2761,6 +2761,24 @@
       }
     },
     {
+      "name": "session.continuation.readiness",
+      "summary": "Probe an authorized plugin's exact connected native continuation destination.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/SessionContinuationReadinessParams"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/SessionContinuationReadinessResult"
+        }
+      }
+    },
+    {
       "name": "session.control",
       "summary": "Run one allowlisted goal / loop / subgoal / heartbeat action and return the exact resulting snapshot.",
       "params": [
@@ -10314,6 +10332,25 @@
           "max_concurrent_children"
         ],
         "title": "DelegationStatusResult",
+        "type": "object"
+      },
+      "DesktopContinuationDestination": {
+        "additionalProperties": false,
+        "properties": {
+          "profile_name": {
+            "title": "Profile Name",
+            "type": "string"
+          },
+          "session_id": {
+            "title": "Session Id",
+            "type": "string"
+          }
+        },
+        "required": [
+          "profile_name",
+          "session_id"
+        ],
+        "title": "DesktopContinuationDestination",
         "type": "object"
       },
       "DiagnosticsShareNousParams": {
@@ -24836,6 +24873,107 @@
           "model"
         ],
         "title": "SessionContextBreakdownResult",
+        "type": "object"
+      },
+      "SessionContinuationReadinessParams": {
+        "additionalProperties": false,
+        "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
+          "plugin_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plugin Id"
+          },
+          "destination": {
+            "default": null,
+            "title": "Destination"
+          }
+        },
+        "title": "SessionContinuationReadinessParams",
+        "type": "object"
+      },
+      "SessionContinuationReadinessResult": {
+        "additionalProperties": false,
+        "properties": {
+          "ready": {
+            "title": "Ready",
+            "type": "boolean"
+          },
+          "status": {
+            "title": "Status",
+            "type": "string"
+          },
+          "generation": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Generation"
+          },
+          "native_session_id": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Native Session Id"
+          },
+          "destination": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/DesktopContinuationDestination"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "busy": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Busy"
+          }
+        },
+        "required": [
+          "ready",
+          "status"
+        ],
+        "title": "SessionContinuationReadinessResult",
         "type": "object"
       },
       "SessionControlArgs": {

@@ -2991,6 +2991,23 @@ export interface SessionEventsStatsResult {
   max_bytes_per_session: number
   max_bytes_process: number
 }
+export interface SessionContinuationReadinessParams {
+  profile?: string | null
+  plugin_id?: string | null
+  destination?: unknown
+}
+export interface SessionContinuationReadinessResult {
+  ready: boolean
+  status: string
+  generation?: string | null
+  native_session_id?: string | null
+  destination?: DesktopContinuationDestination | null
+  busy?: boolean | null
+}
+export interface DesktopContinuationDestination {
+  profile_name: string
+  session_id: string
+}
 /** Needs a ``template`` or ``instructions`` / ``input``; a live ``session_id`` lends its model. */
 export interface LlmOneshotParams {
   profile?: string | null
@@ -4520,6 +4537,8 @@ export interface RpcMethods {
   'session.compress': { params: SessionCompressParams; result: SessionCompressResult }
   /** Cursor-style split of the context window by category. */
   'session.context_breakdown': { params: SessionContextBreakdownParams; result: SessionContextBreakdownResult }
+  /** Probe an authorized plugin's exact connected native continuation destination. */
+  'session.continuation.readiness': { params: SessionContinuationReadinessParams; result: SessionContinuationReadinessResult }
   /** Run one allowlisted goal / loop / subgoal / heartbeat action and return the exact resulting snapshot. */
   'session.control': { params: SessionControlParams; result: SessionControlResult }
   /** Stable, allowlisted snapshot of one live session's goal / loop / heartbeat state. */
@@ -4808,6 +4827,7 @@ export const RPC_METHODS = [
   'session.close',
   'session.compress',
   'session.context_breakdown',
+  'session.continuation.readiness',
   'session.control',
   'session.control.read',
   'session.create',

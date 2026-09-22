@@ -107,7 +107,11 @@ class WSTransport:
         # Socket writes need an async boundary: several batches can queue on the loop during a stall.
         self._send_lock = asyncio.Lock()
 
-    def write(self, obj: dict) -> bool:
+    def write_confirmed(self, obj: dict, *, timeout: float = 5.0) -> bool:
+        """Use the ordered writer but refuse a timeout as delivery evidence."""
+        return self.write(obj, confirmation_timeout=timeout)
+
+    def write(self, obj: dict, *, confirmation_timeout: float | None = None) -> bool:
         if self._closed:
             return False
         line = serialize_frame(obj, self._peer, _log)
@@ -115,10 +119,12 @@ class WSTransport:
             on_loop = asyncio.get_running_loop() is self._loop
         except RuntimeError:
             on_loop = False
+        if on_loop and confirmation_timeout is not None:
+            return False  # A synchronous receipt cannot block its owning socket loop.
         # Streamed token: buffer it and arm the flush timer; the worker returns immediately.
         # call_soon_threadsafe is safe from a worker or the loop.
         params = obj.get("params") if isinstance(obj, dict) else None
-        if isinstance(params, dict) and params.get("type") in _STREAMING_EVENT_TYPES:
+        if confirmation_timeout is None and isinstance(params, dict) and params.get("type") in _STREAMING_EVENT_TYPES:
             with self._token_lock:
                 self._pending_tokens.append(line)
                 if not self._token_flush_armed:
@@ -140,9 +146,11 @@ class WSTransport:
                 self._closed = True
                 return False
         try:
-            fut.result(timeout=_WS_WRITE_TIMEOUT_S)
+            fut.result(timeout=_WS_WRITE_TIMEOUT_S if confirmation_timeout is None else confirmation_timeout)
             return not self._closed
         except concurrent.futures.TimeoutError:  # builtin TimeoutError on 3.11+
+            if confirmation_timeout is not None:
+                return False
             # The loop is stalled (GIL-heavy turn, delegation), NOT the socket dead: the send is already
             # scheduled and flushes once the loop breathes. Latching _closed here permanently silenced
             # live windows after one slow write; _safe_send_many latches on a real error.

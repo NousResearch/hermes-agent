@@ -197,6 +197,9 @@ async def test_run_agent_preserves_provider_request_overrides_on_gateway_path(mo
     session_key = "agent:main:feishu:dm:ou_test"
 
     runner.session_store = SimpleNamespace(
+        _lock=threading.RLock(),
+        _ensure_loaded_locked=lambda: None,
+        _typed_event_recovery_state_locked=lambda _session_id: "none",
         get_or_create_session=lambda _source: SimpleNamespace(session_id="session-1"),
         load_transcript=lambda _session_id: [],
     )
@@ -252,6 +255,9 @@ async def test_reused_agent_turn_merges_request_overrides_not_overwrite(monkeypa
     session_key = "agent:main:feishu:dm:ou_test"
 
     runner.session_store = SimpleNamespace(
+        _lock=threading.RLock(),
+        _ensure_loaded_locked=lambda: None,
+        _typed_event_recovery_state_locked=lambda _session_id: "none",
         get_or_create_session=lambda _source: SimpleNamespace(session_id="session-1"),
         load_transcript=lambda _session_id: [],
     )

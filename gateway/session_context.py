@@ -222,3 +222,41 @@ def session_history_delivery_supported() -> bool:
 
     Fail closed on omitted bindings; never borrow authority from the environment."""
     return _SESSION_HISTORY_DELIVERY.get() == "1"
+
+
+# Set only at the real gateway conversation boundary; never exported to subprocesses.
+_plugin_gateway_turn = ContextVar("plugin_gateway_turn", default=None)
+
+
+@contextmanager
+def plugin_gateway_turn(owner, turn, agent):
+    lease = {"owner": owner, "turn": turn, "agent": agent, "active": True}
+    token = _plugin_gateway_turn.set(lease)
+    try:
+        yield
+    finally:
+        lease["active"] = False
+        _plugin_gateway_turn.reset(token)
+
+
+def current_plugin_gateway_destination(owner):
+    current = _plugin_gateway_turn.get()
+    from agent.delegation_context import is_delegated_child_context
+    if current is None or current["owner"] is not owner or not current["active"] or is_delegated_child_context():
+        return None
+    turn, agent = current["turn"], current["agent"]
+    if getattr(turn, "gateway_system_event", None) is not None:
+        return None
+    if (getattr(agent, "api_mode", None) != "codex_responses"
+            or getattr(agent, "provider", None) != "openai-codex"
+            or not turn.session_id or getattr(agent, "session_id", None) != turn.session_id):
+        return None
+    source = turn.source
+    platform = getattr(source.platform, "value", source.platform)
+    profile = getattr(source, "profile", None) or "default"
+    if not turn.session_key or not source.user_id or not source.chat_id:
+        return None
+    return {"profile_name": str(profile), "session_id": turn.session_id,
+        "session_key": turn.session_key, "platform": str(platform),
+        "user_id": str(source.user_id), "chat_id": str(source.chat_id),
+        "topic_id": str(getattr(source, "thread_id", None) or "")}

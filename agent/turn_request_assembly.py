@@ -117,6 +117,12 @@ def assemble_api_request(
     )
     from agent.model_metadata import estimate_messages_tokens_rough
 
+    typed_event = getattr(agent, "_gateway_system_event", None)
+    if typed_event is not None and (
+        agent.session_id != typed_event.expected_session_id
+        or agent.api_mode != "codex_responses" or agent.provider != "openai-codex"
+    ):
+        raise ValueError("typed gateway event lost its supported physical transport")
     api_messages, effective_system = build_api_messages(
         agent, messages, current_turn_user_idx=current_turn_user_idx,
         ext_prefetch_cache=_ext_prefetch_cache, plugin_user_context=_plugin_user_context,
@@ -139,9 +145,10 @@ def assemble_api_request(
     _sel_incoming = (
         messages[current_turn_user_idx] if 0 <= current_turn_user_idx < len(messages) else None
     )
-    api_messages = _apply_context_engine_selection(
-        agent, api_messages, messages, _sel_incoming, logger=request_logger
-    )
+    if typed_event is None:
+        api_messages = _apply_context_engine_selection(
+            agent, api_messages, messages, _sel_incoming, logger=request_logger
+        )
 
     # Runs unconditionally (not gated on context_compressor) so orphaned tool
     # results from session loading or manual message edits are always caught.

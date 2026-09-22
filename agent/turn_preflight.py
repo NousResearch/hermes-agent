@@ -82,6 +82,20 @@ def run_preflight_compression(
             max_compression_attempts,
         )
 
+    from gateway.internal_events import GatewaySystemEvent
+    if isinstance(getattr(agent, "_gateway_system_event", None), GatewaySystemEvent):
+        threshold = int(getattr(compressor, "threshold_tokens", 0) or 0)
+        if (provider_overflow_preflight or compressor.should_compress(request_pressure_tokens)
+                or (threshold > 0 and request_pressure_tokens >= threshold)):
+            v.api_call_count = _refund_api_call(agent, v.api_call_count)
+            agent._persist_session(v.messages, v.conversation_history)
+            return _done("return", {
+                "messages": v.messages, "completed": False, "failed": True,
+                "api_calls": v.api_call_count,
+                "gateway_system_event_error": "context_budget_exceeded",
+            })
+        return _done("fallthrough")
+
     _compression_cooldown = getattr(
         compressor, "get_active_compression_failure_cooldown", lambda: None
     )()
@@ -264,6 +278,12 @@ def compress_after_tool_results(
             conversation_history=conversation_history, compression_attempts=compression_attempts,
             final_response=final_response, turn_exit_reason=turn_exit_reason,
         )
+
+    from gateway.internal_events import GatewaySystemEvent
+    if isinstance(getattr(agent, "_gateway_system_event", None), GatewaySystemEvent):
+        # Keep new tool evidence; the next request's preflight fails closed if
+        # it cannot fit without changing the exact session's prior context.
+        return _verdict(False)
 
     _compressor = agent.context_compressor
     # A new checkpoint must reach the provider before stale usage can trigger

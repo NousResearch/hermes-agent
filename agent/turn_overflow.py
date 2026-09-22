@@ -477,6 +477,15 @@ def recover_from_overflow(
         approx_tokens=approx_tokens, compression_attempts=compression_attempts,
     )
 
+    from gateway.internal_events import GatewaySystemEvent
+    if (isinstance(getattr(agent, "_gateway_system_event", None), GatewaySystemEvent)
+            and (classified.reason in {FailoverReason.payload_too_large, FailoverReason.context_overflow}
+                 or wrapped_output_cap_budget is not None)):
+        return st.fail_turn(
+            "Typed gateway event exceeds the current session context budget.",
+            compression_exhausted=False, gateway_system_event_error="context_budget_exceeded",
+        )
+
     # GitHub Models free tier caps requests at 8K tokens, under the system prompt +
     # tool schema floor; compression can't help, so say so.
     if (

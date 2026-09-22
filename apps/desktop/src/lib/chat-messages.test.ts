@@ -64,6 +64,35 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 })
 
 describe('toChatMessages', () => {
+  it('keeps typed internal developer input out of chat without hiding user quotations', () => {
+    const content = 'Hermes internal event\nValidated event envelope: {"event_id":"synthetic-ui-event"}'
+
+    const internal: SessionMessage = {
+      role: 'developer',
+      content,
+      timestamp: 2,
+      display_kind: 'internal_notification',
+      display_metadata: { schema_version: 1, event_kind: 't3_turn_terminal', event_id: 'synthetic-ui-event', plugin_id: 'test' }
+    }
+
+    const rows: SessionMessage[] = [
+      { role: 'user', content: 'Check progress', timestamp: 1 },
+      internal,
+      { role: 'assistant', content: 'The task finished.', timestamp: 3 },
+      { ...internal, role: 'user', timestamp: 4 },
+      { role: 'developer', content: 'Other developer message', timestamp: 5 }
+    ]
+
+    for (const hydrated of [rows, JSON.parse(JSON.stringify(rows))]) {
+      expect(toChatMessages(hydrated).map(chatMessageText)).toEqual([
+        'Check progress', 'The task finished.', content, 'Other developer message'
+      ])
+    }
+
+    expect(internal.content).toBe(content)
+    expect(internal.display_kind).toBe('internal_notification')
+  })
+
   it('rebuilds the full command from a gateway tool row carrying args', () => {
     // Gateway watch-window hydration projects tool rows as
     // {role:'tool', name, context, args?}. `context` is an 80-char preview;

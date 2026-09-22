@@ -74,6 +74,9 @@ def _make_runner():
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(streaming=None, multiplex_profiles=False)
     runner.session_store = SimpleNamespace(
+        _lock=threading.RLock(),
+        _ensure_loaded_locked=lambda: None,
+        _typed_event_recovery_state_locked=lambda _session_id: "none",
         get_or_create_session=lambda source: SimpleNamespace(session_id="session-1"),
         load_transcript=lambda session_id: [],
     )

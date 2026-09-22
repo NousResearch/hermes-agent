@@ -88,6 +88,16 @@ or opted-in explicit targets. `all` expansions do not gain home mirror eligibili
 briefs are labelled user turns appended at a turn boundary, preserving role alternation
 (`cron/AGENTS.md`).
 
+## Typed plugin completions
+
+`run_plugin_events.py` admits plugin completions only against a captured physical session and
+currently authorized route. `hermes_cli/plugins_gateway.py` owns observer lifecycle and plugin
+capability checks. Busy sessions refuse admission; the plugin retains finite retry authority.
+`session_lifecycle.py` persists typed recovery ownership before execution so generic restart
+recovery cannot turn an interrupted completion into user input. Clear it only under the exact
+session lease when a real user turn resumes. Desktop's corresponding connected-session consumer
+lives in `tui_gateway/plugin_events.py`; the public contract is in the plugin developer guide.
+
 ## `/login` (off-turn, paired DM only)
 
 `/login` is registered in `hermes_cli/commands.py` with `busy_policy="dispatch"` and

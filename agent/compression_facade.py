@@ -231,6 +231,10 @@ class CompressionFacadeMixin:
         summary-failure cooldown after an auto-compress abort. Auto-compress callers use the default
         ``force=False``. See #100661.
         """
+        from gateway.internal_events import GatewaySystemEvent
+        if isinstance(getattr(self, "_gateway_system_event", None), GatewaySystemEvent):
+            raise ValueError("typed gateway events cannot compress the exact session context")
+
         # Per-attempt timeout signal for turn-start preflight and in-loop consumers: a stalled
         # compression must not be mistaken for a structural no-op. Thread-local + per-agent lock.
         # A stalled compression must not be mistaken for a structural no-op and followed by the oversized

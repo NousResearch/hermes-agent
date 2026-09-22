@@ -677,6 +677,10 @@ class GatewayInboundMixin:
         """Fast-path while this session's agent is running: interrupt by default (minimal latency);
         busy_input_mode queue/steer, subagent and compression protection demote to queue."""
         from gateway.run import _AGENT_PENDING_SENTINEL
+        if getattr(event, "gateway_system_event", None) is not None:
+            from gateway.internal_events import resolve_message_event_receipt
+            resolve_message_event_receipt(event, "busy")
+            return None
         _handled, _result = await self._hm_busy_slash_or_photo(event, source, _quick_key)
         if _handled:
             return _result
@@ -1733,20 +1737,82 @@ class GatewayInboundMixin:
             state.persistent.native_image_paths = []
         return paths
 
-    async def _mark_durable_active_turn(self, event: "MessageEvent", session_key: str) -> bool:
+    async def _mark_durable_active_turn(
+        self,
+        event: "MessageEvent",
+        session_key: str,
+        session_id: Optional[str] = None,
+        *,
+        turn_lease_acquired: bool = False,
+    ) -> bool:
         """Persist the exact resolved routing key for this running turn."""
+        system_event = getattr(event, "gateway_system_event", None)
+        if system_event is not None:
+            from gateway.internal_events import resolve_message_event_receipt
+
+            # A typed continuation may never degrade past the physical-session
+            # serializer. Its trusted ledger is the only crash-recovery owner.
+            if not turn_lease_acquired or not session_id:
+                resolve_message_event_receipt(event, "agent_error")
+                return False
+            status, current_entry, current_source = (
+                await self._gateway_system_event_target(system_event)
+            )
+            if status is not None:
+                resolve_message_event_receipt(event, status)
+                return False
+            if current_entry.session_id != session_id:
+                resolve_message_event_receipt(event, "session_mismatch")
+                return False
+            try:
+                persisted = (
+                    await self.async_session_store.mark_typed_event_recovery_owner(
+                        session_key,
+                        session_id,
+                        system_event.event_id,
+                    )
+                )
+            except Exception as exc:
+                logger.warning(
+                    "Could not persist typed-event recovery owner for %s: %s",
+                    session_key,
+                    exc,
+                )
+                resolve_message_event_receipt(event, "agent_error")
+                return False
+            if not persisted:
+                # A concurrent suspension/recovery flag is a pre-admission
+                # conflict. Re-resolve stronger terminal identities first.
+                status, _entry, _source = await self._gateway_system_event_target(
+                    system_event
+                )
+                resolve_message_event_receipt(event, status or "busy")
+                return False
+            event.source = current_source
+            return True
         try:
-            token = await self.async_session_store.mark_turn_active(session_key)
+            token = await self.async_session_store.mark_turn_active(
+                session_key,
+                expected_session_id=session_id,
+                clear_typed_event_recovery=not bool(
+                    getattr(event, "internal", False)
+                ),
+            )
         except Exception as exc:
-            logger.warning("Could not persist active-turn marker for %s: %s", session_key, exc)
+            logger.warning(
+                "Could not persist active-turn marker for %s: %s",
+                session_key,
+                exc,
+            )
             return False
         if not token:
             return False
-        # Private event attributes are process-local ownership state: keep the token out of public
-        # metadata, transcripts, and platform payloads.
-        event._gateway_active_turn_session_key = session_key
-        event._gateway_active_turn_token = token
+        # Private event attributes are process-local ownership state.  Keep the
+        # token out of public metadata, transcripts, and platform payloads.
+        setattr(event, "_gateway_active_turn_session_key", session_key)
+        setattr(event, "_gateway_active_turn_token", token)
         return True
+
 
     async def _clear_durable_active_turn(self, event: "MessageEvent") -> bool:
         """Best-effort CAS clear of the marker owned by *event* (3 attempts; never blocks agent/lease
@@ -1780,20 +1846,30 @@ class GatewayInboundMixin:
         """Publish this live gateway's plugin message scheduler."""
         from hermes_cli.plugins import get_plugin_manager
 
-        get_plugin_manager().set_gateway_message_injector(
-            self, self._schedule_plugin_message_injection
-        )
+        manager = get_plugin_manager()
+        manager.set_gateway_message_injector(self, self._schedule_plugin_message_injection)
+        manager._start_gateway_tasks(getattr(self, "_gateway_loop", None))
 
     def _clear_plugin_message_injector(self) -> None:
         """Remove this runner's scheduler without clobbering a newer owner."""
         from hermes_cli.plugins import get_plugin_manager
 
-        get_plugin_manager().clear_gateway_message_injector(self)
+        manager = get_plugin_manager()
+        if manager.gateway_message_injector_owned_by(self):
+            manager._stop_gateway_tasks()
+            manager.clear_gateway_message_injector(self)
 
     def _schedule_plugin_message_injection(
-        self, *, session_key: str, content: str, plugin_id: str
-    ) -> bool:
+        self, *, content: str, session_key: str | None = None,
+        plugin_id: str | None = None, system_event=None, receipt=None,
+    ):
         """Schedule a plugin-triggered turn on the live gateway loop (thread-safe)."""
+        if system_event is not None:
+            return self._schedule_plugin_system_event(
+                content=content, system_event=system_event, receipt=receipt,
+            )
+        if not session_key or not plugin_id:
+            return False
         from gateway.run import safe_schedule_threadsafe
         loop = getattr(self, "_gateway_loop", None)
         if not getattr(self, "_running", False) or loop is None or loop.is_closed():

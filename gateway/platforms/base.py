@@ -3807,6 +3807,11 @@ class BasePlatformAdapter(ABC):
         guard = interrupt_event or asyncio.Event()
         self._active_sessions[session_key] = guard
         task = asyncio.create_task(self._process_message_background(event, session_key))
+        if getattr(event, "gateway_system_event", None) is not None and isinstance(task, asyncio.Task):
+            from gateway.internal_events import resolve_message_event_receipt
+            task.add_done_callback(lambda done: resolve_message_event_receipt(
+                event, "cancelled" if done.cancelled() else "agent_error",
+            ))
         if not self._track_session_task(session_key, task):
             self._session_tasks.pop(session_key, None)
             self._release_session_guard(session_key, guard=guard)
@@ -3891,7 +3896,9 @@ class BasePlatformAdapter(ABC):
         """Process an incoming message; returns quickly by spawning a background
         task so new messages (and interrupts) can arrive while an agent runs."""
         event._gateway_accepted = False
+        from gateway.internal_events import resolve_message_event_receipt
         if not self._message_handler:
+            resolve_message_event_receipt(event, "stopping")
             # No handler = every inbound silently discarded on an adapter that still polls and sends;
             # say so once per adapter (#102260).
             if not getattr(self, "_no_message_handler_logged", False):
@@ -3919,15 +3926,21 @@ class BasePlatformAdapter(ABC):
         if expected_session_key and session_key != expected_session_key:
             logger.warning("Dropping internally routed event: expected session=%s derived=%s",
                            expected_session_key, session_key)
+            resolve_message_event_receipt(event, "route_mismatch")
             return
         # On-entry self-heal: clear a guard whose owner task already exited.
         if session_key in self._active_sessions:
             self._heal_stale_session_lock(session_key)
         if session_key in self._active_sessions:
+            if getattr(event, "gateway_system_event", None) is not None:
+                resolve_message_event_receipt(event, "busy")
+                return
             await self._handle_message_while_active(event, session_key)
             return
         # Guard installed synchronously BEFORE the task spawns so a second message can't race in.
         event._gateway_accepted = self._start_session_processing(event, session_key)
+        if not event._gateway_accepted:
+            resolve_message_event_receipt(event, "busy")
 
     async def _handle_message_while_active(self, event: MessageEvent, session_key: str) -> None:
         """Route a message that arrived while ``session_key`` is busy: bypass
@@ -4442,6 +4455,12 @@ class BasePlatformAdapter(ABC):
                     anything_sent=delivery_attempted or _tts_caption_delivered,
                     record_delivery=_record_delivery)
             processing_ok = delivery_succeeded if delivery_attempted else not bool(response)
+            if getattr(event, "gateway_system_event", None) is not None:
+                from gateway.internal_events import resolve_message_event_receipt
+                status = getattr(event, "_gateway_event_terminal_status", "agent_error")
+                if status == "completed" and not processing_ok:
+                    status = "agent_error"
+                resolve_message_event_receipt(event, status)
             # Clean up the per-turn streaming-TTS flag.
             self._streaming_tts_completed_turns.discard(self._streaming_tts_turn_key(
                 session_key, getattr(interrupt_event, "_hermes_run_generation", None),
@@ -4460,12 +4479,16 @@ class BasePlatformAdapter(ABC):
                 self._spawn_drain_task(pending_event, session_key)
                 return  # Drain task owns the session now.
         except asyncio.CancelledError:
+            from gateway.internal_events import resolve_message_event_receipt
+            resolve_message_event_receipt(event, "cancelled")
             expected = asyncio.current_task() in self._expected_cancelled_tasks
             await self._run_processing_hook(
                 "on_processing_complete", event,
                 ProcessingOutcome.CANCELLED if expected else ProcessingOutcome.FAILURE)
             raise
         except BaseException as e:
+            from gateway.internal_events import resolve_message_event_receipt
+            resolve_message_event_receipt(event, "agent_error")
             await self._run_processing_hook("on_processing_complete", event, ProcessingOutcome.FAILURE)
             logger.error("[%s] Error handling message: %s", self.name, e, exc_info=True)
             _thread_metadata = (await self._notify_turn_error(event, e)) or _thread_metadata
@@ -4473,6 +4496,8 @@ class BasePlatformAdapter(ABC):
             if isinstance(e, (SystemExit, KeyboardInterrupt)):
                 raise
         finally:
+            from gateway.internal_events import resolve_message_event_receipt
+            resolve_message_event_receipt(event, "agent_error")
             # Stop typing BEFORE the post-delivery callback: a stuck callback must not keep it
             # alive.
             await self._stop_typing_refresh(event.source.chat_id, typing_task, metadata=_thread_metadata)
@@ -4538,9 +4563,14 @@ class BasePlatformAdapter(ABC):
                                "releasing tracking and letting them unwind in the background",
                                self.name, sum(not t.done() for t in tasks))
                 break
+        from gateway.internal_events import resolve_message_event_receipt
+        for key, pending in list(self._pending_messages.items()):
+            if getattr(pending, "gateway_system_event", None) is not None:
+                resolve_message_event_receipt(pending, "stopping")
+                self._pending_messages.pop(key, None)
         with contextlib.suppress(Exception):  # flush pending messages to disk before clearing
             from gateway.shutdown_flush import flush_pending_to_file
-            flush_pending_to_file(self._pending_messages, reason="adapter_shutdown")
+            flush_pending_to_file(dict(self._pending_messages), reason="adapter_shutdown")
         for state in self._text_debounce_store().values():
             state.cancel_timer()
         for bucket in (self._background_tasks, self._expected_cancelled_tasks, self._session_tasks,

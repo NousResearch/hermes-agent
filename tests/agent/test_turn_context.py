@@ -137,6 +137,7 @@ class _FakeAgent:
 
     def _persist_session(self, *_a, **_k):
         self._persist_calls += 1
+        self._last_persist_args = _a
 
 
 def _make_agent_with_cooldown(db_path, session_id, *, cooldown_until=None):
@@ -534,6 +535,74 @@ def test_prologue_does_not_title_machine_driven_runs(platform):
     """
     assert not _title_turn(platform).called
 
+
+def test_gateway_system_event_appends_developer_row_without_user_side_effects():
+    from gateway.internal_events import create_gateway_system_event
+
+    agent, memory_manager = _agent_with_memory_manager()
+    agent.api_mode = "codex_responses"
+    agent.provider = "openai-codex"
+    agent._gateway_turn_context_notes = "must remain pending"
+    content, marker = create_gateway_system_event(
+        content="internal completion body\n",
+        session_key="agent:main:telegram:dm:42",
+        expected_session_id=agent.session_id,
+        event_id="event-42",
+        event_kind="external_tool_completed",
+        plugin_id="notify-plugin",
+        expected_route={
+            "profile_name": "default",
+            "platform": "telegram",
+            "user_id": "42",
+            "chat_id": "42",
+            "topic_id": "",
+        },
+        eligibility_check=lambda: True,
+    )
+
+    with patch("hermes_cli.lifecycle.invoke_hook") as invoke_hook:
+        ctx = _build(
+            agent,
+            user_message=content,
+            gateway_system_event=marker,
+            persist_user_timestamp=123.5,
+            persist_user_platform_id="telegram-message-id",
+        )
+
+    row = ctx.messages[-1]
+    assert row["role"] == "developer"
+    assert row["content"] == content
+    assert row["display_kind"] == "internal_notification"
+    assert row["display_metadata"]["event_id"] == "event-42"
+    assert "platform_message_id" not in row
+    assert isinstance(row["timestamp"], float)
+    assert row["timestamp"] != 123.5
+    assert agent._user_turn_count == 0
+    assert agent._is_user_initiated_turn is False
+    assert agent._persist_calls == 1
+    assert agent._last_persist_args[0][-1] is row
+    invoke_hook.assert_not_called()
+    memory_manager.on_turn_start.assert_not_called()
+    memory_manager.prefetch_all.assert_not_called()
+    assert agent._gateway_turn_context_notes == "must remain pending"
+
+
+@pytest.mark.parametrize("provider,api_mode", [("openai", "chat_completions"), ("anthropic", "anthropic"), ("openai-codex", "responses")])
+def test_gateway_system_event_refuses_unsupported_transport_before_staging(provider, api_mode):
+    from gateway.internal_events import create_gateway_system_event
+
+    agent = _FakeAgent()
+    agent.provider, agent.api_mode = provider, api_mode
+    content, marker = create_gateway_system_event(
+        content="host metadata", session_key="agent:main:telegram:dm:42",
+        expected_session_id=agent.session_id, event_id="event-unsupported",
+        event_kind="external_tool_completed", plugin_id="notify-plugin",
+        expected_route={"profile_name": "default", "platform": "telegram", "user_id": "42", "chat_id": "42", "topic_id": ""},
+        eligibility_check=lambda: True,
+    )
+    with pytest.raises(ValueError, match="supported Codex Responses transport"):
+        _build(agent, user_message=content, gateway_system_event=marker)
+    assert agent._persist_calls == 0
 
 def test_prologue_forwards_the_submit_title_preview_to_the_titler():
     """A paste-shrunk ``display_metadata.title_preview`` from prompt.submit is the text the

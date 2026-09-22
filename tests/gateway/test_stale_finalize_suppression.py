@@ -21,6 +21,7 @@ Plus unit coverage for ``GatewayStreamConsumer.delivered_final_matches``.
 """
 
 import asyncio
+import threading
 import importlib
 import sys
 import types
@@ -145,7 +146,11 @@ def _make_runner(adapter):
     runner._session_db = None
     runner._running_agents = {}
     runner._session_run_generation = {}
-    runner.session_store = SimpleNamespace(_entries={}, _save=lambda: None)
+    runner.session_store = SimpleNamespace(
+        _entries={}, _save=lambda: None, _lock=threading.RLock(),
+        _ensure_loaded_locked=lambda: None,
+        _typed_event_recovery_state_locked=lambda _session_id: "none",
+    )
     runner.hooks = SimpleNamespace(loaded_hooks=False)
     runner.config = SimpleNamespace(
         thread_sessions_per_user=False,

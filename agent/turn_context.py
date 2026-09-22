@@ -934,7 +934,7 @@ def build_turn_context(
     persist_user_display_metadata: Optional[Dict[str, Any]]=None, turn_author: Optional[Dict[str, Any]]=None,
     restore_or_build_system_prompt,
     install_safe_stdio, sanitize_surrogates, summarize_user_message_for_log, set_session_context,
-    set_current_write_origin, ra, moa_active: bool=False,
+    set_current_write_origin, ra, moa_active: bool=False, gateway_system_event: Optional[Any]=None,
 ) -> TurnContext:
     """Run the once-per-turn setup and return the loop's input context.
 
@@ -943,6 +943,12 @@ def build_turn_context(
     (else it persists system_prompt=NULL and costs a cache miss) and BEFORE preflight
     compression."""
     from agent.turn_context_compaction import run_turn_start_compaction
+    if gateway_system_event is not None:
+        from gateway.internal_events import GatewaySystemEvent
+        if not isinstance(gateway_system_event, GatewaySystemEvent):
+            raise ValueError("invalid typed gateway event")
+        if agent.api_mode != "codex_responses" or agent.provider != "openai-codex":
+            raise ValueError("typed gateway events require the supported Codex Responses transport")
 
     # Guard stdio against OSError from broken pipes (systemd/headless/daemon).
     install_safe_stdio()
@@ -957,6 +963,13 @@ def build_turn_context(
     if recovered_history is not None:
         conversation_history = recovered_history
 
+    if gateway_system_event is not None:
+        from gateway.internal_events import gateway_system_event_is_eligible
+        if agent.session_id != gateway_system_event.expected_session_id:
+            raise ValueError("typed gateway session changed before agent admission")
+        if not gateway_system_event_is_eligible(gateway_system_event):
+            raise ValueError("typed gateway event was cancelled before agent admission")
+
     # Tag log records on this thread with the session ID for ``hermes logs``; bind the
     # skill write-origin ContextVar; restore the primary runtime after a fallback turn.
     # NOTE: the DB session row is created later, AFTER the system prompt is restored/built (see
@@ -970,7 +983,8 @@ def build_turn_context(
     set_review_attended(getattr(agent, "_review_attended", False))
     agent._restore_primary_runtime()
     _publish_runtime_main(agent)
-    _refresh_mcp_tools_between_turns(agent)
+    if gateway_system_event is None:
+        _refresh_mcp_tools_between_turns(agent)
 
     if isinstance(user_message, str):
         user_message = sanitize_surrogates(user_message)
@@ -982,8 +996,10 @@ def build_turn_context(
         persist_user_timestamp, persist_user_platform_id,
     )
     _reset_per_turn_agent_state(agent)
+    agent._gateway_system_event = gateway_system_event
 
-    _preview_text = summarize_user_message_for_log(user_message)
+    _preview_text = (f"<gateway-system-event {gateway_system_event.event_id}>"
+                     if gateway_system_event is not None else summarize_user_message_for_log(user_message))
     _msg_preview = _preview_text[:80] + ("..." if len(_preview_text) > 80 else "")
     logger.info(
         "conversation turn: session=%s model=%s provider=%s platform=%s history=%d msg=%r",
@@ -994,10 +1010,16 @@ def build_turn_context(
 
     # Copy so the caller's list is never mutated.
     messages = list(conversation_history) if conversation_history else []
-    user_msg, pending_cli_message = _stage_turn_user_message(
-        agent, user_message, persist_user_message, persist_user_timestamp,
-        persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
-    )
+    if gateway_system_event is not None:
+        from gateway.internal_events import gateway_system_event_message
+        user_msg = gateway_system_event_message(gateway_system_event, user_message)
+        stamp_message_timestamp(user_msg)
+        pending_cli_message = None
+    else:
+        user_msg, pending_cli_message = _stage_turn_user_message(
+            agent, user_message, persist_user_message, persist_user_timestamp,
+            persist_user_platform_id, persist_user_display_kind, persist_user_display_metadata,
+        )
     _hydrate_from_history(agent, conversation_history)
     # Every estimator this turn prices images at the cost learned from this model's real usage.
     bind_image_token_cost(agent)
@@ -1006,17 +1028,20 @@ def build_turn_context(
     current_turn_user_idx = len(messages) - 1
     agent._persist_user_message_idx = current_turn_user_idx
 
-    agent._user_turn_count += 1
+    if gateway_system_event is None:
+        agent._user_turn_count += 1
     # Copilot x-initiator: the first API call of this user turn is user-initiated;
     # tool-loop follow-ups revert to "agent".
-    agent._is_user_initiated_turn = True
+    agent._is_user_initiated_turn = gateway_system_event is None
 
     # Preserve the original user message (no nudge injection).
     original_user_message = persist_user_message if persist_user_message is not None else user_message
-    should_review_memory = _tick_memory_nudge(agent)
-    _emit_reaction(agent, original_user_message)
+    should_review_memory = False
+    if gateway_system_event is None:
+        should_review_memory = _tick_memory_nudge(agent)
+        _emit_reaction(agent, original_user_message)
 
-    if not agent.quiet_mode:
+    if not agent.quiet_mode and gateway_system_event is None:
         agent._safe_print(
             f"💬 Starting conversation: '{_preview_text[:60]}"
             f"{'...' if len(_preview_text) > 60 else ''}'"
@@ -1049,28 +1074,38 @@ def build_turn_context(
     ):
         agent._flush_messages_to_session_db(conversation_history, conversation_history)
 
-    compaction = run_turn_start_compaction(
-        agent, messages=messages, system_message=system_message,
-        active_system_prompt=active_system_prompt, conversation_history=conversation_history,
-        current_turn_user_idx=current_turn_user_idx, user_message=user_message,
-        effective_task_id=effective_task_id,
-    )
-    messages = compaction.messages
-    active_system_prompt = compaction.active_system_prompt
-    conversation_history = compaction.conversation_history
-    current_turn_user_idx = compaction.current_turn_user_idx
+    if gateway_system_event is None:
+        compaction = run_turn_start_compaction(
+            agent, messages=messages, system_message=system_message,
+            active_system_prompt=active_system_prompt, conversation_history=conversation_history,
+            current_turn_user_idx=current_turn_user_idx, user_message=user_message,
+            effective_task_id=effective_task_id,
+        )
+        messages = compaction.messages
+        active_system_prompt = compaction.active_system_prompt
+        conversation_history = compaction.conversation_history
+        current_turn_user_idx = compaction.current_turn_user_idx
 
-    plugin_user_context = _collect_pre_llm_call_context(
-        agent, effective_task_id=effective_task_id, turn_id=turn_id,
-        original_user_message=original_user_message, messages=messages,
-        conversation_history=conversation_history,
-    )
-    plugin_user_context = _merge_gateway_notes(
-        agent, messages, current_turn_user_idx, plugin_user_context
-    )
+        plugin_user_context = _collect_pre_llm_call_context(
+            agent, effective_task_id=effective_task_id, turn_id=turn_id,
+            original_user_message=original_user_message, messages=messages,
+            conversation_history=conversation_history,
+        )
+        plugin_user_context = _merge_gateway_notes(
+            agent, messages, current_turn_user_idx, plugin_user_context
+        )
+
+    else:
+        from types import SimpleNamespace
+        compaction = SimpleNamespace(compressed=False, blocked=False)
+        plugin_user_context = ""
+        agent._turn_preflight_compressed = False
+        agent._turn_received_provider_response = False
+        agent._turn_preflight_display_snapshot = None
 
     _bind_interrupt_scope(agent, ra)
-    ext_prefetch_cache = _memory_turn_start_and_prefetch(agent, original_user_message, turn_author)
+    ext_prefetch_cache = ("" if gateway_system_event is not None else
+                          _memory_turn_start_and_prefetch(agent, original_user_message, turn_author))
 
     # Sidecar skipped for codex_app_server/MoA.
     if (
@@ -1088,7 +1123,8 @@ def build_turn_context(
 
     # Title the session now: the row exists and titling depends only on the user's ask,
     # so it runs concurrently with the turn. Daemon thread, no-op once titled.
-    _maybe_title_session_at_turn_start(agent, messages)
+    if gateway_system_event is None:
+        _maybe_title_session_at_turn_start(agent, messages)
 
     return TurnContext(
         user_message=user_message, original_user_message=original_user_message, messages=messages,

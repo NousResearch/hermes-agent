@@ -95,6 +95,20 @@ class SessionTurnLeaseRegistry:
         for sid in idle[:overflow]:
             self._leases.pop(sid, None)
 
+    async def try_acquire(self, session_id: str, *, owner_key: str, generation: int):
+        """Acquire an idle physical session without queueing external work behind a human turn."""
+        if not session_id:
+            return None
+        lease = self._get_or_create(session_id)
+        if lease.lock.locked() or lease.pending_acquires:
+            return None
+        # An unlocked asyncio.Lock acquires synchronously, with no scheduling gap.
+        await lease.lock.acquire()
+        token = TurnLeaseToken(session_id, owner_key, int(generation), lease)
+        lease.holder = token
+        lease.acquired_at = lease.last_used = time.time()
+        return token
+
     async def acquire(
         self, session_id: str, *, owner_key: str, generation: int, timeout: Optional[float] = None
     ) -> Optional[TurnLeaseToken]:

@@ -8,6 +8,8 @@ import time
 from types import SimpleNamespace
 from unittest.mock import MagicMock
 
+import pytest
+
 from agent import relay_runtime
 from hermes_state import SessionDB
 from run_agent import AIAgent
@@ -281,6 +283,90 @@ def test_run_conversation_lease_wait_honors_interrupt(monkeypatch):
     assert [event[0] for event in db.events] == ["acquire"]
     assert agent._interrupt_requested is False
     assert agent._interrupt_message is None
+
+
+@pytest.mark.parametrize("typed_event", [False, True], ids=["ordinary", "typed-event"])
+@pytest.mark.parametrize("hard_cancel", [False, True], ids=["soft-interrupt", "hard-stop"])
+def test_interrupted_lease_wait_only_carries_human_input(
+    tmp_path, monkeypatch, typed_event, hard_cancel,
+):
+    """Unadmitted typed events must not become user rows on the next turn (PR #110031)."""
+    from gateway.internal_events import GatewaySystemEvent
+
+    db = SessionDB(tmp_path / "state.db")
+    session_id = "shared"
+    holder = "other-process"
+    db.create_session(session_id, source="test")
+    db.append_message(session_id, "user", "earlier request")
+    db.append_message(session_id, "assistant", "earlier reply")
+    history = db.get_messages_as_conversation(
+        session_id, repair_alternation=False, include_row_ids=True,
+    )
+    agent = _agent_with_db(db, session_id=session_id)
+    agent._hard_interrupt_requested = threading.Event()
+    agent._active_children_lock = threading.Lock()
+    agent._active_children = []
+    agent.quiet_mode = True
+    wait_seen = []
+
+    def interrupt_on_wait(kind, text=None):
+        wait_seen.append((kind, text))
+        # Same soft interrupt API as the busy-session queue; no sleeps or mock lease.
+        assert agent.interrupt(hard_cancel=hard_cancel)
+
+    agent.status_callback = interrupt_on_wait
+    event = GatewaySystemEvent(
+        session_key=session_id, expected_session_id=session_id,
+        event_id="completed-1", event_kind="external_tool_completed",
+        plugin_id="test-plugin", receipt_id="receipt-1", expected_route=None,
+        eligibility_check=lambda: True,
+    ) if typed_event else None
+    # Identical text for both paths: only the typed marker decides whether it is human input.
+    content = "External tool completed: test result"
+    loop_calls = []
+
+    def follow_up_loop(_agent, message, _system, adopted_history, *_args, **_kwargs):
+        loop_calls.append(message)
+        flush_agent = _flush_agent(db, session_id)
+        flush_agent._active_session_turn_lease_holder = _agent._active_session_turn_lease_holder
+        flush_agent._persist_user_message_idx = len(adopted_history)
+        messages = [*adopted_history, {"role": "user", "content": message}]
+        assert flush_agent._flush_messages_to_session_db(messages, adopted_history)
+        return {"final_response": "ok", "messages": messages, "completed": True}
+
+    monkeypatch.setattr("agent.conversation_loop.run_conversation", follow_up_loop)
+    try:
+        assert db.try_acquire_session_turn_lease(session_id, holder, ttl_seconds=60)
+        result = agent.run_conversation(
+            content, conversation_history=history, gateway_system_event=event,
+        )
+        assert wait_seen
+        assert result["interrupted"] is True
+        assert result["api_calls"] == 0
+        assert loop_calls == []
+        assert agent._interrupt_requested is False
+        assert not agent._hard_interrupt_requested.is_set()
+        assert db.get_messages_as_conversation(
+            session_id, repair_alternation=False, include_row_ids=True,
+        ) == history
+
+        db.release_session_turn_lease(session_id, holder)
+        agent.status_callback = None
+        agent.run_conversation("follow-up", conversation_history=result["messages"])
+        assert loop_calls == ["follow-up"]
+        expected = [("user", "earlier request"), ("assistant", "earlier reply")]
+        if not typed_event and not hard_cancel:
+            expected.append(("user", content))
+        expected.append(("user", "follow-up"))
+        assert [(m["role"], m["content"]) for m in db.get_messages(session_id)] == expected
+        if typed_event or hard_cancel:
+            assert result["messages"] == history
+        else:
+            assert result["messages"][-1]["content"] == content
+            assert result["messages"][-1]["_persist_after_admission_interrupt"] is True
+    finally:
+        db.release_session_turn_lease(session_id, holder)
+        db.close()
 
 
 def test_pre_admission_user_row_in_history_is_flushed_once():

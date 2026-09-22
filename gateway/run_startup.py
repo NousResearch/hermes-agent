@@ -536,6 +536,7 @@ class GatewayStartupMixin:
                 candidates = [
                     entry for entry in self.session_store._entries.values()  # noqa: SLF001
                     if entry.resume_pending
+                    and entry.session_id not in self.session_store._typed_event_recovery_session_ids_locked()
                     and not entry.suspended
                     and entry.origin is not None
                     and entry.resume_reason in self._AUTO_RESUME_REASONS

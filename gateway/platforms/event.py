@@ -89,6 +89,9 @@ class MessageEvent:
     # so untrusted payload text stays conversational. Kept last for positional compat.
     allow_gateway_control: bool = True
 
+    gateway_system_event: Any = None
+    gateway_event_receipt: Any = None
+
     # Process-local admission receipt, never routing metadata or execution acknowledgement.
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.

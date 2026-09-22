@@ -30,22 +30,36 @@ def _keyless_rescue_enabled() -> bool:
         return False
 
 
+def _ring_vendor_keyless(name: str) -> bool:
+    """Did *name*'s own provider route this call through the anonymous keyless ring?
+
+    Mirrors the predicate each ring provider evaluates before calling, so eligibility reflects what
+    actually happened. Firecrawl owns extra routes that bypass the ring without a key — the managed
+    Nous Tool Gateway (persisted ``nous`` selection, or the legacy never-configured fallback when the
+    gateway is ready) and a self-hosted ``FIRECRAWL_API_URL`` — so it is asked directly.
+    """
+    if name == "firecrawl":
+        from plugins.web.firecrawl.provider import _use_keyless_ring
+        return _use_keyless_ring()
+    from agent.web_search_provider import get_provider_env
+    from plugins.web.keyless_mcp import use_keyless
+    key_var = _RING_KEY_VARS.get(name, "")
+    return use_keyless(name, get_provider_env(key_var) if key_var else "")
+
+
 def _rescue_eligible(provider) -> bool:
     """True when a failed call on *provider* should get a one-shot rescue.
 
-    Eligible: a keyed/configured path — any non-ring backend, or a ring vendor in keyed mode. A ring
-    vendor already in keyless mode is NOT eligible: its failure means the ring was already walked.
+    Eligible: any call that did NOT go through the keyless ring — a non-ring backend, a ring vendor
+    in keyed mode, or a ring vendor routed through the managed gateway / a self-hosted instance. A
+    ring vendor that walked the ring is NOT eligible: its failure means the ring already failed.
     """
     if not _keyless_rescue_enabled() or provider is None:
         return False
     try:
-        from plugins.web.keyless_mcp import _KEYLESS_RING, use_keyless
+        from plugins.web.keyless_mcp import _KEYLESS_RING
         name = getattr(provider, "name", "")
-        if name not in _KEYLESS_RING:
-            return True
-        from agent.web_search_provider import get_provider_env
-        key_var = _RING_KEY_VARS.get(name, "")
-        return not use_keyless(name, get_provider_env(key_var) if key_var else "")
+        return name not in _KEYLESS_RING or not _ring_vendor_keyless(name)
     except Exception as exc:  # noqa: BLE001 — rescue is best-effort
         logger.debug("rescue eligibility check failed: %s", exc)
         return False

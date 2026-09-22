@@ -1,5 +1,11 @@
 import { configure } from '@testing-library/react'
 
+import { stubResizeObserver } from './src/test/jsdom'
+
+// Shared tooltips now measure their arrow through Radix's useSize hook.
+// Geometry assertions still belong in a real browser, not this inert observer.
+stubResizeObserver()
+
 // Node 26 defines its own `localStorage` accessor on the global object, which
 // returns `undefined` unless the process was started with --localstorage-file
 // (it warns: "localStorage is not available because --localstorage-file was

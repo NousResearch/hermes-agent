@@ -66,6 +66,21 @@ def test_picker_never_synthesizes_900k_for_pro_or_unknown_slugs():
 
 
 
+def test_retired_gpt_5_3_codex_is_not_offered_offline():
+    """The ChatGPT Codex backend retired ``gpt-5.3-codex`` (HTTP 400 "not supported when using
+    Codex with a ChatGPT account", #52492). Neither the curated offline fallback nor any
+    forward-compat template may surface it — only live discovery may, if the backend re-enables it.
+    Same precedent as the gpt-5.2-codex / gpt-5.1-codex-* removal (e8955f222ce)."""
+    from hermes_cli.codex_models import _FORWARD_COMPAT_TEMPLATE_MODELS, DEFAULT_CODEX_MODELS
+
+    assert "gpt-5.3-codex" not in DEFAULT_CODEX_MODELS
+    for newer, templates in _FORWARD_COMPAT_TEMPLATE_MODELS:
+        assert newer != "gpt-5.3-codex"
+        assert "gpt-5.3-codex" not in templates
+    # Spark is still a real Codex-OAuth slug and must keep surfacing via a live template.
+    assert "gpt-5.3-codex-spark" in DEFAULT_CODEX_MODELS
+
+
 def test_setup_wizard_codex_import_resolves():
     """Regression test for #712: setup.py must import the correct function name."""
     # This mirrors the exact import used in hermes_cli/setup.py line 873.
@@ -170,7 +185,7 @@ def test_model_command_prompts_to_reuse_or_reauthenticate_codex_session(monkeypa
     monkeypatch.setattr("hermes_cli.auth._login_openai_codex", _fake_login)
     monkeypatch.setattr(
         "hermes_cli.codex_models.get_codex_model_ids",
-        lambda access_token=None: ["gpt-5.4", "gpt-5.3-codex"],
+        lambda access_token=None: ["gpt-5.4", "gpt-5.5"],
     )
     monkeypatch.setattr(
         "hermes_cli.auth._prompt_model_selection",
@@ -263,9 +278,53 @@ class TestNormalizeModelForProvider:
         assert cli._model_is_default is True
         with patch(
             "hermes_cli.codex_models.get_codex_model_ids",
-            return_value=["gpt-5.3-codex", "gpt-5.4"],
+            return_value=["gpt-5.5", "gpt-5.4"],
         ):
             changed = cli._normalize_model_for_provider("openai-codex")
         assert changed is True
         # Uses first from available list
-        assert cli.model == "gpt-5.3-codex"
+        assert cli.model == "gpt-5.5"
+
+
+def test_catalog_requests_use_ungated_client_version(monkeypatch):
+    """Both catalog request sites send the backend's ungated ``0.0.0`` sentinel: the endpoint
+    hides models whose ``minimal_client_version`` is newer than ``client_version``, so a
+    made-up version silently drops future models."""
+    import sys
+    from urllib.parse import parse_qs, urlparse
+
+    from agent import model_metadata
+    from hermes_cli import codex_models
+
+    seen_urls = []
+
+    class _FakeResp:
+        status_code = 200
+
+        def json(self):
+            return {"models": []}
+
+    class _FakeHttpx:
+        @staticmethod
+        def get(url, headers=None, timeout=None):
+            seen_urls.append(url)
+            return _FakeResp()
+
+    class _FakeRequests:
+        @staticmethod
+        def get(url, headers=None, timeout=None, verify=None):
+            seen_urls.append(url)
+            return _FakeResp()
+
+    monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
+    codex_models._fetch_models_from_api(access_token="tok")
+    monkeypatch.setattr(model_metadata, "requests", _FakeRequests)
+    monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
+    monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
+    model_metadata._fetch_codex_oauth_context_lengths_with_source("tok")
+
+    assert len(seen_urls) == 2
+    for url in seen_urls:
+        parsed = urlparse(url)
+        assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
+        assert parse_qs(parsed.query)["client_version"] == ["0.0.0"]

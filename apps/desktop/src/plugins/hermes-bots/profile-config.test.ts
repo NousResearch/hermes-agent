@@ -31,11 +31,12 @@ type AdvancedConfigState = ReturnType<typeof emptyAdvancedState>
 interface ModelSwitchConfirmArgs {
   confirmMessage: string
   finish: () => void
+  model: string
   requestConfirmed: () => Promise<{ applied?: Record<string, boolean> } | undefined>
 }
 
 const { confirmMock, hostMock, invalidateMock } = vi.hoisted(() => ({
-  confirmMock: vi.fn((_args: ModelSwitchConfirmArgs) => 'notification-1'),
+  confirmMock: vi.fn(async (_args: ModelSwitchConfirmArgs) => true),
   hostMock: {
     getGateway: () => 'ambient-gateway',
     request: vi.fn(),
@@ -55,7 +56,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     GlyphSpinner: () => null,
     host: hostMock,
     Input: () => null,
-    McpTab: undefined,
+    ConnectorsTab: undefined,
     queryClient: { invalidateQueries: invalidateMock },
     ScrollArea: () => null,
     Select: () => null,
@@ -63,7 +64,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     SelectItem: () => null,
     SelectTrigger: () => null,
     SelectValue: () => null,
-    SkillsView: undefined,
+    CapabilitiesView: undefined,
     surfaceModelSwitchConfirm: confirmMock,
     Textarea: () => null,
     ToolsetConfigPanel: undefined,

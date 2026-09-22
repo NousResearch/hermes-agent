@@ -134,7 +134,7 @@ class TestProviderModelIds:
             assert provider_model_ids("anthropic") == ["enterprise-claude"]
 
         req = mock_urlopen.call_args[0][0]
-        assert req.full_url == "http://localhost:6655/anthropic/v1/models"
+        assert req.full_url == "http://localhost:6655/anthropic/v1/models?limit=1000"
         assert req.get_header("X-api-key") == "proxy-key"
 
     def test_custom_provider_passes_anthropic_mode_for_versioned_proxy_catalog(self):
@@ -263,6 +263,9 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-go", "kimi-k2.7-code") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "glm-5.2") == "chat_completions"
         assert opencode_model_api_mode("opencode-go", "minimax-m3") == "anthropic_messages"
+        # Union Alpha is exposed through /v1/messages on both relays.
+        assert opencode_model_api_mode("opencode-go", "union-alpha") == "anthropic_messages"
+        assert opencode_model_api_mode("opencode-zen", "opencode-zen/union-alpha") == "anthropic_messages"
         # GPT models on Go are Responses-only (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "gpt-5.6-luna") == "codex_responses"
         assert opencode_model_api_mode("opencode-go", "opencode-go/gpt-5.6-luna") == "codex_responses"
@@ -285,7 +288,7 @@ class TestCopilotNormalization:
         assert opencode_model_api_mode("opencode-zen", "x-preview-f-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "opencode-zen/x-preview-f-free") == "chat_completions"
         # Other free-tier Zen models are chat/completions too.
-        assert opencode_model_api_mode("opencode-zen", "hy3-free") == "chat_completions"
+        assert opencode_model_api_mode("opencode-zen", "mimo-v2.5-free") == "chat_completions"
         assert opencode_model_api_mode("opencode-zen", "nemotron-3.5-lightning-free") == "chat_completions"
         # Hy3 on Go is chat/completions (Go endpoint table).
         assert opencode_model_api_mode("opencode-go", "hy3") == "chat_completions"
@@ -335,6 +338,34 @@ class TestNormalizeOpencodeBaseUrl:
         assert normalize_opencode_base_url(
             "openrouter", "chat_completions", "https://openrouter.ai/api"
         ) == "https://openrouter.ai/api"
+
+
+class TestNormalizeOpencodeBaseUrlFamilyPath:
+    """A carried-over base_url is healed on the FAMILY path segment (``/zen`` vs ``/zen/go``), not
+    just ``/v1`` (#112600): ``model.base_url`` pinned to the Zen relay survived a switch to
+    ``opencode-go`` and every request 401'd ("Model mimo-v2.5 is not supported")."""
+
+    @pytest.mark.parametrize("provider, api_mode, url, expected", [
+        ("opencode-go", "chat_completions", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go/v1"),
+        ("opencode-zen", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/v1"),
+        # Family healed first, then the /v1 strip for the Anthropic SDK — both apply.
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1", "https://opencode.ai/zen/go"),
+        ("opencode-zen", "anthropic_messages", "https://opencode.ai/zen/go", "https://opencode.ai/zen"),
+        # A self-hosted OPENCODE_*_BASE_URL proxy has no family path to rewrite.
+        ("opencode-go", "chat_completions", "https://gateway.internal.example/zen/v1", "https://gateway.internal.example/zen/v1"),
+        # Non-/zen paths on the real host keep the pre-existing /v1 behaviour.
+        ("opencode-go", "chat_completions", "https://opencode.ai/api", "https://opencode.ai/api/v1"),
+        # A custom provider merely NAMED after a family declared its relay explicitly: no family
+        # heal, but still the family's /v1 handling.
+        ("opencode-zen-bridge", "chat_completions", "https://opencode.ai/zen/go/v1", "https://opencode.ai/zen/go/v1"),
+        ("opencode-go-bridge", "chat_completions", "https://opencode.ai/zen/go", "https://opencode.ai/zen/go/v1"),
+        # The host check is on the hostname, so a port does not defeat the heal; query survives.
+        ("opencode-go", "chat_completions", "https://opencode.ai:443/zen/v1", "https://opencode.ai:443/zen/go/v1"),
+        ("opencode-go", "anthropic_messages", "https://opencode.ai/zen/v1?x=1", "https://opencode.ai/zen/go?x=1"),
+    ])
+    def test_family_path_follows_the_resolved_provider(self, provider, api_mode, url, expected):
+        from hermes_cli.models import normalize_opencode_base_url
+        assert normalize_opencode_base_url(provider, api_mode, url) == expected
 
 
 class TestAzureFoundryModelApiMode:
@@ -827,3 +858,60 @@ class TestValidateCustomUnreachableFallback:
         assert "was not saved" in result["message"]
         # A reachable catalog keeps authoritative validation regardless of mode.
         assert self._validate("my-model", "custom", models=["my-model"], api_mode="chat_completions")["recognized"] is True
+
+    def test_anthropic_messages_reachable_listing_without_slug_is_not_called_unimplemented(self):
+        """A listing that answered 200 but lacks the slug must not be described as a proxy that
+        'does not implement GET /v1/models'; it names the alias candidates instead (#111436)."""
+        result = self._validate("kimi-k3", "kimi-coding", models=["k3", "k3-turbo"], api_mode="anthropic_messages")
+        assert (result["accepted"], result["persist"], result["recognized"]) == (True, True, False)
+        assert "do not implement" not in result["message"]
+        assert "not named in this endpoint's model listing" in result["message"]
+        assert "`k3`" in result["message"]
+        # Case-only spelling differences are a match, not a warning.
+        assert self._validate("K3", "kimi-coding", models=["k3"], api_mode="anthropic_messages")["recognized"] is True
+        # The unreachable-listing wording is unchanged.
+        unreachable = self._validate("kimi-k3", "kimi-coding", models=None, api_mode="anthropic_messages")
+        assert "do not implement GET /v1/models" in unreachable["message"]
+
+
+# -- validate — profile-owned catalog is authoritative (#116667) ----------------
+
+class TestProfileCatalogAuthoritative:
+    """A profile that points ``models_url`` at its own catalog endpoint (relay re-shape,
+    #101705) owns validation: the generic ``{base_url}/models`` listing may expose a
+    different product line that this deployment cannot serve, so a miss in the
+    profile-owned catalog must not be turned into an acceptance by that generic
+    listing (#116667). Unavailable/empty profile catalogs keep the generic fallback."""
+
+    @pytest.fixture
+    def relay_profile(self, monkeypatch):
+        import providers
+        from providers.base import ProviderProfile
+
+        profile = ProviderProfile(
+            name="relay-owned-catalog", auth_type="api_key",
+            env_vars=("RELAY_TEST_KEY",), base_url="https://relay.example.invalid/v1",
+            models_url="https://relay.example.invalid/catalog",
+            fallback_models=("plan/model-1",),
+        )
+        monkeypatch.setitem(providers._REGISTRY, profile.name, profile)
+        return profile
+
+    def test_model_only_in_generic_listing_is_rejected(self, relay_profile):
+        """Profile catalog: ["plan/model-1"]; generic /models: ["other-vendor/model-a"];
+        requested "other-vendor/model-a" — the generic hit must not accept it."""
+        result = _validate(
+            "other-vendor/model-a", "relay-owned-catalog", api_models=["other-vendor/model-a"])
+        assert result["accepted"] is False
+        assert result["persist"] is False
+        assert "plan/model-1" in result["message"]
+
+    def test_unavailable_profile_catalog_keeps_generic_fallback(self, relay_profile):
+        """The profile's own catalog unreachable/empty (e.g. no credentials yet):
+        the generic listing stays the validator, as before (#116667's carve-out)."""
+        with patch("hermes_cli.models.fetch_api_models", return_value=["other-vendor/model-a"]), \
+             patch("hermes_cli.models.provider_model_ids", return_value=[]):
+            result = validate_requested_model(
+                "other-vendor/model-a", "relay-owned-catalog", api_key="k")
+        assert result["accepted"] is True
+        assert result["recognized"] is True

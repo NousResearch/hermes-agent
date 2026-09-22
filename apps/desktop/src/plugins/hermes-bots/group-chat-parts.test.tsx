@@ -171,10 +171,38 @@ describe('insertion', () => {
     expect(options().some(label => label.startsWith('@builder'))).toBe(true)
     expect(options().some(label => label.startsWith('@undefined'))).toBe(false)
   })
+
+  it('paints the popover on the elevated surface token, never a translucent fill (#113713)', async () => {
+    const { input } = await mount()
+
+    typeInto(input, '@')
+
+    // `--ui-bg-primary` is a hover/interactive FILL (accent mixed into a 10%
+    // base over transparent) — on it the transcript read straight through the
+    // menu. Floating menus sit on `--ui-bg-elevated`, an opaque surface.
+    const menu = screen.getByRole('button', { name: /^@everyone/ }).parentElement
+
+    expect(menu?.className).toContain('bg-(--ui-bg-elevated)')
+    expect(menu?.className).not.toMatch(/bg-\(--ui-bg-(?:primary|secondary|tertiary)\)/)
+  })
 })
 
 // #89884: the composer used to be a single-line Input whose form submitted on
 // every Enter, so multi-line room prompts were impossible.
+describe('sizing (#95300)', () => {
+  it('sizes from its content up to a viewport-bounded cap and scrolls beyond it, while starting at one row', async () => {
+    const { input } = await mount()
+
+    // Chromium's field-sizing does the growing; the contract the room relies
+    // on is the class set: content-sized, capped, scrolling past the cap,
+    // and a single compact row when empty.
+    expect(input.rows).toBe(1)
+    expect(input.classList.contains('field-sizing-content')).toBe(true)
+    expect(input.classList.contains('max-h-[min(50vh,24rem)]')).toBe(true)
+    expect(input.classList.contains('overflow-y-auto')).toBe(true)
+  })
+})
+
 describe('keyboard (#89884)', () => {
   it('submits on Enter and leaves Shift+Enter to the textarea', async () => {
     const { input, onSubmitDraft } = await mount('a room prompt')
@@ -209,5 +237,42 @@ describe('keyboard (#89884)', () => {
     fireEvent.keyDown(input, { key: 'Enter', keyCode: 229 })
 
     expect(onSubmitDraft).not.toHaveBeenCalled()
+  })
+})
+
+// #91706: a command approval in a room could be SELECTED but never sent — the
+// footer "Respond" button sat off-screen or under an overflowing code block.
+// Approvals are a closed choice set, so the click itself is the answer.
+describe('approval card (#91706)', () => {
+  const entry = {
+    at: 1,
+    choices: ['once', 'session', 'always', 'deny'],
+    command: 'rm -rf /tmp/scratch',
+    group: 'Core',
+    kind: 'approval' as const,
+    member: 'alpha',
+    memberKey: 'alpha',
+    multiSelect: false,
+    question: '',
+    requestId: 'req-1',
+    sessionId: 'sid-1',
+    thread: 't1'
+  }
+
+  it('submits the clicked choice at once, with no second Respond click', async () => {
+    const answer = vi.fn(async () => undefined)
+    vi.doMock('./group-turns', () => ({ answerGroupClarify: answer }))
+    vi.doMock('./group-chat', () => ({ appendGroupChatEntry: vi.fn() }))
+    const { GroupClarifyCard } = await import('./group-chat-parts')
+
+    render(<GroupClarifyCard entry={entry} members={MEMBERS} />)
+
+    expect(screen.queryByRole('button', { name: 'Respond' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'once' }))
+    // A second click while the first is in flight must not double-submit.
+    fireEvent.click(screen.getByRole('button', { name: 'session' }))
+
+    await vi.waitFor(() => expect(answer).toHaveBeenCalledTimes(1))
+    expect(answer).toHaveBeenCalledWith(entry, MEMBERS[0], 'once')
   })
 })

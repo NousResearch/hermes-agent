@@ -163,9 +163,9 @@ def test_refresh_from_persisted_sanitized_row_keeps_the_full_pair(
 
     real_write = AA._write_claude_code_credentials
 
-    def _counting_write(access_token, refresh_token, expires_at_ms):
+    def _counting_write(access_token, refresh_token, expires_at_ms, **kwargs):
         writes.append(refresh_token)
-        return real_write(access_token, refresh_token, expires_at_ms)
+        return real_write(access_token, refresh_token, expires_at_ms, **kwargs)
 
     monkeypatch.setattr(AA, "refresh_anthropic_oauth_pure", _counting_refresh)
     monkeypatch.setattr(AA, "_write_claude_code_credentials", _counting_write)

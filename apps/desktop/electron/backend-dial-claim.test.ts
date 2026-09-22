@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url'
 import { describe, expect, it, vi } from 'vitest'
 
 import { BackendDialClaims } from './backend-dial-claim'
-import { parseBackendScopeKey } from './connection-registry'
+import { backendScopeKey, parseBackendScopeKey } from './connection-registry'
+import { resolveDesktopConnectionRequest } from './desktop-profile'
 
 const here = path.dirname(fileURLToPath(import.meta.url))
 const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
@@ -123,24 +124,28 @@ describe('parseBackendScopeKey (#90812/#93910)', () => {
 })
 
 describe('main.ts wiring for #90812', () => {
-  it('routes the profile-scoped dial IPC through the single-owner claim', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1200)
+  it.each([null, 'office-ssh'])(
+    'coalesces resolved window routes without absorbing a same-named source (%s)',
+    async connectionId => {
+      const claims = new BackendDialClaims()
+      const source = { connectionId, profile: 'work', registryScoped: connectionId !== null }
+      const route = resolveDesktopConnectionRequest(undefined, source, 'default')
+      const key = backendScopeKey(route.connectionId, route.profile)
+      const dial = vi.fn(async () => ({ baseUrl: 'http://localhost:53150' }))
+      const other = vi.fn(async () => ({ baseUrl: 'http://localhost:53151' }))
 
-    expect(body).toContain('backendDialClaims.run(')
-    expect(body).toContain('ensureBackend(profile, { spawnPriority })')
-  })
+      const [first, second, separate] = await Promise.all([
+        claims.run(key, dial),
+        claims.run(key, dial),
+        claims.run(backendScopeKey('another-source', route.profile), other)
+      ])
 
-  it('routes the registry-scoped dial IPC through the claim keyed by backendScopeKey(connectionId, profile)', () => {
-    const handlerStart = mainSource.indexOf("ipcMain.handle('hermes:connection:for', ")
-    expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 1_200)
-
-    expect(body).toContain('const scopeKey = backendScopeKey(id, profile)')
-    expect(body).toContain('backendDialClaims.run(scopeKey, ')
-    expect(body).toContain("ensureRegistryBackend(id, profile, '', { spawnPriority })")
-  })
+      expect(first).toBe(second)
+      expect(first).not.toBe(separate)
+      expect(dial).toHaveBeenCalledTimes(1)
+      expect(other).toHaveBeenCalledTimes(1)
+    }
+  )
 
   // The four IPC/probe surfaces below call ensureRegistryBackend()/ensureBackend()
   // directly, bypassing backendDialClaims entirely — so a renderer's guarded
@@ -173,7 +178,9 @@ describe('main.ts wiring for #90812', () => {
   it('routes the roster-enumeration probe through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function enumerateRegistryAgentSources')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 3_700)
+    // The ssh branch grew (it now carries the install id learned by the
+    // inventory probe) — keep the scan window comfortably past the dial.
+    const body = mainSource.slice(handlerStart, handlerStart + 4_500)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(connection.id, null)')
     expect(body).toContain('ensureRegistryBackend(connection.id, null)')
@@ -195,9 +202,9 @@ describe('main.ts wiring for #90812', () => {
   it('routes every registry-scoped REST dispatch (hermes:api) through the single-owner claim', () => {
     const handlerStart = mainSource.indexOf('async function dispatchRegistryApiRequest(')
     expect(handlerStart).toBeGreaterThan(-1)
-    const body = mainSource.slice(handlerStart, handlerStart + 900)
+    const body = mainSource.slice(handlerStart, handlerStart + 1_000)
 
     expect(body).toContain('backendDialClaims.run(backendScopeKey(registryConnectionId, routeProfile)')
-    expect(body).toContain('ensureRegistryBackend(registryConnectionId, routeProfile)')
+    expect(body).toContain("ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })")
   })
 })

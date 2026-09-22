@@ -4,15 +4,28 @@ through ``tools.skill_manager_tool`` so that module owns it."""
 
 import json
 import logging
+import os
 import posixpath
 import shutil
 import tempfile
+import time
 from pathlib import Path
 
 logger = logging.getLogger("tools.skill_manager_tool")
 
 _BATCH_OP_ACTIONS = {"create", "patch", "write_file", "remove_file"}
 _BATCH_MAX_OPS = 20
+
+# A rollback parks the broken entry here while it copies the snapshot back. The park
+# must NOT sit inside a skills root: the loader walks a root (following symlinked
+# entries) and prunes only ``EXCLUDED_SKILL_DIRS``, so a park left in there is itself a
+# loadable skill, and one declaring the live skill's frontmatter ``name`` makes that
+# name resolve twice in a single root.
+_ASIDE_DIRNAME = ".skill-rollback-asides"
+# A park lives for the length of one restore. Anything older than this was abandoned by
+# a process that died mid-restore (SIGKILL, host restart, power cut) and is dropped by
+# the next rollback instead of sitting in the park directory forever.
+_ASIDE_STALE_SECONDS = 24 * 3600
 
 # --- Per-op argument shape (checked before any effect) ---------------------------------
 # action -> (arg, is_missing, error) checks run before the handler.
@@ -144,28 +157,94 @@ def _snapshot_skills(names, snap_root, find_skill):
     return snapshots, None
 
 
-def _restore_snapshot(pre_dir, snap, post_dir) -> None:
-    post_exists = post_dir is not None and post_dir.is_dir()
-    if snap is None:
-        if post_exists:  # Batch created this skill: remove the partial result.
-            shutil.rmtree(post_dir)
+def _remove_path(path: Path) -> None:
+    """Best-effort removal of a directory, a file, or a symlink.
+
+    ``shutil.rmtree`` REFUSES a symlink ("Cannot call rmtree on a symbolic link"), so a
+    rollback that parked a symlinked entry could never clean its park up: the entry
+    stayed behind, loadable, inside the skills root.
+    """
+    try:
+        if path.is_symlink() or not path.is_dir():
+            path.unlink()
+        else:
+            shutil.rmtree(path)
+    except OSError:
+        logger.warning("skill_manage: could not remove %s", path)
+
+
+def _asides_root() -> Path:
+    """Directory a rollback parks the broken entry in — never inside a skills root."""
+    from tools import skill_manager_tool as _smt
+    base = Path(_smt._skills_dir()).parent / _ASIDE_DIRNAME
+    try:
+        from agent.skill_utils import get_all_skills_dirs
+        for root in get_all_skills_dirs():
+            if base == root or base.is_relative_to(root):
+                # A HERMES_HOME configured as a skills root would be walked: park off-tree.
+                return Path(tempfile.gettempdir()) / _ASIDE_DIRNAME
+    except Exception:  # noqa: BLE001 — a resolver failure must not block a rollback
+        logger.debug("skill_manage: asides-root check failed", exc_info=True)
+    return base
+
+
+def _sweep_stale_asides(asides_root: Path) -> None:
+    """Drop parks abandoned by a process that died mid-restore."""
+    try:
+        entries = list(asides_root.iterdir())
+    except OSError:
         return
-    if not post_exists:
+    cutoff = time.time() - _ASIDE_STALE_SECONDS
+    for entry in entries:
+        try:
+            if entry.lstat().st_mtime < cutoff:
+                logger.warning("skill_manage: removing abandoned rollback park %s", entry)
+                _remove_path(entry)
+        except OSError:
+            continue
+
+
+def _park_entry_aside(path: Path) -> Path:
+    """Rename *path* (a dir, a file or a symlink) out of its skills root; return the park."""
+    asides_root = _asides_root()
+    asides_root.mkdir(parents=True, exist_ok=True)
+    _sweep_stale_asides(asides_root)
+    aside = asides_root / f"{path.name}-{os.getpid()}-{time.time_ns()}"
+    _remove_path(aside)
+    try:
+        path.rename(aside)
+    except OSError:  # another filesystem: a move copies first and never deletes on failure
+        shutil.move(str(path), str(aside))
+    try:  # stamp the PARK, not the parked entry's own mtime, for the stale sweep
+        os.utime(aside, None, follow_symlinks=False)
+    except (OSError, NotImplementedError):
+        pass
+    return aside
+
+
+def _restore_snapshot(pre_dir, snap, post_dir) -> None:
+    if snap is None:
+        # Batch created this skill: remove the partial result.
+        if post_dir is not None and post_dir.is_dir():
+            _remove_path(post_dir)
+        return
+    if post_dir is None or not post_dir.is_dir():
         shutil.copytree(snap, pre_dir)
         return
     # Move the broken state aside and delete it only after the snapshot is
     # back, so a failed copytree (disk full, locked file) can't mean total loss.
-    aside = post_dir.with_name(post_dir.name + ".rollback-broken")
-    shutil.rmtree(aside, ignore_errors=True)
-    post_dir.rename(aside)
+    # The park lives outside every skills root: a park inside one is itself a
+    # loadable skill, and a process killed between here and the copy landing used
+    # to leave exactly that behind.
+    aside = _park_entry_aside(Path(post_dir))
     try:
         shutil.copytree(snap, pre_dir)
     except Exception:
         # Restore failed: put the half-applied state back rather than nothing.
-        shutil.rmtree(pre_dir, ignore_errors=True)
+        _remove_path(pre_dir)
         aside.rename(pre_dir)
         raise
-    shutil.rmtree(aside, ignore_errors=True)
+    _remove_path(aside)
 
 
 def _rollback(snapshots, find_skill):

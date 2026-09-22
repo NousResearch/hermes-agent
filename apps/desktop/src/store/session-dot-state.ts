@@ -202,12 +202,102 @@ export function unreadSessionCount(
   return n
 }
 
+/** Where an unread row came from. Keep this explicit rather than inferring it
+ * from an id when a source needs different navigation in the future. */
+export type UnreadSessionKind = 'cron' | 'messaging' | 'session'
+
+interface UnreadSessionRow {
+  archived?: boolean
+  connection_id?: string
+  id: string
+  last_active?: number
+  profile?: string
+  started_at?: number
+  unread?: boolean
+}
+
+export interface UnreadSessionTarget {
+  connectionId?: string
+  id: string
+  kind: UnreadSessionKind
+  profile?: string
+}
+
+/** Listed unread rows across every sidebar source, globally newest first,
+ * carrying the owner scope needed to validate a cross-gateway open. */
+export function unreadSessionTargets(
+  byId: Readonly<Record<string, SessionDotState>>,
+  sessions: readonly UnreadSessionRow[] = [],
+  cron: readonly UnreadSessionRow[] = [],
+  messaging: readonly UnreadSessionRow[] = [],
+  unreadWriteGuard: ReadonlyMap<string, { at: number; value: boolean }> = new Map()
+): UnreadSessionTarget[] {
+  const rows = [
+    ...sessions.map(row => ({ kind: 'session' as const, row })),
+    ...cron.map(row => ({ kind: 'cron' as const, row })),
+    ...messaging.map(row => ({ kind: 'messaging' as const, row }))
+  ]
+
+  const ownersById = new Map<string, Set<string>>()
+
+  for (const { row } of rows) {
+    const owners = ownersById.get(row.id) ?? new Set<string>()
+    owners.add(JSON.stringify([row.connection_id?.trim() || '', row.profile?.trim() || 'default']))
+    ownersById.set(row.id, owners)
+  }
+
+  return rows
+    .filter(({ row }) => {
+      if (row.archived || byId[row.id] !== 'unread') {
+        return false
+      }
+
+      if ((ownersById.get(row.id)?.size ?? 0) > 1) {
+        // The shared dot, runtime marker and optimistic guard are ID-only.
+        // With source twins, only the row's own persisted unread flag proves
+        // eligibility; a pending unscoped write makes even that ambiguous.
+        const guard = unreadWriteGuard.get(row.id)
+
+        return row.unread === true && !(guard && Date.now() - guard.at < UNREAD_WRITE_GUARD_MS)
+      }
+
+      return true
+    })
+    .sort((a, b) => {
+      const byRecency =
+        Math.max(b.row.last_active || 0, b.row.started_at || 0) -
+        Math.max(a.row.last_active || 0, a.row.started_at || 0)
+
+      return byRecency || a.row.id.localeCompare(b.row.id)
+    })
+    .map(({ kind, row }) => ({
+      ...(row.connection_id?.trim() ? { connectionId: row.connection_id.trim() } : {}),
+      id: row.id,
+      kind,
+      ...(row.profile?.trim() ? { profile: row.profile.trim() } : {})
+    }))
+}
+
+/** Compatibility mapper over {@link unreadSessionTargets}. */
+export function unreadSessionIds(
+  byId: Readonly<Record<string, SessionDotState>>,
+  sessions: readonly UnreadSessionRow[] = [],
+  cron: readonly UnreadSessionRow[] = [],
+  messaging: readonly UnreadSessionRow[] = []
+): string[] {
+  return unreadSessionTargets(byId, sessions, cron, messaging).map(target => target.id)
+}
+
+export const $unreadSessionTargets = computed(
+  [$sessionDotStateById, $sessions, $messagingSessions, $unreadWriteGuard],
+  (byId, sessions, messaging, guard) => unreadSessionTargets(byId, sessions, [], messaging, guard)
+)
+
+export const $unreadSessionIds = computed($unreadSessionTargets, targets => targets.map(target => target.id))
+
 /** The titlebar badge. Cron sessions are deliberately EXCLUDED: cron runs
  *  finish unwatched by design, so counting them turns the badge into a cron
  *  run counter that is permanently lit (#93552). Their unread state stays
  *  visible where it belongs — the sidebar's cron section rows — and
  *  "mark all as read" still acks them (ackAllSessionsRead iterates cron rows). */
-export const $unreadSessionCount = computed(
-  [$sessionDotStateById, $sessions, $messagingSessions],
-  (byId, sessions, messaging) => unreadSessionCount(byId, sessions, messaging)
-)
+export const $unreadSessionCount = computed($unreadSessionIds, ids => ids.length)

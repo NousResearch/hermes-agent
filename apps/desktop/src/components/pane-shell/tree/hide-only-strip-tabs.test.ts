@@ -2,7 +2,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 
-import { allPaneIds, group, split } from './model'
+import { allPaneIds, group, isPaneActiveInLayoutGroup, split } from './model'
 import {
   $hiddenStripTabs,
   $hiddenTreePanes,
@@ -64,6 +64,22 @@ describe('hide-only strip tabs', () => {
     )
 
     expect(hideOnlyZoneTabs('g-side').map(tab => tab.title)).toEqual(['Сеансы', 'hermes-bots:pane'])
+  })
+
+  it('identifies which shared sidebar tab a reveal control would expose', () => {
+    sessionsBotsTree()
+    const sessionsActive = $layoutTree.get()!
+
+    expect(isPaneActiveInLayoutGroup(sessionsActive, new Set(), 'sessions')).toBe(true)
+    expect(isPaneActiveInLayoutGroup(sessionsActive, new Set(['sessions']), 'sessions')).toBe(false)
+
+    $layoutTree.set(
+      split('row', [
+        group(['sessions', 'hermes-bots:pane'], { active: 'hermes-bots:pane', id: 'g-side' }),
+        group(['workspace'], { active: 'workspace', id: 'g-main' })
+      ])
+    )
+    expect(isPaneActiveInLayoutGroup($layoutTree.get(), new Set(), 'sessions')).toBe(false)
   })
 
   it('hides and shows a chrome tab, keeping the pane in the tree', () => {

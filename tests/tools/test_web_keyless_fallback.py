@@ -25,7 +25,7 @@ from plugins.web.parallel.provider import ParallelWebSearchProvider
 def _no_web_env(monkeypatch):
     """Blank every web credential and neutralize config lookups."""
     for var in (
-        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY", "TAVILY_API_KEY",
+        "EXA_API_KEY", "PARALLEL_API_KEY", "KEENABLE_API_KEY", "TAVILY_API_KEY", "LINKUP_API_KEY",
         "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "BRAVE_SEARCH_API_KEY",
         "SEARXNG_URL", "TOOL_GATEWAY_USER_TOKEN",
     ):

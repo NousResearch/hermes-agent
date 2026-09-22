@@ -181,6 +181,7 @@ class TestUnconfiguredErrorEnvelopeParity:
             "BRAVE_SEARCH_API_KEY",
             "SEARXNG_URL",
             "KEENABLE_API_KEY",
+            "LINKUP_API_KEY",
             "EXA_API_KEY",
             "PARALLEL_API_KEY",
             "FIRECRAWL_API_KEY",

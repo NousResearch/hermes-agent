@@ -40,6 +40,20 @@ class TestDetectCodeSkew:
         skew = code_skew.detect_code_skew()
         assert skew == ("abc1234567", "def4567890")
 
+    def test_status_snapshot_exposes_a_detected_external_update(self, monkeypatch):
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+
+        assert code_skew.code_skew_status() == {
+            "boot_rev": "abc1234567",
+            "disk_rev": "def4567890",
+        }
+
+    @pytest.mark.parametrize("skew", [None, ("", "def4567890"), ("abc1234567", "")])
+    def test_status_snapshot_fails_open_for_missing_or_malformed_fingerprints(self, monkeypatch, skew):
+        monkeypatch.setattr(code_skew, "detect_code_skew", lambda: skew)
+
+        assert code_skew.code_skew_status() is None
+
 
 
 

@@ -10,6 +10,7 @@ from datetime import datetime, timedelta, timezone
 import pytest
 
 import gateway.status as _gw_status
+from gateway import code_skew
 
 
 def _iso_age(seconds_ago: float) -> str:
@@ -64,3 +65,12 @@ def test_status_keeps_watchdog_degraded_verdict_and_reason_for_dead_pid(client, 
     data = client.get("/api/status").json()
     assert data["gateway_state"] == "stopped"
     assert data["gateway_exit_reason"] is None
+
+
+def test_status_exposes_only_a_proven_checkout_skew(client, monkeypatch):
+    monkeypatch.setattr(code_skew, "detect_code_skew", lambda: ("abc1234567", "def4567890"))
+    assert client.get("/api/status").json()["code_skew"] == {
+        "boot_rev": "abc1234567", "disk_rev": "def4567890"}
+
+    monkeypatch.setattr(code_skew, "detect_code_skew", lambda: None)
+    assert "code_skew" not in client.get("/api/status").json()

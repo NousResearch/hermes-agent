@@ -9,7 +9,10 @@ import { deferred } from '../../../test/deferred'
 import { useStatusSnapshot } from './use-status-snapshot'
 
 vi.mock('@/hermes', () => ({
-  getStatus: vi.fn()
+  getStatus: vi.fn(),
+  // reportBackendCodeSkew imports the update store, which retains the profile
+  // store's API-scope subscription during this hook-level test.
+  setApiRequestProfile: vi.fn()
 }))
 
 type GatewayRequester = <T = unknown>(method: string, params?: Record<string, unknown>) => Promise<T>

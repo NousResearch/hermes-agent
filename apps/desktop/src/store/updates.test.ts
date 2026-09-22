@@ -87,6 +87,7 @@ const {
   $backendUpdateApply,
   REQUIRED_BACKEND_CONTRACT,
   reportBackendContract,
+  reportBackendCodeSkew,
   applyUpdates,
   applyEverythingUpdate,
   hasMultipleUpdateTargets,
@@ -238,6 +239,54 @@ describe('reportBackendContract', () => {
     reportBackendContract(REQUIRED_BACKEND_CONTRACT) // backend updated → satisfied, snooze cleared
     reportBackendContract(5) // a later regression must warn immediately
     expect(notifySpy).toHaveBeenCalledTimes(1)
+  })
+})
+
+describe('reportBackendCodeSkew', () => {
+  beforeEach(() => {
+    storage.clear()
+    notifySpy.mockClear()
+    dismissSpy.mockClear()
+  })
+
+  it('warns proactively and routes its action through the existing backend restart request', async () => {
+    const { $backendRestartRequest } = await import('./recovery-requests')
+    const before = $backendRestartRequest.get()
+
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+
+    expect(notifySpy).toHaveBeenCalledOnce()
+    expect(notifySpy.mock.calls[0]?.[0]).toMatchObject({
+      action: { label: 'Restart backend' },
+      kind: 'warning'
+    })
+    lastToast().action.onClick()
+    expect($backendRestartRequest.get()).toBe(before + 1)
+  })
+
+  it('clears the proactive warning for a current or malformed status response', () => {
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    reportBackendCodeSkew({ boot_rev: 'same', disk_rev: 'same' })
+    reportBackendCodeSkew({ boot_rev: 1, disk_rev: 'def4567890' })
+
+    expect(dismissSpy).toHaveBeenCalledWith('backend-code-skew')
+  })
+
+  it('uses the existing time-based snooze after dismissal', () => {
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    lastToast().onDismiss()
+    notifySpy.mockClear()
+
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+    expect(notifySpy).not.toHaveBeenCalled()
+  })
+
+  it('does not offer a local-process recycle for a remote backend', () => {
+    setRemote(true)
+    reportBackendCodeSkew({ boot_rev: 'abc1234567', disk_rev: 'def4567890' })
+
+    expect(notifySpy).not.toHaveBeenCalled()
+    setRemote(false)
   })
 })
 

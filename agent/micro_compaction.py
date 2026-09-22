@@ -154,7 +154,7 @@ class MicroCompactionMixin:
         if not content:
             logger.info("micro-summarization returned empty content")
             return None
-        if _cc()._is_summary_refusal(content):
+        if _cc()._response_refusal_text(response) or _cc()._is_summary_refusal(content):
             logger.warning("micro-summarization returned refusal content — discarding unusable summary")
             return None
         return content

@@ -196,6 +196,27 @@ class TestGenerateSummaryTruncationGuard:
         assert c._last_compress_aborted is True
         assert c._previous_summary is None or refusal not in (c._previous_summary or "")
 
+    def test_provider_refusal_field_is_rejected_even_with_summary_shaped_content(self):
+        """An explicit ``message.refusal`` wins over plausible-looking content (#118406)."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True,
+                protect_first_n=2, protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        msgs = _msgs()
+        filler = "## Goal\nContinue the task.\n\n## Completed Actions\n1. Nothing yet."
+        response = _mock_response(filler, "stop")
+        response.choices[0].message.refusal = "policy refusal"
+        with patch("agent.context_compressor.call_llm", return_value=response):
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert result == msgs
+        assert c._last_summary_empty_content_failure is True
+        assert c._last_compress_aborted is True
+        assert "refusal content" in (c._last_summary_error or "")
+        assert c._previous_summary is None
+
     def test_missing_finish_reason_still_succeeds(self):
         """Providers that omit finish_reason entirely must not be rejected."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

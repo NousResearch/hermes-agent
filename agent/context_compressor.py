@@ -165,9 +165,11 @@ _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 # whole response begins with one of these phrases and refers to the requested
 # summary/checkpoint.
 _SUMMARY_REFUSAL_PREFIX_RE = re.compile(
-    r"^\s*(?:(?:sorry|i(?:['’]m| am)\s+sorry|i\s+apologize|as\s+an\s+ai)"
-    r"\s*[,;:]?\s*(?:but\s+)?)?i\s+"
-    r"(?:can(?:not|['’]t)|won['’]t|will not|must decline|am unable to|am not able to)\b",
+    r"^\s*(?:(?:sorry|i(?:['’]m| am)\s+sorry|i\s+apologi[sz]e|as\s+an\s+ai)"
+    r"\s*[,;:]?\s*(?:but\s+)?)?(?:i|we)\s+"
+    r"(?:can(?:not|['’]t)|could\s*not|couldn['’]t|won['’]t|will\s+not|must\s+decline|"
+    r"refuse\s+to|am\s+unable\s+to|am\s+not\s+able\s+to)\b"
+    r"|^\s*(?:i['’]?m|i\s+am)\s+(?:unable|not\s+able)\b",
     re.IGNORECASE,
 )
 
@@ -180,6 +182,23 @@ def _is_summary_refusal(content: str) -> bool:
     # Limit the search to the opener so a structured checkpoint that records a
     # historical refusal elsewhere is not rejected.
     return any(term in normalized[:400].casefold() for term in ("summary", "summarize", "checkpoint"))
+
+
+def _response_refusal_text(response: Any) -> str:
+    """Explicit provider ``choices[0].message.refusal`` (str, or dict with message/reason/text); ``""`` when absent.
+
+    OpenAI-style structured-output refusals put the refusal here and leave ``content`` as filler or
+    empty, so the prose detector never sees it.
+    """
+    choices = (response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)) or []
+    if not choices:
+        return ""
+    first = choices[0]
+    message = first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
+    refusal = message.get("refusal") if isinstance(message, dict) else getattr(message, "refusal", None)
+    if isinstance(refusal, dict):
+        refusal = refusal.get("message") or refusal.get("reason") or refusal.get("text")
+    return refusal.strip() if isinstance(refusal, str) else ""
 
 
 def _is_summary_access_or_quota_error(exc: Exception) -> bool:
@@ -3608,7 +3627,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # error, rather than replacing real context with an empty summary.
         if not content.strip():
             raise RuntimeError(f"Context compression LLM returned empty content {where}")
-        if _is_summary_refusal(content):
+        if _response_refusal_text(response) or _is_summary_refusal(content):
             # Treat a refusal as unusable content. This deliberately reuses the
             # established fallback/cooldown/abort path for an empty body, so it
             # can never be committed as `_previous_summary`.

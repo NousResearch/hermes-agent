@@ -304,10 +304,11 @@ def compact_ledger() -> Tuple[int, int, int]:
     path = ledger_path()
     try:
         raw = path.read_bytes()
-    except OSError:
+        text = raw.decode("utf-8")
+    except (OSError, UnicodeError):
         return 0, 0, 0
     out, kept = [], 0
-    for line in raw.decode("utf-8").splitlines():
+    for line in text.splitlines():
         if not line.strip():
             continue
         try:

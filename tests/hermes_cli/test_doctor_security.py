@@ -32,6 +32,24 @@ def test_state_permission_check_accepts_private_state_tree(monkeypatch, tmp_path
     assert finding.fixed == 0
 
 
+def test_state_permission_audit_skips_windows_without_attempting_repair(monkeypatch, tmp_path):
+    home = tmp_path / ".hermes"
+    home.mkdir(mode=0o755)
+    config = home / "config.yaml"
+    config.write_text("model: test", encoding="utf-8")
+    config.chmod(0o666)
+    monkeypatch.setattr(doctor_security.os, "name", "nt")
+    def fail_if_repair_attempted(*_args):
+        raise AssertionError("Windows mode audit must not attempt POSIX repair")
+
+    monkeypatch.setattr(doctor_security, "_tighten_without_following", fail_if_repair_attempted)
+
+    finding = _run(monkeypatch, home, should_fix=True)
+
+    assert finding.issues == []
+    assert finding.fixed == 0
+
+
 def test_state_permission_check_reports_insecure_file_and_directory(monkeypatch, tmp_path):
     home = tmp_path / ".hermes"
     home.mkdir(mode=0o755)

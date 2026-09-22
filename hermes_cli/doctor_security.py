@@ -113,6 +113,9 @@ def _check_state_permissions(should_fix: bool, finding: Finding) -> None:
     """Report broad state permissions and optionally tighten known local paths."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
 
+    if os.name == "nt":
+        check_info("POSIX state-file mode audit is not applicable on Windows")
+        return
     if not HERMES_HOME.exists() and not HERMES_HOME.is_symlink():
         check_info(f"{_DHH} does not exist yet; state permission audit skipped")
         return

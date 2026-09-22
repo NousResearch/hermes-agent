@@ -126,6 +126,17 @@ function transcriptChangedDuringRead(before: ChatMessage[] | undefined, after: C
   return false
 }
 
+/** Zero persisted rows read over a populated runtime bound to the SAME stored
+ *  session. A runtime rebound to another stored id while the read was in
+ *  flight holds no evidence about the requested transcript. */
+function emptyPageOverPopulatedTranscript(
+  page: unknown[],
+  current: ClientSessionState | undefined,
+  storedSessionId: string
+): boolean {
+  return page.length === 0 && Boolean(current?.messages.length) && current?.storedSessionId === storedSessionId
+}
+
 type TileTranscriptTarget = { ownerRoute?: SessionOwnerRoute; storedSessionId: string; runtimeId?: string }
 
 /** Signature key per tile — carries the owner route so two connections/profiles
@@ -380,6 +391,16 @@ export async function reconcileActiveTranscript({
           storedSessionId
         ])
       : `${stored.profile ?? 'default'}:${storedSessionId}`
+
+    // An empty page is not proof the transcript is empty — it is also what a
+    // respawning backend (or a state.db read racing the change event) returns.
+    // Publishing it over a populated view blanks the thread, trips the routed
+    // loading branch and re-runs the composer lifecycle. Leave the signature
+    // untouched so the next usable page is not deduped away. Same rule as the
+    // warm-activation guard in use-session-actions/index.ts.
+    if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+      return
+    }
 
     const signature = sessionMessagesSignature(latest.messages)
 

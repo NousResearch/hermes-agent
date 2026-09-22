@@ -1137,3 +1137,80 @@ describe('isTypingBurstActive', () => {
     expect(isTypingBurstActive(1_000_000 + 1_500)).toBe(false)
   })
 })
+
+describe('reconcileActiveTranscript with an empty persisted page', () => {
+  // A backend respawn (or a state.db read racing the change event) answers a
+  // `sessions.changed` refresh with zero rows. That page is not proof the
+  // transcript is empty; accepting it blanks the view, flips the routed
+  // thread into its loading branch and re-runs the composer lifecycle.
+  function populatedFixture() {
+    const fixture = makeRefresh()
+
+    fixture.state.messages = [
+      { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+      { id: 'assistant-1', parts: [{ text: 'answer', type: 'text' }], role: 'assistant' }
+    ]
+    publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
+
+    return fixture
+  }
+
+  const emptyPage = () => ({ messages: [], session_id: ACTIVE_STORED_ID })
+
+  it('keeps a populated active transcript when the refresh reads zero rows', async () => {
+    const fixture = populatedFixture()
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
+
+    await fixture.refresh()
+
+    expect(fixture.updateSessionState).not.toHaveBeenCalled()
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages.map(message => message.id)).toEqual([
+      'user-1',
+      'assistant-1'
+    ])
+  })
+
+  it('does not record the ignored empty page as accepted, so the next usable page still lands', async () => {
+    const fixture = populatedFixture()
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(emptyPage() as never)
+
+    await fixture.refresh()
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(transcript('a newer answer') as never)
+
+    await fixture.refresh()
+
+    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
+
+    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+    expect(messages.flatMap(message => message.parts.map(part => ('text' in part ? part.text : '')))).toContain(
+      'a newer answer'
+    )
+  })
+
+  it('still accepts an empty page for a session whose transcript is genuinely empty', async () => {
+    const fixture = makeRefresh()
+    publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
+
+    await fixture.refresh()
+
+    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages).toEqual([])
+  })
+
+  it('does not let a runtime bound to another stored session veto the requested page', async () => {
+    const fixture = makeRefresh()
+
+    const foreign = createClientSessionState('stored-other', [
+      { id: 'other-user', parts: [{ text: 'elsewhere', type: 'text' }], role: 'user' }
+    ])
+
+    publishSessionState(ACTIVE_RUNTIME_ID, foreign)
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
+
+    await fixture.refresh()
+
+    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+  })
+})

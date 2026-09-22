@@ -139,6 +139,28 @@ class TestYAMLNormalisation:
 # ---------------------------------------------------------------------------
 
 
+    def test_shipped_template_keeps_every_platform_default(self, tmp_path):
+        """The installers, the Docker first boot and ``doctor --fix`` copy
+        cli-config.yaml.example verbatim, so an uncommented ``display.<key>`` there
+        becomes an explicit global value that beats every platform tier."""
+        import shutil
+        from pathlib import Path
+
+        from gateway.display_config import _PLATFORM_DEFAULTS, resolve_display_setting, resolve_tool_progress
+        from gateway.run import _load_gateway_config
+
+        template = Path(__file__).resolve().parents[2] / "cli-config.yaml.example"
+        shutil.copy(template, tmp_path / "config.yaml")
+        seeded = _load_gateway_config(tmp_path / "config.yaml")
+        assert "display" in seeded  # the loader fails open to {}, which would pass vacuously
+
+        tier_keys = {key for tier in _PLATFORM_DEFAULTS.values() for key in tier}
+        for platform in _PLATFORM_DEFAULTS:
+            assert resolve_tool_progress(seeded, platform) == resolve_tool_progress({}, platform), platform
+            for key in tier_keys:
+                assert resolve_display_setting(seeded, platform, key) == resolve_display_setting({}, platform, key), (
+                    platform, key)
+
 
 # ---------------------------------------------------------------------------
 # Config migration: tool_progress_overrides → display.platforms

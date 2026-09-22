@@ -46,3 +46,21 @@ def test_setup_agent_settings_prefers_config_over_stale_env(tmp_path, monkeypatc
     assert "Press Enter to keep 60." not in out
     # And the stale .env entry gets cleaned up
     assert "HERMES_MAX_ITERATIONS" in removed_keys
+
+
+def test_first_time_defaults_keep_every_platform_tool_progress_default(tmp_path, monkeypatch):
+    """Quick and full first-time setup run this. A global display.tool_progress it
+    writes beats every platform tier, so Telegram and Slack went from off to all."""
+    from gateway.display_config import _PLATFORM_DEFAULTS, resolve_tool_progress
+    from gateway.run import _load_gateway_config
+    from hermes_cli.config import load_config
+    from hermes_cli.setup import _apply_default_agent_settings
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    _apply_default_agent_settings(load_config())
+
+    on_disk = _load_gateway_config(tmp_path / "config.yaml")
+    assert on_disk.get("agent", {}).get("max_turns") == 150  # the save really landed
+    for platform in _PLATFORM_DEFAULTS:
+        assert resolve_tool_progress(on_disk, platform) == resolve_tool_progress({}, platform), platform

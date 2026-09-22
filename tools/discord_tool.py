@@ -484,7 +484,8 @@ def _ensure_subissue_context(
         contexts[key] = record
         _write_subissue_contexts(contexts)
         handoff_message_id = None
-        if created and handoff.strip():
+        handoff_pending = not (isinstance(existing, dict) and existing.get("handoff_message_id"))
+        if handoff.strip() and (created or handoff_pending):
             sent = _discord_request("POST", f"/channels/{thread_id}/messages", token, body={"content": handoff})
             handoff_message_id = str(sent.get("id", "")) or None
             record["handoff_message_id"] = handoff_message_id
@@ -581,7 +582,7 @@ _ACTION_MANIFEST = [
     ("add_reaction", _add_reaction, "(channel_id, message_id, emoji)", "add this bot's reaction to a message"),
     ("remove_own_reaction", _remove_own_reaction, "(channel_id, message_id, emoji)", "remove this bot's matching reaction from a message"),
     ("complete_demand", _complete_demand, "(channel_id, message_id, issue_repo, issue_number, epic_number)", "after GitHub verifies closure, replace ⌛ with ✅ in #demandas"),
-    ("ensure_subissue_context", _ensure_subissue_context, "(guild_id, channel_id, issue_repo, issue_number, name)", "create or recover the one dedicated operational thread for a sub-issue; optional handoff is sent only on creation"),
+    ("ensure_subissue_context", _ensure_subissue_context, "(guild_id, channel_id, issue_repo, issue_number, name)", "create or recover the one dedicated operational thread for a sub-issue; optional handoff is sent until its receipt is persisted"),
     ("list_pins", _list_pins, "(channel_id)", "pinned messages in a channel"),
     ("pin_message", _pin_message, "(channel_id, message_id)", "pin a message"),
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),

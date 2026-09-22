@@ -512,6 +512,10 @@ class UpdateTaskBody(BaseModel):
     clear_model_override: bool = False
     reasoning_effort: Optional[str] = None
     clear_reasoning_effort: bool = False
+    # Goal configuration is mutable only before the first worker run. Sending
+    # ``goal_max_turns: null`` clears the per-task budget to the engine default.
+    goal_mode: Optional[bool] = None
+    goal_max_turns: Optional[int] = None
 
 
 class BulkTaskBody(BaseModel):
@@ -671,6 +675,12 @@ def update_task(task_id: str, payload: UpdateTaskBody, board: Optional[str] = Qu
                 _require_ok(ok)
         if payload.priority is not None:
             _set_priority(conn, task_id, payload.priority, board)
+        if payload.goal_mode is not None or "goal_max_turns" in payload.model_fields_set:
+            with _map_errors(400, ValueError):
+                _require_ok(kanban_db.edit_task(
+                    conn, task_id, board=board, goal_mode=payload.goal_mode,
+                    goal_max_turns=payload.goal_max_turns if "goal_max_turns" in payload.model_fields_set else kanban_db._UNSET,
+                ))
         if payload.title is not None or payload.body is not None:
             _patch_title_body(conn, task_id, payload, board)
         updated = kanban_db.get_task(conn, task_id)

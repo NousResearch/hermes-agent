@@ -176,6 +176,27 @@ def test_connect_migrates_legacy_db_before_optional_column_indexes(tmp_path):
 # ---------------------------------------------------------------------------
 
 
+def test_goal_settings_are_editable_only_before_first_claim(kanban_home):
+    """Goal settings lock permanently when the task gains its first run."""
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="configure goal", assignee="alice")
+
+        assert kb.edit_task(conn, task_id, goal_mode=True, goal_max_turns=40)
+        configured = kb.get_task(conn, task_id)
+        assert configured is not None
+        assert configured.goal_mode is True
+        assert configured.goal_max_turns == 40
+
+        assert kb.claim_task(conn, task_id, claimer="worker") is not None
+        with pytest.raises(ValueError, match="cannot be changed after execution has started"):
+            kb.edit_task(conn, task_id, goal_mode=False, clear_goal_max_turns=True)
+
+        locked = kb.get_task(conn, task_id)
+        assert locked is not None
+        assert locked.goal_mode is True
+        assert locked.goal_max_turns == 40
+
+
 
 # ---------------------------------------------------------------------------
 # Links + dependency resolution

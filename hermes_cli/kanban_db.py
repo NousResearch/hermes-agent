@@ -3133,12 +3133,29 @@ def edit_task(
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    goal_mode: Optional[bool] = None, goal_max_turns: Any = _UNSET,
+    clear_goal_max_turns: bool = False,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    Goal settings are a launch contract, so they may change only before the
+    task has acquired its first durable run.  This check and the write share
+    the transaction with a conditional UPDATE, preventing a dispatcher claim
+    from slipping between validation and persistence.
+    """
+    if goal_max_turns is not _UNSET and goal_max_turns is not None and int(goal_max_turns) <= 0:
+        raise ValueError("goal_max_turns must be greater than zero")
+    if clear_goal_max_turns:
+        goal_max_turns = None
+    changing_goal = goal_mode is not None or goal_max_turns is not _UNSET
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    if goal_mode is not None:
+        changed_fields.append("goal_mode")
+    if goal_max_turns is not _UNSET:
+        changed_fields.append("goal_max_turns")
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
@@ -3149,16 +3166,27 @@ def edit_task(
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if goal_mode is not None:
+            assignments.append("goal_mode = ?")
+            params.append(1 if goal_mode else 0)
+        if goal_max_turns is not _UNSET:
+            assignments.append("goal_max_turns = ?")
+            params.append(_opt_int(goal_max_turns))
         if result is not None:
             assignments.append("result = ?")
             params.append(result)
             changed_fields.append("result")
         if not assignments:
             return False
-        conn.execute(
-            f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?",
-            (*params, task_id),
-        )
+        updated = conn.execute(
+            f"UPDATE tasks SET {', '.join(assignments)} WHERE id = ?"
+            + (" AND NOT EXISTS (SELECT 1 FROM task_runs WHERE task_id = ?)" if changing_goal else ""),
+            (*params, task_id, task_id) if changing_goal else (*params, task_id),
+        ).rowcount
+        if updated != 1:
+            if changing_goal:
+                raise ValueError("goal configuration cannot be changed after execution has started")
+            return False
         if priority is not None:
             _append_event(conn, task_id, "reprioritized", {"priority": priority})
         if result is None:

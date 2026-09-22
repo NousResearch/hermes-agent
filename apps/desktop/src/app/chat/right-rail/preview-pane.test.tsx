@@ -10,8 +10,10 @@ import { PreviewPane } from './preview-pane'
 // The consent dialog has its own test file and needs a QueryClientProvider;
 // these tests exercise the pane's console/watch/webview wiring, not the
 // prompt, so isolate it the way the pane's other collaborators are.
+const { realProfileConsentDialog } = vi.hoisted(() => ({ realProfileConsentDialog: vi.fn(() => null) }))
+
 vi.mock('./real-profile-consent-dialog', () => ({
-  RealProfileConsentDialog: () => null
+  RealProfileConsentDialog: realProfileConsentDialog
 }))
 
 function stubPdfObjectUrls() {
@@ -43,7 +45,38 @@ describe('PreviewPane console state', () => {
     cleanup()
     $connection.set(null)
     $selectedStoredSessionId.set(null)
+    realProfileConsentDialog.mockClear()
     vi.unstubAllGlobals()
+  })
+
+  it('does not offer real-profile consent for a remote backend', async () => {
+    $connection.set({ mode: 'remote' } as never)
+
+    await act(async () => {
+      render(
+        <PreviewPane
+          tabId="remote-browser"
+          target={{ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' }}
+        />
+      )
+    })
+
+    expect(realProfileConsentDialog).not.toHaveBeenCalled()
+  })
+
+  it('offers real-profile consent for a local backend', async () => {
+    $connection.set({ mode: 'local' } as never)
+
+    await act(async () => {
+      render(
+        <PreviewPane
+          tabId="local-browser"
+          target={{ kind: 'url', label: 'Browser', source: 'about:blank', url: 'about:blank' }}
+        />
+      )
+    })
+
+    expect(realProfileConsentDialog).toHaveBeenCalledWith({ tabId: 'local-browser' }, undefined)
   })
 
   it('does not watch backend-only remote filesystem previews locally', async () => {

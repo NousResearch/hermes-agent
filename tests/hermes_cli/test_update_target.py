@@ -29,6 +29,14 @@ INSTALL_ID = "b" * 32
 CURRENT_SHA = "c" * 40
 
 
+@pytest.fixture(autouse=True)
+def _authoritative_install_identity(tmp_path, monkeypatch):
+    home = tmp_path / "hermes-home"
+    home.mkdir()
+    (home / "install_id").write_text("1" * 32 + "\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+
 def _parser(collaborator=None):
     parser = argparse.ArgumentParser()
     subparsers = parser.add_subparsers(dest="command")
@@ -452,7 +460,6 @@ def _git_fixture(tmp_path: Path) -> dict[str, object]:
     _git(tmp_path, "clone", str(bare), str(install))
     _git(install, "config", "user.name", "fixture")
     _git(install, "config", "user.email", "fixture@example.test")
-    (install / "install_id").write_text("1" * 32 + "\n", encoding="utf-8")
     return {"source": source, "bare": bare, "install": install, "a": commit_a}
 
 

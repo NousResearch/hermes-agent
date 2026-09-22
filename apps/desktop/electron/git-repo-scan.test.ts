@@ -64,6 +64,25 @@ describe('scanGitRepos', () => {
     ])
   })
 
+  it('scanRoots overrides the roots argument', async () => {
+    const root = tempDir()
+    const dev = makeRepoAt(root, 'dev', 'proj')
+    const music = makeRepoAt(root, 'Music', 'app')
+
+    const result = await scanGitRepos([], { enabled: true, scanRoots: [path.join(root, 'dev')], maxDepth: 3 })
+    expect(foundRoots(result)).toEqual([dev])
+    expect(result).not.toContainEqual(expect.objectContaining({ root: music }))
+  })
+
+  it('skips a repo whose .git has no HEAD file', async () => {
+    const root = tempDir()
+    const valid = makeRepoAt(root, 'good')
+    const broken = path.join(root, 'broken')
+    makeRepo(broken, false)
+
+    expect(foundRoots(await scanGitRepos([root], { enabled: true, maxDepth: 2 }))).toEqual([valid])
+  })
+
   it('deduplicates overlapping roots', async () => {
     const root = tempDir()
     const repo = path.join(root, 'repo')

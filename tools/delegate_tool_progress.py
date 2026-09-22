@@ -167,12 +167,12 @@ _ORCHESTRATOR_BLOCK = (
     "for the final summary, not your workers.\n\n"
 )
 _LEAF_CHILDREN_NOTE = (
-    "Your own children MUST be leaves (cannot delegate further) because they would be at the depth floor — you cannot "
-    "pass role='orchestrator' to your own delegate_task calls."
+    "Your own children MUST be leaves (cannot delegate further) because they will reach the maximum nesting depth. "
+    "The system manages this automatically; no parameter override is available."
 )
 _NESTED_CHILDREN_NOTE = (
-    "Your own children can themselves be orchestrators or leaves, depending on the `role` you pass to delegate_task. "
-    "Default is 'leaf'; pass role='orchestrator' explicitly when a child needs to further decompose its work."
+    "Your own children can themselves delegate because depth remains. The system determines this automatically "
+    "from the nesting depth; children at the maximum depth cannot delegate further. No parameter override is available."
 )
 
 def _build_child_system_prompt(
@@ -182,7 +182,10 @@ def _build_child_system_prompt(
     """Focused system prompt for a child agent. role='orchestrator' appends a delegation-capability block (modeled on
     OpenClaw's buildSubagentSystemPrompt); its depth note is literal truth grounded in the passed config so the LLM
     can't confabulate nesting."""
-    parts = ["You are a focused subagent working on a specific delegated task.", "", f"YOUR TASK:\n{goal}"]
+    # The goal is the child's first user turn (see ``_ChildRun.await_child``).
+    # Keeping it out of the system prompt avoids sending OAuth Anthropic the
+    # same task in both roles, while preserving the normal user-turn contract.
+    parts = ["You are a focused subagent working on a specific delegated task."]
     if context and context.strip():
         parts.append(f"\nCONTEXT:\n{context}")
     if workspace_path and str(workspace_path).strip():
@@ -298,6 +301,7 @@ class _ChildProgressRelay:
             subagent_id, parent_id, depth, model, toolsets
         )
         self.batch: List[str] = []
+        self.parent_scope: Any = None  # owning parent agent; set by _build_child_progress_callback
         self.tool_count = 0  # per-subagent running counter
 
     def _prefix(self) -> str:
@@ -349,11 +353,20 @@ class _ChildProgressRelay:
     def _on_complete(self, tool_name, preview, args, kwargs):
         # Failed child: echo one clean reason line into the CLI tree so the human
         # sees WHY, not just a vanished branch (gateway renders off the relayed event).
+        # The echo is an automatic diagnostic presentation: it goes through the warning
+        # boundary under the parent's turn snapshot. The relayed event (the gateway's
+        # producer, which classifies it) and the child result are never gated here.
         if kwargs.get("status") in SUBAGENT_FAILURE_STATUSES:
-            self._tree_line(format_subagent_failure_line(
-                self.goal_label, kwargs.get("status"), error=kwargs.get("summary") or preview,
-                duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
-            ))
+            from gateway.warning_notifications import render_notification
+            parent = self.parent_scope
+            render_notification(
+                lambda: self._tree_line(format_subagent_failure_line(
+                    self.goal_label, kwargs.get("status"), error=kwargs.get("summary") or preview,
+                    duration_seconds=kwargs.get("duration_seconds"), failure_reason=kwargs.get("failure_reason"),
+                )),
+                platform=getattr(parent, "_notification_platform", getattr(parent, "platform", "cli")),
+                user_config=getattr(parent, "_notification_config", None),
+            )
         self._relay("subagent.complete", preview=preview, **kwargs)
 
     def _on_text(self, tool_name, preview, args, kwargs):
@@ -416,6 +429,8 @@ def _build_child_progress_callback(
     if session_ref is not None:
         # Not an identity kwarg (underscore-prefixed, never relayed); only scopes the batch ordinal.
         session_ref["_parent_scope"] = parent_agent
-    return _ChildProgressRelay(
+    relay = _ChildProgressRelay(
         task_index, goal, spinner, parent_cb, task_count, subagent_id, parent_id, depth, model, toolsets, session_ref,
     )
+    relay.parent_scope = parent_agent
+    return relay

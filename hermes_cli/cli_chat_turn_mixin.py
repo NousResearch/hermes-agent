@@ -18,6 +18,8 @@ from rich import box as rich_box
 from rich.panel import Panel
 from typing import Optional
 
+from hermes_cli.cli_agent_setup_mixin import _retire_agent
+
 
 class CLIChatTurnMixin:
     """chat() and its per-turn phase helpers."""
@@ -26,6 +28,21 @@ class CLIChatTurnMixin:
     # response string, so one-shot callers that must map an outcome onto a
     # process exit code (see cli._run_single_query_mode) read this instead.
     _last_turn_result = None
+
+    def _sync_fallback_chain_with_config(self, agent) -> None:
+        """Adopt ``fallback_providers`` edits made while this chat is open (#95066) — the same
+        per-turn, fail-closed contract as the Desktop/TUI and messaging gateways: a torn config.yaml
+        keeps the last known-good chain instead of reading as "chain removed"."""
+        from cli import logger
+        try:
+            from gateway.run import GatewayRunner
+            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_cli.fallback_config import get_fallback_chain
+            self._fallback_model = get_fallback_chain(load_user_config_effective(fail_closed=True))
+        except Exception as e:
+            logger.debug("fallback chain sync skipped (keeping current chain): %s", e)
+            return
+        GatewayRunner._apply_fallback_chain_to_agent(agent, self._fallback_model)
 
     def chat(self, message, images: list = None, voice_input: bool = False) -> Optional[str]:
         """Run one user turn; returns the agent's response, or None on error.
@@ -51,7 +68,7 @@ class CLIChatTurnMixin:
 
         turn_route = self._resolve_turn_agent_config(message)
         if turn_route["signature"] != self._active_agent_route_signature:
-            self.agent = None
+            _retire_agent(self)
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
@@ -60,6 +77,7 @@ class CLIChatTurnMixin:
         agent = self.agent
         if agent is None:
             return None
+        self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):
@@ -77,27 +95,32 @@ class CLIChatTurnMixin:
         ChatConsole().print(f"[{_accent_hex()}]{'─' * 40}[/]")
         print(flush=True)
 
-        turn = _ChatTurn()
-        try:
-            self._reset_stream_state()
-            # Not part of _reset_stream_state: must persist across intermediate turn
-            # boundaries (tool-calling loops), reset once per user turn.
-            self._reasoning_shown_this_turn = False
-            self._chat_setup_turn_audio(turn, message, voice_input)
-            # Per-prompt elapsed timer — frozen when the agent thread finishes.
-            self._prompt_start_time = time.time()
-            self._prompt_duration = 0.0
-            # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
-            agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
-            agent_thread.start()
-            interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
-            self._chat_settle_turn(turn)
-            return self._chat_render_turn(turn, agent_thread, interrupt_msg)
-        except Exception as e:
-            print(f"Error: {e}")
-            return None
-        finally:
-            self._chat_release_turn_audio(turn)
+        from agent.notification_presentation import notification_config_snapshot, notification_policy_snapshot
+        with notification_policy_snapshot(agent, "cli", notification_config_snapshot()):
+            turn = _ChatTurn()
+            from gateway.warning_notifications import diagnostic_turn_muted
+            turn.mute_notification_reply = diagnostic_turn_muted(
+                agent._pending_cli_user_message.get("display_metadata"), "cli", agent._notification_config)
+            try:
+                self._reset_stream_state()
+                # Not part of _reset_stream_state: must persist across intermediate turn
+                # boundaries (tool-calling loops), reset once per user turn.
+                self._reasoning_shown_this_turn = False
+                self._chat_setup_turn_audio(turn, message, voice_input)
+                # Per-prompt elapsed timer — frozen when the agent thread finishes.
+                self._prompt_start_time = time.time()
+                self._prompt_duration = 0.0
+                # Daemon: closing the terminal tab (SIGHUP) must not be kept alive by it.
+                agent_thread = threading.Thread(target=self._chat_run_agent, args=(turn, message), daemon=True)
+                agent_thread.start()
+                interrupt_msg = self._chat_monitor_agent_thread(turn, agent_thread)
+                self._chat_settle_turn(turn)
+                return self._chat_render_turn(turn, agent_thread, interrupt_msg)
+            except Exception as e:
+                print(f"Error: {e}")
+                return None
+            finally:
+                self._chat_release_turn_audio(turn)
 
     def _chat_release_turn_audio(self, turn):
         """Every exit path: stop the thinking sound, send the TTS sentinel, cut TTS only if abnormal."""
@@ -215,13 +238,16 @@ class CLIChatTurnMixin:
             from tools.process_registry_notifications import TimelineNotification
             if isinstance(message, TimelineNotification):
                 staged_user_message.update(content=str(message), display_kind=message.display_kind,
-                                           display_metadata={"display_text": message.display_text})
+                                           display_metadata={"display_text": message.display_text,
+                                                             "notification_category": message.notification_category})
             agent._pending_cli_user_message = staged_user_message
             self.conversation_history.append(staged_user_message)
 
     def _chat_setup_turn_audio(self, turn, message, voice_input):
         """Arm the full-duplex listener and the streaming-TTS pipeline for this turn (voice mode only)."""
         from cli import _ACCENT, _RST, _STREAM_PAD, _cprint, datetime
+        if getattr(turn, "mute_notification_reply", False):
+            return
         # Continuous voice mode: arm the mic NOW (utterance-submit), not at TTS playback —
         # it spans generation (speech interrupts the turn) and playback (speech cuts TTS)
         # and disarms itself when the turn is done. See _voice_full_duplex_listener.
@@ -319,18 +345,21 @@ class CLIChatTurnMixin:
         _one_turn_model_restore = getattr(self, "_pending_one_turn_model_restore", None)
         self._pending_one_turn_model_restore = None
         try:
-            turn.result = self.agent.run_conversation(
-                user_message=agent_message,
-                conversation_history=self.conversation_history[:-1],  # exclude the message just staged
-                stream_callback=turn.stream_callback, task_id=self.session_id,
-                persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
-            )
+            from agent.notification_presentation import notification_turn
+            muted = getattr(turn, "mute_notification_reply", False)
+            with notification_turn(self.agent, muted=muted, session_id=self.session_id):
+                turn.result = self.agent.run_conversation(
+                    user_message=agent_message,
+                    conversation_history=self.conversation_history[:-1],
+                    stream_callback=None if muted else turn.stream_callback, task_id=self.session_id,
+                    persist_user_message=_persist_clean_user_message, moa_config=_moa_cfg,
+                )
             if getattr(self, "_pending_moa_disable_after_turn", False):
                 _restore = getattr(self, "_pending_moa_restore_model", None) or {}
                 for _key, _value in _restore.items():
                     if _value is not None:
                         setattr(self, _key, _value)
-                self.agent = None
+                _retire_agent(self)
                 self._pending_moa_restore_model = None
                 self._pending_moa_disable_after_turn = False
         except Exception as exc:
@@ -484,6 +513,11 @@ class CLIChatTurnMixin:
         """
         from cli import _DIM, _RST, _cprint, _suspend_output_history
         response = turn.result.get("final_response", "") if turn.result else ""
+        if getattr(turn, "mute_notification_reply", False):
+            pending, _ = self._chat_resolve_interrupt(turn, agent_thread, interrupt_msg, response)
+            if pending:
+                self._pending_input.put(pending)
+            return None
         # "failed"/"partial" with an empty final_response: no usable answer.
         if turn.result and (turn.result.get("failed") or turn.result.get("partial")) and not response:
             from hermes_cli.cli_chat_error_copy import chat_error_response
@@ -519,10 +553,13 @@ class CLIChatTurnMixin:
             _api_calls = turn.result.get("api_calls", 0)
             _max_iter = getattr(self.agent, "max_iterations", 500)
             if _api_calls >= _max_iter:
-                _cprint(
-                    f"\n{_DIM}⚠ Iteration budget reached ({_api_calls}/{_max_iter}) — "
-                    f"response may be incomplete{_RST}"
-                )
+                from gateway.warning_notifications import render_notification
+                render_notification(
+                    lambda: _cprint(
+                        f"\n{_DIM}⚠ Iteration budget reached ({_api_calls}/{_max_iter}) — "
+                        f"response may be incomplete{_RST}"
+                    ),
+                    platform="cli", user_config=getattr(self.agent, "_notification_config", None))
 
         # Batch TTS unless streaming TTS already spoke the response.
         if self._voice_tts and response and not turn.use_streaming_tts:

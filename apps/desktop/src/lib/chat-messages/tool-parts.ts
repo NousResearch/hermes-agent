@@ -357,6 +357,18 @@ export function upsertToolPart(
 
   if (index === -1) {
     next.push(base)
+  } else if (
+    phase === 'running' &&
+    prev?.type === 'tool-call' &&
+    prev.completedAt !== undefined &&
+    prev.result === undefined
+  ) {
+    // A settle-time seal (interim boundary, mid-turn user message, lost
+    // completion) closed this call without a result. A running event for the
+    // same id says the tool is still executing, so the row goes live again
+    // instead of reading "Result unavailable" over a ticking sibling.
+    const { completedAt: _completedAt, ...unsealed } = next[index] as Extract<ChatMessagePart, { type: 'tool-call' }>
+    next[index] = { ...unsealed, ...base }
   } else {
     next[index] = { ...next[index], ...base }
   }
@@ -372,6 +384,50 @@ export interface PendingClarifyProjection {
 export interface SettledClarifyProjection {
   messages: ChatMessage[]
   streamId: string | null
+}
+
+/**
+ * Find the message that owns a tool call, by its stable call id, anywhere in
+ * the transcript — not just in the currently-streaming bubble.
+ *
+ * Interim commentary and turn settles seal the streaming bubble and drop the
+ * stream id while a long-running tool is still executing. When the completion
+ * finally arrives it must reconcile with the part that already exists (and,
+ * sealed with `completedAt` but no `result`, renders as "Result unavailable"),
+ * instead of seeding a fresh bubble with a duplicate row (#113035).
+ *
+ * Only an UNRESOLVED part (never completed: no `result` key, sealed or not)
+ * can own an event. Tool call ids are not unique across turns — llama.cpp
+ * emits one constant id for every call and Hermes' own deterministic ids
+ * repeat — so a part that already carries its completion is a finished call
+ * from an earlier turn, not the owner of the new one. Routing to it would
+ * draw the new call over the old row and leave the live turn empty.
+ *
+ * Newest-first among unresolved parts: interim boundaries append bubbles, so
+ * the owner of an in-flight call is the most recent message that carries the
+ * id without a result.
+ */
+export function toolCallOwnerMessageId(
+  messages: ChatMessage[],
+  payload: GatewayEventPayload | undefined
+): string | null {
+  const stableId = toolId(payload)
+
+  if (!stableId) {
+    return null
+  }
+
+  for (let messageIndex = messages.length - 1; messageIndex >= 0; messageIndex -= 1) {
+    const message = messages[messageIndex]
+
+    for (const part of message.parts) {
+      if (part.type === 'tool-call' && part.toolCallId === stableId && !Object.hasOwn(part, 'result')) {
+        return message.id
+      }
+    }
+  }
+
+  return null
 }
 
 interface PendingClarifyLocation {
@@ -757,7 +813,7 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       result: parseStoredToolResult(content),
       isError: false
     } as ChatMessagePart
-    messages[i] = { ...message, parts }
+    messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
 
     return true
   }

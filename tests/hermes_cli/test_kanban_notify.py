@@ -182,6 +182,27 @@ def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
         conn.close()
 
 
+def test_notify_sub_user_id_backfills_legacy_senderless_rows(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy sub", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        assert kbn.list_notify_subs(conn, tid)[0]["user_id"] is None
+
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", user_id="640466638",
+        )
+        subs = kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert subs[0]["user_id"] == "640466638"
+
+
 def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
     """user_id_alt is persisted with the notify subscription routing tuple and
     can backfill a pre-existing row created before the alt id was known."""
@@ -875,10 +896,15 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        # A dispatcher-spawned worker completes a card it holds a run on: bind the
+        # run id like the dispatcher does, or the ownership CAS refuses (#116239).
+        assert kb.claim_task(conn, tid) is not None
+        run_id = kb._current_run_id(conn, tid)
     finally:
         conn.close()
 
     import os
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
         kt._handle_complete({

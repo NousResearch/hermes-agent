@@ -24,6 +24,7 @@ import os
 import subprocess
 import sys
 import textwrap
+import time
 
 import pytest
 
@@ -32,6 +33,7 @@ from tools.code_execution_env import (
     _WINDOWS_ESSENTIAL_ENV_VARS,
     _scrub_child_env,
 )
+from tools import code_execution_env
 
 
 def _no_passthrough(_name):
@@ -654,3 +656,43 @@ class TestChildStdioIsUtf8:
             )
         # Otherwise: crash OR garbled output — both count as proving the
         # bug is real on this system.
+
+
+def _configured_timezone_child_env():
+    return code_execution_env._build_child_env(
+        rpc_endpoint="socket",
+        rpc_token="token",
+        tmpdir="/tmp/hermes-code-execution-test",
+        child_python=sys.executable,
+    )
+
+
+def test_windows_child_keeps_os_local_timezone_when_timezone_is_configured(monkeypatch):
+    """Windows CPython cannot interpret an IANA zone name in ``TZ``."""
+    monkeypatch.setattr(code_execution_env, "_IS_WINDOWS", True)
+    monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
+
+    assert "TZ" not in _configured_timezone_child_env()
+
+
+@pytest.mark.windows_only
+def test_windows_live_child_offset_matches_os_zone_when_timezone_is_configured(monkeypatch):
+    """The user-visible contract of #112233: with ``timezone:`` configured, a real Windows child
+    must report the OS zone's UTC offset — an IANA name in ``TZ`` made the MSVC runtime derive
+    ``time.timezone == 0`` (+01:00 instead of -07:00) while ``time.tzname`` still read correctly."""
+    import datetime
+    import json
+
+    monkeypatch.setattr("hermes_time.get_timezone_name", lambda: "America/Los_Angeles")
+    child_env = _configured_timezone_child_env()
+    result = subprocess.run(
+        [sys.executable, "-c",
+         "import json, time, datetime; print(json.dumps([time.timezone, "
+         "datetime.datetime.now().astimezone().utcoffset().total_seconds()]))"],
+        env=child_env, capture_output=True, text=True, encoding="utf-8", errors="replace", timeout=30,
+    )
+    assert result.returncode == 0, result.stderr
+    child_timezone, child_offset = json.loads(result.stdout.strip())
+    # The test process itself has no TZ override, so its view IS the OS zone.
+    assert child_offset == datetime.datetime.now().astimezone().utcoffset().total_seconds()
+    assert child_timezone == time.timezone

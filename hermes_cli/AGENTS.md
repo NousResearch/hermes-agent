@@ -6,9 +6,27 @@ Applies on top of the root `AGENTS.md`. Long-form: `website/docs/developer-guide
 
 `cli.py` holds `HermesCLI` (REPL loop, config, slash dispatch); behaviour lives in mixins
 `hermes_cli/cli_commands_mixin.py`, `cli_stream_mixin.py`, `cli_status_bar_mixin.py`,
-`cli_billing_mixin.py`, `cli_tui_mixin.py`, ... **Rich** renders banner/panels; **prompt_toolkit**
+`cli_billing_mixin.py`, `cli_tui_mixin.py` (widgets, keybindings, panels), `cli_tui_runtime_mixin.py`
+(run-loop phases: input dispatch, startup, signals, shutdown), `cli_init_mixin.py` (the `__init__`
+phases), ... Module-level helpers live in topical siblings that `cli.py` re-exports:
+`cli_config_load.py` (defaults + YAML merge, env mirroring), `cli_render.py` (ANSI/skin colours,
+light mode, markdown, `_cprint`, panel wrap), `cli_terminal_input.py` (file drops, paste/Enter-key
+sequences, CPR guards), `cli_shutdown.py` (exit watchdog, cleanup steps, one-shot finalize),
+`cli_single_query.py` (`-q` runner, exit codes, kanban loops), `cli_auto_maintenance.py` (state-db/checkpoint maintenance).
+Moved bodies late-bind cli-level names via `from cli import ...` at call time, so patch seams on the
+`cli` facade still intercept them; mutable module state (`_cleanup_done`, `_OUTPUT_HISTORY`,
+`_LIGHT_MODE_CACHE`, ...) and every `global`-writing function stay in `cli.py`. **Rich** renders banner/panels; **prompt_toolkit**
 handles input + autocomplete; `KawaiiSpinner` (`agent/display.py`) animates API calls and prints
 the `┊` activity feed. `load_cli_config()` in `cli.py` merges CLI defaults + user YAML.
+
+`hermes_cli/gateway.py` is the `hermes gateway` facade (process discovery, systemd backend, command
+dispatch); topical siblings re-exported by the facade: `gateway_service_unit.py` (systemd unit
+generation/refresh), `gateway_launchd.py` (macOS LaunchAgent backend), `gateway_setup_wizard.py`
+(`hermes gateway setup`: `_PLATFORMS` registry, status table, per-platform prompts, service offer),
+`gateway_windows*.py`, `gateway_supervised_restart.py`, `gateway_migrate*.py`, `gateway_multiplex_*.py`,
+`gateway_enroll.py`, `gateway_command_errors.py`. Sibling bodies read facade names through `_gw()`
+(late binding on `hermes_cli.gateway`), so monkeypatch on the facade; mutable state such as
+`_resolved_launchd_domain` stays a facade global.
 `process_command()` resolves the canonical name via `resolve_command()` then dispatches through
 `HermesCLI._SLASH_DISPATCH` (`canonical -> (method name, pass_arg)`), falling back to a
 `_handle_<name>_command` method by naming convention. **There is no `elif` ladder — do not add one.**
@@ -65,7 +83,18 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   `{"description", "prompt", "url", "password": True, "category": provider|tool|messaging|setting}`.
   Non-secret settings go in config.yaml; if internal code needs an env mirror, bridge it in code
   (`gateway_timeout`; `terminal.cwd` → `TERMINAL_CWD`). `MESSAGING_CWD` is removed and `TERMINAL_CWD`
-  in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`.
+  in `.env` is deprecated — the loader warns; canonical is `terminal.cwd`. `hermes config
+  set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
+  (or carrying a `setup_hidden_env` platform suffix) to `.env` via `config_env_routing.py` — the
+  file the platform setup flows write — never to the top level of config.yaml.
+- **One writer.** Every write of a `config.yaml` (main or profile) goes through
+  `hermes_cli.config.atomic_config_write` (→ `utils.atomic_roundtrip_yaml_save`, ruamel
+  round-trip merge): comments, key order, quoting and blank lines survive, absent keys are
+  deleted, and the fail-closed unreadable-file guard runs first. `save_config`, `config set/unset`,
+  migrations, plugin bookkeeping, gateway/TUI RPCs and auth resets all reach it; never call
+  `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
+  (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
+  path (#92554). The commented example blocks are appended only when the file is created.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via
@@ -74,6 +103,12 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   canon, NO defaults — for presence-sensitive readers). If the CLI sees a key and the gateway
   doesn't (or vice versa), you're on the wrong loader — check `DEFAULT_CONFIG` coverage. Never
   hand-roll raw-read → overlay → expand; `read_user_config_raw` is for write-back round-trips only.
+- **Every `DEFAULT_CONFIG` key has a runtime reader, and every reader a registry entry.** Both drift
+  modes are silent: a registered key nothing reads (a knob that does nothing) and a reader of a key
+  never registered (never shown, never migrated; new roots also go in `_KNOWN_ROOT_KEYS`). For a new
+  key: `rg -n '"<key>"' hermes_cli/config_defaults.py` AND `rg -n '<key>' --glob '!tests' .` both hit,
+  and one invariant test sets it in a temp `config.yaml` and asserts the behaviour through the loader
+  the consuming surface uses. Under multiplex the process env never overrides a profile's YAML.
 - **Working directory:** CLI uses `os.getcwd()`; messaging uses `terminal.cwd`, bridged to
   `TERMINAL_CWD` for child tools.
 
@@ -106,8 +141,17 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
 - **Apply**: git pull, or the Windows ZIP fallback — which fires ONLY when git itself failed
   (`_should_zip_fallback_on_update_error`, argv-classified; a dependency-install failure must never
   trigger a tree-clobbering re-download), REFUSES a dirty working tree (`-uall` + a pre-swap TOCTOU
-  re-check), and grafts the live `apps/desktop/release/` into the staged swap (the GitHub source
-  ZIP has no built desktop app; without the graft the swap deletes it).
+  re-check — but classifies a `!!` line by whether the swap would destroy it: an ignored path under a
+  root entry the ZIP does not ship (`.bytecode-fingerprint`, `.hermes-bootstrap-complete`,
+  `hermes_agent.egg-info/`; tracked root entries stand in for the ZIP set before the download, the
+  re-check gets the real one), a nested `__pycache__`/`node_modules`, or a `_ZIP_PRESERVED_NESTED`
+  output is admitted; other ignored files under shipped dirs still block), and grafts the live nested
+  build outputs (`_ZIP_PRESERVED_NESTED`: `apps/desktop/{release,dist,node_modules,build}`,
+  `hermes_cli/web_dist`, `ui-tui/{dist,node_modules,packages/hermes-ink/dist}`, `web/node_modules`,
+  `scripts/whatsapp-bridge/node_modules`) into the staged swap by hardlink (the GitHub source ZIP has
+  none of them; without the graft the swap deletes them). Post-swap, the Desktop
+  rebuild decision also trusts the build stamp under HERMES_HOME, so an install that already lost
+  its artifacts in an earlier update is rebuilt instead of "forgotten" (#90495).
 - **Restart-per-kind**: systemd and launchd restarts are FLEET-WIDE (every `hermes-gateway*` unit /
   `ai.hermes.gateway*` LaunchAgent), drain-first (SIGUSR1), with per-unit/per-label failure
   isolation. Restarting only the invoking profile's service leaves siblings on stale `sys.modules`
@@ -120,7 +164,23 @@ it guards. `plan → snapshot → apply → restart-per-kind → verify → repo
   (`latest.json` pointer; steps, skips WITH reasons, restart outcome, plan, fleet snapshot).
   Finalization is owned by the `cmd_update` command boundary — early `sys.exit` paths (preflight
   refusals, fetch failures) still persist a receipt with the real exit code. A begun-but-unwritten
-  receipt is a bug: refused/failed runs are the ones receipts exist for.
+  receipt is a bug: refused/failed runs are the ones receipts exist for. The receipt is opened by
+  the pre-swap process and finished by the post-swap child (below): `detach_update_receipt` /
+  `resume_update_receipt` carry it across, so one run still yields exactly one receipt. A write
+  failure prints `⚠ Update receipt not written` and logs at WARNING, never debug.
+- **Nothing runs pulled code in the pre-pull interpreter** (`update_handoff.py`). The process that
+  started `hermes update` imported the PRE-pull tree; once git (or the ZIP swap) has replaced the
+  checkout it stops, writes the hand-off payload (open receipt, pre-update plan, pre-update
+  version/active features, Windows pause token) and re-executes
+  `hermes update <same flags> --post-swap <file>` under the venv interpreter, which imports only the
+  pulled tree and owns the tail (deps, Node/web/Desktop, maintenance, config migration, fleet
+  restart, verification, receipt); the parent relays the exit code. Every "purge `sys.modules`" /
+  "reload this list of modules" / "isolate this one step" fix was a symptom of the old shape and is
+  gone — do not reintroduce one: a phase that needs new code runs in the child, full stop. Mocked
+  updater tests run the tail in-process via the `_inline_post_swap_handoff` autouse fixture
+  (`@pytest.mark.real_post_swap_handoff` opts out). Live A/B:
+  `evals/update_pipeline/post_swap_handoff_ab.sh`. Post-update steps still isolate their own
+  failures (a crashed notice must not abort the fleet matrix and receipt finalize that follow).
 
 Process-scan coordination between updater, serve/dashboard, and gateway is being replaced by a
 gateway-owned control socket (#92091); scans are the fallback layer for old/crashed processes — read
@@ -130,24 +190,69 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 
 ## Profiles (multi-instance)
 
-`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import, so
-every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
+`_apply_profile_override()` in `hermes_cli/main.py` sets `HERMES_HOME` before any module import for
+single-profile commands (`hermes -p x <cmd>`), so there `get_hermes_home()` scopes to the active
+profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead bind the active
+profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
+profile — a module constant or import-time read there freezes to the launch profile (rules in
+root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
-channels (`profile_channels.py` derives the token/allowlist/platform-section key set from the adapter
-registry + `gateway/config_env._ENV_STEPS`, never a hand list; `--clone-channels` opts in). Multiplex
+channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
+adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
+with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
+list). `--clone-channels` opts in and its live-multiplexer refusal lives in `create_profile` (CLI, REST
+and TUI all go through it). Clones are built in `profiles/.<name>.staging-<pid>` (hidden → invisible to
+`_iter_named_profile_dirs` and the hot-serve rescan) and published by one `os.rename` after the strip;
+symlinked `.env`/`config.yaml` are materialized first so a clone never writes through to its source. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`. The served set is
-`profiles.py::profiles_to_serve(multiplex=True)` = default + every live (non-tombstoned) dir under
-`profiles/` — there is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
+`profiles.py::profiles_to_serve(multiplex=True)` = default + every live dir under `profiles/` — live =
+carries an identity marker (`hermes_constants.named_profile_has_identity`: `config.yaml`/`.env`/`SOUL.md`/
+`profile.yaml`/`auth.json`/`state.db`) and is not tombstoned. A marker-less dir (cron/log side-effect
+shell, stray infrastructure dir) is never listed, served, ticked, `.env`-backfilled or resolvable via `-p`
+(#95188, #99392); `profile create` replaces it only when it is also tombstoned (a live marker-less dir may hold user
+files — fail closed, never rmtree). A dangling symlinked marker still counts as identity (`is_symlink()`).
+`tools/bot_mode_probe._roster` (Bot Mode teammate roster, `bot_relay.deliver` target check) applies the same
+predicate. There is no allowlist (`gateway.multiplex_profile_allowlist` was retired in config v43).
 Enumeration is a pure read: never `mkdir` a profile home from a served path (`SessionDB`, logging,
 cron all go through `mkdir_under_hermes_home` / `_ensure_cron_dir`, which refuse a deleted or
 missing named profile, #94590). Process-global per-profile slots (MCP discovery in `mcp_startup.py`,
 tool registry overlays) key on `hermes_constants.hermes_home_key()`, never a single flag.
+`gateway.multiplex_profiles` defaults to **on**, but `GatewayConfig` keeps an unset flag `None` and
+`gateway_multiplex_mode.resolve_multiplex_mode` settles it once per boot (called from
+`load_gateway_config_for_runner`): default profile, >= 2 profiles, no standalone secondary gateway,
+no preflight blocker, migratable host → `True`; else `False` + a logged reason. Explicit values pass
+through. CLI/dashboard readers use `default_gateway_multiplexes` (live `served_profiles` record, then
+the explicit flag) — never the merged default, which would guess a verdict only the gateway makes.
 Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
---multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
+--multiplex`, the only mode — `--standalone` is deleted and a per-profile fleet is not a supported
+target; table-driven `_PREFLIGHT_CHECKS`; manifest `<default>/gateway_migration.json` = UNFINISHED,
+a re-run resumes from it; a named profile's `gateway install|start|run` refuse without `--force` via
+`gateway.py::_named_profile_refused_under_multiplexer`, dashboard twin
+`web_server_gateway.py::multiplexed_profile_refusal`);
 `update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
-path only. Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
+path only; `gateway_migrate_guards.py` holds the auto-path-only refusals (table `_AUTO_MIGRATION_GUARDS`:
+other service domain / UNIX user / HERMES_HOME outside `profiles/` — notices for the explicit command,
+blockers for the hook) and the `gateway.auto_multiplex_migration` opt-out (#109954). Blockers reuse `GatewayRunner._adapter_credential_fingerprint` and `platform_binds_port`;
 "has a `/p/<profile>/` ingress" is the adapter class attribute `serves_profile_prefix` — set it on a
 new HTTP-inbound adapter when it answers the prefix, never extend a list here.
+`hermes gateway restart` for a gateway Hermes did not install (custom launchd agent / unit running
+`gateway run --external-supervisor`): `gateway_supervised_restart.py` — the gateway's SELF-declared
+supervisor (control-socket `identify` answering anything but `manual`, OR the argv marker) decides; hand back via SIGUSR1 and wait
+for a fresh supervised PID, never stop + foreground `run_gateway` (that stamps the CLI's PID and wedges
+every KeepAlive respawn, #110637).
+
+Service installs are a matrix, not a unit file: `gateway_service_unit.py::generate_systemd_unit(system=,
+run_as_user=)` (systemd unit generation / `systemd_unit_is_current` / `refresh_systemd_unit_if_needed` live in that
+sibling and read facade helpers late-bound through `hermes_cli.gateway`, so patch them on the facade; user unit AND `--system` unit with `User=`; an unresolvable `User=` is a blocker,
+never a dir-owner fallback), `gateway_launchd.py::generate_launchd_plist` (`gui/<uid>` then `user/<uid>` domains, never a
+`~/Library/LaunchAgents` glob; the whole launchd backend — plist refresh, `launchctl` bootstrap/kickstart,
+`launchd_start/stop/restart/status`, detached-process degrade — lives in that sibling, with the domain cache
+`_resolved_launchd_domain` staying a facade global), Windows Scheduled Task and the Desktop-spawned backend all carry the
+profile's `HERMES_HOME` (and `HOME` for the service user) explicitly — a supervisor starts with an
+empty environment, so the env override that makes `-p` work interactively does not exist there. A
+change to install/restart/status regenerates and diffs every kind; both user and system units are
+recorded when both exist. Process liveness is `(pid, start_time)` or the canonical matchers
+(`gateway.status.live_gateway_pid_for_home`), never bare PID existence.
 
 ## Nous free tier (`hermes_cli/anon_auth.py`)
 

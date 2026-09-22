@@ -6,6 +6,7 @@ description: 'Drive a live TouchDesigner session through the twozero MCP server 
   (mcp.json + skills/); TouchDesigner itself runs on macOS/Windows.'
 maintainer: NousResearch
 tier: official
+category: tools
 docs_url: https://github.com/NousResearch/hermes-plugin-touchdesigner
 platforms: []
 capabilities:

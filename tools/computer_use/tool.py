@@ -8,6 +8,7 @@ from __future__ import annotations
 import atexit
 import base64
 import contextlib
+import hashlib
 import json
 import logging
 import os
@@ -90,6 +91,43 @@ _AUX_VISION_ROUTE_CACHE: Dict[Tuple[str, str, str], bool] = {}
 _approval_lock = threading.Lock()
 _escalation_warned: set = set()               # sids already warned that a bypass widened the driver mode
 
+# Screenshot dedup: a tight capture→act→capture loop on a static screen resends the same ~1200px image every step.
+# Every delivered frame is hashed (sha256 over mime + base64 payload); when the next capture of the SAME target
+# (app, window) in the SAME session is byte-identical, the tool returns the normal text metadata (element index
+# included) plus an explicit "screen unchanged" note and omits the image block. Append-only — no prior transcript
+# message is rewritten, so prompt-cache prefixes stay intact. Staleness is bounded by a consecutive-omission streak
+# cap: full pixels are re-delivered before compaction (which keeps only the newest image-bearing tool results)
+# could evict the image the note refers to. State is per session; sessionless calls never dedup.
+_screenshot_dedup_lock = threading.Lock()
+_last_screenshot_state: Dict[str, Dict[str, Any]] = {}  # session_id -> {"digest", "target": (app, window), "streak"}
+_SCREENSHOT_DEDUP_MAX_STREAK = 2
+
+def _screenshot_dedup_check(session_id: str, digest: str, target: Tuple[str, str]) -> bool:
+    """True when this capture should be delivered WITHOUT its image: the previous frame for this session had identical
+    bytes for the same target and the omission streak is below _SCREENSHOT_DEDUP_MAX_STREAK. Any miss (new pixels,
+    new target, streak exhausted, first capture) resets the stored state to this digest so the image goes out."""
+    with _screenshot_dedup_lock:
+        state = _last_screenshot_state.get(session_id)
+        if (state is not None and state.get("digest") == digest and state.get("target") == target
+                and int(state.get("streak", 0)) < _SCREENSHOT_DEDUP_MAX_STREAK):
+            state["streak"] = int(state.get("streak", 0)) + 1
+            return True
+        _last_screenshot_state[session_id] = {"digest": digest, "target": target, "streak": 0}
+        return False
+
+def _reset_screenshot_dedup(session_id: Optional[str] = None) -> None:
+    """Forget dedup state (all sessions, or one scoped key)."""
+    with _screenshot_dedup_lock:
+        if session_id is None:
+            _last_screenshot_state.clear()
+        else:
+            _last_screenshot_state.pop(session_id, None)
+
+def reset_screenshot_dedup(session_id: str) -> None:
+    """Compaction boundary hook (mirrors ``reset_file_dedup``): the summary may have dropped the frame an
+    "unchanged" note would point at, so the next capture of this session must deliver pixels again."""
+    _reset_screenshot_dedup(_scoped_sid(session_id))
+
 def _cua_permission_mode(session_id: str) -> str:
     """Map Hermes's approval bypass onto Cua's immutable mode; fails closed. Both identity namespaces are consulted
     (DB ``session_id`` and gateway ``session_key`` contextvar) or a gateway ``/yolo`` would be invisible here.
@@ -156,12 +194,21 @@ def _stop_backend(backend: ComputerUseBackend, call_lock: Optional[threading.RLo
     except Exception as e:
         on_error(e)
 
-def _get_backend(session_id: str = "") -> ComputerUseBackend:
+def _scoped_sid(session_id: str) -> str:
+    """Cache key for one Hermes session's backend. Outside a served-profile scope it is the bare id
+    (legacy keys byte-identical); under a multiplexed turn the routed profile's home key is appended
+    so two profiles that share a session id (or a DISPLAY) never share one cua-driver (#110032).
+    Every cache path — lookup, install, release — goes through this, so release finds what lookup made."""
+    from hermes_constants import get_hermes_home_override, hermes_home_key
     sid = str(session_id or "")
+    return sid if get_hermes_home_override() is None else f"{sid}@{hermes_home_key()}"
+
+def _get_backend(session_id: str = "") -> ComputerUseBackend:
+    bare_sid, sid = str(session_id or ""), _scoped_sid(session_id)
     while True:
         with _backend_lock:
             # Mode resolved under the cache lock; YOLO mutation never holds the approval lock while releasing it.
-            permission_mode = _cua_permission_mode(sid)
+            permission_mode = _cua_permission_mode(bare_sid)  # approval state is keyed by the Hermes session id
             if sid == "" and _backend is not None and sid not in _backends:
                 _install_backend(sid, _backend, permission_mode)  # fold the injection hook into the cache
             if (cached := _backends.get(sid)) is None:
@@ -178,7 +225,8 @@ def release_computer_use_session(session_id: str) -> bool:
     """Release one session-owned backend (lifecycle seam for hosts/plugins); idempotent, True iff one was released.
     Cache entries are removed BEFORE stopping so new lookups cannot retain the stale target/ref namespace. Approval
     grants are not touched here: they live in the shared store and die with ``tools.approval.clear_session``."""
-    sid = str(session_id or "")
+    sid = _scoped_sid(session_id)
+    _reset_screenshot_dedup(sid)  # the next capture of a re-created session must deliver pixels
     with _backend_lock:
         backend, call_lock = _detach_locked(sid)
     if backend is None:
@@ -212,6 +260,7 @@ def _shutdown_backend_atexit() -> None:
 def reset_backend_for_tests() -> None:  # pragma: no cover — tear down the cached backend and per-session state
     _shutdown_backend_atexit()
     _AUX_VISION_ROUTE_CACHE.clear()
+    _reset_screenshot_dedup()
 
 def _noop_stub(name: str, *params: str, result: Any = None):
     # Recording stub: positional args are folded in under *params* (declared params default to None). ``result`` may
@@ -261,7 +310,7 @@ def handle_computer_use(args: Dict[str, Any], **kwargs) -> Any:
         with _backend_lock:
             call_lock = _backend_call_locks.setdefault(session_id, threading.RLock())
         with call_lock:
-            return _dispatch(backend, action, args)
+            return _dispatch(backend, action, args, session_id=session_id or None)
     except Exception as e:
         logger.exception("computer_use %s failed", action)
         return json.dumps({"error": f"{action} failed: {e}"})
@@ -323,12 +372,13 @@ def _do_scroll(backend, action, args, **delivery):
     return backend.scroll(direction=args.get("direction", "down"), amount=int(args.get("amount", 3)),
                           element=args.get("element"), **_scroll_xy(args), modifiers=args.get("modifiers"), **delivery)
 
-def _do_capture(backend, action, args, **_):
+def _do_capture(backend, action, args, session_id=None, **_):
     if (mode := str(args.get("mode", "som"))) not in {"som", "vision", "ax"}:
         return json.dumps({"error": f"bad mode {mode!r}; use som|vision|ax"})
     # pid/window_id forwarded only when given so older backends keep their defaults.
     return _capture_response(backend.capture(mode=mode, app=args.get("app"),
-                                             **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}))
+                                             **{k: args[k] for k in ("pid", "window_id") if args.get(k) is not None}),
+                             session_id=session_id)
 
 def _do_listing(backend, action, args, key, **_):
     return json.dumps({key: (items := getattr(backend, action)()), "count": len(items)})
@@ -378,7 +428,7 @@ _ACTION_SUGGESTIONS = {
     "input_text": "type", "screenshot": "capture", "get_window_state": "capture", "left_click": "click", "mouse_click": "click",
 }
 
-def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) -> Any:
+def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any], session_id: Optional[str] = None) -> Any:
     spec = _ACTIONS.get(action)
     if spec is None:
         return json.dumps({"error": f"unknown action {action!r}" + (f" — did you mean {hint!r}? See the action enum in the tool schema."
@@ -391,10 +441,12 @@ def _dispatch(backend: ComputerUseBackend, action: str, args: Dict[str, Any]) ->
             f"{action} would go to the current target {mismatch!r}, not {requested_app.strip()!r} "
             "— input actions always hit the sticky target from the last capture/focus_app. "
             f"Call capture(app={requested_app.strip()!r}) or focus_app first, then retry.")})
-    # delivery_mode / bring_to_front thread through every input action (background → foreground ladder).
+    # delivery_mode / bring_to_front thread through every input action (background → foreground ladder); input
+    # handlers forward their kwargs to the backend verbatim, so the dedup session key rides only on read handlers.
     res = spec.handler(backend, action, args, delivery_mode=args.get("delivery_mode"),
-                       bring_to_front=bool(args.get("bring_to_front")))
-    return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")))
+                       bring_to_front=bool(args.get("bring_to_front")), **({} if spec.input else {"session_id": session_id}))
+    return res if isinstance(res, (str, dict)) else _maybe_follow_capture(backend, res, bool(args.get("capture_after")),
+                                                                         session_id=session_id)
 
 # ── Response shaping ────────────────────────────────────────────────────────
 def _classify_action_result(res: ActionResult) -> Dict[str, Any]:
@@ -499,8 +551,12 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
+    # The driver's own AX walk may have stopped at the ``max_elements`` the backend sent: then the spill file is
+    # NOT the full tree, and the hint must not promise one.
+    ax_capped = len(cap.elements) >= cap.ax_max_elements > 0
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
                            truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
+                           ax_capped=cap.ax_max_elements if ax_capped else 0,
                            elements_file=_spill_elements_to_file(cap) if lost_detail else None,
                            screenshot_path=_persist_capture_image(cap) if has_image else None,
                            dims_omitted=dims if too_small else None, has_image=has_image)
@@ -513,8 +569,10 @@ def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
                                            f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
         v.screenshot_path and f"shareable screenshot saved to {v.screenshot_path}",
         v.cap.note,
-        v.elements_file and (f"full element tree with untruncated labels saved to {v.elements_file} — "
-                             "read_file/search_files it if you need dropped label text or elements beyond the cap"),
+        v.elements_file and (f"{'' if v.ax_capped else 'full '}element tree with untruncated labels "
+                             f"saved to {v.elements_file} — read_file/search_files it if you need dropped label "
+                             "text or elements beyond the cap"),
+        v.ax_capped and (f"accessibility walk capped at {v.ax_capped} elements; pass app= to narrow"),
     )
     return [
         f"capture mode={v.cap.mode} {v.width}x{v.height}"
@@ -537,11 +595,24 @@ def _text_capture_payload(v: SimpleNamespace, summary: str, extra: Optional[Dict
                    bounds_scale=v.bounds_scale),
     })
 
-def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS) -> Any:
+def _capture_digest(cap: CaptureResult) -> str:
+    return hashlib.sha256((str(cap.image_mime_type or "") + ":").encode("utf-8")
+                          + (cap.png_b64 or "").encode("ascii", "ignore")).hexdigest()
+
+def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEMENTS,
+                      session_id: Optional[str] = None) -> Any:
     v = _capture_view(cap, max_elements)
     lines = _capture_summary_lines(v)
     summary, extra = "\n".join(lines), None  # multimodal/aux paths use this; text paths append notes and rebuild
-    if v.has_image:
+    if v.has_image and session_id and _screenshot_dedup_check(
+            _scoped_sid(session_id), _capture_digest(cap), (str(cap.app or ""), str(cap.window_title or ""))):
+        # Unchanged frame: same pixels for the same target in this session — no image (and no aux-vision call);
+        # the text metadata is fresh and the note says which earlier result still applies.
+        lines.append("  (screen unchanged since the previous capture — image omitted to save context; the previous "
+                     "capture's screenshot/analysis still shows the current state. Element indices below are fresh "
+                     "and remain the preferred way to act.)")
+        extra = {"screen_unchanged": True}
+    elif v.has_image:
         # Hand the screenshot to auxiliary.vision (text-only result) when the main model may not consume images
         # natively; returning the multimodal envelope unconditionally tripped HTTP 404/400 at the provider.
         if not _should_route_through_aux_vision():  # envelope carrying the screenshot (not the elements array, so no truncation note)
@@ -572,7 +643,8 @@ def _capture_response(cap: CaptureResult, max_elements: int = _DEFAULT_MAX_ELEME
                      "elements_file — read_file/search_files it, or pass app= to narrow scope)")
     return _text_capture_payload(v, "\n".join(lines), extra)
 
-def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool) -> Any:
+def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_capture: bool,
+                          session_id: Optional[str] = None) -> Any:
     # No follow-up capture after a failed action: a normal-looking screenshot would suggest success.
     if not do_capture or not res.ok:
         return _text_response(res)
@@ -585,7 +657,7 @@ def _maybe_follow_capture(backend: ComputerUseBackend, res: ActionResult, do_cap
     except Exception as e:
         logger.warning("follow-up capture failed: %s", e)
         return _text_response(res)
-    resp, payload = _capture_response(cap), _action_payload(res)
+    resp, payload = _capture_response(cap, session_id=session_id), _action_payload(res)
     if isinstance(resp, dict) and resp.get("_multimodal"):
         # Keep the evidence/verdict contract visible alongside the image — it governs whether input may repeat.
         resp["content"][0]["text"] = resp["text_summary"] = json.dumps(payload) + "\n\n" + resp["text_summary"]

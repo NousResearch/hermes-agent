@@ -3,6 +3,7 @@ import pytest
 
 from pathlib import Path
 from types import SimpleNamespace
+from hermes_cli import kanban as kc
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
@@ -85,6 +86,33 @@ def test_notify_sub_delivery_mode_persists_and_last_write_wins(kanban_home):
         conn.close()
 
 
+def test_notify_subscribe_cli_records_discord_multiplex_anchors(kanban_home):
+    """The CLI must persist thread route anchors without dropping existing metadata."""
+    import argparse
+
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="thread route", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="discord", chat_id="thread",
+            thread_id="thread", delivery_metadata={"chat_type": "thread", "existing": "keep"},
+        )
+
+    parser = argparse.ArgumentParser()
+    kc.build_parser(parser.add_subparsers(dest="command"))
+    args = parser.parse_args([
+        "kanban", "notify-subscribe", tid, "--platform", "discord", "--chat-id", "thread",
+        "--thread-id", "thread", "--chat-type", "thread", "--parent-chat-id", "parent",
+        "--guild-id", "guild",
+    ])
+    assert kc.kanban_command(args) == 0
+
+    with kbc.connect() as conn:
+        sub = kbn.list_notify_subs(conn, tid)[0]
+    assert sub["delivery_metadata"] == {
+        "chat_type": "thread", "existing": "keep", "parent_chat_id": "parent", "guild_id": "guild",
+    }
+
+
 def test_child_task_inherits_parent_delivery_mode(kanban_home):
     """Graph children inherit the parent's ACK edge AND its delivery_mode."""
     import hermes_cli.kanban_db as kb
@@ -152,6 +180,27 @@ def test_notify_sub_chat_type_persists_and_last_write_wins(kanban_home):
         assert subs[0]["delivery_mode"] == "wake"
     finally:
         conn.close()
+
+
+def test_notify_sub_user_id_backfills_legacy_senderless_rows(kanban_home):
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="legacy sub", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        assert kbn.list_notify_subs(conn, tid)[0]["user_id"] is None
+
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat1", user_id="640466638",
+        )
+        subs = kbn.list_notify_subs(conn, tid)
+    finally:
+        conn.close()
+
+    assert subs[0]["user_id"] == "640466638"
 
 
 def test_notify_sub_user_id_alt_persists_and_backfills_legacy_rows(kanban_home):
@@ -562,7 +611,11 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
 
     # The user is notified about the abnormal event...
     fake_adapter.send.assert_called_once()
-    assert kind.replace('_', ' ') in fake_adapter.send.call_args[0][1]
+    sent = fake_adapter.send.call_args[0][1]
+    assert tid in sent
+    # Plain-language outcome per event kind (no internal event names).
+    expected = {"crashed": "stopped unexpectedly", "gave_up": "blocked", "timed_out": "time limit"}[kind]
+    assert expected in sent
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
@@ -843,10 +896,15 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     try:
         tid = kb.create_task(conn, title="t", assignee="worker1")
         kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        # A dispatcher-spawned worker completes a card it holds a run on: bind the
+        # run id like the dispatcher does, or the ownership CAS refuses (#116239).
+        assert kb.claim_task(conn, tid) is not None
+        run_id = kb._current_run_id(conn, tid)
     finally:
         conn.close()
 
     import os
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(run_id))
     os.environ["HERMES_KANBAN_TASK"] = tid
     try:
         kt._handle_complete({
@@ -895,6 +953,83 @@ async def test_notifier_artifact_delivery_skips_missing_files(kanban_home, tmp_p
     # Only the real file was uploaded.
     assert len(documents_uploaded) == 1
     assert "real.pdf" in documents_uploaded[0]
+
+
+@pytest.mark.asyncio
+async def test_notifier_uploads_review_handoff_artifacts(kanban_home, tmp_path, monkeypatch):
+    """A review handoff's files are uploaded from the durable staged copy —
+    not the scratch original the reviewer's completion is about to delete."""
+    import hermes_cli.kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_notify as kbn
+    from hermes_cli import kanban_db_workspace as kbw
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    monkeypatch.setenv("HERMES_MEDIA_ALLOW_DIRS", str(tmp_path))
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="review handoff", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        ws = kbw.resolve_workspace(kb.get_task(conn, tid))
+        kbw.set_workspace_path(conn, tid, ws)
+        scratch = ws / "report.pdf"
+        scratch.write_bytes(b"%PDF-fake")
+        kb.claim_task(conn, tid)
+        run_id = kb.get_task(conn, tid).current_run_id
+        # The summary names the scratch original, which still exists at
+        # handoff time: it must not ride along as a second upload.
+        assert kb.request_review(
+            conn, tid, summary=f"ready for review: {scratch}",
+            metadata={"artifacts": [str(scratch)]}, expected_run_id=run_id)
+        handoff = [e for e in kb.list_events(conn, tid) if e.kind == "review_requested"][-1]
+        attachments = kb.list_attachments(conn, tid)
+    finally:
+        conn.close()
+    staged_path = handoff.payload["artifacts"][0]
+    assert staged_path != str(scratch), "handoff must name the staged copy, not the scratch original"
+    assert scratch.exists(), "scratch original survives until the reviewer completes"
+    assert staged_path == attachments[0].stored_path
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+    runner._kanban_dispatcher_lock_handle = object()
+
+    fake_adapter = MagicMock()
+    fake_adapter.name = "telegram"
+
+    documents_uploaded: list = []
+
+    async def _send(chat_id, msg, metadata=None):
+        runner._running = False
+
+    async def _send_document(chat_id, file_path, metadata=None, **_kw):
+        documents_uploaded.append(file_path)
+
+    fake_adapter.send = AsyncMock(side_effect=_send)
+    fake_adapter.send_document = AsyncMock(side_effect=_send_document)
+    fake_adapter.send_multiple_images = AsyncMock()
+    from gateway.platforms.base import BasePlatformAdapter
+    fake_adapter.extract_local_files = BasePlatformAdapter.extract_local_files
+
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    assert documents_uploaded == [staged_path]
+    assert str(scratch) not in documents_uploaded
 
 
 # ---------------------------------------------------------------------------

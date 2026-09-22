@@ -259,3 +259,32 @@ def test_doctor_removes_temp_home_when_staging_copy_fails(
     # exact window where a stranded hermes-plugin-doctor-* dir was observed.
     leftovers = list(scratch.glob("hermes-plugin-doctor-*"))
     assert leftovers == [], f"stranded doctor temp dirs: {leftovers}"
+
+
+def test_doctor_loads_model_provider_plugins_through_provider_discovery(tmp_path: Path) -> None:
+    """`kind: model-provider` registers a ProviderProfile at import and has no register(ctx);
+    doctor must judge it by that contract and leave the live registry untouched."""
+    import providers
+    from hermes_cli.plugin_dev import doctor_plugin
+
+    plugin = tmp_path / "acme-provider"
+    plugin.mkdir()
+    (plugin / "plugin.yaml").write_text("name: acme-provider\nkind: model-provider\n", encoding="utf-8")
+    (plugin / "__init__.py").write_text(
+        "from providers import register_provider\nfrom providers.base import ProviderProfile\n"
+        "register_provider(ProviderProfile(name='acme-doctor-probe', auth_type='external_process',\n"
+        "                                  process_command='acme', aliases=('acme-alias',)))\n",
+        encoding="utf-8")
+    registry_before = dict(providers._REGISTRY)
+
+    report = doctor_plugin(plugin)
+    assert report.ok, report.format_text()
+    assert report.registered_providers == ("acme-doctor-probe",)
+    assert "provider(s): acme-doctor-probe" in report.format_text()
+    assert providers._REGISTRY == registry_before
+    assert "acme-alias" not in providers._ALIASES
+
+    (plugin / "__init__.py").write_text("x = 1\n", encoding="utf-8")
+    report = doctor_plugin(plugin)
+    assert not report.ok
+    assert any("registered no ProviderProfile" in f.message for f in report.findings)

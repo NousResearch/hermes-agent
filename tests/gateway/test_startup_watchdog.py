@@ -483,6 +483,24 @@ class TestFire:
         # absent on detached runs).
         assert "Thread" in content or "Current thread" in content
 
+    def test_file_dump_precedes_stderr_dump(self, monkeypatch):
+        """A blocked stderr must not hide the durable stack dump."""
+        writes = []
+
+        def _dump(*, file=None, all_threads=True):
+            writes.append("file" if file is not None else "stderr")
+
+        monkeypatch.setattr(sw.faulthandler, "dump_traceback", _dump)
+        monkeypatch.setattr(
+            StartupWatchdogHandle, "_exit", staticmethod(lambda code: None)
+        )
+
+        StartupWatchdogHandle(
+            timeout_s=60, exit_code=SERVICE_RESTART_EXIT_CODE
+        )._fire()
+
+        assert writes[:2] == ["file", "stderr"]
+
     def test_fire_marks_lifecycle_exit(self, exit_capture, monkeypatch):
         marked = {}
 

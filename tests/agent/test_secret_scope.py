@@ -92,6 +92,66 @@ class TestScopedSingleProfile:
             ss.reset_secret_scope(token)
 
 
+class TestScopeSetupRecovery:
+    """A raise mid-scope-setup must release whatever was already bound — a leaked
+    HERMES_HOME override or secret scope silently re-homes every later read in
+    the caller's context."""
+
+    def test_profile_runtime_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
+        from gateway.run import _profile_runtime_scope
+        from hermes_constants import get_hermes_home_override
+
+        foreign = tmp_path / "profiles" / "b"
+        foreign.mkdir(parents=True)
+
+        def boom(home):
+            raise RuntimeError("corrupt profile home")
+
+        monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
+        with pytest.raises(RuntimeError):
+            with _profile_runtime_scope(foreign, hydrate_secrets=False):
+                pass
+        assert get_hermes_home_override() is None
+        assert ss.current_secret_scope() is None
+
+    def test_worker_profile_scope_setup_failure_restores_override(self, monkeypatch, tmp_path):
+        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+        from hermes_constants import get_hermes_home_override
+
+        foreign = tmp_path / "profiles" / "assignee"
+        foreign.mkdir(parents=True)
+
+        def boom(home):
+            raise RuntimeError("corrupt profile home")
+
+        monkeypatch.setattr("agent.secret_scope.build_profile_secret_scope", boom)
+        with pytest.raises(RuntimeError):
+            with _worker_profile_scope(str(foreign), bind_home=True):
+                pass
+        assert get_hermes_home_override() is None
+        assert ss.current_secret_scope() is None
+
+    def test_model_switch_bind_releases_partial_scopes_on_raise(self, monkeypatch, tmp_path):
+        """The scopes object never reaches the caller when the bind raises, so the
+        bind must release what it already bound (home override + secret scope).
+        Driven through ``server`` — the split module's functions run rebound on
+        server.py's globals (``bind_module``)."""
+        from tui_gateway import server
+        from hermes_constants import get_hermes_home_override
+
+        home = tmp_path / "profiles" / "b"
+        home.mkdir(parents=True)
+
+        def boom(home, env_overlay=None):
+            raise RuntimeError("terminal policy unreadable")
+
+        monkeypatch.setattr("tools.terminal_scope.install_profile_terminal_scope", boom)
+        with pytest.raises(RuntimeError):
+            server._profile_runtime_scope_tokens(home, hydrate_secrets=False)
+        assert get_hermes_home_override() is None
+        assert ss.current_secret_scope() is None
+
+
 class TestScopeIsolation:
     """Two scopes never see each other's secrets."""
 

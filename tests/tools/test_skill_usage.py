@@ -105,6 +105,196 @@ def test_bump_view_increments_and_timestamps(skills_home):
     assert rec["last_viewed_at"] is not None
 
 
+def test_skill_reuse_and_post_patch_reuse_are_derived_atomically(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools.skill_usage import bump_patch, bump_use, get_record, record_created
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append((name, kwargs)),
+    )
+
+    record_created("private-skill-name", agent_created=True, task_id="task")
+    bump_use("private-skill-name", task_id="task")
+    bump_use("private-skill-name", task_id="task")
+    bump_patch("private-skill-name", task_id="task")
+    bump_use("private-skill-name", task_id="task")
+    bump_use("private-skill-name", task_id="task")
+
+    loaded = [event for _, event in events if event["action"] == "loaded"]
+    assert [event["reused"] for event in loaded] == [False, True, True, True]
+    assert [event["reuse_after_patch"] for event in loaded] == [
+        False,
+        False,
+        True,
+        False,
+    ]
+    assert all(event["provenance"] == "agent_created" for event in loaded)
+    record = get_record("private-skill-name")
+    assert record["use_count"] == 4
+    assert record["patch_generation"] == 1
+    assert record["last_reused_patch_generation"] == 1
+
+def test_skill_state_events_emit_only_for_real_transitions(skills_home, monkeypatch):
+    from hermes_cli import lifecycle
+    from tools.skill_usage import (
+        STATE_ACTIVE,
+        STATE_ARCHIVED,
+        STATE_STALE,
+        record_created,
+        set_state,
+    )
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+
+    record_created("my-skill", agent_created=True)
+    set_state("my-skill", STATE_STALE)
+    set_state("my-skill", STATE_STALE)
+    set_state("my-skill", STATE_ARCHIVED)
+    set_state("my-skill", STATE_ARCHIVED)
+    set_state("my-skill", STATE_ACTIVE)
+    set_state("my-skill", STATE_ACTIVE)
+
+    assert [event["action"] for event in events] == [
+        "created",
+        "stale",
+        "archived",
+        "restored",
+    ]
+
+def test_skill_event_is_not_emitted_when_usage_state_cannot_commit(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+    monkeypatch.setattr(skill_usage, "save_usage", lambda data: False)
+
+    skill_usage.bump_use("private-skill-name")
+
+    assert events == []
+
+def test_installed_lifecycle_uses_persisted_provenance_when_hub_lookup_misses(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+    monkeypatch.setattr(skill_usage, "is_hub_installed", lambda _name: False)
+    monkeypatch.setattr(skill_usage, "is_bundled", lambda _name: False)
+
+    skill_usage.record_installed("private-installed-skill")
+
+    assert len(events) == 1
+    assert events[0]["action"] == "installed"
+    assert events[0]["provenance"] == "installed"
+
+def test_created_skill_does_not_inherit_stale_identity_or_continuity(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+    skill_usage.save_usage({
+        "recreated": {
+            "created_by": "agent",
+            "use_count": 11,
+            "patch_count": 4,
+            "patch_generation": 4,
+            "last_reused_patch_generation": 3,
+            "pinned": True,
+            "state": skill_usage.STATE_ARCHIVED,
+        }
+    })
+
+    skill_usage.record_created("recreated", agent_created=False)
+    skill_usage.bump_use("recreated")
+
+    record = skill_usage.get_record("recreated")
+    assert record["created_by"] == "learn"  # foreground re-create: learning-signal marker, not curator opt-in
+    assert record["use_count"] == 1
+    assert record["patch_count"] == 0
+    assert record["patch_generation"] == 0
+    assert record["last_reused_patch_generation"] == 0
+    assert record["pinned"] is False
+    assert record["state"] == skill_usage.STATE_ACTIVE
+    assert [event["provenance"] for event in events] == ["local", "local"]
+    assert events[-1]["reused"] is False
+    assert events[-1]["reuse_after_patch"] is False
+
+def test_malformed_usage_counters_recover_without_losing_patch_reuse(
+    skills_home,
+    monkeypatch,
+):
+    from hermes_cli import lifecycle
+    from tools import skill_usage
+
+    events = []
+    monkeypatch.setattr(lifecycle, "has_hook", lambda name: True)
+    monkeypatch.setattr(
+        lifecycle,
+        "invoke_hook",
+        lambda name, **kwargs: events.append(kwargs),
+    )
+    skill_usage.save_usage({
+        "damaged": {
+            "view_count": "not-a-number",
+            "use_count": "not-a-number",
+            "patch_generation": 1,
+            "last_reused_patch_generation": 999,
+        }
+    })
+
+    skill_usage.bump_view("damaged")
+    skill_usage.bump_use("damaged")
+    skill_usage.bump_patch("damaged")
+    skill_usage.bump_use("damaged")
+
+    record = skill_usage.get_record("damaged")
+    assert record["view_count"] == 1
+    assert record["use_count"] == 2
+    assert record["patch_generation"] == 2
+    assert record["last_reused_patch_generation"] == 2
+    loaded = [event for event in events if event["action"] == "loaded"]
+    assert [event["reused"] for event in loaded] == [False, True]
+    assert [event["reuse_after_patch"] for event in loaded] == [False, True]
+
 def test_bumps_do_not_corrupt_other_skills(skills_home):
     from tools.skill_usage import bump_view, bump_use, get_record
     bump_view("skill-a")
@@ -155,6 +345,29 @@ def test_restoring_from_archive_clears_timestamp(skills_home):
     assert get_record("x")["archived_at"] is not None
     set_state("x", STATE_ACTIVE)
     assert get_record("x")["archived_at"] is None
+
+
+def test_archive_and_restore_key_on_skill_name_not_directory_name(skills_home):
+    """`mlops/training/accelerate` is the skill `huggingface-accelerate`: archive lands under the NAME,
+    and an older archive flattened under the directory name is still found by `restore_skill`."""
+    from tools.skill_usage import archive_skill, mark_agent_created, restore_skill
+    skills_dir = skills_home / "skills"
+    d = skills_dir / "training" / "accelerate"
+    d.mkdir(parents=True)
+    (d / "SKILL.md").write_text("---\nname: huggingface-accelerate\ndescription: x\n---\n", encoding="utf-8")
+    mark_agent_created("huggingface-accelerate")
+
+    ok, msg = archive_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / ".archive" / "huggingface-accelerate" / "SKILL.md").exists()
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+
+    # Legacy layout: archived under the directory name by an older build.
+    (skills_dir / "huggingface-accelerate").rename(skills_dir / ".archive" / "accelerate")
+    ok, msg = restore_skill("huggingface-accelerate")
+    assert ok, msg
+    assert (skills_dir / "huggingface-accelerate" / "SKILL.md").exists()
 
 
 def test_forget_removes_record(skills_home):
@@ -324,7 +537,7 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
     """Adoption writes a provenance claim, so it must refuse anything with an
     external owner rather than stamping a lie onto the record.
 
-    ``prune_builtins`` is forced ON here — the shipped default — because that
+    ``prune_builtins`` is forced ON here (opt-in; the shipped default is off) because that
     is the configuration in which a bundled skill is otherwise curation-
     eligible. With it off, ``mark_agent_created``'s own eligibility gate would
     block the write and this test would pass without exercising adopt's guard
@@ -349,7 +562,10 @@ def test_adopt_refuses_skills_the_user_does_not_own(skills_home, monkeypatch, ki
             json.dumps({"installed": {name: {}}}), encoding="utf-8",
         )
     elif kind == "protected":
-        name = sorted(skill_usage.PROTECTED_BUILTIN_SKILLS)[0]
+        # Shipped set is currently empty (plan graduated to a built-in
+        # command) — stage a sentinel to exercise the mechanism.
+        name = "sentinel-protected-skill"
+        monkeypatch.setattr(skill_usage, "PROTECTED_BUILTIN_SKILLS", {name})
         _write_skill(skills_dir, name)
     else:
         name = "no-such-skill"
@@ -364,3 +580,43 @@ def test_adopt_rejects_empty_name(skills_home):
 
     assert adopt_skill("")[0] is False
 
+
+def test_foreground_create_stamps_learn_provenance_not_agent(skills_home):
+    """A foreground create (e.g. /learn) gets a learning-signal marker ("learn"), never the
+    curator-management opt-in ("agent") — /journey shows it, autonomous curation stays off."""
+    from tools import skill_usage
+
+    skill_usage.record_created("taught-skill", agent_created=False)
+    rec = skill_usage.get_record("taught-skill")
+    assert rec["created_by"] == "learn"
+    assert not skill_usage.is_curator_managed("taught-skill")
+    # And the background path is unchanged.
+    skill_usage.record_created("agent-skill", agent_created=True)
+    assert skill_usage.get_record("agent-skill")["created_by"] == "agent"
+    assert skill_usage.is_curator_managed("agent-skill")
+
+
+def test_skill_file_lock_is_reentrant_in_thread_and_exclusive_across_threads(tmp_path):
+    """A nested acquire of the same lock path in one thread must not deadlock (an atomic
+    skill_manage batch holds every target lock while its per-op calls re-acquire them), while a
+    second thread still waits until the outer holder releases.
+    """
+    import threading
+    from tools.skill_usage import skill_file_lock
+
+    lock_path = tmp_path / ".locks" / "demo.lock"
+    entered = threading.Event()
+    other_done = threading.Event()
+
+    def other():
+        with skill_file_lock(lock_path):
+            other_done.set()
+
+    t = threading.Thread(target=other)
+    with skill_file_lock(lock_path):
+        with skill_file_lock(lock_path):  # re-entrant: returns immediately
+            entered.set()
+        t.start()
+        assert not other_done.wait(timeout=0.2), "second thread acquired a held lock"
+    t.join(timeout=2)
+    assert entered.is_set() and other_done.is_set()

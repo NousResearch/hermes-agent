@@ -58,8 +58,8 @@ def test_api_key_providers_expose_a_credential_env_var():
     configure it).
 
     Exemptions: ``aws_sdk`` (bedrock — uses AWS_REGION/AWS_PROFILE) and the
-    ``custom`` bring-your-own-endpoint pseudo-provider, which is configured
-    inline via the local-endpoint flow rather than a fixed env var.
+    ``custom`` bring-your-own-endpoint pseudo-provider (configured inline via
+    the ``local-endpoint`` flow).
     """
     exempt = {"custom"}
     for d in provider_catalog():

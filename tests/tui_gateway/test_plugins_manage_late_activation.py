@@ -38,18 +38,7 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
     manager.discover_and_load()  # the serve process booted long before the install
     events: list = []
     manager.on_plugin_loaded(events.append)
-    from hermes_cli import plugins_cmd
-    real_install = plugins_cmd.dashboard_install_plugin
-
-    def _install(*args, **kwargs):
-        result = real_install(*args, **kwargs)
-        # ``PluginsManageResult.python_dependencies`` ships in a sibling PR; until it lands the strict
-        # contract rejects the key. Everything else is the real core.
-        result.pop("python_dependencies", None)
-        return result
-
-    with patch("hermes_cli.plugins_cmd.dashboard_install_plugin", _install), \
-         patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
+    with patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
          patch("hermes_cli.plugins_cmd._install_python_dependencies_quietly", return_value=[]), \
          patch("gateway.control_socket.reload_gateway_plugins", return_value=None):  # no gateway running
         resp = server.handle_request({"id": "1", "method": "plugins.manage",

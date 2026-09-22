@@ -778,6 +778,7 @@ from hermes_cli.main_dashboard import (
     _finalize_update_output,
     _find_stale_dashboard_pids,
     _install_hangup_protection,
+    _is_desktop_owned_backend,
     _is_electron_packaged_web_dist,
     _maybe_setup_dashboard_auth_interactively,
     _read_ssh_session_token_file,
@@ -2588,10 +2589,7 @@ def _dashboard_sanitize_desktop_env(headless_backend) -> None:
     HERMES_DASHBOARD_SESSION_TOKEN, which the terminal pane never receives and
     the terminal tool's env policy strips from agent children.
     """
-    desktop_owned_child = (
-        os.environ.get("HERMES_DESKTOP") == "1"
-        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"))
-    )
+    desktop_owned_child = _is_desktop_owned_backend()
     if (
         not headless_backend
         and not desktop_owned_child
@@ -2670,7 +2668,7 @@ def _dashboard_prepare_runtime(args, headless_backend) -> bool:
     # wait_for_mcp_discovery covers a server still connecting at first turn.
     # A standalone (non-Desktop) dashboard may sit idle and unvisited for days
     # (#58733): it arms discovery instead and the first /api/ws client fires it.
-    desktop = os.environ.get("HERMES_DESKTOP") == "1"
+    desktop = _is_desktop_owned_backend()
     if headless_backend and desktop:
         return True
     try:

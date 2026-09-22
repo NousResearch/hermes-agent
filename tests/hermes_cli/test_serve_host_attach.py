@@ -91,6 +91,31 @@ def test_second_serve_attaches_to_the_live_host_backend(host_dir, owner, capsys)
     assert f"port {owner.port}" in capsys.readouterr().out
 
 
+def test_inherited_desktop_flag_without_spawn_credential_still_attaches(host_dir, owner, monkeypatch):
+    """A terminal spawned by Desktop inherits its marker, not Desktop ownership.
+
+    Only the Desktop backend receives the per-spawn session credential.  A bare
+    marker must therefore preserve the one-host-backend attach invariant.
+    """
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.delenv("HERMES_DASHBOARD_SESSION_TOKEN", raising=False)
+    _publish(hr.process_create_time(), port=owner.port)
+
+    with pytest.raises(SystemExit) as exc:
+        _attach_to_host_backend(_args(), headless_backend=True)
+
+    assert exc.value.code == 0
+
+
+def test_desktop_owned_backend_keeps_its_separate_lifecycle(host_dir, owner, monkeypatch):
+    """Desktop's credential-bearing backend does not attach to the host owner."""
+    monkeypatch.setenv("HERMES_DESKTOP", "1")
+    monkeypatch.setenv("HERMES_DASHBOARD_SESSION_TOKEN", "desktop-spawn-token")
+    _publish(hr.process_create_time(), port=owner.port)
+
+    assert _attach_to_host_backend(_args(), headless_backend=True) is None
+
+
 def test_stale_record_is_ignored_and_the_launch_proceeds(host_dir):
     """A record whose creation time does not match the live PID is a recycled PID, not a
     backend: the launch must fall through and bind, never attach."""

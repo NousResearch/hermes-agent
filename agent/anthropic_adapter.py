@@ -90,7 +90,7 @@ _NO_XHIGH_CLAUDE_SUBSTRINGS = ("claude-opus-4-6", "claude-opus-4.6", "claude-son
 # Adaptive families where thinking is mandatory: ``thinking: {"type": "disabled"}`` answers HTTP
 # 400 (Portal flags them ``reasoning.mandatory``). The failure is asymmetric — a missing entry
 # 400s the turn, a spurious one only leaves thinking on — so when in doubt, add the family.
-_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable",)
+_MANDATORY_THINKING_CLAUDE_SUBSTRINGS = ("claude-fable", "claude-opus-5-5", "claude-opus-5.5")
 _FAST_MODE_SUPPORTED_SUBSTRINGS = ("opus-4-8", "opus-4.8", "opus-5")
 
 
@@ -109,7 +109,7 @@ def _model_matches(model: str, substrings) -> bool:
 # ``claude-fable`` = Mythos-class named models (1M context); ``minimax`` is a third-party
 # Anthropic-compatible endpoint; DashScope enforces ``qwen3`` max_tokens in [1, 65536].
 _ANTHROPIC_OUTPUT_LIMITS = {
-    "claude-fable": 128_000, "claude-sonnet-5": 128_000, "claude-opus-4-8": 128_000,
+    "claude-fable": 128_000, "claude-opus-5-5": 128_000, "claude-sonnet-5": 128_000, "claude-opus-4-8": 128_000,
     "claude-opus-4-7": 128_000, "claude-opus-4-6": 128_000, "claude-sonnet-4-6": 64_000,
     "claude-opus-4-5": 64_000, "claude-sonnet-4-5": 64_000, "claude-haiku-4-5": 64_000,
     "claude-opus-4": 32_000, "claude-sonnet-4": 64_000, "claude-3-7-sonnet": 128_000,
@@ -637,11 +637,15 @@ def build_anthropic_kwargs(
         if tool_choice == "none":
             kwargs.pop("tools", None)  # no Anthropic "none" — omit tools to prevent use
         elif tool_choice is None or isinstance(tool_choice, str):
-            # A forced tool name goes through the OAuth normalizer too: every tools[] entry is
-            # mcp__-prefixed/aliased there, so the literal would leak and name a nonexistent tool.
-            kwargs["tool_choice"] = _TOOL_CHOICE_MAP.get(tool_choice) or {
-                "type": "tool", "name": to_wire(tool_choice) if to_wire else tool_choice
-            }
+            # Opus 5.5 rejects forced tool use; preserve the tools while allowing the model to choose.
+            if "claude-opus-5-5" in model.lower().replace(".", "-") and tool_choice not in (None, "auto"):
+                kwargs["tool_choice"] = {"type": "auto"}
+            else:
+                # A forced tool name goes through the OAuth normalizer too: every tools[] entry is
+                # mcp__-prefixed/aliased there, so the literal would leak and name a nonexistent tool.
+                kwargs["tool_choice"] = _TOOL_CHOICE_MAP.get(tool_choice) or {
+                    "type": "tool", "name": to_wire(tool_choice) if to_wire else tool_choice
+                }
     # Map reasoning_config to Anthropic's thinking parameter. Claude 4.6+ models use adaptive thinking +
     # output_config.effort. Older models use manual thinking with budget_tokens. MiniMax Anthropic-compat
     # endpoints support thinking (manual mode only, not adaptive). Haiku does NOT support extended thinking

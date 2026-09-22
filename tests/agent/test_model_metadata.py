@@ -1265,13 +1265,14 @@ class TestGetModelContextLength:
                 return_value=False,
             ),
         ):
-            # A known model behind a custom proxy should resolve to its
+            # Known models behind a custom proxy should resolve to their
             # catalog value (1M), NOT the 256K fallback.
-            ctx = get_model_context_length(
-                "claude-opus-4-8",
-                base_url="https://my-gateway.example.com/v1/claude",
-            )
-            assert ctx == 1000000, f"Expected 1000000, got {ctx}"
+            for model in ("claude-opus-5-5", "claude-opus-4-8"):
+                ctx = get_model_context_length(
+                    model,
+                    base_url="https://my-gateway.example.com/v1/claude",
+                )
+                assert ctx == 1000000, f"Expected 1000000 for {model}, got {ctx}"
 
             # Another known model
             ctx2 = get_model_context_length(

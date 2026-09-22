@@ -1069,6 +1069,21 @@ class TestBuildAnthropicKwargs:
         beta_header = (kwargs.get("extra_headers") or {}).get("anthropic-beta", "")
         assert "fast-mode-2026-02-01" not in beta_header
 
+    def test_opus_5_5_cannot_disable_thinking(self):
+        from agent.anthropic_adapter import _accepts_thinking_disable
+        assert _accepts_thinking_disable("claude-opus-5-5") is False
+
+    def test_opus_5_5_downgrades_forced_tool_choice_to_auto(self):
+        kwargs = build_anthropic_kwargs(
+            model="claude-opus-5-5",
+            messages=[{"role": "user", "content": "hi"}],
+            tools=[{"type": "function", "function": {"name": "lookup", "description": "Lookup", "parameters": {"type": "object"}}}],
+            max_tokens=1024,
+            reasoning_config=None,
+            tool_choice="required",
+        )
+        assert kwargs["tool_choice"] == {"type": "auto"}
+
 
 
 
@@ -1087,6 +1102,10 @@ class TestBuildAnthropicKwargs:
 
 
 class TestGetAnthropicMaxOutput:
+    def test_opus_5_5(self):
+        from agent.anthropic_adapter import _get_anthropic_max_output
+        assert _get_anthropic_max_output("claude-opus-5-5") == 128_000
+
     def test_opus_4_6(self):
         from agent.anthropic_adapter import _get_anthropic_max_output
         assert _get_anthropic_max_output("claude-opus-4-6") == 128_000

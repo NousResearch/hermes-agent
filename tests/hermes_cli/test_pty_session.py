@@ -291,7 +291,7 @@ async def test_eof_marks_dead_and_closes_socket_4410():
     await s.close()
 
 
-from hermes_cli.pty_session import PtySessionRegistry, RegistryFull
+from hermes_cli.pty_session import PtySessionRegistry, RegistryFull, WS_CLOSE_IDLE_REAP
 
 
 def make_registry(ttl=1800.0, max_sessions=16):
@@ -445,3 +445,132 @@ async def test_close_all_survives_key_popped_by_concurrent_reap():
 
     assert not reg._sessions
     assert all(b.closed for b in bridges)
+
+
+# --- Attached-session idle reaping (#110849) -------------------------------
+
+
+T0 = 1000.0
+
+
+def make_idle_registry(attached_idle_ttl=600.0, ttl=1800.0, max_sessions=16):
+    return PtySessionRegistry(ttl=ttl, max_sessions=max_sessions, buffer_cap=1024,
+                              read_timeout=0.01, attached_idle_ttl=attached_idle_ttl)
+
+
+async def _attached_session(reg, key="tok"):
+    from hermes_cli.pty_session import PtySession
+    bridge = FakeBridge([b"", b"", b""])
+    s = PtySession(key, bridge, buffer_cap=1024, read_timeout=0.01)
+    await s.start()
+    ws = FakeWS()
+    await s.attach(ws)
+    reg._sessions[key] = s
+    return s, ws, bridge
+
+
+@pytest.mark.asyncio
+async def test_attached_idle_session_is_reaped_after_silence():
+    """A viewer that vanished without a FIN leaves the session attached; silence reclaims it."""
+    reg = make_idle_registry(attached_idle_ttl=600.0)
+    s, ws, bridge = await _attached_session(reg)
+    assert s.attached is True
+    s.last_activity = T0
+
+    await reg.reap_idle(now=T0 + 1.0)
+    assert "tok" in reg._sessions                 # still within the bound
+
+    await reg.reap_idle(now=T0 + 601.0)
+    assert "tok" not in reg._sessions
+    assert ws.close_code == WS_CLOSE_IDLE_REAP
+    assert bridge.closed is True
+
+
+@pytest.mark.asyncio
+async def test_attached_idle_reaping_disabled_by_default():
+    """attached_idle_ttl=0 keeps the historical 'an attached session is immortal' behavior."""
+    reg = make_idle_registry(attached_idle_ttl=0.0)
+    s, ws, bridge = await _attached_session(reg)
+    s.last_activity = T0
+
+    await reg.reap_idle(now=T0 + 10_000_000.0)
+    assert "tok" in reg._sessions
+
+
+@pytest.mark.asyncio
+async def test_touch_extends_attached_lifetime(monkeypatch):
+    """The 20 s resize keepalive a quiet terminal still sends keeps its PTY alive."""
+    reg = make_idle_registry(attached_idle_ttl=600.0)
+    s, ws, bridge = await _attached_session(reg)
+    s.last_activity = T0
+
+    monkeypatch.setattr("hermes_cli.pty_session.time.monotonic", lambda: T0 + 300.0)
+    reg.touch("tok", ws)
+    assert s.last_activity == T0 + 300.0
+
+    await reg.reap_idle(now=T0 + 601.0)
+    assert "tok" in reg._sessions                 # deadline moved to T0 + 900
+
+    await reg.reap_idle(now=T0 + 901.0)
+    assert "tok" not in reg._sessions
+    assert ws.close_code == WS_CLOSE_IDLE_REAP
+
+
+@pytest.mark.asyncio
+async def test_touch_from_superseded_socket_is_ignored(monkeypatch):
+    """A stale tab's keepalive must not keep alive a session its viewer abandoned."""
+    reg = make_idle_registry(attached_idle_ttl=600.0)
+    s, old_ws, bridge = await _attached_session(reg)
+    new_ws = FakeWS()
+    await s.attach(new_ws)                        # old socket is now superseded
+    s.last_activity = T0
+
+    monkeypatch.setattr("hermes_cli.pty_session.time.monotonic", lambda: T0 + 5000.0)
+    reg.touch("tok", old_ws)
+    assert s.last_activity == T0                  # ignored
+
+    await reg.reap_idle(now=T0 + 601.0)
+    assert "tok" not in reg._sessions
+
+
+@pytest.mark.asyncio
+async def test_touch_ignores_unknown_key_and_detached_session(monkeypatch):
+    reg = make_idle_registry(attached_idle_ttl=600.0)
+    reg.touch("nope", FakeWS())                   # unknown key must not raise
+
+    s, ws, bridge = await _attached_session(reg)
+    reg.detach("tok", ws)
+    assert s.attached is False
+
+    s.last_activity = T0
+    monkeypatch.setattr("hermes_cli.pty_session.time.monotonic", lambda: T0 + 5000.0)
+    reg.touch("tok", ws)
+    assert s.last_activity == T0                  # detached: the detach TTL governs
+
+
+@pytest.mark.asyncio
+async def test_detached_ttl_still_governs_a_detached_session():
+    """Reaping a detached session stays bounded by `ttl`, not the attached bound (#81387)."""
+    reg = make_idle_registry(attached_idle_ttl=600.0, ttl=1800.0)
+    s, ws, bridge = await _attached_session(reg)
+    reg.detach("tok", ws)
+    s.last_detached_at = T0
+
+    await reg.reap_idle(now=T0 + 601.0)
+    assert "tok" in reg._sessions                 # the attached bound must not apply
+
+    await reg.reap_idle(now=T0 + 1801.0)
+    assert "tok" not in reg._sessions
+    assert bridge.closed is True
+
+
+@pytest.mark.asyncio
+async def test_reap_notifies_the_attached_socket_before_teardown():
+    """The victim's tab gets 4411 so it can start a fresh session instead of going dark."""
+    reg = make_idle_registry(attached_idle_ttl=600.0)
+    s, ws, bridge = await _attached_session(reg)
+    s.last_activity = T0
+
+    await reg.reap_idle(now=T0 + 601.0)
+    assert ws.close_code == WS_CLOSE_IDLE_REAP
+    assert bridge.closed is True

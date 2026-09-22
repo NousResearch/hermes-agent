@@ -548,6 +548,8 @@ async def pty_ws(ws: WebSocket) -> None:
                 raw = text.encode("utf-8") if isinstance(text, str) else b""
             if not raw:
                 continue
+            # Inbound traffic is liveness; the 20 s resize keepalive keeps a quiet tab alive.
+            session.touch(ws)
             # Resize escape is consumed locally, never written to the PTY.
             match = _RESIZE_RE.match(raw)
             if match and match.end() == len(raw):

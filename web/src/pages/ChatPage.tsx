@@ -86,6 +86,7 @@ import {
   PTY_RECONNECTING_BANNER,
   PTY_SESSION_ENDED_MESSAGE,
   PTY_SESSION_ENDED_TERMINAL_LINE,
+  PTY_SESSION_IDLE_REAPED_TERMINAL_LINE,
   PTY_START_FAILED_MESSAGE,
   PTY_TOKEN_MISSING_BANNER,
   ptyReconnectExhausted,
@@ -1448,6 +1449,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       // Keep-alive close-code contract (web_server.pty_ws + pty_session):
       //   4410 = the agent PROCESS exited (real end) → restart affordance.
       //   4409 = superseded by a newer tab attaching the same token → stay quiet.
+      //   4411 = reaped for silence → reconnect to a fresh PTY (session resumes).
       if (ev.code === 4410) {
         term.write(`\r\n\x1b[90m${PTY_SESSION_ENDED_TERMINAL_LINE}\x1b[0m\r\n`);
         setEndedReason("exited");
@@ -1456,6 +1458,13 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       }
       if (ev.code === 4409) {
         setPtyState("closed");
+        return;
+      }
+      if (ev.code === 4411) {
+        term.write(
+          `\r\n\x1b[90m${PTY_SESSION_IDLE_REAPED_TERMINAL_LINE}\x1b[0m\r\n`
+        );
+        scheduleReconnect(ev.code);
         return;
       }
       if (!ev.wasClean || ev.code === 1001 || ev.code === 1006) {

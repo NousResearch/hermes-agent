@@ -65,6 +65,10 @@ export const PTY_START_FAILED_MESSAGE = 'Chat could not start. The reason is pri
 /** Terminal footer line replacing `[session ended (code N)]`. */
 export const PTY_SESSION_ENDED_TERMINAL_LINE = '[chat session ended]'
 
+/** The server reaped this PTY for being silent; the tab reconnects to a fresh one. */
+export const PTY_SESSION_IDLE_REAPED_TERMINAL_LINE =
+  '[chat session idle-reaped; reconnecting]'
+
 /** True once the ladder has used its last attempt and that attempt also failed. */
 export function ptyReconnectExhausted(attempt: number, maxAttempts: number): boolean {
   return attempt >= maxAttempts

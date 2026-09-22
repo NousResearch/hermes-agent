@@ -17,6 +17,7 @@ import urllib.request
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from pathlib import Path
 from typing import Optional
+from hermes_cli.config import load_config
 from hermes_cli.pty_session import PtySessionRegistry
 
 # Same logger the code used before extraction (record parity).
@@ -45,8 +46,27 @@ _PTY_READ_CHUNK_TIMEOUT = 0.2
 # loop (keeps dashboard idle CPU low).
 # A positive sleep lets other coroutines run and keeps dashboard idle CPU low (#42627).
 _PTY_IDLE_BACKOFF = 0.05
+
+
+def _pty_attached_idle_ttl() -> float:
+    """Attached-session silence bound: ``dashboard.pty_attached_idle_minutes`` (0 disables).
+
+    An attached session was never reaped, so a viewer that vanished without closing its socket
+    pinned its PTY and the child's threads until restart (#110849). The chat client keepalives
+    every 20 s, so silence past this bound means the viewer is gone.
+    """
+    default = 10.0
+    try:
+        raw = (load_config().get("dashboard") or {}).get("pty_attached_idle_minutes", default)
+        minutes = float(raw)
+    except Exception:
+        return default * 60
+    return minutes * 60 if minutes > 0 else 0.0
+
+
 PTY_REGISTRY = PtySessionRegistry(
-    ttl=30 * 60, max_sessions=16, buffer_cap=1 * 1024 * 1024, read_timeout=_PTY_READ_CHUNK_TIMEOUT)
+    ttl=30 * 60, max_sessions=16, buffer_cap=1 * 1024 * 1024, read_timeout=_PTY_READ_CHUNK_TIMEOUT,
+    attached_idle_ttl=_pty_attached_idle_ttl())
 
 
 async def _close_stalled_pty_input(ws: "WebSocket", *, path: str) -> None:

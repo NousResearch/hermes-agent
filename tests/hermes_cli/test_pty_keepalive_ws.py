@@ -11,6 +11,7 @@ class FakeBridge:
         self.alive = True
         self.accept_input = True
         self.written = bytearray()
+        self.resized = None
 
     def read(self, timeout):
         return b""        # idle forever
@@ -22,7 +23,7 @@ class FakeBridge:
         return True
 
     def resize(self, cols, rows):
-        pass
+        self.resized = (cols, rows)
 
     def close(self):
         self.alive = False
@@ -144,3 +145,51 @@ async def test_attach_token_reuses_default_chat_after_active_session_fallback(
         ws2.send_bytes(b"again")
 
     assert pty_keepalive_harness == [["x", "fresh"]]
+
+
+@pytest.mark.asyncio
+async def test_inbound_frame_stamps_attached_session_activity(pty_keepalive_harness):
+    """Every inbound frame is liveness proof — the resize keepalive included (#110849)."""
+    import time as _time
+
+    from starlette.testclient import TestClient
+
+    client = TestClient(web_server.app)
+    with client.websocket_connect("/api/pty?attach=TOK1") as ws:
+        deadline = _time.monotonic() + 2.0
+        while "TOK1" not in _web_server_chat.PTY_REGISTRY._sessions and _time.monotonic() < deadline:
+            _time.sleep(0.01)                     # registration happens in the handler task
+        session = _web_server_chat.PTY_REGISTRY._sessions["TOK1"]
+        before = session.last_activity
+
+        ws.send_bytes(b"\x1b[RESIZE:80;24]")       # the resize keepalive: consumed, not written
+        deadline = _time.monotonic() + 2.0
+        while session.last_activity == before and _time.monotonic() < deadline:
+            _time.sleep(0.01)                     # server-side frame handling is async
+
+        assert session.last_activity > before
+        assert session.bridge.resized == (80, 24)
+        assert bytes(session.bridge.written) == b""
+
+
+@pytest.mark.parametrize(
+    "raw, expected",
+    [
+        (None, 600.0),        # key absent -> documented default
+        (2, 120.0),
+        ("5", 300.0),         # config.yaml values may arrive as strings
+        (0, 0.0),             # explicit opt-out
+        (-3, 0.0),
+        ("nope", 600.0),      # garbage must not disable reaping or raise
+    ],
+)
+def test_pty_attached_idle_ttl_reads_dashboard_config(monkeypatch, raw, expected):
+    dashboard = {} if raw is None else {"pty_attached_idle_minutes": raw}
+    monkeypatch.setattr(_web_server_chat, "load_config", lambda: {"dashboard": dashboard})
+    assert _web_server_chat._pty_attached_idle_ttl() == expected
+
+
+def test_pty_attached_idle_ttl_tolerates_missing_or_malformed_block(monkeypatch):
+    for cfg in ({}, {"dashboard": "x"}, {"dashboard": None}):
+        monkeypatch.setattr(_web_server_chat, "load_config", lambda: cfg)
+        assert _web_server_chat._pty_attached_idle_ttl() == 600.0

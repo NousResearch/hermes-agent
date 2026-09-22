@@ -353,7 +353,8 @@ def _hydrate_hit(db, lineage_root: str, match_info: Dict[str, Any], result_detai
 def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort: Optional[str],
               detail: str, current_session_id: str = None, link_profile: str = None,
               after_ts: Optional[int] = None, before_ts: Optional[int] = None,
-              exclude_session_ids: Optional[List[str]] = None) -> str:
+              exclude_session_ids: Optional[List[str]] = None,
+              channel_id: Optional[str] = None, channel_platform: Optional[str] = None) -> str:
     """Discovery shape: FTS5 plus adaptive or full result hydration."""
     current_lineage_root = _resolve_lineage(db, current_session_id) if current_session_id else None
     excluded_roots = _excluded_lineage_roots(db, exclude_session_ids or [])
@@ -365,10 +366,18 @@ def _discover(db, query: str, role_filter: Optional[List[str]], limit: int, sort
         title_started = _coerce_started_ts((_get_session_meta(db, title_root) or _get_session_meta(db, title_sid)).get("started_at"))
         if {title_sid, title_root} & excluded_roots or not _in_time_window(title_started, after_ts, before_ts):
             title_result = None
+        elif channel_id is not None:
+            # The channel filter is also the one place a title match must be re-checked in Python:
+            # title matching reads the session row directly, not through search_messages' SQL.
+            title_meta = _get_session_meta(db, title_sid)
+            if str(title_meta.get("chat_id")) != str(channel_id) or (
+                    channel_platform is not None and str(title_meta.get("source")) != str(channel_platform)):
+                title_result = None
     raw_results, err = _loud(lambda: db.search_messages(
         query=query, role_filter=role_filter or ["user", "assistant"],
         exclude_sources=list(_HIDDEN_SESSION_SOURCES), limit=_DISCOVER_SCAN_LIMIT, offset=0, sort=sort,
-        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts), "FTS5 search failed: %s", "Search failed")
+        fields=_DISCOVER_SEARCH_FIELDS, after_ts=after_ts, before_ts=before_ts,
+        channel_id=channel_id, channel_platform=channel_platform), "FTS5 search failed: %s", "Search failed")
     if err:
         return err
     # Demote cron rows below interactive ones BEFORE dedup so a high-volume cron corpus
@@ -575,7 +584,8 @@ def _scroll(db, session_id: str, around_message_id: int, window: int = 5,
 
 def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
               around_message_id, window, sort, profile, detail, owned_dbs,
-              after=None, before=None, exclude_session_ids=None) -> str:
+              after=None, before=None, exclude_session_ids=None,
+              platform=None, channel_id=None) -> str:
     """Mode dispatch (see module docstring); scroll wins when an anchor is set.
     Profile DBs opened here are appended to *owned_dbs* for the caller to close."""
     # A raw `@session:<profile>/<id>` link as session_id: ids never contain "/", so
@@ -612,13 +622,15 @@ def _dispatch(query, role_filter, limit, db, current_session_id, session_id,
         role_filter=([r.strip() for r in role_filter.split(",") if r.strip()] or None) if isinstance(role_filter, str) else None,
         detail="full" if isinstance(detail, str) and detail.strip().lower() == "full" else "adaptive",
         current_session_id=current_session_id, link_profile=profile, after_ts=after_ts, before_ts=before_ts,
-        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids))
+        exclude_session_ids=_normalize_exclude_session_ids(exclude_session_ids),
+        channel_id=channel_id, channel_platform=platform)
 
 
 def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=None,
                    current_session_id: str = None, session_id: str = None, around_message_id: int = None,
                    window: int = 5, sort: str = None, profile: str = None, detail: str = "adaptive",
-                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None) -> str:
+                   after: str = None, before: str = None, exclude_session_ids: Optional[List[str]] = None,
+                   platform: str = None, channel_id: str = None) -> str:
     """Run session search, closing DBs opened here. Positional order is frozen for old callers;
     new parameters are appended after ``detail``."""
     from hermes_state import format_session_db_unavailable
@@ -632,7 +644,8 @@ def session_search(query: str = "", role_filter: str = None, limit: int = 3, db=
     try:
         return _dispatch(query, role_filter, limit, db, current_session_id, session_id,
                          around_message_id, window, sort, profile, detail, owned_dbs,
-                         after=after, before=before, exclude_session_ids=exclude_session_ids)
+                         after=after, before=before, exclude_session_ids=exclude_session_ids,
+                         platform=platform, channel_id=channel_id)
     finally:
         for owned_db in reversed(owned_dbs):
             _quiet(lambda: release_or_close(owned_db), None, "Failed to close session_search SessionDB")
@@ -656,7 +669,9 @@ SESSION_SEARCH_SCHEMA = {
         "`around_message_id` = scroll (window of messages around an anchor); "
         "`session_id` alone = read a whole session — how you resolve an "
         "`@session:<profile>/<id>` link (split on '/' into profile + id); no "
-        "args = browse recent sessions. Results are actual DB messages, no LLM. "
+        "args = browse recent sessions. Discovery may be scoped to one channel with "
+        "`channel_id` (optionally + `platform`) — how you answer 'what did I say in "
+        "this channel' without guessing terms. Results are actual DB messages, no LLM. "
         "Searches conversation history ONLY — when the user gave a direct "
         "source (URL, file, contact, live system), inspect that first; never "
         "conclude 'not found' from history alone. Use for questions about past "
@@ -774,6 +789,25 @@ SESSION_SEARCH_SCHEMA = {
                     "Omit to use the current profile."
                 ),
             },
+            "platform": {
+                "type": "string",
+                "description": (
+                    "Discovery shape only. Optional platform filter (e.g. 'slack', "
+                    "'discord') scoping the search to sessions on that platform. Only "
+                    "used together with channel_id (or to narrow a channel that exists "
+                    "on more than one platform)."
+                ),
+            },
+            "channel_id": {
+                "type": "string",
+                "description": (
+                    "Discovery shape only. Optional channel filter: restrict the search "
+                    "to sessions in this channel/chat (sessions.chat_id). Pair with "
+                    "platform when the channel id could be ambiguous across platforms. "
+                    "This is how you answer 'what did I say in this channel' without "
+                    "guessing search terms."
+                ),
+            },
         },
         "required": [],
     },
@@ -790,6 +824,6 @@ registry.register(
         query=args.get("query") or "", limit=args.get("limit", 3), window=args.get("window", 5),
         detail=args.get("detail", "adaptive"), db=kw.get("db"), current_session_id=kw.get("current_session_id"),
         **{k: args.get(k) for k in ("role_filter", "session_id", "around_message_id", "sort", "profile",
-                                    "after", "before", "exclude_session_ids")}),
+                                    "after", "before", "exclude_session_ids", "platform", "channel_id")}),
     check_fn=check_session_search_requirements,
     emoji="🔍")

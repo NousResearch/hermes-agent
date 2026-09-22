@@ -7,6 +7,7 @@ import logging
 import os
 import json
 import threading
+import time
 from pathlib import Path
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field, fields
@@ -19,6 +20,7 @@ from gateway.session_persistence import SessionPersistenceMixin, _DB_UNPINNED
 from gateway.session_recovery import SessionRecoveryMixin
 from gateway.session_lifecycle import SessionLifecycleMixin, _iso, _new_session_id, _now, _parse_iso
 from gateway.session_transcript import SessionTranscriptMixin
+from hermes_cli.timefmt import relative_time
 
 logger = logging.getLogger(__name__)
 
@@ -619,6 +621,51 @@ def build_channel_continuity_note(entry: "SessionEntry", source: SessionSource) 
         f"{where}'s history, use the session_search tool to recall that prior session before "
         f"acting — do not assume an unrelated recent session is the right context.]"
     )
+
+
+_CHANNEL_CONTEXT_PLATFORMS = (Platform.SLACK, Platform.DISCORD)
+_CHANNEL_CONTEXT_CONTENT_CHARS = 120
+
+
+def build_channel_context_block(
+    session_db, source: SessionSource, *, max_messages: int = 20,
+    lookback_days: int = 7, include_other_users: bool = False,
+) -> Optional[str]:
+    """Compact "your recent messages in this channel/thread" block (Feature A: channel context).
+
+    Opt-in cross-session recall: every turn the agent composes for a long-lived Slack/Discord
+    channel sees the agent's own recent messages there (across sessions, incl. cron). By default
+    ONLY the agent's own (``role == "assistant"``) messages are injected; ``include_other_users``
+    adds the other participants'. Returns ``None`` (inject nothing) outside Slack/Discord, when the
+    channel has no prior messages in the window, or on any DB failure — this must never break a turn.
+    """
+    if source.platform not in _CHANNEL_CONTEXT_PLATFORMS:
+        return None
+    roles = ["assistant", "user"] if include_other_users else ["assistant"]
+    since_ts = time.time() - lookback_days * 86400
+    try:
+        rows = session_db.recent_channel_messages(
+            source.platform.value, source.chat_id, source.chat_type, source.thread_id,
+            roles=roles, limit=max_messages, since_ts=since_ts,
+        )
+    except Exception:
+        logger.debug("channel context block query failed", exc_info=True)
+        return None
+    if not rows:
+        return None
+    where = "thread" if source.thread_id else "channel"
+    lines = [f"## Your recent messages in this {where}"]
+    for row in rows:
+        content = row.get("content")
+        if isinstance(content, list):
+            parts = [p.get("text", "") for p in content
+                     if isinstance(p, dict) and p.get("type") == "text"]
+            content = " ".join(t for t in parts if t)
+        snippet = neutralize_untrusted_inline_text(content or "", max_chars=_CHANNEL_CONTEXT_CONTENT_CHARS)
+        if not snippet:
+            continue
+        lines.append(f"- [{relative_time(row.get('timestamp'))}] {snippet}")
+    return "\n".join(lines)
 
 
 def is_shared_multi_user_session(

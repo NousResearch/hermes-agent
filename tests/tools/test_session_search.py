@@ -105,6 +105,8 @@ class TestSchema:
             "after",
             "before",
             "exclude_session_ids",
+            "platform",
+            "channel_id",
         ]
 
 
@@ -1289,3 +1291,39 @@ class TestDiscoverySessionExclusion:
         excluded = json.loads(session_search(
             query="unique lineage token alpha", limit=5, exclude_session_ids=["s_child"], db=db))
         assert not {r["session_id"] for r in excluded["results"]} & {"s_root", "s_child"}
+
+
+class TestChannelFilter:
+    """Feature B: session_search ``platform``/``channel_id`` scopes discovery to a channel."""
+
+    def _seed_channels(self, db):
+        for sid, source, chat_id in (
+            ("sc_a", "slack", "C-GENERAL"),
+            ("sc_b", "slack", "C-RANDOM"),
+            ("dc_a", "discord", "C-GENERAL"),
+        ):
+            db.create_session(sid, source=source, chat_id=chat_id, chat_type="channel")
+            db.append_message(sid, role="user", content="the launch checklist")
+            db.append_message(sid, role="assistant", content="checklist shipped")
+
+    def test_channel_filter_scopes_results(self, db):
+        self._seed_channels(db)
+        result = json.loads(session_search(query="checklist", channel_id="C-GENERAL", platform="slack", db=db))
+        assert result["success"] is True
+        assert {hit["session_id"] for hit in result["results"]} == {"sc_a"}
+
+    def test_channel_filter_without_platform_matches_chat_id_across_platforms(self, db):
+        self._seed_channels(db)
+        result = json.loads(session_search(query="checklist", channel_id="C-GENERAL", db=db))
+        assert {hit["session_id"] for hit in result["results"]} == {"sc_a", "dc_a"}
+
+    def test_no_channel_filter_is_backward_compatible(self, db):
+        self._seed_channels(db)
+        result = json.loads(session_search(query="checklist", db=db))
+        assert {hit["session_id"] for hit in result["results"]} == {"sc_a", "sc_b", "dc_a"}
+
+    def test_channel_filter_no_match_returns_empty(self, db):
+        self._seed_channels(db)
+        result = json.loads(session_search(query="checklist", channel_id="C-NOPE", db=db))
+        assert result["success"] is True
+        assert result["count"] == 0

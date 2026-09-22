@@ -2075,8 +2075,10 @@ class TestHandleProcessTransformHook:
             out = json.loads(pr._handle_process({"action": action, "session_id": sess.id}, task_id="task-bg"))
             assert out[key].startswith("REWRITTEN:raw line"), (action, out)
         assert [s for s in seen if s[0] == "transform_terminal_output"]
-        # The hook sees the command, the recorded exit code (None while running) and the caller's task_id.
-        assert ("transform_terminal_output", "python app.py", 3, "task-bg") in seen
+        # The hook sees the command, the recorded exit code (None while running) and the process
+        # OWNER's task_id (the session's, not the caller's — a sibling polling a handed-off process
+        # is still observing that owner's output).
+        assert ("transform_terminal_output", "python app.py", 3, "t1") in seen
 
     def test_hook_replacement_is_still_redacted(self, monkeypatch):
         secret = "sk-proj-abc123def456ghi789jkl012mno345"

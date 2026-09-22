@@ -2499,7 +2499,7 @@ def transform_process_output(output: str, *, command: str, returncode: Optional[
     return _apply_output_transform_hook(command, output, returncode, task_id or "", "")
 
 
-def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
+def _redact_process_result(result: dict) -> dict:
     """Transform, then redact secrets from background-process output before it reaches the
     model, session.db and CLI, mirroring the foreground ``terminal`` pipeline (hook first,
     redaction after) so the two surfaces can't diverge. Respects ``security.redact_secrets``;
@@ -2512,7 +2512,10 @@ def _redact_process_result(result: dict, *, task_id: str = "") -> dict:
     from agent.redact import redact_sensitive_text, redact_terminal_output
 
     command = result.get("command") or ""
-    task_id = task_id or str(result.get("task_id") or "")
+    # The hook's task_id is the process OWNER's (poll/log/wait results carry only session_id).
+    task_id = str(result.get("task_id") or "")
+    if not task_id and (session := process_registry.get(str(result.get("session_id") or ""))) is not None:
+        task_id = str(getattr(session, "task_id", "") or "")
     for key in ("output", "output_preview"):
         if isinstance(value := result.get(key), str) and value:
             value = transform_process_output(value, command=command, returncode=result.get("exit_code"), task_id=task_id)
@@ -2605,7 +2608,7 @@ def _handle_process(args, **kw):
             return tool_error(f"session_id is required for {action}")
         handler, redact = _SESSION_ACTIONS[action]
         result = handler(session_id, args)
-        return json.dumps(_redact_process_result(result, task_id=kw.get("task_id") or "") if redact else result, ensure_ascii=False)
+        return json.dumps(_redact_process_result(result) if redact else result, ensure_ascii=False)
     return tool_error(f"Unknown process action: {action}. Use: list, poll, log, wait, kill, write, submit, close, handoff")
 
 

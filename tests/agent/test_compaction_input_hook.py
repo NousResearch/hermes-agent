@@ -8,7 +8,11 @@ from agent.compaction_hooks import (
     COMPACTION_HOOK_PROVENANCE_KEY,
     transform_compaction_input,
 )
-from agent.context_compressor import COMPRESSED_SUMMARY_METADATA_KEY, ContextCompressor
+from agent.context_compressor import (
+    COMPRESSED_SUMMARY_METADATA_KEY,
+    SUMMARY_PREFIX,
+    ContextCompressor,
+)
 from hermes_state import SessionDB
 
 
@@ -178,3 +182,30 @@ def test_valid_empty_decisions_intentionally_keep_original_blocks(monkeypatch):
     )
 
     assert "RAW_TOOL_RESULT_" in "\n".join(str(message.get("content", "")) for message in turns)
+
+
+def _state_after_aborted_summary(monkeypatch, *, hook_enabled: bool) -> tuple:
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: hook_enabled)
+    monkeypatch.setattr(
+        "hermes_cli.lifecycle.invoke_hook",
+        lambda _name, **_payload: [{"decisions": [{"block_index": 0, "action": "shorten"}]}],
+    )
+    compressor = _compressor()
+    compressor.abort_on_summary_failure = True
+    messages = _history()
+    handoff = next(message for message in messages if message.get("content", "").startswith("answer 6"))
+    handoff["content"] = f"{SUMMARY_PREFIX}\nold summary"
+    monkeypatch.setattr(compressor, "_summarize_window", lambda *_args: None)
+
+    compressor.compress(messages, current_tokens=100_000, force=True)
+
+    assert compressor._last_compress_aborted is True
+    return compressor._previous_summary, compressor._summary_has_user_turn
+
+
+def test_unsuccessful_hook_abort_restores_baseline_handoff_state(monkeypatch):
+    baseline = _state_after_aborted_summary(monkeypatch, hook_enabled=False)
+    actual = _state_after_aborted_summary(monkeypatch, hook_enabled=True)
+
+    assert actual == baseline
+    assert actual[0] is None

@@ -5353,6 +5353,8 @@ Write only the summary body. Do not include any preamble or prefix."""
         if hook_enabled and not hook_result.applied:
             # A registered callback owns the original selected blocks only when it produces a
             # structurally valid result. Failures resume the ordinary deterministic path.
+            self._previous_summary = scan.previous_summary_before
+            self._summary_has_user_turn = scan.has_user_turn_before
             messages, pruned_count = self._prune_old_tool_results(
                 unpruned_messages,
                 protect_tail_count=self.protect_last_n,

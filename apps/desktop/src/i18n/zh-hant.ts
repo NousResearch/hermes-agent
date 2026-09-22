@@ -296,6 +296,10 @@ export const zhHant = defineLocale({
   },
 
   settings: {
+    managedRollouts: {
+      title: '受控發布', noActive: '沒有進行中的發布快照。', history: '發布記錄',
+      unresolved: (count: number) => `未解決的圍欄：${count}`, archived: '已封存', active: '進行中'
+    },
     subpages: {
       appearanceTheme: '主題',
       appearanceTypography: '字體與縮放',

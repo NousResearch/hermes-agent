@@ -369,6 +369,10 @@ export const ar = defineLocale({
     noResults: 'لا توجد لغة مطابقة'
   },
   settings: {
+    managedRollouts: {
+      title: 'عمليات النشر المُدارة', noActive: 'لا توجد لقطة نشر نشطة.', history: 'سجل النشر',
+      unresolved: (count: number) => `الحواجز غير المحلولة: ${count}`, archived: 'مؤرشف', active: 'نشط'
+    },
     subpages: {
       appearanceTheme: 'السمة',
       appearanceTypography: 'الخطوط والتحجيم',

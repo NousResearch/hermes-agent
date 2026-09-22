@@ -305,6 +305,10 @@ export const ja = defineLocale({
   },
 
   settings: {
+    managedRollouts: {
+      title: '管理対象ロールアウト', noActive: 'アクティブなロールアウトのスナップショットはありません。', history: 'ロールアウト履歴',
+      unresolved: (count: number) => `未解決フェンス: ${count}`, archived: 'アーカイブ済み', active: 'アクティブ'
+    },
     subpages: {
       appearanceTheme: 'テーマ',
       appearanceTypography: 'フォントと表示倍率',

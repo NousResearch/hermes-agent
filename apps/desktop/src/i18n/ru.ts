@@ -408,6 +408,10 @@ export const ru = defineLocale({
     noResults: 'Языки не найдены'
   },
   settings: {
+    managedRollouts: {
+      title: 'Управляемые развёртывания', noActive: 'Нет активного снимка развёртывания.', history: 'История развёртываний',
+      unresolved: (count: number) => `Неразрешённые ограждения: ${count}`, archived: 'архивировано', active: 'активно'
+    },
     subpages: {
       appearanceTheme: 'Тема',
       appearanceTypography: 'Шрифты и масштаб',

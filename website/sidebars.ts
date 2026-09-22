@@ -575,6 +575,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/research/research-domain-intel',
                     'user-guide/skills/optional/research/research-drug-discovery',
                     'user-guide/skills/optional/research/research-duckduckgo-search',
+                    'user-guide/skills/optional/research/research-evidence-reports',
                     'user-guide/skills/optional/research/research-gitnexus-explorer',
                     'user-guide/skills/optional/research/research-osint-investigation',
                     'user-guide/skills/optional/research/research-parallel-cli',

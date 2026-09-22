@@ -542,11 +542,22 @@ def _batch_status(combined: Dict[str, Any]) -> str:
 
 def _dispatch(**kwargs) -> Dict[str, Any]:
     from hermes_cli.backend_retirement import retirement
+    from tools.approval_ownership import retain_gateway_approval_owner
 
     with retirement.work() as admitted:
         if not admitted:
             return {"status": "rejected", "error": "backend is retiring; reconnect to continue"}
-        return _dispatch_admitted(**kwargs)
+        # Retain before submission: a queued worker may start after its parent returns.
+        owner = retain_gateway_approval_owner(kwargs["session_key"])
+        try:
+            result = _dispatch_admitted(**kwargs, approval_owner=owner)
+        except BaseException:
+            if owner is not None:
+                owner.close()
+            raise
+        if result["status"] != "dispatched" and owner is not None:
+            owner.close()
+        return result
 
 
 def _dispatch_admitted(
@@ -554,7 +565,7 @@ def _dispatch_admitted(
     toolsets: Optional[List[str]], role: str, model: Optional[str], session_key: str,
     parent_session_id: Optional[str], runner: Callable[[], Dict[str, Any]], origin_ui_session_id: str,
     origin_session_id: str, interrupt_fn: Optional[Callable[[], None]], max_async_children: int,
-    progress_fn: Optional[Callable[[], tuple]], capacity_error: str, slot_key: Optional[str] = None,
+    progress_fn: Optional[Callable[[], tuple]], capacity_error: str, approval_owner=None, slot_key: Optional[str] = None,
     task_indexes: Optional[List[int]] = None,
     task_transcripts: Optional[Dict[str, str]] = None,
 ) -> Dict[str, Any]:
@@ -584,6 +595,7 @@ def _dispatch_admitted(
         # The one stale-monitor thread serves every profile and starts with an empty Context;
         # a forced finalization runs under the dispatcher's so it settles the same state.db.
         "_context": contextvars.copy_context(),
+        "_approval_owner": approval_owner,
         # Stale-monitor bookkeeping (see _stale_monitor_loop).
         "_progress_token": None, "_progress_ts": dispatched_at, "_interrupted_at": None}
     with _records_lock:
@@ -598,6 +610,9 @@ def _dispatch_admitted(
     executor = _get_executor(max(max_async_children, live_units))
 
     def _worker() -> None:
+        from tools.approval_ownership import gateway_approval_owner
+
+        owner_token = gateway_approval_owner.set(approval_owner)
         result: Dict[str, Any] = {}
         status = "error"
         with _records_lock:
@@ -612,25 +627,37 @@ def _dispatch_admitted(
             logger.exception(f"Async delegation{label} %s crashed", delegation_id)
             result = crash_result(f"{type(exc).__name__}: {exc}", round(time.time() - dispatched_at, 2))
         finally:
-            _finalize(delegation_id, result, status)
+            try:
+                _finalize(delegation_id, result, status)
+            finally:
+                gateway_approval_owner.reset(owner_token)
 
     from hermes_cli.backend_retirement import retirement
 
     # The outer dispatch reservation prevents a freeze during this handoff. Retain a worker
     # reservation too: the stall monitor may finalize its registry record before it really exits.
     retirement.acquire()
+
+    def _worker_done(_):
+        # Also covers cancellation before the queued worker ever starts.
+        if approval_owner is not None:
+            approval_owner.close()
+        retirement.release()
+
     try:
+        # Monitor startup can fail. Finish it before submission transfers the
+        # approval owner to a worker that must retain it until its own teardown.
+        if progress_fn is not None:
+            _ensure_stale_monitor()
         future = executor.submit(propagate_context_to_thread(_worker))
-        future.add_done_callback(lambda _: retirement.release())
-    except Exception as exc:  # pragma: no cover — pool submit failure is rare
+        future.add_done_callback(_worker_done)
+    except Exception as exc:
         retirement.release()
         with _records_lock:
             _records.pop(delegation_id, None)
         with _DB_LOCK, _transaction() as conn:
             conn.execute("DELETE FROM async_delegations WHERE delegation_id=?", (delegation_id,))
         return {"status": "rejected", "error": f"Failed to schedule async delegation{label}: {exc}"}
-    if progress_fn is not None:
-        _ensure_stale_monitor()
     return {"status": "dispatched", "delegation_id": delegation_id}
 
 
@@ -713,7 +740,10 @@ def _finalize(delegation_id: str, result: Any, status: str) -> None:
         record["completed_at"] = time.time()
         record["interrupt_fn"] = None  # drop the closure; child is done
         record["progress_fn"] = None  # stop stale-monitor sampling
+        owner = record.pop("_approval_owner", None)
         snapshot = dict(record)
+    if owner is not None:
+        owner.close()
     _push_completion_event(snapshot, result(snapshot) if callable(result) else result, status)
     with _records_lock:
         if delegation_id in _records:
@@ -886,7 +916,10 @@ def _stale_monitor_loop() -> None:
                            "(in_tool=%s) — interrupting; grace window %.0fs",
                            delegation_id, quiet_for, in_tool, _STALL_GRACE_SECONDS)
             with _records_lock:
-                fn = (_records.get(delegation_id) or {}).get("interrupt_fn")
+                rec = _records.get(delegation_id) or {}
+                fn, owner = rec.get("interrupt_fn"), rec.get("_approval_owner")
+            if owner is not None:
+                owner.close("the background execution stopped responding")
             _call_interrupt(fn, "Async delegation %s stall interrupt failed: %s", delegation_id)
         for delegation_id in expired:
             with _records_lock:
@@ -991,6 +1024,10 @@ def list_async_delegations() -> List[Dict[str, Any]]:
 
 def _interrupt_records(targets: List[Dict[str, Any]], caller: str, reason: str, msg: str) -> int:
     """Call ``interrupt_fn`` on each record; log ``msg`` once; returns how many succeeded."""
+    for record in targets:
+        owner = record.get("_approval_owner")
+        if owner is not None:
+            owner.close("the background execution was interrupted")
     count = sum(
         _call_interrupt(r.get("interrupt_fn"), "%s: %s interrupt failed: %s", caller, r.get("delegation_id"))
         for r in targets)

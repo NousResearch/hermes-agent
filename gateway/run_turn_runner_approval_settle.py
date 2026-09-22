@@ -27,8 +27,8 @@ def register_timeout_notice(
     delivered BUTTON card's id when the adapter returned one, so the card itself is edited in place
     (which also drops its buttons). The plain-text prompt passes ``None``: it has no buttons to
     drop and rewriting it would erase the record of what was asked. ``command`` is the
-    already-redacted command shown to the user. The notice is skipped when the run is no longer
-    current (``ctx._run_still_current``).
+    already-redacted command shown to the user. The core request owns this notice, not the
+    parent turn: a detached child may still be waiting after that turn returns.
     """
     from tools.approval import register_gateway_settle
 
@@ -41,11 +41,8 @@ def register_timeout_notice(
     def settle(reason: str) -> None:
         if reason != "timeout":
             return  # answered / interrupted / notify_failed already produced their own feedback
-        # Same guard as every other late notice in TurnRunner: after /stop, /new or a restart the
-        # turn is over and this chat belongs to a newer run — do not edit or post into it.
-        still_current = getattr(runner._ctx, "_run_still_current", None)
-        if callable(still_current) and not still_current():
-            return
+        # The exact request timed out. Parent handoff does not invalidate its card or route;
+        # explicit owner/session cancellation instead settles with a non-timeout reason.
         runner._schedule(
             _post_timeout_notice(runner._ctx, command, card_message_id, timeout_s),
             "Approval timeout notice scheduling error")

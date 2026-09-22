@@ -1589,7 +1589,8 @@ class ExecApprovalPrompt:
     ``BasePlatformAdapter.send_exec_approval``). ``actions`` rows are ``(label, choice, style)``
     with ``choice`` in ``once`` / ``session`` / ``always`` / ``deny`` — the vocabulary
     ``tools.approval.resolve_gateway_approval`` accepts — and ``style`` in ``primary`` /
-    ``danger`` / ``""``."""
+    ``danger`` / ``""``. ``request_id`` correlates a control with its exact pending
+    operation; native controls must not substitute session-level FIFO resolution."""
     chat_id: str
     session_key: str
     text: str
@@ -1598,6 +1599,7 @@ class ExecApprovalPrompt:
     description: str
     smart_denied: bool
     metadata: Optional[Dict[str, Any]] = None
+    request_id: Optional[str] = None
 
     @property
     def choices(self) -> List[str]:
@@ -1612,6 +1614,8 @@ class SendResult:
     error: Optional[str] = None
     # Adapter-specific metadata. Contract: Telegram edit-overflow partials set
     # raw_response["partial_overflow"] so the stream consumer sends the missing tail.
+    # raw_response["exec_approval_settlement"] = True means a native card already owns the
+    # core settlement hook (including in-flight sends); the runner must not overwrite it.
     raw_response: Any = None
     retryable: bool = False  # transient connection error — base retries automatically
     retry_after: Optional[float] = None  # server-requested delay (Telegram FloodWait) beats our backoff
@@ -2777,14 +2781,14 @@ class BasePlatformAdapter(ABC):
     async def send_exec_approval(
         self, chat_id: str, command: str, session_key: str, description: str = "dangerous command",
         metadata: Optional[Dict[str, Any]] = None, allow_permanent: bool = True, allow_session: bool = True,
-        smart_denied: bool = False,
+        smart_denied: bool = False, *, request_id: Optional[str] = None,
     ) -> SendResult:
         """Interactive exec-approval prompt; a press resolves via
         ``tools.approval.resolve_gateway_approval``. Text and choice set are shared; adapters
         render them natively in ``_send_exec_approval_prompt``."""
         prompt = ExecApprovalPrompt(
             chat_id=chat_id, session_key=session_key, metadata=metadata, command=str(command or ""),
-            description=description, smart_denied=smart_denied,
+            description=description, smart_denied=smart_denied, request_id=request_id,
             text=self._format_exec_approval(command, description, smart_denied),
             actions=self._exec_approval_actions(
                 allow_permanent=allow_permanent, allow_session=allow_session, smart_denied=smart_denied))

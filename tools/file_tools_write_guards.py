@@ -284,8 +284,7 @@ def _request_protected_instruction_approval(reasons: list[str], task_id: str = "
     # is registered for this session. One-operation only — no scope buttons.
     session_key = get_current_session_key()
     try:
-        with _approval._lock:
-            notify_cb = _approval._gateway_notify_cbs.get(session_key)
+        notify_cb = _approval._gateway_notify_cb(session_key)
     except Exception:
         notify_cb = None
 

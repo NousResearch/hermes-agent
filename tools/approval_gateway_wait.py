@@ -15,6 +15,8 @@ import threading
 import time
 import uuid
 
+from tools.approval_ownership import GatewayApprovalOwner
+
 from tools.interrupt import get_interrupt_reason, is_interrupted
 from tools import approval_context as _ctx
 from tools.approval_human_wait import activity_heartbeat, human_wait_window
@@ -24,13 +26,14 @@ logger = logging.getLogger("tools.approval")
 
 class _ApprovalEntry:
     """One pending dangerous-command approval inside a gateway session."""
-    __slots__ = ("event", "data", "result", "reason", "acknowledged", "settle", "cancelled")
+    __slots__ = ("event", "data", "result", "reason", "acknowledged", "settle", "cancelled", "owner")
 
     def __init__(self, data: dict):
         self.event = threading.Event()
         self.data = dict(data)
         self.data.setdefault("request_id", uuid.uuid4().hex)
         self.acknowledged = False
+        self.owner: GatewayApprovalOwner | None = None
         # Surface hook run once when the wait ends by ANY path (answer, timeout, interrupt, /approve from
         # another client): the tui_gateway withdraws its open server→client request through it.
         self.settle = None
@@ -81,8 +84,10 @@ def _cancel_cause(state: str, entry) -> str | None:
     or a plain timeout."""
     if state == "interrupted":
         return get_interrupt_reason() or "turn interrupted"
+    if entry.result is None and entry.cancelled:
+        return entry.cancelled
     if state == "set" and entry.result is None:
-        return entry.cancelled or "the turn ended before the prompt was answered"
+        return "the turn ended before the prompt was answered"
     return None
 
 
@@ -141,6 +146,7 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
     the leader's ``session``/``always``/``deny``/timeout; a ``once`` covers only
     the leader, so the follower falls through to a fresh prompt."""
     from tools import approval as _approval
+    from tools.approval_ownership import current_gateway_approval_owner
     from agent.terminal_approval_batch import approval_published, preparing_terminal_approval, register_prepared_approval
 
     primary_key = approval_data.get("pattern_key", "")
@@ -151,10 +157,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         "pattern_keys": list(approval_data.get("pattern_keys", [primary_key])),
         "session_key": session_key, "surface": surface,
     }
+    owner = current_gateway_approval_owner(session_key)
+    if owner is None and isinstance(notify_cb, GatewayApprovalOwner):
+        owner = notify_cb
     keys = list(approval_data.get("pattern_keys") or [])
     with _approval._lock:
         leader = next((e for e in _approval._gateway_queues.get(session_key, [])
-                       if e.data.get("command") == approval_data.get("command")
+                       if e.owner is owner
+                       and e.data.get("command") == approval_data.get("command")
                        and list(e.data.get("pattern_keys") or []) == keys), None)
     if leader is not None and not preparing_terminal_approval():
         adopted = _await_coalesced_leader(session_key, leader, payload)
@@ -162,9 +172,14 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             return adopted
 
     entry = _ApprovalEntry(approval_data)
+    entry.owner = owner
     with _approval._lock:
-        register_prepared_approval(session_key, entry)
-        _approval._gateway_queues.setdefault(session_key, []).append(entry)
+        cancelled = owner.cancelled if owner is not None else None
+        if not cancelled:
+            register_prepared_approval(session_key, entry)
+            _approval._gateway_queues.setdefault(session_key, []).append(entry)
+    if cancelled:
+        return _finish(payload, False, None, None, cancelled=cancelled)
 
     def _drop_entry(state: str) -> str | None:
         """Leave the queue and return the choice committed so far. Reading ``entry.result`` and
@@ -184,8 +199,10 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
             # ``request.cancel`` carries a RequestCancelReason: a choice committed from another surface is
             # ``resolved``; a withdrawn entry (woken with no choice — session torn down, turn ended, client
             # cannot answer) is ``session_closed``; never the raw poll-state token "set".
-            if state == "set":
-                reason = "resolved" if choice is not None else "session_closed"
+            if choice is not None:
+                reason = "resolved"
+            elif entry.cancelled or state == "set":
+                reason = "session_closed"
             else:
                 reason = state
             try:
@@ -214,6 +231,9 @@ def _await_gateway_decision(session_key: str, notify_cb, approval_data: dict, *,
         entry.cancelled = cancelled
         entry.event.set()
     choice = _drop_entry(state)
+    # Closure can win after the poll checks its deadline, just like a late answer.
+    # Report the committed withdrawal rather than inventing an approval timeout.
+    cancelled = _cancel_cause(state, entry)
     if state == "interrupted":
         # Our own decision stays a fail-closed deny.
         choice = "deny"

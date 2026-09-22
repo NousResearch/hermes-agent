@@ -2170,6 +2170,9 @@ class GatewayTurnMixin:
             # Admission/typing is not execution. All routing, authorization and
             # turn preparation gates have passed when the agent runner is entered.
             event._heartbeat_execution_started = True
+            start_typing = getattr(event, "_gateway_start_typing_refresh", None)
+            if callable(start_typing):
+                start_typing()
             agent_result = await self._run_agent(
                 message=message_text, context_prompt=prepared.context_prompt, history=history, source=source,
                 session_id=_run_start_session_id, session_key=session_key,

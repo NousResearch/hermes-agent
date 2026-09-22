@@ -4285,7 +4285,7 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
     older_than_seconds = int(older_than_seconds)
     if older_than_seconds < 0:
         raise ValueError(_NEGATIVE_RETENTION_MSG.format(older_than_seconds))
-    cutoff = int(time.time()) - int(older_than_seconds)
+    cutoff = int(time.time()) - older_than_seconds
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "

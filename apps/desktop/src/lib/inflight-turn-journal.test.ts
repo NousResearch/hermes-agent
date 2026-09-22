@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { ChatMessage } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
   type JournalableSessionState,
@@ -691,6 +691,27 @@ describe('recoverInFlightTurnJournal', () => {
     expect(result.messages.map(m => m.id)).toEqual(['db-u1', 'db-a1'])
     // The stale entry is cleared so the next resume stays clean.
     expect(readInFlightTurnJournal('stored-1')).toBeNull()
+  })
+
+  // A steer typed before the first token journals `[prompt, steer, assistant]`.
+  // When only the prompt persisted, the prompt is the anchor: the steer and
+  // the partial reply are recovered under it, and the prompt is not repeated.
+  it('anchors a pre-token steer tail on the persisted prompt', () => {
+    journalEntry([
+      user('user-1', 'remove the session counts'),
+      user('user-2', 'hurry up'),
+      assistant('assistant-stream-1', 'Moving.')
+    ])
+
+    const base = [user('db-u1', 'remove the session counts')]
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.applied).toBe(true)
+    expect(result.messages.map(message => `${message.role}:${chatMessageText(message)}`)).toEqual([
+      'user:remove the session counts',
+      'user:hurry up',
+      'assistant:Moving.'
+    ])
   })
 
   it('does not re-append committed answers when the journal tail has no user row', () => {

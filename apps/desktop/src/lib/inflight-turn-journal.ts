@@ -752,11 +752,31 @@ export function mergeInFlightMessages(
     return noop
   }
 
-  const tailUserIndex = tail.findLastIndex(message => message.role === 'user')
-  const tailUser = tailUserIndex >= 0 ? tail[tailUserIndex] : null
+  // Anchor on the latest tail user the base already holds. A steer typed
+  // before the first token rides in the tail behind its prompt; when only the
+  // prompt persisted, the prompt is the anchor and the steer is recovered
+  // output, not a reason to append the prompt a second time.
+  let tailUserIndex = tail.findLastIndex(message => message.role === 'user')
+  let matchingUserIndex = -1
+
+  for (let index = tailUserIndex; index >= 0; index -= 1) {
+    const tailUser = tail[index]
+
+    if (tailUser.role !== 'user') {
+      continue
+    }
+
+    matchingUserIndex = baseMessages.findLastIndex(message => userMessagesMatch(message, tailUser))
+
+    if (matchingUserIndex >= 0) {
+      tailUserIndex = index
+
+      break
+    }
+  }
+
   let tailAssistants = tail.slice(tailUserIndex + 1)
   let lastJournalRow = tailAssistants.findLast(assistantHasRecoverableContent) ?? null
-  const matchingUserIndex = tailUser ? baseMessages.findLastIndex(message => userMessagesMatch(message, tailUser)) : -1
 
   if (matchingUserIndex < 0) {
     // No base user matches the tail's user row (a projected user-inflight row

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import ssl
 from threading import Thread
@@ -598,6 +599,30 @@ def test_fallback_bundle_change_does_not_invalidate_the_memo(monkeypatch, tmp_pa
 
     assert urllib_security._resolved_https_context() is first
     assert calls == [str(preferred)]
+
+
+def test_default_certificates_fallback_is_logged_once_after_all_bundles_fail(monkeypatch, caplog):
+    """A failed candidate says "trying the next bundle"; the default-certificates line is emitted once."""
+    import hermes_cli.urllib_security as urllib_security
+
+    def create_default_context(*, cafile=None):
+        raise ssl.SSLError(f"bad bundle {cafile}")
+
+    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
+
+    with caplog.at_level(logging.WARNING, logger=urllib_security.logger.name):
+        assert urllib_security._build_https_context(("/a.pem", "/b.pem")) == (None, None)
+
+    messages = [record.getMessage() for record in caplog.records]
+    per_failure = [m for m in messages if "trying the next bundle" in m]
+    assert [m.split(":")[0] for m in per_failure] == [
+        "CA bundle could not be loaded from /a.pem",
+        "CA bundle could not be loaded from /b.pem",
+    ]
+    assert [m for m in messages if "falling back to default certificates" in m] == [
+        "No configured CA bundle could be loaded — falling back to default certificates"
+    ]
+    assert all(record.levelno == logging.WARNING for record in caplog.records)
 
 
 @pytest.mark.parametrize(

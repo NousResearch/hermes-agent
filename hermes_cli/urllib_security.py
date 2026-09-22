@@ -167,9 +167,9 @@ def _build_https_context(candidates: tuple[str, ...]) -> tuple[ssl.SSLContext | 
         try:
             return ssl.create_default_context(cafile=path), path
         except (OSError, ssl.SSLError) as exc:
-            logger.warning(
-                "CA bundle could not be loaded from %s: %s — falling back to default certificates", path, exc
-            )
+            logger.warning("CA bundle could not be loaded from %s: %s — trying the next bundle", path, exc)
+    if candidates:
+        logger.warning("No configured CA bundle could be loaded — falling back to default certificates")
     return None, None
 
 

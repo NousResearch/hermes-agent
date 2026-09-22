@@ -332,11 +332,15 @@ def _cmd_export(db, args):
         from hermes_cli.session_export_md import redact_session_data
         return redact_session_data(data)
 
+    # HTML and --only are read by people, so they carry the turns in-place compaction archived; JSONL stays the
+    # live rows import_sessions restores.
+    shown = args.format == "html" or bool(getattr(args, "only", None))
+
     def _collect_sessions():
         """--session-id / filters / bare export -> redacted session dicts, or None after printing an error."""
         if args.session_id:
             resolved = db.resolve_session_id(args.session_id)
-            data = _redact(db.export_session(resolved)) if resolved else None
+            data = _redact(db.export_session(resolved, include_compacted=shown)) if resolved else None
             if not data:
                 _not_found(args.session_id)
                 return None
@@ -345,10 +349,10 @@ def _cmd_export(db, args):
             candidates = db.list_prune_candidates(**filters)
             if args.dry_run:
                 return _print_dry_run_preview(candidates, filters)
-            return [s for s in (_redact(db.export_session(row["id"])) for row in candidates) if s]
+            return [s for s in (_redact(db.export_session(row["id"], include_compacted=shown)) for row in candidates) if s]
         if args.dry_run:
             return print("--dry-run requires at least one filter.")
-        return [_redact(s) for s in db.export_all(source=None)]
+        return [_redact(s) for s in db.export_all(source=None, include_compacted=shown)]
     if getattr(args, "only", None):
         return _export_flat("only", args, _collect_sessions)
     if args.format == "trace":
@@ -472,7 +476,10 @@ def _export_markdown(db, args, filters, redact):
     output_dir = _export_dir(args.output)
 
     def _export_one(session_id: str, *, include_lineage: bool = False):
-        data = db.export_session_lineage(session_id) if include_lineage else db.export_session(session_id)
+        # The history the user sees, not only the live rows: in-place compaction archives earlier turns under
+        # the same id, and --delete-after-verified removes every row of it.
+        export = db.export_session_lineage if include_lineage else db.export_session
+        data = export(session_id, include_compacted=True)
         if not data:
             return None, None
         data = redact(data)
@@ -538,6 +545,14 @@ def _export_markdown_single(db, args, export_one, output_dir, lineage_is_logical
         return
     for data, exported_path in exported_items:
         ok, reason = verify_export_file(exported_path, data)
+        # The file only proves it matches the dict it was written from; the delete removes what the store holds
+        # now, so re-count the store just before it (like the adoption retire loop, outside its transaction).
+        exported = len(data.get("messages") or [])
+        shown = sum(len(db.get_messages(sid, include_compacted=True))
+                    for sid in data.get("lineage_session_ids") or [data["id"]])
+        if ok and shown != exported:
+            ok, reason = False, (f"the session changed after it was exported ({shown} messages now, {exported} in "
+                                 "the file); run the export again")
         if not ok:
             print(f"Export verification failed; not deleting session '{data.get('id')}': {reason}")
             return

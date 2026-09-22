@@ -1660,6 +1660,12 @@ DEFAULT_CONFIG = {
         # After this many consecutive guardian DENYs in a session, the deny message escalates to a
         # hard-stop (report to user / ask for /approve). Approval resets; 0 off.
         "denial_breaker_threshold": 3,
+        # When false, approval prompts and pending records offer once/session/deny only: no
+        # surface (CLI, gateway buttons, TUI/desktop, Runs API) can grant the permanent scope and
+        # no "always" response can write ``command_allowlist``, so one broad approval never
+        # becomes a cross-session bypass. A stale client that still answers "always" is persisted
+        # at session scope instead.
+        "allow_permanent": True,
         # Case-insensitive fnmatch globs against terminal commands; a match blocks even under --yolo
         # / mode=off. Quote in YAML when starting with * or containing {}/!/: e.g. "git push
         # --force*".

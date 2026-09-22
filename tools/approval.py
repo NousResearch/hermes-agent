@@ -380,12 +380,15 @@ def load_permanent(patterns: set):
 def _persist_choice(session_key: str, choice: str, warnings: list[tuple]) -> None:
     """Persist a human ``session``/``always`` choice for each ``(key, _, is_tirith)``. Tirith
     findings are session-max by design (no broad permanent allowlisting of content-level
-    findings), so ``always`` downgrades them to session. ``once`` persists nothing."""
+    findings), so ``always`` downgrades them to session. ``once`` persists nothing.
+    ``approvals.allow_permanent: false`` downgrades the same way — the scope was never offered, so a
+    stale or custom client's ``always`` must not write ``command_allowlist``."""
+    permanent_scope = approval_context._get_allow_permanent()
     for key, _, is_tirith in warnings:
         if choice not in ("session", "always"):
             continue
         approve_session(session_key, key)
-        if choice == "always" and not is_tirith:
+        if choice == "always" and not is_tirith and permanent_scope:
             approve_permanent(key)
             with _lock:
                 snapshot = set(_permanent_set())
@@ -812,7 +815,11 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
         if result is not None:
             return result
     pending_body = pending_body() if pending_body else None
-    allow_permanent = permanent_capable and not smart_denied
+    # ``approvals.allow_permanent: false`` removes the permanent scope from every surface at once:
+    # the pending record, the transport prompt and the CLI prompt all advertise the scopes from this
+    # flag, and ``_persist_choice`` refuses the write — so no surface can offer an "always" its
+    # backend would not honour, and no gate can be reached that way.
+    allow_permanent = permanent_capable and not smart_denied and approval_context._get_allow_permanent()
 
     def deny(template: str, outcome: str, **fmt) -> dict:
         breaker = ""
@@ -862,7 +869,7 @@ def _human_decision(spec: _GateSpec, *, command: str, description: str,
             data = {
                 "command": display_command, "pattern_key": pattern_key,
                 "pattern_keys": pattern_keys, "description": display_description,
-                "allow_permanent": permanent_capable and not smart_denied,
+                "allow_permanent": allow_permanent,
                 "allow_session": not smart_denied,
             }
             if smart_denied:

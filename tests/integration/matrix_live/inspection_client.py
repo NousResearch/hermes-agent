@@ -205,6 +205,7 @@ def check_inspection(
             "kick": 50,
             "ban": 50,
             "redact_other": 50,
+            "send_redaction": 0,
         },
         "bot_can_edit_pins": False,
     }

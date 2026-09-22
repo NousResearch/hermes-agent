@@ -129,6 +129,7 @@ _LOCAL_SCHEDULED_MODEL_PROVIDERS = frozenset({
 def _scheduled_moa_preset_uses_local_route(model: Any, cfg: dict) -> bool:
     """Whether any enabled route inside a MoA preset resolves to a local endpoint."""
     from agent.errors import MoAPresetNotFoundError
+    from agent.moa_loop import _slot_runtime
     from hermes_cli.moa_config import resolve_moa_preset
 
     try:
@@ -144,12 +145,16 @@ def _scheduled_moa_preset_uses_local_route(model: Any, cfg: dict) -> bool:
     aggregator = preset.get("aggregator")
     if isinstance(aggregator, dict):
         routes.append(aggregator)
-    return any(
-        _scheduled_model_route_is_local(
-            route.get("provider"), route.get("base_url"), model=route.get("model"), cfg=cfg,
-        )
-        for route in routes
-    )
+    for route in routes:
+        runtime = _slot_runtime(route)
+        if _scheduled_model_route_is_local(
+            runtime.get("provider") or route.get("provider"),
+            runtime.get("base_url"),
+            model=runtime.get("model") or route.get("model"),
+            cfg=cfg,
+        ):
+            return True
+    return False
 
 
 def _scheduled_model_route_is_local(

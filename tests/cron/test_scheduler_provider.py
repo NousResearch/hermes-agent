@@ -1068,6 +1068,77 @@ def test_scheduled_cloud_route_keeps_cloud_backed_moa_fallback():
     ) == [moa, cloud]
 
 
+def test_scheduled_cloud_route_skips_moa_with_scoped_lan_override(tmp_path, monkeypatch):
+    """MoA classification honors the same scoped provider URL override as slot execution."""
+    import agent.moa_loop as moa_loop
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    (profile / ".env").write_text("NVIDIA_BASE_URL=http://192.168.1.20:8080/v1\n")
+    moa_loop._runtime_cache.clear()
+    moa = {"provider": "moa", "model": "scoped-lan"}
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "moa": {
+            "default_preset": "scoped-lan",
+            "presets": {
+                "scoped-lan": {
+                    "reference_models": [{"provider": "nvidia", "model": "nvidia/test-model"}],
+                    "aggregator": {"provider": "openrouter", "model": "openai/gpt-5.5"},
+                },
+            },
+        },
+        "fallback_providers": [moa, cloud],
+    }
+
+    try:
+        with _profile_cron_scope(profile):
+            assert scheduled_model_fallback_chain(
+                {"id": "cloud-only", "provider": "nous"}, cfg,
+            ) == [cloud]
+    finally:
+        set_multiplex_active(False)
+
+
+def test_scheduled_cloud_route_skips_moa_with_auto_selected_local_route(tmp_path, monkeypatch):
+    """A MoA auto slot inherits the effective local main route before cron classifies it."""
+    import yaml
+
+    import agent.moa_loop as moa_loop
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    moa_loop._runtime_cache.clear()
+    moa = {"provider": "moa", "model": "auto-local"}
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "model": {
+            "provider": "auto",
+            "default": "local-test-model",
+            "base_url": "http://127.0.0.1:11434/v1",
+        },
+        "moa": {
+            "default_preset": "auto-local",
+            "presets": {
+                "auto-local": {
+                    "reference_models": [{"provider": "auto", "model": "local-test-model"}],
+                    "aggregator": {"provider": "openrouter", "model": "openai/gpt-5.5"},
+                },
+            },
+        },
+        "fallback_providers": [moa, cloud],
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    assert scheduled_model_fallback_chain(
+        {"id": "cloud-only", "provider": "nous"}, cfg,
+    ) == [cloud]
+
+
 def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     """Hot-serve: with a callable ``profile_homes`` the ticker re-reads the served set every cycle,
     so a profile created after the multiplexer started gets its jobs fired without a restart."""

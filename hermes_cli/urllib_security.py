@@ -13,6 +13,8 @@ from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
+from utils import file_signature
+
 logger = logging.getLogger(__name__)
 
 # Headers safe to forward to a different origin. Everything else is dropped:
@@ -83,7 +85,7 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
 
 
 # Building the context parses the whole CA bundle (~4 ms for certifi) on EVERY Hermes-owned request,
-# since no opener is ever installed globally. Memoise on the bundles' (path, mtime_ns, size) so a
+# since no opener is ever installed globally. Memoise on the bundles' ``_bundle_signature`` so a
 # rotated/reconfigured bundle is still picked up. The context is shared and never mutated by callers.
 # No lock: a race costs one duplicate parse.
 _HTTPS_CONTEXT_CACHE: tuple[tuple, ssl.SSLContext | None] | None = None
@@ -121,12 +123,15 @@ def _ca_bundle_candidates() -> tuple[str, ...]:
 
 
 def _bundle_signature(path: str) -> tuple:
-    """``(path, mtime_ns, size)`` so an edited or rotated bundle invalidates the memo."""
+    """``(path, *file_signature(stat))`` so an edited or rotated bundle invalidates the memo.
+
+    ``utils.file_signature`` adds inode and ctime to mtime + size, so a timestamp-preserving
+    replacement (``cp -p``, ``rsync -t``) of the bundle is caught as well. Unreadable → ``(path, None)``.
+    """
     try:
-        stat = Path(path).stat()
+        return (path, *file_signature(Path(path).stat()))
     except OSError:
-        return (path, None, None)
-    return (path, stat.st_mtime_ns, stat.st_size)
+        return (path, None)
 
 
 def _resolved_https_context() -> ssl.SSLContext | None:

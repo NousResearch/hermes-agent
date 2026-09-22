@@ -13033,7 +13033,7 @@ function startAttachedBackendMonitor(attached: AttachedBackend) {
       stopAttachedBackendMonitor()
       rememberLog(`[attach] attached backend on ${attached.baseUrl} (pid ${attached.pid}) is gone; recovering`)
       invalidatePrimaryConnection()
-      scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.', ready: true })
+      scheduleUnexpectedPrimaryRecovery({ error: 'The Hermes backend this app attached to exited.' })
     })
   }, ATTACHED_LIVENESS_POLL_MS)
 
@@ -13150,22 +13150,17 @@ function startHermes() {
   return start
 }
 
-// A ready primary child died. When its exit leaves the primary slot with no
-// owner and no start in flight (outside an intentional teardown), the
-// supervisor owns the respawn (#112344): the stale-classified exit used to
-// "log and return", and recovery then hinged on the renderer noticing its
-// socket drop — a 9 h engine-less window when it did not. Pool children are
-// deliberately not consulted: they never own the window backend.
+// A primary child died. When its exit leaves the primary slot with no owner
+// and no start in flight (outside an intentional teardown), the supervisor
+// owns the respawn (#112344). This applies before readiness too: SIGTERM can
+// arrive while a replacement is booting, and an empty slot must not stay
+// latched until the whole app relaunches. Pool children are deliberately not
+// consulted: they never own the window backend.
 function scheduleUnexpectedPrimaryRecovery({
   code = null,
   signal = null,
-  error = null,
-  ready = false
-}: { code?: number | null; error?: string | null; ready?: boolean; signal?: string | null } = {}) {
-  if (!ready) {
-    return false
-  }
-
+  error = null
+}: { code?: number | null; error?: string | null; signal?: string | null } = {}) {
   const claimed = primaryExitRecovery.claim({
     hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
     hasPendingStart: primaryStartsInFlight > 0,
@@ -13509,7 +13504,7 @@ async function runHermesStart() {
 
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(`Ignoring stale Hermes backend error: ${error.message}`)
-        scheduleUnexpectedPrimaryRecovery({ error: error.message, ready: backendReady })
+        scheduleUnexpectedPrimaryRecovery({ error: error.message })
         rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
 
         return
@@ -13534,7 +13529,7 @@ async function runHermesStart() {
       if (!backendConnectionState.clearForCurrentProcess(processOwner)) {
         rememberLog(formatBackendExitLine('Ignoring stale Hermes backend exit', code, signal, primaryOutputTail))
 
-        scheduleUnexpectedPrimaryRecovery({ code, signal, ready: backendReady })
+        scheduleUnexpectedPrimaryRecovery({ code, signal })
 
         if (!backendReady) {
           rejectBackendStart?.(new Error('Hermes backend start was superseded by a newer connection attempt.'))
@@ -13545,7 +13540,7 @@ async function runHermesStart() {
 
       rememberLog(formatBackendExitLine('Hermes backend exited', code, signal, primaryOutputTail))
 
-      if (!scheduleUnexpectedPrimaryRecovery({ code, signal, ready: backendReady })) {
+      if (!scheduleUnexpectedPrimaryRecovery({ code, signal })) {
         sendBackendExit({ code, signal })
       }
 

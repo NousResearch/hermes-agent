@@ -1,11 +1,17 @@
 import assert from 'node:assert/strict'
+import fs from 'node:fs'
+import path from 'node:path'
+import { fileURLToPath } from 'node:url'
 
-import { test } from 'vitest'
+import { expect, test } from 'vitest'
 
 import { createBackendConnectionState } from './backend-connection-state'
 import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
 
 type Child = { pid: number }
+
+const here = path.dirname(fileURLToPath(import.meta.url))
+const mainSource = fs.readFileSync(path.join(here, 'main.ts'), 'utf8').replace(/\r\n/g, '\n')
 
 // Mirrors main.ts::runHermesStart's exit handler: the slot state the handler
 // reads when the child's exit is classified as stale (#112344).
@@ -88,4 +94,22 @@ test('a backend that dies after every ready is respawned at most maxRespawns tim
   clock += 120_000
   assert.equal(latch.claim(empty), true)
   assert.equal(latch.isCrashLooping(), false)
+})
+
+test('a pre-ready primary exit reaches the empty-slot recovery claim', () => {
+  const start = mainSource.indexOf('function scheduleUnexpectedPrimaryRecovery(')
+  const end = mainSource.indexOf('\nasync function runHermesStart()', start)
+
+  expect(start).toBeGreaterThan(-1)
+  expect(end).toBeGreaterThan(start)
+
+  const body = mainSource.slice(start, end)
+
+  // Readiness only re-arms the latch after a healthy boot. It must not veto an
+  // otherwise recoverable empty slot: SIGTERM can arrive before backendReady.
+  expect(body).not.toContain('ready = false')
+  expect(body).not.toContain('if (!ready)')
+  expect(body).toContain('primaryExitRecovery.claim(')
+  expect(body).toContain('hasPendingStart: primaryStartsInFlight > 0')
+  expect(body).toContain('intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()')
 })

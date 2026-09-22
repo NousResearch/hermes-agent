@@ -2158,7 +2158,8 @@ if not _configured_cwd or _configured_cwd in CWD_PLACEHOLDERS:
         docker_mount_cwd_to_workspace=os.getenv(
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").lower()
         in {"true", "1", "yes"},
-        home_fallback=str(Path.home()))
+        home_fallback=str(Path.home()),
+        workspace_fallback=str(get_hermes_home()))
     if _resolved_cwd is None:
         os.environ.pop("TERMINAL_CWD", None)
     else:

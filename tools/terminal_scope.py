@@ -107,6 +107,7 @@ def build_profile_terminal_scope(
 
     home = Path(hermes_home)
     scope: Dict[str, str] = {}
+    messaging_cwd: str | None = None
 
     def _apply(mapping: Dict[str, Any]) -> None:
         for cfg_key, value in mapping.items():
@@ -131,8 +132,10 @@ def build_profile_terminal_scope(
             raise TerminalPolicyUnavailable(f"cannot read {env_path}: {exc}") from exc
         from agent.secret_scope import load_env_file
 
-        scope.update((k, str(v)) for k, v in load_env_file(env_path).items()
+        profile_env = load_env_file(env_path)
+        scope.update((k, str(v)) for k, v in profile_env.items()
                      if k.startswith("TERMINAL_"))
+        messaging_cwd = profile_env.get("MESSAGING_CWD")
     if env_overlay:
         scope.update((k, str(v)) for k, v in env_overlay.items() if k.startswith("TERMINAL_"))
     # Read config.yaml directly, not via read_raw_config() (which collapses "missing" and
@@ -153,11 +156,16 @@ def build_profile_terminal_scope(
         raw_terminal = raw.get("terminal") if isinstance(raw, dict) else None
         if isinstance(raw_terminal, dict):
             _apply(raw_terminal)
-    _resolve_scope_cwd_placeholder(scope)
+    _resolve_scope_cwd_placeholder(
+        scope, messaging_cwd=messaging_cwd, workspace_fallback=str(home)
+    )
     return scope
 
 
-def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
+def _resolve_scope_cwd_placeholder(
+    scope: Dict[str, str], *, messaging_cwd: str | None,
+    workspace_fallback: str,
+) -> None:
     """Give a scope with no explicit ``terminal.cwd`` the same resolved ``TERMINAL_CWD`` a standalone
     gateway computes at import (``gateway/run.py``: local backend → ``$HOME``; docker with the
     workspace mount → the host cwd signal; other backends → unset). Without it a routed turn's
@@ -170,10 +178,11 @@ def _resolve_scope_cwd_placeholder(scope: Dict[str, str]) -> None:
 
     resolved = resolve_placeholder_terminal_cwd(
         configured_cwd="", terminal_backend=scope.get("TERMINAL_ENV", ""),
-        messaging_cwd=None,
+        messaging_cwd=messaging_cwd,
         docker_mount_cwd_to_workspace=scope.get(
             "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE", "false").strip().lower() in {"true", "1", "yes"},
         home_fallback=str(Path.home()),
+        workspace_fallback=workspace_fallback,
     )
     if resolved:
         scope["TERMINAL_CWD"] = resolved

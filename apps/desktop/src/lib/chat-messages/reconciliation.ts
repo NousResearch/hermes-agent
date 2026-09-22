@@ -256,11 +256,49 @@ export function preserveLocalAssistantErrors(
     return mergedNextMessages
   }
 
-  const preserved = currentMessages
-    .filter(message => preserveIds.has(message.id))
-    .map(message => ({ ...message, pending: false }))
+  // Position each preserved block instead of appending every block at the end.
+  // Once the conversation moves past a failed turn — a re-submitted prompt
+  // truncated it out of the authoritative list and the retry persisted —
+  // appending it repaints the old turn at the newest-message position. Anchor
+  // a block before its nearest surviving successor in the current timeline; a
+  // block with no successor is a genuine failed tail and still lands at the
+  // end.
+  const merged = [...mergedNextMessages]
 
-  return [...mergedNextMessages, ...preserved]
+  const preserved = currentMessages
+    .map((message, index) => ({ index, message }))
+    .filter(({ message }) => preserveIds.has(message.id))
+
+  for (let cursor = preserved.length - 1; cursor >= 0; cursor -= 1) {
+    let start = cursor
+
+    while (start > 0 && preserved[start - 1].index === preserved[start].index - 1) {
+      start -= 1
+    }
+
+    const blockEnd = preserved[cursor].index
+    let insertAt = merged.length
+
+    for (let probe = blockEnd + 1; probe < currentMessages.length; probe += 1) {
+      const successor = merged.findIndex(message => message.id === currentMessages[probe].id)
+
+      if (successor !== -1) {
+        insertAt = successor
+
+        break
+      }
+    }
+
+    merged.splice(
+      insertAt,
+      0,
+      ...preserved.slice(start, cursor + 1).map(({ message }) => ({ ...message, pending: false }))
+    )
+
+    cursor = start
+  }
+
+  return merged
 }
 
 export function branchGroupForUser(userMessage: ChatMessage): string {

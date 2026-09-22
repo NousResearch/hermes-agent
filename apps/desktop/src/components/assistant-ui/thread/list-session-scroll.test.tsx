@@ -188,7 +188,7 @@ describe('list session-scroll restore', () => {
     }
   })
 
-  it('restores a reading offset on return after switching away', async () => {
+  it('opens sessions at the latest messages instead of a saved reading offset', async () => {
     saveThreadScrollPosition('a', { fromBottom: 800, kind: 'offset' })
 
     const { container, rerender } = render(<ScrollHarness messages={sessionMessages('a')} sessionKey="a" />)
@@ -210,7 +210,7 @@ describe('list session-scroll restore', () => {
 
     await settleScroll()
 
-    expect(vpA.scrollTop).toBe(SCROLL_H - 800 - CLIENT_H)
+    expect(vpA.scrollTop).toBe(SCROLL_H - CLIENT_H)
 
     // Globals switch before React commits the outgoing cleanup.
     for (const remote of [null, 'https://other.invalid']) {

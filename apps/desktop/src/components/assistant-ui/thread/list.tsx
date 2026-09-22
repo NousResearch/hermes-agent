@@ -869,13 +869,13 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     return () => window.removeEventListener('beforeunload', flush)
   }, [scrollStorageKey, sessionKey])
 
-  // Reset the cap and restore the remembered scroll state on mount + every
-  // session switch (messages swap in place on a long-lived runtime, so
-  // sessionKey is the only signal). Sessions the user left mid-read reapply
-  // their exact distance-from-bottom; sticky-bottom sessions pin to the bottom.
+  // Reset the cap on mount + every session switch (messages swap in place on a
+  // long-lived runtime, so sessionKey is the only signal). Session entry shows
+  // the latest messages; remounting a kept-alive pane preserves its explicit
+  // in-session scroll and paging position.
   // The swap is multi-step and lays out over many frames; letting the library
   // follow re-pins every frame to a moving target — visible as ~10 scroll
-  // jumps. Instead: quiet it, glue to the remembered target until the height
+  // jumps. Instead: quiet it, glue to the bottom target until the height
   // holds steady, then hand back (locked at the bottom, escaped at an offset).
   // Live streaming afterward uses the normal resize follow.
   //
@@ -913,7 +913,8 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
 
     // Cleanup belongs to the subscription owner, not the newly active globals.
     const storageKey = scrollStorageKey
-    const sessionSwitched = settleKeyRef.current !== sessionKey || restoredStorageKeyRef.current !== storageKey
+    const sessionKeyChanged = settleKeyRef.current !== sessionKey
+    const sessionSwitched = sessionKeyChanged || restoredStorageKeyRef.current !== storageKey
     restoredStorageKeyRef.current = storageKey
 
     const plan = planThreadScrollRestore(
@@ -948,7 +949,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       // Whatever anchor exists was measured against the tree that just
       // collapsed (the OUTGOING transcript, or stale rows shown under this key
       // before the swap) and would re-pin the arriving one to garbage. The
-      // re-arm below restores from the remembered position instead.
+      // re-arm below restores the arriving transcript from its saved target.
       loadSettledRef.current = false
       settleKeyRef.current = sessionKey
       restoreFromBottomRef.current = null
@@ -962,7 +963,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
     }
 
     const remembered = sessionKey ? getThreadScrollPosition(sessionKey, storageKey) : undefined
-    let target = remembered ?? THREAD_SCROLL_BOTTOM
+    let target = sessionKeyChanged ? THREAD_SCROLL_BOTTOM : (remembered ?? THREAD_SCROLL_BOTTOM)
 
     // The previous session's parting state must not leak into this one: from
     // here every scroll/RO event describes the restored session.

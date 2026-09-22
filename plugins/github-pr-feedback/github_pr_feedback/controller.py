@@ -2240,6 +2240,8 @@ class ScanController:
             return "invalid_feedback_timestamp"
         if _is_non_actionable_review_container(feedback):
             return "non_actionable_review_container"
+        if _is_advisory_lgtm_report(feedback):
+            return "advisory_lgtm_report"
         if _is_codex_review_summary_tracker(feedback):
             return "codex_review_summary_tracker"
         if is_codex_review_request(feedback.body):
@@ -2774,6 +2776,29 @@ def _is_non_actionable_review_container(feedback: Feedback) -> bool:
         and "p1 badge" not in body
         and "p2 badge" not in body
         and not any(marker in body for marker in _ACTION_REMAINS_MARKERS)
+    )
+
+
+def _is_advisory_lgtm_report(feedback: Feedback) -> bool:
+    """Skip reference-only AI review summaries that request no PR changes."""
+
+    if feedback.kind not in {"issue_comment", "review_comment", "review"}:
+        return False
+    body = " ".join(feedback.body.casefold().split())
+    return (
+        "automated review for reference; please use your judgment" in body
+        and re.search(r"\bverdict\s*:\s*lgtm\b", body) is not None
+        and "non-blocking:" in body
+        and not any(
+            marker in body
+            for marker in (
+                "changes requested",
+                "action required",
+                "blocking finding",
+                "must be fixed",
+                "needs to be fixed",
+            )
+        )
     )
 
 

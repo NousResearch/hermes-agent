@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 
 import { test } from 'vitest'
 
-import type { RemoteUpdateTarget } from './managed-ssh-update'
+import type { ManagedSshUpdateIntent, RemoteUpdateTarget } from './managed-ssh-update'
 import {
   createManagedSshUpdateService,
   type ManagedSshUpdateServiceDependencies,
@@ -12,6 +12,18 @@ import {
 
 const CORRELATION = '12345678-1234-4678-9234-567812345678'
 const OTHER_CORRELATION = '22345678-1234-4678-9234-567812345678'
+const PINNED_INTENT: ManagedSshUpdateIntent = {
+  targetSha: 'abcdef0123456789abcdef0123456789abcdef01',
+  source: {
+    repositoryRoot: '/srv/hermes-agent',
+    originUrl: 'https://github.com/NousResearch/hermes-agent.git',
+    resolvedRef: 'refs/remotes/origin/main',
+    targetSha: 'abcdef0123456789abcdef0123456789abcdef01',
+    assuranceProfile: 'managed-ssh-review-v1',
+    assuranceEvidenceSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    assuranceGeneration: 7
+  }
+}
 
 interface TestScope extends ManagedSshUpdateScope {
   state?: object | null
@@ -124,6 +136,116 @@ test('durable ownership fences new admission and only the exact owner can releas
   assert.equal(service.gate.owner('homelab'), CORRELATION)
   assert.throws(() => service.gate.assertCanDial('homelab'), /paused/)
   assert.throws(() => service.gate.assertCanMutate('homelab'), /edited or removed/)
+})
+
+test('coordinator forwarding requires a capability bound to one exact pinned mutation', async () => {
+  let mutations = 0
+  let forwarded: ManagedSshUpdateIntent | undefined
+  const service = createManagedSshUpdateService(
+    deps({
+      executeRemoteUpdate: async (_target, correlation, context) => {
+        mutations += 1
+        forwarded = context.intent
+        await context.onLaunchProved()
+        return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+      }
+    })
+  )
+  const capability = service.issueLaunchCapability('homelab', CORRELATION, PINNED_INTENT)
+
+  const first = await service.request('homelab', {
+    correlationId: CORRELATION,
+    intent: PINNED_INTENT,
+    mode: 'coordinator',
+    launchCapability: capability
+  })
+  const reused = await service.request('homelab', {
+    correlationId: CORRELATION,
+    intent: PINNED_INTENT,
+    mode: 'coordinator',
+    launchCapability: capability
+  })
+
+  assert.equal(first.ok, true)
+  assert.deepEqual(forwarded, PINNED_INTENT)
+  assert.equal(reused.outcome, 'update-failed')
+  assert.match(reused.error || '', /already been consumed/)
+  assert.equal(mutations, 1)
+})
+
+test('a coordinator update cannot reach mutation transport without its matching capability', async () => {
+  let mutations = 0
+  const service = createManagedSshUpdateService(
+    deps({
+      executeRemoteUpdate: async (_target, correlation, context) => {
+        mutations += 1
+        await context.onLaunchProved()
+        return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+      }
+    })
+  )
+
+  const result = await service.request('homelab', {
+    correlationId: CORRELATION,
+    intent: PINNED_INTENT,
+    mode: 'coordinator'
+  })
+
+  assert.equal(result.ok, false)
+  assert.match(result.error || '', /single-use launch capability/)
+  assert.equal(mutations, 0)
+})
+
+test('preparation shares admission with updates, records its receipt, and does not launch an update', async () => {
+  let releasePreparation!: () => void
+  let launched = 0
+  const events: string[] = []
+  const pendingPreparation = new Promise<void>(resolve => {
+    releasePreparation = resolve
+  })
+  const service = createManagedSshUpdateService(
+    deps({
+      executeRemoteUpdate: async (_target, correlation, context) => {
+        launched += 1
+        await context.onLaunchProved()
+        return { exitCode: 0, receipt: { correlationId: correlation, outcome: 'success' } }
+      },
+      prepareRemote: async (_source, correlation) => {
+        events.push('prepare')
+        await pendingPreparation
+        return { kind: 'preparation', correlationId: correlation }
+      },
+      recordPreparationReceipt: async () => events.push('record'),
+      refreshEligibility: async () => events.push('refresh')
+    })
+  )
+
+  const preparation = service.prepare('homelab', { correlationId: CORRELATION })
+  await Promise.resolve()
+  const blockedUpdate = await service.request('homelab', { correlationId: OTHER_CORRELATION })
+
+  assert.equal(blockedUpdate.outcome, 'refused')
+  assert.match(blockedUpdate.error || '', /already in progress/)
+  assert.equal(launched, 0)
+  releasePreparation()
+  assert.deepEqual(await preparation, {
+    connectionId: 'homelab',
+    correlationId: CORRELATION,
+    ok: true,
+    outcome: 'prepared',
+    receipt: { kind: 'preparation', correlationId: CORRELATION }
+  })
+  assert.deepEqual(events, ['prepare', 'record', 'refresh'])
+  assert.equal(launched, 0)
+})
+
+test('preparation refuses a frozen target because preparation must precede target review', async () => {
+  const service = createManagedSshUpdateService(deps({ prepareRemote: async () => ({ kind: 'preparation', correlationId: CORRELATION }) }))
+
+  const result = await service.prepare('homelab', { correlationId: CORRELATION, intent: PINNED_INTENT })
+
+  assert.equal(result.outcome, 'refused')
+  assert.match(result.error || '', /must not include a pinned target/)
 })
 
 test('service captures, restores, closes owned transport, and releases admission in order', async () => {

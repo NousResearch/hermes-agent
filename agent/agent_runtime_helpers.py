@@ -1150,6 +1150,32 @@ def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
 
 
+def _primary_pool_serves_now(agent, primary_model, matches_primary, load_primary_pool, prefetched_pool) -> bool:
+    """True when the primary provider's pool has an entry out of exhaustion cooldown right now.
+
+    The session-wide ``_rate_limited_until`` is armed from the ``reset_at`` of the credential that
+    returned the 429, so it must not outlive that credential's bench while a sibling entry is
+    usable (see restore_primary_runtime). Reads the pool the reset-aware gate already loaded, then
+    the one attached to the session, and only then loads it — an empty ``_credential_pool`` slot is
+    exactly the state a cross-provider fallback leaves behind, so it must not read as "no primary
+    pool". Fails closed — False — on a missing or mismatched pool and on any error, so an
+    unreadable pool can never undo a genuine provider-wide cooldown.
+    """
+    try:
+        pool = prefetched_pool
+        if pool is None:
+            attached = getattr(agent, "_credential_pool", None)
+            pool = attached if attached is not None and matches_primary(attached) else None
+        if pool is None:
+            pool = load_primary_pool()
+        return bool(
+            pool is not None and matches_primary(pool) and pool.has_available(model=primary_model or None)
+        )
+    except Exception:
+        logger.debug("Primary pool availability check failed; honouring the cooldown", exc_info=True)
+        return False
+
+
 def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matches_primary, load_primary_pool, prefetched_pool, prefetched) -> None:
     """Rebind and re-select the primary credential pool after a fallback turn. A cross-provider
     fallback attaches its own pool, which would trip the provider-mismatch guard on the next
@@ -1157,7 +1183,11 @@ def _rebind_primary_credential_pool(agent, primary_provider, primary_model, matc
     rotation; re-select the pool's best entry, keeping the snapshot key when none is usable."""
     pool = getattr(agent, "_credential_pool", None)
     pool_provider = str(getattr(pool, "provider", "") or "").strip().lower()
-    if pool is not None and pool_provider and not matches_primary(pool):
+    # An EMPTY slot is the state a cross-provider fallback leaves behind: it clears the primary
+    # pool to avoid contamination and only attaches one when the fallback provider has rows of its
+    # own. Leaving it empty here keeps the construction-time snapshot api_key — the credential that
+    # just got benched — so the next call re-hits the same cap and falls back again. Reload it.
+    if pool is None or (pool_provider and not matches_primary(pool)):
         agent._credential_pool = None
         agent._credential_pool_entry_id = None
         try:
@@ -1231,8 +1261,6 @@ def restore_primary_runtime(agent) -> bool:
     # leaves _fallback_index >= len(_fallback_chain) while _fallback_activated stays False. The next turn
     # skips this block entirely, stranding the index and silently blocking all future fallback attempts for
     # the session. Fixes #20465.
-    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
-        return False  # primary still in rate-limit cooldown, stay on fallback
     rt = agent._primary_runtime
     primary_provider = str((rt or {}).get("provider") or "").strip().lower()
     primary_model = str((rt or {}).get("model") or "").strip()
@@ -1258,6 +1286,20 @@ def restore_primary_runtime(agent) -> bool:
     )
     if blocked:
         return False
+    if getattr(agent, "_rate_limited_until", 0) > time.monotonic():
+        # A cooldown armed from a provider-declared reset belongs to the CREDENTIAL that returned
+        # the 429 (subscription windows report days out), while the slot holding it is
+        # session-wide. Honouring it blind therefore strands a long-lived session on the paid
+        # fallback for the whole window even after a healthy credential of the same provider
+        # became usable — a new session would have picked it through ``select()``. Ask the pool
+        # and clear the stale stamp only when it has somewhere to go; a pool whose every entry is
+        # still benched keeps the cooldown.
+        if not _primary_pool_serves_now(
+            agent, primary_model, _matches_primary, _load_primary_pool, prefetched_pool
+        ):
+            return False  # primary still in rate-limit cooldown, stay on fallback
+        agent._rate_limited_until = 0
+        agent._rate_limit_backoff_count = 0
     agent._restore_wait_logged = False
     fallback_route = getattr(agent, "_provider_fallback_route", None)
     if not (isinstance(fallback_route, (list, tuple)) and len(fallback_route) == 2):

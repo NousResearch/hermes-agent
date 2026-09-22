@@ -327,14 +327,28 @@ class TestResetAwareRestoreGate:
         waits = [r for r in caplog.records if "staying on fallback" in r.getMessage()]
         assert len(waits) == 1
 
-    def test_transient_cooldown_still_respected(self):
-        """The existing 60s monotonic gate fires before the reset-aware one."""
+    def test_transient_cooldown_still_respected_when_pool_cannot_serve(self):
+        """A 60s transient cooldown still parks the session on the fallback while the credential
+        pool has nowhere to go — the cooldown is asked about the pool, not skipped."""
         agent = _make_agent(fallback_model=self.FB)
         _activate_fallback(agent)
         agent._rate_limited_until = time.monotonic() + 60
-        pool = _FakePool("custom", next_at=None)
+        pool = _FakePool("custom", next_at=None)  # no entry available
         agent._credential_pool = pool
 
         assert agent._restore_primary_runtime() is False
-        # Reset-aware gate never consulted — short-circuited by the 60s gate.
-        assert pool.next_available_calls == 0
+        # The gate consulted the pool (one read of its reset state) before honouring the cooldown.
+        assert pool.next_available_calls == 1
+
+    def test_transient_cooldown_yields_to_an_available_pool_entry(self):
+        """The same 60s cooldown is credential-scoped: a usable sibling entry ends it now rather
+        than after the wait, like a new session's ``select()`` would have."""
+        agent = _make_agent(fallback_model=self.FB)
+        _activate_fallback(agent)
+        agent._rate_limited_until = time.monotonic() + 60
+        agent._credential_pool = _FakePool("custom", next_at=None, available=True)
+
+        with patch("agent.process_bootstrap.OpenAI", return_value=MagicMock()):
+            assert agent._restore_primary_runtime() is True
+        assert agent._fallback_activated is False
+        assert agent._rate_limited_until == 0

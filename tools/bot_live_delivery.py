@@ -70,6 +70,12 @@ def _owner(home: Path | str, owner: dict[str, Any]) -> dict[str, str]:
     return pinned
 
 
+def _is_canonical_live_owner(profile_home: Path | str, pinned: dict[str, str]) -> bool:
+    """Whether an admission pin is the currently advertised Bot Chat owner."""
+    canonical = find_canonical_live_owner(profile_home)
+    return canonical is not None and _owner(profile_home, canonical) == pinned
+
+
 def _delivery_id(value: str) -> str:
     if not isinstance(value, str) or re.fullmatch(r"[0-9a-f]{32,64}", value) is None:
         raise ValueError("delivery id must be 32 to 64 lowercase hex characters")
@@ -208,6 +214,11 @@ def deliver_to_live_owner(
     if not isinstance(message, str):
         raise ValueError("message must be a string")
     key = _delivery_id(delivery_id if delivery_id is not None else uuid.uuid4().hex)
+    # Avoid creating a mailbox directory for a rejected fresh delivery. A
+    # second check under the lock below closes the owner-change race before
+    # writing the ticket.
+    if not _root(profile_home).is_dir() and not _is_canonical_live_owner(profile_home, pinned):
+        raise ValueError("owner is not the canonical live owner")
     with _locked(profile_home) as root:
         path = root / f"{key}.json"
         existing = _read(path)
@@ -216,6 +227,8 @@ def deliver_to_live_owner(
                     or existing.get("notification_category", "result") != notification_category):
                 raise ValueError("delivery id already belongs to a different payload")
             return existing
+        if not _is_canonical_live_owner(profile_home, pinned):
+            raise ValueError("owner is not the canonical live owner")
         record = dict(delivery_id=key, id=key, owner=pinned, **pinned,
                       message=message, status="queued", created_at=time.time_ns(),
                       sequence=_next_sequence(root), **({"author": dict(author)} if author else {}))

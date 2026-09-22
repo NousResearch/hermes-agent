@@ -1,0 +1,5 @@
+name: fastmetal-provider
+kind: model-provider
+version: 1.0.0
+description: FastMetal OpenAI-compatible multi-model gateway
+author: Don Johnson

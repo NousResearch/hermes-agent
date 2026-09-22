@@ -10,7 +10,7 @@ description: 'Realtime duplex voice chat with the Gemini Live API — a status-b
 maintainer: cruzlxyz
 tier: community
 version: "1.0.6"
-category: desktop
+category: voice
 docs_url: https://github.com/cruzlxyz/gemini-live-bridge#readme
 platforms: []
 capabilities:

@@ -439,6 +439,53 @@ class TestPluginDiscovery:
         assert mgr._aux_tasks == {}
         assert mgr._slack_action_handlers == []
 
+    def test_multi_harness_repo_is_discovered_without_probing_foreign_manifests(
+        self, tmp_path, monkeypatch, caplog
+    ):
+        """A git-clone install keeps its Hermes manifest in ``.hermes-plugin/`` beside the OTHER
+        harnesses' own manifest dirs (``.claude-plugin/plugin.json``, ``.codex-plugin/``, …).
+
+        Those declare a foreign schema, so probing them as Agent Plugins roots answered one
+        "Failed to parse … unsupported or missing Agent Plugins schema" warning per directory on
+        every sweep. Hermes' own marker must still be discovered.
+        """
+        from hermes_cli import plugins as plugins_mod
+
+        home = tmp_path / "home"
+        repo = home / "plugins" / "superpowers"
+        hermes_meta = repo / ".hermes-plugin"
+        hermes_meta.mkdir(parents=True)
+        (hermes_meta / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "superpowers", "version": "6.3.0"})
+        )
+        (hermes_meta / "__init__.py").write_text(
+            "def register(ctx):\n    pass\n", encoding="utf-8"
+        )
+        for harness in (".claude-plugin", ".codex-plugin", ".cursor-plugin"):
+            foreign = repo / harness
+            foreign.mkdir()
+            # Foreign layouts ship a bare plugin.json — no Agent Plugins $schema.
+            (foreign / "plugin.json").write_text(
+                json.dumps({"name": "superpowers", "description": "Core skills library"})
+            )
+        home.mkdir(exist_ok=True)
+        (home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["superpowers"]}})
+        )
+        empty_bundled = tmp_path / "bundled"
+        empty_bundled.mkdir()
+        monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: empty_bundled)
+
+        with caplog.at_level(logging.WARNING):
+            manager = PluginManager()
+            manager.discover_and_load()
+
+        assert "superpowers/.hermes-plugin" in manager._plugins
+        assert manager._plugins["superpowers/.hermes-plugin"].enabled is True
+        assert "Failed to parse" not in caplog.text
+
 
 # ── TestPluginLoading ──────────────────────────────────────────────────────
 

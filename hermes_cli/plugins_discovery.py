@@ -27,6 +27,12 @@ logger = logging.getLogger("hermes_cli.plugins")
 ENTRY_POINTS_GROUP = "hermes_agent.plugins"
 ENTRY_POINT_CAPABILITIES_GROUP = "hermes_agent.plugin_capabilities"
 
+# A dotted directory inside a plugin install belongs to ANOTHER harness (``.claude-plugin``,
+# ``.codex-plugin``, ``.cursor-plugin``, …). Only Hermes' own marker holds a Hermes plugin root,
+# so a multi-harness repo (git-clone installs keep ``.hermes-plugin/`` beside them) is scanned
+# without probing their manifests — each of which declares a foreign schema and used to warn.
+HERMES_PLUGIN_DIR = ".hermes-plugin"
+
 
 def _select_entry_point_group(entry_points: Any, group: str) -> list:
     """Return one metadata entry-point group across supported Python APIs."""
@@ -105,13 +111,16 @@ def scan_directory(
     """Read manifests under *path*: flat ``<root>/<name>/plugin.yaml`` (key ``name``) or category
     ``<root>/<cat>/<name>/plugin.yaml`` (key ``cat/name``; a manifest-less directory recurses one level, depth
     capped at two). *skip_names* ignores top-level names; portable ``plugin.json`` packages are accepted
-    alongside YAML manifests."""
+    alongside YAML manifests. Dotted directories belong to another harness and are skipped, except Hermes'
+    own ``.hermes-plugin`` (see :data:`HERMES_PLUGIN_DIR`)."""
     manifests: List[PluginManifest] = []
     if not path.is_dir():
         return manifests
     for child in sorted(path.iterdir()):
         try:
             if not child.is_dir() or (depth == 0 and skip_names and child.name in skip_names):
+                continue
+            if child.name.startswith(".") and child.name != HERMES_PLUGIN_DIR:
                 continue
             manifest_file = next((f for f in (child / "plugin.yaml", child / "plugin.yml") if f.exists()), None)
             portable_file = child / "plugin.json"

@@ -1,0 +1,44 @@
+name: nerve
+repo: https://github.com/keeltrace/hermes-jev
+sha: de219b1875a9943cb81de406c6853caf53496aaf
+description: Nerve is a supervisory nervous system for Hermes Agent with provider-neutral Jev, Laya,
+  and OpenJev Reflex backends, evidence-backed Kanban supervision, context governance, token-budget
+  trajectory control, and durable SSH workers. Disclosure — the default Reflex backend is hosted Jev;
+  when enabled it can send user prompts and redacted tool/result previews to the configured Jev provider
+  using the user's provider credentials. Laya and OpenJev can be configured as local/self-hosted backends.
+maintainer: keeltrace
+tier: community
+category: automation
+requires_hermes: '>=0.21'
+docs_url: https://github.com/keeltrace/hermes-jev#readme
+version: 0.2.2
+capabilities:
+  provides_tools:
+  - nerve_decide
+  - nerve_rank
+  - nerve_verify
+  - nerve_assess
+  - nerve_context_curate
+  - nerve_context_rehydrate
+  - nerve_stats
+  - nerve_nervous_event
+  - nerve_supervise_card
+  - nerve_work_event
+  - nerve_work_status
+  - nerve_remote_delegate_task
+  - nerve_remote_worker_status
+  - nerve_remote_worker_result
+  - nerve_remote_worker_cancel
+  - nerve_remote_worker_control
+  provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
+  - transform_tool_result
+  - pre_verify
+  - post_api_request
+  - api_request_error
+  - post_llm_call
+  - on_session_end
+  provides_middleware: []
+  requires_env: []

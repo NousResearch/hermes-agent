@@ -568,6 +568,10 @@ DEFAULT_CONFIG = {
         # models (their 50% trigger sat at 500K, so compaction never fired) while every lower
         # ratio trigger still wins; null = ratio-only.
         "threshold_tokens": 256_000,
+        # Opt in to moving routine threshold-triggered compaction to a detached gateway task after
+        # the reply finishes. Provider-proven overflow recovery remains inline; non-gateway agents
+        # keep the ordinary inline threshold path because they have no post-turn scheduler.
+        "post_turn_background_compaction": False,
         # "progress_notices": False,    # opt-in (#52995): when True, routine compression
         "target_ratio": 0.20,         # fraction of threshold to preserve as recent tail
         # tail_mode: "lean" = clamped 2.5%-of-window tail (10K floor / 25K cap) plus chunked

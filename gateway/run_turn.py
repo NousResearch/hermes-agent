@@ -718,7 +718,9 @@ class GatewayTurnMixin:
             pass
         return hs
 
-    async def _hmwa_hygiene_plan(self, hs, history, session_entry, session_key):
+    async def _hmwa_hygiene_plan(
+        self, hs, history, session_entry, session_key, *, trigger_tokens=None,
+    ):
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
         failure cooldown, in-flight compression)."""
         from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
@@ -726,7 +728,11 @@ class GatewayTurnMixin:
             hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
             config_context_length=hs.config_context_length, provider=hs.provider or "",
         )
-        _compress_token_threshold = int(_hyg_context_length * hs.threshold_pct)
+        _compress_token_threshold = (
+            max(1, int(trigger_tokens))
+            if isinstance(trigger_tokens, int) and not isinstance(trigger_tokens, bool)
+            else int(_hyg_context_length * hs.threshold_pct)
+        )
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)
 
@@ -786,9 +792,11 @@ class GatewayTurnMixin:
         if _needs_compress:
             logger.info(
                 "Session hygiene: %s messages, ~%s tokens (%s) — auto-compressing "
-                "(threshold: %s%% of %s = %s tokens)",
+                "(trigger: %s; context: %s)",
                 _msg_count, f"{_approx_tokens:,}", _token_source,
-                int(hs.threshold_pct * 100), f"{_hyg_context_length:,}", f"{_compress_token_threshold:,}",
+                (f"{_compress_token_threshold:,} tokens" if trigger_tokens is not None
+                 else f"{int(hs.threshold_pct * 100)}% = {_compress_token_threshold:,} tokens"),
+                f"{_hyg_context_length:,}",
             )
         return self._HygienePlan(_needs_compress, _approx_tokens, _msg_count, _warn_token_threshold)
 
@@ -1063,6 +1071,7 @@ class GatewayTurnMixin:
 
     async def _hmwa_hygiene_adopt_transcript(
         self, attempt, _compressed, history, plan, *, session_entry, source, _quick_key, run_generation,
+        commit_authority_check=None,
     ):
         """Adopt a finished compression (rotation / in-place / refused); publishes the transcript to
         continue with on ``attempt.history``. Returns ``(rotated, in_place, new_count, new_tokens)``.
@@ -1113,13 +1122,25 @@ class GatewayTurnMixin:
                 _hyg_rotated = False
                 _hyg_in_place = False
             else:
-                session_entry.session_id = _hyg_new_sid
-                # The held turn lease follows the rotation (alias keys still serialize on this turn).
-                self._rebind_turn_lease(_quick_key, run_generation, _hyg_new_sid)
-                await self.async_session_store._save()
-                await asyncio.to_thread(
-                    self._sync_telegram_topic_binding, source, session_entry, reason="hygiene-compression",
-                )
+                if commit_authority_check is not None:
+                    live_entry = self.session_store.advance_compression_session_if_current(
+                        session_entry.session_key, session_entry,
+                        session_entry.session_id, _hyg_new_sid,
+                    )
+                    if live_entry is None:
+                        _hyg_rotated = False
+                        _hyg_in_place = False
+                    else:
+                        session_entry = live_entry
+                else:
+                    session_entry.session_id = _hyg_new_sid
+                    await self.async_session_store._save()
+                if _hyg_rotated:
+                    # The held turn lease follows the rotation (alias keys still serialize on this turn).
+                    self._rebind_turn_lease(_quick_key, run_generation, _hyg_new_sid)
+                    await asyncio.to_thread(
+                        self._sync_telegram_topic_binding, source, session_entry, reason="hygiene-compression",
+                    )
 
         if _hyg_rotated or _hyg_in_place:
             # Rewritten (rotation) or persisted by archive_and_compact() (in-place): reset token count.
@@ -1148,6 +1169,7 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_apply_result(
         self, attempt, hs, _compressed, history, plan, *,
         session_entry, session_key, source, _quick_key, run_generation,
+        commit_authority_check=None,
     ):
         """Adopt a finished hygiene compression, rebind the session + turn lease, record
         streak/cooldown, and warn the user on abort."""
@@ -1155,6 +1177,7 @@ class GatewayTurnMixin:
         _hyg_rotated, _hyg_in_place, _new_count, _new_tokens = await self._hmwa_hygiene_adopt_transcript(
             attempt, _compressed, history, plan, session_entry=session_entry, source=source,
             _quick_key=_quick_key, run_generation=run_generation,
+            commit_authority_check=commit_authority_check,
         )
         # Summary failure aborts the compressor (nothing dropped). Warn the user visibly — agent.log
         # is invisible on TG/Discord — so they know the chat is "frozen" and can /compress or /reset.
@@ -1266,6 +1289,9 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_detached_attempt(
         self, attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
         source, session_entry, session_key, _quick_key, run_generation,
+        commit_authority_check=None, commit_authority_lock=None, cache_owner=None,
+        cache_refresh_callback=None,
+        compression_in_place=None,
     ):
         """Run one detached hygiene compression attempt end to end; publishes the transcript to
         continue with (compressed or original) on ``attempt.history``."""
@@ -1276,7 +1302,9 @@ class GatewayTurnMixin:
         try:
             # Hygiene owns the session binding, so prefer in-place compaction over minting a
             # continuation child. Without a SessionDB this stays False.
-            _hyg_agent.compression_in_place = True
+            _hyg_agent.compression_in_place = (
+                True if compression_in_place is None else bool(compression_in_place)
+            )
             _bind_hyg_state = getattr(getattr(_hyg_agent, "context_compressor", None), "bind_session_state", None)
             if callable(_bind_hyg_state):
                 _bind_hyg_state(_hyg_session_db, session_entry.session_id)
@@ -1285,7 +1313,11 @@ class GatewayTurnMixin:
             _hyg_agent._print_fn = lambda *a, **kw: None
 
             loop = asyncio.get_running_loop()
-            _hyg_commit_fence = CompressionCommitFence(total_ceiling_seconds=hs.total_ceiling_seconds)
+            _hyg_commit_fence = CompressionCommitFence(
+                total_ceiling_seconds=hs.total_ceiling_seconds,
+                admission_check=commit_authority_check,
+                admission_lock=commit_authority_lock,
+            )
             # Default executor (NOT self._get_executor): a hung summary must never occupy an
             # agent-work slot. MUST run in the caller's contextvars (multiplex secret scope).
             attempt.commit_fence = _hyg_commit_fence
@@ -1318,15 +1350,30 @@ class GatewayTurnMixin:
                 attempt, hs, _compressed, history, plan, session_entry=session_entry,
                 session_key=session_key, source=source, _quick_key=_quick_key,
                 run_generation=run_generation,
+                commit_authority_check=commit_authority_check,
             )
         finally:
             # Evict the cached agent so the next turn rebuilds its system prompt.
-            self._evict_cached_agent(session_key)
+            evicted = self._evict_cached_agent(
+                session_key,
+                expected_agent=cache_owner,
+                run_generation=run_generation if cache_owner is not None else None,
+            )
+            if cache_owner is not None and not evicted:
+                if cache_refresh_callback is not None:
+                    cache_refresh_callback(getattr(attempt.agent, "session_id", None))
+                elif commit_authority_check is None:
+                    state = self._peek_session_state(session_key)
+                    if state is not None:
+                        state.persistent.cache_refresh_required = True
+
             if not attempt.cleanup_deferred:
                 await self._cleanup_agent_resources_off_loop(_hyg_agent, context="session hygiene")
 
     async def _hmwa_run_session_hygiene(
         self, event, source, session_entry, session_key, history, _quick_key, run_generation,
+        *, trigger_tokens=None, commit_authority_check=None, commit_authority_lock=None,
+        cache_owner=None, cache_refresh_callback=None, compression_in_place=None,
     ):
         """Auto-compress pathologically large transcripts before the agent starts so oversized
         histories don't cause repeated truncation/context failures. Token source: the API's
@@ -1339,7 +1386,9 @@ class GatewayTurnMixin:
         # Hygiene can never land with compression disabled; a sub-limit transcript is the identity (#111988).
         if not hs.compression_enabled:
             return self._bound_hygiene_payload(history, hs, session_entry)
-        plan = await self._hmwa_hygiene_plan(hs, history, session_entry, session_key)
+        plan = await self._hmwa_hygiene_plan(
+            hs, history, session_entry, session_key, trigger_tokens=trigger_tokens,
+        )
         # No compression this turn (under both thresholds, cooldown, or one already in flight): without
         # the bound the model would get the full uncompressed transcript.
         if not plan.needs_compress:
@@ -1352,7 +1401,15 @@ class GatewayTurnMixin:
                 user_config=hs.data if isinstance(hs.data, dict) else None,
             )
             if str(_hyg_runtime.get("api_mode") or "").lower() == "codex_app_server":
-                await self._hmwa_hygiene_codex_compaction(hs, plan, history, session_entry, session_key, _hyg_runtime)
+                if commit_authority_check is None:
+                    await self._hmwa_hygiene_codex_compaction(
+                        hs, plan, history, session_entry, session_key, _hyg_runtime,
+                    )
+                else:
+                    logger.info(
+                        "Skipping detached post-turn compaction for codex_app_server session %s",
+                        session_key,
+                    )
             elif _hyg_runtime.get("api_key"):
                 # Pass the FULL transcript (tool results included) as the agent loop does: filtering
                 # to user/assistant starved the compressor (tool results are the bulk of context).
@@ -1361,6 +1418,11 @@ class GatewayTurnMixin:
                     await self._hmwa_hygiene_detached_attempt(
                         attempt, hs, plan, history, _hyg_msgs, _hyg_model, _hyg_runtime,
                         source, session_entry, session_key, _quick_key, run_generation,
+                        commit_authority_check=commit_authority_check,
+                        commit_authority_lock=commit_authority_lock,
+                        cache_owner=cache_owner,
+                        cache_refresh_callback=cache_refresh_callback,
+                        compression_in_place=compression_in_place,
                     )
         except HygieneTurnHoldExceeded:
             # Availability boundary, not a failure — already logged at INFO by the turn-hold handler.
@@ -2127,6 +2189,10 @@ class GatewayTurnMixin:
 
     async def _handle_message_with_agent(self, event, source, _quick_key: str, run_generation: int):
         """Inner handler that runs under the _running_agents sentinel guard."""
+        # The public handler returns shaped response text, which otherwise loses the agent
+        # envelope's failure bit before post-turn hooks run. Default closed on every entry;
+        # only an explicit completed agent envelope may arm detached provider work.
+        event._agent_turn_succeeded = False
         _msg_start_time = time.time()
         _platform_name = source.platform.value if hasattr(source.platform, "value") else str(source.platform)
         logger.info(
@@ -2231,6 +2297,13 @@ class GatewayTurnMixin:
                 response=response, agent_failed_early=agent_failed_early,
                 hidden_reasoning_incomplete=hidden_reasoning_incomplete,
                 is_context_overflow_failure=is_context_overflow_failure,
+            )
+            # Arm provider-dependent post-turn work only after the completed turn has crossed
+            # the transcript persistence boundary. Every exception/early-return path stays false.
+            event._agent_turn_succeeded = bool(
+                isinstance(agent_result, dict)
+                and agent_result.get("completed") is True
+                and not agent_result.get("failed")
             )
             return await self._hmwa_deliver_turn_response(
                 event, source, session_entry, session_key, run_generation,

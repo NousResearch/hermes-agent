@@ -448,7 +448,13 @@ class CompressionCommitFence:
     The sync worker thread cannot be killed; the fence makes the commit boundary deterministic: cancellation
     wins before mutation starts, or waits for an already-started commit to finish completely."""
 
-    def __init__(self, total_ceiling_seconds: float | None = None) -> None:
+    def __init__(
+        self,
+        total_ceiling_seconds: float | None = None,
+        *,
+        admission_check: Optional[Callable[[], bool]] = None,
+        admission_lock: Any = None,
+    ) -> None:
         self._lock = threading.Lock()
         self._cancelled = False
         self._commit_started = False
@@ -466,6 +472,12 @@ class CompressionCommitFence:
         # lock, so a host that cannot afford to block behind an in-flight commit can still guarantee no
         # FUTURE commit is admitted.
         self._admission_revoked = False
+        # Optional host-owned authority proof evaluated under the fence lock immediately before
+        # mutation. Detached gateway compaction uses this to linearize /new and /resume against
+        # archive_and_compact without coupling the compression core to gateway routing state.
+        self._admission_check = admission_check
+        self._admission_lock = admission_lock
+        self._admission_lock_held = False
         # Holder-scoped release published by the worker once it owns the durable lock (no ABA on a NEW holder).
         # Holder-qualified durable-lock release hook (#76354 review F4; transplanted from PR #71569 by
         # @ciabata-git). The worker publishes an idempotent, holder-scoped release callable once it owns the
@@ -545,10 +557,26 @@ class CompressionCommitFence:
 
     def begin_commit(self, cancel_event: Any = None) -> bool:
         """Atomically admit commit unless a hard cancellation already won."""
+        if self._admission_lock is not None:
+            self._admission_lock.acquire()
+            self._admission_lock_held = True
         self._lock.acquire()
-        if self.is_cancelled or self._admission_revoked or (cancel_event is not None and bool(cancel_event.is_set())):
+        authority_current = True
+        if self._admission_check is not None:
+            try:
+                authority_current = bool(self._admission_check())
+            except Exception:
+                authority_current = False
+                logger.warning("Compression commit authority check failed; refusing mutation", exc_info=True)
+        if (
+            self.is_cancelled
+            or self._admission_revoked
+            or not authority_current
+            or (cancel_event is not None and bool(cancel_event.is_set()))
+        ):
             self._cancelled = True
             self._lock.release()
+            self.release_admission_lock()
             if self._admission_revoked:
                 # A revoke that lost the fence-lock race deferred its lease release; commit refused: release now.
                 self.release_cancelled_compression_lock()
@@ -562,9 +590,16 @@ class CompressionCommitFence:
         """Leave a commit boundary entered by :meth:`begin_commit`."""
         self._commit_phase.clear()
         self._lock.release()
+        self.release_admission_lock()
         if self._admission_revoked:
             # A revoke during THIS commit deferred its lease release (never free mid-mutation); release now.
             self.release_cancelled_compression_lock()
+
+    def release_admission_lock(self) -> None:
+        """Release the host authority lock after commit admission or mutation."""
+        if self._admission_lock_held:
+            self._admission_lock_held = False
+            self._admission_lock.release()
 
     @property
     def commit_in_flight(self) -> bool:

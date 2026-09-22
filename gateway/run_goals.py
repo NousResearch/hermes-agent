@@ -327,6 +327,13 @@ class GatewayGoalsMixin:
         except Exception as exc:
             logger.debug("post-turn session resolution failed: %s", exc)
             return
+        try:
+            self._schedule_post_turn_background_compaction(
+                session_entry=session_entry, source=source, agent_result=agent_result,
+                final_response=final_text, event=event,
+            )
+        except Exception as exc:
+            logger.debug("post-turn background compaction scheduling failed: %s", exc)
         # Empty interrupted/errored responses must not drive /goal, but an in-flight /loop tick
         # still needs to be released and rescheduled.
         hooks = [("loop completion", self._post_turn_loop_completion)]
@@ -337,6 +344,100 @@ class GatewayGoalsMixin:
                 await hook(session_entry=session_entry, source=source, final_response=final_text)
             except Exception as exc:
                 logger.debug("%s hook failed: %s", label, exc)
+
+    def _schedule_post_turn_background_compaction(
+        self, *, session_entry: Any, source: Any, agent_result: Any,
+        final_response: str, event: Any = None,
+    ) -> Any:
+        """Schedule one threshold compaction per live gateway session without delaying delivery.
+
+        The detached hygiene compressor owns the durable lock, watermark commit fence, cooldown,
+        and in-place persistence. A following turn may proceed on the old transcript while that
+        worker runs; the fenced commit preserves rows appended after this snapshot.
+        """
+        # _handle_message_with_agent returns shaped text to this outer hook, so the original
+        # result envelope (including ``failed``) is no longer available here. Require the
+        # explicit success marker propagated on the event; missing/early-exit paths fail closed.
+        if not bool(getattr(event, "_agent_turn_succeeded", False)):
+            return None
+        session_key = self._session_key_for_source(source)
+        state = self._peek_session_state(session_key) if session_key else None
+        agent = state.turn.agent if state is not None else None
+        if not bool(getattr(agent, "compression_defer_threshold_to_post_turn", False)):
+            return None
+        compressor = getattr(agent, "context_compressor", None)
+        trigger_tokens = getattr(compressor, "threshold_tokens", None)
+        if not isinstance(trigger_tokens, int) or isinstance(trigger_tokens, bool) or trigger_tokens <= 0:
+            return None
+
+        tasks = getattr(self, "_post_turn_compaction_tasks", None)
+        if not isinstance(tasks, dict):
+            tasks = self._post_turn_compaction_tasks = {}
+        prior = tasks.get(session_key)
+        if prior is not None and not prior.done():
+            return prior
+        expected_session_id = session_entry.session_id
+        run_generation = getattr(state.persistent, "run_generation", None)
+        if run_generation is None:
+            return None
+
+        route_lock = self.session_store._lock
+
+        def _authority_current_locked() -> bool:
+            live_entry = self.session_store._entries.get(session_key)
+            return bool(
+                live_entry is session_entry
+                and live_entry.session_id == expected_session_id
+            )
+
+        def _authority_current() -> bool:
+            with route_lock:
+                return _authority_current_locked()
+
+        def _mark_cache_refresh_if_current(adopted_session_id=None) -> None:
+            with route_lock:
+                live_entry = self.session_store._entries.get(session_key)
+                if (
+                    live_entry is not session_entry
+                    or live_entry.session_id not in {expected_session_id, adopted_session_id}
+                ):
+                    return
+                current_state = self._peek_session_state(session_key)
+                if current_state is not None:
+                    current_state.persistent.cache_refresh_required = True
+
+        async def _run() -> None:
+            try:
+                history = await self.async_session_store.load_transcript(expected_session_id)
+                # A replaced route no longer owns this routing key. Same-session successor turns
+                # remain valid; the compression watermark preserves their appended rows.
+                if not _authority_current():
+                    return
+                await self._hmwa_run_session_hygiene(
+                    event, source, session_entry, session_key, history, session_key,
+                    run_generation, trigger_tokens=trigger_tokens,
+                    commit_authority_check=_authority_current_locked,
+                    commit_authority_lock=route_lock,
+                    cache_owner=agent,
+                    cache_refresh_callback=_mark_cache_refresh_if_current,
+                    compression_in_place=bool(getattr(agent, "compression_in_place", True)),
+                )
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                logger.exception("Post-turn context compaction failed for session %s", session_key)
+
+        task = self._retain_background_task(asyncio.create_task(
+            _run(), name=f"post-turn-compaction:{str(session_key)[:48]}",
+        ))
+        tasks[session_key] = task
+
+        def _forget(done, key=session_key, registry=tasks):
+            if registry.get(key) is done:
+                registry.pop(key, None)
+
+        task.add_done_callback(_forget)
+        return task
 
     @staticmethod
     def _final_text_for_post_turn_hooks(agent_result, event=None) -> str:

@@ -676,7 +676,13 @@ class GatewayAgentCacheMixin:
         )
         return hashlib.sha256(repr(key_tuple).encode("utf-8")).hexdigest()
 
-    def _evict_cached_agent(self, session_key: str) -> None:
+    def _evict_cached_agent(
+        self,
+        session_key: str,
+        *,
+        expected_agent: Any = None,
+        run_generation: Optional[int] = None,
+    ) -> bool:
         """Remove a cached agent (/new, /model, ...) and soft-release its LLM client pool (AIAgent
         holds reference cycles; without it RSS grows across /new). Soft = frees clients and child
         subagents but PRESERVES terminal sandbox / browser / bg processes since the session may
@@ -690,31 +696,43 @@ class GatewayAgentCacheMixin:
         leak class as #25315).
         """
         from gateway.run import _AGENT_PENDING_SENTINEL
+        # Tests build runners with ``_agent_cache_lock = None``; evict lock-free then. With the lock
+        # present ``_agent_cache`` is read directly (an initialized runner always has it).
+        _lock = getattr(self, "_agent_cache_lock", None)
+        evicted = None
+
+        def _pop_if_owned(cache):
+            current = cache.get(session_key)
+            if expected_agent is not None and _first_agent(current) is not expected_agent:
+                return None
+            if run_generation is not None and not self._is_session_run_current(session_key, run_generation):
+                return None
+            return cache.pop(session_key, None)
+
+        if _lock:
+            with _lock:
+                evicted = _pop_if_owned(self._agent_cache)
+        else:
+            _cache = getattr(self, "_agent_cache", None)
+            if _cache is not None:
+                evicted = _pop_if_owned(_cache)
+        if (expected_agent is not None or run_generation is not None) and evicted is None:
+            return False
         # Prompt-stability state rides the agent-cache lifecycle: a fresh agent must re-render its
         # session-context bytes (the pin) and re-see the current voice-channel state once.
         state = self._peek_session_state(session_key)
         if state is not None:
             state.conversation.ephemeral_pin = None
             state.conversation.vc_last = None
-        # Tests build runners with ``_agent_cache_lock = None``; evict lock-free then. With the lock
-        # present ``_agent_cache`` is read directly (an initialized runner always has it).
-        _lock = getattr(self, "_agent_cache_lock", None)
-        evicted = None
-        if _lock:
-            with _lock:
-                evicted = self._agent_cache.pop(session_key, None)
-        else:
-            _cache = getattr(self, "_agent_cache", None)
-            if _cache is not None:
-                evicted = _cache.pop(session_key, None)
         agent = _first_agent(evicted)
         # Never tear down an agent that's mid-turn — its client, sandbox and child subagents are in use.
         if agent is None or agent is _AGENT_PENDING_SENTINEL or id(agent) in self._running_agent_ids():
-            return
+            return True
         self._spawn_release_thread(
             self._release_evicted_agent_soft, (agent,), f"agent-evict-{str(session_key)[:24]}", inline_fallback=True,
             session_key=session_key,
         )
+        return True
 
     def _spawn_release_thread(self, target, args: tuple, name: str, *, inline_fallback: bool,
                               session_key: Optional[str] = None) -> None:

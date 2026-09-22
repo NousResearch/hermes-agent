@@ -1545,6 +1545,9 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
         codex_responses_native=responses_native,
         codex_responses_compact_threshold=compact_threshold,
         idle_compact_after_seconds=idle_compact_after_seconds,
+        post_turn_background_compaction=_cfg_flag(
+            cfg, "post_turn_background_compaction", False
+        ),
     )
 
 
@@ -1994,6 +1997,11 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
     )
     agent.max_compression_attempts = cs.max_attempts
     agent.compression_idle_compact_after_seconds = cs.idle_compact_after_seconds
+    # The gateway turn runner arms the deferral only for agents that have a post-turn scheduler.
+    # CLI/cron/API agents therefore keep the safe inline threshold path even when the global knob
+    # is present in their shared config.
+    agent.compression_post_turn_background_requested = cs.post_turn_background_compaction
+    agent.compression_defer_threshold_to_post_turn = False
 
 
 def _enforce_minimum_context(agent):

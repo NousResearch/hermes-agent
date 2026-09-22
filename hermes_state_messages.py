@@ -94,6 +94,21 @@ def _tool_calls_count(tool_calls: Any) -> int:
     return 0 if tool_calls is None else (len(tool_calls) if isinstance(tool_calls, list) else 1)
 
 
+def _tool_call_identity(raw: Any) -> Any:
+    """Compaction-stable identity of a stored ``tool_calls`` column: the ordered provider call ids.
+
+    The serialized column is NOT stable across compaction generations — argument text gets
+    truncated on the way into a later generation, so a byte comparison reports two copies of one
+    message as distinct and the display dedupe leaks a duplicate. Call ids are provider-assigned
+    and survive verbatim. Falls back to the raw value when ids are absent (nothing to key on).
+    """
+    parsed = _parse_tool_calls(raw)
+    if not isinstance(parsed, list):
+        return raw
+    ids = [tc.get("id") or tc.get("call_id") for tc in parsed if isinstance(tc, dict)]
+    return tuple(ids) if ids and all(ids) else raw
+
+
 def _tool_calls_len(raw: Any, scalar: int = 0) -> int:
     """Count of a stored ``tool_calls`` column: list length, *scalar* for a truthy non-list, else 0."""
     parsed = _parse_tool_calls(raw)
@@ -802,7 +817,7 @@ class SessionMessagesMixin:
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
         return (row["role"], dedupe_content, row["timestamp"],
-                row["tool_call_id"], row["tool_calls"], row["tool_name"])
+                row["tool_call_id"], _tool_call_identity(row["tool_calls"]), row["tool_name"])
 
     @staticmethod
     def _display_identity(key: Tuple[Any, ...]) -> bytes:

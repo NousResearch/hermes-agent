@@ -238,6 +238,44 @@ class TestCleanStreamEndMidToolCall:
         assert getattr(response, "_dropped_tool_names", None) == ["execute_code"]
 
 
+class TestTerminalStreamWithUnrepairableToolArgs:
+    """A terminal marker does not make an unrecoverable payload safe to execute."""
+
+    @pytest.mark.parametrize("tool_name", ["write_file", "read_file"])
+    @patch("run_agent.AIAgent._create_request_openai_client")
+    @patch("run_agent.AIAgent._close_request_openai_client")
+    def test_unrepairable_args_with_terminal_finish_route_to_stub(
+        self, _mock_close, mock_create, monkeypatch, tool_name,
+    ):
+        def _terminal_but_unrepairable_stream():
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, tc_id="call_x", name=tool_name),
+            ])
+            # A string cut in progress cannot be safely repaired. The provider nevertheless
+            # sends a normal terminal marker, which used to let this call execute as {}.
+            yield _make_stream_chunk(tool_calls=[
+                _make_tool_call_delta(index=0, arguments='{"path": "unterminated'),
+            ])
+            yield _make_stream_chunk(finish_reason="tool_calls")
+
+        mock_client = MagicMock()
+        mock_client.chat.completions.create.side_effect = (
+            lambda *a, **kw: _terminal_but_unrepairable_stream()
+        )
+        mock_create.return_value = mock_client
+
+        agent = _make_agent()
+        agent._fire_stream_delta = lambda text: None
+        monkeypatch.setenv("HERMES_STREAM_RETRIES", "0")
+
+        response = agent._interruptible_streaming_api_call({})
+
+        assert response.id == PARTIAL_STREAM_STUB_ID
+        assert response.choices[0].finish_reason == FINISH_REASON_LENGTH
+        assert response.choices[0].message.tool_calls is None
+        assert getattr(response, "_dropped_tool_names", None) == [tool_name]
+
+
 
 
 # ── Clean stream-end before any argument byte arrives (#80498) ─────────────

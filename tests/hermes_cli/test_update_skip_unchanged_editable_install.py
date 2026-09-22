@@ -68,6 +68,16 @@ def test_new_submodule_in_mapped_package_skips_the_reinstall(repo):
     assert _editable_install_is_current(GIT, repo, before) is True
 
 
+def test_new_top_level_package_forces_the_reinstall(repo):
+    """Setuptools writes a static editable finder for top-level packages."""
+    before = _head(repo)
+    (repo / "hermes_platform").mkdir()
+    (repo / "hermes_platform" / "__init__.py").write_text("")
+    _commit(repo, "add top-level package")
+
+    assert _editable_install_is_current(GIT, repo, before) is False
+
+
 @pytest.mark.parametrize(
     "filename",
     ["pyproject.toml", "setup.py", "setup.cfg", "MANIFEST.in", "uv.lock"],

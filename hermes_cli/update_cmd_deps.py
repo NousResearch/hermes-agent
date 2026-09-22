@@ -33,9 +33,26 @@ def _editable_install_is_current(git_cmd, cwd, pre_pull_sha: str | None) -> bool
         result = subprocess.run(
             git_cmd + ["diff", "--name-only", f"{pre_pull_sha}..HEAD", "--"] + list(_INSTALL_DEFINING_FILES),
             cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
+        package_result = subprocess.run(
+            git_cmd + ["diff", "--name-status", "--find-renames", f"{pre_pull_sha}..HEAD", "--"],
+            cwd=cwd, capture_output=True, text=True, encoding="utf-8", errors="replace")
     except OSError:
         return False
-    return result.returncode == 0 and not result.stdout.strip()
+    if result.returncode != 0 or package_result.returncode != 0 or result.stdout.strip():
+        return False
+
+    # Setuptools' editable finder records top-level packages statically. Adding,
+    # removing, or renaming one changes that mapping even when pyproject.toml is
+    # untouched; files within an existing package continue to resolve normally.
+    for line in package_result.stdout.splitlines():
+        fields = line.split("\t")
+        if not fields or fields[0][:1] not in {"A", "D", "R", "C"}:
+            continue
+        for path in fields[1:]:
+            parts = Path(path).parts
+            if len(parts) == 2 and parts[1] == "__init__.py":
+                return False
+    return True
 
 
 # Modules imported on every startup. Unlike _UPDATE_CRITICAL_FILES (only parsed) these are

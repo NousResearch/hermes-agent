@@ -16328,6 +16328,17 @@
             ],
             "default": null,
             "title": "Partial"
+          },
+          "persisted_turn": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PersistedTurn"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           }
         },
         "title": "MessageCompletePayload",
@@ -17920,6 +17931,53 @@
           }
         },
         "title": "PendingApproval",
+        "type": "object"
+      },
+      "PersistedTurn": {
+        "additionalProperties": false,
+        "description": "Committed SQLite row addresses for the agent's current-turn suffix. Missing ids are\nunproven, never negative acknowledgements. ``complete`` permits retiring the whole local\nturn only when the original turn boundary, every row and final body are still accounted\nfor; compaction, redirects and partial writes conservatively leave it false. Row ids are\nscoped to the owning profile's store, as in ``SessionMessage.row_id``.",
+        "properties": {
+          "row_ids": {
+            "items": {
+              "type": "integer"
+            },
+            "title": "Row Ids",
+            "type": "array"
+          },
+          "complete": {
+            "title": "Complete",
+            "type": "boolean"
+          },
+          "user_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Id"
+          },
+          "final_assistant_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Final Assistant Row Id"
+          }
+        },
+        "required": [
+          "row_ids",
+          "complete"
+        ],
+        "title": "PersistedTurn",
         "type": "object"
       },
       "PetCancelParams": {
@@ -23857,6 +23915,18 @@
             ],
             "default": null,
             "title": "Voice Stopped"
+          },
+          "user_row_id": {
+            "anyOf": [
+              {
+                "type": "integer"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "User Row Id"
           },
           "survivor_user_row_ids": {
             "anyOf": [

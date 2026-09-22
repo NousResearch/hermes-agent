@@ -4265,6 +4265,7 @@ class GatewayRunner(
         """Set session context variables (contextvars, not os.environ, so concurrent messages can't
         overwrite each other). Returns reset tokens for ``_clear_session_env`` in a ``finally``."""
         from gateway.session_context import set_session_vars
+        from gateway.session_identity import identity_of
         # Async-delivery capability tells async tools whether this channel can wake a later turn. Default
         # True keeps CLI/unknown paths working; stateless adapters (api_server) declare False.
         _adapter = self._delivery_adapter_for(context.source)
@@ -4286,6 +4287,7 @@ class GatewayRunner(
             async_delivery=_async_delivery,
             transport_adapter=_adapter,
             transport_loop=getattr(self, "_gateway_loop", None),
+            routing_identity=identity_of(context.source),
             cron_session="")
 
     def _clear_session_env(self, tokens: list) -> None:

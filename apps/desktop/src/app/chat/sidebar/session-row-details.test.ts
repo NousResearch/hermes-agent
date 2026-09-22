@@ -89,6 +89,40 @@ describe('session row details', () => {
     })
   })
 
+  // #89888: in a list that mixes profiles, the row has to answer "whose chat,
+  // which model" — the owning profile's display name rides the metadata line
+  // next to the model.
+  describe('owning profile name (#89888)', () => {
+    it('prints the profile name next to the model when the list mixes profiles', () => {
+      expect(sessionRowDetails(session({ git_branch: null }), en, { profileName: 'forge' })).toEqual({
+        metadata: 'forge · gemini-3.1-pro · 26 messages · 8 tool calls',
+        preview: 'Explore Gmail-like density tiers for session rows.'
+      })
+    })
+
+    it('keeps the branch first and the profile beside the model', () => {
+      expect(sessionRowDetails(session({ git_branch: 'feature/menu' }), en, { profileName: 'forge' }).metadata).toBe(
+        'feature/menu · forge · gemini-3.1-pro · 26 messages · 8 tool calls'
+      )
+    })
+
+    it('omits the name when the caller has none to give (single-profile views)', () => {
+      expect(sessionRowDetails(session({ git_branch: null }), en, { profileName: null })).toEqual({
+        metadata: 'gemini-3.1-pro · 26 messages · 8 tool calls',
+        preview: 'Explore Gmail-like density tiers for session rows.'
+      })
+      expect(sessionRowDetails(session({ git_branch: null }), en).metadata).toBe(
+        'gemini-3.1-pro · 26 messages · 8 tool calls'
+      )
+    })
+
+    it('normalizes a whitespace-only profile name away', () => {
+      expect(sessionRowDetails(session({ git_branch: null }), en, { profileName: '   ' }).metadata).toBe(
+        'gemini-3.1-pro · 26 messages · 8 tool calls'
+      )
+    })
+  })
+
   it('localizes count labels via the formatter interface', () => {
     const ja: SessionRowFormatters = {
       messageCount: count => `${count} 件のメッセージ`,

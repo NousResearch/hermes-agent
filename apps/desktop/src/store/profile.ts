@@ -49,6 +49,19 @@ export function profileLabel(profile: Pick<ProfileInfo, 'display_name' | 'name'>
   return (profile.display_name ?? '').trim() || profile.name
 }
 
+// Presentation-only name for a profile KEY, resolved against a roster: the Bot
+// Mode title the Bots roster shows when set (ui_meta['hermes-bots'].title),
+// else the profileLabel rule (display_name → slug). Null when the roster has
+// nothing to say about that key — it may still be loading, or the profile may
+// have been removed — so the caller can fall back to the key itself, which IS
+// the profile's name (#89888).
+export function profileNameFor(profiles: readonly ProfileInfo[], name: null | string | undefined): null | string {
+  const key = normalizeProfileKey(name)
+  const profile = profiles.find(candidate => normalizeProfileKey(candidate.name) === key)
+
+  return profile ? (profile.bot_title ?? '').trim() || profileLabel(profile) : null
+}
+
 // The profile the running local backend is actually scoped to (mirrors
 // /api/profiles/active `current`). "default" is the root ~/.hermes. This is the
 // display source of truth for the statusbar pill; the desktop's *stored*

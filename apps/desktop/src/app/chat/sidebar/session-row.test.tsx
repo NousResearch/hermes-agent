@@ -3,13 +3,15 @@ import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SessionInfo } from '@/hermes'
+import type { ProfileInfo, SessionInfo } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import type * as ChatRuntime from '@/lib/chat-runtime'
 import type * as Time from '@/lib/time'
 import type * as ComposerStatusStore from '@/store/composer-status'
+import { $profiles } from '@/store/profile'
+import { setSessionListDensity } from '@/store/session-list-density'
 import type * as SessionStore from '@/store/session'
 import { clearAllSessionStates, publishSessionState } from '@/store/session-states'
 import type * as SessionStatesStore from '@/store/session-states'
@@ -159,7 +161,7 @@ const handoffAvatar = (container: HTMLElement) =>
 
 const noop = vi.fn()
 
-const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
+const renderRow = (session: SessionInfo, extra?: { card?: boolean; showProfileName?: boolean }) =>
   render(
     <SidebarSessionRow
       card={extra?.card}
@@ -171,6 +173,7 @@ const renderRow = (session: SessionInfo, extra?: { card?: boolean }) =>
       onResume={noop}
       onToggleUnread={noop}
       session={session}
+      showProfileName={extra?.showProfileName}
       unread={false}
     />
   )
@@ -505,5 +508,112 @@ describe('SidebarSessionRow inside the sortable list', () => {
     grabber.focus()
     fireEvent.keyDown(grabber, space)
     expect(grabber.getAttribute('aria-pressed')).toBe('true')
+  })
+})
+
+// #89888: the Show-all list merges profiles, so a row has to answer "whose
+// chat" as well as "which model". The row resolves the owning profile's
+// display name from the live roster (Bot Mode title → display_name → slug)
+// and prints it in its own metadata line, next to the model.
+describe('SidebarSessionRow owning profile name', () => {
+  const session = (overrides: Partial<Omit<SessionInfo, 'title'>> & { title?: string } = {}) =>
+    makeSession({
+      git_branch: null,
+      message_count: 12,
+      model: 'x-ai/grok-4',
+      preview: null,
+      profile: 'forge',
+      title: 'Bot Chat',
+      tool_call_count: 0,
+      ...overrides
+    })
+
+  const roster = (overrides: Partial<ProfileInfo> = {}): ProfileInfo => ({
+    has_env: true,
+    is_default: false,
+    model: null,
+    name: 'forge',
+    path: '/root/.hermes/profiles/forge',
+    provider: null,
+    skill_count: 0,
+    ...overrides
+  })
+
+  // The metadata line is a density feature: compact (the default) shows the
+  // title alone, so this suite renders the density that owns the line.
+  const metadataLine = () => screen.getByText(/grok-4/)
+
+  beforeEach(() => {
+    setSessionListDensity('comfortable')
+  })
+
+  afterEach(() => {
+    setSessionListDensity('compact')
+    $profiles.set([])
+  })
+
+  it('prints the profile name next to the model in a mixed-profile list', () => {
+    $profiles.set([roster({ bot_title: 'Forge Bot' })])
+
+    renderRow(session(), { showProfileName: true })
+
+    expect(metadataLine().textContent).toBe('Forge Bot · grok-4 · 12 messages')
+  })
+
+  it('names the profile by its display_name when it carries no bot title', () => {
+    $profiles.set([roster({ display_name: 'Forge Ops' })])
+
+    renderRow(session(), { showProfileName: true })
+
+    expect(metadataLine().textContent).toBe('Forge Ops · grok-4 · 12 messages')
+  })
+
+  it('falls back to the owning profile key while the roster is still unloaded', () => {
+    // A row can paint before /api/profiles lands — the owning key IS the name.
+    $profiles.set([])
+
+    renderRow(session(), { showProfileName: true })
+
+    expect(metadataLine().textContent).toBe('forge · grok-4 · 12 messages')
+  })
+
+  it('leaves default rows unnamed — "the normal one" on every row is noise', () => {
+    $profiles.set([roster({ is_default: true, name: 'default' })])
+
+    renderRow(session({ profile: 'default' }), { showProfileName: true })
+
+    expect(metadataLine().textContent).toBe('grok-4 · 12 messages')
+  })
+
+  it('stays out of single-profile views', () => {
+    $profiles.set([roster({ bot_title: 'Forge Bot' })])
+
+    renderRow(session())
+
+    expect(metadataLine().textContent).toBe('grok-4 · 12 messages')
+  })
+
+  // The card (Inbox style) has no metadata line, so its footer carries the
+  // owner instead — otherwise Show all + Inbox style would name nobody.
+  it('names the owner in the card footer, before the model', () => {
+    $profiles.set([roster({ bot_title: 'Forge Bot' })])
+
+    renderRow(session(), { card: true, showProfileName: true })
+
+    const footer = screen.getByText('Forge Bot').parentElement
+    const cells = [...(footer?.children ?? [])].map(cell => cell.textContent)
+
+    expect(cells[0]).toBe('Forge Bot')
+    // displayModelName, not the metadata line's bare id — the card footer is
+    // the pretty surface. What matters here is the ORDER: owner, then model.
+    expect(cells[1]).toBe('Grok 4')
+  })
+
+  it('leaves the card footer alone in single-profile views', () => {
+    $profiles.set([roster({ bot_title: 'Forge Bot' })])
+
+    renderRow(session(), { card: true })
+
+    expect(screen.queryByText('Forge Bot')).toBeNull()
   })
 })

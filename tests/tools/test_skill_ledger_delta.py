@@ -83,6 +83,25 @@ def test_compact_leaves_an_undecodable_ledger_untouched(ledger_home, caplog):
     assert "compaction skipped" in caplog.text
 
 
+def test_list_entries_treats_an_undecodable_ledger_as_empty_and_warns(ledger_home, caplog):
+    """A ledger that exists but is not UTF-8 lists as empty (rollback then fails closed on
+    ``get_entry`` -> None) and, unlike a merely missing ledger, is warned about (re-gate M8/S1)."""
+    from tools import skill_ledger
+    ledger = skill_ledger.ledger_path()
+    ledger.parent.mkdir(parents=True, exist_ok=True)
+    ledger.write_bytes(b"\xff")
+    assert skill_ledger.list_entries() == []
+    assert skill_ledger.get_entry("deadbeef") is None
+    assert "listing empty" in caplog.text
+
+
+def test_list_entries_is_silent_when_the_ledger_is_merely_missing(ledger_home, caplog):
+    from tools import skill_ledger
+    assert not skill_ledger.ledger_path().exists()
+    assert skill_ledger.list_entries() == []
+    assert "listing empty" not in caplog.text
+
+
 def test_gc_blobs_removes_only_unreferenced(ledger_home):
     """The blob store was write-only (#107539): after compaction, blobs no entry references are
     deleted; every referenced blob survives so any entry can still roll back."""

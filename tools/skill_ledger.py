@@ -411,7 +411,9 @@ def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> Li
     """Read the ledger, newest first. Malformed lines are skipped."""
     try:
         lines = ledger_path().read_text(encoding="utf-8").splitlines()
-    except (OSError, UnicodeError):  # missing, unreadable or undecodable ledger == empty
+    except (OSError, UnicodeError) as exc:  # missing, unreadable or undecodable ledger == empty
+        if not isinstance(exc, FileNotFoundError):  # a missing ledger is normal; a corrupt one is not
+            logger.warning("skill_ledger: ledger unreadable (%s); listing empty", exc)
         return []
     rows: List[Dict[str, Any]] = []
     for line in lines:

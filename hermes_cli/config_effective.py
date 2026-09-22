@@ -58,16 +58,17 @@ def load_user_config_effective(config_path: Optional[Path] = None, *, fail_close
     last-good state); otherwise the last successfully parsed user file — in-process first, then
     the newest ``backups/config/*.good.*`` copy — is served through the same pipeline, so a
     mid-edit torn write never silently drops user overrides (same contract as ``load_config``).
-    Cached on the user + managed file signatures and the values of every referenced env var."""
+    Cached on the user + managed + root-policy signatures and the values of every referenced env var."""
     if config_path is None:
         config_path = _config.get_config_path()
     path_key = str(config_path)
     with _config._CONFIG_LOCK:
         user_sig, cache_sig = _config._load_config_cache_sig(config_path)
         cached = _EFFECTIVE_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            if all(_config._env_ref_lookup(k) == v for k, v in cached[9].items()):
-                return copy.deepcopy(cached[8])
+        if cached is not None and cache_sig is not None and cached[:len(cache_sig)] == cache_sig:
+            env_snapshot = cached[len(cache_sig) + 1]
+            if all(_config._env_ref_lookup(k) == v for k, v in env_snapshot.items()):
+                return copy.deepcopy(cached[len(cache_sig)])
 
         raw: Dict[str, Any] = {}
         recovered = False

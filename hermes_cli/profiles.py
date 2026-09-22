@@ -1092,11 +1092,14 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
 
 
 def _apply_global_provider_routing_defaults(profile_dir: Path) -> None:
-    """Apply the machine-wide, secret-free route defaults to every newly created profile."""
+    """Seed the Parallel search tool permission for a new profile; routes load globally."""
     from utils import atomic_roundtrip_yaml_update, fast_safe_load
 
     policy_path = get_default_hermes_root() / "ROUTING_POLICY.md"
-    policy = policy_path.read_text(encoding="utf-8")
+    try:
+        policy = policy_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
     if not policy.startswith("---\n") or "\n---\n" not in policy[4:]:
         raise RuntimeError(f"Global Hermes routing policy has no YAML frontmatter: {policy_path}")
     frontmatter = policy[4:].split("\n---\n", 1)[0]
@@ -1108,8 +1111,8 @@ def _apply_global_provider_routing_defaults(profile_dir: Path) -> None:
         raise RuntimeError(f"Global Hermes routing policy has invalid profile defaults: {policy_path}")
 
     config_path = profile_dir / "config.yaml"
-    for key, value in defaults["web"].items():
-        atomic_roundtrip_yaml_update(config_path, f"web.{key}", value)
+    # Web routing values are overlaid from ROUTING_POLICY.md by the shared config loader,
+    # so existing profiles follow policy edits without per-profile config rewrites.
     for name, value in defaults["mcp_servers"].items():
         atomic_roundtrip_yaml_update(config_path, f"mcp_servers.{name}", value)
 

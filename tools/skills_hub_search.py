@@ -46,7 +46,7 @@ def _load_hermes_index() -> Optional[dict]:
     from tools.skills_hub import _read_json_if_fresh
     cache_file = _hermes_index_cache_file()
     cached = _read_json_if_fresh(cache_file, HERMES_INDEX_TTL)
-    if cached is not None:
+    if isinstance(cached, dict):
         return cached
     data = None
     for accept_encoding in ("gzip, deflate", "identity"):
@@ -76,7 +76,8 @@ def _load_hermes_index() -> Optional[dict]:
 def _load_stale_index_cache() -> Optional[dict]:
     """Fall back to the cache regardless of age when the network fetch fails."""
     from tools.skills_hub import _read_json_if_fresh
-    return _read_json_if_fresh(_hermes_index_cache_file(), float("inf"))
+    cached = _read_json_if_fresh(_hermes_index_cache_file(), float("inf"))
+    return cached if isinstance(cached, dict) else None
 
 
 # External API sources the centralized index already covers; skipped when the

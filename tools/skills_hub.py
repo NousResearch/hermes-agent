@@ -208,7 +208,7 @@ def _read_json_if_fresh(path: Path, ttl: float) -> Optional[Any]:
     try:
         if time.time() - path.stat().st_mtime > ttl:
             return None
-        return json.loads(path.read_text(encoding="utf-8"))
+        return json.loads(path.read_text(encoding="utf-8", errors="replace"))
     except (OSError, json.JSONDecodeError):
         return None
 
@@ -252,13 +252,42 @@ class _JsonStateFile:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8"))
+            data = json.loads(self.path.read_text(encoding="utf-8", errors="replace"))
         except (json.JSONDecodeError, OSError):
+            data = None
+        if not self._has_state_shape(data):
             return json.loads(json.dumps(self.EMPTY))
+        for key, template in self.EMPTY.items():
+            if key not in data and isinstance(template, (dict, list)):
+                data[key] = json.loads(json.dumps(template))
+        return data
+
+    @classmethod
+    def _has_state_shape(cls, data: Any) -> bool:
+        """A state file is a JSON object whose declared container keys keep the
+        container types ``EMPTY`` declares.  Scalars (``version``) go unchecked:
+        they are never subscripted, and a future schema bump must not be wiped
+        as corrupt."""
+        return isinstance(data, dict) and all(
+            key not in data or isinstance(data[key], type(template))
+            for key, template in cls.EMPTY.items()
+            if isinstance(template, (dict, list)))
 
     def _write(self, data: dict, **dumps_kwargs) -> None:
+        from utils import atomic_json_write
         self.path.parent.mkdir(parents=True, exist_ok=True)
-        self.path.write_text(json.dumps(data, indent=2, **dumps_kwargs) + "\n", encoding="utf-8")
+        # Fail closed on write: a corrupt state file must never be silently
+        # overwritten (its provenance is the only record of what was installed).
+        if self.path.exists():
+            try:
+                existing = json.loads(self.path.read_text(encoding="utf-8", errors="replace"))
+            except (json.JSONDecodeError, OSError):
+                existing = None
+            if not self._has_state_shape(existing):
+                raise ValueError(
+                    f"Refusing to overwrite corrupt hub state file {self.path} — "
+                    "delete it to start fresh")
+        atomic_json_write(self.path, data, indent=2, **dumps_kwargs)
 
 
 class HubLockFile(_JsonStateFile):
@@ -313,10 +342,12 @@ class HubLockFile(_JsonStateFile):
         self.save(data)
 
     def get_installed(self, name: str) -> Optional[dict]:
-        return self.load()["installed"].get(name)
+        entry = self.load()["installed"].get(name)
+        return entry if isinstance(entry, dict) else None
 
     def list_installed(self) -> List[dict]:
-        return [{"name": name, **entry} for name, entry in self.load()["installed"].items()]
+        return [{"name": name, **entry} for name, entry in self.load()["installed"].items()
+                if isinstance(entry, dict)]
 
 
 class TapsManager(_JsonStateFile):
@@ -326,7 +357,9 @@ class TapsManager(_JsonStateFile):
     DEFAULT_PATH = staticmethod(_taps_file)
 
     def load(self) -> List[dict]:
-        return self._read().get("taps", [])
+        return [t for t in self._read().get("taps", [])
+                if isinstance(t, dict) and isinstance(t.get("repo"), str)
+                and all(isinstance(t.get(k, ""), str) for k in ("path", "bucket"))]
 
     def save(self, taps: List[dict]) -> None:
         self._write({"taps": taps})

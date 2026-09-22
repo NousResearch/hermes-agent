@@ -705,7 +705,7 @@ def do_install(identifier: str, category: str = "", force: bool = False,
 
     existing = HubLockFile().get_installed(bundle.name)
     if existing:
-        c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing['install_path']}")
+        c.print(f"[yellow]Warning:[/] '{bundle.name}' is already installed at {existing.get('install_path')}")
         if not force:
             c.print("Use --force to reinstall.\n")
             return
@@ -1288,25 +1288,36 @@ def do_snapshot_import(input_path: str, force: bool = False,
         _print_error(c, f"File not found: {inp}")
         return
     try:
-        snapshot = json.loads(inp.read_text(encoding="utf-8"))
+        snapshot = json.loads(inp.read_text(encoding="utf-8", errors="replace"))
     except json.JSONDecodeError:
         _print_error(c, f"Invalid JSON in {inp}")
         return
+    if not isinstance(snapshot, dict):
+        _print_error(c, f"Invalid snapshot shape in {inp} (expected a JSON object)")
+        return
 
     taps = snapshot.get("taps", [])
-    if taps:
+    if isinstance(taps, list) and taps:
         mgr = TapsManager()
-        for tap in taps:
-            if tap.get("repo", ""):
-                mgr.add(tap["repo"], tap.get("path", "skills/"))
-        c.print(f"[dim]Restored {len(taps)} tap(s)[/]")
+        restored = 0
+        try:
+            for tap in taps:
+                if isinstance(tap, dict) and tap.get("repo"):
+                    mgr.add(tap["repo"], tap.get("path", "skills/"))
+                    restored += 1
+            c.print(f"[dim]Restored {restored} tap(s)[/]")
+        except ValueError as exc:
+            c.print(f"[yellow]Could not restore taps: {exc}[/]")
 
     skills = snapshot.get("skills", [])
-    if not skills:
+    if not isinstance(skills, list) or not skills:
         c.print("[dim]No skills in snapshot to install.[/]\n")
         return
     c.print(f"[bold]Importing {len(skills)} skill(s) from snapshot...[/]\n")
     for entry in skills:
+        if not isinstance(entry, dict):
+            c.print(f"[yellow]Skipping malformed entry: {entry!r}[/]")
+            continue
         identifier = entry.get("identifier", "")
         if not identifier:
             c.print(f"[yellow]Skipping entry with no identifier: {entry.get('name', '?')}[/]")

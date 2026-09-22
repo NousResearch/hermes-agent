@@ -367,7 +367,7 @@ def load_usage() -> Dict[str, Dict[str, Any]]:
     """The whole .usage.json map (non-dict values dropped); {} on missing/corrupt."""
     path = _usage_file()
     try:
-        data = json.loads(path.read_text(encoding="utf-8")) if path.exists() else {}
+        data = json.loads(path.read_text(encoding="utf-8", errors="replace")) if path.exists() else {}
     except (OSError, json.JSONDecodeError) as e:
         logger.debug("Failed to read %s: %s", path, e)
         return {}

@@ -304,6 +304,41 @@ def test_stale_claim_extend_live_worker_does_not_count_failure(
         assert row["consecutive_failures"] == 0
 
 
+def test_fresh_claim_discards_previous_run_heartbeat_before_stale_sweep(
+    kanban_home, monkeypatch,
+):
+    """A new live claim must not inherit a reclaimed run's stale heartbeat."""
+    import hermes_cli.kanban_db as _kb
+
+    old_now = 10_000
+    fresh_now = old_now + _kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS + 1
+    monkeypatch.setattr(_kb.time, "time", lambda: old_now)
+
+    with kbc.connect() as conn:
+        task_id = kb.create_task(conn, title="fresh claim", assignee="a")
+        host = _kb._claimer_id().split(":", 1)[0]
+        assert kb.claim_task(conn, task_id, claimer=f"{host}:previous") is not None
+        assert kbd.heartbeat_worker(conn, task_id) is True
+        assert kb.reclaim_task(conn, task_id, signal_fn=lambda _pid, _sig: None) is True
+
+        monkeypatch.setattr(_kb.time, "time", lambda: fresh_now)
+        assert kb.claim_task(conn, task_id, claimer=f"{host}:fresh") is not None
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ?, claim_expires = ? WHERE id = ?",
+            (12345, fresh_now - 1, task_id),
+        )
+        monkeypatch.setattr(_kb, "_worker_alive", lambda _pid, _started: True)
+        terminated = []
+        monkeypatch.setattr(
+            _kb,
+            "_terminate_reclaimed_worker",
+            lambda *_args, **_kwargs: terminated.append(True) or {"terminated": True},
+        )
+
+        assert kb.release_stale_claims(conn) == 0
+        assert terminated == []
+
+
 
 
 

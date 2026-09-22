@@ -14,6 +14,7 @@ from typing import Any, Dict, Optional, Tuple
 
 from agent.message_metadata import append_message
 from agent.message_sanitization import coalesce_tool_call_id
+from agent.midturn_model_router import maybe_apply_midturn_route
 from agent.turn_preflight import compress_after_tool_results
 from agent.turn_tool_validation import validate_tool_calls
 
@@ -45,6 +46,7 @@ class ToolRoundVerdict:
 def run_tool_round(
     agent: Any, *, assistant_message: Any, finish_reason: Any, messages: Any,
     conversation_history: Any, api_call_count: Any, effective_task_id: Any, user_message: Any,
+    original_user_message: Any,
     system_message: Any, active_system_prompt: Any, compression_attempts: Any,
     max_compression_attempts: Any, final_response: Any, failed: Any, _turn_exit_reason: Any,
     truncated_tool_call_retries: Any,
@@ -184,6 +186,12 @@ def run_tool_round(
     # calling) — cheap RPC-style calls shouldn't eat the budget.
     if {tc.function.name for tc in assistant_message.tool_calls} == {"execute_code"}:
         agent.iteration_budget.refund()
+
+    # The router sees only completed tool-result rows and makes request-local changes for
+    # the next call. It never runs before tool execution or after a failed/guardrailed round.
+    maybe_apply_midturn_route(
+        agent, messages=messages, original_user_message=original_user_message,
+    )
 
     _ptc = compress_after_tool_results(
         agent, messages=messages, system_message=system_message, user_message=user_message,

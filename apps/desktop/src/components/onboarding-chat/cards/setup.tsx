@@ -25,7 +25,6 @@ import { SearchField } from '@/components/ui/search-field'
 import { registry } from '@/contrib/registry'
 import { connectorIconUrl, connectorTitle } from '@/lib/connector-tools'
 import { useConnectorCatalog } from '@/store/connector-catalog'
-import { setInterfaceMode } from '@/store/interface-mode'
 import { $onboardingAnswers, setOnboardingAnswers } from '@/store/onboarding-answers'
 import { useTheme } from '@/themes'
 import { setAccentOverride } from '@/themes/accent-override'
@@ -209,10 +208,6 @@ export function LayoutCard({ locked }: CardProps) {
     // Skip leaves the mode alone, so only an actual choice sets it.
     const layout = LAYOUTS.find(candidate => candidate.id === id)
 
-    if (layout) {
-      setInterfaceMode(layout.mode)
-    }
-
     const preset = registry.getArea('layouts').find(contribution => contribution.id === id)
 
     if (!preset?.data) {
@@ -224,7 +219,7 @@ export function LayoutCard({ locked }: CardProps) {
     // Swapping only the preset tree on a re-pick kept the previous layout's dismissals and dock records, and the two
     // layouts came up mixed together.
     // SAFETY: Layout presets declare data: LayoutNode (pane-shell/tree/presets.ts).
-    assembleChatOnboarding(preset.id, preset.data as LayoutNode)
+    assembleChatOnboarding(preset.id, preset.data as LayoutNode, layout?.mode)
   }
 
   return (

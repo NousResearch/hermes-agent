@@ -4,10 +4,9 @@ import { getUsageAnalytics, type McpTestResult, type ProfileScope } from '@/herm
 import type { Translations } from '@/i18n'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
 import { NEEDS_AUTH_RE } from '@/lib/mcp-probe-cache'
-import type { McpServerEntry } from '@/lib/mcp-servers'
+import { type McpServerEntry, serverEnabled } from '@/lib/mcp-servers'
 import { countEnabledTools } from '@/lib/mcp-tool-filter'
 
-import { serverEnabled } from './mcp-doc'
 
 export const MCP_CATALOG_KEY = ['mcp-catalog'] as const
 

@@ -82,6 +82,8 @@ def _redact_mcp_env(env: Dict[str, Any]) -> Dict[str, str]:
 
 
 def _mcp_server_summary(name: str, cfg: Dict[str, Any], plugin: str | None = None) -> Dict[str, Any]:
+    from tools.mcp_tool_common import mcp_server_enabled
+
     transport = "http" if cfg.get("url") else ("stdio" if cfg.get("command") else "unknown")
     auth = cfg.get("auth")
     headers = cfg.get("headers") or {}
@@ -95,7 +97,7 @@ def _mcp_server_summary(name: str, cfg: Dict[str, Any], plugin: str | None = Non
         "args": list(cfg.get("args") or []),
         "env": _redact_mcp_env(cfg.get("env") or {}),
         "auth": auth,
-        "enabled": cfg.get("enabled", True) is not False,
+        "enabled": mcp_server_enabled(cfg),
         # Tool selection: list of enabled tool names, or None = all.
         "tools": cfg.get("tools"),
         "source": "plugin" if plugin is not None else "config",

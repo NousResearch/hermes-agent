@@ -96,6 +96,155 @@ def test_confident_routine_selects_only_the_allowlisted_routine_target():
     assert observed["state"] == {"goal": "Return a concise greeting."}
 
 
+def test_midturn_router_uses_only_bounded_redacted_completed_tool_outcome():
+    from hermes_cli.model_router import resolve_midturn_route
+
+    observed = {}
+
+    def controller(_url, _timeout, state, _candidates):
+        observed.update(state)
+        return {"choice": "routine", "confidence": 1.0}
+
+    route = resolve_midturn_route(
+        config=_config(mid_turn={"enabled": True, "tool_outcome_max_chars": 32, "strong_route": "exception"}),
+        user_message="Investigate the failure.",
+        tool_outcome="token=secret-value-abcdefghijklmnopqrstuvwxyz; useful result " * 3,
+        base_model="base-model",
+        base_runtime={"provider": "base"},
+        runtime_resolver=_runtime,
+        controller=controller,
+    )
+
+    assert route.decision == "routine"
+    assert route.model == "laptop-qwen35-defiant-fable"
+    assert observed["goal"] == "Investigate the failure."
+    outcome = observed["completed_tool_outcome"]
+    assert outcome["character_count"] <= 32
+    assert "secret-value-abcdefghijklmnopqrstuvwxyz" not in repr(outcome)
+
+
+def test_midturn_router_sends_only_deterministic_outcome_metadata_and_redacted_goal():
+    """The local controller gets difficulty signals, never a tool-result transcript or PII."""
+    from hermes_cli.model_router import resolve_midturn_route
+
+    observed = {}
+
+    def controller(_url, _timeout, state, _candidates):
+        observed.update(state)
+        return {"choice": "routine", "confidence": 1.0}
+
+    route = resolve_midturn_route(
+        config=_config(mid_turn={"enabled": True, "tool_outcome_max_chars": 80, "strong_route": "exception"}),
+        user_message="Investigate alice@example.com and call +1 415-555-0123.",
+        tool_outcome=(
+            "customer alice@example.com reported a failed timeout after a 503; "
+            "the raw account record must not leave Hermes"
+        ),
+        base_model="base-model",
+        base_runtime={"provider": "base"},
+        runtime_resolver=_runtime,
+        controller=controller,
+    )
+
+    assert route.decision == "routine"
+    assert observed["goal"] == "Investigate [email] and call [phone]."
+    assert observed["completed_tool_outcome"] == {
+        "kind": "tool_outcome_metadata",
+        "character_count": 80,
+        "line_count": 1,
+        "signals": ["failure", "timeout", "server_error"],
+    }
+    assert "alice@example.com" not in repr(observed)
+    assert "raw account record" not in repr(observed)
+
+
+def test_midturn_raw_outcome_requires_an_authenticated_explicit_opt_in():
+    """A raw transcript is never selected by a boolean alone on an unauthenticated controller."""
+    from hermes_cli.model_router import resolve_midturn_route
+
+    states = []
+    config = _config(mid_turn={
+        "enabled": True, "tool_outcome_max_chars": 64, "strong_route": "exception",
+        "authenticated_raw_tool_outcome": True,
+    })
+
+    def controller(_url, _timeout, state, _candidates):
+        states.append(state)
+        return {"choice": "routine", "confidence": 1.0}
+
+    for controller_auth_token in ("", "controller-auth-token"):
+        config["model_router"]["controller_auth_token"] = controller_auth_token
+        resolve_midturn_route(
+            config=config, user_message="Inspect.", tool_outcome="private result: successful",
+            base_model="base", base_runtime={"provider": "base"}, runtime_resolver=_runtime,
+            controller=controller,
+        )
+
+    assert states[0]["completed_tool_outcome"]["kind"] == "tool_outcome_metadata"
+    assert states[1]["completed_tool_outcome"] == "private result: successful"
+
+
+def test_router_accepts_named_custom_provider_with_custom_runtime_identity():
+    """Named custom targets resolve to the ``custom`` transport but retain their requested name."""
+    from hermes_cli.model_router import resolve_turn_route
+
+    def named_custom_runtime(provider, model):
+        assert (provider, model) == ("Laptop Defiant Fable", "laptop-qwen35-defiant-fable")
+        runtime = _runtime("custom", model)
+        runtime["requested_provider"] = provider
+        return runtime
+
+    route = resolve_turn_route(
+        config=_config(), user_message="Return a concise greeting.", base_model="base",
+        base_runtime={"provider": "base"}, runtime_resolver=named_custom_runtime,
+        controller=lambda *_args: {"choice": "routine", "confidence": 1.0},
+    )
+
+    assert route.decision == "routine"
+    assert route.runtime["provider"] == "custom"
+    assert route.runtime["requested_provider"] == "Laptop Defiant Fable"
+
+
+def test_midturn_planning_or_exception_choice_is_pinned_to_configured_strong_route():
+    from hermes_cli.model_router import resolve_midturn_route
+
+    config = _config(mid_turn={"enabled": True, "tool_outcome_max_chars": 64, "strong_route": "routine"})
+    for choice in ("planning", "exception"):
+        route = resolve_midturn_route(
+            config=config,
+            user_message="Investigate the failure.",
+            tool_outcome="the tool reported an unexpected condition",
+            base_model="base-model",
+            base_runtime={"provider": "base"},
+            runtime_resolver=_runtime,
+            controller=lambda *_args, choice=choice: {"choice": choice, "confidence": 1.0},
+        )
+
+        assert route.decision == "routine"
+        assert route.model == "laptop-qwen35-defiant-fable"
+        assert route.reason == "strong_route"
+
+
+def test_default_configuration_leaves_midturn_routing_off():
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    from hermes_cli.model_router import resolve_midturn_route
+
+    calls = []
+    route = resolve_midturn_route(
+        config=DEFAULT_CONFIG,
+        user_message="Inspect the data.",
+        tool_outcome="completed inspection",
+        base_model="base-model",
+        base_runtime={"provider": "base"},
+        runtime_resolver=lambda *_args: (_ for _ in ()).throw(AssertionError("must not resolve")),
+        controller=lambda *_args: calls.append(True),
+    )
+
+    assert route.decision == "disabled"
+    assert route.model == "base-model"
+    assert calls == []
+
+
 def test_route_keeps_only_the_selected_target_request_overrides():
     from hermes_cli.model_router import resolve_turn_route
 
@@ -176,6 +325,39 @@ def test_router_refuses_non_loopback_controller_url():
         _require_loopback_http_url("https://example.invalid/v1/route")
     with pytest.raises(ValueError, match="loopback"):
         _require_loopback_http_url("http://100.83.157.26:18777/v1/route")
+
+
+def test_router_controller_auth_token_is_sent_as_bearer_authorization(monkeypatch):
+    """The explicit raw-outcome opt-in has an actual authenticated transport boundary."""
+    from types import SimpleNamespace
+    from hermes_cli import model_router
+
+    seen = {}
+
+    class Response:
+        status = 200
+
+        def __enter__(self):
+            return self
+
+        def __exit__(self, *_args):
+            return False
+
+        def read(self, _size):
+            return b'{"choice":"routine","confidence":1.0}'
+
+    def open_request(request, *, timeout):
+        seen["authorization"] = request.get_header("Authorization")
+        seen["timeout"] = timeout
+        return Response()
+
+    monkeypatch.setattr(model_router, "build_opener", lambda *_args: SimpleNamespace(open=open_request))
+
+    assert model_router.post_route_decision(
+        "http://127.0.0.1:18777/v1/route", 2, {"goal": "safe"}, {"routine": "safe"},
+        auth_token="controller-auth-token",
+    ) == {"choice": "routine", "confidence": 1.0}
+    assert seen == {"authorization": "Bearer controller-auth-token", "timeout": 2}
 
 
 def test_tui_turn_router_switches_only_for_the_current_turn(monkeypatch):

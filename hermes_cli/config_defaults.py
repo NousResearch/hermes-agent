@@ -31,6 +31,16 @@ DEFAULT_CONFIG = {
         "minimum_confidence": 0.75,
         "message_max_chars": 4096,
         "fallback_route": "exception",
+        # Post-tool selection is separately opt-in. It may change only model/effort within
+        # one live provider runtime; provider/API-mode switches remain next-turn only.
+        "mid_turn": {
+            "enabled": False,
+            "tool_outcome_max_chars": 2048,
+            "strong_route": "exception",
+            # Tool results are projected to deterministic difficulty metadata. Raw text needs
+            # this explicit opt-in AND model_router.controller_auth_token for authenticated egress.
+            "authenticated_raw_tool_outcome": False,
+        },
         # Each route needs provider, model, description, and optionally reasoning_effort.
         # The controller cannot supply provider/model values and cannot escape this allowlist.
         "routes": {},

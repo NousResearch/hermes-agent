@@ -1143,10 +1143,11 @@ class TurnRunner:
             user_id_alt=getattr(ctx.source, "user_id_alt", None),
             skip_context_files=skip_context_files,
         )
-        # Policy state is part of cache identity. Otherwise a normal cached agent can
-        # carry fallback providers or per-request fields into a routed turn.
-        sig = (sig, bool(turn_route.get("router_active")),
-               repr(turn_route.get("reasoning_config")), repr(turn_route.get("request_overrides")))
+        # A routed prompt needs a separate cache identity: otherwise a normal cached agent can
+        # carry fallback providers or per-request fields into a routed turn. Keep the existing
+        # signature unchanged for unrouted turns so current cache reuse behavior remains intact.
+        if turn_route.get("router_active"):
+            sig = (sig, True, repr(turn_route.get("reasoning_config")), repr(turn_route.get("request_overrides")))
         cache_lock = getattr(runner, "_agent_cache_lock", None)
         cache = getattr(runner, "_agent_cache", None)
         peek_sid, dead = self._cached_sid_is_dead(cache_lock, cache)

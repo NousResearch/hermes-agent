@@ -154,6 +154,15 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
 
   if (event.type === 'message.delta') {
     if (sessionId) {
+      // A submit optimistically arms its next turn before the gateway has
+      // accepted it. Do not let an in-flight callback from the prior turn
+      // create a new visible bubble in that gap: message.start (or a
+      // running=true session.info recovery) is the backend-owned proof that
+      // this session's current turn may publish stream text.
+      if (!sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
+        return true
+      }
+
       appendAssistantDelta(sessionId, coerceGatewayText(payload?.text), occurredAt)
     }
 

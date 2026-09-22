@@ -3543,6 +3543,15 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # so they cannot consume other regions' budget or evict the newest record.
         display_records = [cls._bound_oversized_record(r, target) for r in records]
 
+        def _merged(slices: list[tuple[int, int]]) -> list[tuple[int, int]]:
+            out: list[tuple[int, int]] = []
+            for s, e in slices:
+                if out and s <= out[-1][1]:
+                    out[-1] = (out[-1][0], max(out[-1][1], e))
+                else:
+                    out.append((s, e))
+            return out
+
         starts = [round(i * len(records) / n) for i in range(n)]
         selected: list[tuple[int, int]] = []
         for index, start in enumerate(starts):
@@ -3561,11 +3570,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     size += len(display_records[end]) + (len(separator) if end > start else 0)
                     end += 1
             if end > start:
-                if selected and start <= selected[-1][1]:
-                    prev_start, prev_end = selected.pop()
-                    selected.append((prev_start, max(prev_end, end)))
-                else:
-                    selected.append((start, end))
+                selected.append((start, end))
+        selected = _merged(selected)
 
         def _render(slices: list[tuple[int, int]]) -> str:
             parts: list[str] = []
@@ -3587,21 +3593,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             shown = [i for s, e in selected for i in range(s, e)]
             return text, _coverage(sum(len(display_records[i]) for i in shown), len(shown))
 
-        def _merged(slices: list[tuple[int, int]]) -> list[tuple[int, int]]:
-            out: list[tuple[int, int]] = []
-            for s, e in slices:
-                if out and s <= out[-1][1]:
-                    out[-1] = (out[-1][0], max(out[-1][1], e))
-                else:
-                    out.append((s, e))
-            return out
-
         # Budget extension: the greedy fill leaves each slice short of `target` by up to one record
         # (5-43% of the cap unused for 8-20K records). Spend the headroom on whole neighbouring
         # records, round-robin one record per slice per round so every region keeps an even share
         # (the newest slice grows backward, older slices grow forward) — never past cap.
         cap = cls._SUMMARY_INPUT_MAX_CHARS
-        rendered_len = len(_render(_merged(selected)))
+        rendered_len = len(_render(selected))
         grew = True
         while grew:
             grew = False

@@ -2936,7 +2936,10 @@ def _prepare_agent_startup(args) -> None:
             # Daemon thread: ~150ms of manifest scanning overlaps the rest of
             # startup. Every synchronous reader goes through discover_plugins(),
             # which joins this thread first (incl. model_tools at import time).
-            start_background_plugin_discovery()
+            if args.command == "gateway" and getattr(args, "gateway_command", None) == "run":
+                start_background_plugin_discovery(defer_platforms=False)
+            else:
+                start_background_plugin_discovery()
         except Exception:
             logger.warning(
                 "plugin discovery failed at CLI startup",

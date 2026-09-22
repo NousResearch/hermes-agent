@@ -1141,6 +1141,13 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self.home_path = Path(self.scope_key)
         self._discovery_lock = threading.RLock()
         self._discovered: bool = False
+        # A gateway that follows a CLI/TUI discovery in the same process must reload deferred platform
+        # manifests once so its adapters register before platform configuration is evaluated.
+        self._deferred_platforms: bool = True
+        # True once a discovery re-applied plugin secret sources for this home: the per-home snapshot and
+        # the installed scope may then hold plugin-supplied names, and a later discovery that finds NO
+        # enabled plugin source (plugin removed / disabled) must still reconcile once to drop them.
+        self._plugin_secret_sources_reconciled: bool = False
         self._cli_ref = None  # Set by CLI after plugin discovery
         self._gateway_message_injector: tuple[object, Callable] | None = None
         self._context_engine = None  # Set by a plugin via register_context_engine()
@@ -1225,12 +1232,14 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         registered = self._gateway_message_injector
         return registered is not None and bool(registered[1](**kwargs))
 
-    def discover_and_load(self, force: bool = False) -> None:
+    def discover_and_load(self, force: bool = False, *, defer_platforms: bool = True) -> None:
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             if self._discovered and not force:
-                return
+                if defer_platforms or not self._deferred_platforms:
+                    return
+                force = True
             if force:
                 self.unload()  # the ledger owns teardown of process-global registries
             if env_var_enabled("HERMES_SAFE_MODE"):
@@ -1242,7 +1251,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             # — callers swallow the exception and would be stranded on the early return above.
             self._discovered = True
             try:
-                self._discover_and_load_inner()
+                if defer_platforms:
+                    self._discover_and_load_inner()
+                else:
+                    self._discover_and_load_inner(defer_platforms=False)
+                self._deferred_platforms = defer_platforms
                 # Persistent registrations survived the unload-all; now that plugins re-registered,
                 # dispose the ones whose plugin did not come back.
                 # Now that plugins have had their chance to re-register, dispose the ones whose plugin did
@@ -1313,7 +1326,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         except Exception as exc:
             logger.debug("secret source re-apply after discovery failed: %s", exc)
 
-    def _discover_and_load_inner(self) -> None:
+    def _discover_and_load_inner(self, *, defer_platforms: bool = True) -> None:
         """The actual discovery sweep — see :meth:`discover_and_load`."""
         manifests: List[PluginManifest] = self._collect_directory_manifests()
         # Entry points are separate from the directory scan: the startup MCP probe must not import
@@ -1335,7 +1348,10 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         # Later sources win on key collision (project > user > bundled); gate the winners, then
         # load survivors in requires_plugins order (see resolve_plugin_load_order).
         winners = {manifest_key(m): m for m in manifests}
-        to_load = {k: m for k, m in winners.items() if self._gate_manifest(m, disabled, enabled)}
+        to_load = {
+            k: m for k, m in winners.items()
+            if self._gate_manifest(m, disabled, enabled, defer_platforms=defer_platforms)
+        }
         for lookup_key in resolve_plugin_load_order(to_load):
             manifest = to_load[lookup_key]
             self._warn_python_dependencies(manifest)
@@ -1360,12 +1376,17 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
             logger.debug("plugin compat report refresh skipped: %s", exc)
 
     def _gate_manifest(
-        self, manifest: PluginManifest, disabled: Set[str], enabled: Optional[Set[str]],
+        self,
+        manifest: PluginManifest,
+        disabled: Set[str],
+        enabled: Optional[Set[str]],
+        *,
+        defer_platforms: bool = True,
     ) -> bool:
         """Route one winning manifest per :func:`gate_manifest`: load now, defer, or record as
         skipped (introspection-only placeholder). Returns True only for plugins that go through the
         dependency-ordered load pass."""
-        verdict = gate_manifest(manifest, disabled, enabled)
+        verdict = gate_manifest(manifest, disabled, enabled, defer_platforms=defer_platforms)
         if verdict.action == "load":
             return True
         if verdict.action == "load_now":
@@ -1591,18 +1612,22 @@ def has_enabled_agent_plugin_mcp(raw_config: Mapping[str, Any]) -> bool:
     return PluginManager().has_enabled_portable_mcp(raw_config)
 
 
-def discover_plugins(force: bool = False) -> None:
+def discover_plugins(force: bool = False, *, defer_platforms: bool = True) -> None:
     """Discover and load all plugins (idempotent; ``force=True`` rescans). Joins an in-flight
     background discovery instead of racing a second scan."""
     _join_background_discovery()
-    get_plugin_manager().discover_and_load(force=force)
+    manager = get_plugin_manager()
+    if defer_platforms:
+        manager.discover_and_load(force=force)
+    else:
+        manager.discover_and_load(force=force, defer_platforms=False)
 
 
 _background_discovery_thread: Optional[threading.Thread] = None
 _background_discovery_lock = threading.Lock()
 
 
-def start_background_plugin_discovery() -> None:
+def start_background_plugin_discovery(*, defer_platforms: bool = True) -> None:
     """Run discovery in a daemon thread to overlap the rest of CLI startup (~150ms). Every
     synchronous consumer joins it via :func:`discover_plugins`, so no one sees a half-loaded
     registry. No-op when already done or in flight."""
@@ -1616,7 +1641,10 @@ def start_background_plugin_discovery() -> None:
 
         def _run() -> None:
             try:
-                manager.discover_and_load()
+                if defer_platforms:
+                    manager.discover_and_load()
+                else:
+                    manager.discover_and_load(defer_platforms=False)
                 _persist_plugin_toolset_keys()
             except Exception:
                 logger.warning("background plugin discovery failed", exc_info=True)

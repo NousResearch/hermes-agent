@@ -114,16 +114,20 @@ def _fresh_cache(tmp_path, monkeypatch, doc: dict):
 
 def test_newer_in_tree_pin_outranks_a_fresh_live_cache(tmp_path, monkeypatch):
     """Right after `hermes update` bumps an in-tree pin, a live cache fetched BEFORE the bump must not
-    re-install the old sha: for the same entry the newer catalog wins (checkout catalog commit time vs
-    the doc's generated_at). Live-only entries survive; an older checkout still defers to the doc."""
+    re-install the old sha or hide a newly added plugin: the newer catalog wins (checkout catalog commit
+    time vs the doc's generated_at). Live-only entries survive; an older checkout still defers to the doc."""
     old, new = SHA, "a" * 40
     _fresh_cache(tmp_path, monkeypatch, {"generated_at": "2026-09-22T10:00:00Z",
                                          "entries": [_entry("shared", sha=old), _entry("live-only")], "removed": []})
-    monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: [pc.entry_from_mapping(_entry("shared", sha=new), "t")])
+    monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: [
+        pc.entry_from_mapping(_entry("shared", sha=new), "t"),
+        pc.entry_from_mapping(_entry("in-tree-only"), "t"),
+    ])
     bump_time = pc._live_generated_time({"generated_at": "2026-09-22T10:00:00Z"}) + 3600
     monkeypatch.setattr(pc, "in_tree_catalog_time", lambda: bump_time)
     by_name = {e.name: e for e in pc.load_catalog_live()}
-    assert by_name["shared"].sha == new and "live-only" in by_name
+    assert by_name["shared"].sha == new
+    assert set(by_name) == {"shared", "live-only", "in-tree-only"}
     # Control: a checkout whose catalog predates the doc takes the live pin.
     monkeypatch.setattr(pc, "in_tree_catalog_time", lambda: bump_time - 7200)
     assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == old

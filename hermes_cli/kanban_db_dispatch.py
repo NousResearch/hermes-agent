@@ -519,6 +519,7 @@ def _defer_reclaim_for_live_worker(
     termination: dict,
     *,
     reason: str,
+    expected_run_id: Optional[int] = None,
 ) -> None:
     """Hold a claim whose worker survived termination instead of releasing it.
 
@@ -529,10 +530,12 @@ def _defer_reclaim_for_live_worker(
     """
     grace = now + _kb.RECLAIM_DEFER_GRACE_SECONDS
     with _kb.write_txn(conn):
+        ownership_sql = " AND current_run_id = ?" if expected_run_id is not None else ""
+        ownership_params = (expected_run_id,) if expected_run_id is not None else ()
         cur = conn.execute(
             "UPDATE tasks SET claim_expires = ? "
-            "WHERE id = ? AND status = 'running' AND claim_lock IS ?",
-            (grace, task_id, claim_lock),
+            "WHERE id = ? AND status = 'running' AND claim_lock IS ?" + ownership_sql,
+            (grace, task_id, claim_lock, *ownership_params),
         )
         if cur.rowcount != 1:
             return
@@ -589,13 +592,14 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
     task's source phase so the next tick re-spawns the same kind of worker —
     unless the circuit breaker already gave up, leaving it blocked. Host-local
     only (same reasoning as ``detect_crashed_workers``). ``signal_fn`` is a test hook.
+    Failed or uncertain termination retains the original run for cleanup retry.
     """
     timed_out: list[str] = []
     now = int(time.time())
     host_prefix = _kb._host_prefix()
 
     rows = conn.execute(
-        "SELECT t.id, t.worker_pid, t.worker_started_at, "
+        "SELECT t.id, t.current_run_id, t.worker_pid, t.worker_started_at, "
         "       COALESCE(r.started_at, t.started_at) AS active_started_at, "
         "       t.max_runtime_seconds, t.claim_lock "
         "FROM tasks t "
@@ -618,24 +622,17 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
         pid = int(row["worker_pid"])
         tid = row["id"]
         started_at = _kb._row_get(row, "worker_started_at")
-        if started_at == UNVERIFIED_WORKER_FINGERPRINT and _kb._pid_alive(pid):
-            # Fingerprint capture failed at spawn: we cannot prove this live PID is our worker, so
-            # it is neither signalled nor released beside (duplicate). It is reclaimed once it exits.
-            _kb._log.warning("kanban: task %s worker pid %s exceeded max runtime but has no verified "
-                             "identity; not signalled", tid, pid)
+        termination = _terminate_reclaimed_worker(
+            pid, lock, signal_fn=signal_fn, started_at=started_at)
+        # Timeout and delivered signals are not proof of exit. Preserve this
+        # run and its worker identity until owned cleanup is positively known.
+        if not termination["terminated"]:
+            _defer_reclaim_for_live_worker(
+                conn, tid, lock, now, termination, reason="max_runtime_worker_alive",
+                expected_run_id=row["current_run_id"],
+            )
             continue
-        # SIGTERM then SIGKILL after 5 s grace; workers wanting a cleaner
-        # shutdown install their own SIGTERM handler. A recycled PID (fingerprint
-        # mismatch) is never signalled: the worker is already gone.
-        killed = False
-        kill = _kill_fn(signal_fn)
-        if kill is not None and not (_kb._pid_alive(pid) and _pid_recycled(pid, started_at)):
-            with contextlib.suppress(ProcessLookupError, OSError):
-                kill(pid, signal.SIGTERM)
-            # Short polling wait — no time.sleep on the write txn.
-            _poll_worker_exit(pid, started_at)
-            if _worker_alive(pid, started_at):
-                killed = _sigkill(kill, pid)
+        killed = termination["sigkill"]
 
         error = f"elapsed {int(elapsed)}s > limit {limit}s"
         with _kb.write_txn(conn):
@@ -645,8 +642,8 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                 "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
                 "last_heartbeat_at = NULL "
                 "WHERE id = ? AND status = 'running' "
-                "  AND worker_pid = ? AND claim_lock IS ?",
-                (retry_status, tid, pid, row["claim_lock"]),
+                "  AND worker_pid = ? AND claim_lock IS ? AND current_run_id IS ?",
+                (retry_status, tid, pid, row["claim_lock"], row["current_run_id"]),
             )
             if cur.rowcount == 1:
                 payload = {
@@ -655,6 +652,7 @@ def enforce_max_runtime(conn: sqlite3.Connection, *, signal_fn=None) -> list[str
                     "limit_seconds": limit,
                     "sigkill": killed,
                     "retry_status": retry_status,
+                    "termination": termination,
                 }
                 run_id = _kb._end_run(
                     conn, tid, outcome="timed_out", status="timed_out",

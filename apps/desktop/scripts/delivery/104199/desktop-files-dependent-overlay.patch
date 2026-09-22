@@ -1,0 +1,68 @@
+diff --git a/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx b/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
+index 7ec5ccb4d1..f760750b0e 100644
+--- a/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/group-chat-view.render.test.tsx
+@@ -14,2 +14,12 @@ vi.mock('@hermes/plugin-sdk', async () => {
+-  const Button = ({ children, onClick, title }: { children?: ReactNode; onClick?: () => void; title?: string }) => (
+-    <button onClick={onClick} title={title}>
++  const Button = ({
++    'aria-label': ariaLabel,
++    children,
++    onClick,
++    title
++  }: {
++    'aria-label'?: string
++    children?: ReactNode
++    onClick?: () => void
++    title?: string
++  }) => (
++    <button aria-label={ariaLabel} onClick={onClick} title={title}>
+@@ -77 +87 @@ it('renders member replies through the shell message renderer, resolving media o
+-  const { getAllByTestId } = render(<GroupChatWorkspace group="Room" members={members} />)
++  const { getAllByTestId, getByRole } = render(<GroupChatWorkspace group="Room" members={members} />)
+@@ -79,0 +90 @@ it('renders member replies through the shell message renderer, resolving media o
++  expect(getByRole('button', { name: 'Files' })).toBeTruthy()
+diff --git a/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx b/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
+index 8183b4dbae..abbdd535d3 100644
+--- a/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
++++ b/apps/desktop/src/plugins/hermes-bots/group-chat-view.tsx
+@@ -65,0 +66 @@ import type { GroupActivityEntry } from './group-activity'
++import { downloadGroupChatAttachment } from './group-attachment-download'
+@@ -85,0 +87 @@ import { storedClassicDesktopAuthority } from './group-desktop-authority'
++import { SharedFilesControl } from './group-files-view'
+@@ -116 +117,0 @@ import {
+-  readHostedGroupChatAttachment,
+@@ -966,0 +968 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
++      <SharedFilesControl group={group} room={room} />
+@@ -1343,14 +1345 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
+-      const resolved = attachment.data ? attachment : await readHostedGroupChatAttachment(group, entry, attachment)
+-
+-      if (!resolved.data) {
+-        throw new Error('Attachment data is unavailable.')
+-      }
+-
+-      const link = document.createElement('a')
+-
+-      link.href = resolved.data
+-      link.download = resolved.name || 'attachment'
+-      link.style.display = 'none'
+-      document.body.appendChild(link)
+-      link.click()
+-      link.remove()
++      await downloadGroupChatAttachment(group, entry, attachment)
+diff --git a/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts b/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts
+index 717258ef7d..0cd97136c3 100644
+--- a/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts
++++ b/apps/desktop/src/plugins/hermes-bots/hosted-room-runtime.ts
+@@ -1272 +1272 @@ async function enqueueHostedRoomCommand(command: Partial<HostedRoomCommand>) {
+-async function hostedRouteForRoom(room: GroupChat) {
++export async function hostedRouteForRoom(room: GroupChat) {
+diff --git a/apps/desktop/src/plugins/hermes-bots/types.ts b/apps/desktop/src/plugins/hermes-bots/types.ts
+index ad1d8cda37..271f688ec9 100644
+--- a/apps/desktop/src/plugins/hermes-bots/types.ts
++++ b/apps/desktop/src/plugins/hermes-bots/types.ts
+@@ -11,0 +12 @@
++import type { ClassicFileRef } from './classic-output'
+@@ -144,0 +146,2 @@ export interface Attachment {
++  /** Non-secret producer custody reference. Raw bytes stay behind the exact reader. */
++  classicExport?: ClassicFileRef

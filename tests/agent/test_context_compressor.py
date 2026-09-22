@@ -3313,6 +3313,122 @@ class TestDoubleCompactionSummaryRole:
         )
 
 
+class TestSystemCompressionNoteAuthority:
+    """The live system-message compaction note must not restore universal
+    memory authority after the handoff prefix was repaired."""
+
+    def _compress_with_system(self, system_content: str):
+        mock_response = MagicMock()
+        mock_response.choices = [MagicMock()]
+        mock_response.choices[0].message.content = "summary of earlier turns"
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test", quiet_mode=True, protect_first_n=0, protect_last_n=2,
+            )
+        msgs = [{"role": "system", "content": system_content}]
+        msgs.extend(
+            {"role": "user" if i % 2 == 0 else "assistant", "content": f"msg {i}"}
+            for i in range(8)
+        )
+        with patch("agent.context_compressor.call_llm", return_value=mock_response):
+            return c.compress(msgs)
+
+    def test_live_note_preserves_memory_without_universal_authority(self):
+        result = self._compress_with_system("You are a helpful assistant.")
+        system = result[0]["content"]
+        lower = system.lower()
+        assert system.startswith("You are a helpful assistant.")
+        assert "attributed continuity evidence" in lower
+        assert "current explicit user statements" in lower
+        assert "always outrank it" in lower
+        assert "canonical live sources" in lower
+        assert "fully authoritative regardless of compaction" not in lower
+        assert "always authoritative and active" not in lower
+
+    def test_retired_note_is_replaced_instead_of_stacked(self):
+        retired = (
+            "[Note: Some earlier conversation turns have been compacted into a "
+            "handoff summary to preserve context space. The current session "
+            "state may still reflect earlier work, so build on that summary "
+            "and state rather than re-doing work. Your persistent memory "
+            "(MEMORY.md, USER.md) remains fully authoritative regardless of "
+            "compaction.]"
+        )
+        result = self._compress_with_system(
+            "You are a helpful assistant.\n\n" + retired
+        )
+        system = result[0]["content"]
+        lower = system.lower()
+        assert system.startswith("You are a helpful assistant.")
+        assert "attributed continuity evidence" in lower
+        assert "current explicit user statements" in lower
+        assert "always outrank it" in lower
+        assert "canonical live sources" in lower
+        assert "fully authoritative regardless of compaction" not in lower
+        assert lower.count("[note: some earlier conversation turns have been compacted") == 1
+
+    def test_retired_note_is_frozen_for_replacement(self):
+        from agent.context_compressor import (
+            COMPRESSION_NOTE,
+            _HISTORICAL_COMPRESSION_NOTES,
+        )
+
+        retired = (
+            "[Note: Some earlier conversation turns have been compacted into a "
+            "handoff summary to preserve context space. The current session "
+            "state may still reflect earlier work, so build on that summary "
+            "and state rather than re-doing work. Your persistent memory "
+            "(MEMORY.md, USER.md) remains fully authoritative regardless of "
+            "compaction.]"
+        )
+        assert retired in _HISTORICAL_COMPRESSION_NOTES
+        assert COMPRESSION_NOTE not in _HISTORICAL_COMPRESSION_NOTES
+        assert "fully authoritative regardless of compaction" not in COMPRESSION_NOTE
+
+    @pytest.mark.parametrize("as_list", [False, True])
+    def test_apply_note_replaces_retired_string_or_multimodal_list(self, as_list):
+        from agent.context_compressor import (
+            COMPRESSION_NOTE,
+            _HISTORICAL_COMPRESSION_NOTES,
+            _apply_system_compression_note,
+            _content_text_for_contains,
+        )
+
+        retired = _HISTORICAL_COMPRESSION_NOTES[0]
+        prefix = "You are a helpful assistant.\n\n"
+        image = {"type": "image_url", "image_url": {"url": "x"}}
+        raw = prefix + retired
+        content = (
+            [{"type": "text", "text": raw}, image] if as_list else raw
+        )
+        applied = _apply_system_compression_note(content)
+        joined = _content_text_for_contains(applied)
+        lower = joined.lower()
+        assert joined.startswith("You are a helpful assistant.")
+        assert retired not in joined
+        assert COMPRESSION_NOTE in joined
+        assert lower.count("[note: some earlier conversation turns have been compacted") == 1
+        assert "fully authoritative regardless of compaction" not in lower
+        if as_list:
+            assert isinstance(applied, list)
+            assert applied[1] == image
+
+    def test_apply_note_appends_to_multimodal_list_without_note(self):
+        from agent.context_compressor import (
+            COMPRESSION_NOTE,
+            _apply_system_compression_note,
+            _content_text_for_contains,
+        )
+
+        content = [{"type": "text", "text": "You are a helpful assistant."}]
+        applied = _apply_system_compression_note(content)
+        assert isinstance(applied, list)
+        assert applied[0]["text"] == "You are a helpful assistant."
+        assert applied[-1]["type"] == "text"
+        assert COMPRESSION_NOTE in applied[-1]["text"]
+        assert _content_text_for_contains(applied).count(COMPRESSION_NOTE) == 1
+
+
 class TestSummaryPromptBounding:
 
 

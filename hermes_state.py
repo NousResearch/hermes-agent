@@ -284,6 +284,7 @@ def _secure_state_db_files(db_path: Path, *, create_main: bool = False) -> None:
 
 # Openings of the background-review harness prompts (agent/background_review.py).
 _REVIEW_HARNESS_PREFIXES = (
+    "Review the conversation above for durable skill learning",
     "Review the conversation above and update the skill library",
     "Review the conversation above and consider saving to memory",
 )

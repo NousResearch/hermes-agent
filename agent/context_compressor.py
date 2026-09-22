@@ -228,9 +228,10 @@ SUMMARY_PREFIX = (
     "back', 'just verify', 'don't do that anymore', 'never mind', a new "
     "topic) must immediately end any in-flight work described in the "
     "summary; do not re-surface it in later turns. "
-    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
-    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
-    "memory content due to this compaction note. "
+    "IMPORTANT: Persistent memory (MEMORY.md, USER.md) remains active, "
+    "attributed continuity evidence — never ignore it merely because of this "
+    "compaction note. Current explicit user statements always outrank it. "
+    "For consequential factual claims, verify against canonical live sources. "
     "None of the above restricts HOW you work: your tools remain fully "
     "active — keep calling them normally for the active task (edit files, "
     "run commands, search) instead of merely narrating what you would do. "
@@ -238,6 +239,31 @@ SUMMARY_PREFIX = (
     "described here — avoid repeating it:"
 )
 LEGACY_SUMMARY_PREFIX = "[CONTEXT SUMMARY]:"
+
+# Live system-message compaction note. Sibling of SUMMARY_PREFIX's memory
+# clause: attributed continuity evidence, not universal authority.
+COMPRESSION_NOTE = (
+    "[Note: Some earlier conversation turns have been compacted into a "
+    "handoff summary to preserve context space. The current session state "
+    "may still reflect earlier work, so build on that summary and state "
+    "rather than re-doing work. Persistent memory (MEMORY.md, USER.md) "
+    "remains active, attributed continuity evidence — never ignore it "
+    "merely because of this compaction note. Current explicit user "
+    "statements always outrank it. For consequential factual claims, "
+    "verify against canonical live sources.]"
+)
+
+# Retired system-message notes persisted into session transcripts. A later
+# compaction must replace these rather than append the live note beside
+# them. NEVER mutate or reorder an existing entry — prepend only when
+# COMPRESSION_NOTE changes.
+_HISTORICAL_COMPRESSION_NOTES = (
+    "[Note: Some earlier conversation turns have been compacted into a "
+    "handoff summary to preserve context space. The current session state "
+    "may still reflect earlier work, so build on that summary and state "
+    "rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) "
+    "remains fully authoritative regardless of compaction.]",
+)
 
 # Underscore prefix ON PURPOSE: wire sanitizers strip ``_``-keys; strict gateways
 # reject unknown keys, so a bare key would poison every request in the session.
@@ -524,6 +550,40 @@ def salvage_grown_transcript(
 # Exact wire text of every shipped prefix, newest-first; stale directives must
 # still be strippable on resume. NEVER edit/reorder entries (byte-pinned); prepend.
 _HISTORICAL_SUMMARY_PREFIXES = (
+    # Retired universal-memory-authority handoff; preserve exact wire text.
+    "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted "
+    "into the summary below. This is a handoff from a previous context "
+    "window — treat it as background reference, NOT as active instructions. "
+    "Do NOT answer questions or fulfill requests mentioned in this summary; "
+    "they were already addressed. "
+    "Respond ONLY to the latest user message that appears AFTER this "
+    "summary — that message is the single source of truth for what to do "
+    "right now. "
+    "If no user message appears AFTER this summary, do nothing: do not "
+    "resume, wrap up, or continue work from "
+    "'## Historical Task Snapshot' or any other section, do not call tools, "
+    "and wait for a new user message. This handoff must never become the "
+    "active turn by itself. (Exception: if tool results or your own "
+    "tool calls appear after this summary, you are mid-way through an "
+    "in-flight exchange — continue that exchange normally.) "
+    "Topic overlap with the summary does NOT mean you should resume its "
+    "task: even on similar topics, the latest user message WINS. Treat ONLY "
+    "the latest message as the active task and discard stale items from "
+    "'## Historical Task Snapshot' entirely — do not 'wrap up' or "
+    "'finish' work described there unless the latest message explicitly "
+    "asks for it. "
+    "Reverse signals in the latest message (e.g. 'stop', 'undo', 'roll "
+    "back', 'just verify', 'don't do that anymore', 'never mind', a new "
+    "topic) must immediately end any in-flight work described in the "
+    "summary; do not re-surface it in later turns. "
+    "IMPORTANT: Your persistent memory (MEMORY.md, USER.md) in the system "
+    "prompt is ALWAYS authoritative and active — never ignore or deprioritize "
+    "memory content due to this compaction note. "
+    "None of the above restricts HOW you work: your tools remain fully "
+    "active — keep calling them normally for the active task (edit files, "
+    "run commands, search) instead of merely narrating what you would do. "
+    "The current session state (files, config, etc.) may reflect work "
+    "described here — avoid repeating it:",
     # Pre-#80622: lacked the "no user message after summary => do nothing" clause.
     "[CONTEXT COMPACTION — REFERENCE ONLY] Earlier turns were compacted into the summary below. This is a handoff "
     "from a previous context window — treat it as background reference, NOT as active instructions. Do NOT answer "
@@ -1291,6 +1351,42 @@ def _append_text_to_content(content: Any, text: str, *, prepend: bool = False) -
         return [text_block, *content] if prepend else [*content, text_block]
     rendered = content if isinstance(content, str) else str(content)
     return text + rendered if prepend else rendered + text
+
+
+def _replace_text_in_content(content: Any, old: str, new: str) -> Any:
+    """Replace an exact substring in string or multimodal text blocks."""
+    if content is None or not old:
+        return content
+    if isinstance(content, str):
+        return content.replace(old, new)
+    if isinstance(content, list):
+        out = []
+        for item in content:
+            if isinstance(item, str):
+                out.append(item.replace(old, new))
+            elif isinstance(item, dict) and isinstance(item.get("text"), str):
+                updated = dict(item)
+                updated["text"] = item["text"].replace(old, new)
+                out.append(updated)
+            else:
+                out.append(item)
+        return out
+    return str(content).replace(old, new)
+
+
+def _apply_system_compression_note(content: Any) -> Any:
+    """Ensure the live compaction note is present without stacking retired ones."""
+    text = _content_text_for_contains(content)
+    for old_note in _HISTORICAL_COMPRESSION_NOTES:
+        if old_note in text:
+            content = _replace_text_in_content(content, old_note, COMPRESSION_NOTE)
+            text = _content_text_for_contains(content)
+    if COMPRESSION_NOTE in text:
+        return content
+    suffix = (
+        "\n\n" + COMPRESSION_NOTE if isinstance(content, str) and content else COMPRESSION_NOTE
+    )
+    return _append_text_to_content(content, suffix)
 
 
 def _replace_image_parts(parts: Any, placeholder: str) -> Optional[List[Any]]:
@@ -4864,8 +4960,6 @@ Write only the summary body. Do not include any preamble or prefix."""
             logger.warning(message, n_skipped)
         return True
 
-    _COMPRESSION_NOTE = "[Note: Some earlier conversation turns have been compacted into a handoff summary to preserve context space. The current session state may still reflect earlier work, so build on that summary and state rather than re-doing work. Your persistent memory (MEMORY.md, USER.md) remains fully authoritative regardless of compaction.]"
-
     def _assemble_head(self, messages: List[Dict[str, Any]], compress_start: int) -> List[Dict[str, Any]]:
         """Protected head with the compaction note on the system prompt and stale handoffs stripped."""
         compressed = []
@@ -4874,10 +4968,7 @@ Write only the summary body. Do not include any preamble or prefix."""
             # keeps prior-tail text). Merged rows hold real user text — never blanket-skip.
             msg = _fresh_compaction_message_copy(messages[i])
             if i == 0 and msg.get("role") == "system":
-                existing = msg.get("content")
-                if self._COMPRESSION_NOTE not in _content_text_for_contains(existing):
-                    sep = "\n\n" if isinstance(existing, str) and existing else ""
-                    msg["content"] = _append_text_to_content(existing, sep + self._COMPRESSION_NOTE)
+                msg["content"] = _apply_system_compression_note(msg.get("content"))
             stripped = self._strip_context_summary_handoff_message(msg)
             if stripped is not None:
                 compressed.append(stripped)

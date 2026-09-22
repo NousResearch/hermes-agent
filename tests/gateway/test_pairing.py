@@ -275,6 +275,25 @@ class TestApprovalFlow:
         assert result["user_id"] == "user1"
         assert result["user_name"] == "Alice"
 
+    def test_approve_code_with_internal_spacing(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            spaced_code = "   ".join(code)
+            result = store.approve_code("telegram", f"  {spaced_code}  ")
+
+        assert isinstance(result, dict)
+        assert result["user_id"] == "user1"
+        assert result["user_name"] == "Alice"
+
+    def test_approve_code_with_words_still_fails(self, tmp_path):
+        with patch("gateway.pairing.PAIRING_DIR", tmp_path):
+            store = PairingStore()
+            code = store.generate_code("telegram", "user1", "Alice")
+            result = store.approve_code("telegram", f"code {code}")
+
+        assert result is None
+
     def test_approved_user_is_approved(self, tmp_path):
         with patch("gateway.pairing.PAIRING_DIR", tmp_path):
             store = PairingStore()

@@ -9,6 +9,7 @@ import json
 import os
 import re
 import sys
+import tempfile
 import time
 
 WORKTREE = os.environ["HERMES_WORKTREE"]
@@ -20,7 +21,7 @@ import tools.async_delegation as ad  # noqa: E402
 from run_agent import AIAgent  # noqa: E402
 
 MODEL = os.environ.get("LIVE_MODEL", "openai/gpt-5.6-terra")
-OUT = os.environ.get("STRESS_OUT", "/tmp/stress_handoff_results.jsonl")
+OUT = os.environ.get("STRESS_OUT", os.path.join(tempfile.gettempdir(), "stress_handoff_results.jsonl"))
 
 
 def run_scenario(name, parent_prompt, *, wait_for_completions=0, timeout=420, max_iter=12, second_turn=None):

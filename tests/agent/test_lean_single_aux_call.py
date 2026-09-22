@@ -145,23 +145,22 @@ class TestLeanSingleAuxiliaryCall:
 
 class TestSampledSummaryInput:
     def test_small_input_passes_through(self):
-        content = "abc" * 100
-        assert ContextCompressor._sample_summary_input(content) == content
+        records = ["[USER]: abc" * 100] * 3
+        assert ContextCompressor._sample_summary_records(records)[0] == "\n\n".join(records)
 
     def test_sampling_is_bounded_ordered_and_marked(self):
         # Distinct decade markers let us verify oldest-to-newest order and
         # uniform coverage across the whole region.
-        content = "".join(
-            f"<seg{i:02d}>" + ("x" * 50_000) for i in range(10)
-        )
-        out = ContextCompressor._sample_summary_input(content)
+        records = [f"<seg{i:02d}>" + ("x" * 50_000) for i in range(10)]
+        out, _coverage = ContextCompressor._sample_summary_records(records)
         assert len(out) <= ContextCompressor._SUMMARY_INPUT_MAX_CHARS
         assert "chars elided" in out
         seen = [i for i in range(10) if f"<seg{i:02d}>" in out]
         # Coverage reaches past the head AND includes the newest end.
         assert seen == sorted(seen)
         assert any(i >= 5 for i in seen)
-        assert ("<seg09>" in out) or (content[-500:] in out)
+        # The newest record anchors the last slice, so its token must be present outright.
+        assert "<seg09>" in out
 
     def test_legacy_mode_keeps_head_tail_bound(self):
         c = _mk_compressor(tail_mode="legacy")

@@ -20,7 +20,7 @@ Two files make up the agent's memory:
 Both are stored in `~/.hermes/memories/` and are injected into the system prompt as a frozen snapshot at session start. The agent manages its own memory via the `memory` tool — it can add, replace, or remove entries.
 
 :::caution One agent per Hermes home
-Don't point two agent processes at the same Hermes home directory. Memory writes are automatic and load back into the system prompt at session start, so two writers sharing one home will compound each other's entries into state neither of them (nor you) authored. Memory is scoped per [profile](/user-guide/profiles) by design — give a second agent its own profile, and if they need shared memory, use an [external memory provider](/user-guide/features/memory-providers) instead.
+Don't point two agent processes at the same Hermes home directory. Memory writes are automatic and load back into the system prompt at session start, so two writers sharing one home will compound each other's entries into state neither of them (nor you) authored. Memory is scoped per [profile](../profiles.md) by design — give a second agent its own profile, and if they need shared memory, use an [external memory provider](./memory-providers.md) instead.
 :::
 
 :::info
@@ -60,9 +60,32 @@ The format includes:
 
 The whole memory system is built around the moment a session **ends**: `MEMORY.md` and `USER.md` carry the essentials into the next session, and `session_search` fills the gaps once the old context is gone. Inside a single session none of that machinery has a reason to run — everything important is still in the live context, so the agent rarely consults `session_search` and mostly compacts memory entries instead of curating them.
 
-This matters on messaging platforms (Telegram, Discord, etc.), where a chat is deliberately [one continuous session](/user-guide/sessions#session-continuity) that survives restarts, gateway crashes, and machine reboots. Shutting the machine down overnight does **not** end the session — the next message picks it up exactly where it left off. If you never reset, a chat can run for weeks as a single session: convenient, but it grows expensive (compaction runs repeatedly over an ever-longer history) and the learning loop of *forget → recall from memory → search past sessions* almost never gets to fire. Fresh memory entries also stay invisible to the running session because of the frozen snapshot above.
+This matters on messaging platforms (Telegram, Discord, etc.), where a chat is deliberately [one continuous session](../sessions.md#session-continuity) that survives restarts, gateway crashes, and machine reboots. Shutting the machine down overnight does **not** end the session — the next message picks it up exactly where it left off. If you never reset, a chat can run for weeks as a single session: convenient, but it grows expensive (compaction runs repeatedly over an ever-longer history) and the learning loop of *forget → recall from memory → search past sessions* almost never gets to fire. Fresh memory entries also stay invisible to the running session because of the frozen snapshot above.
 
 **Practice:** run `/new` at natural boundaries — a finished task, a change of topic, the start of a day. Each boundary is when memory pays off: the agent re-reads the updated `MEMORY.md`/`USER.md` snapshot, starts from a cheap short context, and reaches for `session_search` when it actually needs history. On the CLI this mostly takes care of itself (every invocation is a new session); on gateways the boundary is yours to create.
+
+## Troubleshooting: "I told it to remember, and the next session it forgot"
+
+The most common report looks like this: you tell the agent where something lives (an Obsidian vault, a project directory, a server), it answers "Done, I'll remember that", and a fresh session has no idea what you mean. Work through these in order — the first one explains the large majority of cases.
+
+1. **Check whether the write actually happened.** Memory only persists when the model *calls the `memory` tool*; a sentence like "I've added that to my memory" is just text. Open the file and look for the entry:
+
+   ```bash
+   cat ~/.hermes/memories/MEMORY.md
+   cat ~/.hermes/memories/USER.md
+   ```
+
+   If the fact is not there, the model claimed a save it never made. Small local models (roughly under 30B parameters) and models with weak tool-calling do this often — they produce the confirmation without the tool call. Ask explicitly ("use the `memory` tool to save the vault path `/srv/vault`") and confirm the entry landed in the file. If it keeps happening, the fix is a stronger model for setup, not more instructions; once the entries exist, a smaller model reads them fine because they arrive in the system prompt.
+
+2. **Check the write wasn't staged.** With `write_approval: true`, writes outside the interactive CLI are held for review and never reach the file until approved — run `/memory pending` and `/memory approve all`. See [Controlling memory writes](#controlling-memory-writes-write_approval).
+
+3. **Check you are reading the same memory you wrote.** Memory is per [profile](../profiles.md): `hermes -p work` (or `work chat` / `work gateway start`) reads `~/.hermes/profiles/work/memories/`, not `~/.hermes/memories/`. A CLI session in the default profile and a Telegram bot on another profile do not share notes. `hermes profile list` shows what exists.
+
+4. **Check memory is enabled.** `memory.memory_enabled: false` (or `memory` under `agent.disabled_toolsets`) removes the tool entirely — the model cannot save anything, whatever it says. See [Configuration](#configuration).
+
+5. **Remember the snapshot is frozen at session start.** A fact saved in the current session is visible to the *next* session, not to another session that was already running. Start a new session (`/new`, or a fresh CLI invocation) after the write.
+
+Two things that do **not** make the agent remember: variables in `.env` (those are credentials and settings, not memory) and facts mentioned in passing without asking for them to be saved. For a location the agent needs on every run of a recurring task, a [skill](./skills.md) is often the better home than a memory entry — it loads only when relevant and does not compete for the 2,200-character budget.
 
 ## Memory Tool Actions
 
@@ -86,6 +109,8 @@ memory(action="replace", target="memory",
 ```
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
+
+`replace` overwrites the **whole matched entry** with `content` — `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
 
 ## Two Targets Explained
 
@@ -203,7 +228,7 @@ Beyond MEMORY.md and USER.md, the agent can search its past conversations using 
 hermes sessions list    # Browse past sessions
 ```
 
-See [Session Search Tool](/user-guide/sessions#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
+See [Session Search Tool](../sessions.md#session-search-tool) for the three calling shapes (discovery / scroll / browse) and the response format.
 
 ### session_search vs memory
 
@@ -225,6 +250,8 @@ The learning journey is a timeline view of everything Hermes has learned — sav
 - **Classic CLI / standalone** — `hermes journey` (aliases: `hermes learning`, `hermes memory-graph`) renders the timeline in the terminal. Flags: `--play` animates the build-up (`--fps` to tune it), `--width`/`--height` override the render size, `--no-color` disables color, and `--json` dumps the raw graph payload.
 - **TUI** — `/journey` (aliases: `/learning`, `/memory-graph`) opens the timeline as an overlay.
 - **Desktop app** — `/journey` opens the Star Map / memory-graph panel, an interactive visual of the same nodes.
+
+A skill appears on the timeline as soon as it has a learning signal: it was created in this profile (a `/learn` result or a foreground `skill_manage` create), created by the background review, or used at least once. Bundled skills and hand-written skills that have never been used stay out of the timeline.
 
 Beyond viewing, the journey is also where you **prune and correct** what Hermes has learned:
 
@@ -351,7 +378,7 @@ A review using the same model as the parent **always inherits the parent's reaso
 
 Reasoning settings, the system prompt, the full conversation snapshot, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
 
-To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; its separate task-effort bug is tracked in [#94825](https://github.com/NousResearch/hermes-agent/issues/94825). These frequency and routing controls do not decouple same-model reasoning.
+To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; on that route `auxiliary.background_review.reasoning_effort` IS honored (unset = the routed provider's default). A one-time warning is printed when the key is set but the review stays on the main model. These frequency and routing controls do not decouple same-model reasoning.
 
 ### Disabling automatic reviews (`enabled`)
 
@@ -366,6 +393,26 @@ auxiliary:
 
 With `enabled: false`, automatic post-turn forks do not spawn; manual
 `/refine` still works.
+
+### Capping review cost (`max_input_tokens`)
+
+The review loop replays the conversation on every provider request it makes,
+so a single review can multiply input tokens across its tool iterations.
+`max_input_tokens` caps the SUM of replayed input tokens for one review; the
+loop stops before crossing it. `<= 0` means unlimited.
+
+```yaml
+auxiliary:
+  background_review:
+    max_input_tokens: 48000  # <= 0 = unlimited
+```
+
+When the key is unset, the budget is derived from the review model's resolved
+context window: 75% of the window, capped at 600,000 tokens — so it also binds
+on small local models (a 65,536-token model gets 49,152), where a fixed
+cloud-scale default would never bite. If the window cannot be resolved, a
+conservative 120,000-token fallback applies. Note the key lives under
+`auxiliary:`; a top-level `background_review:` block is not read.
 
 Fork usage is persisted in `session_model_usage` with `task='background_review'`
 and a completion line is written to `agent.log`
@@ -447,7 +494,7 @@ inline, but the full diff stays out-of-band:
 On a messaging platform, approve a skill from its gist + metadata, or open
 `/skills diff` on the CLI / dashboard / the staged file under
 `~/.hermes/pending/skills/<id>.json` when you want to read the whole change.
-Full details in [Gating agent skill writes](/user-guide/features/skills#gating-agent-skill-writes-skillswrite_approval).
+Full details in [Gating agent skill writes](./skills.md#gating-agent-skill-writes-skillswrite_approval).
 
 
 ## External Memory Providers

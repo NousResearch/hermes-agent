@@ -277,8 +277,16 @@ class _ResponsesStream:
         await self.write_event("response.created", {"type": "response.created", "response": env})
         self.persist_snapshot(env)
 
+    async def _write_message_part(self, event_type: str, text: str) -> None:
+        await self.write_event(event_type, {
+            "type": event_type, "item_id": self.message_item_id,
+            "output_index": self.message_output_index, "content_index": 0,
+            "part": {"type": "output_text", "text": text, "annotations": []}})
+
     async def _open_message_item(self) -> None:
-        """Emit output_item.added for the assistant message on the first text delta."""
+        """Emit output_item.added + content_part.added for the assistant message on the first
+        text delta. Accumulating clients (the openai SDK's ``responses.stream()``) only create
+        ``content[0]`` from content_part.added, then index it on every output_text.delta."""
         if self.message_opened:
             return
         self.message_opened = True
@@ -288,6 +296,7 @@ class _ResponsesStream:
             "type": "response.output_item.added", "output_index": self.message_output_index,
             "item": {"id": self.message_item_id, "type": "message", "status": "in_progress",
                      "role": "assistant", "content": []}})
+        await self._write_message_part("response.content_part.added", "")
 
     async def emit_text_delta(self, delta_text: str) -> None:
         await self.close_reasoning_item()
@@ -473,6 +482,7 @@ class _ResponsesStream:
             "type": "response.output_text.done", "item_id": self.message_item_id,
             "output_index": self.message_output_index, "content_index": 0,
             "text": self.final_response_text, "logprobs": []})
+        await self._write_message_part("response.content_part.done", self.final_response_text)
         await self.write_event("response.output_item.done", {
             "type": "response.output_item.done", "output_index": self.message_output_index,
             "item": {"id": self.message_item_id, "type": "message", "status": "completed",
@@ -892,7 +902,8 @@ class OpenAICompatRoutesMixin:
         gateway_session_key: Optional[str] = None) -> "web.StreamResponse":
         """Write the SSE stream for POST /v1/responses.
 
-        Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
+        Events: ``response.created`` -> ``output_text.delta/done`` (wrapped in
+        ``content_part.added/done``) + ``output_item.added/done``
         (reasoning / function_call / function_call_output) + ``reasoning_summary_part/text.*``
         -> ``response.completed`` (non-streaming envelope)
         or ``response.failed``. On disconnect the agent is interrupted and, with ``store=True``,

@@ -4,7 +4,7 @@ import { act, cleanup, renderHook } from '@testing-library/react'
 import { useRef } from 'react'
 import { afterEach, beforeEach, expect, it, vi } from 'vitest'
 
-import { type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { type ChatMessage, chatMessageText, toChatMessages } from '@/lib/chat-messages'
 import {
   clearInFlightTurnJournal,
   readInFlightTurnJournal,
@@ -15,6 +15,7 @@ import { $sessionStates } from '@/store/session-states'
 
 import { usePromptActions } from '../use-prompt-actions'
 import { useSessionStateCache } from '../use-session-state-cache'
+import { reconcileDurableHistory } from '../use-session-actions/utils'
 
 import { useMessageStream } from './index'
 
@@ -28,7 +29,7 @@ const requestGateway = async <T,>(method: string): Promise<T> =>
 
 // Real submit/redirect, stream reducer, cache and view publication; only RPC
 // acceptance and history/metadata I/O are stand-ins.
-function mount() {
+function mount(rpc = requestGateway) {
   const queryClient = new QueryClient()
   const hydrate = vi.fn(noop)
 
@@ -68,7 +69,7 @@ function mount() {
       handleSkinCommand: () => '',
       openMemoryGraph: () => undefined,
       refreshSessions: noop,
-      requestGateway,
+      requestGateway: rpc,
       resumeStoredSession: noop,
       runtimeIdByStoredSessionIdRef: cache.runtimeIdByStoredSessionIdRef,
       selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
@@ -105,6 +106,71 @@ function mount() {
     }
   }
 }
+
+it('binds a late submit acknowledgement to its exact optimistic prompt without reviving the turn', async () => {
+  const laterUser: ChatMessage = { id: 'later-user', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }
+  const h = mount(async <T,>(): Promise<T> => {
+    await h.send('message.start')
+    await h.send('message.delta', { text: ANSWER })
+    await h.send('message.complete', { text: ANSWER })
+    h.update(state => ({ ...state, messages: [...state.messages, laterUser], needsInput: true }))
+    await flush()
+    return { status: 'started', user_row_id: 71 } as T
+  })
+
+  await h.submit()
+  await flush()
+
+  expect(h.state().messages[0].rowId).toBe(71)
+  expect($messages.get()[0].rowId).toBe(71)
+  expect(h.state().messages.at(-1)).toBe(laterUser)
+  expect(h.state()).toMatchObject({ busy: false, awaitingResponse: false, needsInput: true, streamId: null })
+  h.dispose()
+})
+
+it.each([true, false, undefined])(
+  'keeps the final occurrence receipt (complete=%s) before a queued prompt',
+  async complete => {
+    const h = mount()
+    await h.submit()
+    await h.send('message.start')
+    await h.send('message.delta', { text: ANSWER })
+    await flush()
+    const assistantId = h.state().streamId
+    const queued: ChatMessage = { id: `user-queued-${SID}`, role: 'user', parts: [{ type: 'text', text: 'Next' }] }
+    h.update(state => ({ ...state, messages: [...state.messages, queued] }))
+    const receipt =
+      complete === undefined
+        ? undefined
+        : {
+            row_ids: [71, 72, 73],
+            user_row_id: 71,
+            final_assistant_row_id: 73,
+            complete
+          }
+
+    await h.send('message.complete', { text: ANSWER, persisted_turn: receipt })
+
+    const settled = h.state().messages.find(message => message.id === assistantId)!
+    expect(settled.pending).toBe(false)
+    expect(settled.rowId).toBe(receipt?.final_assistant_row_id)
+    expect(settled.parts.findLast(part => part.type === 'text')?.sourceRowId).toBe(receipt?.final_assistant_row_id)
+    expect(settled.durableComplete === true).toBe(complete === true)
+    expect(settled.persistedTurn).toEqual(receipt)
+    expect(h.state().messages.at(-1)).toBe(queued)
+
+    if (complete === true) {
+      const latestPage = toChatMessages([{ id: 73, role: 'assistant', content: ANSWER }])
+      h.update(state => ({ ...state, messages: reconcileDurableHistory(latestPage, state.messages) }))
+      await flush()
+      expect(timeline($messages.get())).toEqual([
+        ['assistant', ANSWER],
+        ['user', 'Next']
+      ])
+    }
+    h.dispose()
+  }
+)
 
 const timeline = (messages: ChatMessage[]) => messages.map(message => [message.role, chatMessageText(message)])
 

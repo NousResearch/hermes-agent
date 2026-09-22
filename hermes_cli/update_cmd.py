@@ -97,7 +97,7 @@ from hermes_cli.update_cmd_git import (
     OFFICIAL_REPO_URL, OFFICIAL_REPO_URLS, SKIP_UPSTREAM_PROMPT_FILE, _ORPHAN_RESCUE_REFS_TO_KEEP,
     _ORPHAN_RESCUE_REF_MAX_AGE_DAYS, _add_upstream_remote, _assess_parked_branch_switch,
     _branch_head_label, _branch_head_suffix, _classify_fetch_failure, _count_commits_between,
-    _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_is_trampoline,
+    _discard_lockfile_churn, _ensure_non_trampoline_git, _get_origin_url, _git_fetch, _git_is_trampoline,
     _has_upstream_remote, _is_fork, _locate_real_git, _mark_skip_upstream_prompt,
     _normalize_managed_eol, _park_detached_head, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
@@ -258,9 +258,10 @@ def _record_snapshot_stage(args, snapshot_id) -> None:
 
 
 
-def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
+def _git_run(git_cmd, args, cwd=None, *, check=False, network=False, env=None):
     """Run git capturing utf-8 text (default cwd: checkout); ``network=True`` disables the
     terminal prompt so an HTTP 401 fails fast instead of hanging, and bounds the wait.
+    ``env`` replaces the child's environment (a network caller passes a no-prompt env).
 
     Every spawn carries ``windows_hide_flags()``: the updater's git children run under the
     console-less desktop backend, and a bare spawn flashes a console window each (#117781)."""
@@ -269,6 +270,8 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, network=False):
     # calls, so layer them instead of passing the keyword twice.
     spawn_kwargs = {"timeout": NETWORK_GIT_TIMEOUT_SECONDS, **_no_prompt_git_kwargs()} if network else {}
     spawn_kwargs.setdefault("creationflags", windows_hide_flags())
+    if env is not None:
+        spawn_kwargs["env"] = env
     from hermes_cli.update_custody import run_git
 
     # The one custody policy (R2): local mutators keep the update's checkout lock fd, network
@@ -1919,7 +1922,7 @@ def _cmd_update_impl(args, gateway_mode: bool):
         from hermes_cli.gitlock import fetch_with_partial_clone_recovery, is_partial_clone_pack_objects_crash
         # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
         fetch_result = fetch_with_partial_clone_recovery(
-            lambda gc, a: _git_run(gc, a, network=True), git_cmd, fetch_args, _m().PROJECT_ROOT)
+            lambda gc, a: _git_fetch(gc, a, "origin"), git_cmd, fetch_args, _m().PROJECT_ROOT)
         if fetch_result.returncode != 0:
             if is_partial_clone_pack_objects_crash(fetch_result.stderr or ""):
                 print("✗ git still crashed after marking this checkout's packs. See 'Fetch fails with"

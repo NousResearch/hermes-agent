@@ -104,9 +104,9 @@ def tracking_refspec(remote: str, branch: str) -> str:
 
 def _fetch(git_cmd: list[str], root: Path, depth_args: list[str], remote: str, branch: str):
     print(f"→ Fetching from {remote}...")
-    return _git(
-        git_cmd, root, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)],
-        **_uc()._no_prompt_git_kwargs())
+    from hermes_cli.update_cmd_git import _git_fetch
+
+    return _git_fetch(git_cmd, ["fetch", *depth_args, remote, tracking_refspec(remote, branch)], remote, cwd=root)
 
 
 def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args: list[str]):
@@ -123,10 +123,11 @@ def fetch_compare_branch(git_cmd: list[str], root: Path, branch: str, depth_args
             if fetch_result.returncode == 0:
                 return fetch_result, f"upstream/{branch}"
     from hermes_cli.gitlock import fetch_with_partial_clone_recovery
+    from hermes_cli.update_cmd_git import _git_fetch
     # Marking the unmarked packs clears the git 2.53+ partial-clone pack-objects crash (#124272).
     print("→ Fetching from origin...")
     return fetch_with_partial_clone_recovery(
-        lambda gc, a: _git(gc, root, a, **_uc()._no_prompt_git_kwargs()),
+        lambda gc, a: _git_fetch(gc, a, "origin", cwd=root),
         git_cmd, ["fetch", *depth_args, "origin", tracking_refspec("origin", branch)], root), f"origin/{branch}"
 
 

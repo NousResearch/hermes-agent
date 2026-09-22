@@ -14,6 +14,7 @@ from pathlib import Path
 from typing import Optional
 
 from hermes_cli._subprocess_compat import NO_LAZY_FETCH_ENV, noninteractive_git_env, windows_hide_flags
+from hermes_cli.git_credentials import is_rate_limited, retry_git_with_credentials
 from hermes_cli.update_cmd_common import _record_stop
 
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
@@ -54,6 +55,21 @@ def _git_run(git_cmd, args, cwd=None, *, check=False, env=None):
         creationflags=windows_hide_flags(),
         env=env,
     )
+
+
+def _git_fetch(git_cmd, args, remote: str, cwd=None):
+    """The fetch ``git_cmd + args`` from ``remote`` via ``_git_run(network=True)``. GitHub
+    rate-limits anonymous git by IP (HTTP 429) and git only offers a stored credential after a
+    401, so a throttled fetch is retried with the user's own GitHub credential (#105857),
+    through the same runner."""
+    from hermes_cli.update_cmd import _git_run, _no_prompt_git_kwargs
+    result = _git_run(git_cmd, args, cwd=cwd, network=True)
+    if result.returncode == 0 or not is_rate_limited(result.stderr):
+        return result
+    url = _git_run(git_cmd, ["remote", "get-url", remote], cwd=cwd).stdout.strip()
+    return retry_git_with_credentials(
+        git_cmd + args, url, result, env=_no_prompt_git_kwargs()["env"], retry_on_rate_limit=True,
+        run=lambda _argv, env, **_kw: _git_run(git_cmd, args, cwd=cwd, network=True, env=env))
 
 
 def _git_stdout(git_cmd, args, cwd, **kw) -> Optional[str]:
@@ -395,9 +411,8 @@ def _sync_with_upstream_if_needed(git_cmd: list[str], cwd: Path, *, assume_yes: 
     ):
         return False
     print("\n→ Fetching upstream...")
-    try:
-        run_git(git_cmd, ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"], cwd=cwd, capture_output=True, check=True, **_no_prompt_git_kwargs())
-    except subprocess.CalledProcessError:
+    fetch_args = ["fetch", "upstream", tracking_refspec("upstream", "main"), "--quiet"]
+    if _git_fetch(git_cmd, fetch_args, "upstream", cwd=cwd).returncode != 0:
         print("  ✗ Failed to fetch upstream. Skipping upstream sync.")
         return False
     # One commit for the whole sync (m2): the short `upstream/main` also names a local branch of
@@ -501,7 +516,7 @@ def _has_http_code(stderr: str, *codes: str) -> bool:
 # answered with HTTP 401 ("could not read Username") is GitHub during an outage (or a renamed/private
 # repo), not a user credentials problem.
 _FETCH_FAILURE_RULES = (
-    (lambda s: _has_http_code(s, "429") or "rate limit" in s.lower(),
+    (is_rate_limited,
      "✗ GitHub is rate limiting requests or having an outage (HTTP 429) — try again in 5 minutes."),
     (lambda s: _has_http_code(s, "500", "502", "503", "504"),
      "✗ GitHub appears to be having an outage — try again in a few minutes (https://www.githubstatus.com)."),
@@ -530,11 +545,12 @@ def _classify_fetch_failure(stderr: str) -> str:
 
 
 def _print_fetch_failure(stderr: str) -> None:
-    """Print the classified diagnosis plus the first raw stderr line."""
+    """Print the classified diagnosis, the first raw stderr line, and any ``hint:`` lines."""
     stderr = (stderr or "").strip()
     print(_classify_fetch_failure(stderr))
-    if stderr:
-        print(f"  {stderr.splitlines()[0]}")
+    lines = stderr.splitlines()
+    for line in lines[:1] + [line for line in lines[1:] if line.startswith("hint:")]:
+        print(f"  {line}")
 
 
 def _probe_fork_bomb(argv: list) -> Optional[bool]:

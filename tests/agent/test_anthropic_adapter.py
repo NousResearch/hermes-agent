@@ -1017,12 +1017,12 @@ class TestManualThinkingBudgetClamp:
     """
 
     @staticmethod
-    def _build(model, effort="max", context_length=None):
+    def _build(model, effort="max", context_length=None, max_tokens=None):
         return build_anthropic_kwargs(
             model=model,
             messages=[{"role": "user", "content": "think hard"}],
             tools=None,
-            max_tokens=None,
+            max_tokens=max_tokens,
             reasoning_config={"enabled": True, "effort": effort},
             context_length=context_length,
         )
@@ -1112,6 +1112,36 @@ class TestManualThinkingBudgetClamp:
         assert kwargs["thinking"]["budget_tokens"] == expected_budget
         assert kwargs["max_tokens"] == expected_max_tokens
         assert kwargs["max_tokens"] <= context_length - 1
+
+    @pytest.mark.parametrize(
+        "model,context_length,expected_budget,expected_max_tokens",
+        [
+            # binding cap = model ceiling (128000 < context_length - 1)
+            ("claude-3-7-sonnet", 200000, 64000, 128000),
+            # binding cap = context_length - 1 (65535 < model ceiling 65536)
+            ("qwen3-max", 65536, 61439, 65535),
+        ],
+    )
+    def test_explicit_max_tokens_equal_to_context_length_clamped_under_it(self, model, context_length, expected_budget, expected_max_tokens):
+        # The caller's context clamp passes ``==`` through (``>`` on purpose), so the pair's
+        # legality must be guaranteed here, not by every caller staying strictly clamped.
+        kwargs = self._build(model, effort="max", context_length=context_length, max_tokens=context_length)
+        assert kwargs["max_tokens"] == expected_max_tokens
+        assert kwargs["max_tokens"] <= context_length - 1
+        assert kwargs["thinking"]["budget_tokens"] == expected_budget
+        assert kwargs["thinking"]["budget_tokens"] < kwargs["max_tokens"]
+
+    def test_explicit_max_tokens_above_model_ceiling_clamped_to_it(self):
+        # A positive explicit max_tokens passes _resolve_anthropic_messages_max_tokens through
+        # untouched and the caller never clamps against the model's output limit — only this
+        # helper does, so the manual pair's legality cannot depend on an upstream clamp.
+        from agent.anthropic_adapter import _get_anthropic_max_output
+
+        kwargs = self._build("claude-3-5-sonnet", effort="max", max_tokens=100000)
+        assert kwargs["max_tokens"] == 8192
+        assert kwargs["max_tokens"] <= _get_anthropic_max_output("claude-3-5-sonnet")
+        assert kwargs["thinking"]["budget_tokens"] == 4096
+        assert kwargs["thinking"]["budget_tokens"] < kwargs["max_tokens"]
 
     def test_unmapped_effort_falls_back_to_medium_then_clamps(self, caplog):
         with caplog.at_level(logging.WARNING):

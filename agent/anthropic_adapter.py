@@ -61,6 +61,7 @@ def _require_sdk(purpose: str, verb: str = "Install it with"):
 logger = logging.getLogger(__name__)
 
 THINKING_BUDGET = {
+    # "minimal" is a legacy alias of "low" (same 4000) — the ladder's first rung is flat on purpose.
     "ultra": 64000, "max": 64000, "xhigh": 32000, "high": 16000,
     "medium": 8000, "low": 4000, "minimal": 4000,
 }
@@ -621,7 +622,10 @@ def _thinking_kwargs(reasoning_config: Dict[str, Any], model: str, effective_max
     return {
         "thinking": {"type": "enabled", "budget_tokens": budget},
         "temperature": 1,  # required when thinking is enabled on older models
-        "max_tokens": max(effective_max_tokens, min(budget + _THINKING_RESPONSE_ROOM, cap)),
+        # The outer min() clamps an over-cap caller value down (e.g. max_tokens == context_length,
+        # which the caller's `>` clamp deliberately passes through) instead of letting max()
+        # promote it back above the cap this function just established.
+        "max_tokens": min(max(effective_max_tokens, min(budget + _THINKING_RESPONSE_ROOM, cap)), cap),
     }
 
 

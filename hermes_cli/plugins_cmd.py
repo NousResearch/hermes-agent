@@ -2072,23 +2072,31 @@ def _stash_ref(git_exe: str, target: Path) -> str:
     return probe.stdout.strip() if probe.returncode == 0 else ""
 
 
-def _reapply_stash(git_exe: str, target: Path) -> bool:
-    """``stash apply`` the autostash; drop it on a clean apply. False when it applied with
-    errors or left unmerged paths (the stash entry is kept in that case)."""
-    restore = _run_plugin_git(git_exe, target, "stash", "apply", "stash@{0}")
+def _reapply_stash(git_exe: str, target: Path, stash_sha: str) -> bool:
+    """``stash apply`` the autostash commit *stash_sha*; drop it on a clean apply. False when it
+    applied with errors or left unmerged paths (the stash entry is kept in that case).
+
+    Git is addressed by the stash's commit sha, never a ``stash@{N}`` selector: on native Windows
+    the MSYS runtime re-parses git.exe's argv and strips the braces, so ``stash@{0}`` reaches git
+    as ``stash@0`` and both the apply and the drop fail (#87542)."""
+    restore = _run_plugin_git(git_exe, target, "stash", "apply", stash_sha)
     unmerged = _run_plugin_git(git_exe, target, "diff", "--name-only", "--diff-filter=U")
     if restore.returncode != 0 or unmerged.stdout.strip():
         return False
-    _run_plugin_git(git_exe, target, "stash", "drop", "stash@{0}")
+    # `stash drop` only takes a selector; a bare `drop` targets the newest entry, so drop
+    # positionally only while the newest entry is still our autostash.
+    if _stash_ref(git_exe, target) == stash_sha:
+        _run_plugin_git(git_exe, target, "stash", "drop")
     return True
 
 
-def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
-    """Stash local edits before a pull. Returns ``(stash_created, error)``; a non-empty error means
-    the tree is dirty but nothing was saved, so the pull must not run."""
+def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[str, str]:
+    """Stash local edits before a pull. Returns ``(stash_sha, error)``; *stash_sha* is empty when
+    the tree was clean, and a non-empty error means the tree is dirty but nothing was saved, so
+    the pull must not run."""
     status = _run_plugin_git(git_exe, target, "status", "--porcelain", "-z")
     if status.returncode != 0 or not status.stdout.strip():
-        return False, ""
+        return "", ""
     # `git add -N` entries make `git stash push` fail outright (see update_cmd_stash), so promote them
     # to real staged adds first; the checkout's own local edits are otherwise unstashable.
     from hermes_cli.update_cmd_stash import _intent_to_add_paths
@@ -2102,7 +2110,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
     post_stash = _stash_ref(git_exe, target)
     if not post_stash or post_stash == pre_stash:
         err = _safe_git_error(push)
-        return False, (
+        return "", (
             "Local changes in the plugin checkout could not be "
             "stashed; update aborted before touching the checkout."
             + (f"\n{err}" if err else ""))
@@ -2110,7 +2118,7 @@ def _autostash_dirty_tree(git_exe: str, target: Path) -> tuple[bool, str]:
         # Saved-but-couldn't-clean (undeletable untracked files): the stash entry is complete;
         # reset tracked mods so the pull isn't blocked by a still-dirty tree.
         _run_plugin_git(git_exe, target, "reset", "--hard", "HEAD")
-    return True, ""
+    return post_stash, ""
 
 
 def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
@@ -2127,26 +2135,26 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
     if not git_exe:
         return False, "git is not installed or not in PATH."
     try:
-        stash_created, err = _autostash_dirty_tree(git_exe, target)
+        stash_sha, err = _autostash_dirty_tree(git_exe, target)
         if err:
             return False, err
         origin = _run_plugin_git(git_exe, target, "remote", "get-url", "origin", timeout=15)
         result = _run_plugin_git(git_exe, target, "pull", "--ff-only", auth_url=origin.stdout.strip())
         if result.returncode != 0:
             err = _safe_git_error(result) or "git pull failed."
-            if not stash_created:
+            if not stash_sha:
                 return False, err
             # Put the user's edits back before reporting the failure.
-            if _reapply_stash(git_exe, target):
+            if _reapply_stash(git_exe, target, stash_sha):
                 note = "Local changes were restored."
             else:
                 note = "Local changes are preserved in git stash (restore with: git stash pop)."
             return False, f"{err}\n{note}"
 
         pulled = result.stdout.strip()
-        if not stash_created:
+        if not stash_sha:
             return True, pulled
-        if _reapply_stash(git_exe, target):
+        if _reapply_stash(git_exe, target, stash_sha):
             return True, pulled + "\nLocal changes were re-applied on top of the update."
 
         # Conflicted re-apply: leave the plugin importable on the updated
@@ -2155,7 +2163,7 @@ def _git_pull_plugin_dir(target: Path) -> tuple[bool, str]:
         return True, pulled + (
             "\n⚠ Local changes in this plugin conflicted with the update and "
             "were NOT re-applied. They are preserved in git stash — inspect "
-            "with `git stash show -p stash@{0}` and re-apply with "
+            "with `git stash show -p` and re-apply with "
             f"`git stash pop` inside {target}.")
     except FileNotFoundError:
         return False, "git is not installed or not in PATH."

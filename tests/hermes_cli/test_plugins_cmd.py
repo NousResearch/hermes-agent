@@ -295,6 +295,34 @@ class TestGitPullPluginDirAutostash:
         assert ok is True
         assert "Already up to date" in msg
 
+    def test_autostash_addresses_git_by_sha_never_brace_selector(self, tmp_path, monkeypatch):
+        """Native Windows: MSYS strips the braces from ``stash@{0}`` in git.exe's argv, so the
+        apply and the drop must target the autostash by its commit sha / positionally (#87542)."""
+        import hermes_cli.plugins_cmd as pc
+
+        if not pc._resolve_git_executable():
+            pytest.skip("git not available")
+        origin, checkout, git = self._make_repos(tmp_path)
+        self._set_line(origin, "VALUE", "VALUE = 2")
+        git(origin, "commit", "-qam", "bump value")
+        self._set_line(checkout, "OTHER", "OTHER = 'local'")
+
+        argv_log: list[tuple[str, ...]] = []
+        real_run = pc._run_plugin_git
+
+        def recording_run(git_exe, target, *args, **kwargs):
+            argv_log.append(args)
+            return real_run(git_exe, target, *args, **kwargs)
+
+        monkeypatch.setattr(pc, "_run_plugin_git", recording_run)
+        ok, msg = pc._git_pull_plugin_dir(checkout)
+
+        assert ok is True and "re-applied" in msg
+        assert git(checkout, "stash", "list").strip() == ""
+        assert not any("{" in arg or "}" in arg for args in argv_log for arg in args), argv_log
+        applied = [args for args in argv_log if args[:2] == ("stash", "apply")]
+        assert len(applied) == 1 and len(applied[0][2]) == 40, applied  # by commit sha
+
 
 # ── _repo_name_from_url ──────────────────────────────────────────────────
 
@@ -992,7 +1020,8 @@ def test_autostash_dirty_tree_promotes_intent_to_add_entries(tmp_path):
 
     stashed, error = _autostash_dirty_tree("git", tmp_path)
 
-    assert (stashed, error) == (True, ""), "the plugin autostash must not be blocked by i-t-a entries"
+    assert error == "", "the plugin autostash must not be blocked by i-t-a entries"
+    assert stashed == git("rev-parse", "refs/stash").stdout.strip()  # the autostash commit sha
     assert git("status", "--porcelain").stdout == ""
 
 

@@ -169,6 +169,33 @@ test('a failed atomic write leaves the last valid record and does not reserve th
   })
 })
 
+test('a durability acknowledgement failure leaves the prior revision and fence state intact', () => {
+  withTempDirectory(directory => {
+    let failSync = false
+    const injected = realFs({
+      syncFileSync: filePath => {
+        if (failSync && String(filePath).includes('.tmp-')) throw new Error('flush failed')
+      }
+    })
+    const instance = journal(directory, { fs: injected })
+    instance.create(snapshot())
+    failSync = true
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-flush-failure',
+          payload: { action: 'pause' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'paused' })
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'write-failed'
+    )
+    assert.equal(instance.read(ROLLOUT_A).snapshot.revision, 1)
+  })
+})
+
 test('a failed final rename leaves the destination unchanged', () => {
   withTempDirectory(directory => {
     let failRename = false
@@ -388,11 +415,64 @@ test('removing a resolved fence updates the durable unresolved index', () => {
       payload: { action: 'reconciled', key: unresolved.key },
       snapshot: snapshot(ROLLOUT_A, { phase: 'completed' }),
       events: [event('reconciled', INSTALL_A)],
+      facts: [
+        {
+          kind: 'settlement-validated',
+          rolloutId: ROLLOUT_A,
+          correlationId: unresolved.correlationId,
+          installId: INSTALL_A,
+          observedAt: '2026-09-21T00:00:01.000Z',
+          basis: 'validated terminal receipt and restored scope'
+        }
+      ],
       unresolved: { remove: [unresolved.key] }
     })
 
     assert.equal(instance.hasUnresolvedInstall(INSTALL_A), false)
     assert.equal(journal(directory).hasUnresolvedInstall(INSTALL_A), false)
+  })
+})
+
+test('refuses fence release without a matching validated settlement fact', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    const unresolved = fence()
+    instance.create(snapshot(ROLLOUT_A, { phase: 'running' }), { unresolved: [unresolved] })
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-unproven-release',
+          payload: { action: 'reconciled' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'completed' }),
+          unresolved: { remove: [unresolved.key] }
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'fence-release-unproven'
+    )
+    assert.equal(instance.hasUnresolvedInstall(INSTALL_A), true)
+  })
+})
+
+test('refuses a second writer while the canonical journal owner marker exists', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory)
+    instance.create(snapshot())
+    fs.writeFileSync(path.join(directory, '.owner'), '{"pid":1,"ownerId":"held"}', 'utf8')
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-owner-held',
+          payload: { action: 'pause' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'paused' })
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'owner-unavailable'
+    )
+    assert.equal(instance.read(ROLLOUT_A).snapshot.revision, 1)
   })
 })
 test('keeps event cursors stable when later events are inserted', () => {
@@ -500,6 +580,28 @@ test('prunes old settled records but retains an unresolved tombstone and its fen
     assert.equal(
       reopened.history({ limit: 10 }).items.some(item => item.id === ROLLOUT_A),
       true
+    )
+  })
+})
+
+test('refuses replay against a compacted tombstone', () => {
+  withTempDirectory(directory => {
+    const instance = journal(directory, { retentionLimit: 1 })
+    instance.create(snapshot(ROLLOUT_A, { phase: 'completed' }))
+    instance.create(snapshot(ROLLOUT_B, { phase: 'completed' }))
+    instance.create(snapshot(ROLLOUT_C, { phase: 'completed' }))
+    instance.prune()
+
+    assert.throws(
+      () =>
+        instance.record({
+          id: ROLLOUT_A,
+          expectedRevision: 1,
+          requestId: 'request-after-compaction',
+          payload: { action: 'resume' },
+          snapshot: snapshot(ROLLOUT_A, { phase: 'running' })
+        }),
+      (error: unknown) => error instanceof JournalError && error.code === 'replay-expired'
     )
   })
 })

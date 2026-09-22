@@ -11,6 +11,7 @@ const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-
 const RECORD_FILE_RE = /^([0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12})\.json$/
 const INDEX_FILE = 'index.json'
 const UNRESOLVED_FILE = 'unresolved.json'
+const OWNER_FILE = '.owner'
 const TEMP_FILE_RE = /^\.tmp-[^/\\]+$/
 const MAX_REQUEST_ID_LENGTH = 256
 const MAX_REQUEST_PAYLOAD_BYTES = 256 * 1024
@@ -35,6 +36,8 @@ export interface JournalFs {
   ) => unknown
   renameSync: (from: string, to: string) => unknown
   unlinkSync: (filePath: string) => unknown
+  syncFileSync?: (filePath: string) => unknown
+  syncDirectorySync?: (filePath: string) => unknown
 }
 
 export interface JournalSnapshot extends Record<string, unknown> {
@@ -62,6 +65,22 @@ export interface JournalEventInput extends Record<string, unknown> {
 export interface JournalEvent extends JournalEventInput {
   sequence: number
   at: string
+}
+
+export type JournalFactKind =
+  | 'authorization-committed'
+  | 'handoff-accepted'
+  | 'detached-intent'
+  | 'terminal-receipt'
+  | 'settlement-validated'
+
+export interface JournalEvidenceFact extends Record<string, unknown> {
+  kind: JournalFactKind
+  rolloutId: string
+  correlationId: string | null
+  installId: string | null
+  observedAt: string
+  basis: string
 }
 
 export interface UnresolvedFence {
@@ -93,6 +112,11 @@ export interface JournalAck {
   eventSequences: number[]
 }
 
+export interface JournalOwnerLease {
+  token: string
+  release: () => void
+}
+
 export interface JournalRequest {
   requestId: string
   payload: unknown
@@ -101,11 +125,13 @@ export interface JournalRequest {
 export interface JournalRecord {
   schemaVersion: typeof JOURNAL_SCHEMA_VERSION
   id: string
+  generation: string
   snapshot: JournalSnapshot
   events: JournalEvent[]
   requests: Record<string, StoredRequest>
   archive: ArchiveMetadata | null
   unresolved: UnresolvedFence[]
+  facts: JournalEvidenceFact[]
   createdAt: string
   updatedAt: string
 }
@@ -117,6 +143,7 @@ interface StoredRequest {
 
 export interface JournalSummary {
   id: string
+  generation: string
   revision: number
   phase: string
   createdAt: string
@@ -130,6 +157,8 @@ export interface JournalSummary {
   pruned: boolean
   tombstone: boolean
   prunedAt: string | null
+  evidenceFacts: JournalEvidenceFact[]
+  requestDigests: Record<string, string>
 }
 
 interface JournalIndexFile {
@@ -146,6 +175,7 @@ export interface JournalRecordOptions {
   events?: JournalEventInput[]
   unresolved?: UnresolvedFenceChange | UnresolvedFence[]
   archive?: ArchiveMetadata | null
+  facts?: JournalEvidenceFact[]
 }
 
 export interface UnresolvedFenceChange {
@@ -221,7 +251,23 @@ const defaultFs: JournalFs = {
   readFileSync: filePath => fs.readFileSync(filePath, 'utf8'),
   writeFileSync: (filePath, data, options) => fs.writeFileSync(filePath, data, options),
   renameSync: (from, to) => fs.renameSync(from, to),
-  unlinkSync: filePath => fs.unlinkSync(filePath)
+  unlinkSync: filePath => fs.unlinkSync(filePath),
+  syncFileSync: filePath => {
+    const handle = fs.openSync(filePath, 'r')
+    try {
+      fs.fsyncSync(handle)
+    } finally {
+      fs.closeSync(handle)
+    }
+  },
+  syncDirectorySync: filePath => {
+    const handle = fs.openSync(filePath, 'r')
+    try {
+      fs.fsyncSync(handle)
+    } finally {
+      fs.closeSync(handle)
+    }
+  }
 }
 
 function isMissing(error: unknown): boolean {
@@ -363,6 +409,31 @@ function validateEventInput(value: unknown, forRead = false): JournalEventInput 
   return value as JournalEventInput | JournalEvent
 }
 
+function validateEvidenceFact(value: unknown): JournalEvidenceFact {
+  if (!isPlainObject(value)) throw new JournalCorruptionError('Journal evidence fact must be an object.')
+  const kinds: JournalFactKind[] = [
+    'authorization-committed',
+    'handoff-accepted',
+    'detached-intent',
+    'terminal-receipt',
+    'settlement-validated'
+  ]
+  if (!kinds.includes(value.kind as JournalFactKind)) throw new JournalCorruptionError('Journal evidence fact kind is invalid.')
+  validateRolloutId(value.rolloutId)
+  if (value.correlationId !== null && typeof value.correlationId !== 'string') {
+    throw new JournalCorruptionError('Journal evidence correlationId is invalid.')
+  }
+  if (value.installId !== null && typeof value.installId !== 'string') {
+    throw new JournalCorruptionError('Journal evidence installId is invalid.')
+  }
+  validateIsoLike(value.observedAt, 'evidence observedAt')
+  if (typeof value.basis !== 'string' || !value.basis || value.basis.length > MAX_REASON_LENGTH) {
+    throw new JournalCorruptionError('Journal evidence basis is invalid.')
+  }
+  canonicalJson(value)
+  return clone(value) as JournalEvidenceFact
+}
+
 function validateFence(value: unknown, forRead = false): UnresolvedFence | UnresolvedIndexEntry {
   if (!isPlainObject(value)) throw new JournalCorruptionError('Unresolved fence must be an object.')
   if (typeof value.key !== 'string' || !value.key || value.key.length > 300) {
@@ -425,6 +496,7 @@ function summaryFromRecord(record: JournalRecord): JournalSummary {
   const snapshot = record.snapshot
   return {
     id: record.id,
+    generation: record.generation,
     revision: snapshot.revision,
     phase: snapshot.phase,
     createdAt: record.createdAt,
@@ -437,7 +509,9 @@ function summaryFromRecord(record: JournalRecord): JournalSummary {
     unresolvedInstallIds: [...new Set(record.unresolved.map(fence => fence.installId))].sort(),
     pruned: false,
     tombstone: false,
-    prunedAt: null
+    prunedAt: null,
+    evidenceFacts: clone(record.facts),
+    requestDigests: Object.fromEntries(Object.entries(record.requests).map(([id, request]) => [id, request.payloadDigest]))
   }
 }
 
@@ -455,6 +529,7 @@ export class ManagedRolloutJournal {
   private readonly summaries = new Map<string, JournalSummary>()
   private readonly unresolved = new Map<string, UnresolvedIndexEntry>()
   private tempCounter = 0
+  private activeOwnerToken: string | null = null
 
   constructor(options: ManagedRolloutJournalOptions) {
     this.directory = path.resolve(options.directory)
@@ -483,6 +558,58 @@ export class ManagedRolloutJournal {
 
   private unresolvedPath(): string {
     return path.join(this.directory, UNRESOLVED_FILE)
+  }
+
+  private ownerPath(): string {
+    return path.join(this.directory, OWNER_FILE)
+  }
+
+  private withOwner<T>(operation: () => T): T {
+    if (this.activeOwnerToken !== null) return operation()
+    const lease = this.acquireOwner()
+    try {
+      return operation()
+    } finally {
+      lease.release()
+    }
+  }
+
+  acquireOwner(): JournalOwnerLease {
+    if (this.activeOwnerToken !== null) {
+      return { token: this.activeOwnerToken, release: () => undefined }
+    }
+    const owner = this.ownerPath()
+    const token = randomUUID()
+    try {
+      this.fs.writeFileSync(
+        owner,
+        JSON.stringify({
+          pid: process.pid,
+          incarnation: process.pid + ':' + process.uptime(),
+          ownerId: token,
+          acquiredAt: new Date().toISOString()
+        }),
+        { encoding: 'utf8', flag: 'wx', mode: 0o600 }
+      )
+    } catch (error) {
+      throw new JournalError('owner-unavailable', 'Another process owns the managed rollout journal.', error)
+    }
+    this.activeOwnerToken = token
+    let released = false
+    return {
+      token,
+      release: () => {
+        if (released) return
+        released = true
+        if (this.activeOwnerToken !== token) return
+        this.activeOwnerToken = null
+        try {
+          this.fs.unlinkSync(owner)
+        } catch {
+          // Preserve fail-closed semantics if ownership cannot be released.
+        }
+      }
+    }
   }
 
   private ensureDirectory(): void {
@@ -542,6 +669,9 @@ export class ManagedRolloutJournal {
     }
     const id = validateRolloutId(parsed.id)
     if (id !== expectedId) throw new JournalCorruptionError(`Managed rollout ${expectedId} id is invalid.`)
+    if (typeof parsed.generation !== 'string' || !parsed.generation) {
+      throw new JournalCorruptionError(`Managed rollout ${expectedId} generation is invalid.`)
+    }
     const snapshot = validateSnapshot(parsed.snapshot, expectedId)
     if (!Array.isArray(parsed.events))
       throw new JournalCorruptionError(`Managed rollout ${expectedId} events are invalid.`)
@@ -590,6 +720,11 @@ export class ManagedRolloutJournal {
     if (!Array.isArray(parsed.unresolved))
       throw new JournalCorruptionError(`Managed rollout ${expectedId} unresolved list is invalid.`)
     const unresolved = parsed.unresolved.map(item => validateFence(item) as UnresolvedFence)
+    const facts = parsed.facts === undefined
+      ? []
+      : Array.isArray(parsed.facts)
+        ? parsed.facts.map(item => validateEvidenceFact(item))
+        : (() => { throw new JournalCorruptionError(`Managed rollout ${expectedId} evidence facts are invalid.`) })()
     const archive = validateArchive(parsed.archive)
     const createdAt = validateIsoLike(parsed.createdAt, 'record createdAt')
     const updatedAt = validateIsoLike(parsed.updatedAt, 'record updatedAt')
@@ -597,11 +732,13 @@ export class ManagedRolloutJournal {
     return {
       schemaVersion: JOURNAL_SCHEMA_VERSION,
       id,
+      generation: parsed.generation,
       snapshot,
       events,
       requests,
       archive,
       unresolved,
+      facts,
       createdAt,
       updatedAt
     }
@@ -617,6 +754,9 @@ export class ManagedRolloutJournal {
         throw new JournalCorruptionError('Managed rollout history summary is invalid.')
       }
       validateRolloutId(item.id)
+      if (typeof item.generation !== 'string' || !item.generation) {
+        throw new JournalCorruptionError('Managed rollout history generation is invalid.')
+      }
       if (
         !Number.isSafeInteger(item.revision) ||
         Number(item.revision) < 1 ||
@@ -648,7 +788,18 @@ export class ManagedRolloutJournal {
       }
       if (item.prunedAt !== null) validateIsoLike(item.prunedAt, 'summary prunedAt')
       const archive = validateArchive(item.archive)
-      return clone({ ...item, archive }) as unknown as JournalSummary
+      const evidenceFacts = item.evidenceFacts === undefined
+        ? []
+        : Array.isArray(item.evidenceFacts)
+          ? item.evidenceFacts.map(fact => validateEvidenceFact(fact))
+          : (() => { throw new JournalCorruptionError('Managed rollout history evidence facts are invalid.') })()
+      const requestDigests = item.requestDigests === undefined
+        ? {}
+        : isPlainObject(item.requestDigests) &&
+            Object.values(item.requestDigests).every(digest => typeof digest === 'string' && /^[0-9a-f]{64}$/.test(digest))
+          ? clone(item.requestDigests) as Record<string, string>
+          : (() => { throw new JournalCorruptionError('Managed rollout history request digests are invalid.') })()
+      return clone({ ...item, archive, evidenceFacts, requestDigests }) as unknown as JournalSummary
     })
     return { schemaVersion: JOURNAL_SCHEMA_VERSION, summaries }
   }
@@ -677,7 +828,7 @@ export class ManagedRolloutJournal {
 
     for (const name of entries) {
       if (TEMP_FILE_RE.test(name)) continue
-      if (name === INDEX_FILE || name === UNRESOLVED_FILE) continue
+      if (name === INDEX_FILE || name === UNRESOLVED_FILE || name === OWNER_FILE) continue
       const match = RECORD_FILE_RE.exec(name)
       if (!match) throw new JournalCorruptionError(`Unexpected file in managed rollout journal: ${name}`)
       const id = match[1]
@@ -691,7 +842,13 @@ export class ManagedRolloutJournal {
     }
 
     for (const summary of index?.summaries ?? []) {
-      if (this.records.has(summary.id)) continue
+      const record = this.records.get(summary.id)
+      if (record) {
+        if (record.generation !== summary.generation) {
+          throw new JournalCorruptionError(`History summary ${summary.id} generation does not match its record.`)
+        }
+        continue
+      }
       if (!summary.pruned || !summary.tombstone) {
         throw new JournalCorruptionError(`History summary ${summary.id} has no retained record.`)
       }
@@ -729,7 +886,9 @@ export class ManagedRolloutJournal {
         }
       }
       this.fs.writeFileSync(temp, data, { encoding: 'utf8', flag: 'wx', mode: 0o600 })
+      this.fs.syncFileSync?.(temp)
       this.fs.renameSync(temp, target)
+      this.fs.syncDirectorySync?.(this.directory)
     } catch (error) {
       try {
         this.assertRegular(temp, path.basename(temp))
@@ -823,6 +982,32 @@ export class ManagedRolloutJournal {
     return [...next.values()].sort((a, b) => a.key.localeCompare(b.key))
   }
 
+  private validateFacts(facts: JournalEvidenceFact[] | undefined, rolloutId: string): JournalEvidenceFact[] {
+    return (facts ?? []).map(fact => {
+      const validated = validateEvidenceFact(fact)
+      if (validated.rolloutId !== rolloutId) throw new JournalError('invalid-input', 'Evidence fact rollout does not match the journal record.')
+      return validated
+    })
+  }
+
+  private assertFenceRelease(
+    current: JournalRecord,
+    nextFacts: JournalEvidenceFact[],
+    nextUnresolved: UnresolvedFence[]
+  ): void {
+    const retained = new Set(nextUnresolved.map(fence => fence.key))
+    for (const fence of current.unresolved) {
+      if (retained.has(fence.key)) continue
+      const settled = nextFacts.some(
+        fact =>
+          fact.kind === 'settlement-validated' &&
+          fact.correlationId === fence.correlationId &&
+          fact.installId === fence.installId
+      )
+      if (!settled) throw new JournalError('fence-release-unproven', `Fence ${fence.key} lacks validated settlement evidence.`)
+    }
+  }
+
   private prepareAck(id: string, revision: number, eventSequences: number[]): JournalAck {
     const acceptanceId = String(this.idFactory())
     if (!acceptanceId || /[\x00\r\n]/.test(acceptanceId)) {
@@ -879,6 +1064,10 @@ export class ManagedRolloutJournal {
   }
 
   create(snapshot: JournalSnapshot, options: JournalCreateOptions = {}): JournalAck {
+    return this.withOwner(() => this.createOwned(snapshot, options))
+  }
+
+  private createOwned(snapshot: JournalSnapshot, options: JournalCreateOptions = {}): JournalAck {
     this.reload()
     const id = validateRolloutId(snapshot.id)
     const request = options.request
@@ -907,11 +1096,13 @@ export class ManagedRolloutJournal {
     const record: JournalRecord = {
       schemaVersion: JOURNAL_SCHEMA_VERSION,
       id,
+      generation: randomUUID(),
       snapshot: normalizedSnapshot,
       events,
       requests,
       archive: options.archive ? clone(options.archive) : null,
       unresolved: this.applyFenceChange([], options.unresolved),
+      facts: this.validateFacts(options.facts, id),
       createdAt: normalizedSnapshot.createdAt,
       updatedAt: now
     }
@@ -941,10 +1132,19 @@ export class ManagedRolloutJournal {
   }
 
   record(input: JournalRecordInput): JournalAck {
+    return this.withOwner(() => this.recordOwned(input))
+  }
+
+  private recordOwned(input: JournalRecordInput): JournalAck {
     this.reload()
     const id = validateRolloutId(input.id)
     const current = this.records.get(id)
-    if (!current) throw new JournalError('not-found', `Managed rollout ${id} was not found.`)
+    if (!current) {
+      if (this.summaries.get(id)?.tombstone) {
+        throw new JournalError('replay-expired', `Managed rollout ${id} was compacted; replay is refused.`)
+      }
+      throw new JournalError('not-found', `Managed rollout ${id} was not found.`)
+    }
     const requestId = validateRequestId(input.requestId)
     const payloadDigest = digestPayload(input.payload)
     const existing = current.requests[requestId]
@@ -971,14 +1171,19 @@ export class ManagedRolloutJournal {
       now,
       current.snapshot
     )
+    const nextFacts = [...current.facts, ...this.validateFacts(input.facts, id)]
+    const nextUnresolved = this.applyFenceChange(current.unresolved, input.unresolved)
+    this.assertFenceRelease(current, nextFacts, nextUnresolved)
     const nextRecord: JournalRecord = {
       schemaVersion: JOURNAL_SCHEMA_VERSION,
       id,
+      generation: randomUUID(),
       snapshot: nextSnapshot,
       events: [...current.events, ...events],
       requests: clone(current.requests),
       archive: input.archive === undefined ? clone(current.archive) : clone(input.archive),
-      unresolved: this.applyFenceChange(current.unresolved, input.unresolved),
+      unresolved: nextUnresolved,
+      facts: nextFacts,
       createdAt: current.createdAt,
       updatedAt: now
     }
@@ -1095,6 +1300,10 @@ export class ManagedRolloutJournal {
   }
 
   prune(): PruneResult {
+    return this.withOwner(() => this.pruneOwned())
+  }
+
+  private pruneOwned(): PruneResult {
     this.reload()
     const records = [...this.records.values()]
       .filter(isSettled)

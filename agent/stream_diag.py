@@ -52,7 +52,10 @@ def stream_diag_note_serving_provider(diag: Dict[str, Any], chunk: Any) -> None:
         if isinstance(value, str) and value.strip():
             diag["serving_provider"] = value.strip()[:64]  # keep log lines bounded
     except Exception:
-        pass
+        # Deliberately swallowed: this is a best-effort annotation on the diagnostics path and
+        # must never break streaming. Logged at DEBUG so a reader can tell it apart from a
+        # missed error-handling gap.
+        logger.debug("stream_diag: could not read serving provider from chunk", exc_info=True)
 
 
 def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response: Any) -> None:

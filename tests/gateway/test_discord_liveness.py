@@ -358,7 +358,8 @@ async def test_disconnect_cancels_liveness_task(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_socket_closed_first_strike_forces_reconnect(monkeypatch, caplog):
+@pytest.mark.parametrize("reason", ["socket_closed", "client_closed"])
+async def test_closed_transport_first_strike_forces_reconnect(monkeypatch, caplog, reason):
     """A closed transport is a confirmed death — strike 1 must reconnect (#118487).
 
     Pre-fix, the first ``socket_closed`` strike logged ``1/2`` and waited for a
@@ -381,7 +382,7 @@ async def test_socket_closed_first_strike_forces_reconnect(monkeypatch, caplog):
     def _probe(client):
         nonlocal calls
         calls += 1
-        return False, "socket_closed"
+        return False, reason
 
     monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
 
@@ -389,13 +390,13 @@ async def test_socket_closed_first_strike_forces_reconnect(monkeypatch, caplog):
         await _connect(adapter, monkeypatch, factory)
         await _wait_until(
             lambda: handler.called,
-            "fatal handler not called after first socket_closed strike",
+            f"fatal handler not called after first {reason} strike",
         )
 
-    assert calls == 1, "first socket_closed strike must escalate without a confirming strike"
+    assert calls == 1, f"first {reason} strike must escalate without a confirming strike"
     assert adapter._disconnecting is True
     errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
-    assert any("transport closed (socket_closed, 1/2)" in m for m in errors)
+    assert any("forcing reconnect" in m and reason in m for m in errors)
 
     await adapter.disconnect()
 

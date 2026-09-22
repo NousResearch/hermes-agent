@@ -58,15 +58,16 @@ it('requires explicit opt-in and native readiness, with permission recovery and 
   await act(async () => fireEvent.click(toggle))
   expect(api.setEnabled).toHaveBeenLastCalledWith(true)
   expect(screen.getByText(copy.permission)).toBeTruthy()
-  expect(screen.queryByText(copy.ready)).toBeNull()
   await act(async () => fireEvent.click(screen.getByRole('button', { name: common.openSettings })))
   expect(api.openPermissionSettings).toHaveBeenCalledOnce()
   api.setEnabled.mockResolvedValueOnce({ enabled: true, state: 'starting' })
   await act(async () => fireEvent.click(screen.getByRole('button', { name: common.retry })))
   expect(api.setEnabled).toHaveBeenLastCalledWith(true)
-  expect(screen.queryByText(copy.ready)).toBeNull()
+  expect(screen.queryByRole('alert')).toBeNull()
   await act(async () => emit({ enabled: true, state: 'ready' }))
-  expect(screen.getByText(copy.ready)).toBeTruthy()
+  expect(toggle).toHaveProperty('ariaChecked', 'true')
+  expect(view.container.textContent).toBe(`${copy.title}${copy.description}`)
+  expect(screen.queryByRole('alert')).toBeNull()
   api.setEnabled.mockResolvedValueOnce({ enabled: false, state: 'disabled' })
   await act(async () => fireEvent.click(toggle))
   expect(toggle).toHaveProperty('ariaChecked', 'false')
@@ -75,7 +76,7 @@ it('requires explicit opt-in and native readiness, with permission recovery and 
 })
 
 it('rereads after an unconfirmed write and keeps failed reads recoverable', async () => {
-  const { api } = bridge()
+  const { api, emit } = bridge()
   api.getSettings.mockRejectedValueOnce(new Error('IPC unavailable'))
   render(<HudModifierSettings />)
   expect(await screen.findByText(common.loadFailed)).toBeTruthy()
@@ -87,4 +88,16 @@ it('rereads after an unconfirmed write and keeps failed reads recoverable', asyn
   await act(async () => fireEvent.click(screen.getByRole('button', { name: common.retry })))
   expect(api.setEnabled).toHaveBeenCalledOnce()
   expect(screen.getByText(copy.unavailable)).toBeTruthy()
+
+  for (const [reason, message] of [
+    ['missing-helper', copy.missingHelper],
+    ['unsupported-session', copy.unsupportedSession]
+  ] as const) {
+    await act(async () => emit({ enabled: true, state: 'unavailable', reason }))
+    expect(screen.getByText(message)).toBeTruthy()
+    expect(screen.queryByText(copy.unavailable)).toBeNull()
+  }
+
+  await act(async () => emit({ enabled: true, state: 'ready' }))
+  expect(screen.queryByRole('alert')).toBeNull()
 })

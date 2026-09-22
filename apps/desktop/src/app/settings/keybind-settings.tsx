@@ -39,6 +39,14 @@ interface KeybindSettingsProps {
 }
 
 export function KeybindSettings({ subpage }: KeybindSettingsProps = {}) {
+  if (subpage === 'hud-gesture') {
+    return (
+      <SettingsContent>
+        <HudModifierSettings />
+      </SettingsContent>
+    )
+  }
+
   if (subpage === 'screen-capture') {
     return (
       <SettingsContent>
@@ -137,11 +145,6 @@ function ShortcutSettings({ includeScreenshot }: { includeScreenshot: boolean })
         (!isSearching || t.settings.screenshot.enabledTitle.toLowerCase().includes(query.toLowerCase())) && (
           <ScreenshotSettings />
         )}
-
-      {(!isSearching ||
-        `${t.settings.hudModifier.title} ${t.settings.hudModifier.description}`
-          .toLowerCase()
-          .includes(query.toLowerCase())) && <HudModifierSettings />}
 
       <div className="pb-3">
         <SearchField

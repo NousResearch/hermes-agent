@@ -458,6 +458,21 @@ const ROUTES = [
     expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
   },
   {
+    // #118431/#118432: the host backend this app attached to may have been
+    // launched under another profile's home, so the primary's own scopable
+    // REST calls must still say which profile they mean.
+    name: 'the primary profile names itself on a scopable local REST request',
+    profile: 'nash',
+    opts: { primaryProfile: 'nash', globalRemote: false, requestMethod: 'POST', requestPath: '/api/model/set' },
+    expected: { backend: 'primary', descriptorProfile: 'nash', scopePath: true }
+  },
+  {
+    name: 'the primary profile stays unscoped on a route the server cannot scope',
+    profile: 'nash',
+    opts: { primaryProfile: 'nash', globalRemote: false, requestMethod: 'POST', requestPath: '/api/files/upload' },
+    expected: { backend: 'primary', descriptorProfile: null, scopePath: false }
+  },
+  {
     name: 'a renamed primary profile on a global remote is still scoped on the wire',
     profile: ' coder ',
     opts: { primaryProfile: 'coder', globalRemote: true },

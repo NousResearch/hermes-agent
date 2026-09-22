@@ -6,8 +6,15 @@ import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type * as ConfigApi from '@/api/config'
+import { $settingsOwner } from '@/store/settings-scope'
 
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
+
+type TestScope = { connectionId: string; profile: string }
+
+// The vi.mock factory below replaces the computed (read-only) atom with a
+// writable one; narrow the import back so tests can drive it.
+const settingsOwnerMock = $settingsOwner as unknown as { set: (value: TestScope) => void }
 
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
@@ -18,11 +25,11 @@ const getElevenLabsVoices = vi.fn()
 // config hook reaches them through the barrel, and a bare mock would throw.
 vi.mock('@/hermes', async () => ({
   ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
-  getHermesConfigRecord: () => getHermesConfigRecord(),
+  getHermesConfigRecord: (scope?: TestScope) => getHermesConfigRecord(scope),
   getHermesConfigSchema: () => getHermesConfigSchema(),
-  saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
+  saveHermesConfig: (config: unknown, scope?: TestScope) => saveHermesConfig(config, scope),
   getElevenLabsVoices: () => getElevenLabsVoices(),
-  profileScopeKey: (scope: { connectionId: string; profile: string }) => `${scope.connectionId}::${scope.profile}`,
+  profileScopeKey: (scope: TestScope) => `${scope.connectionId}::${scope.profile}`,
   setApiRequestProfile: () => {}
 }))
 
@@ -59,6 +66,7 @@ beforeAll(async () => {
 }, 60_000)
 
 beforeEach(() => {
+  settingsOwnerMock.set({ connectionId: 'local', profile: 'default' })
   getElevenLabsVoices.mockResolvedValue({ available: false })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
   saveHermesConfig.mockResolvedValue({ ok: true })
@@ -144,6 +152,37 @@ describe('ConfigSettings autosave', () => {
       // (the field is back to its original value) and leave disk stuck at
       // `enabled: true` from the first save.
       expect(saveHermesConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('threads the "Applies to" request scope into both the config read and the autosave write', async () => {
+    // #118432: the request scope is the concrete profile the page displays
+    // (see settings-scope.test.ts). The page must carry it into the read AND
+    // the write — a read scoped to B with a write that falls back to the
+    // ambient (launch) profile is exactly the silent cross-profile write.
+    settingsOwnerMock.set({ connectionId: 'local', profile: 'nash' })
+    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
+
+    vi.useFakeTimers({ shouldAdvanceTime: true })
+
+    try {
+      renderConfigSettings()
+
+      await vi.waitFor(() =>
+        expect(getHermesConfigRecord).toHaveBeenCalledWith({ connectionId: 'local', profile: 'nash' })
+      )
+
+      ;(await screen.findByRole('switch')).click()
+      await vi.advanceTimersByTimeAsync(700)
+
+      await vi.waitFor(() =>
+        expect(saveHermesConfig).toHaveBeenCalledWith(
+          { checkpoints: { enabled: true } },
+          { connectionId: 'local', profile: 'nash' }
+        )
+      )
     } finally {
       vi.useRealTimers()
     }

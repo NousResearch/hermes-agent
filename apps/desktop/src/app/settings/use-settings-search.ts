@@ -304,7 +304,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
               keywords: ['HUD', 'summon', 'modifier', 'tap', 'Ctrl', 'Alt', 'Command', 'Option'],
               label: t.settings.hudModifier.title,
               description: t.settings.hudModifier.description,
-              target: { view: 'keybinds' as const, subpage: 'shortcuts', setting: 'hud-modifier' }
+              target: { view: 'keybinds' as const, subpage: 'hud-gesture', setting: 'hud-modifier' }
             }
           ]
         : [])

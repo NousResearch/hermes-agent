@@ -847,10 +847,10 @@ export interface Translations {
     hudModifier: {
       title: string
       description: string
-      statusTitle: string
-      ready: string
       permission: string
       unavailable: string
+      missingHelper: string
+      unsupportedSession: string
     }
     screenshot: {
       enabledTitle: string

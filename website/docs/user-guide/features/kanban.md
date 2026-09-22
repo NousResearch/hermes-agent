@@ -1049,9 +1049,13 @@ All of these are gated by the same dashboard plugin auth as the rest of the kanb
 
 ```bash
 hermes kanban swarm "Design a multi-region failover plan" \
-  --workers researcher,architect,sre \
+  --worker "researcher:Survey failover options" \
+  --worker "architect:Draft the target topology" \
+  --worker "sre:Write the cutover runbook" \
   --verifier reviewer --synthesizer writer
 ```
+
+Each `--worker` is `profile:title[:skill,skill]` and adds one parallel worker card; repeat it for each worker.
 
 The resulting graph is committed atomically: dispatchers and dashboard readers see either no new swarm or the complete topology, never a partially linked root/worker/verifier graph. It then dispatches normally — workers run in parallel, the verifier wakes after they all finish, and the synthesizer wakes after the verifier marks the work clean.
 

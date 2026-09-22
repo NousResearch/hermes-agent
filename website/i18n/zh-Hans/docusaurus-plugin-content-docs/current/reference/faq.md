@@ -776,10 +776,10 @@ skills:
 
 ```bash
 # 在源机器上
-hermes profile export work ./work-backup.tar.gz
+hermes profile export work -o ./work-backup.tar.gz
 
 # 将文件复制到目标机器，然后：
-hermes profile import ./work-backup.tar.gz work
+hermes profile import ./work-backup.tar.gz --name work
 ```
 
 导入的 profile 将包含导出时的所有配置、记忆、会话和技能。如果新机器的设置不同，您可能需要更新路径或重新向提供商进行身份验证。

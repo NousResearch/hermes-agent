@@ -1027,7 +1027,7 @@ hooks:
 
 ```bash
 hermes skills tap add myorg/skills-repo
-hermes skills search my-workflow --source myorg/skills-repo
+hermes skills search my-workflow --source github
 hermes skills install myorg/skills-repo/my-workflow
 ```
 

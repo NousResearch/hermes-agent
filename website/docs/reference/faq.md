@@ -809,10 +809,10 @@ Skills with very long descriptions are truncated to 40 characters in the Telegra
 
 ```bash
 # On the source machine
-hermes profile export work ./work-backup.tar.gz
+hermes profile export work -o ./work-backup.tar.gz
 
 # Copy the file to the target machine, then:
-hermes profile import ./work-backup.tar.gz work
+hermes profile import ./work-backup.tar.gz --name work
 ```
 
 The imported profile will have all config, memories, sessions, and skills from the export. You may need to update paths or re-authenticate with providers if the new machine has a different setup.

@@ -1757,7 +1757,7 @@ If you maintain a GitHub repo of skills (or want to pull from a community index 
 
 ```bash
 hermes skills tap add myorg/skills-repo
-hermes skills search my-workflow --source myorg/skills-repo
+hermes skills search my-workflow --source github
 hermes skills install myorg/skills-repo/my-workflow
 ```
 

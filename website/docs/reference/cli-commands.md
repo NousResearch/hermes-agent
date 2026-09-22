@@ -527,7 +527,7 @@ hermes send --list telegram         # filter by platform
 hermes peer add <name> --url http://host:port --key <API_SERVER_KEY>
 hermes peer list
 hermes peer dm <peer>[/<agent>] "message"
-hermes peer run <peer>[/<agent>] --idempotency-key <key> "message"
+hermes peer run <peer>[/<agent>] "message" --idempotency-key <key>
 hermes peer status <peer>[/<agent>] <run_id>
 hermes peer stop <peer>[/<agent>] <run_id>
 hermes peer remove <name>
@@ -1189,8 +1189,7 @@ Importing an older backup over newer work is still allowed, but it is no longer 
 ```
   ⚠ Session data replaced by older backup contents:
     state.db: 12 session(s) / 8912 message(s) -> 3 / 24
-    Anything recorded after the backup was taken is not in it.
-    Recover from a newer backup or snapshot: hermes snapshot list
+    Anything recorded after the backup was taken is not in it. To restore a newer snapshot, start `hermes` in a terminal and run `/snapshot list`, then `/snapshot restore <id>` (CLI only).
 ```
 
 ### Examples
@@ -1970,7 +1969,7 @@ Additional behavior:
 - **Update receipts + fleet version check.** Every run writes a machine-readable receipt to `~/.hermes/logs/update_receipts/` (pre-update fleet plan, steps, skips with reasons, restart outcome; `latest.json` points at the newest). After the restart phase the updater verifies each live gateway's running code against the updated checkout and prints a per-profile version matrix; a gateway still on pre-update code fails the update (exit 1) with the exact restart command.
 - **Local source changes.** For git installs, dirty tracked files and untracked files are auto-stashed before branch checkout or pull (`git stash push --include-untracked`). Interactive terminal updates ask before restoring the stash. Non-interactive updates restore it by default; set `updates.non_interactive_local_changes: discard` only on managed installs where local source edits should be thrown away after a successful pull. If stash restore conflicts or the pull fails, the stash is left in place for manual recovery.
 - **npm lockfile churn.** Before stashing or switching branches, Hermes makes a best-effort cleanup of tracked `package-lock.json` diffs produced by npm install/build steps. Commit or manually stash intentional lockfile edits before running `hermes update`.
-- **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. You can roll it back with `hermes backup restore --state pre-update` if a pull rewrites a file you were editing.
+- **Pairing data snapshot.** Even when `--backup` is off, `hermes update` takes a lightweight snapshot of `~/.hermes/pairing/` and the Feishu comment rules before `git pull`. If a pull rewrites a file you were editing, start `hermes` and run `/snapshot list`, then `/snapshot restore <id>` on the entry labelled `pre-update`. The restore puts back every file in that snapshot, not only the pairing data.
 - **Legacy `hermes.service` warning.** If Hermes detects a pre-rename `hermes.service` systemd unit (instead of the current `hermes-gateway.service`), it prints a one-time migration hint so you can avoid flap-loop issues.
 - **Exit codes.** `0` on success, `1` on pull/install/post-install errors, `2` on unexpected working-tree changes that block `git pull`.
 

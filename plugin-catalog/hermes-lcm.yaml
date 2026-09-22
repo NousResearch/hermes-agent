@@ -1,6 +1,6 @@
 name: hermes-lossless-context-manager
 repo: https://github.com/misterdas/hermes-lossless-context-manager
-sha: d964c8e54516f5d608634c08e3f85aa2a5d42a57
+sha: d1fb9ea54516f5d608634c08e3f85aa2a5d42a57
 description: Lossless Context Management — SQLite-backed DAG context engine that never loses a message. Full retrieval drill-down after compression.
 maintainer: misterdas
 tier: community

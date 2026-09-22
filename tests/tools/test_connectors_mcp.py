@@ -10,6 +10,7 @@ Contracts:
 - deadline ownership: fixed operation deadline + sequential-deadline exemption
 """
 
+import contextlib
 import json
 import threading
 from types import SimpleNamespace
@@ -373,3 +374,148 @@ def test_a_desktop_session_with_no_callback_gets_the_link_at_once_and_opens_no_o
     assert out["status"] == "initiated"
     assert out["targets"][0]["connect_url"] == "https://auth.example/paper/1"
     assert live.current("s1") is None
+
+
+# ---------------------------------------------------------------------------
+# late-attempt parking is scoped by (profile, session), never by session alone
+# ---------------------------------------------------------------------------
+
+
+@contextlib.contextmanager
+def _as_home(home):
+    """Bind a profile home the way the multiplex gateway binds one per activity."""
+    from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+    token = set_hermes_home_override(str(home))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
+
+
+def _profile_home(tmp_path, name):
+    """A real profile dir with the same-named MCP server configured, as both multiplexed
+    homes carry in production."""
+    home = tmp_path / name
+    home.mkdir(parents=True)
+    (home / "config.yaml").write_text(
+        "mcp_servers:\n  linear:\n    url: https://mcp.linear.app/mcp\n")
+    return home
+
+
+def _park_attempt(home, name="linear", session_key="s1", profile_key="stamped"):
+    """Close a runner whose operation parked one approved OAuth attempt, the way
+    ``_Runner.close`` does at the end of a tool call bound to ``home``."""
+    import tools.connectors.mcp as mcp
+    from hermes_constants import hermes_home_key
+    from tools.connectors.operation import ConnectionOperation
+
+    attempt = FakeAttempt("https://auth.example/linear")
+    attempt.approve(["read"])
+    operation = ConnectionOperation(targets=[], session_key=session_key)
+    runner = mcp._Runner("authorize", backend=None)
+    runner.operation = operation
+    runner.op_id = None
+    runner.work = {name: mcp._Work(attempt=attempt)}
+    with _as_home(home):
+        if profile_key == "stamped":
+            operation.profile_key = hermes_home_key()  # what live.open stamps
+        else:
+            operation.profile_key = profile_key  # "" on the detached no-card path
+        runner.close()
+    return attempt
+
+
+def _adopt_as(home, agent=None, session_id="s1"):
+    """adopt_late_connections as it runs inside a turn bound to ``home``."""
+    import tools.connectors.mcp as mcp
+
+    registered = []
+    agent = agent or SimpleNamespace(session_id=session_id, enabled_toolsets=[])
+    with _as_home(home), \
+         patch("tools.mcp_tool_discovery.register_mcp_servers",
+               side_effect=lambda servers: registered.extend(servers) or list(servers)):
+        adopted = mcp.adopt_late_connections(agent)
+    return adopted, registered, agent
+
+
+@pytest.fixture(autouse=True)
+def _clear_late_attempts():
+    import tools.connectors.mcp as mcp
+
+    mcp._LATE_ATTEMPTS.clear()
+    yield
+    mcp._LATE_ATTEMPTS.clear()
+
+
+def test_late_attempt_is_never_adopted_by_another_profile(tmp_path):
+    """Two multiplexed profiles can carry the same session key (the api_server's
+    X-Hermes-Session-Key header is client-chosen, and live.py keys _open by
+    (profile, session) for exactly this reason). A parked grant must not leak."""
+    import tools.connectors.mcp as mcp
+
+    home_a = _profile_home(tmp_path, "home-a")
+    home_b = _profile_home(tmp_path, "home-b")
+    _park_attempt(home_a)
+
+    adopted, registered, agent = _adopt_as(home_b)
+    assert adopted == [] and registered == []
+    assert mcp._LATE_ATTEMPTS  # still parked for its owner
+
+    adopted, registered, agent = _adopt_as(home_a)
+    assert adopted == ["linear"] and registered == ["linear"]
+    assert agent.enabled_toolsets == ["linear"]
+    assert mcp._LATE_ATTEMPTS == {}
+
+
+def test_late_attempt_keyed_by_detached_path_uses_calling_profile(tmp_path):
+    """The no-card DetachedOperation never passes through live.open, so profile_key is empty;
+    the park must still record the home the tool thread was scoped to."""
+    import tools.connectors.mcp as mcp
+
+    home_a = _profile_home(tmp_path, "home-a")
+    home_b = _profile_home(tmp_path, "home-b")
+    _park_attempt(home_a, profile_key="")
+
+    from hermes_constants import hermes_home_key
+    with _as_home(home_a):
+        assert list(mcp._LATE_ATTEMPTS) == [(hermes_home_key(), "s1")]
+    adopted, registered, _ = _adopt_as(home_b)
+    assert adopted == []
+    adopted, registered, _ = _adopt_as(home_a)
+    assert adopted == ["linear"]
+
+
+def test_e2e_carded_oauth_park_and_adopt_stay_inside_their_profile(tmp_path):
+    """The production path end to end: an authorize card bound to home A deadline-settles
+    while its OAuth attempt is still pending, so _Runner.close parks the attempt under the
+    profile key live.open stamped. The browser-side approval that lands afterwards may only
+    be adopted by a turn bound to the same home — never by the other multiplexed profile,
+    even one that configures the same-named server."""
+    import tools.connectors.mcp as mcp
+
+    home_a = _profile_home(tmp_path, "home-a")
+    home_b = _profile_home(tmp_path, "home-b")
+
+    backend = FakeBackend()
+    with _as_home(home_a):
+        with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+            out = _mcp({"action": "authorize", "connectors": [_linear()]},
+                       _answering(None), mcp_backend=backend)
+    assert out["settled_by"] == SettleReason.deadline.value
+    backend.attempts["linear"].approve(["read"])  # the browser flow lands after the card closed
+
+    registered = []
+    with patch("tools.mcp_tool_discovery.register_mcp_servers",
+               side_effect=lambda servers: registered.extend(servers) or list(servers)):
+        agent_b = SimpleNamespace(session_id="s1", enabled_toolsets=[])
+        with _as_home(home_b):
+            assert mcp.adopt_late_connections(agent_b) == []
+        assert registered == [] and agent_b.enabled_toolsets == []
+        assert mcp._LATE_ATTEMPTS  # still parked for its owner
+
+        agent_a = SimpleNamespace(session_id="s1", enabled_toolsets=[])
+        with _as_home(home_a):
+            assert mcp.adopt_late_connections(agent_a) == ["linear"]
+        assert registered == ["linear"] and agent_a.enabled_toolsets == ["linear"]
+        assert mcp._LATE_ATTEMPTS == {}

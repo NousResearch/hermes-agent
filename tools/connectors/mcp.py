@@ -7,8 +7,9 @@ import logging
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any, Callable, Dict, List, Optional
+from typing import Any, Callable, Dict, List, Optional, Tuple
 
+from hermes_constants import hermes_home_key
 from tools.connectors.contract import Actor, SettleReason, TargetState
 from tools.connectors.gateway.config import operation_session_key
 from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
@@ -314,12 +315,22 @@ class _Runner:
 
                 cancel_attempt(work.attempt.flow)
             else:
-                _LATE_ATTEMPTS.setdefault(operation.session_key, {})[name] = work.attempt
+                _LATE_ATTEMPTS.setdefault(_late_key(operation), {})[name] = work.attempt
         self.work.clear()
 
 
-# session key -> {server: attempt} for OAuth attempts that outlived their card.
-_LATE_ATTEMPTS: Dict[str, Dict[str, Any]] = {}
+def _late_key(operation: ConnectionOperation) -> Tuple[str, str]:
+    """The ``(profile, session)`` pairing ``live.open`` keys an operation by. ``profile_key``
+    is stamped there; the detached no-card path never opens, so fall back to the calling
+    thread's home — ``close`` runs on the tool thread under the turn's profile scope."""
+    return (operation.profile_key or hermes_home_key(), operation.session_key)
+
+
+# (profile key, session key) -> {server: attempt} for OAuth attempts that outlived their card.
+# The profile is part of the key for the same reason live.py keys _open by it: two multiplexed
+# profiles can carry the same session key, and an attempt must only ever be adopted by the
+# profile whose card authorized it.
+_LATE_ATTEMPTS: Dict[Tuple[str, str], Dict[str, Any]] = {}
 
 
 def adopt_late_connections(agent: Any) -> List[str]:
@@ -327,7 +338,8 @@ def adopt_late_connections(agent: Any) -> List[str]:
     them to the agent's toolset selection. Runs between turns, so the result that said "not
     connected" is followed by a turn in which the tools are there."""
     session_key = operation_session_key(getattr(agent, "session_id", None))
-    attempts = _LATE_ATTEMPTS.get(session_key)
+    key = (hermes_home_key(), session_key)
+    attempts = _LATE_ATTEMPTS.get(key)
     if not attempts:
         return []
     adopted: List[str] = []
@@ -349,7 +361,7 @@ def adopt_late_connections(agent: Any) -> List[str]:
         except Exception:
             logger.debug("late MCP connection %s was not adopted", name, exc_info=True)
     if not attempts:
-        _LATE_ATTEMPTS.pop(session_key, None)
+        _LATE_ATTEMPTS.pop(key, None)
     enabled = getattr(agent, "enabled_toolsets", None)
     if adopted and enabled is not None and "no_mcp" not in enabled:
         agent.enabled_toolsets = [*enabled, *(n for n in adopted if n not in enabled)]

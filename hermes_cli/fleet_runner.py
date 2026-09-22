@@ -127,9 +127,8 @@ class FleetRunner:
 
     def _execute_task(self, task: Any, profile: str):
         body = task.get("body") if isinstance(task, dict) else task.body
-        return self._executor([self.hermes_executable, "-p", profile, "-q", body])
+        return self._executor([self.hermes_executable, "-p", profile, "-z", body])
 
     @staticmethod
     def _execute(argv: list[str]):
         return subprocess.run(argv, check=False, capture_output=True, text=True)
-

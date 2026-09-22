@@ -92,7 +92,7 @@ def test_runner_uses_windows_executable_as_an_argument_vector_and_reports_comple
         r"C:\Users\idrat\AppData\Local\hermes\bin\hermes.exe",
         "-p",
         "coding-expert",
-        "-q",
+        "-z",
         "Run the build",
     ]]
     assert coordinator.completed[0][0:2] == ("global-task-1", "claim-1")

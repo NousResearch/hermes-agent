@@ -40,10 +40,10 @@ def test_kanban_task_becomes_a_wire_task_without_local_credentials():
     )
 
 
-def test_federated_create_clears_local_assignee_and_uses_ready_state():
+def test_federated_create_clears_local_assignee_and_uses_ready_admission():
     options = federated_create_options(SimpleNamespace(assignee=None, initial_status="running"))
 
-    assert options == {"assignee": None, "initial_status": "ready", "created_by": "fleet"}
+    assert options == {"assignee": None, "initial_status": "running", "created_by": "fleet"}
 
 
 def test_federated_create_rejects_a_profile_assignee():

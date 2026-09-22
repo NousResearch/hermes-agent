@@ -172,7 +172,7 @@ class _FleetHandler(BaseHTTPRequestHandler):
             return
         if path.startswith("/v1/fleet/runners/") and path.endswith("/heartbeat"):
             parts = path.split("/")
-            if len(parts) != 6:
+            if len(parts) != 7:
                 raise ValueError("invalid heartbeat path")
             body = self._json_body()
             updated = self.fleet.store.heartbeat_runner(

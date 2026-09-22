@@ -24,8 +24,10 @@ def federated_enabled(config: Mapping[str, object] | None) -> bool:
     """Return the explicit opt-in for the cross-machine Kanban lane."""
     if not isinstance(config, Mapping):
         return False
-    kanban = config.get("kanban")
-    federated = kanban.get("federated") if isinstance(kanban, Mapping) else None
+    # Callers may provide the full config or the already-selected ``kanban``
+    # section (the CLI uses the latter).
+    section = config.get("kanban") if isinstance(config.get("kanban"), Mapping) else config
+    federated = section.get("federated") if isinstance(section, Mapping) else None
     return bool(isinstance(federated, Mapping) and federated.get("enabled") is True)
 
 
@@ -53,7 +55,9 @@ def federated_create_options(args) -> dict[str, object]:
     """Return the local-row overrides for an unassigned federated card."""
     if getattr(args, "assignee", None):
         raise ValueError("federated Kanban tasks must not specify --assignee")
-    return {"assignee": None, "initial_status": "ready", "created_by": "fleet"}
+    # ``create_task`` accepts ``running`` as the non-blocked admission input
+    # and resolves it to the durable ``ready`` state after parent checks.
+    return {"assignee": None, "initial_status": "running", "created_by": "fleet"}
 
 
 def submit_federated_task(task, config: Mapping[str, object] | None = None):
@@ -61,8 +65,12 @@ def submit_federated_task(task, config: Mapping[str, object] | None = None):
     from hermes_cli.fleet_client import FleetClient
 
     config = _kanban_config() if config is None else config
-    kanban = config.get("kanban") if isinstance(config, Mapping) else None
-    federated = kanban.get("federated") if isinstance(kanban, Mapping) else None
+    section = (
+        config.get("kanban")
+        if isinstance(config, Mapping) and isinstance(config.get("kanban"), Mapping)
+        else config
+    )
+    federated = section.get("federated") if isinstance(section, Mapping) else None
     if not isinstance(federated, Mapping):
         raise RuntimeError("kanban.federated is not configured")
     url = str(federated.get("coordinator_url") or "").strip()

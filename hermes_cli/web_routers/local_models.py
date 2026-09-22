@@ -574,11 +574,16 @@ def _catalog_row(entry, budget, recommended, recommended_reason, staged_ids) -> 
     variant = choice.variant
     decision = entry.launch_plan(variant, budget).decision
     download_total = entry.download_bytes(variant)
+    ttft_s, turn_s = catalog.predicted_reference_turn_s(
+        entry, variant, budget, spilled=not choice.zero_spill)
     row.update({
         "fits": True, "model_id": variant.model_id, "quant": variant.quant,
         "quant_validated": variant.validated, "size_bytes": download_total,
         "size_label": _human_gb(download_total), "variant_count": len(entry.variants),
         "quant_reason": _QUANT_REASONS.get(choice.reason_key, _QUANT_REASON_COMPACT).format(quant=variant.quant),
+        "reference_prompt_tokens": catalog.REFERENCE_PROMPT_TOKENS,
+        "reference_output_tokens": catalog.REFERENCE_OUTPUT_TOKENS,
+        "estimated_ttft_seconds": round(ttft_s), "estimated_turn_seconds": round(turn_s),
     })
     if isinstance(decision, estimator.PhysicsRefusal):
         row["fit_summary"] = row["quant_reason"]

@@ -1406,6 +1406,10 @@ export interface LocalCatalogModel {
   quant_reason?: string
   quant_validated?: boolean
   variant_count?: number
+  reference_prompt_tokens?: number
+  reference_output_tokens?: number
+  estimated_ttft_seconds?: number
+  estimated_turn_seconds?: number
   start_window?: number
   start_window_label?: string
   spilled?: boolean

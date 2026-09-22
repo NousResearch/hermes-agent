@@ -160,6 +160,10 @@ def test_catalog_prices_every_entry_for_this_machine(client):
         if row["fits"]:
             assert row["start_window"] >= 1
             assert row["start_window_label"].endswith("K")
+            assert row["reference_prompt_tokens"] > 0
+            assert row["reference_output_tokens"] > 0
+            assert row["estimated_ttft_seconds"] > 0
+            assert row["estimated_turn_seconds"] >= row["estimated_ttft_seconds"]
         else:
             assert "memory" in row["fit_summary"].lower()
         assert isinstance(row["downloaded"], bool)

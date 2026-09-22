@@ -29,13 +29,44 @@ from pathlib import Path
 from hermes_constants import get_hermes_home
 
 
+def _launch_cwd_is_a_host_signal() -> bool:
+    """True when this process's cwd is a host path the active backend actually consumes.
+
+    ``local``/unset always consumes it. Container backends (docker, singularity, modal, daytona,
+    vercel_sandbox) do too: the host cwd is the bind source of ``/workspace``, and every
+    container-cwd sanitizer (``_resolve_config_cwd``, ``_resolve_command_cwd``) already discards it
+    wherever it cannot apply — so recording it never reaches ``docker run -w`` as a host path.
+
+    Everything else (ssh, managed_modal) runs in an environment the host path cannot describe:
+    the row must stay empty, or the resume path re-records a host dir the sandbox never had (the
+    ``cd <host path>`` → exit 126 class, #50636).
+
+    The ``_is_container_backend`` classification is the SAME predicate the sanitizers use, so this
+    can never drift from them (plugin backends declaring ``is_container`` are covered too).
+    """
+    backend = (os.environ.get("TERMINAL_ENV") or "local").strip().lower()
+    if backend in ("", "local"):
+        return True
+    try:
+        from tools.terminal_tool_config import _is_container_backend
+        return _is_container_backend(backend)
+    except Exception:  # partial install / import failure: keep the conservative pre-existing behavior
+        return False
+
+
 def _launch_cwd_for_session(source: str) -> Optional[str]:
     """cwd to stamp on a new session row (``hermes -c`` / ``--resume``), or None.
 
-    Only local CLI sessions record one: gateway/cron/remote backends (non-"local" ``TERMINAL_ENV``) have no
-    stable host cwd for the agent's tools.
+    CLI-family sessions record the directory the human launched from. That column is the ONLY
+    durable record of which worktree a session belonged to, and every resume path reads it back
+    (``main.py`` chdirs to it; ``_restore_session_cwd`` chdirs AND re-exports ``TERMINAL_CWD``, which
+    is what makes the docker ``/workspace`` bind fall on the same directory it did at launch).
+
+    Only the launch dir of a *human* CLI run qualifies: gateway/cron/ui-transport sources are
+    excluded by ``CLI_FAMILY_SOURCES``, and backends that cannot consume a host cwd by
+    ``_launch_cwd_is_a_host_signal``.
     """
-    if source not in CLI_FAMILY_SOURCES or (os.environ.get("TERMINAL_ENV") or "local").strip().lower() not in ("", "local"):
+    if source not in CLI_FAMILY_SOURCES or not _launch_cwd_is_a_host_signal():
         return None
     try:
         return os.getcwd()

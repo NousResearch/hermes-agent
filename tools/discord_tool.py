@@ -388,6 +388,22 @@ _remove_role = _mutation(
     "Role {role_id} removed from user {user_id}.")
 
 
+def _reaction_path(channel_id: str, message_id: str, emoji: str) -> str:
+    """Discord REST path for this bot's reaction; unicode emoji must be URL encoded."""
+    return "/channels/{}/messages/{}/reactions/{}/@me".format(
+        channel_id, message_id, urllib.parse.quote(emoji, safe=""))
+
+
+def _add_reaction(token: str, channel_id: str, message_id: str, emoji: str, **_kwargs: Any) -> str:
+    _discord_request("PUT", _reaction_path(channel_id, message_id, emoji), token)
+    return json.dumps({"success": True, "message_id": message_id, "emoji": emoji})
+
+
+def _remove_own_reaction(token: str, channel_id: str, message_id: str, emoji: str, **_kwargs: Any) -> str:
+    _discord_request("DELETE", _reaction_path(channel_id, message_id, emoji), token)
+    return json.dumps({"success": True, "message_id": message_id, "emoji": emoji})
+
+
 # ── action dispatch + metadata ───────────────────────────────────────────────
 # Single source of truth: (action, handler, required-param signature, description). Order is
 # the schema/enum order; the signature drives runtime required-param validation.
@@ -400,6 +416,8 @@ _ACTION_MANIFEST = [
     ("member_info", _member_info, "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", _search_members, "(guild_id, query)", "find members by name prefix"),
     ("fetch_messages", _fetch_messages, "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("add_reaction", _add_reaction, "(channel_id, message_id, emoji)", "add this bot's reaction to a message"),
+    ("remove_own_reaction", _remove_own_reaction, "(channel_id, message_id, emoji)", "remove this bot's matching reaction from a message"),
     ("list_pins", _list_pins, "(channel_id)", "pinned messages in a channel"),
     ("pin_message", _pin_message, "(channel_id, message_id)", "pin a message"),
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
@@ -415,7 +433,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "add_reaction", "remove_own_reaction"})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -478,6 +496,7 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "user_id": {"type": "string", "description": "Discord user ID."},
     "role_id": {"type": "string", "description": "Discord role ID."},
     "message_id": {"type": "string", "description": "Discord message ID."},
+    "emoji": {"type": "string", "description": "Unicode emoji reaction."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
     "limit": {
@@ -581,7 +600,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "emoji": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

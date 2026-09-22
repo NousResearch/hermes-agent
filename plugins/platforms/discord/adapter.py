@@ -2911,12 +2911,27 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         """Reactions enabled via ``extra.reactions`` (YAML, per profile) or ``DISCORD_REACTIONS``."""
         return self._extra_or_env_flag("reactions", "DISCORD_REACTIONS", "true", truthy=False)
 
+    @staticmethod
+    def _is_demandas_forum_message(message: Any) -> bool:
+        """Whether *message* belongs to the DevTeam demands forum.
+
+        Messages delivered in a forum post have the post thread as their channel;
+        the forum id therefore lives on ``parent_id`` (or ``parent.id`` in older
+        discord.py objects), rather than on the message channel itself.
+        """
+        channel = getattr(message, "channel", None)
+        parent_id = getattr(channel, "parent_id", None)
+        if parent_id is None:
+            parent_id = getattr(getattr(channel, "parent", None), "id", None)
+        return str(parent_id or "") == "1550141272243707914"
+
     async def on_processing_start(self, event: MessageEvent) -> None:
         """Add an in-progress reaction and record durable handling state."""
         message = event.raw_message
         acked = False
         if self._reactions_enabled() and hasattr(message, "add_reaction"):
-            acked = await self._add_reaction(message, "👀")
+            acked = await self._add_reaction(
+                message, "⌛" if self._is_demandas_forum_message(message) else "👀")
         await asyncio.to_thread(self._record_discord_processing_start, event, emoji_ack=acked)
 
     async def on_processing_complete(self, event: MessageEvent, outcome: ProcessingOutcome) -> None:
@@ -2926,6 +2941,14 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         message = event.raw_message
         if hasattr(message, "add_reaction"):
+            # A normal successful turn does not close a DevTeam demand. Keep its
+            # in-progress marker until the orchestrator has checked GitHub and
+            # explicitly transitions it through the Discord reaction tool.
+            if self._is_demandas_forum_message(message):
+                if outcome == ProcessingOutcome.FAILURE:
+                    await self._remove_reaction(message, "⌛")
+                    await self._add_reaction(message, "❌")
+                return
             await self._remove_reaction(message, "👀")
             if outcome == ProcessingOutcome.SUCCESS:
                 await self._add_reaction(message, "✅")

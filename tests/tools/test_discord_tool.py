@@ -149,6 +149,25 @@ class TestDiscordRequest:
         assert req.get_method() == "GET"
 
 
+class TestReactionActions:
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_reaction_actions_use_the_bot_reaction_endpoint(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")
+        mock_urlopen_fn.return_value = _mock_urlopen({})
+
+        assert json.loads(discord_core(
+            action="add_reaction", channel_id="12", message_id="34", emoji="✅"))["success"] is True
+        add_request = mock_urlopen_fn.call_args[0][0]
+        assert add_request.get_method() == "PUT"
+        assert add_request.full_url.endswith("/channels/12/messages/34/reactions/%E2%9C%85/@me")
+
+        assert json.loads(discord_core(
+            action="remove_own_reaction", channel_id="12", message_id="34", emoji="⌛"))["success"] is True
+        remove_request = mock_urlopen_fn.call_args[0][0]
+        assert remove_request.get_method() == "DELETE"
+        assert remove_request.full_url.endswith("/channels/12/messages/34/reactions/%E2%8C%9B/@me")
+
+
     @patch("tools.discord_tool.urllib.request.urlopen")
     def test_response_body_size_limit(self, mock_urlopen_fn, monkeypatch):
         monkeypatch.setattr("tools.discord_tool._DISCORD_RESPONSE_BODY_MAX_BYTES", 8)

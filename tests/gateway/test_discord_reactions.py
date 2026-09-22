@@ -141,3 +141,35 @@ async def test_reactions_disabled_via_env(adapter, monkeypatch):
     adapter.send.assert_awaited_once()
 
 
+def _demandas_message():
+    return SimpleNamespace(
+        channel=SimpleNamespace(parent_id=1550141272243707914),
+        add_reaction=AsyncMock(),
+        remove_reaction=AsyncMock(),
+    )
+
+
+@pytest.mark.asyncio
+async def test_demandas_forum_keeps_hourglass_after_intermediate_success(adapter):
+    raw_message = _demandas_message()
+    event = _make_event("demand-1", raw_message)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+
+    assert raw_message.add_reaction.await_args_list == [(("⌛",),)]
+    raw_message.remove_reaction.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_demandas_forum_replaces_hourglass_with_failure(adapter):
+    raw_message = _demandas_message()
+    event = _make_event("demand-2", raw_message)
+
+    await adapter.on_processing_start(event)
+    await adapter.on_processing_complete(event, ProcessingOutcome.FAILURE)
+
+    assert raw_message.add_reaction.await_args_list == [(("⌛",),), (("❌",),)]
+    assert raw_message.remove_reaction.await_args_list == [(("⌛", adapter._client.user),)]
+
+

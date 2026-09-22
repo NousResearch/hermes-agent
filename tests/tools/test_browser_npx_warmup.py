@@ -16,7 +16,9 @@ npx PID — on timeout.
 from __future__ import annotations
 
 import os
+import signal
 import subprocess
+import time
 
 import pytest
 from unittest.mock import MagicMock, patch
@@ -345,6 +347,53 @@ class TestLegacyKillProcessTree:
         finally:
             if proc.poll() is None:
                 proc.kill()
+
+    @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
+    def test_real_shared_group_child_descendants_are_killed(self, tmp_path):
+        """A shared-group child's descendants can hold the capture pipe's write
+        end open past proc.kill() (the #68915 communicate() hang), so the
+        non-leader path must kill them individually. The grandchild is in OUR
+        process group: if the implementation regressed to killpg this test
+        process would die before the assertion."""
+        pid_file = tmp_path / "grandchild.pid"
+        proc = subprocess.Popen(
+            ["sh", "-c", f"sleep 60 & echo $! > {pid_file}; wait"],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+        )
+        gcpid = None
+        try:
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                text = pid_file.read_text().strip() if pid_file.exists() else ""
+                if text:
+                    gcpid = int(text)
+                    break
+                time.sleep(0.05)
+            assert gcpid is not None, "grandchild never wrote its pid file"
+            assert os.getpgid(proc.pid) == os.getpgid(0)  # shared group precondition
+
+            _legacy_kill_process_tree(proc)
+            proc.wait(timeout=5)
+
+            deadline = time.monotonic() + 5
+            while time.monotonic() < deadline:
+                try:
+                    os.kill(gcpid, 0)
+                except ProcessLookupError:
+                    break
+                time.sleep(0.05)
+            else:
+                pytest.fail(f"grandchild pid {gcpid} survived the non-leader tree kill")
+        finally:
+            if proc.poll() is None:
+                proc.kill()
+            if gcpid is not None:
+                try:
+                    os.kill(gcpid, signal.SIGKILL)
+                except OSError:
+                    pass
 
     @pytest.mark.skipif(os.name != "posix", reason="POSIX process-group semantics")
     def test_real_group_leader_child_is_tree_killed(self, monkeypatch):

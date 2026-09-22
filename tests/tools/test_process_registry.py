@@ -1164,40 +1164,29 @@ class TestPopenLeakOnSetupFailure:
 
     def test_popen_killed_when_thread_creation_fails(self, registry):
         """If Thread() raises after Popen, proc must be killed — not orphaned."""
-        killed = []
-
         proc = MagicMock()
         proc.pid = 9999
         proc.stdout = iter([])
         proc.stdin = MagicMock()
         proc.poll.return_value = None
-
-        def fake_kill():
-            killed.append(True)
-
-        proc.kill = fake_kill
         proc.wait = MagicMock()
 
         def boom(*args, **kwargs):
             raise RuntimeError("Thread creation failed")
 
-        # proc.pid is a MagicMock-backed fake; os.getpgid(fake_pid) would query
-        # the real OS for an arbitrary PID. On a busy host that PID may exist,
-        # in which case spawn_local's primary cleanup path
-        # (os.killpg(os.getpgid(pid), SIGKILL)) succeeds against an UNRELATED
-        # real process group and proc.kill() is never reached — flaky failure,
-        # and a real risk of SIGKILLing an innocent process group. Force the
-        # ProcessLookupError fallback so the test deterministically exercises
-        # proc.kill() and never issues a real killpg.
+        # The orphan path terminates through _terminate_host_pid, which
+        # revalidates the recorded kernel start time before signalling, so a
+        # MagicMock pid can never reach a real killpg/os.kill.
         with patch("tools.process_registry._find_shell", return_value="/bin/bash"), \
              patch("subprocess.Popen", return_value=proc), \
              patch("threading.Thread", side_effect=boom), \
-             patch("os.getpgid", side_effect=ProcessLookupError), \
+             patch.object(ProcessRegistry, "_terminate_host_pid") as terminate, \
              patch.object(registry, "_write_checkpoint"):
             with pytest.raises(RuntimeError, match="Thread creation failed"):
                 registry.spawn_local("echo hello", cwd="/tmp")
 
-        assert killed, "proc.kill() must be called when post-Popen setup raises"
+        assert terminate.call_count == 1, "post-Popen setup failure must terminate the orphan"
+        assert terminate.call_args[0][0] == 9999
 
 # =========================================================================
 # Spawn rewrite regression (issue #68915)

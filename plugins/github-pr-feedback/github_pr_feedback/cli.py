@@ -1971,6 +1971,34 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
             raise ValueError("audit target is not configured")
         github = _github_client(policy)
         state = github.get_merge_state(args.repository, args.pr_number)
+        if state.is_draft:
+            reason = "pull_request_draft"
+        elif state.state != "OPEN" or state.merged:
+            reason = "pull_request_not_open"
+        else:
+            reason = None
+        if reason is not None:
+            print(
+                json.dumps(
+                    {
+                        "status": "audit_skipped",
+                        "reason": reason,
+                        "repository": args.repository,
+                        "pr_number": args.pr_number,
+                        "head_sha": state.head_sha,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            _complete_current_ci_task(
+                None,
+                result=(
+                    f"Skipped local CI audit: {reason}; audits are limited to open, "
+                    "non-draft pull requests."
+                ),
+            )
+            return 0
         if state.head_sha != str(args.head_sha).casefold():
             raise CIValidationError("canonical PR head changed")
         identity = CIAuditIdentity(
@@ -2171,7 +2199,11 @@ def _ci_audit_comment(receipt: CIAuditReceipt) -> str:
     return body
 
 
-def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
+def _complete_current_ci_task(
+    receipt: CIAuditReceipt | None,
+    *,
+    result: str | None = None,
+) -> None:
     task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
     if not task_id:
         return
@@ -2179,14 +2211,12 @@ def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
     argv = [sys.executable, "-E", "-P", "-m", "hermes_cli.main", "kanban"]
     if board:
         argv.extend(["--board", board])
-    argv.extend(
-        [
-            "complete",
-            task_id,
-            "--result",
-            f"Exact-head local CI receipt {receipt.receipt_id}: {receipt.status}.",
-        ]
-    )
+    task_result = result
+    if task_result is None and receipt is not None:
+        task_result = f"Exact-head local CI receipt {receipt.receipt_id}: {receipt.status}."
+    if not task_result:
+        raise ValueError("a Kanban completion result is required")
+    argv.extend(["complete", task_id, "--result", task_result])
     try:
         completed = subprocess.run(
             argv,
@@ -3084,6 +3114,11 @@ def _load_policy_from_context(ctx: Any) -> PluginPolicy:
         value = ctx.get_config(key, default=_MISSING)
         if value is not _MISSING:
             settings[key] = value
+    # Each scan wrapper pins its board in the child environment. This keeps
+    # repository-specific scans from inheriting the plugin's global default.
+    board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if board:
+        settings["board"] = board
     return load_policy(settings)
 
 

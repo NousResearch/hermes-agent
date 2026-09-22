@@ -15,7 +15,7 @@ import json
 import logging
 import time
 from contextvars import ContextVar
-from contextlib import ExitStack, contextmanager, nullcontext
+from contextlib import ExitStack, contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Dict, Iterator, List, Optional
@@ -120,13 +120,8 @@ def _skills_hub_http_get(url: str, **kwargs: Any) -> httpx.Response:
 def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
                         headers: Optional[Dict[str, str]] = None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
-    cm = (
-        nullcontext(client)
-        if (client := _skills_hub_http_client.get()) is not None
-        else create_ssrf_safe_client(timeout=timeout, follow_redirects=False)
-    )
-    with cm as c:
-        return c.get(url, timeout=timeout, headers=headers)
+    with skills_hub_http_session():
+        return _skills_hub_http_client.get().get(url, timeout=timeout, headers=headers)
 
 
 def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,

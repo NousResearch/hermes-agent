@@ -41,6 +41,7 @@ cached entry's snapshot session_id..." / ``_stale_dead_sid_reuse``).
 """
 
 import threading
+from types import SimpleNamespace
 
 from hermes_state import SessionDB
 
@@ -65,7 +66,7 @@ def _make_runner_with_db(tmp_path):
         def __init__(self, db):
             self._db = db
 
-        def _is_session_ended_in_db(self, session_id):
+        def _is_session_ended_in_db(self, session_id, *, session_key=None):
             if not self._db or not session_id:
                 return False
             row = self._db.get_session(session_id)
@@ -130,6 +131,33 @@ def _guard_would_reuse_after_fix(runner, session_key, session_id, current_mc=Non
 
 
 class TestStaleSelfHealAgentCacheEviction:
+    def test_dead_probe_passes_the_routed_session_key(self):
+        """The cache guard cannot infer an ended cached id's profile after self-heal."""
+        from gateway.run_turn_runner import TurnRunner
+
+        calls = []
+
+        class _Store:
+            def _is_session_ended_in_db(self, session_id, *, session_key=None):
+                calls.append((session_id, session_key))
+                return True
+
+        runner = SimpleNamespace(
+            _agent_cache_lock=threading.Lock(),
+            _agent_cache={"agent:fitness:discord:dm:1": (object(), "sig", 0, "ended")},
+            session_store=_Store(),
+        )
+        ctx = SimpleNamespace(
+            session_key="agent:fitness:discord:dm:1", session_id="replacement"
+        )
+
+        peek_sid, dead = TurnRunner(runner, ctx)._cached_sid_is_dead(
+            runner._agent_cache_lock, runner._agent_cache
+        )
+
+        assert (peek_sid, dead) == ("ended", True)
+        assert calls == [("ended", "agent:fitness:discord:dm:1")]
+
     def test_dead_cached_session_id_is_not_reused(self, tmp_path):
         """The #54878 x #54947 bug: cached agent's session_id was just
         self-healed away from (ended in state.db). Must NOT be reused —
@@ -196,5 +224,4 @@ class TestStaleSelfHealAgentCacheEviction:
 
         assert would_reuse is False
         assert evicted is True
-
 

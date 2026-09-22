@@ -1020,7 +1020,9 @@ class TurnRunner:
         dead = False
         if peek_sid is not None and ctx.session_id is not None and peek_sid != ctx.session_id:
             with suppress(Exception):
-                dead = self._runner.session_store._is_session_ended_in_db(peek_sid)
+                dead = self._runner.session_store._is_session_ended_in_db(
+                    peek_sid, session_key=ctx.session_key
+                )
         return peek_sid, dead
 
     def _current_message_count(self):

@@ -57,7 +57,7 @@ def auto_continue_freshness_window() -> float:
 class SessionLifecycleMixin:
     """SessionStore explicit boundaries and crash-recovery markers."""
 
-    def _is_session_ended_in_db(self, session_id: str) -> bool:
+    def _is_session_ended_in_db(self, session_id: str, *, session_key: Optional[str] = None) -> bool:
         """True iff state.db has this session with a non-null end_reason (same staleness test as
         ``_prune_stale_sessions_locked``; no DB/row or DB error -> False). Lets routing self-heal a
         session ended while the gateway stays alive. Store resolved from the owning profile.
@@ -69,9 +69,11 @@ class SessionLifecycleMixin:
         variant of #52804/FM9). DB errors are non-fatal — never block routing on a failed lookup.
         The store is resolved from the row's owning profile rather than the ambient scope: an unscoped
         background writer keeps its own copy of the same session, and comparing against that copy reports a
-        live session as ended (#66887).
+        live session as ended (#66887). Callers that already know the routing key may pass it explicitly;
+        a stale cached session id is no longer present in the routing index, so inferring its owner from the
+        id would otherwise fall back to the launch profile's store.
         """
-        db = self._db_for_session_id(session_id)
+        db = self._db_for_key(session_key) if session_key is not None else self._db_for_session_id(session_id)
         if not db or not session_id:
             return False
         try:

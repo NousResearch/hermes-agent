@@ -1,6 +1,6 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { ownViewport } from './timeline'
+import { activeTimelineIndex, cacheTimelineGeometry, ownViewport } from './timeline'
 
 /**
  * Several chat surfaces are mounted at once — side by side in a split, and
@@ -38,5 +38,65 @@ describe('ownViewport', () => {
     document.body.innerHTML = '<div data-slot="aui_thread-viewport" id="viewport-lone"></div>'
 
     expect(ownViewport(null)?.id).toBe('viewport-lone')
+  })
+})
+
+describe('timeline geometry cache', () => {
+  it('uses cached turn offsets for each scroll frame', () => {
+    document.body.innerHTML = `
+      <div data-slot="aui_thread-viewport">
+        <div data-slot="aui_turn-pair" data-top="20"><div data-message-id="first"></div></div>
+        <div data-slot="aui_turn-pair" data-top="120"><div data-message-id="second"></div></div>
+      </div>
+    `
+    const viewport = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')!
+
+    const rect = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (
+      this: HTMLElement
+    ) {
+      const top = Number(this.getAttribute('data-top') ?? 0)
+
+      return { width: 0, height: 0, top, left: 0, bottom: top, right: 0, x: 0, y: 0, toJSON: () => ({}) }
+    })
+
+    const geometry = cacheTimelineGeometry(
+      viewport,
+      new Map([
+        ['first', 0],
+        ['second', 1]
+      ])
+    )
+
+    expect(activeTimelineIndex(geometry, 0)).toBe(0)
+    expect(activeTimelineIndex(geometry, 130)).toBe(1)
+    expect(rect).toHaveBeenCalledTimes(3)
+  })
+
+  it('refreshes cached offsets after a layout update', () => {
+    document.body.innerHTML = `
+      <div data-slot="aui_thread-viewport">
+        <div data-slot="aui_turn-pair" data-top="20"><div data-message-id="first"></div></div>
+        <div data-slot="aui_turn-pair" data-top="120"><div data-message-id="second"></div></div>
+      </div>
+    `
+    const viewport = document.querySelector<HTMLElement>('[data-slot="aui_thread-viewport"]')!
+    vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      const top = Number(this.getAttribute('data-top') ?? 0)
+
+      return { width: 0, height: 0, top, left: 0, bottom: top, right: 0, x: 0, y: 0, toJSON: () => ({}) }
+    })
+    const turn = viewport.querySelectorAll<HTMLElement>('[data-slot="aui_turn-pair"]')[1]
+
+    const indexes = new Map([
+      ['first', 0],
+      ['second', 1]
+    ])
+
+    const beforeLayoutChange = cacheTimelineGeometry(viewport, indexes)
+
+    expect(activeTimelineIndex(beforeLayoutChange, 70)).toBe(0)
+    turn.setAttribute('data-top', '50')
+    expect(activeTimelineIndex(beforeLayoutChange, 70)).toBe(0)
+    expect(activeTimelineIndex(cacheTimelineGeometry(viewport, indexes), 70)).toBe(1)
   })
 })

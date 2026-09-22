@@ -25,6 +25,49 @@ import { useTimelineHistory } from './use-timeline-history'
 
 const VIEWPORT = '[data-slot="aui_thread-viewport"]'
 
+type TimelineGeometry = {
+  index: number
+  top: number
+}
+
+/** Read mounted-turn positions only when the DOM or its layout changes. */
+export const cacheTimelineGeometry = (
+  viewport: HTMLElement,
+  indexes: ReadonlyMap<string, number>
+): TimelineGeometry[] => {
+  const viewportRect = viewport.getBoundingClientRect()
+
+  return Array.from(viewport.querySelectorAll<HTMLElement>('[data-message-id]'), node => {
+    const index = indexes.get(node.dataset.messageId!)
+
+    if (index === undefined) {
+      return null
+    }
+
+    const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
+
+    return { index, top: turn.getBoundingClientRect().top - viewportRect.top + viewport.scrollTop }
+  }).filter((geometry): geometry is TimelineGeometry => geometry !== null)
+}
+
+/** Resolve the active item from cached document-relative offsets during scroll. */
+export const activeTimelineIndex = (geometry: readonly TimelineGeometry[], scrollTop: number): number => {
+  let first = -1
+  let active = -1
+
+  for (const entry of geometry) {
+    if (first === -1) {
+      first = entry.index
+    }
+
+    if (entry.top - scrollTop <= 8) {
+      active = entry.index
+    }
+  }
+
+  return active === -1 ? Math.max(0, first) : active
+}
+
 /** A kept-alive neighbor must never receive this rail's navigation. */
 export const ownViewport = (root: HTMLElement | null): HTMLElement | null =>
   (root?.closest('[data-session-anchor]') ?? document).querySelector<HTMLElement>(VIEWPORT)
@@ -247,6 +290,7 @@ const ActiveThreadTimeline: FC = () => {
 
     let frame = 0
     const indexes = new Map(railEntries.map((entry, index) => [entry.id, index]))
+    let geometry = cacheTimelineGeometry(viewport, indexes)
 
     const compute = () => {
       frame = 0
@@ -257,30 +301,7 @@ const ActiveThreadTimeline: FC = () => {
         return
       }
 
-      const top = viewport.getBoundingClientRect().top
-      let first = -1
-      let active = -1
-
-      // Walk only mounted messages, never every archived prompt in the rail.
-      for (const node of viewport.querySelectorAll<HTMLElement>('[data-message-id]')) {
-        const index = indexes.get(node.dataset.messageId!)
-
-        if (index === undefined) {
-          continue
-        }
-
-        if (first === -1) {
-          first = index
-        }
-
-        const turn = node.closest<HTMLElement>('[data-slot="aui_turn-pair"]') ?? node
-
-        if (turn.getBoundingClientRect().top - top <= 8) {
-          active = index
-        }
-      }
-
-      setActiveIndex(active === -1 ? Math.max(0, first) : active)
+      setActiveIndex(activeTimelineIndex(geometry, viewport.scrollTop))
     }
 
     const schedule = () => {
@@ -289,12 +310,21 @@ const ActiveThreadTimeline: FC = () => {
       }
     }
 
-    const observer = new MutationObserver(schedule)
+    const refreshGeometry = () => {
+      geometry = cacheTimelineGeometry(viewport, indexes)
+      schedule()
+    }
+
+    const observer = new MutationObserver(refreshGeometry)
     const content = viewport.querySelector('[data-slot="aui_thread-content"]')
+    const resizeObserver = new ResizeObserver(refreshGeometry)
 
     if (content) {
       observer.observe(content, { childList: true })
+      resizeObserver.observe(content)
     }
+
+    resizeObserver.observe(viewport)
 
     viewport.addEventListener('scroll', schedule, { passive: true })
     viewport.addEventListener('wheel', cancelJump, { passive: true })
@@ -303,6 +333,7 @@ const ActiveThreadTimeline: FC = () => {
     return () => {
       cancelAnimationFrame(frame)
       observer.disconnect()
+      resizeObserver.disconnect()
       viewport.removeEventListener('scroll', schedule)
       viewport.removeEventListener('wheel', cancelJump)
     }

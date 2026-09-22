@@ -1062,7 +1062,7 @@ class GatewaySlashCommandsMixin(
         user_config = self._read_user_config()
         approvals = user_config.get("approvals") if isinstance(user_config, dict) else None
         if isinstance(approvals, dict) and not approvals.get("mcp_reload_confirm", True):
-            return await self._execute_mcp_reload(event)
+            return await self._execute_mcp_reload_serialized(event)
         # Route through slash-confirm. The primitive sends the prompt and stores the resume handler;
         # the button/text response triggers ``_resolve_slash_confirm`` which invokes the handler
         # with the chosen outcome.
@@ -1078,7 +1078,7 @@ class GatewaySlashCommandsMixin(
                 except Exception as exc:
                     logger.warning("Failed to persist mcp_reload_confirm=false: %s", exc)
             # once / always → run the reload
-            result = await self._execute_mcp_reload(event)
+            result = await self._execute_mcp_reload_serialized(event)
             if choice == "always":
                 return f"{result}\n\n" + t("gateway.reload_mcp.always_followup")
             return result

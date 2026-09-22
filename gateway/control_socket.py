@@ -1,5 +1,5 @@
 """Gateway control socket — the gateway-owned local coordination surface: a local-only socket answering
-versioned JSON verbs (``identify``, ``status``). A connectable socket with a well-formed ``identify``
+versioned JSON verbs (``identify``, ``status``, ``reload-mcp``). A connectable socket with a well-formed ``identify``
 answer IS liveness — no PID-reuse heuristics. Never a TCP port: filesystem/pipe ACLs are the auth
 boundary. POSIX: ``$HERMES_HOME/gateway.sock`` (or a temp-dir socket + ``gateway.sock.path`` pointer
 file when the home path exceeds ``sun_path``); Windows: named pipe ``\\\\.\\pipe\\hermes-gateway-<hash>``.
@@ -120,7 +120,7 @@ def build_status_payload() -> dict[str, Any]:
 
 
 class GatewayControlServer:
-    """Gateway-owned control socket server (identify/status, v1): ``start()`` after the PID-file claim,
+    """Gateway-owned control socket server (identify/status/lifecycle, v1): ``start()`` after the PID-file claim,
     ``stop()`` on shutdown. All failures are non-fatal — the gateway never refuses to serve messaging
     because its control socket couldn't bind; consumers fall back to the scan layer."""
 
@@ -378,3 +378,10 @@ def purge_gateway_profile_identity(home: Path, name: str, *,
     ``{"ok": True, "dropped": N, ...}`` answer, or None when no gateway answers / the gateway predates
     the verb."""
     return query_gateway_control(home, "purge-profile-identity", params={"name": name}, timeout=timeout)
+def reload_gateway_mcp(home: Path, *, timeout: float = _DEFAULT_CLIENT_TIMEOUT) -> Optional[dict[str, Any]]:
+    """Ask a running gateway to reload MCP without sending a chat message.
+
+    The reply confirms that the gateway accepted the work. The reload itself runs on the
+    gateway loop, so callers do not have to keep a chat session open while it reconnects.
+    """
+    return query_gateway_control(home, "reload-mcp", timeout=timeout)

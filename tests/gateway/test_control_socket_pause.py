@@ -20,6 +20,7 @@ from gateway.control_socket import (
     GatewayControlServer,
     pause_gateway_for_update,
     query_gateway_control,
+    reload_gateway_mcp,
 )
 
 
@@ -107,3 +108,62 @@ def test_pause_client_none_when_gateway_lacks_verb(tmp_path):
 
 def test_pause_client_none_when_no_socket(tmp_path):
     assert pause_gateway_for_update(tmp_path, timeout=0.5) is None
+
+
+@pytest.mark.skipif(sys.platform == "win32", reason="unix socket transport")
+def test_reload_mcp_client_roundtrip_over_real_socket(tmp_path):
+    async def scenario():
+        server = GatewayControlServer(
+            home=tmp_path, verb_handlers={"reload-mcp": lambda: {"reloading": True, "pid": 9}}
+        )
+        assert await server.start()
+        try:
+            loop = asyncio.get_running_loop()
+            return await loop.run_in_executor(
+                None, lambda: reload_gateway_mcp(tmp_path, timeout=5.0)
+            )
+        finally:
+            await server.stop()
+
+    assert asyncio.run(scenario()) == {"reloading": True, "pid": 9}
+
+
+def test_gateway_reload_handler_schedules_reload_on_gateway_loop(monkeypatch):
+    import gateway.run as gateway_run
+
+    handlers = {}
+
+    class FakeControlServer:
+        def __init__(self, *, verb_handlers):
+            handlers.update(verb_handlers)
+
+        async def start(self):
+            return True
+
+        def cleanup_files(self):
+            pass
+
+    class FakeRunner:
+        config = SimpleNamespace(multiplex_profiles=False)
+
+        def __init__(self):
+            self.calls = 0
+
+        async def _execute_mcp_reload_from_control(self):
+            self.calls += 1
+            return {"default": "done"}
+
+    async def scenario():
+        runner = FakeRunner()
+        monkeypatch.setattr("gateway.control_socket.GatewayControlServer", FakeControlServer)
+        await gateway_run._start_gateway_start_control_socket(runner)
+        reply = await asyncio.to_thread(handlers["reload-mcp"])
+        for _ in range(10):
+            if runner.calls:
+                break
+            await asyncio.sleep(0)
+        return reply, runner.calls
+
+    reply, calls = asyncio.run(scenario())
+    assert reply["reloading"] is True
+    assert calls == 1

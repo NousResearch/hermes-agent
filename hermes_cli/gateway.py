@@ -1,6 +1,6 @@
 """Gateway subcommand for hermes CLI.
 
-Handles: hermes gateway [run|start|stop|restart|status|install|uninstall|setup]
+Handles: hermes gateway [run|start|stop|restart|status|reload-mcp|install|uninstall|setup]
 """
 
 import asyncio
@@ -4551,6 +4551,32 @@ def _cmd_setup(args):
     gateway_setup()
 
 
+def _reload_mcp_control_home() -> Path:
+    """Return the home that owns the live MCP reload control socket.
+
+    A multiplexed gateway is owned by the default root even when the CLI was launched with a named
+    profile selected. Standalone profile gateways still own their individual profile homes.
+    """
+    from hermes_constants import get_default_hermes_root
+    from hermes_cli.gateway_multiplex_mode import default_gateway_multiplexes
+
+    active_home = Path(get_hermes_home())
+    default_root = Path(get_default_hermes_root())
+    return default_root if default_gateway_multiplexes(default_root) else active_home
+
+
+def _cmd_reload_mcp(args):
+    """Ask the running gateway to reload MCP without sending a chat message."""
+    from gateway.control_socket import reload_gateway_mcp
+
+    result = reload_gateway_mcp(_reload_mcp_control_home())
+    if result is None:
+        print_error("no running gateway answered the MCP reload request")
+        sys.exit(1)
+    pid = result.get("pid")
+    print(f"mcp reload started{f' on gateway pid {pid}' if pid else ''}")
+
+
 _WSL_FOREGROUND_HINT = (
     "", "  hermes gateway run                              # direct foreground",
     "  tmux new -s hermes 'hermes gateway run'         # persistent via tmux",
@@ -5059,7 +5085,8 @@ def _cmd_migrate(args):
 _GATEWAY_SUBCOMMANDS = {
     None: _cmd_run, "run": _cmd_run, "setup": _cmd_setup, "install": _cmd_install,
     "uninstall": _cmd_uninstall, "start": _cmd_start, "stop": _cmd_stop, "restart": _cmd_restart,
-    "status": _cmd_status, "list": _cmd_list, "migrate-legacy": _cmd_migrate_legacy, "migrate": _cmd_migrate,
+    "status": _cmd_status, "reload-mcp": _cmd_reload_mcp, "list": _cmd_list,
+    "migrate-legacy": _cmd_migrate_legacy, "migrate": _cmd_migrate,
 }
 
 

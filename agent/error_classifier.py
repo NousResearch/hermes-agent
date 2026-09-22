@@ -478,8 +478,6 @@ _V_ROLE_ALTERNATION = _v(_R.role_alternation, **_ABORT_FALLBACK)
 # other provider can fix that output, so falling back only replays the same broken turn 4-5 times
 # (20-60s per occurrence, #12770). Abort this call; the loop's argument repair handles the retry.
 _V_MALFORMED_TOOL_ARGS = _v(_R.format_error, retryable=False, should_fallback=False)
-# A reasoning-mandatory route answering ``reasoning: {enabled: false}`` (Nous Portal + OpenRouter wording).
-_REASONING_MANDATORY_PATTERN = "reasoning is mandatory"
 
 # Generic markers a provider 400 puts next to the offending parameter name. Bedrock Converse
 # rejects sampling params for reasoning-first models with the contraction ("This model doesn't
@@ -1156,10 +1154,13 @@ def _classify_400(c: _Ctx) -> Verdict:
     ):
         return _V_INVALID_ENCRYPTED
     # Route rejecting a reasoning disable: a reasoning-mandatory route (GLM-5.3 on Nous Portal /
-    # OpenRouter) or a chat-only relay that does not accept ``reasoning_effort: none`` at all
-    # (#114460). Deterministic for the request shape, but the only bad field is the disable — the
-    # loop drops it and retries once. Must precede request-validation, which would abort as format_error.
-    if _REASONING_MANDATORY_PATTERN in msg or is_reasoning_field_rejection(msg):
+    # OpenRouter — the literal "reasoning is mandatory" wording survives as the predicate's
+    # "mandatory" marker next to the field token), a closed reasoning vocabulary
+    # ("reasoning_effort must be [low, high, max]", #118627), or a chat-only relay that does not
+    # accept ``reasoning_effort: none`` at all (#114460). Deterministic for the request shape,
+    # but the only bad field is the disable —
+    # the loop drops it and retries once. Must precede request-validation, which would abort as format_error.
+    if is_reasoning_required_rejection(msg) or is_reasoning_field_rejection(msg):
         return _V_REASONING_MANDATORY
     # 400 blaming a field this route never sent (Codex OAuth injects then rejects
     # prompt_cache_retention ~20% of the time): transient, retry identical request.

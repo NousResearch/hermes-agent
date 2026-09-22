@@ -86,29 +86,26 @@ def blobs_dir() -> Path:
     return get_hermes_home() / ".curator_backups" / "blobs"
 
 
-def ledger_enabled() -> bool:
-    """Config gate ``skills.ledger`` (default True); lazy import keeps this importable without the CLI."""
+def _skills_cfg(key: str, default):
+    """``skills.<key>`` from the read-only merged config (no deepcopy), or *default* when the
+    read fails. Lazy import keeps this module importable without the CLI."""
     try:
         from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
-        return bool(cfg_get(load_config_readonly(), "skills", "ledger", default=True))
+        return cfg_get(load_config_readonly(), "skills", key, default=default)
     except Exception as e:  # pragma: no cover — best-effort config read
-        logger.debug("skill_ledger: config read failed (%s); defaulting on", e)
-        return True
+        logger.debug("skill_ledger: config read failed (%s); skills.%s defaults to %r", e, key, default)
+        return default
+
+
+def ledger_enabled() -> bool:
+    """Config gate ``skills.ledger`` (default True)."""
+    return bool(_skills_cfg("ledger", True))
 
 
 def _max_ledger_bytes() -> int:
     """Config ``skills.ledger_max_bytes`` (default 5 MB, 0 disables): above it the
     next append triggers the maintenance sweep instead of growing the file forever."""
-    try:
-        from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
-        return int(
-            cfg_get(
-                load_config_readonly(), "skills", "ledger_max_bytes", default=5 * 1024 * 1024
-            )
-        )
-    except Exception as e:  # pragma: no cover — best-effort config read
-        logger.debug("skill_ledger: config read failed (%s); defaulting to 5 MB", e)
-        return 5 * 1024 * 1024
+    return int(_skills_cfg("ledger_max_bytes", 5 * 1024 * 1024))
 
 
 def _rel_posix(path: Path | str, root: Path) -> Optional[str]:

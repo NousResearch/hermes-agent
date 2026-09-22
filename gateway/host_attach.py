@@ -1,17 +1,21 @@
 """Is there ONE live host gateway, and does it already serve this profile?
 
-Multiplex-only (Teknium ruling): exactly one ``hermes gateway run`` per host, multiplexing every
-profile. The lifecycle verbs therefore answer a different question than they used to — not "does
-THIS home hold a ``gateway.pid``?" but "is the host process live, and is this profile in its served
-set?" — and when it is not, they ask that process to serve the profile instead of starting a second
-one. Four outcomes, in order:
+Multiplex-only (Teknium ruling): exactly one MULTIPLEXING ``hermes gateway run`` per host, serving
+every profile; standalone per-profile gateways coexist until that migration is forced (#109417).
+The lifecycle verbs therefore answer a different question than they used to — not "does THIS home
+hold a ``gateway.pid``?" but "is the host process live, and is this profile in its served set?" —
+and when it is not, they ask that process to serve the profile instead of starting a second one.
+Five outcomes, in order:
 
 * ``ATTACH``       — a live host gateway already serves this profile. Nothing to start; exit 0.
 * ``RESCAN``→ATTACH — it does not serve it yet: ask it to reconcile ``profiles/`` now (control
   socket ``rescan-profiles``) and attach once the answer includes us.
 * ``REPLACE_HOST`` — ``--replace`` names the host process as the target, whichever home launched it.
-* ``REFUSE``       — a live host gateway exists and cannot be made to serve this profile. Never
-  start a second one silently.
+* ``REFUSE``       — a live MULTIPLEXING gateway exists and cannot be made to serve this profile.
+  Never start a second one silently.
+* ``START``        — no live owner, or the owner answers ``multiplex: False``: it is another
+  profile's standalone gateway (the documented one-process-per-profile topology), not a
+  multiplexer that excluded us, so this profile runs its own gateway beside it as it always did.
 
 **The attach channel is the OWNER's control socket, never ours.** Ordering matters: the owner
 publishes its rendezvous record when it claims its PID file and binds its control socket a moment
@@ -76,6 +80,9 @@ class HostGateway:
     #: False when the owner has not answered ``identify`` yet: an owner exists, but which profiles
     #: it serves is UNKNOWN. Never conflate that with "serves nothing" — see the module doc.
     served_known: bool = True
+    #: True once the owner has said ``multiplex: False``: a per-profile gateway that cannot be asked
+    #: to serve anyone else — see ``START`` in the module doc.
+    standalone: bool = False
 
     def serves(self, profile: str) -> bool:
         if not self.served_known:
@@ -201,7 +208,9 @@ def host_gateway_serving(profile: str, *, wait_for_channel: float = 0.0) -> Opti
 def request_serve_profile(profile: str, *, timeout: float = 8.0,
                           owner: Optional[HostGateway] = None) -> Optional[HostGateway]:
     """Ask the live host gateway to reconcile ``profiles/`` now; return it once it serves
-    ``profile``. ``None`` when nobody answered or the answer still excludes the profile."""
+    ``profile``. ``None`` when nobody answered or a multiplexer's roster still excludes the profile.
+    An owner that answers ``multiplex: False`` comes back flagged ``standalone``: it cannot take the
+    profile, and it is not a multiplexer that refused — the caller runs beside it, as before."""
     gateway = owner if owner is not None else host_gateway(wait_for_channel=ATTACH_CHANNEL_WAIT_S)
     if gateway is None or gateway.serves(profile):
         return gateway
@@ -212,13 +221,14 @@ def request_serve_profile(profile: str, *, timeout: float = 8.0,
     except Exception:
         logger.debug("host gateway rescan failed", exc_info=True)
         return None
-    if not isinstance(answer, dict) or answer.get("multiplex") is False:
+    if not isinstance(answer, dict):
         return None
     served = answer.get("served_profiles")
     rescanned = HostGateway(
         gateway.pid, gateway.home,
-        tuple(str(p) for p in served) if isinstance(served, list) else ())
-    return rescanned if rescanned.serves(profile) else None
+        tuple(str(p) for p in served) if isinstance(served, list) else (),
+        standalone=answer.get("multiplex") is False)
+    return rescanned if rescanned.standalone or rescanned.serves(profile) else None
 
 
 @dataclass(frozen=True)
@@ -263,7 +273,7 @@ def _refuse_message(gateway: HostGateway, profile: str) -> str:
 
 
 def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
-    """Attach, rescan-then-attach, replace or refuse — never a second gateway.
+    """Attach, rescan-then-attach, replace or refuse — never a second gateway beside a multiplexer.
 
     Never raises: a broken probe degrades to ``START``, i.e. exactly the pre-rendezvous behaviour.
     """
@@ -297,6 +307,16 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         attached = None
     if attached is not None and attached.serves(profile):
         return HostAttachDecision(ATTACH, attach_message(attached, profile), attached, transient=True)
+    if attached is not None and attached.standalone:
+        # One-process-per-profile fleet: the owner is another profile's standalone gateway. Refusing
+        # here exits 78, which every supervisor treats as permanent — on a launchd fleet that parked
+        # every unit but the first to claim the host lock. Start beside it; the host-lock claim logs
+        # the topology and the `gateway migrate --multiplex` path stays the way to converge.
+        logger.warning(
+            "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it. "
+            "Fold every profile onto one gateway with: hermes gateway migrate --multiplex",
+            attached.describe(), profile)
+        return HostAttachDecision(START, "")
     if not gateway.served_known:
         # The owner never answered, so we know only that it exists. ATTACH here (on the record's
         # word) parked a supervised unit against a served set nobody had committed to yet.

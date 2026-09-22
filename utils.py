@@ -225,6 +225,41 @@ def fsync_directory(path: Union[str, Path]) -> None:
         os.close(fd)
 
 
+def rmtree_readonly(path: Union[str, Path], *, ignore_errors: bool = False) -> None:
+    """``shutil.rmtree`` that can also delete read-only trees.
+
+    ``shutil.rmtree`` stops at the first entry it cannot unlink.  Git marks
+    loose object files read-only on Windows (``WinError 5``), and package
+    installs (Nix store, deb/rpm) are copied ``r--r--r--`` into ``0555``
+    directories on POSIX, where unlinking needs a writable *parent*.  Clear the
+    write bit on the failing path and on its parent, then retry the exact
+    operation that failed.  Only ``PermissionError`` is retried: every other
+    failure keeps ``shutil.rmtree``'s semantics (and ``ignore_errors``).
+    """
+
+    def _on_error(func, fpath, exc_info):
+        # ``onerror`` (3.11) passes ``exc_info``, ``onexc`` (3.12+) the exception.
+        exc = exc_info[1] if isinstance(exc_info, tuple) else exc_info
+        if not isinstance(exc, PermissionError):
+            raise exc
+        for candidate in (os.path.dirname(fpath), fpath):
+            if candidate:
+                with suppress(OSError):
+                    os.chmod(candidate, os.stat(candidate).st_mode | stat.S_IWUSR | stat.S_IXUSR)
+        func(fpath)
+
+    try:
+        try:
+            shutil.rmtree(path, onexc=_on_error)
+        except TypeError:  # ``onexc`` is 3.12+; 3.11 only knows ``onerror``
+            shutil.rmtree(path, onerror=_on_error)
+    except OSError:
+        # ``ignore_errors`` still gets the read-only recovery; it only swallows
+        # whatever is left after the retry.
+        if not ignore_errors:
+            raise
+
+
 def _atomic_write(path: Path, write, *, prefix: str, encoding: str = "utf-8", mode: "int | None" = None,
                   preserve_owner: bool = True, binary: bool = False, fsync_dir: bool = False) -> None:
     """Temp file + fsync + :func:`atomic_replace`, then re-apply owner/mode.

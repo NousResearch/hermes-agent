@@ -124,9 +124,7 @@ OAuth needs a browser, but the loopback callback runs on the machine where Herme
 
 ### Profile setup {#profile-setup}
 
-If you use [Hermes profiles](../user-guide/profiles.md), the Portal refresh token is shared across profiles via a shared token store — but the store **refreshes an existing login, it does not create one**. Profiles are independent islands ([#111724](https://github.com/NousResearch/hermes-agent/issues/111724)), so a profile that has never signed in to the Portal has no Nous credentials of its own: at boot it fails closed with `Profile '<name>' is not connected to any AI provider yet` rather than silently adopting another profile's session.
-
-Sign in **once per profile** with `hermes -p <name> portal` (alias for `hermes -p <name> auth add nous --type oauth`). When a shared Portal session already exists on the machine, that command offers to import it — one confirmation, no browser round-trip. After that first import the profile keeps its own state, and the shared store keeps its token current whenever any profile refreshes or re-logs in. `hermes profile create <name> --clone-all` from a signed-in profile also carries the Portal login (only single-use grants such as Anthropic/Codex are stripped from clones).
+If you use [Hermes profiles](../user-guide/profiles.md), the Portal refresh token is automatically shared across all profiles via a shared token store. Sign in once on any profile, and the rest pick it up automatically — no need to repeat the OAuth flow per profile.
 
 ## Using the Portal day-to-day
 

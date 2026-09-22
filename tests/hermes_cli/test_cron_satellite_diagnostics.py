@@ -73,9 +73,12 @@ def test_status_preserves_profile_health_contract(served_root, capsys, monkeypat
         assert "hermes --profile default gateway install" in output
         assert "sudo hermes --profile default gateway install --system" in output
         assert "hermes --profile default gateway run" in output
-        assert "hermes --profile default gateway restart" in output
-        # The per-profile service is offered only as the LEGACY second-process topology.
-        assert "LEGACY (pre-multiplex topology, not recommended)" in output
+        # Multiplex-only: a per-profile service is not offered at all any more, not even as a
+        # "legacy" fallback -- the one host gateway is the only topology, and an old per-profile
+        # install is something to FOLD IN, not something to reinstall.
+        assert "gateway migrate --multiplex" in output
+        assert "LEGACY" not in output
+        assert "hermes gateway install   # starts a SECOND gateway" not in output
     if mode == "external":
         assert "managed scheduler" in output
         assert "STALLED" not in output
@@ -143,9 +146,10 @@ def test_standalone_guidance_matches_profile_membership(served_root, monkeypatch
     cron_status()
     output = capsys.readouterr().out
     assert "hermes --profile default gateway install" in output
-    assert ("hermes --profile default gateway restart" in output) == (home_kind == "named")
-    # A served/named profile is never told to start a SECOND host process except as LEGACY.
-    assert ("LEGACY (pre-multiplex topology, not recommended)" in output) == (home_kind == "named")
+    # A named profile is told the host gateway serves it and how to fold an older per-profile
+    # install in; it is never offered a second host process, legacy or otherwise.
+    assert ("gateway migrate --multiplex" in output) == (home_kind == "named")
+    assert "LEGACY" not in output
 
 
 @pytest.mark.parametrize("detail", ["unreachable " * 30 + "\nsecret second line", ""])

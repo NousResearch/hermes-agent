@@ -1240,6 +1240,9 @@ export const zh = defineLocale({
         '桌面端为预览和图片附件加载本地文件的大小上限（MB）。默认为 16。远程非图片附件使用单独的 256 MB 上限。设置过大会将整个文件读入内存，可能导致应用卡死或崩溃。',
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: '预览 / 图片加载大小上限（MB）',
+      largePasteAttachTitle: '将大段粘贴转为附件',
+      largePasteAttachDesc:
+        '粘贴超过 3,000 字符的文本时，会将其作为 .txt 文件附加，而不是直接插入输入框。关闭后长文本将保留在输入框中——当粘贴的内容本身就是提示词（规格说明、代理任务、日志）时非常有用。',
       showOptions: '显示选项'
     },
     hudModifier: {

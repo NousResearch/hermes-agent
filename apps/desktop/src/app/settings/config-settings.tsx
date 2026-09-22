@@ -22,6 +22,7 @@ import {
 } from '@/store/data-url-read-max'
 import { $disableF12, setDisableF12 } from '@/store/disable-f12'
 import { $keepAwake, setKeepAwake } from '@/store/keep-awake'
+import { $largePasteAttachEnabled, setLargePasteAttachEnabled } from '@/store/large-paste-attach'
 import { notify, notifyError } from '@/store/notifications'
 import { normalizeProfileKey } from '@/store/profile'
 import { repoDiscoveryPolicyFromConfig, repoDiscoveryPolicySignature, scanAndRecordRepos } from '@/store/projects'
@@ -455,6 +456,7 @@ function ConfigSettingsInner({
           where image-attachment behavior already lives, so this sits above the
           schema fields for that section. */}
       {showAttachments ? <AttachmentSizeSetting /> : null}
+      {showAttachments ? <LargePasteAttachSetting /> : null}
       {showEmptyState ? (
         <EmptyState description={c.emptyDesc} title={c.emptyTitle} />
       ) : visibleFields.length === 0 ? null : (
@@ -559,6 +561,27 @@ function AttachmentSizeSetting() {
       }
       description={c.attachmentSizeDesc}
       title={c.attachmentSizeTitle}
+    />
+  )
+}
+
+/**
+ * Device-local on/off for the large-paste-to-attachment conversion. Default on
+ * (the conversion keeps the composer clean); off inserts the paste inline,
+ * subject to the normal composer limits. Same renderer-side split as the
+ * disable-F12 toggle — the main process never reads this.
+ */
+function LargePasteAttachSetting() {
+  const { t } = useI18n()
+  const c = t.settings.config
+  const enabled = useStore($largePasteAttachEnabled)
+
+  return (
+    <ToggleRow
+      checked={enabled}
+      description={c.largePasteAttachDesc}
+      label={c.largePasteAttachTitle}
+      onChange={setLargePasteAttachEnabled}
     />
   )
 }

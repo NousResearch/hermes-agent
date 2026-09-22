@@ -23,6 +23,23 @@ def test_ringbuffer_drops_oldest_over_capacity():
 
 
 
+async def wait_until(predicate, *, timeout=10.0, what="condition"):
+    """Await ``predicate()`` becoming true instead of sleeping a fixed span.
+
+    The drain task runs on an executor thread, so a loaded machine can miss a
+    fixed ``asyncio.sleep(0.05)`` budget and fail a test whose behaviour is
+    correct. Polling the exact fact the assertion checks makes load cost time,
+    not correctness; ``timeout`` is only a hang guard.
+    """
+    deadline = time.monotonic() + timeout
+    while True:
+        if predicate():
+            return
+        if time.monotonic() >= deadline:
+            raise AssertionError(f"timed out after {timeout}s waiting for {what}")
+        await asyncio.sleep(0.005)
+
+
 class FakeBridge:
     """Implements the bridge contract PtySession depends on."""
 
@@ -87,7 +104,8 @@ async def test_attach_replays_buffer_then_streams_live():
     bridge = FakeBridge([b"hello ", b"world", None])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
     await s.start()
-    await asyncio.sleep(0.05)                      # drain consumes "hello world"
+    await wait_until(lambda: s.buffer.snapshot() == b"hello world",
+                     what="the drain task to buffer 'hello world'")
     ws = FakeWS()
     await s.attach(ws)
     replay = b"".join(p for kind, p in ws.sent if kind == "bytes")
@@ -152,7 +170,8 @@ async def test_reattach_can_force_complete_tui_redraw_after_replay():
     bridge = FakeBridge([b"partial differential frame", b""])
     s = PtySession("k", bridge, buffer_cap=1024, read_timeout=0.01)
     await s.start()
-    await asyncio.sleep(0.05)
+    await wait_until(lambda: s.buffer.snapshot() == b"partial differential frame",
+                     what="the drain task to buffer the differential frame")
 
     ws = FakeWS()
     assert await s.attach(ws, force_redraw=True) is True
@@ -269,7 +288,8 @@ async def test_detach_keeps_draining_into_buffer():
     s.detach(ws)
     assert s.attached is False
     assert s.last_detached_at is not None
-    await asyncio.sleep(0.05)                      # "two" drains while detached
+    await wait_until(lambda: s.buffer.snapshot() == b"onetwo",
+                     what="'two' to drain into the buffer while detached")
     ws2 = FakeWS()
     await s.attach(ws2)
     replay = b"".join(p for kind, p in ws2.sent if kind == "bytes")
@@ -285,7 +305,8 @@ async def test_eof_marks_dead_and_closes_socket_4410():
     await s.start()
     ws = FakeWS()
     await s.attach(ws)
-    await asyncio.sleep(0.05)                      # drain hits None (EOF)
+    await wait_until(lambda: ws.close_code is not None,
+                     what="the drain task to observe EOF and close the socket")
     assert s.alive is False
     assert ws.close_code == 4410
     await s.close()
@@ -368,22 +389,36 @@ async def test_concurrent_attach_on_one_token_forks_one_pty():
 
 @pytest.mark.asyncio
 async def test_reaper_loop_invokes_reap(monkeypatch):
+    """The reaper keeps iterating: it calls reap_idle more than once.
+
+    Witness is the iteration COUNT reached, not elapsed wall-clock time —
+    ``reaped_twice`` fires the instant the second call lands, so a loaded
+    runner only makes this test slower, never red. The 10s ``wait_for`` is a
+    hang guard, orders of magnitude above the ~20ms the loop really needs.
+    """
     from hermes_cli.pty_session import run_reaper
     reg = make_registry()
     calls = {"n": 0}
+    reaped_twice = asyncio.Event()
 
     async def fake_reap(now=None):
         calls["n"] += 1
+        if calls["n"] >= 2:
+            reaped_twice.set()
 
     monkeypatch.setattr(reg, "reap_idle", fake_reap)
     task = asyncio.create_task(run_reaper(reg, interval=0.01))
-    await asyncio.sleep(0.05)
-    task.cancel()
     try:
-        await task
-    except asyncio.CancelledError:
-        pass
-    assert calls["n"] >= 2
+        await asyncio.wait_for(reaped_twice.wait(), timeout=10)
+    except asyncio.TimeoutError:
+        pass                                        # fall through to the named assert
+    finally:
+        task.cancel()
+        try:
+            await task
+        except asyncio.CancelledError:
+            pass
+    assert calls["n"] >= 2, f"reaper loop only invoked reap_idle {calls['n']} time(s)"
 
 
 async def _two_idle_sessions_first_close_gated(reg):

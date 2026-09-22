@@ -77,6 +77,7 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     completeAssistantMessage,
     finalizeInterimAssistantMessage,
     flushQueuedDeltas,
+    dropQueuedDeltas,
     nativeSubagentSessionsRef,
     sessionStateByRuntimeIdRef,
     updateSessionState
@@ -87,7 +88,17 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
       return true
     }
 
-    flushQueuedDeltas(sessionId)
+    // Turn-boundary orphan drop (#119543): when no turn is live, anything
+    // still queued belongs to the superseded attempt (straggler bytes the
+    // background-review abort released racing the new turn) — flushing it
+    // would seed a bubble the new turn inherits, painting a stale duplicate
+    // of the previous reply. A still-live previous turn (steer) keeps the
+    // flush: those bytes are real output of the bubble on screen.
+    if (sessionStateByRuntimeIdRef.current.get(sessionId)?.turnLive) {
+      flushQueuedDeltas(sessionId)
+    } else {
+      dropQueuedDeltas(sessionId)
+    }
     pruneFinishedSessionSubagents(sessionId)
     setSessionCompacting(sessionId, false)
     compactedTurnRef.current.delete(sessionId)

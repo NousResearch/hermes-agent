@@ -257,6 +257,21 @@ export function useMessageStream({
     [mutateStream]
   )
 
+  // Turn-boundary orphan drop (#119543): discard queued bytes without
+  // painting them. Used when a new turn starts while no turn is live — the
+  // queue can only hold stragglers of the superseded attempt then.
+  const dropQueuedDeltas = useCallback((sessionId?: string) => {
+    const queue = queuedDeltasRef.current
+
+    if (sessionId) {
+      queue.delete(sessionId)
+
+      return
+    }
+
+    queue.clear()
+  }, [])
+
   const scheduleDeltaFlush = useCallback(() => {
     if (flushHandleRef.current !== null) {
       return
@@ -1000,6 +1015,7 @@ export function useMessageStream({
     completeAssistantMessage,
     failAssistantMessage,
     flushQueuedDeltas,
+    dropQueuedDeltas,
     finalizeInterimAssistantMessage,
     hydrateFromStoredSession,
     queryClient,

@@ -312,9 +312,20 @@ def _kb_completed(task, payload: dict, title: str) -> str:
 
 
 def _kb_timed_out(task, payload: dict, title: str) -> str:
-    with contextlib.suppress(TypeError, ValueError):
-        return f" timed out (max_runtime={int(payload.get('limit_seconds') or 0)}s); will retry"
-    return " timed out (max_runtime=0s); will retry"
+    """Name the recorded terminal cause — the dispatcher's wall-clock cap or the worker's own
+    iteration budget — via the shared classifier instead of printing ``max_runtime``: the payload
+    carries ``limit_seconds`` only on the cap path, so an absent cap is "no cap", never "0s"."""
+    try:
+        from gateway.kanban_watchers_notifier import timed_out_cause
+        cause, used, cap = timed_out_cause(payload)
+        if cause == "iteration_budget":
+            detail = f" ({used}/{cap})" if used and cap else ""
+            return f" stopped: iteration budget exhausted{detail}; will retry"
+        if cause == "limit":
+            return f" timed out ({max(1, round(used / 60))}-minute limit); will retry"
+    except Exception:  # the notify path must never raise on a malformed payload
+        pass
+    return " timed out; will retry"
 
 
 # kind -> (glyph, suffix after "Kanban <id>"); silent kinds (archived/unblocked) are absent → None.

@@ -411,7 +411,7 @@ def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> Li
     """Read the ledger, newest first. Malformed lines are skipped."""
     try:
         lines = ledger_path().read_text(encoding="utf-8").splitlines()
-    except OSError:  # missing or unreadable ledger == empty
+    except (OSError, UnicodeError):  # missing, unreadable or undecodable ledger == empty
         return []
     rows: List[Dict[str, Any]] = []
     for line in lines:

@@ -1,3 +1,4 @@
+# syntax=docker/dockerfile:1
 # Debian 13 still ships SQLite 3.46.1, which contains the upstream WAL-reset
 # corruption bug. Build a pinned shared library for the runtime image instead
 # of relying on a distro backport that trixie does not currently provide.
@@ -282,13 +283,13 @@ RUN cd web && npm run build && \
 
 # ---------- Source code ----------
 # .dockerignore excludes node_modules, so the installs above survive.
-# --link decouples this layer from parents for cache purposes; --chmod bakes
+# --chmod bakes
 # the final read-only permissions at copy time so we skip the separate
 # `chmod -R` pass that previously walked ~30k files across the venv +
 # node_modules + source (21s amd64 / 222s arm64 — #49113).  `a+rX,go-w`
 # gives the non-root hermes user read + traverse but no write; root retains
 # write so the build steps below don't need chmod u+w dances.
-COPY --link --chmod=a+rX,go-w . .
+COPY --chmod=a+rX,go-w . .
 
 # ---------- Permissions ----------
 # Link hermes-agent itself (editable). Deps are already installed in the
@@ -304,6 +305,9 @@ USER root
 RUN mkdir -p /opt/hermes/bin && \
     cp /opt/hermes/docker/hermes-exec-shim.sh /opt/hermes/bin/hermes && \
     chmod 0755 /opt/hermes /opt/hermes/bin/hermes && \
+    chmod -R 0755 /opt/hermes/docker && \
+    find /opt/hermes -type d -not -path "*/.venv*" -not -path "*/node_modules*" -exec chmod 0755 {} + && \
+    find /opt/hermes -type f -not -path "*/.venv*" -not -path "*/node_modules*" -exec chmod a+r {} + && \
     printf 'docker\n' > /opt/hermes/.install_method
 # The ``.install_method`` stamp is baked next to the running code (the install
 # tree), NOT into $HERMES_HOME. $HERMES_HOME (/opt/data) is a shared data

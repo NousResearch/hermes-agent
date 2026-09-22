@@ -15,6 +15,10 @@
  * inside Windows Terminal (covers WSL).
  */
 import bidiFactory from 'bidi-js'
+import stripAnsi from 'strip-ansi'
+
+import { shapeArabicCharacters } from './arabic.js'
+import { isDashboardHosted } from './termio/host.js'
 
 type ClusteredChar = {
   value: string
@@ -26,10 +30,17 @@ type ClusteredChar = {
 let bidiInstance: ReturnType<typeof bidiFactory> | undefined
 let needsSoftwareBidi: boolean | undefined
 
+export function setNeedsBidiForTesting(val: boolean | undefined): void {
+  needsSoftwareBidi = val
+}
+
 function needsBidi(): boolean {
   if (needsSoftwareBidi === undefined) {
     needsSoftwareBidi =
+      process.env['HERMES_ENABLE_BIDI'] === '1' ||
+      isDashboardHosted() ||
       process.platform === 'win32' ||
+      process.platform === 'linux' ||
       typeof process.env['WT_SESSION'] === 'string' || // WSL in Windows Terminal
       process.env['TERM_PROGRAM'] === 'vscode' // VS Code integrated terminal (xterm.js)
   }
@@ -46,43 +57,136 @@ function getBidi() {
 }
 
 /**
+ * Mirror brackets when reversed within an RTL run (odd bidi embedding level).
+ */
+function mirrorBidiBracket(char: string): string {
+  switch (char) {
+    case '(':
+      return ')'
+
+    case ')':
+      return '('
+
+    case '[':
+      return ']'
+
+    case ']':
+      return '['
+
+    case '{':
+      return '}'
+
+    case '}':
+      return '{'
+
+    case '<':
+      return '>'
+
+    case '>':
+      return '<'
+
+    case '«':
+      return '»'
+
+    case '»':
+      return '«'
+
+    default:
+      return char
+  }
+}
+
+/**
+ * Determine the base paragraph direction for a line.
+ * Lines beginning with code syntax, tool names (e.g. `Terminal(...)`), command prompts,
+ * or Latin identifiers get an LTR base direction to protect code syntax and parentheses
+ * from mirroring or scrambling. Conversational text starting with RTL characters gets RTL.
+ */
+export function getParagraphDirection(text: string): 'ltr' | 'rtl' {
+  // Strip ANSI escape sequences
+  const clean = stripAnsi(text).trim()
+
+  for (let i = 0; i < clean.length; i++) {
+    const code = clean.codePointAt(i)
+
+    if (!code) {
+      continue
+    }
+
+    // Skip bullet points, markdown list markers, or leading symbols
+    if (code === 0x2022 || code === 0x2d || code === 0x2a || code === 0x23 || code <= 0x20) {
+      continue
+    }
+
+    // RTL: Arabic, Hebrew, Syriac, Thaana
+    if (
+      (code >= 0x0590 && code <= 0x08ff) ||
+      (code >= 0xfb1d && code <= 0xfdff) ||
+      (code >= 0xfe70 && code <= 0xfeff)
+    ) {
+      return 'rtl'
+    }
+
+    // LTR: Latin, ASCII digits, CJK, Cyrillic, Greek, or code prefixes ('/', '$', '>')
+    if (
+      (code >= 0x0041 && code <= 0x005a) ||
+      (code >= 0x0061 && code <= 0x007a) ||
+      (code >= 0x0030 && code <= 0x0039) ||
+      (code >= 0x00c0 && code <= 0x024f) ||
+      (code >= 0x0400 && code <= 0x04ff) ||
+      (code >= 0x4e00 && code <= 0x9fff) ||
+      code === 0x2f ||
+      code === 0x24 ||
+      code === 0x3e
+    ) {
+      return 'ltr'
+    }
+  }
+
+  return 'ltr'
+}
+
+/**
  * Reorder an array of ClusteredChars from logical order to visual order
- * using the Unicode Bidi Algorithm. Active on terminals that lack native
- * bidi support (Windows Terminal, conhost, WSL).
+ * using the Unicode Bidi Algorithm with Arabic contextual shaping.
+ * Active on terminals that lack native bidi/shaping support (Web Dashboard,
+ * Windows Terminal, conhost, WSL, Linux consoles).
  *
- * Returns the same array on bidi-capable terminals (no-op).
+ * Returns the same array on bidi-capable native terminals (no-op).
  */
 export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
   if (!needsBidi() || characters.length === 0) {
     return characters
   }
 
-  // Build a plain string from the clustered chars to run through bidi
+  // Build a plain string from the clustered chars to check for RTL scripts
   const plainText = characters.map(c => c.value).join('')
 
-  // Check if there are any RTL characters — skip bidi if pure LTR
   if (!hasRTLCharacters(plainText)) {
     return characters
   }
 
+  // 1. Shape Arabic characters in logical order before visual reordering
+  const shaped = shapeArabicCharacters(characters)
+  const shapedText = shaped.map(c => c.value).join('')
+
+  // 2. Compute bidi embedding levels with context-aware paragraph direction
   const bidi = getBidi()
-  const { levels } = bidi.getEmbeddingLevels(plainText, 'auto')
+  const dir = getParagraphDirection(shapedText)
+  const { levels } = bidi.getEmbeddingLevels(shapedText, dir)
 
   // Map bidi levels back to ClusteredChar indices.
   // Each ClusteredChar may be multiple code units in the joined string.
   const charLevels: number[] = []
   let offset = 0
 
-  for (let i = 0; i < characters.length; i++) {
+  for (let i = 0; i < shaped.length; i++) {
     charLevels.push(levels[offset]!)
-    offset += characters[i]!.value.length
+    offset += shaped[i]!.value.length
   }
 
-  // Get reorder segments from bidi-js, but we need to work at the
-  // ClusteredChar level, not the string level. We'll implement the
-  // standard bidi reordering: find the max level, then for each level
-  // from max down to 1, reverse all contiguous runs >= that level.
-  const reordered = [...characters]
+  // 3. Reorder runs by bidi level (from max level down to 1)
+  const reordered = [...shaped]
   const maxLevel = Math.max(...charLevels)
 
   for (let level = maxLevel; level >= 1; level--) {
@@ -90,16 +194,28 @@ export function reorderBidi(characters: ClusteredChar[]): ClusteredChar[] {
 
     while (i < reordered.length) {
       if (charLevels[i]! >= level) {
-        // Find the end of this run
         let j = i + 1
 
         while (j < reordered.length && charLevels[j]! >= level) {
           j++
         }
 
-        // Reverse the run in both arrays
+        // Reverse the run
         reverseRange(reordered, i, j - 1)
         reverseRangeNumbers(charLevels, i, j - 1)
+
+        // If this level is odd (RTL), mirror paired brackets
+        if (level % 2 === 1) {
+          for (let k = i; k < j; k++) {
+            const item = reordered[k]!
+            const mirrored = mirrorBidiBracket(item.value)
+
+            if (mirrored !== item.value) {
+              reordered[k] = { ...item, value: mirrored }
+            }
+          }
+        }
+
         i = j
       } else {
         i++

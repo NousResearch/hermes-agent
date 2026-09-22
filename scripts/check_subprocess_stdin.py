@@ -203,6 +203,11 @@ def find_subprocess_calls(content: str, filepath: str) -> list[dict]:
 
 
 def main() -> int:
+    if hasattr(sys.stdout, "reconfigure"):
+        sys.stdout.reconfigure(encoding="utf-8")
+    if hasattr(sys.stderr, "reconfigure"):
+        sys.stderr.reconfigure(encoding="utf-8")
+
     fix_mode = "--fix" in sys.argv
     repo_root = Path(__file__).resolve().parent.parent
     os.chdir(repo_root)
@@ -220,7 +225,7 @@ def main() -> int:
             continue
 
         for py_file in dirpath.rglob("*.py"):
-            rel = str(py_file.relative_to(repo_root))
+            rel = py_file.relative_to(repo_root).as_posix()
 
             # Skip known-safe files.
             if rel in KNOWN_SAFE:
@@ -250,7 +255,7 @@ def main() -> int:
         seen_roots.add(resolved)
 
         for py_file in resolved.rglob("*.py"):
-            rel = str(py_file)
+            rel = py_file.as_posix()
             if py_file.name in ("conftest.py",) or "/tests/" in rel:
                 continue
 

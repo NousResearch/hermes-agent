@@ -674,6 +674,16 @@ class GatewaySlashCommandsMixin(
             else:
                 self._set_adapter_auto_tts_enabled(adapter, chat_id, enabled=True)
 
+        # Voice text inclusion subcommands
+        if args in {"text on", "text enable", "text true"}:
+            if hasattr(self, "_set_voice_text_mode"):
+                self._set_voice_text_mode(voice_key, True)
+            return "Voice replies will include accompanying text in this chat."
+        if args in {"text off", "text disable", "text false", "audio_only", "audio-only", "clean"}:
+            if hasattr(self, "_set_voice_text_mode"):
+                self._set_voice_text_mode(voice_key, False)
+            return "Voice replies will be audio-only (no accompanying text) in this chat."
+
         if args in _VOICE_MODE_BY_ARG:
             mode, reply_key = _VOICE_MODE_BY_ARG[args]
             _set_mode(mode)
@@ -686,6 +696,9 @@ class GatewaySlashCommandsMixin(
             mode = self._voice_mode.get(voice_key, "off")
             label = t(f"gateway.voice.label_{mode}") if mode in ("off", "voice_only", "all") else mode
             lines = [t("gateway.voice.status_mode", label=label)]
+            if hasattr(self, "_should_send_voice_text"):
+                voice_text_on = self._should_send_voice_text(event)
+                lines.append(f"Voice text duplicate: {'Included' if voice_text_on else 'Audio only (text suppressed)'}")
             guild_id = self._get_guild_id(event)  # append voice channel info if connected
             info = adapter.get_voice_channel_info(guild_id) if guild_id and hasattr(adapter, "get_voice_channel_info") else None
             if info:
@@ -704,7 +717,8 @@ class GatewaySlashCommandsMixin(
         # subcommands (and, on Discord, live voice-channel join/leave). Toggle result shows first.
         supports_voice_channels = adapter is not None and hasattr(adapter, "join_voice_channel")
         channels = t("gateway.voice.help_channels") if supports_voice_channels else ""
-        return t("gateway.voice.help", toggle=toggle_line, channels=channels)
+        help_msg = t("gateway.voice.help", toggle=toggle_line, channels=channels)
+        return help_msg + "\nTip: Use `/voice text off` (or `/voice audio_only`) for audio-only replies."
 
     async def _handle_rollback_command(self, event: MessageEvent) -> str:
         """Handle /rollback command — list or restore filesystem checkpoints."""

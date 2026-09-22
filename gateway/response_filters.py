@@ -1,11 +1,13 @@
 """Gateway response filtering helpers.
 
-These decide whether a completed agent turn should be delivered to the chat,
-not what should be persisted in conversation history.
+These decide whether a completed agent turn should be delivered to the chat
+(and in what display form), not what should be persisted in conversation
+history.
 """
 
 from __future__ import annotations
 
+import re
 import unicodedata
 from typing import Any
 
@@ -121,6 +123,38 @@ def is_machinery_display_kind(display_kind: Any) -> bool:
     authorize silence on a human turn.
     """
     return display_kind in MACHINERY_DISPLAY_KINDS
+
+
+def strip_edge_punctuation(text: str) -> str:
+    """Strip punctuation (Unicode P category) from both ends; inner characters
+    (``reload-mcp``) are kept. Inbound command names tolerate ``/stop!``."""
+    start, end = 0, len(text)
+    while start < end and unicodedata.category(text[start]).startswith("P"):
+        start += 1
+    while end > start and unicodedata.category(text[end - 1]).startswith("P"):
+        end -= 1
+    return text[start:end]
+
+
+_WHITESPACE_RUN_RE = re.compile(r"[ \t]{2,}")
+
+
+def strip_punctuation_for_display(text: str) -> str:
+    """Remove every punctuation character (Unicode P category) for chat display.
+
+    Words, digits, emoji/symbols, and line breaks survive; runs of leftover
+    spaces collapse so ``Hello,  world!`` reads ``Hello world``. History and
+    raw/programmatic surfaces keep the original text — this is display-only.
+    """
+    if not text:
+        return ""
+    lines = [
+        _WHITESPACE_RUN_RE.sub(" ", "".join(
+            ch for ch in line if not unicodedata.category(ch).startswith("P")
+        )).strip()
+        for line in str(text).split("\n")
+    ]
+    return "\n".join(lines).strip()
 
 
 def is_partial_silence_marker(text: Any) -> bool:

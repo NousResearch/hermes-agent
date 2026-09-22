@@ -1,11 +1,14 @@
+import { normalizeClipboardText } from "./arabic-clipboard";
+
 export async function copyTextToClipboard(text: string): Promise<boolean> {
+  const normalizedText = normalizeClipboardText(text);
   const clipboard =
     typeof navigator === "undefined" ? undefined : navigator.clipboard;
   const secureContext =
     typeof window === "undefined" ? true : window.isSecureContext;
   if (secureContext && clipboard?.writeText) {
     try {
-      await clipboard.writeText(text);
+      await clipboard.writeText(normalizedText);
       return true;
     } catch {
       // Fall through to the selection-based copy path below.
@@ -17,7 +20,7 @@ export async function copyTextToClipboard(text: string): Promise<boolean> {
   }
 
   const textarea = document.createElement("textarea");
-  textarea.value = text;
+  textarea.value = normalizedText;
   textarea.setAttribute("readonly", "");
   textarea.style.position = "fixed";
   textarea.style.top = "-1000px";

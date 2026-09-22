@@ -32,6 +32,7 @@ import { useNavigate, useSearchParams } from "react-router";
 
 import { ChatSidebar } from "@/components/ChatSidebar";
 import { ChatSessionList } from "@/components/ChatSessionList";
+import { ChatVoiceControls } from "@/components/ChatVoiceControls";
 import { usePageHeader } from "@/contexts/usePageHeader";
 import { useI18n } from "@/i18n";
 import { api } from "@/lib/api";
@@ -98,6 +99,7 @@ import { PluginSlot } from "@/plugins";
 import { useTheme } from "@/themes";
 import { useProfileScope } from "@/contexts/useProfileScope";
 import { errorMessage } from "@/lib/api-error";
+import { sendVoicePrompt } from "@/lib/chat-voice";
 
 // Per-tab keep-alive identity (`?attach=`): lives in pty-attach-token.ts so a
 // second tab — including a Chrome "Duplicate tab" — gets its own PTY instead of
@@ -531,6 +533,19 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
     termRef.current?.focus();
   };
 
+  const submitSpokenPrompt = useCallback((rawText: string): boolean => {
+    const ws = wsRef.current;
+    const sent = sendVoicePrompt(
+      ws,
+      rawText,
+      (callback) => window.setTimeout(callback, 100),
+      () => wsRef.current === ws,
+    );
+    if (!sent) return false;
+    termRef.current?.focus();
+    return true;
+  }, []);
+
   useEffect(() => {
     // Don't spawn the chat PTY (and the TUI/agent bootstrap it triggers)
     // until the chat tab has been activated. Prevents the persistently
@@ -558,7 +573,7 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
       allowProposedApi: true,
       cursorBlink: true,
       fontFamily:
-        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
+        "'JetBrains Mono', 'Cascadia Mono', 'Fira Code', 'Cairo', 'IBM Plex Sans Arabic', 'Noto Sans Arabic', 'Segoe UI', 'Geeza Pro', 'Tahoma', 'MesloLGS NF', 'Source Code Pro', Menlo, Consolas, 'DejaVu Sans Mono', monospace",
       fontSize: terminalFontSizeForWidth(tierW0),
       lineHeight: terminalLineHeightForWidth(tierW0),
       letterSpacing: 0,
@@ -1906,6 +1921,12 @@ export default function ChatPage({ isActive = true }: { isActive?: boolean }) {
             boxShadow: "0 8px 32px rgba(0, 0, 0, 0.4)",
           }}
         >
+          <ChatVoiceControls
+            channel={channel}
+            connected={ptyState === "open"}
+            foreground={terminalFg}
+            onSubmit={submitSpokenPrompt}
+          />
           <div
             ref={hostRef}
             className="hermes-chat-xterm-host min-h-0 min-w-0 flex-1"

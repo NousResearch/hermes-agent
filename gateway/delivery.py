@@ -13,6 +13,7 @@ from hermes_cli.config import get_hermes_home
 from .config import Platform, GatewayConfig, PlatformConfig
 from .session import SessionSource
 from .dead_targets import DeadTargetRegistry, classify_dead_error
+from .response_filters import strip_punctuation_for_display
 
 logger = logging.getLogger(__name__)
 
@@ -282,6 +283,12 @@ class DeliveryRouter:
             logger.warning("Dropped silence-narration outbound to %s (chat=%s): %r",
                            target.platform.value, target.chat_id, content[:40])
             return {"success": True, "filtered": "silence_narration", "delivered": False}
+
+        # Chat display carries no punctuation (accepted inbound, stripped outbound).
+        # The silence check above runs on the original text so a bare "..." is
+        # still filtered, not delivered as an empty message. Local/file delivery
+        # never passes through here.
+        content = strip_punctuation_for_display(content)
 
         send_metadata = dict(metadata or {})
         home = self.config.get_home_channel(target.platform) if transport.is_relay else None

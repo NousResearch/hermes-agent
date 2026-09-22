@@ -1,8 +1,7 @@
 from pathlib import Path
 from types import SimpleNamespace
 
-from gateway.config import GatewayConfig, load_gateway_config
-from gateway.run import GatewayRunner
+from gateway.config import GatewayConfig
 
 
 def test_stt_echo_transcripts_defaults_on_for_backwards_compatibility():

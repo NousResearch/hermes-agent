@@ -379,7 +379,8 @@ async def test_oversized_non_ascii_output_is_delivered_on_windows_codepage(tmp_p
     # The truncated message reached the adapter unharmed.
     assert len(adapter.calls) == 1
     assert "🎉" in adapter.calls[0]["content"]
-    assert "truncated, full output saved to" in adapter.calls[0]["content"]
+    # Chat display strips punctuation, so the footer's comma/brackets are gone.
+    assert "truncated full output saved to" in adapter.calls[0]["content"]
 
     # The full-output backup was written and round-trips as UTF-8.
     saved = list((tmp_path / "cron" / "output").glob("nightly_*.txt"))

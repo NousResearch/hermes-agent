@@ -263,12 +263,26 @@ def _finalize_voice_delivery(
 
 
 # --- Main tool function ---
-def _apply_call_overrides(tts_config: Dict[str, Any], speed: Optional[float], provider: Optional[str]):
-    """Apply per-call ``speed`` (clamped, on a shallow copy so the cached config isn't mutated) and
-    resolve the provider name."""
+def _apply_call_overrides(
+    tts_config: Dict[str, Any], speed: Optional[float], provider: Optional[str],
+    voice: Optional[str] = None, model: Optional[str] = None,
+):
+    """Apply per-call ``speed``, ``voice``, ``model`` (clamped, on a copy so the cached config isn't mutated)
+    and resolve the provider name."""
+    if speed is not None or voice is not None or model is not None:
+        tts_config = copy.deepcopy(tts_config)
     if speed is not None:
-        tts_config = {**tts_config, "speed": max(0.25, min(4.0, float(speed)))}
-    return tts_config, provider.lower().strip() if provider else _get_provider(tts_config)
+        tts_config["speed"] = max(0.25, min(4.0, float(speed)))
+    resolved_prov = provider.lower().strip() if provider else _get_provider(tts_config)
+    if voice is not None or model is not None:
+        prov_dict = tts_config.setdefault(resolved_prov, {})
+        if voice is not None:
+            prov_dict["voice_id"] = voice
+            prov_dict["voice"] = voice
+        if model is not None:
+            prov_dict["model_id"] = model
+            prov_dict["model"] = model
+    return tts_config, resolved_prov
 
 
 def _session_platform() -> tuple:
@@ -418,7 +432,8 @@ def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
+    instructions: Optional[str] = None, provider: Optional[str] = None,
+    voice: Optional[str] = None, model: Optional[str] = None) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
     Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
@@ -433,7 +448,7 @@ def text_to_speech_tool(
         text = text.strip()
     if not text:
         return tool_error("Text is empty after TTS cleanup", success=False)
-    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider)
+    tts_config, provider = _apply_call_overrides(_load_tts_config(), speed, provider, voice=voice, model=model)
     command_provider_config = _resolve_command_provider_config(provider, tts_config)
     max_len = _resolve_max_text_length(provider, tts_config)
     chunks = _split_text_for_tts(text, max_len)

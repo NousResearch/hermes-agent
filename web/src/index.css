@@ -253,3 +253,39 @@ html[dir="rtl"] {
   direction: rtl;
 }
 
+/* ------------------------------------------------------------------ */
+/* JARVIS HUD, Cyber Grid & Shimmer Utilities                        */
+/* ------------------------------------------------------------------ */
+.hud-scanline-overlay {
+  background: linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0),
+    rgba(255, 255, 255, 0) 50%,
+    rgba(0, 240, 255, 0.02) 50%,
+    rgba(0, 240, 255, 0.02)
+  );
+  background-size: 100% 4px;
+  pointer-events: none;
+}
+
+.hud-grid-pattern {
+  background-image: radial-gradient(rgba(0, 240, 255, 0.1) 1px, transparent 0);
+  background-size: 24px 24px;
+}
+
+@keyframes jarvis-shimmer {
+  0% { background-position: -200% 0; }
+  100% { background-position: 200% 0; }
+}
+
+.jarvis-shimmer {
+  background: linear-gradient(
+    90deg,
+    rgba(0, 240, 255, 0.05) 25%,
+    rgba(0, 240, 255, 0.15) 50%,
+    rgba(0, 240, 255, 0.05) 75%
+  );
+  background-size: 200% 100%;
+  animation: jarvis-shimmer 2s infinite;
+}
+

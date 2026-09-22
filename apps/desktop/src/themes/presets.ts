@@ -387,7 +387,57 @@ export const slateTheme: DesktopTheme = {
   }
 }
 
+/** Stark Industries J.A.R.V.I.S. holographic cyan HUD. */
+export const jarvisTheme: DesktopTheme = {
+  name: 'jarvis',
+  label: 'JARVIS HUD',
+  description: 'Stark Industries arc reactor cyan and holographic blue',
+  ...THEME_PRESET_PALETTES.jarvis,
+  typography: {
+    fontMono: `"JetBrains Mono", ${SYSTEM_MONO}`
+  },
+  terminal: {
+    foreground: '#e0f7fa',
+    black: '#040d1a',
+    red: '#ff3366',
+    green: '#00e676',
+    yellow: '#f59e0b',
+    blue: '#00d2ff',
+    magenta: '#d946ef',
+    cyan: '#00f0ff',
+    white: '#e0f7fa',
+    brightBlack: '#486581',
+    brightRed: '#ff6b8b',
+    brightGreen: '#69f0ae',
+    brightYellow: '#fbbf24',
+    brightBlue: '#38bdf8',
+    brightMagenta: '#e879f9',
+    brightCyan: '#67e8f9',
+    brightWhite: '#ffffff'
+  },
+  darkTerminal: {
+    foreground: '#e0f7fa',
+    black: '#040d1a',
+    red: '#ff3366',
+    green: '#00e676',
+    yellow: '#f59e0b',
+    blue: '#00d2ff',
+    magenta: '#d946ef',
+    cyan: '#00f0ff',
+    white: '#e0f7fa',
+    brightBlack: '#486581',
+    brightRed: '#ff6b8b',
+    brightGreen: '#69f0ae',
+    brightYellow: '#fbbf24',
+    brightBlue: '#38bdf8',
+    brightMagenta: '#e879f9',
+    brightCyan: '#67e8f9',
+    brightWhite: '#ffffff'
+  }
+}
+
 export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
+  jarvis: jarvisTheme,
   nous: nousTheme,
   github: githubTheme,
   catppuccin: catppuccinTheme,
@@ -404,4 +454,4 @@ export const BUILTIN_THEMES: Record<string, DesktopTheme> = {
 export const BUILTIN_THEME_LIST = Object.values(BUILTIN_THEMES)
 
 /** Skin used when nothing is persisted or the persisted name is retired. */
-export const DEFAULT_SKIN_NAME = 'nous'
+export const DEFAULT_SKIN_NAME = 'jarvis'

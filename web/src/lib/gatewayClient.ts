@@ -27,6 +27,7 @@ import { maybeReloadForLoopbackWsAuthFailure } from "@/lib/dashboard-auth-reload
 export type { ConnectionState, GatewayEvent, GatewayEventName };
 
 export class GatewayClient extends JsonRpcGatewayClient {
+  private pendingConnection: Promise<void> | null = null;
   constructor() {
     super({
       closedErrorMessage: "WebSocket closed",
@@ -37,10 +38,16 @@ export class GatewayClient extends JsonRpcGatewayClient {
     });
   }
 
-  async connect(token?: string): Promise<void> {
-    if (this.connectionState === "open" || this.connectionState === "connecting") {
-      return;
-    }
+  connect(token?: string): Promise<void> {
+    if (this.pendingConnection) return this.pendingConnection;
+    if (this.connectionState === "open") return Promise.resolve();
+    this.pendingConnection = this.connectAuthenticated(token).finally(() => {
+      this.pendingConnection = null;
+    });
+    return this.pendingConnection;
+  }
+
+  private async connectAuthenticated(token?: string): Promise<void> {
 
     // Gated mode: legacy ``?token=`` is rejected by ``_ws_auth_ok``; the SPA
     // must fetch a single-use ticket. Explicit ``token`` keeps the test-only

@@ -721,8 +721,10 @@ def _sanitize_gateway_final_response(platform: Any, text: str) -> str:
 
     redacted = _redact_gateway_user_facing_secrets(str(text))
     if _looks_like_gateway_provider_error(redacted):
-        return _gateway_provider_error_reply(redacted)
-    return redacted
+        return strip_punctuation_for_display(_gateway_provider_error_reply(redacted))
+    # Chat display carries no punctuation: accepted inbound, stripped outbound.
+    # Raw/programmatic surfaces returned above; persisted history is untouched.
+    return strip_punctuation_for_display(redacted)
 
 
 def _prepare_gateway_status_message(platform: Any, event_type: str, message: str) -> Optional[str]:
@@ -2177,6 +2179,7 @@ from gateway.session import (
 # DeliveryRouter's private-chat reply-anchor requirement. Compute the routed metadata ONCE so both the text
 # send (via DeliveryRouter) and the media send agree.
 from gateway.delivery import DeliveryRouter
+from gateway.response_filters import strip_punctuation_for_display
 from gateway.turn_lease import SessionTurnLeaseRegistry
 from gateway.session_state import SessionState, legacy_dict_property, legacy_lease_token_property
 from gateway.authz_mixin import GatewayAuthorizationMixin

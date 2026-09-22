@@ -75,6 +75,22 @@ afterEach(() => {
 });
 
 describe("GatewayClient", () => {
+  it("waits for one authenticated connection before concurrent callers can submit", async () => {
+    const gw = new GatewayClient();
+    const first = gw.connect();
+    const second = gw.connect();
+    let ready = false;
+    void second.then(() => { ready = true; });
+    await vi.waitFor(() => expect(FakeWebSocket.instances).toHaveLength(1));
+    expect(ready).toBe(false);
+    const socket = FakeWebSocket.instances[0];
+    socket.readyState = 1;
+    socket.emit("open", {});
+    await Promise.all([first, second]);
+    expect(ready).toBe(true);
+    gw.close();
+  });
+
   it("treats loopback 4401 closes as stale-token reload candidates", async () => {
     reloadMocks.maybeReloadForLoopbackWsAuthFailure.mockReturnValue(true);
     const gw = new GatewayClient();

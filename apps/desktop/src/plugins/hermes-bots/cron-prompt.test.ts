@@ -12,16 +12,30 @@
  */
 
 import { spawnSync } from 'node:child_process'
+import { existsSync } from 'node:fs'
 
 import { describe, expect, it } from 'vitest'
 
 import { isLegacyDelegatedRoutine, normalizedProfileName, routineInputError, routinePrompt } from './cron'
 
+const resolveSh = (): string => {
+  if (process.platform !== 'win32') return 'sh'
+  const candidates = [
+    'C:\\Program Files\\Git\\bin\\sh.exe',
+    'C:\\Program Files\\Git\\usr\\bin\\sh.exe',
+    'C:\\Program Files (x86)\\Git\\bin\\sh.exe'
+  ]
+  for (const c of candidates) {
+    if (existsSync(c)) return c
+  }
+  return 'sh'
+}
+
 /** Run the delegation command under a `hermes` stub that prints its argv, so
  *  the assertion is what the SHELL passed — not what the string looks like. */
 function argvOf(prompt: string): string[] {
   const command = prompt.slice(prompt.indexOf('hermes '), prompt.lastIndexOf('\n\nIf the command'))
-  const result = spawnSync('sh', ['-c', `hermes() { printf '%s\\037' "$@"; }\n${command}`], { encoding: 'utf8' })
+  const result = spawnSync(resolveSh(), ['-c', `hermes() { printf '%s\\037' "$@"; }\n${command}`], { encoding: 'utf8' })
 
   expect(result.status, result.stderr).toBe(0)
 

@@ -106,6 +106,9 @@ vi.mock("@/components/ChatSidebar", () => ({
 vi.mock("@/components/ChatSessionList", () => ({
   ChatSessionList: () => null,
 }));
+vi.mock("@/components/ChatVoiceControls", () => ({
+  ChatVoiceControls: () => null,
+}));
 vi.mock("@/components/Backdrop", () => ({ Backdrop: () => null }));
 vi.mock("@/plugins", () => ({
   PluginSlot: () => null,

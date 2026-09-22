@@ -1199,6 +1199,12 @@ class TurnRunner:
         pending_lock = threading.Lock()
 
         def deliver(message: str) -> None:
+            clean_messaging = bool(
+                getattr(getattr(self._runner, "config", None), "clean_messaging", False)
+                or (ctx.user_config.get("gateway") or {}).get("clean_messaging", False)
+            )
+            if clean_messaging:
+                return
             if self._status_live():
                 self._send_status_text(
                     message,

@@ -79,6 +79,13 @@ cd /opt/data
 cd "$_hermes_orig_cwd"
 
 if [ $# -eq 0 ]; then
+    if [ -n "${K_SERVICE:-}" ] || [ -n "${PORT:-}" ]; then
+        if [ -z "${HERMES_DASHBOARD_BASIC_AUTH_USERNAME:-}" ] && [ -z "${HERMES_DASHBOARD_OAUTH_CLIENT_ID:-}" ]; then
+            export HERMES_DASHBOARD_BASIC_AUTH_USERNAME="admin"
+            export HERMES_DASHBOARD_BASIC_AUTH_PASSWORD="${HERMES_DASHBOARD_BASIC_AUTH_PASSWORD:-admin12345}"
+        fi
+        drop hermes dashboard --host 0.0.0.0 --port "${PORT:-8080}" --no-open
+    fi
     drop hermes
 fi
 

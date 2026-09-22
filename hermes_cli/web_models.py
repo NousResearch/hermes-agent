@@ -230,6 +230,11 @@ class DebugShareRequest(BaseModel):
 
 class TTSSpeakRequest(BaseModel):
     text: str
+    persona: Optional[str] = None
+    provider: Optional[str] = None
+    voice_id: Optional[str] = None
+    model_id: Optional[str] = None
+    language: Optional[str] = None
 
 class VoiceLiveSessionRequest(BaseModel):
     """POST /api/audio/voice-live/session: the renderer's WebRTC SDP offer plus optional prior
@@ -530,4 +535,12 @@ class _PluginProvidersPutBody(BaseModel):
 
 class _PluginVisibilityBody(BaseModel):
     hidden: bool
+
+
+class YouTubePlayRequest(BaseModel):
+    query: Optional[str] = None
+    video_id: Optional[str] = None
+    open_browser: bool = True
+    autoplay: bool = True
+
 

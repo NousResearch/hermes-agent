@@ -9,6 +9,7 @@ from datetime import datetime
 from enum import Enum
 from typing import Any, Dict, List, Optional
 
+from gateway.response_filters import strip_edge_punctuation
 from gateway.session import SessionSource
 
 
@@ -103,6 +104,9 @@ class MessageEvent:
         if not self.is_command():
             return None
         raw = (self.text or "").lstrip().split(maxsplit=1)[0][1:].lower().split("@", 1)[0]
+        # Accept trailing/leading punctuation (``/stop!``, ``/new?``); inner
+        # punctuation (``reload-mcp``) still identifies the command.
+        raw = strip_edge_punctuation(raw)
         # Reject file paths: valid command names never contain /
         return None if "/" in raw else raw
 

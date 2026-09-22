@@ -77,6 +77,61 @@ class GatewayVoiceMixin:
         except OSError as e:
             logger.warning("Failed to save voice modes: %s", e)
 
+    def _voice_text_mode_path(self):
+        base_path = getattr(self, "_VOICE_TEXT_MODE_PATH", None)
+        if base_path is not None:
+            from pathlib import Path
+            return Path(base_path)
+        from hermes_constants import get_hermes_home
+        return get_hermes_home() / "gateway_voice_text_mode.json"
+
+    def _load_voice_text_modes(self) -> Dict[str, bool]:
+        try:
+            path = self._voice_text_mode_path()
+            if not path.is_file():
+                return {}
+            data = json.loads(path.read_text(encoding="utf-8"))
+            if isinstance(data, dict):
+                return {str(k): bool(v) for k, v in data.items()}
+        except Exception as e:
+            logger.debug("Failed to load voice text modes: %s", e)
+        return {}
+
+    def _save_voice_text_modes(self) -> None:
+        try:
+            path = self._voice_text_mode_path()
+            path.parent.mkdir(parents=True, exist_ok=True)
+            modes = getattr(self, "_voice_text_mode", {})
+            path.write_text(json.dumps(modes, indent=2), encoding="utf-8")
+        except Exception as e:
+            logger.warning("Failed to save voice text modes: %s", e)
+
+    def _get_voice_text_mode(self, voice_key: str) -> Optional[bool]:
+        modes = getattr(self, "_voice_text_mode", None)
+        if modes is None:
+            modes = self._voice_text_mode = self._load_voice_text_modes()
+        return modes.get(voice_key)
+
+    def _set_voice_text_mode(self, voice_key: str, include_text: bool) -> None:
+        modes = getattr(self, "_voice_text_mode", None)
+        if modes is None:
+            modes = self._voice_text_mode = self._load_voice_text_modes()
+        modes[voice_key] = include_text
+        self._save_voice_text_modes()
+
+    def _should_send_voice_text(self, event: MessageEvent) -> bool:
+        """Return True if text message should accompany a voice reply for this chat."""
+        key = self._voice_key_for_source(event.source)
+        chat_override = self._get_voice_text_mode(key)
+        if chat_override is not None:
+            return chat_override
+        cfg = getattr(self, "config", None)
+        if cfg is not None and getattr(cfg, "voice_include_text", None) is not None:
+            return bool(cfg.voice_include_text)
+        if cfg is not None and getattr(cfg, "clean_messaging", False):
+            return False
+        return True
+
     @staticmethod
     def _toggle_adapter_auto_tts_set(adapter, chat_id: str, on: bool, *, enable: bool) -> None:
         """Add/discard ``chat_id`` in the adapter's enabled (``enable=True``) or disabled set;
@@ -323,19 +378,21 @@ class GatewayVoiceMixin:
         return not (is_voice_input and not already_sent)
 
     def _should_echo_stt_transcripts(self) -> bool:
+        cfg = getattr(self, "config", None)
+        if cfg is not None and getattr(cfg, "clean_messaging", False) and not getattr(cfg, "_stt_echo_explicit", False):
+            return False
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
-        """Generate TTS audio and send as a voice message before the text reply. The TTS tool
-        may return one combined file or several separately valid ones (combination unavailable /
-        over a platform limit); legacy single-file results keep working."""
+    async def _send_voice_reply(self, event: MessageEvent, text: str) -> bool:
+        """Generate TTS audio and send as a voice message before the text reply. Returns True
+        if the voice reply was successfully generated and dispatched, False on failure."""
         audio_path, actual_paths = None, []
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
             tts_text = _strip_markdown_for_tts(text)
             if not tts_text:
-                return
+                return False
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
             audio_path = build_auto_tts_output_path(event.source.platform)
@@ -346,16 +403,18 @@ class GatewayVoiceMixin:
             except (json.JSONDecodeError, TypeError):
                 logger.warning("Auto voice reply TTS returned invalid JSON: %s",
                                raw[:200] if raw else raw)
-                return
+                return False
             candidates = result.get("file_paths") or [result.get("file_path", audio_path)]
             paths = [str(p) for p in candidates if p and os.path.isfile(p)]
             if not result.get("success") or not paths:
                 logger.warning("Auto voice reply TTS failed: %s", result.get("error"))
-                return
+                return False
             actual_paths = paths
             await self._deliver_voice_reply(event, actual_paths)
+            return True
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
+            return False
         finally:
             for p in ({audio_path, *actual_paths} - {None}):
                 with suppress(OSError):

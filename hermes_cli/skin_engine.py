@@ -61,38 +61,87 @@ _HERMES_BRANDING: Dict[str, str] = _branding(
 
 _BUILTIN_SKINS: Dict[str, Dict[str, Any]] = {
     "default": {
-        "name": "default", "description": "Classic Hermes — gold and kawaii",
-        # Dark-authored; values match the TUI's DARK_THEME so both render the same gold.
+        "name": "default", "description": "Classic JARVIS — arc reactor cyan and stark obsidian HUD",
+        # Dark-authored; holographic cyan, electric blue, and deep space obsidian.
         "colors": {
-            "banner_border": "#CD7F32", "banner_title": "#FFD700", "banner_accent": "#FFBF00",
-            "banner_dim": "#B8860B", "banner_text": "#FFF8DC", "ui_accent": "#FFBF00",
-            "ui_label": "#DAA520", "ui_ok": "#4caf50", "ui_error": "#ef5350", "ui_warn": "#ffa726",
-            "prompt": "#FFF8DC", "input_rule": "#CD7F32", "response_border": "#FFD700",
-            "status_bar_bg": "#1a1a2e", "status_bar_text": "#C0C0C0",
-            "status_bar_strong": "#FFD700", "status_bar_dim": "#8A7A4A",
-            "status_bar_good": "#8FBC8F", "status_bar_warn": "#FFD700", "status_bar_bad": "#FF8C00",
-            "status_bar_critical": "#FF6B6B", "session_label": "#DAA520",
-            "session_border": "#8B8682", "completion_menu_bg": "#1a1a2e",
-            "completion_menu_current_bg": "#333355", "selection_bg": "#3a3a55",
-            "shell_dollar": "#4dabf7", "voice_status_bg": "#1a1a2e"},
-        # Light overlay (merged onto `colors`). Goldenrod ladder: on white the vivid
-        # #FFD700/#FFBF00 read as glare and WCAG-darkened mustard (#867000) as mud; the
-        # statusbar's goldenrod family (#B8860B/#DAA520) keeps the hue, tames saturation.
-        # Hierarchy on white: ink body 8.9:1 > fade 5.2 > label 3.7 > muted 3.3 > title 2.7 >
-        # headers 2.4. Fills (*_bg) flip the dark navy surfaces to light polarity.
+            "banner_border": "#0088CC", "banner_title": "#00F0FF", "banner_accent": "#00D2FF",
+            "banner_dim": "#5A789A", "banner_text": "#E0F7FA", "ui_accent": "#00F0FF",
+            "ui_label": "#38BDF8", "ui_ok": "#00E676", "ui_error": "#FF3366", "ui_warn": "#F59E0B",
+            "prompt": "#00F0FF", "input_rule": "#0088CC", "response_border": "#00D2FF",
+            "status_bar_bg": "#040D1A", "status_bar_text": "#B0E0E6",
+            "status_bar_strong": "#00F0FF", "status_bar_dim": "#5A789A",
+            "status_bar_good": "#00E676", "status_bar_warn": "#F59E0B", "status_bar_bad": "#FF7043",
+            "status_bar_critical": "#FF1744", "session_label": "#38BDF8",
+            "session_border": "#0088CC", "completion_menu_bg": "#040D1A",
+            "completion_menu_current_bg": "#0E3A5F", "selection_bg": "#0E3A5F",
+            "shell_dollar": "#00F0FF", "voice_status_bg": "#040D1A"},
+        # Light overlay for bright terminal backgrounds.
         "light_colors": {
-            "banner_title": "#C8961E", "banner_accent": "#D89B04", "banner_dim": "#B8860B",
-            "banner_text": "#5C4718", "ui_accent": "#D89B04", "ui_label": "#A97E10",
-            "ui_ok": "#2E7D32", "ui_error": "#C62828", "ui_warn": "#D97706", "prompt": "#5C4718",
-            "response_border": "#C8961E", "session_label": "#A97E10", "status_bar_text": "#6F6F6F",
-            "status_bar_strong": "#C8961E", "status_bar_dim": "#9A8A5A",
-            "status_bar_good": "#2E7D32", "status_bar_warn": "#C8961E", "status_bar_bad": "#C2410C",
-            "status_bar_critical": "#B91C1C", "shell_dollar": "#1E6FC0",
-            "completion_menu_bg": "#F5F5F5", "completion_menu_current_bg": "#E0D1BF",
-            "selection_bg": "#D4E4F7", "status_bar_bg": "#F5F5F5", "voice_status_bg": "#F5F5F5"},
+            "banner_title": "#0284C7", "banner_accent": "#0369A1", "banner_dim": "#475569",
+            "banner_text": "#0C4A6E", "ui_accent": "#0284C7", "ui_label": "#0369A1",
+            "ui_ok": "#15803D", "ui_error": "#BE123C", "ui_warn": "#B45309", "prompt": "#0C4A6E",
+            "response_border": "#0284C7", "session_label": "#0369A1", "status_bar_text": "#334155",
+            "status_bar_strong": "#0284C7", "status_bar_dim": "#64748B",
+            "status_bar_good": "#15803D", "status_bar_warn": "#B45309", "status_bar_bad": "#C2410C",
+            "status_bar_critical": "#B91C1C", "shell_dollar": "#0284C7",
+            "completion_menu_bg": "#F0F9FF", "completion_menu_current_bg": "#BAE6FD",
+            "selection_bg": "#E0F2FE", "status_bar_bg": "#F0F9FF", "voice_status_bg": "#F0F9FF"},
         "spinner": {},  # empty = hardcoded defaults in display.py
         "branding": _HERMES_BRANDING,
         "tool_prefix": "┊"},
+    "jarvis": {
+        "name": "jarvis", "description": "J.A.R.V.I.S. HUD — Stark Industries arc reactor cyan and holographic blue",
+        "colors": {
+            "banner_border": "#0088CC", "banner_title": "#00F0FF", "banner_accent": "#00D2FF",
+            "banner_dim": "#5A789A", "banner_text": "#E0F7FA", "ui_accent": "#00F0FF",
+            "ui_label": "#38BDF8", "ui_ok": "#00E676", "ui_error": "#FF3366", "ui_warn": "#F59E0B",
+            "prompt": "#00F0FF", "input_rule": "#0088CC", "response_border": "#00D2FF",
+            "status_bar_bg": "#040D1A", "status_bar_text": "#B0E0E6",
+            "status_bar_strong": "#00F0FF", "status_bar_dim": "#5A789A",
+            "status_bar_good": "#00E676", "status_bar_warn": "#F59E0B", "status_bar_bad": "#FF7043",
+            "status_bar_critical": "#FF1744", "session_label": "#38BDF8",
+            "session_border": "#0088CC", "completion_menu_bg": "#040D1A",
+            "completion_menu_current_bg": "#0E3A5F", "selection_bg": "#0E3A5F",
+            "shell_dollar": "#00F0FF", "voice_status_bg": "#040D1A"},
+        "light_colors": {
+            "banner_title": "#0284C7", "banner_accent": "#0369A1", "banner_dim": "#475569",
+            "banner_text": "#0C4A6E", "ui_accent": "#0284C7", "ui_label": "#0369A1",
+            "ui_ok": "#15803D", "ui_error": "#BE123C", "ui_warn": "#B45309", "prompt": "#0C4A6E",
+            "response_border": "#0284C7", "session_label": "#0369A1", "status_bar_text": "#334155",
+            "status_bar_strong": "#0284C7", "status_bar_dim": "#64748B",
+            "status_bar_good": "#15803D", "status_bar_warn": "#B45309", "status_bar_bad": "#C2410C",
+            "status_bar_critical": "#B91C1C", "shell_dollar": "#0284C7",
+            "completion_menu_bg": "#F0F9FF", "completion_menu_current_bg": "#BAE6FD",
+            "selection_bg": "#E0F2FE", "status_bar_bg": "#F0F9FF", "voice_status_bg": "#F0F9FF"},
+        "spinner": {
+            "waiting_faces": ["(◎)", "(◈)", "(⌬)", "(⎊)", "(⚡)"],
+            "thinking_faces": ["(◎)", "(◈)", "(⌬)", "(⌁)", "(⚡)"],
+            "thinking_verbs": [
+                "calibrating telemetry", "interfacing with mainframe", "computing trajectories",
+                "allocating repulsor power", "analyzing combat parameters", "optimizing arc reactor",
+                "decrypting satellite data", "scanning tactical grid"],
+            "wings": _wings("◎", "◈", "⌬", "⎊")},
+        "branding": _branding("JARVIS", "⎊", "Powering down systems. Goodbye, sir. ⎊", prompt="JARVIS ❯", help_header="⎊ J.A.R.V.I.S. Protocols"),
+        "tool_prefix": "◈",
+        "banner_logo": """[bold #00F0FF]     ██╗ █████╗ ██████╗ ██╗   ██╗██╗███████╗       █████╗  ██████╗ ███████╗███╗   ██╗████████╗[/]
+[bold #00D2FF]     ██║██╔══██╗██╔══██╗██║   ██║██║██╔════╝      ██╔══██╗██╔════╝ ██╔════╝████╗  ██║╚══██╔══╝[/]
+[#00B4D8]     ██║███████║██████╔╝██║   ██║██║███████╗█████╗███████║██║  ███╗█████╗  ██╔██╗ ██║   ██║[/]
+[#0096C7]     ██║██╔══██║██╔══██╗╚██╗ ██╔╝██║╚════██║╚════╝██╔══██║██║   ██║██╔══╝  ██║╚██╗██║   ██║[/]
+[#0077B6]███████║██║  ██║██║  ██║ ╚████╔╝ ██║███████║      ██║  ██║╚██████╔╝███████╗██║ ╚████║   ██║[/]
+[#023E8A]╚══════╝╚═╝  ╚═╝╚═╝  ╚═╝  ╚═══╝  ╚═╝╚══════╝      ╚═╝  ╚═╝ ╚═════╝ ╚══════╝╚═╝  ╚═══╝   ╚═╝[/]""",
+        "banner_hero": """[#0088CC]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⢀⣀⡀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#00D2FF]⠀⠀⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⣿⣿⣦⡀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#00F0FF]⠀⠀⠀⠀⠀⠀⠀⣠⣾⣿⡿⠋⠉⠙⢿⣿⣦⡀⠀⠀⠀⠀⠀⠀[/]
+[#00F0FF]⠀⠀⠀⠀⠀⠀⣰⣿⡿⠋⠀⢀⣤⡀⠀⠙⢿⣿⣆⠀⠀⠀⠀⠀[/]
+[#38BDF8]⠀⠀⠀⠀⠀⢰⣿⡟⠀⠀⣰⣿⡿⢿⣆⠀⠀⢻⣿⡆⠀⠀⠀⠀[/]
+[#00F0FF]⠀⠀⠀⠀⠀⢸⣿⡇⠀⠀⣿⣿⎊⣿⣿⠀⠀⢸⣿⡇⠀⠀⠀⠀[/]
+[#38BDF8]⠀⠀⠀⠀⠀⠘⣿⣧⠀⠀⠹⣿⣶⣿⠏⠀⠀⣼⣿⠃⠀⠀⠀⠀[/]
+[#00D2FF]⠀⠀⠀⠀⠀⠀⠹⣿⣷⣄⠀⠈⠛⠁⠀⣠⣾⣿⠏⠀⠀⠀⠀⠀[/]
+[#0088CC]⠀⠀⠀⠀⠀⠀⠀⠈⠻⣿⣿⣶⣶⣶⣿⣿⠟⠁⠀⠀⠀⠀⠀⠀[/]
+[#0284C7]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠈⠛⠿⠿⠿⠛⠁⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[#38BDF8]⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⎊ ARC ⎊⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀⠀[/]
+[dim #486581]⠀⠀⠀⠀⠀⠀⠀⠀all systems online⠀⠀⠀⠀⠀⠀⠀⠀[/]""",
+    },
     "ares": {
         "name": "ares", "description": "War-god theme — crimson and bronze",
         "colors": {
@@ -496,16 +545,16 @@ def get_active_goodbye(fallback: str = "Goodbye! ☤") -> str:
 # Palette resolution order for prompt_toolkit styles: (name, skin color key, fallback). A
 # fallback starting with "@" names an earlier entry (so a missing key inherits its remapped value).
 _STYLE_PALETTE = (
-    ("prompt", "prompt", ""), ("input_rule", "input_rule", "#CD7F32"),
-    ("title", "banner_title", "#FFD700"), ("text", "banner_text", "#FFF8DC"),
-    ("dim", "banner_dim", "#555555"), ("label", "ui_label", "@title"), ("warn", "ui_warn", "#FF8C00"),
-    ("error", "ui_error", "#FF6B6B"), ("status_bg", "status_bar_bg", "#1a1a2e"),
+    ("prompt", "prompt", ""), ("input_rule", "input_rule", "#0088CC"),
+    ("title", "banner_title", "#00F0FF"), ("text", "banner_text", "#E0F7FA"),
+    ("dim", "banner_dim", "#5A789A"), ("label", "ui_label", "@title"), ("warn", "ui_warn", "#F59E0B"),
+    ("error", "ui_error", "#FF3366"), ("status_bg", "status_bar_bg", "#040D1A"),
     ("status_text", "status_bar_text", "@text"), ("status_strong", "status_bar_strong", "@title"),
-    ("status_dim", "status_bar_dim", "@dim"), ("ok", "ui_ok", "#8FBC8F"),
+    ("status_dim", "status_bar_dim", "@dim"), ("ok", "ui_ok", "#00E676"),
     ("status_good", "status_bar_good", "@ok"), ("status_warn", "status_bar_warn", "@warn"),
     ("accent", "banner_accent", "@warn"), ("status_bad", "status_bar_bad", "@accent"),
     ("status_critical", "status_bar_critical", "@error"), ("voice_bg", "voice_status_bg", "@status_bg"),
-    ("menu_bg", "completion_menu_bg", "#1a1a2e"), ("menu_current_bg", "completion_menu_current_bg", "#333355"),
+    ("menu_bg", "completion_menu_bg", "#040D1A"), ("menu_current_bg", "completion_menu_current_bg", "#0E3A5F"),
     ("menu_meta_bg", "completion_menu_meta_bg", "@menu_bg"),
     ("menu_meta_current_bg", "completion_menu_meta_current_bg", "@menu_current_bg"))
 

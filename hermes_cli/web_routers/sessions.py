@@ -715,7 +715,7 @@ async def rename_session_endpoint(session_id: str, body: SessionRename):
         result["title"] = db.get_session_title(sid) or ""
         return result
 
-    return _with_db(body.profile, _update, read_only=False)
+    return await asyncio.to_thread(_with_db, body.profile, _update, read_only=False)
 
 
 def _compact_json(obj) -> str:

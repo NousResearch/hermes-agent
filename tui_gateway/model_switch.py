@@ -19,7 +19,11 @@ def _snapshot_agent_model_runtime(agent) -> dict:
     """Capture the current agent model runtime for a one-turn restore."""
     return {**{k: getattr(agent, k, "") for k in _RUNTIME_KEYS},
             "reasoning_config": copy.deepcopy(getattr(agent, "reasoning_config", None)),
-            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None))}
+            "primary_runtime": copy.deepcopy(getattr(agent, "_primary_runtime", None)),
+            "request_overrides": copy.deepcopy(getattr(agent, "request_overrides", {}) or {}),
+            "fallback_chain": copy.deepcopy(getattr(agent, "_fallback_chain", []) or []),
+            "fallback_index": getattr(agent, "_fallback_index", 0),
+            "fallback_model": copy.deepcopy(getattr(agent, "_fallback_model", None))}
 
 
 def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
@@ -30,6 +34,12 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
     # runtime restore paths below (primary_runtime may predate a session /reasoning change).
     if "reasoning_config" in snapshot:
         agent.reasoning_config = snapshot["reasoning_config"]
+    if "request_overrides" in snapshot:
+        agent.request_overrides = copy.deepcopy(snapshot["request_overrides"])
+    if "fallback_chain" in snapshot:
+        agent._fallback_chain = copy.deepcopy(snapshot["fallback_chain"])
+        agent._fallback_index = snapshot.get("fallback_index", 0)
+        agent._fallback_model = copy.deepcopy(snapshot.get("fallback_model"))
     primary = snapshot.get("primary_runtime")
     if primary and hasattr(agent, "_restore_primary_runtime"):
         try:

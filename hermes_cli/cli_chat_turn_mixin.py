@@ -67,17 +67,21 @@ class CLIChatTurnMixin:
             return None
 
         turn_route = self._resolve_turn_agent_config(message)
+        self._active_turn_router_active = bool(turn_route.get("router_active"))
         if turn_route["signature"] != self._active_agent_route_signature:
             _retire_agent(self)
         if self.agent is None:
             _cprint(f"{_DIM}Initializing agent...{_RST}")
         if not self._init_agent(model_override=turn_route["model"], runtime_override=turn_route["runtime"],
-                                request_overrides=turn_route.get("request_overrides")):
+                                request_overrides=turn_route.get("request_overrides"),
+                                reasoning_config=turn_route.get("reasoning_config"),
+                                route_signature=turn_route["signature"]):
             return None
         agent = self.agent
         if agent is None:
             return None
-        self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
+        if not turn_route.get("router_active"):
+            self._sync_fallback_chain_with_config(agent)  # chain added after this chat opened reaches this turn
         message = self._chat_route_images(message, images)
 
         if isinstance(message, str) and not isinstance(message, TimelineNotification):

@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import importlib
 from contextlib import contextmanager
 from typing import Optional
 
@@ -12,13 +11,24 @@ router = APIRouter(prefix="/api/memory/providers")
 
 
 def _resolve_flow(provider: str):
-    """Return a provider's OAuth flow module by convention, or raise 404."""
+    """Return a provider's OAuth flow module by convention, or raise 404.
+
+    Resolved by the memory-provider loader, not ``import plugins.memory.<provider>.oauth_flow``:
+    that path finds only BUNDLED providers, so a catalog install under ``$HERMES_HOME/plugins/``
+    404'd with a working flow — and Connect, capability-probed on this route, silently vanished."""
     if not provider.isidentifier():
         raise HTTPException(status_code=404, detail=f"unknown memory provider {provider!r}")
+    from plugins.memory import load_provider_submodule
+
     try:
-        return importlib.import_module(f"plugins.memory.{provider}.oauth_flow")
-    except ImportError:
+        flow = load_provider_submodule(provider, "oauth_flow")
+    except Exception as exc:
+        # Present but unloadable, kept distinct from "no flow shipped": same 404 and the
+        # operator chases a capability the provider really does advertise.
+        raise HTTPException(status_code=500, detail=f"{provider} OAuth flow failed to load: {exc}")
+    if flow is None:
         raise HTTPException(status_code=404, detail=f"{provider} does not support OAuth connect")
+    return flow
 
 
 @contextmanager

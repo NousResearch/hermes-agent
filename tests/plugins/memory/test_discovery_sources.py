@@ -243,3 +243,52 @@ def test_unreadable_user_plugin_does_not_abort_memory_discovery(tmp_path, monkey
     assert "goodmem" in names
     assert "denied" not in names
     assert memory_plugins.find_provider_dir("denied") is None
+
+
+# ---------------------------------------------------------------------------
+# Sibling modules core reads off the provider (cli.py, oauth_flow.py)
+# ---------------------------------------------------------------------------
+
+OAUTH_FLOW_SOURCE = """\
+from .endpoints import TOKEN_URL
+
+
+def start_loopback_flow_background():
+    return {"state": "pending", "detail": TOKEN_URL}
+
+
+def get_flow_status():
+    return {"state": "idle", "detail": "", "connected": False, "auth": None}
+"""
+
+
+def test_oauth_flow_resolves_for_a_provider_installed_outside_core(tmp_path, monkeypatch):
+    """Connect is capability-probed — a 404 from ``/oauth/status`` means "no OAuth" and the
+    panel renders nothing — so resolving the flow as ``plugins.memory.<name>.oauth_flow``,
+    which finds only bundled providers, cost every catalog provider one-click sign-in
+    silently. The relative import is deliberate: it only resolves if the parent shell exists."""
+    provider = _write_provider_dir(tmp_path / "plugins", "flowmem")
+    (provider / "endpoints.py").write_text("TOKEN_URL = 'https://example.test/token'\n", encoding="utf-8")
+    (provider / "oauth_flow.py").write_text(OAUTH_FLOW_SOURCE, encoding="utf-8")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli.memory_oauth import _resolve_flow
+
+    flow = _resolve_flow("flowmem")
+    assert flow.get_flow_status()["state"] == "idle"
+    assert flow.start_loopback_flow_background()["detail"] == "https://example.test/token"
+
+
+def test_provider_without_an_oauth_flow_still_reports_no_capability(tmp_path, monkeypatch):
+    """404 has to keep meaning "no flow shipped" — it is how the panel decides not to offer
+    Connect at all."""
+    from fastapi import HTTPException
+
+    _write_provider_dir(tmp_path / "plugins", "plainmem")
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+
+    from hermes_cli.memory_oauth import _resolve_flow
+
+    with pytest.raises(HTTPException) as excinfo:
+        _resolve_flow("plainmem")
+    assert excinfo.value.status_code == 404

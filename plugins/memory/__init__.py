@@ -466,34 +466,53 @@ def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None
         registered.pop(qualified_name, None)
 
 
+def load_provider_submodule(name: str, submodule: str):
+    """Import ``<provider>/<submodule>.py`` (``cli.py``, ``oauth_flow.py``) by PATH, or None.
+
+    Never by package name: ``plugins.memory.<name>.<submodule>`` only ever resolves a BUNDLED
+    provider, so an ``import_module`` on it reports "no such module" for anything installed
+    under ``$HERMES_HOME/plugins/``. None when the provider or file is absent; imports raise."""
+    plugin_dir = find_provider_dir(name)
+    if plugin_dir is None or not (plugin_dir / f"{submodule}.py").exists():
+        return None
+
+    package = _module_name(plugin_dir, name)
+    module_name = f"{package}.{submodule}"
+    cached = sys.modules.get(module_name)
+    if cached is not None:
+        return cached
+    if not _is_bundled(plugin_dir):
+        # Parent shells so the submodule's relative imports resolve without executing the
+        # plugin's __init__.py (shells have no __file__, so the real module still loads later).
+        _register_synthetic_package(_USER_NAMESPACE, [])
+        _register_synthetic_package(package, [str(plugin_dir)])
+    spec = importlib.util.spec_from_file_location(module_name, str(plugin_dir / f"{submodule}.py"))
+    if not spec or not spec.loader:
+        return None
+    mod = importlib.util.module_from_spec(spec)
+    sys.modules[module_name] = mod
+    try:
+        spec.loader.exec_module(mod)
+    except BaseException:
+        # Callers poll (the Desktop OAuth panel, every 1.5s): a half-executed module left
+        # cached would answer every later call with a stale failure.
+        sys.modules.pop(module_name, None)
+        raise
+    return mod
+
+
 def discover_plugin_cli_commands() -> List[dict]:
     """CLI commands for the **active** memory plugin only. Imports just its ``cli.py``
     (``register_cli(subparser)``), never the provider module, so it is safe during
     argparse setup. At most one dict: name/help/description/setup_fn/handler_fn/plugin."""
     active_provider = _get_active_memory_provider() if _MEMORY_PLUGINS_DIR.is_dir() else None
     plugin_dir = find_provider_dir(active_provider) if active_provider else None
-    if not plugin_dir or not (plugin_dir / "cli.py").exists():
+    if not plugin_dir:
         return []
 
-    module_name = _module_name(plugin_dir, active_provider) + ".cli"
     try:
-        cli_mod = sys.modules.get(module_name)
-        if cli_mod is None:
-            if not _is_bundled(plugin_dir):
-                # cli.py imports as _hermes_user_memory.<name>.cli, usually before the
-                # provider is loaded: register parent packages so its relative imports
-                # resolve without executing the plugin's __init__.py (the shell has no
-                # __file__, so _load_provider_from_dir() still loads the real module).
-                _register_synthetic_package(_USER_NAMESPACE, [])
-                _register_synthetic_package(_module_name(plugin_dir, active_provider), [str(plugin_dir)])
-            spec = importlib.util.spec_from_file_location(module_name, str(plugin_dir / "cli.py"))
-            if not spec or not spec.loader:
-                return []
-            cli_mod = importlib.util.module_from_spec(spec)
-            sys.modules[module_name] = cli_mod
-            spec.loader.exec_module(cli_mod)
-
-        register_cli = getattr(cli_mod, "register_cli", None)
+        cli_mod = load_provider_submodule(active_provider, "cli")
+        register_cli = getattr(cli_mod, "register_cli", None) if cli_mod else None
         if not callable(register_cli):
             return []
         desc = _loader.read_plugin_description(plugin_dir)

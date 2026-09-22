@@ -194,13 +194,16 @@ bounded by the tool's `limit` argument. Pinned messages use the bot's Matrix
 client and report individual fetch or decryption errors. The tool applies the
 same room and sender access rules as Matrix history reads.
 
-To let the agent pin or unpin messages, enable the `matrix_admin` toolset for
-Matrix in `hermes tools`. The `matrix_pin` action changes the current room's
+Enable the `matrix_admin` toolset for Matrix in `hermes tools` to allow room
+administration. This toolset is disabled by default. Its actions use the
+current session's connected client and the same room and sender access rules
+as Matrix reads. The `matrix_pin` action changes the current room's
 `m.room.pinned_events` state. The requesting user must have the room power
 level needed to change pins, so a member cannot use the bot's power to change
 pins that they could not change themselves. The homeserver then checks the
 bot's own permission, and the tool reports its error if the bot cannot send
-that state event. The toolset is disabled by default.
+that state event. The other administration actions are described in
+[Matrix Tools and Controls](#matrix-tools-and-controls).
 
 This guide walks you through the full setup process — from creating your bot account to sending your first message.
 
@@ -461,7 +464,7 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes has three Matrix-specific agent tools, each in a toolset of the same name. `matrix_read` reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
+The `matrix_read` tool, in the `matrix_read` toolset, reads recent messages in the current room, one thread, or one event, and returns at most 50 events. Each call checks that the room is joined and allowed and that the user who sent the current message passes the Matrix user policy. Encrypted events are decrypted with the gateway's Matrix session. Each message in the result lists its reactions with their sender and target event.
 
 The `matrix_reaction` tool, in the `matrix_reaction` toolset, adds an emoji reaction to a message or removes the reactions that the agent added. A reaction targets the current inbound message unless the agent supplies a Matrix event ID. The gateway records agent reactions in memory for the 1,000 most recently used messages, so the agent can remove only reactions that it added since the gateway process started. `MATRIX_REACTIONS=false` disables automatic processing reactions but does not block an agent-requested reaction.
 
@@ -471,7 +474,62 @@ The read and reaction tools operate in the current room. Each call checks that t
 
 The `matrix_read`, `matrix_reaction` and `matrix_followup` toolsets are enabled for Matrix sessions. Turn any of them off in the Matrix checklist of `hermes tools`, or run `hermes tools disable <toolset> --platform matrix`, for example `hermes tools disable matrix_reaction --platform matrix`. A saved Matrix toolset list that names individual toolsets and was saved before these toolsets existed does not include them; run `hermes tools enable <toolset> --platform matrix` to add each one.
 
-Hermes has no agent tools for room creation or invites, and `matrix_reaction` redacts only the reactions that the agent added. The agent otherwise interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+Room administration requires the additional `matrix_admin` toolset. Enable it
+for Matrix in `hermes tools`, or select it in the owning profile's config:
+
+```yaml
+platform_toolsets:
+  matrix: [hermes-matrix, matrix_admin]
+```
+
+When a shared bot routes a conversation to another profile, administration
+still uses the bot that received the event. Enable `matrix_admin` in both the
+runtime profile and the receiving bot's profile. Each operation rechecks both
+selections before writing.
+
+| Tool | Action |
+|---|---|
+| `matrix_room_admin`, `action: create` | Create a private room with a name, topic, invite list, and optional E2EE |
+| `matrix_room_admin`, `action: invite` | Invite a full Matrix user ID to the current room |
+| `matrix_room_admin`, `action: leave` | Leave the current room |
+| `matrix_room_admin`, `action: forget` | Forget the current room after the bot has left |
+| `matrix_room_admin`, `action: redact` | Redact an event in the current room |
+| `matrix_pin` | Pin or unpin an event in the current room |
+
+These tools require a live Matrix session and an authorised actor. Existing
+room actions are limited to the session's current room. Invite and pin also
+require the actor's corresponding Matrix power level. Every redaction requires
+the room's level for sending `m.room.redaction` events, and redacting another
+user's event, including the bot's, also requires the redact level. Leave and
+forget require the room's kick level, because removing the bot affects every
+member of the room. A room v12 creator passes every power check. In a private
+chat with the bot, where the actor is the only other joined member, leave and
+forget need no power level. A refusal reports the required and actual levels.
+The homeserver checks the bot's permissions and its errors are reported in the
+tool result. Create uses the configured actor authorisation and no room power
+level. It can invite only the actor and users whom the gateway authorises,
+such as those in `MATRIX_ALLOWED_USERS`.
+
+New rooms are private. `encrypted: true` requires the owning client's active
+crypto store and adds Megolm encryption state during creation. With
+`is_direct: true`, the room must invite exactly one user, and the bot records
+it as a direct chat with that user in its `m.direct` account data. The bot sees
+the new room through normal sync. Forget removes the room from the bot's own
+account after leaving; other members retain their room. It does not purge the
+room from the homeserver. A leave/forget sequence must run during the current
+turn because the bot cannot receive a new turn in a room after leaving. An
+authorised user can invite the bot back later, and it rejoins through its
+normal invite handling.
+
+Changing the admin selection affects tool discovery for new sessions. Active
+admin operations recheck the current selection, profile, client, room policy,
+and actor authorisation before a write. If the turn is interrupted or the
+operation times out after the request was sent to the homeserver, the result
+reports that the outcome is unknown and tells the agent how to check before
+retrying. Enabling tools does not rebuild the system prompt or rewrite the
+history of an existing conversation.
+
+The adapter also uses reactions and redactions internally to power approval prompts and pickers.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms and in private bot chats with exactly two joined users, including the bot.
 

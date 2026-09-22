@@ -2,9 +2,9 @@
 
 Covers:
 - VaultStore: encrypt/decrypt round-trip, file perms, identifier-as-metadata
-  (login secret payload is password-only)
+  (model-facing tools still hide both credential fields)
 - login-control classifier: scoring + new-password/one-time-code exclusion,
-  password-only fill selection
+  model-blind identifier + password fill selection
 - origin-binding refusal (pre-check + in-script TOCTOU assert)
 - fail-closed secret eval (no argv fallback)
 - vault-value redaction registry (browser_cdp read-back regression)
@@ -30,6 +30,7 @@ from agent.vault_login_classifier import (  # noqa: E402
     LoginControl,
     build_fill_js,
     classify_login_control,
+    select_login_fills,
     select_password_fill,
 )
 from agent.vault_store import (  # noqa: E402
@@ -95,6 +96,27 @@ class TestVaultStore:
         assert items[0].identifier_type == "email"
         assert items[0].id == meta.id
         assert items[0].origin == "https://example.com"
+
+    def test_model_list_does_not_resolve_login_secrets(self, store, monkeypatch):
+        from agent.vault_backends.local import LocalLoginBackend
+        from tools import browser_vault_tool
+
+        _add_login(store)
+        backend = LocalLoginBackend()
+        monkeypatch.setattr(backend, "list_items", store.list_items)
+
+        resolved = []
+
+        def track_resolution(handle):
+            resolved.append(handle)
+            return {"identifier": "user@example.com", "password": "s3cret-pw"}
+
+        monkeypatch.setattr(backend, "resolve_login", track_resolution)
+        monkeypatch.setattr("agent.vault_backends.enabled_backends", lambda: [backend])
+        out = json.loads(browser_vault_tool.browser_vault_list())
+        assert out["success"] is True
+        assert out["items"][0]["label"] == "example.com"
+        assert resolved == []
 
     def test_remove_item(self, store):
         meta = _add_login(store)
@@ -220,6 +242,18 @@ class TestClassifier:
         fills = select_password_fill([pw1, pw2], "p")
         assert len(fills) == 1 and fills[0]["index"] == 1
 
+    def test_select_login_fills_prefers_identifier_in_password_form(self):
+        wrong_form = ClassifiedLoginControl(_ctrl(index=0, form_index=0, type="email"), 100, "email")
+        right_form = ClassifiedLoginControl(_ctrl(index=2, form_index=1, type="email"), 85, "email")
+        password = ClassifiedLoginControl(_ctrl(index=3, form_index=1, type="password"), 90, "current-password")
+        fills = select_login_fills([wrong_form, right_form, password], "me@example.com", "email", "pw")
+        assert [(item["index"], item["value"]) for item in fills] == [(2, "me@example.com"), (3, "pw")]
+
+    def test_select_login_fills_supports_two_step_identifier_page(self):
+        identifier = ClassifiedLoginControl(_ctrl(index=4, form_index=0, autocomplete="username"), 100, "username")
+        fills = select_login_fills([identifier], "rico", "username", "pw")
+        assert fills == [{"index": 4, "token": "username", "value": "rico"}]
+
     def test_build_fill_js_contains_events(self):
         js = build_fill_js(
             [{"index": 0, "token": "current-password", "value": "x"}],
@@ -261,6 +295,54 @@ class TestClassifier:
 # ---------------------------------------------------------------------------
 
 class TestBrowserVaultTools:
+    def test_empty_unlock_prompt_does_not_claim_the_user_declined(self):
+        from tools import browser_vault_tool
+
+        class LockedBackend:
+            name = "bitwarden"
+            display_name = "Bitwarden"
+            needs_unlock = True
+
+            def is_unlocked(self):
+                return False
+
+        with patch("agent.vault_backends.enabled_backends", return_value=[LockedBackend()]), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+             patch("agent.vault_backends.unlock.get_unlock_prompt_callback", return_value=lambda *_: ""):
+            result = json.loads(browser_vault_tool.browser_vault_unlock("bitwarden"))
+
+        assert result["success"] is False
+        assert result["error_type"] == "unlock_cancelled"
+        assert "cancelled or timed out" in result["error"]
+        assert "user declined" not in result["error"].lower()
+
+    def test_unlock_failure_never_returns_master_password(self):
+        from tools import browser_vault_tool
+
+        master = "master-password-from-prompt"
+
+        class EchoingBackend:
+            name = "bitwarden"
+            display_name = "Bitwarden"
+            needs_unlock = True
+
+            def is_unlocked(self):
+                return False
+
+            def unlock(self, password):
+                raise RuntimeError(f"bw rejected {password}")
+
+        with patch("agent.vault_backends.enabled_backends", return_value=[EchoingBackend()]), \
+             patch("agent.vault_backends.unlock.can_prompt_here", return_value=True), \
+             patch("agent.vault_backends.unlock.get_unlock_prompt_callback",
+                   return_value=lambda *_: master):
+            result = json.loads(browser_vault_tool.browser_vault_unlock("bitwarden"))
+
+        assert result["success"] is False
+        assert result["error_type"] == "unlock_failed"
+        assert master not in json.dumps(result)
+        assert "[REDACTED]" in result["error"]
+
     def test_check_fn_follows_the_browser_not_the_item_count(self, tmp_path):
         """The vault tools ride with the browser toolset: an empty vault must still expose
         browser_vault_save_login (that is how the first login gets saved), and no browser means no tools."""
@@ -278,7 +360,7 @@ class TestBrowserVaultTools:
              patch("tools.browser_tool_install.check_browser_requirements", return_value=False):
             assert browser_vault_tool._check_vault_available() is True
 
-    def test_list_returns_identifier_never_password(self, store):
+    def test_list_returns_handle_without_identifier_or_password(self, store):
         from tools import browser_vault_tool
 
         _add_login(store)
@@ -286,10 +368,23 @@ class TestBrowserVaultTools:
             out = json.loads(browser_vault_tool.browser_vault_list())
         assert out["success"] is True
         assert out["items"][0]["handle"].startswith("vault_")
-        # Design change: identifier is agent-visible metadata.
-        assert out["items"][0]["identifier"] == "user@example.com"
-        assert out["items"][0]["identifier_type"] == "email"
+        assert "identifier" not in out["items"][0]
+        assert "identifier_type" not in out["items"][0]
+        assert "user@example.com" not in json.dumps(out)
         assert "s3cret-pw" not in json.dumps(out)
+
+    def test_login_label_cannot_echo_a_password(self, store):
+        from tools import browser_vault_tool
+
+        password = "password-used-as-label"
+        store.add_item(
+            kind="login", label=password, origin="https://example.com",
+            secret={"identifier_type": "email", "identifier": "user@example.com", "password": password},
+        )
+        with patch("agent.vault_store.get_vault_store", return_value=store):
+            raw = browser_vault_tool.browser_vault_list()
+        assert password not in raw
+        assert json.loads(raw)["items"][0]["label"] == "example.com"
 
     def test_fill_refused_on_origin_mismatch(self, store):
         from tools import browser_vault_tool
@@ -329,8 +424,12 @@ class TestBrowserVaultTools:
             def get_meta(self, handle):
                 return meta if handle == meta.id else None
 
-            def resolve_password(self, handle):
-                return "s3cret-pw"
+            def resolve_login(self, handle):
+                return {
+                    "identifier": meta.identifier,
+                    "identifier_type": meta.identifier_type,
+                    "password": "s3cret-pw",
+                }
 
         controls = [
             {"autocomplete": "email", "formIndex": 0, "index": 0, "label": "", "name": "email", "type": "email"},
@@ -409,29 +508,28 @@ class TestBrowserVaultTools:
 
         def fake_eval_secret(task_id, expression):
             secret_exprs.append(expression)
-            return {"success": True, "result": json.dumps({"filled": 1})}
+            return {"success": True, "result": json.dumps({"filled": 2})}
 
         with patch("agent.vault_store.get_vault_store", return_value=store), \
              patch.object(browser_vault_tool, "_eval_js", side_effect=fake_eval), \
              patch.object(browser_vault_tool, "_eval_js_secret", side_effect=fake_eval_secret):
             raw = browser_vault_tool.browser_vault_fill(meta.id)
         out = json.loads(raw)
-        # Password-only fill: exactly one field.
         assert out.pop("next").startswith("Submit")  # workflow hint, not data
         assert out == {
             "success": True,
-            "filled_fields": 1,
+            "filled_fields": 2,
             "backend": "local",
             "kind": "login",
             "origin": "https://example.com",
         }
         assert "s3cret-pw" not in raw
-        # The secret expression only ever goes through the secret eval path,
-        # and it targets only the password field (index 1).
+        # Both credential fields travel only through the secret eval path.
         assert len(secret_exprs) == 1
         assert "s3cret-pw" in secret_exprs[0]
-        assert '"index": 0' not in secret_exprs[0]
-        assert "user@example.com" not in secret_exprs[0]
+        assert '"index": 0' in secret_exprs[0]
+        assert '"index": 1' in secret_exprs[0]
+        assert "user@example.com" in secret_exprs[0]
 
     def test_fill_toctou_navigation_writes_nothing(self, store):
         """P1-2 schedule regression: inspection passes on the allowed origin,
@@ -558,6 +656,7 @@ class TestBrowserVaultTools:
             # And the generic browser-result scrub catches it too, even with
             # user-level redaction preferences irrelevant (unconditional).
             assert canary not in redact_sensitive_text(f"page text: {canary}")
+            assert redact_sensitive_text("email field on https://example.com") == "email field on https://example.com"
         finally:
             redact.clear_vault_redaction_values()
 
@@ -664,22 +763,19 @@ class TestVaultHardening:
 
 
 class TestVaultSchemaCrossToolset:
-    def test_vault_schemas_name_the_input_tool_of_the_active_browser_stack(self):
-        """The vault tools sit in `browser`; the tool that types the identifier lives in `browser-use`
-        (`fill_input` inside browser_exec) or is browser_type. A static name would be a ghost on one stack,
-        so model_tools resolves it per session from the tools actually present."""
+    def test_vault_schema_never_instructs_the_model_to_type_an_identifier(self):
         import model_tools
         from tools.browser_vault_tool import BROWSER_VAULT_FILL_SCHEMA
 
-        assert "fill_input" not in BROWSER_VAULT_FILL_SCHEMA["description"]
         base = model_tools._fn_def(dict(BROWSER_VAULT_FILL_SCHEMA))
         with_exec = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_exec", "description": "x"}),
                                                         model_tools._fn_def({"name": "terminal", "description": "x"})])
         with_builtin = model_tools._apply_dynamic_schemas([base, model_tools._fn_def({"name": "browser_type", "description": "x"})])
         desc_exec = with_exec[0]["function"]["description"]
         desc_builtin = with_builtin[0]["function"]["description"]
-        assert "`fill_input` inside browser_exec" in desc_exec and "browser_type" not in desc_exec
-        assert "browser_type" in desc_builtin and "fill_input" not in desc_builtin
+        assert desc_exec == desc_builtin == BROWSER_VAULT_FILL_SCHEMA["description"]
+        assert "without returning either value" in desc_exec
+        assert "agent types" not in desc_exec.lower()
 
 
 def test_every_registered_tool_schema_declares_openai_style_parameters():
@@ -717,7 +813,10 @@ class TestSaveLoginPrompt:
             out = json.loads(browser_vault_tool.browser_vault_save_login(task_id="t1"))
         unlock_mod.set_save_login_prompt_callback(None)
 
-        assert out["success"] is True and out["identifier"] == "tek@acme.test"
+        assert out["success"] is True and out["save_completed"] is True
+        assert "identifier" not in out
+        assert "do not call browser_vault_list" in out["next"]
+        assert "tek@acme.test" not in json.dumps(out)
         assert "hunter2" not in json.dumps(out)
         assert seen == {"origin": "https://acme.test", "site": "acme.test"}
         [meta] = store.list_items()
@@ -749,6 +848,14 @@ class TestManagerAutoDetection:
                 assert {b.name for b in base.enabled_backends()} == {"local", "onepassword", "bitwarden"}
             with patch.object(base, "_cfg", return_value={"bitwarden": {"enabled": False}}):
                 assert {b.name for b in base.enabled_backends()} == {"local", "onepassword"}
+            with patch.object(base, "_cfg", return_value={"bitwarden_secrets": {
+                "enabled": True,
+                "organization_id": "00000000-0000-0000-0000-000000000001",
+                "project_id": "00000000-0000-0000-0000-000000000002",
+            }}):
+                assert {b.name for b in base.enabled_backends()} == {
+                    "local", "onepassword", "bitwarden", "bitwarden_secrets",
+                }
         with patch.object(base, "is_installed", return_value=False), patch.object(base, "_cfg", return_value={}):
             assert [b.name for b in base.enabled_backends()] == ["local"]
 

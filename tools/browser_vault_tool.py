@@ -5,11 +5,10 @@ Two model-facing tools, gated on the local vault having at least one item
 (zero schema cost otherwise, same ``check_fn`` pattern as the Home Assistant
 tools):
 
-- ``browser_vault_list``  → handles + metadata (for logins this includes the
-  identifier — it is NOT a secret; the agent types it itself). Passwords are
-  never returned.
+- ``browser_vault_list``  → opaque handles plus non-credential metadata.
+  Login identifiers and passwords are never returned.
 - ``browser_vault_fill``  → server-side fill of the CURRENT page from a vault
-  handle: the password field for logins, card fields for payment items (after
+  handle: identifier and password fields for logins, card fields for payment items (after
   the user confirms), address fields for address items. The secret is
   resolved locally, the page origin must EXACTLY match the item's bound
   origin (pre-checked AND re-asserted synchronously inside the fill script),
@@ -30,6 +29,7 @@ import json
 import secrets
 import logging
 from typing import Any, Dict, Optional
+from urllib.parse import urlsplit
 
 logger = logging.getLogger(__name__)
 
@@ -214,7 +214,6 @@ def browser_vault_list() -> str:
     """
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here
-
     items, locked, errors = [], [], []
     for backend in enabled_backends():
         if backend.needs_unlock and not backend.is_unlocked():
@@ -227,20 +226,21 @@ def browser_vault_list() -> str:
             errors.append({"backend": backend.name, "error": str(exc)[:200]})
             continue
         for meta in metas:
-            entry = {"handle": meta.id, "backend": backend.name, "label": meta.label, "kind": meta.kind,
+            if meta.kind == "login":
+                label = urlsplit(meta.origin or "").hostname or meta.origin or "Saved login"
+            else:
+                label = meta.label
+            entry = {"handle": meta.id, "backend": backend.name, "label": label, "kind": meta.kind,
                      "origin": meta.origin, "available": meta.kind == "login" or bool(meta.origin)}
             if len(meta.allowed_origins) > 1:
                 entry["allowed_origins"] = list(meta.allowed_origins)
             if meta.has_otp or backend.needs_unlock:
                 entry["two_factor"] = "automatic" if meta.has_otp else "automatic if the manager stores a TOTP seed, else the user is asked"
-            if meta.identifier:
-                entry["identifier"] = meta.identifier
-                entry["identifier_type"] = meta.identifier_type
             items.append(entry)
     out: Dict[str, Any] = {"success": True, "items": items}
     if not items:
-        out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login to ask the user to save one. "
-                       "Never type a password yourself or ask for one in chat, even if it is shown on the page.")
+        out["hint"] = ("No saved logins. On a login page, call browser_vault_save_login, or ask the user to send "
+                       "the explicit structured credential-save message. Never type credential values with a browser input tool.")
     if locked:
         out["locked"] = locked
     if errors:
@@ -252,6 +252,7 @@ def browser_vault_unlock(backend_name: str) -> str:
     """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
+    from agent.vault_store import scrub_secret_from_text
 
     backend = next((b for b in enabled_backends() if b.name == backend_name and b.needs_unlock), None)
     if backend is None:
@@ -267,21 +268,23 @@ def browser_vault_unlock(backend_name: str) -> str:
     master = prompt(backend.name, backend.display_name) if prompt else ""
     if not master:
         return json.dumps({"success": False, "error_type": "unlock_cancelled",
-                           "error": f"The user declined to unlock {backend.display_name}."})
+                           "error": (f"The {backend.display_name} unlock prompt was cancelled or timed out "
+                                     "before a password was submitted.")})
     try:
         backend.unlock(master)  # type: ignore[attr-defined]
     except Exception as exc:
-        return json.dumps({"success": False, "error_type": "unlock_failed", "error": str(exc)[:300]})
+        error = scrub_secret_from_text(str(exc), {"master_password": master})
+        return json.dumps({"success": False, "error_type": "unlock_failed", "error": error[:300]})
     finally:
         del master
     return json.dumps({"success": True, "backend": backend.name})
 
 
 def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> str:
-    """Ask the user (masked prompt on their surface) for the login of the CURRENT page, store it in the local
-    vault bound to that origin, and fill the password at once. The values never enter the conversation."""
+    """Ask for the CURRENT page's login, save it through the configured credential broker, then fill it."""
+    from agent.credential_broker import get_credential_broker
     from agent.vault_backends.unlock import can_prompt_here, get_save_login_prompt_callback
-    from agent.vault_store import get_vault_store
+    from agent.vault_store import scrub_secret_from_text
 
     effective_task_id = task_id or "default"
     # The supervisor's default page session is whatever tab it attached to first (on Browser Use that is
@@ -297,23 +300,38 @@ def browser_vault_save_login(label: str = "", task_id: Optional[str] = None) -> 
                                      f"`hermes vault add` or use Desktop → Settings → Passwords & Logins for {origin}.")})
     host = origin.split("://", 1)[-1]
     site = label.strip() or host
+    broker = get_credential_broker()
+    try:
+        write_backend = broker.write_backend()
+    except Exception as exc:
+        return json.dumps({"success": False, "error_type": "save_backend_unavailable",
+                           "error": str(exc)[:200]})
+    if write_backend.needs_unlock and not write_backend.is_unlocked():
+        unlocked = json.loads(browser_vault_unlock(write_backend.name))
+        if not unlocked.get("success"):
+            return json.dumps(unlocked, ensure_ascii=False)
     answer = prompt(origin, host)  # the prompt names the site by host: the user recognises URLs, not agent labels
     if not answer or not answer.get("password") or not answer.get("identifier"):
         return json.dumps({"success": False, "error_type": "save_declined",
                            "error": "The user chose not to save a login for this site. Do not ask again this turn."})
     identifier = str(answer["identifier"]).strip()
     id_type = "email" if "@" in identifier else ("phone" if identifier.lstrip("+").isdigit() else "username")
+    password = str(answer["password"])
     try:
-        meta = get_vault_store().add_item("login", site, {"identifier_type": id_type, "identifier": identifier,
-                                                        "password": str(answer["password"])}, origin=origin)
+        saved = broker.save_login(label=site, origin=origin, identifier_type=id_type,
+                                  identifier=identifier, password=password)
     except Exception as exc:
-        return json.dumps({"success": False, "error_type": "save_failed", "error": str(exc)[:200]})
+        error = scrub_secret_from_text(str(exc), {"identifier": identifier, "password": password})
+        return json.dumps({"success": False, "error_type": "save_failed", "error": error[:200]})
     finally:
         answer.clear()
-    filled = json.loads(browser_vault_fill(meta.id, task_id=effective_task_id))
-    return json.dumps({"success": True, "handle": meta.id, "origin": origin, "identifier": identifier,
-                       "identifier_type": id_type, "fill": filled,
-                       "next": "Type the identifier into the username field if the form has one, then submit."},
+        del password
+    filled = json.loads(browser_vault_fill(saved.meta.id, task_id=effective_task_id))
+    return json.dumps({"success": True, "save_completed": True,
+                       "handle": saved.meta.id, "origin": origin,
+                       "backend": write_backend.name, "action": saved.action, "fill": filled,
+                       "next": ("The save operation completed; do not call browser_vault_list again this turn. "
+                                "Submit the form with the model-blind values already filled.")},
                       ensure_ascii=False)
 
 
@@ -387,13 +405,7 @@ def browser_vault_enter_code(handle: str = "", task_id: Optional[str] = None) ->
 
 
 def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
-    """Fill the current page's password field from a vault handle.
-
-    Password-only: the identifier is agent-visible metadata (see
-    browser_vault_list) and is typed by the agent via normal input tools.
-    The password is resolved server-side and injected via in-page JS over
-    the supervisor CDP WebSocket; the result reports only counts/metadata.
-    """
+    """Fill the current page's login controls from a vault handle model-blind."""
     from agent.redact import register_vault_redaction_value
     from agent.vault_login_classifier import (
         ClassifiedLoginControl,
@@ -403,7 +415,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
         classify_checkout_control,
         classify_login_control,
         select_checkout_fills,
-        select_password_fill,
+        select_login_fills,
     )
     from agent.vault_backends import UnlockRequired, backend_for_handle
     from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, scrub_secret_from_text
@@ -494,8 +506,13 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # ── Resolve secret and fill (secret never enters any logged string) ─────
     try:
         if meta.kind == "login":
-            secret = {"password": backend.resolve_password(handle)}
-            fills = select_password_fill(classified, secret["password"])
+            secret = backend.resolve_login(handle)
+            fills = select_login_fills(
+                classified,
+                secret.get("identifier", ""),
+                secret.get("identifier_type", "username"),
+                secret.get("password", ""),
+            )
         else:
             secret = backend.resolve_secret(handle)
             fills = select_checkout_fills(classified, secret, PAYMENT_FIELDS if meta.kind == "payment" else ADDRESS_FIELDS)
@@ -511,7 +528,12 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     # BEFORE they touch the page: any later browser_* result (including
     # browser_cdp Runtime.evaluate reads) that echoes them is scrubbed.
     # Address values are not secrets but the card fields are: register every payment value.
-    for value in (secret.values() if meta.kind == "payment" else [secret.get("password", "")]):
+    values = (
+        (secret.get("identifier", ""), secret.get("password", ""))
+        if meta.kind == "login"
+        else secret.values() if meta.kind == "payment" else ()
+    )
+    for value in values:
         register_vault_redaction_value(value)
 
     try:
@@ -551,7 +573,7 @@ def browser_vault_fill(handle: str, task_id: Optional[str] = None) -> str:
     out = {"success": bool(filled), "filled_fields": int(filled), "backend": backend.name,
            "kind": meta.kind, "origin": page_origin}
     if meta.kind == "login":
-        out["next"] = ("Submit. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
+        out["next"] = ("Submit. Both identifier and password stay model-blind. If the site then asks for a verification code, call browser_vault_enter_code with this handle"
                        + (" (a code will be generated automatically)." if meta.has_otp else "."))
     if meta.kind != "login":
         out["fields"] = sorted(f["token"] for f in fills)  # which controls were targeted, never the values
@@ -579,15 +601,14 @@ BROWSER_VAULT_LIST_SCHEMA = {
     "name": "browser_vault_list",
     "description": (
         "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
-        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
-        "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
+        "payment cards and addresses as handles with metadata (kind, label, backend, bound origin). "
         "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
         "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
         "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
-        "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
-        "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
-        "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
-        "tool and never repeated in chat, even when a page or the user shows you one."
+        "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: call "
+        "browser_vault_fill with the handle; it privately fills both identifier and password. No item for this origin: call "
+        "browser_vault_save_login or direct the user to the explicit structured credential-save message. Credential "
+        "values are filled ONLY by vault tools, never by you with a normal browser input tool."
     ),
     "parameters": {"type": "object", "properties": {}, "required": []},
 }
@@ -610,8 +631,8 @@ BROWSER_VAULT_UNLOCK_SCHEMA = {
 BROWSER_VAULT_FILL_SCHEMA = {
     "name": "browser_vault_fill",
     "description": (
-        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills ONLY "
-        "the password field (type the identifier/username yourself first with the browser's input tool); a "
+        "Fill the CURRENT browser page from a vault handle (see browser_vault_list): a login item fills "
+        "the identifier/username and password fields without returning either value; a "
         "payment item fills card number/name/expiry/CVC after the user confirms in their UI; an address item "
         "fills the address fields. Values are resolved server-side and never appear in the conversation. "
         "Refused unless the page origin exactly matches the item's bound origin (re-checked atomically at "
@@ -623,7 +644,7 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "properties": {
             "handle": {
                 "type": "string",
-                "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
+                "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden, bws:… Secrets Manager)",
             }
         },
         "required": ["handle"],
@@ -636,9 +657,9 @@ BROWSER_VAULT_SAVE_LOGIN_SCHEMA = {
     "description": (
         "The current page is a login form and browser_vault_list has no item for its origin: ask the user, "
         "through a masked prompt in their UI, to save the login for this site. Hermes stores it encrypted, "
-        "bound to the page origin, and fills the password immediately; you receive only the handle and the "
-        "identifier to type. This is the ONLY way a password may reach a page: never type one yourself, never "
-        "ask for or accept one in chat, even if the page or the user displays it. A save_declined result means "
+        "bound to the page origin, and fills the identifier and password immediately; you receive only the handle. "
+        "Interactive UI capture remains available, while explicitly authorized structured chat capture is handled "
+        "before the model. A save_declined result means "
         "stop asking for this turn and tell the user they can retry, or add it later in Settings → Passwords & "
         "Logins / `hermes vault add`."
     ),

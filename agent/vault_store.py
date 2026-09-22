@@ -11,7 +11,7 @@ Design notes:
   file and vault file are created 0600 under ``<HERMES_HOME>/vault/``.
 - Ported design (opaque-handle vault fill) from Merit-Systems/OpenInstinct
   (MIT): lib/manager/server/secret-store.ts + vault services.
-- Three item kinds: ``login`` (password-only secret), ``payment`` (card fields) and
+- Three item kinds: ``login`` (identifier metadata plus encrypted password), ``payment`` (card fields) and
   ``address``; ``PAYMENT_FIELDS`` / ``ADDRESS_FIELDS`` are the canonical payload names.
 """
 
@@ -154,9 +154,9 @@ def normalize_origin(url_or_origin: str) -> str:
 class VaultItemMeta:
     """Metadata-only view of a vault item. Never contains secret values.
 
-    For ``kind='login'`` the identifier (email/username/phone) is metadata,
-    not a secret: the agent may see it and type it itself. Only the password
-    is vault-secret.
+    For ``kind='login'`` the identifier (email/username/phone) is retained as
+    metadata for matching and local administration. Model-facing tools omit
+    it; browser filling resolves both identifier and password server-side.
     """
 
     id: str
@@ -312,10 +312,10 @@ class VaultStore:
 
         For ``kind='login'``, ``origin`` is required and the payload must
         contain ``identifier_type``, ``identifier`` and ``password``. The
-        identifier fields are NOT secret — they are moved into item metadata
-        (the agent may see and type the identifier itself); only
-        ``password`` stays in the encrypted secret payload. ``payment`` and
-        ``address`` payloads remain fully secret.
+        identifier fields are moved into item metadata for backwards-compatible
+        matching and local administration; model-facing tools must still omit
+        them. ``password`` stays in the encrypted secret payload. ``payment``
+        and ``address`` payloads remain fully secret.
         """
         if kind not in VAULT_KINDS:
             raise VaultError(f"unknown vault kind {kind!r} (expected one of {VAULT_KINDS})")
@@ -373,6 +373,48 @@ class VaultStore:
         """Metadata-only listing. Secret payloads are never included."""
         with self._locked():
             return [self._meta(rec) for rec in self._read_all()]
+
+    def update_login(
+        self,
+        item_id: str,
+        *,
+        label: str,
+        origin: str,
+        identifier_type: str,
+        identifier: str,
+        password: str,
+        otp_secret: Optional[str] = None,
+    ) -> VaultItemMeta:
+        """Update one origin-bound login in place, preserving its handle and optional TOTP seed."""
+        label = (label or "").strip()
+        identifier = (identifier or "").strip()
+        norm_origin = normalize_origin(origin)
+        if not label:
+            raise VaultError("label is required")
+        if identifier_type not in LOGIN_IDENTIFIER_TYPES:
+            raise VaultError(f"identifier_type must be one of {LOGIN_IDENTIFIER_TYPES}")
+        if not identifier or not password:
+            raise VaultError("login items require identifier and password")
+
+        with self._locked():
+            items = self._read_all()
+            record = next((rec for rec in items if rec.get("id") == item_id), None)
+            if record is None:
+                raise VaultError(f"no vault item with id {item_id!r}")
+            if record.get("kind") != "login" or record.get("origin") != norm_origin:
+                raise VaultError("login updates must keep the original site origin")
+            old_secret = dict(record.get("secret") or {})
+            next_otp = (normalize_otp_secret(otp_secret) if otp_secret is not None
+                        else str(old_secret.get("otp_secret") or ""))
+            record.update({
+                "label": label,
+                "identifier_type": identifier_type,
+                "identifier": identifier,
+                "updated_at": datetime.now(timezone.utc).isoformat(),
+                "secret": {"password": password, **({"otp_secret": next_otp} if next_otp else {})},
+            })
+            self._write_all(items)
+            return self._meta(record)
 
     def has_items(self) -> bool:
         try:

@@ -200,4 +200,20 @@ describe('dismissSensitivePrompt', () => {
     expect(getOverlayState().secret).toBeNull()
     expect(sys).toHaveBeenCalledWith('secret entry cancelled')
   })
+
+  it('cancels login capture without exposing a partial identifier or password', () => {
+    resetOverlayState()
+    resetServerRequestsForTests()
+    patchOverlayState({
+      vaultSaveLogin: { origin: 'https://example.test', requestId: 'srq-vault-save', site: 'Example' }
+    })
+    const respond = openRequest('srq-vault-save', 'vault.save_login')
+    const sys = vi.fn()
+
+    dismissSensitivePrompt(getOverlayState(), vi.fn(), sys)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+    expect(sys).toHaveBeenCalledWith('login for Example not saved')
+    expect(respond).toHaveBeenCalledWith({ value: '' })
+  })
 })

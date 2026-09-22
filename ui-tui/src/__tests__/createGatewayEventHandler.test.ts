@@ -1823,6 +1823,72 @@ describe('createGatewayEventHandler', () => {
     expect(line).not.toContain('turn_author')
   })
 
+  it('opens the secure login capture for vault.save_login instead of rejecting the request', () => {
+    const { handled, respond } = serverRequest(
+      'vault.save_login',
+      { origin: 'https://example.test', site: 'Example' },
+      'vault-save-1'
+    )
+
+    expect(handled).toBe(true)
+    expect(respond).not.toHaveBeenCalled()
+    expect(getOverlayState().vaultSaveLogin).toEqual({
+      origin: 'https://example.test',
+      requestId: 'vault-save-1',
+      site: 'Example'
+    })
+    expect(getUiState().status).toBe('login details needed')
+  })
+
+  it('reveals a vault unlock prompt by closing local panels that can hide PromptZone', () => {
+    patchOverlayState({
+      agents: true,
+      journey: true,
+      modelPicker: true,
+      pager: { lines: ['hidden'], offset: 0 },
+      petPicker: true,
+      pluginsHub: true,
+      sessions: true,
+      skillsHub: true,
+      widget: { id: 'test-widget' } as any
+    })
+
+    const { handled, respond } = serverRequest(
+      'vault.unlock_prompt',
+      { backend: 'bitwarden', display_name: 'Bitwarden' },
+      'vault-unlock-visible'
+    )
+
+    expect(handled).toBe(true)
+    expect(respond).not.toHaveBeenCalled()
+    expect(getOverlayState()).toMatchObject({
+      agents: false,
+      journey: false,
+      modelPicker: false,
+      pager: null,
+      petPicker: false,
+      pluginsHub: false,
+      sessions: false,
+      skillsHub: false,
+      vaultUnlock: {
+        backend: 'bitwarden',
+        displayName: 'Bitwarden',
+        requestId: 'vault-unlock-visible'
+      },
+      widget: null
+    })
+    expect(getUiState().status).toBe('unlock Bitwarden')
+  })
+
+  it('clears a matching vault save card when the gateway withdraws it', () => {
+    const onEvent = createGatewayEventHandler(buildCtx([]))
+
+    serverRequest('vault.save_login', { origin: 'https://example.test', site: 'Example' }, 'vault-save-2')
+    onEvent({ payload: { id: 'vault-save-2', method: 'vault.save_login', reason: 'timeout' }, type: 'request.cancel' } as any)
+
+    expect(getOverlayState().vaultSaveLogin).toBeNull()
+  })
+
   // ── Batch (multi-question) clarify ─────────────────────────────────
 
   it('parses a batch clarify request into a questions overlay', () => {

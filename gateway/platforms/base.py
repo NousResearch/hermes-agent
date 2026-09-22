@@ -3904,6 +3904,9 @@ class BasePlatformAdapter(ABC):
                 )
             return
 
+        from gateway.credential_capture import prepare_credential_capture
+        prepare_credential_capture(event)
+
         if event.allow_gateway_control:
             coerce_plaintext_gateway_command(event)
         # Identity FIRST: every key below (routing check, guard lookup, batch lane) derives from it.
@@ -3941,6 +3944,9 @@ class BasePlatformAdapter(ABC):
         # runner. Without this, they are queued as pending messages and either: See #4926.
         self._canonicalize(event.source)  # identity FIRST (direct callers may skip handle_message)
         cmd = event.get_command()
+        if getattr(event, "_credential_capture", None) is not None:
+            await self._dispatch_inline_reply(event)
+            return
         from hermes_cli.commands import (is_interrupt_then_dispatch, should_bypass_active_session)
         if should_bypass_active_session(cmd):
             try:

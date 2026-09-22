@@ -479,7 +479,7 @@ class VaultAddResult(Result):
 
 
 method("vault.add", params=VaultAddParams, result=VaultAddResult,
-       doc="Add a login / payment / address item to the local vault.")
+       doc="Add a login through the configured broker, or a payment/address to the local vault.")
 
 
 class VaultRemoveParams(ProfileParams):
@@ -491,7 +491,7 @@ class VaultRemoveResult(Result):
 
 
 method("vault.remove", params=VaultRemoveParams, result=VaultRemoveResult,
-       doc="Remove a local vault item by id.")
+       doc="Remove a vault item through the backend identified by its handle.")
 
 
 # ── foreign histories (methods_session_foreign) ───────────────────────────────────────────────

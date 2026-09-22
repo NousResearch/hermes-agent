@@ -113,6 +113,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "memory.supermemory": ("supermemory==3.50.0",),
     "memory.mem0": ("mem0ai==2.0.10",),
 
+    # ─── Credential vaults ────────────────────────────────────────────────
+    # The SDK keeps create/update secret values out of process argv. The bws
+    # CLI currently accepts those values only as positional arguments.
+    "vault.bitwarden_secrets": ("bitwarden-sdk==2.1.0",),
+
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
     # brotlicffi: aiohttp needs its 2-arg Decompressor for Discord CDN Brotli attachments

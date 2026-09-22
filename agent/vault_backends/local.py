@@ -20,6 +20,9 @@ class LocalLoginBackend(LoginBackend):
     display_name = "Hermes vault"
     prefix = "vault_"
 
+    def capabilities(self):
+        return super().capabilities() | {"create_login", "update_login", "remove"}
+
     def list_items(self) -> List[VaultItemMeta]:
         return _store().list_items()
 
@@ -36,3 +39,23 @@ class LocalLoginBackend(LoginBackend):
 
     def resolve_secret(self, handle: str) -> Dict[str, str]:
         return {k: str(v) for k, v in _store().resolve_secret(handle).items()}
+
+    def create_login(self, *, label: str, origin: str, identifier_type: str,
+                     identifier: str, password: str, otp_secret: Optional[str] = None) -> VaultItemMeta:
+        secret = {
+            "identifier_type": identifier_type,
+            "identifier": identifier,
+            "password": password,
+        }
+        if otp_secret is not None:
+            secret["otp_secret"] = otp_secret
+        return _store().add_item("login", label, secret, origin=origin)
+
+    def update_login(self, handle: str, *, label: str, origin: str, identifier_type: str,
+                     identifier: str, password: str, otp_secret: Optional[str] = None) -> VaultItemMeta:
+        return _store().update_login(handle, label=label, origin=origin,
+                                     identifier_type=identifier_type, identifier=identifier,
+                                     password=password, otp_secret=otp_secret)
+
+    def remove_item(self, handle: str) -> bool:
+        return _store().remove_item(handle)

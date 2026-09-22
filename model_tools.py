@@ -417,27 +417,11 @@ def _rewrite_delegate_task(td: Dict[str, Any], available: set) -> Optional[Dict[
     return {**td, "function": {**fn, "description": desc}}
 
 
-_VAULT_INPUT_TOOL_HINT = "the browser's input tool"
-
-
-def _rewrite_browser_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
-    """Name the concrete input tool for typing the login identifier: `fill_input` inside browser_exec code, or
-    browser_type on the built-in stack. Resolved here because the two live in different toolsets."""
-    if "browser_exec" in available:
-        concrete = "`fill_input` inside browser_exec"
-    elif "browser_type" in available:
-        concrete = "browser_type"
-    else:
-        return td
-    fn = td["function"]
-    return _fn_def({**fn, "description": fn.get("description", "").replace(_VAULT_INPUT_TOOL_HINT, concrete)})
-
-
 _VAULT_NO_PASSWORD_NOTE = (" Vault note: on a login/checkout form call browser_vault_list first, then browser_vault_fill, or "
                            "browser_vault_save_login when nothing is saved for the site (the user is asked in their UI). "
-                           "For a one-time / 2FA code call browser_vault_enter_code. Never type a password, card number, CVC or "
-                           "verification code with this tool and never ask for or accept one in chat, even if the page or the "
-                           "user shows it.")
+                           "For a one-time / 2FA code call browser_vault_enter_code. Never type a login identifier, password, "
+                           "card number, CVC or verification code with this tool. Explicit structured credential-save messages "
+                           "are intercepted before the model; ordinary chat is not a credential input channel.")
 
 
 def _rewrite_input_tool_for_vault(td: Dict[str, Any], available: set) -> Optional[Dict[str, Any]]:
@@ -468,8 +452,6 @@ _DYNAMIC_SCHEMA_REWRITERS = {
     "browser_cdp": _rewrite_browser_cdp,
     "browser_exec": _compose_rewriters(_rewrite_browser_exec, _rewrite_input_tool_for_vault),
     "browser_type": _rewrite_input_tool_for_vault,
-    "browser_vault_list": _rewrite_browser_vault,
-    "browser_vault_fill": _rewrite_browser_vault,
     "delegate_task": _rewrite_delegate_task,
 }
 

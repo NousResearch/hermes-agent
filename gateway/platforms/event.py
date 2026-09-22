@@ -43,7 +43,7 @@ class MessageEvent:
     # None only in isolated unit tests; production always sets it. Typing it Optional
     # exposes ~60 unguarded ``.source.<attr>`` reads, so that is a separate change.
     source: SessionSource = None
-    raw_message: Any = None
+    raw_message: Any = field(default=None, repr=False)
     message_id: Optional[str] = None
     # Delivery-ledger identity for the final send, when it differs from ``message_id``. A queued
     # (/queue) chain answers the LAST message of the chain, so its final send has to be ledgered
@@ -93,6 +93,10 @@ class MessageEvent:
     _gateway_accepted: bool = field(default=False, init=False, repr=False, compare=False)
     # Run-owned final presentation snapshot; never deserialized from ingress metadata.
     _notification_reply_muted: Optional[bool] = field(default=None, init=False, repr=False, compare=False)
+    # Explicit credential captures are held only until the authorized gateway boundary consumes
+    # them. The object is deliberately private and omitted from repr/equality/metadata.
+    _credential_capture: Any = field(default=None, init=False, repr=False, compare=False)
+    _credential_capture_deferred: bool = field(default=False, init=False, repr=False, compare=False)
 
     def is_command(self) -> bool:
         """Check if this is a command message (e.g., /new, /reset)."""

@@ -674,7 +674,12 @@ export function useMainApp(gw: GatewayClient) {
   const model = ui.info?.model?.replace(/^.*\//, '') ?? ''
 
   const marker =
-    overlay.approval || overlay.sudo || overlay.secret || overlay.vaultUnlock || overlay.clarify
+    overlay.approval ||
+    overlay.sudo ||
+    overlay.secret ||
+    overlay.vaultSaveLogin ||
+    overlay.vaultUnlock ||
+    overlay.clarify
       ? '⚠'
       : ui.busy
         ? '⏳'
@@ -1187,6 +1192,22 @@ export function useMainApp(gw: GatewayClient) {
     [overlay.vaultUnlock, respondWith]
   )
 
+  const answerVaultSaveLogin = useCallback(
+    (value: string) => {
+      if (!overlay.vaultSaveLogin) {
+        return
+      }
+
+      const requestId = overlay.vaultSaveLogin.requestId
+
+      respondWith(requestId, { value }, () => {
+        patchOverlayState({ vaultSaveLogin: null })
+        patchUiState({ status: 'running…' })
+      })
+    },
+    [overlay.vaultSaveLogin, respondWith]
+  )
+
   const onModelSelect = useCallback((value: string) => {
     patchOverlayState({ modelPicker: false })
     slashRef.current(`/model ${value}`)
@@ -1297,6 +1318,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       newLiveSession: () => session.newLiveSession(),
@@ -1321,6 +1343,7 @@ export function useMainApp(gw: GatewayClient) {
       answerClarifyQuestion,
       answerSecret,
       answerSudo,
+      answerVaultSaveLogin,
       answerVaultUnlock,
       clearSelection,
       closeLiveSession,

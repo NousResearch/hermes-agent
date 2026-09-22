@@ -1,8 +1,8 @@
 """Login-backend contract + registry for the browser credential vault.
 
-A ``LoginBackend`` lists login metadata (never secrets) and resolves ONE
-password at fill time. External managers (1Password, Bitwarden) additionally
-need a per-session unlock; ``resolve_password`` raises ``UnlockRequired``
+A ``LoginBackend`` lists non-credential metadata and resolves one login only
+inside the server-side fill path. External managers (1Password, Bitwarden)
+additionally need a per-session unlock; ``resolve_password`` raises ``UnlockRequired``
 while locked so the tool can ask the surface to prompt. Handles are
 namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
 """
@@ -11,8 +11,9 @@ from __future__ import annotations
 
 import subprocess
 from abc import ABC, abstractmethod
+from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence
+from typing import Dict, FrozenSet, List, Optional, Sequence
 
 from agent.vault_store import VaultItemMeta
 
@@ -25,8 +26,14 @@ class UnlockRequired(Exception):
         self.backend = backend
 
 
+@dataclass(frozen=True)
+class LoginSaveResult:
+    meta: VaultItemMeta
+    action: str  # created | updated
+
+
 class LoginBackend(ABC):
-    name: str                # config key: local | onepassword | bitwarden
+    name: str                # config key: local | onepassword | bitwarden | bitwarden_secrets
     display_name: str        # user-facing
     prefix: str              # handle prefix ("vault_", "op:", "bw:")
     needs_unlock: bool = False
@@ -36,6 +43,10 @@ class LoginBackend(ABC):
 
     def is_unlocked(self) -> bool:
         return True
+
+    def capabilities(self) -> FrozenSet[str]:
+        """Stable feature negotiation used by the credential broker."""
+        return frozenset({"list", "resolve"})
 
     @abstractmethod
     def list_items(self) -> List[VaultItemMeta]:
@@ -57,6 +68,40 @@ class LoginBackend(ABC):
         """Full payload of a payment/address item (server-side only). External managers list only
         logins, so the base returns the password-only shape."""
         return {"password": self.resolve_password(handle)}
+
+    def resolve_login(self, handle: str) -> Dict[str, str]:
+        """Resolve one login for server-side form filling; never expose this payload to the model."""
+        meta = self.get_meta(handle)
+        if meta is None or meta.kind != "login":
+            return {}
+        secret = self.resolve_secret(handle)
+        return {
+            "identifier": str(secret.get("identifier") or meta.identifier or ""),
+            "identifier_type": str(secret.get("identifier_type") or meta.identifier_type or "username"),
+            "password": str(secret.get("password") or ""),
+        }
+
+    def find_login(self, origin: str, identifier: str) -> Optional[VaultItemMeta]:
+        """Find an existing login without requiring callers to inspect secret payloads."""
+        return next(
+            (
+                item
+                for item in self.list_items()
+                if item.kind == "login" and item.origin == origin and item.identifier == identifier
+            ),
+            None,
+        )
+
+    def create_login(self, *, label: str, origin: str, identifier_type: str,
+                     identifier: str, password: str, otp_secret: Optional[str] = None) -> VaultItemMeta:
+        raise RuntimeError(f"{self.display_name} does not support creating logins")
+
+    def update_login(self, handle: str, *, label: str, origin: str, identifier_type: str,
+                     identifier: str, password: str, otp_secret: Optional[str] = None) -> VaultItemMeta:
+        raise RuntimeError(f"{self.display_name} does not support updating logins")
+
+    def remove_item(self, handle: str) -> bool:
+        raise RuntimeError(f"{self.display_name} does not support removing items")
 
 
 def run_with_stdin_secret(argv: Sequence[str], *, env: Dict[str, str], secret: str, timeout: float,
@@ -88,16 +133,22 @@ def run_with_secret_env(argv: Sequence[str], *, env: Dict[str, str], secret_env:
         raise RuntimeError(f"failed to invoke {label}: {exc}") from exc
 
 
-def _cfg() -> Dict:
+def vault_config() -> Dict:
     from hermes_cli.config import load_config_readonly
     cfg = load_config_readonly().get("vault") or {}
     return cfg if isinstance(cfg, dict) else {}
 
 
+def _cfg() -> Dict:
+    """Backward-compatible internal alias."""
+    return vault_config()
+
+
 def external_backend_classes():
+    from agent.vault_backends.bitwarden_secrets import BitwardenSecretsLoginBackend
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    return (BitwardenSecretsLoginBackend, OnePasswordLoginBackend, BitwardenLoginBackend)
 
 
 def is_installed(name: str) -> bool:
@@ -110,6 +161,12 @@ def is_installed(name: str) -> bool:
     if name == "onepassword":
         from agent.secret_sources.onepassword import find_op
         return find_op() is not None
+    if name == "bitwarden_secrets":
+        try:
+            import importlib.util
+            return importlib.util.find_spec("bitwarden_sdk") is not None
+        except (ImportError, ValueError):
+            return False
     return shutil.which("bw") is not None
 
 
@@ -117,6 +174,8 @@ def is_enabled(name: str) -> bool:
     """An installed manager is a login source unless the user opted out (``vault.<name>.enabled: false``).
     Zero-config on purpose: a user with ``bw``/``op`` on PATH should never have to discover a toggle."""
     section = _cfg().get(name) or {}
+    if name == "bitwarden_secrets":
+        return isinstance(section, dict) and section.get("enabled") is True
     if isinstance(section, dict) and section.get("enabled") is False:
         return False
     return is_installed(name)

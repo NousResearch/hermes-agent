@@ -3,9 +3,8 @@
 Python port (~170 LOC) of Merit-Systems/OpenInstinct's
 ``lib/manager/server/kernel-login-autofill.ts`` (MIT). Classifies visible
 input controls on a page into login-autofill tokens. The vault fill path
-uses the classification to select the single best current-password control
-(the identifier is agent-visible metadata and is typed by the agent
-itself via normal input tools).
+uses the classification to select identifier and current-password controls
+without exposing either value to the model.
 
 Scoring:
 - exact autocomplete-token match ................ 100
@@ -158,11 +157,10 @@ def select_password_fill(
 ) -> List[Dict[str, Any]]:
     """Select the single best current-password control to fill.
 
-    The vault fill path is password-only: the identifier is agent-visible
-    metadata and is typed by the agent via normal input tools. This picks
-    the highest-scoring ``current-password`` control (ties broken by DOM
-    order) and returns ``[{"index": int, "token": "current-password",
-    "value": password}]`` or ``[]`` when no password field exists.
+    Compatibility helper for callers that intentionally need only the password
+    phase of a two-step flow. The primary vault path uses
+    :func:`select_login_fills` so both fields stay model-blind. This picks the
+    highest-scoring ``current-password`` control (ties broken by DOM order).
     """
     passwords = [c for c in classified if c.token == "current-password"]
     if not passwords or not password:
@@ -177,6 +175,45 @@ def select_password_fill(
             "value": password,
         }
     ]
+
+
+def select_login_fills(
+    classified: List[ClassifiedLoginControl],
+    identifier: str,
+    identifier_type: str,
+    password: str,
+) -> List[Dict[str, Any]]:
+    """Select at most one identifier field and one password field."""
+    passwords = sorted(
+        (c for c in classified if c.token == "current-password"),
+        key=lambda c: (-c.score, c.control.index),
+    )
+    preferred = {
+        "email": ("email", "username"),
+        "phone": ("tel", "username"),
+        "username": ("username", "email", "tel"),
+    }.get(identifier_type, ("username", "email", "tel"))
+    identifiers = sorted(
+        (c for c in classified if c.token in preferred),
+        key=lambda c: (preferred.index(c.token), -c.score, c.control.index),
+    )
+    best_password = passwords[0] if passwords and password else None
+    best_identifier = None
+    if identifiers and identifier:
+        same_form = [
+            c for c in identifiers
+            if best_password is not None
+            and c.control.form_index is not None
+            and c.control.form_index == best_password.control.form_index
+        ]
+        best_identifier = same_form[0] if same_form else identifiers[0]
+
+    fills: List[Dict[str, Any]] = []
+    if best_identifier is not None:
+        fills.append({"index": best_identifier.control.index, "token": best_identifier.token, "value": identifier})
+    if best_password is not None:
+        fills.append({"index": best_password.control.index, "token": "current-password", "value": password})
+    return fills
 
 
 def classify_checkout_control(control: LoginControl) -> Optional[ClassifiedLoginControl]:

@@ -1,22 +1,21 @@
-"""``hermes vault`` — manage the local encrypted autofill vault.
+"""``hermes vault`` — manage model-blind autofill credentials.
 
 Subcommands:
-- ``hermes vault add``   interactive wizard; the password is read via
-  getpass (never echoed, never accepted as argv). The login identifier is
-  visible metadata and prompted normally.
+- ``hermes vault add``   interactive wizard; logins go through the configured
+  credential broker while cards and addresses remain in the local vault.
 - ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
 
-The vault backs the password-blind browser autofill tools
-(``browser_vault_list`` / ``browser_vault_fill``): the agent sees handles
-and login identifiers, types the identifier itself, and fills the password
-server-side without ever seeing it.
+The vault backs model-blind browser autofill tools
+(``browser_vault_list`` / ``browser_vault_fill``): the agent sees opaque
+handles while both the identifier and password are filled server-side.
 """
 
 from __future__ import annotations
 
 import getpass
+import os
 
 
 def _console():
@@ -29,15 +28,13 @@ def _cmd_add(args) -> None:
     from agent.vault_store import (
         LOGIN_IDENTIFIER_TYPES,
         VAULT_KINDS,
-        VaultError,
         get_vault_store,
     )
 
     c = _console()
     c.print(
-        "[bold]Add a vault item[/] (the password is encrypted at rest and the "
-        "agent never sees it; the identifier is visible metadata the agent "
-        "can type itself)"
+        "[bold]Add a vault item[/] (login identifiers and passwords are filled "
+        "server-side and never returned to the agent)"
     )
 
     kind = (args.kind or "").strip().lower()
@@ -51,8 +48,11 @@ def _cmd_add(args) -> None:
     while not label:
         label = input("Label (e.g. 'GitHub work account'): ").strip()
 
+    sensitive = {}
     try:
         if kind == "login":
+            from agent.credential_broker import get_credential_broker
+
             origin = ""
             while not origin:
                 origin = input("Site origin (e.g. https://github.com): ").strip()
@@ -70,19 +70,19 @@ def _cmd_add(args) -> None:
             password = ""
             while not password:
                 password = getpass.getpass("Password (hidden): ")
-            otp_secret = getpass.getpass(
-                "Authenticator key (optional, hidden; the 2FA \"setup key\" or otpauth:// link — Enter to skip): ")
-            # identifier_type/identifier are stored as metadata (not secret);
-            # add_item moves them out of the encrypted payload.
-            secret = {
-                "identifier_type": id_type,
-                "identifier": identifier,
-                "password": password,
-                **({"otp_secret": otp_secret} if otp_secret.strip() else {}),
-            }
-            meta = get_vault_store().add_item(
-                kind="login", label=label, secret=secret, origin=origin
-            )
+            sensitive["password"] = password
+            broker = get_credential_broker()
+            backend = broker.write_backend()
+            if backend.needs_unlock and not backend.is_unlocked():
+                master = getpass.getpass(f"Unlock {backend.display_name} (hidden): ")
+                try:
+                    backend.unlock(master)  # type: ignore[attr-defined]
+                finally:
+                    del master
+            saved = broker.save_login(label=label, origin=origin, identifier_type=id_type,
+                                      identifier=identifier, password=password)
+            meta = saved.meta
+            del password
         else:
             from agent.vault_store import ADDRESS_FIELDS, PAYMENT_FIELDS, REQUIRED_FIELDS
 
@@ -92,6 +92,7 @@ def _cmd_add(args) -> None:
                 origin = input("Site origin the item may be filled on (e.g. https://shop.example.com): ").strip()
             c.print(f"[dim]{kind} fields are filled only on that origin; card values are read hidden.[/]")
             secret = {}
+            sensitive = secret
             for field in fields:
                 required = field in REQUIRED_FIELDS[kind]
                 prompt = f"{field.replace('_', ' ')}{'' if required else ' (optional)'}: "
@@ -102,9 +103,14 @@ def _cmd_add(args) -> None:
                 if value:
                     secret[field] = value
             meta = get_vault_store().add_item(kind=kind, label=label, secret=secret, origin=origin)
-    except VaultError as exc:
-        c.print(f"[red]Error:[/] {exc}")
+    except Exception as exc:
+        from agent.vault_store import scrub_secret_from_text
+        c.print(f"[red]Error:[/] {scrub_secret_from_text(str(exc), sensitive)}")
         return
+    finally:
+        sensitive.clear()
+        if "password" in locals():
+            password = ""
 
     c.print(f"[green]Stored.[/] handle=[bold]{meta.id}[/] kind={meta.kind} origin={meta.origin or '-'}")
 
@@ -139,47 +145,204 @@ def _cmd_list(args) -> None:
 
 
 def _cmd_sources(args) -> None:
-    """Show the detected password managers; `--disable`/`--enable` flip the opt-out (`vault.<name>.enabled`)."""
+    """Show password managers and configure read/write routing."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.base import external_backend_classes, is_installed
     from hermes_cli.config import _ensure_dict, load_config, save_config
 
     c = _console()
     classes = {cls.name: cls for cls in external_backend_classes()}
-    if args.enable or args.disable:
-        name = args.enable or args.disable
+    if args.enable or args.disable or args.write:
+        name = args.enable or args.disable or args.write
+        if name == "local" and not args.write:
+            c.print("[red]local is always enabled and cannot be toggled[/]")
+            return
+        if name == "local" and args.write:
+            cfg = load_config()
+            cfg.setdefault("vault", {})["write_backend"] = "local"
+            save_config(cfg)
+            c.print("[green]Hermes vault[/] is now the credential write backend.")
+            return
+        if args.write and name not in {"local", "bitwarden", "bitwarden_secrets"}:
+            c.print("[red]Writable credential backends are local, bitwarden and bitwarden_secrets.[/]")
+            return
         if name not in classes:
             c.print(f"[red]Unknown password manager {name!r}[/] (expected one of {', '.join(classes)})")
+            return
+        if (args.enable or args.write) and not is_installed(name):
+            c.print(f"[red]{classes[name].display_name} CLI is not installed.[/]")
             return
         cfg = load_config()
         section = _ensure_dict(_ensure_dict(cfg, "vault"), name)
         if args.enable:
-            section.pop("enabled", None)  # detected managers are on by default; drop the opt-out
-        else:
+            section["enabled"] = True
+        elif args.disable:
             section["enabled"] = False
+            if cfg["vault"].get("write_backend") == name:
+                cfg["vault"]["write_backend"] = "local"
+        else:
+            section["enabled"] = True
+            cfg["vault"]["write_backend"] = name
         save_config(cfg)
-        c.print(f"[green]{classes[name].display_name} {'on' if args.enable else 'off'}[/] for browser logins.")
+        if args.write:
+            c.print(f"[green]{classes[name].display_name}[/] is now the credential write backend.")
+        else:
+            c.print(f"[green]{classes[name].display_name} {'on' if args.enable else 'off'}[/] for browser logins.")
         return
     enabled = {b.name for b in enabled_backends()}
+    from agent.vault_backends.base import vault_config
+    write_backend = str(vault_config().get("write_backend") or "local")
     for name, cls in classes.items():
         if name in enabled:
-            status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            status = "[green]configured[/] · unattended" if name == "bitwarden_secrets" else (
+                "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            )
         elif is_installed(name):
             status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
         else:
             status = "[dim]not installed[/]"
-        c.print(f"  {cls.display_name:<10} {status}")
+        marker = " · [bold]writes here[/]" if write_backend == name else ""
+        c.print(f"  {cls.display_name:<10} {status}{marker}")
+    if write_backend == "local":
+        c.print("  Hermes vault [green]enabled[/] · [bold]writes here[/]")
     c.print("[dim]Managers are picked up automatically when their CLI is installed and signed in.[/]")
 
 
 def _cmd_rm(args) -> None:
-    from agent.vault_store import get_vault_store
+    from agent.credential_broker import get_credential_broker
 
     c = _console()
-    if get_vault_store().remove_item(args.handle):
-        c.print(f"[green]Removed[/] {args.handle}")
+    broker = get_credential_broker()
+    sensitive = {}
+    try:
+        backend = broker.backend_for_handle(args.handle)
+        if backend is not None and backend.needs_unlock and not backend.is_unlocked():
+            master = getpass.getpass(f"Unlock {backend.display_name} (hidden): ")
+            sensitive["master_password"] = master
+            backend.unlock(master)  # type: ignore[attr-defined]
+            del master
+        if broker.remove_item(args.handle):
+            c.print(f"[green]Removed[/] {args.handle}")
+        else:
+            c.print(f"[red]No vault item with handle {args.handle!r}[/]")
+    except Exception as exc:
+        from agent.vault_store import scrub_secret_from_text
+        c.print(f"[red]Error:[/] {scrub_secret_from_text(str(exc), sensitive)}")
+    finally:
+        sensitive.clear()
+        if "master" in locals():
+            master = ""
+
+
+def _cmd_migrate_local(args) -> None:
+    from agent.credential_broker import get_credential_broker
+    from agent.vault_backends.base import UnlockRequired
+
+    c = _console()
+    broker = get_credential_broker()
+    while True:
+        try:
+            result = broker.migrate_local_logins(execute=bool(args.execute))
+            break
+        except UnlockRequired as exc:
+            master = getpass.getpass(f"Unlock {exc.backend.display_name} (hidden): ")
+            try:
+                exc.backend.unlock(master)  # type: ignore[attr-defined]
+            except Exception as unlock_exc:
+                from agent.vault_store import scrub_secret_from_text
+                c.print(f"[red]Error:[/] {scrub_secret_from_text(str(unlock_exc), {'master': master})}")
+                return
+            finally:
+                master = ""
+        except Exception as exc:
+            c.print(f"[red]Error:[/] {exc}")
+            return
+
+    planned = sum(item.status == "would_import" for item in result.items)
+    c.print(
+        f"Local login migration: scanned={len(result.items)} target={result.target} "
+        f"imported={result.imported} skipped={result.skipped} failed={result.failed} planned={planned}"
+    )
+    for item in result.items:
+        style = "red" if item.status == "failed" else "dim"
+        suffix = f" — {item.error}" if item.error else ""
+        c.print(f"[{style}]{item.status}[/] {item.label} · {item.identifier} · {item.origin}{suffix}")
+    c.print("[dim]Local source items were not deleted.[/]")
+
+
+def _sdk_endpoints(server_url: str) -> tuple[str, str]:
+    base = (server_url or "").strip().rstrip("/")
+    if not base or base == "https://vault.bitwarden.com":
+        return "", ""
+    if base == "https://vault.bitwarden.eu":
+        return "https://api.bitwarden.eu", "https://identity.bitwarden.eu"
+    return f"{base}/api", f"{base}/identity"
+
+
+def _cmd_setup_bitwarden_secrets(args) -> None:
+    """Configure a dedicated BSM project for model-blind login storage."""
+    from agent.secret_sources import bitwarden as bw
+    from hermes_cli.config import get_env_path, load_config, save_config, save_env_value
+    from hermes_cli.secret_prompt import masked_secret_prompt
+    from hermes_cli.secrets_cli import _list_projects
+
+    c = _console()
+    binary = bw.find_bws(install_if_missing=True)
+    if binary is None:
+        c.print("[red]Could not install the Bitwarden Secrets Manager CLI.[/]")
+        return
+    token_env = "BWS_ACCESS_TOKEN"
+    token = os.environ.get(token_env, "").strip()
+    if not token:
+        if not os.isatty(0):
+            c.print(f"[red]{token_env} is required in non-interactive mode.[/]")
+            return
+        token = masked_secret_prompt(f"Paste the machine-account access token ({token_env}): ").strip()
+    if not token:
+        c.print("[red]Empty access token; nothing changed.[/]")
+        return
+    server_url = str(args.server_url or os.environ.get("BWS_SERVER_URL", "")).strip()
+    projects = _list_projects(binary, token, c, server_url=server_url)
+    if projects is None:
+        c.print("[red]The token could not be validated; nothing changed.[/]")
+        return
+    project_id = str(args.project_id or "").strip()
+    if project_id:
+        if not any(str(project.get("id")) == project_id for project in projects):
+            c.print("[red]The requested project is not visible to this machine account.[/]")
+            return
     else:
-        c.print(f"[red]No vault item with handle {args.handle!r}[/]")
+        if not projects:
+            c.print("[red]No project is visible to this machine account.[/]")
+            return
+        if not os.isatty(0):
+            c.print("[red]--project-id is required in non-interactive mode.[/]")
+            return
+        from hermes_cli._secrets_common import print_table, prompt_index
+        print_table(c, (("#", {"style": "cyan", "width": 4}), "Name", ("ID", {"style": "dim"})),
+                    ((str(i), p.get("name", "?"), p.get("id", "?")) for i, p in enumerate(projects, 1)))
+        choice = prompt_index(c, f"Select the dedicated credential project [1-{len(projects)}]: ", len(projects))
+        project_id = str(projects[choice - 1]["id"])
+
+    api_url, identity_url = _sdk_endpoints(server_url)
+    save_env_value(token_env, token)
+    cfg = load_config()
+    vault_cfg = cfg.setdefault("vault", {})
+    vault_cfg["write_backend"] = "bitwarden_secrets"
+    vault_cfg.setdefault("bitwarden", {})["enabled"] = False
+    vault_cfg["bitwarden_secrets"] = {
+        "enabled": True,
+        "organization_id": "",
+        "project_id": project_id,
+        "access_token_env": token_env,
+        "keychain_service": "",
+        "keychain_account": "",
+        "api_url": api_url,
+        "identity_url": identity_url,
+    }
+    save_config(cfg)
+    c.print(f"[green]Configured Bitwarden Secrets Manager credential storage.[/] Token: {get_env_path()}")
+    c.print("Restart the Hermes gateway, then run `hermes vault migrate-local` before `--execute`.")
 
 
 def register_cli(subparser) -> None:
@@ -203,10 +366,30 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
+    p_migrate = subs.add_parser(
+        "migrate-local",
+        help="Copy local login items into the configured external write backend",
+    )
+    p_migrate.add_argument(
+        "--execute",
+        action="store_true",
+        help="Perform the copy (without this flag, show a dry-run plan)",
+    )
+    p_migrate.set_defaults(_vault_handler=_cmd_migrate_local)
+
+    p_bws = subs.add_parser(
+        "setup-bitwarden-secrets",
+        help="Use a dedicated Bitwarden Secrets Manager project for unattended login storage",
+    )
+    p_bws.add_argument("--project-id", help="Dedicated credential project UUID (interactive picker when omitted)")
+    p_bws.add_argument("--server-url", default="", help="Bitwarden vault URL; empty uses US Cloud")
+    p_bws.set_defaults(_vault_handler=_cmd_setup_bitwarden_secrets)
+
+    p_src = subs.add_parser("sources", help="Show password-manager login backends")
     group = p_src.add_mutually_exclusive_group()
-    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
+    group.add_argument("--disable", metavar="NAME", help="Stop using a manager: onepassword | bitwarden | bitwarden_secrets")
     group.add_argument("--enable", metavar="NAME", help="Undo --disable")
+    group.add_argument("--write", metavar="NAME", help="Save new/changed logins here: local | bitwarden | bitwarden_secrets")
     p_src.set_defaults(_vault_handler=_cmd_sources)
 
 

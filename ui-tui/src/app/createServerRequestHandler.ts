@@ -20,12 +20,25 @@ const strList = (v: unknown): null | string[] =>
  * (`tui_gateway/server_requests.py`). Each method opens its overlay card;
  * the card's answer path resolves the request through `serverRequestStore`.
  * Methods the terminal cannot answer (desktop GUI bridges: `preview.*`,
- * `window.read`, `tour`, `mcp.setup`, `terminal.read`, the vault card
- * prompts) return `false` so the channel answers `-32601` and the tool
+ * `window.read`, `tour`, `mcp.setup`, `terminal.read`, and `vault.code`)
+ * return `false` so the channel answers `-32601` and the tool
  * fails fast instead of waiting out its deadline.
  */
 export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (request: ServerRequest) => boolean {
   const { ringPromptBell, setStatus } = ctx
+
+  const revealSensitivePrompt = () =>
+    patchOverlayState({
+      agents: false,
+      journey: false,
+      modelPicker: false,
+      pager: null,
+      petPicker: false,
+      pluginsHub: false,
+      sessions: false,
+      skillsHub: false,
+      widget: null
+    })
 
   const open = (request: ServerRequest, status: string) => {
     rememberServerRequest(request)
@@ -100,12 +113,28 @@ export function createServerRequestHandler(ctx: ServerRequestHandlerContext): (r
         return true
 
       case 'vault.unlock_prompt':
+        revealSensitivePrompt()
         patchOverlayState({
           vaultUnlock: { backend: str(p.backend), displayName: str(p.display_name), requestId: request.id }
         })
         open(request, `unlock ${str(p.display_name)}`)
 
         return true
+      case 'vault.save_login': {
+        const origin = str(p.origin)
+
+        revealSensitivePrompt()
+        patchOverlayState({
+          vaultSaveLogin: {
+            origin,
+            requestId: request.id,
+            site: str(p.site) || origin
+          }
+        })
+        open(request, 'login details needed')
+
+        return true
+      }
 
       default:
         return false

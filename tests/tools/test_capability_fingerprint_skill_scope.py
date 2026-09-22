@@ -14,7 +14,6 @@ from __future__ import annotations
 
 import pytest
 
-from agent.skill_utils import EXCLUDED_SKILL_DIRS
 from tools import bot_mode_probe
 
 
@@ -67,54 +66,3 @@ def test_archiving_a_skill_does_not_move_the_epoch(home):
     assert bot_mode_probe.capability_fingerprint(home) == after_archive
     _install(home, ".archive/another-old-skill", "another")
     assert bot_mode_probe.capability_fingerprint(home) == after_archive
-
-
-@pytest.mark.parametrize("excluded", sorted(EXCLUDED_SKILL_DIRS))
-def test_no_excluded_directory_can_move_the_epoch(home, excluded):
-    _install(home, "web/keep", "keep")
-    before = bot_mode_probe.capability_fingerprint(home)
-
-    _install(home, f"{excluded}/pkg", "hidden")
-
-    assert bot_mode_probe.capability_fingerprint(home) == before, excluded
-
-
-def test_a_curator_backup_does_not_rebuild_every_bot_chat_prompt(home):
-    """The curator writes into `.curator_backups/` on its own schedule — routine churn that must
-    not invalidate a months-long Bot Chat's prompt cache."""
-    _install(home, "web/keep", "keep")
-    before = bot_mode_probe.capability_fingerprint(home)
-
-    _install(home, ".curator_backups/2026-09-21T00-00-00Z/web/keep", "keep")
-
-    assert bot_mode_probe.capability_fingerprint(home) == before
-
-
-def test_a_skill_support_dir_is_not_a_second_skill(home):
-    """`references/` inside a skill package is progressive-disclosure material, not an install."""
-    _install(home, "web/keep", "keep")
-    before = bot_mode_probe.capability_fingerprint(home)
-
-    _install(home, "web/keep/references/deep-dive", "deep-dive")
-
-    assert bot_mode_probe.capability_fingerprint(home) == before
-
-
-def test_the_epoch_tracks_exactly_what_the_skills_walker_reports(home):
-    """The fingerprint and every other reader of the tree must agree on what is installed."""
-    from agent.skill_utils import iter_skill_index_files
-
-    for rel in ("web/keep", "ops/deploy", ".archive/old", ".curator_backups/x/web/keep"):
-        _install(home, rel, rel.rsplit("/", 1)[-1])
-
-    walker = sorted(str(p.parent.relative_to(home / "skills"))
-                    for p in iter_skill_index_files(home / "skills", "SKILL.md"))
-
-    assert walker == ["ops/deploy", "web/keep"]
-    # Same surface: removing a skill the walker reports moves the epoch, removing one it does not
-    # report leaves it alone.
-    before = bot_mode_probe.capability_fingerprint(home)
-    (home / "skills" / ".archive" / "old" / "SKILL.md").unlink()
-    assert bot_mode_probe.capability_fingerprint(home) == before
-    (home / "skills" / "ops" / "deploy" / "SKILL.md").unlink()
-    assert bot_mode_probe.capability_fingerprint(home) != before

@@ -21,6 +21,7 @@ Use when writing research reports with checked claims.
 | License | MIT |
 | Platforms | linux, macos, windows |
 | Tags | `Research`, `Reports`, `Citations`, `Evidence`, `Sources` |
+| Related skills | [`grounded-citations`](../../bundled/research/research-grounded-citations.md) |
 
 ## Reference: full SKILL.md
 
@@ -37,6 +38,10 @@ claims without trusting the writer's memory.
 
 The workflow works with ordinary Hermes tools and local files. It does not require
 a private service, a particular citation manager, or another unpublished skill.
+
+**Catalogue boundary:** This skill covers evidence-gated research and report
+handoffs. The related `grounded-citations` skill covers ledger mechanics. They
+are complementary, and neither is a hard dependency of the other.
 
 ## When to use it
 

@@ -23,6 +23,11 @@ def private_replace(path: Path, data: str) -> None:
             stream.flush()
             os.fsync(stream.fileno())
         os.replace(name, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if os.path.exists(name):
             os.unlink(name)
@@ -58,6 +63,9 @@ def configure() -> None:
 
 def run(service: str, profile: str = 'default') -> None:
     if Path('/etc/hermes-sprites-state/stopped').exists():
+        # A cold boot also starts Services. Exiting would cause a restart loop.
+        import threading
+        threading.Event().wait()
         return
     env = environment()
     executable = str(ROOT / '.venv/bin/hermes')

@@ -43,6 +43,11 @@ def write_managed(path: Path, values: dict[str, str], uid: int, gid: int) -> Non
             os.fsync(stream.fileno())
             os.fchown(stream.fileno(), uid, gid)
         os.replace(temp, path)
+        directory = os.open(path.parent, os.O_RDONLY)
+        try:
+            os.fsync(directory)
+        finally:
+            os.close(directory)
     finally:
         if os.path.exists(temp):
             os.unlink(temp)

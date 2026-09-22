@@ -26,6 +26,7 @@ if [[ ! -f "$release/.sprites-ready" ]]; then
     npm --prefix web run build
     npm --prefix ui-tui run build
     touch .sprites-ready
+    sync
 fi
 id hermes >/dev/null 2>&1 || useradd --uid 10000 --create-home --home-dir /opt/data --shell /bin/bash hermes
 # No checkout or install command writes into the user home.
@@ -33,3 +34,4 @@ id hermes >/dev/null 2>&1 || useradd --uid 10000 --create-home --home-dir /opt/d
 ln -sfn "$release" /opt/hermes.next
 mv -Tf /opt/hermes.next /opt/hermes
 ln -sfn /opt/hermes/.venv/bin/hermes /usr/local/bin/hermes
+sync

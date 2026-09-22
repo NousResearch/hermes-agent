@@ -226,6 +226,37 @@ def test_iter_skill_index_files_keeps_support_named_categories(tmp_path):
     assert is_excluded_skill_path(scripts_skill / "SKILL.md") is False
 
 
+def test_iter_skill_index_files_prunes_agent_metadata_dirs(tmp_path):
+    """Nested compatibility mirrors stay hidden without masking an external root."""
+    primary = tmp_path / "gstack" / "qa"
+    primary.mkdir(parents=True)
+    (primary / "SKILL.md").write_text(
+        "---\nname: qa\ndescription: Run QA.\n---\n", encoding="utf-8"
+    )
+
+    mirror = tmp_path / "gstack" / ".agents" / "skills" / "qa"
+    mirror.mkdir(parents=True)
+    (mirror / "SKILL.md").write_text(
+        "---\nname: qa\ndescription: Run QA.\n---\n", encoding="utf-8"
+    )
+
+    external_root = tmp_path / ".agents" / "skills"
+    external = external_root / "shared"
+    external.mkdir(parents=True)
+    (external / "SKILL.md").write_text(
+        "---\nname: shared\ndescription: Run shared skill.\n---\n", encoding="utf-8"
+    )
+
+    assert list(iter_skill_index_files(tmp_path / "gstack", "SKILL.md")) == [
+        primary / "SKILL.md"
+    ]
+    assert list(iter_skill_index_files(external_root, "SKILL.md")) == [
+        external / "SKILL.md"
+    ]
+    assert is_excluded_skill_path(mirror / "SKILL.md") is False
+    assert is_excluded_skill_path(external / "SKILL.md") is False
+
+
 def test_skill_support_path_uses_explicit_discovery_root_not_cwd(tmp_path, monkeypatch):
     discovery_root = tmp_path / "site-packages" / "skills"
     umbrella = discovery_root / "category" / "umbrella"

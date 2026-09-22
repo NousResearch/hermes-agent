@@ -26,6 +26,11 @@ EXCLUDED_SKILL_DIRS = frozenset((
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
 
+# Compatibility mirrors generated inside a skill package. Keep these out of a
+# package-root scan without suppressing an explicitly configured external root
+# such as ``~/.agents/skills``.
+NESTED_SKILL_MIRROR_DIRS = frozenset((".agents",))
+
 # Progressive-disclosure support dirs inside a skill package: loaded explicitly
 # via skill_view(skill, file_path=...), never scanned as standalone skills.
 SKILL_SUPPORT_DIRS = frozenset(("references", "templates", "assets", "scripts"))
@@ -773,7 +778,12 @@ def iter_skill_index_files(skills_dir: Path, filename: str):
             dirs.remove(ORG_MIRROR_DIR_NAME)
         elif root == org_root:
             dirs[:] = [d for d in dirs if d == active_org]
-        dirs[:] = [d for d in dirs if d not in EXCLUDED_SKILL_DIRS and not (has_skill_md and d in SKILL_SUPPORT_DIRS)]
+        dirs[:] = [
+            d for d in dirs
+            if d not in EXCLUDED_SKILL_DIRS
+            and d not in NESTED_SKILL_MIRROR_DIRS
+            and not (has_skill_md and d in SKILL_SUPPORT_DIRS)
+        ]
         if filename in files:
             matches.append(os.path.join(root, filename))
     yield from map(Path, sorted(matches))

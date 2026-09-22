@@ -3117,6 +3117,7 @@ export const en: Translations = {
       removeFolderFailed: 'Could not remove folder',
       menuRestore: 'Restore',
       workspaceArchived: 'Archived',
+      workspaceShared: 'Shared',
       profileLabel: 'Profile',
       create: 'Create',
       menu: 'Actions',

@@ -2984,6 +2984,7 @@ export const zh = defineLocale({
       removeFolderDesc: '仅从当前项目中移除该文件夹——磁盘上的文件不会被删除。',
       menuRestore: 'Restore',
       workspaceArchived: 'Archived',
+      workspaceShared: 'Shared',
       profileLabel: '配置文件',
       removeFolderFailed: '无法移除文件夹',
       create: '创建',

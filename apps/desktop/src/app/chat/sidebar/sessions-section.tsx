@@ -1,7 +1,7 @@
 import type { useSensors } from '@dnd-kit/core'
 import { useStore } from '@nanostores/react'
 import type * as React from 'react'
-import { useCallback, useEffect, useMemo } from 'react'
+import { Fragment, useCallback, useEffect, useMemo } from 'react'
 
 import { type NewSessionSplitHandler, startNewSessionDrag } from '@/app/chat/new-session-drag'
 import { SidebarPanelLabel } from '@/app/shell/sidebar-label'
@@ -133,6 +133,10 @@ interface SidebarSessionsSectionProps {
   // which then passes `projectContent` on the next render. Takes precedence
   // over `tree` / `groups`.
   projectOverview?: SidebarProjectTree[]
+  // All-profiles view: fold the overview into per-owner profile groups
+  // (archived rows under the owner's own Arkivet sub-group) instead of
+  // one flat pile — a merged row alone cannot say which profile owns it.
+  projectOverviewProfiles?: boolean
   // Per-project preview rows (from the backend tree), keyed by project id.
   projectOverviewPreviews?: Record<string, SessionInfo[]>
   // The exclusion the previews were built with (pins, filter misses, removed
@@ -216,6 +220,7 @@ export function SidebarSessionsSection({
   footer,
   groups,
   projectOverview,
+  projectOverviewProfiles = false,
   projectOverviewPreviews,
   projectOverviewHidden,
   projectsLoading = false,
@@ -521,7 +526,7 @@ export function SidebarSessionsSection({
     // own section below the active list (the Archived group the tree now asks for).
     const activeProjects = sortableProjects.filter(project => !project.archived)
     const archivedProjects = sortableProjects.filter(project => project.archived)
-    const projectsDraggable = activeProjects.length > 1 && !!onReorderProjects
+    const projectsDraggable = !projectOverviewProfiles && activeProjects.length > 1 && !!onReorderProjects
     const Row = projectsDraggable ? SortableProjectOverviewRow : ProjectOverviewRow
 
     const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
@@ -545,7 +550,61 @@ export function SidebarSessionsSection({
 
     const rows = activeProjects.map(project => projectRow(project, Row))
 
-    inner = (
+    if (projectOverviewProfiles) {
+      // Folded claims from several profiles: group by owner so each
+      // project sits under its profile, with the owner's archived
+      // rows in an Arkivet sub-group. Multi-owner rows land in a
+      // Shared group carrying the owner list.
+      const grouped = new Map<string, { label: string; actives: SidebarProjectTree[]; archived: SidebarProjectTree[] }>()
+      const groupOrder: string[] = []
+      for (const project of sortableProjects) {
+        const owners = (project.profiles ?? []).length
+          ? [...(project.profiles ?? [])].sort()
+          : ['default']
+        const key = owners.join(',')
+        let group = grouped.get(key)
+        if (!group) {
+          group = {
+            label:
+              owners.length === 1
+                ? owners[0]
+                : `${t.sidebar.projects.workspaceShared} · ${owners.join(', ')}`,
+            actives: [],
+            archived: [],
+          }
+          grouped.set(key, group)
+          groupOrder.push(key)
+        }
+        ;(project.archived ? group.archived : group.actives).push(project)
+      }
+      inner = (
+        <>
+          {home && projectRow(home, ProjectOverviewRow)}
+          {groupOrder.map(key => {
+            const group = grouped.get(key)!
+            return (
+              <Fragment key={key}>
+                <SidebarGroupRow
+                  label={group.label}
+                  lead={<Codicon name="organization" />}
+                />
+                {group.actives.map(project => projectRow(project, ProjectOverviewRow))}
+                {group.archived.length > 0 && (
+                  <>
+                    <SidebarGroupRow
+                      label={`${t.sidebar.projects.workspaceArchived} · ${group.archived.length}`}
+                      lead={<Codicon name="history" />}
+                    />
+                    {group.archived.map(project => projectRow(project, ProjectOverviewRow))}
+                  </>
+                )}
+              </Fragment>
+            )
+          })}
+        </>
+      )
+    } else {
+      inner = (
       <>
         {home && projectRow(home, ProjectOverviewRow)}
         {projectsDraggable && onReorderProjects ? (
@@ -560,15 +619,17 @@ export function SidebarSessionsSection({
           rows
         )}
         {archivedProjects.length > 0 && (
-          <SidebarGroupRow
-            label={`${t.sidebar.projects.workspaceArchived} · ${archivedProjects.length}`}
-            lead={<Codicon name="history" />}
-          >
+          <>
+            <SidebarGroupRow
+              label={`${t.sidebar.projects.workspaceArchived} · ${archivedProjects.length}`}
+              lead={<Codicon name="history" />}
+            />
             {archivedProjects.map(project => projectRow(project, ProjectOverviewRow))}
-          </SidebarGroupRow>
+          </>
         )}
       </>
-    )
+      )
+    }
   } else if (groups?.length && groups.every(group => group.mode === 'profile' && group.profile)) {
     inner = (
       <GatewayProfileGroups

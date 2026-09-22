@@ -196,10 +196,7 @@ def _response_refusal_text(response: Any) -> str:
     OpenAI-style structured-output refusals put the refusal here and leave ``content`` as filler or
     empty, so the prose detector never sees it.
     """
-    message = _coerce_llm_message(response)
-    if message is None or isinstance(message, str):
-        return ""
-    refusal = _message_field(message, "refusal")
+    refusal = _message_field(_coerce_llm_message(response), "refusal")
     if isinstance(refusal, dict):
         refusal = refusal.get("message") or refusal.get("reason") or refusal.get("text")
     return refusal.strip() if isinstance(refusal, str) else ""

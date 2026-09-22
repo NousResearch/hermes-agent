@@ -15,6 +15,8 @@ from enum import Enum
 from hermes_cli.config import get_hermes_home
 from agent.secret_scope import current_secret_scope, get_secret as _get_secret
 from gateway.shutdown_watchdog import (
+    DEFAULT_LIVENESS_STARVATION_LOAD_FACTOR,
+    DEFAULT_LIVENESS_STARVATION_MAX_HOLD_S,
     DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES,
     DEFAULT_LOOP_WATCHDOG_TIMEOUT_S,
@@ -623,6 +625,12 @@ class GatewayConfig:
     loop_watchdog_probe_interval_s: float = DEFAULT_LOOP_WATCHDOG_INTERVAL_S
     loop_watchdog_probe_timeout_s: float = DEFAULT_LOOP_WATCHDOG_TIMEOUT_S
     loop_watchdog_max_strikes: int = DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
+    # Host-starvation classification for the missed-probe escalation. Above
+    # max(liveness_starvation_load_factor * ncpu, an absolute floor) the loop is STARVED, not
+    # wedged — exiting 75 hands the replacement process the same starved host — so the watchdog
+    # holds and pages, for at most liveness_starvation_max_hold_s of continuous starvation.
+    liveness_starvation_load_factor: float = DEFAULT_LIVENESS_STARVATION_LOAD_FACTOR
+    liveness_starvation_max_hold_s: float = DEFAULT_LIVENESS_STARVATION_MAX_HOLD_S
     unauthorized_dm_behavior: str = "pair"  # UNAUTHORIZED_DM_BEHAVIORS
     unauthorized_dm_decline_message: str = ""  # "decline" reply text; empty → DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
     streaming: StreamingConfig = field(default_factory=StreamingConfig)
@@ -637,7 +645,9 @@ class GatewayConfig:
         "max_concurrent_sessions", "multiplex_profiles",
         "room_link_url", "systemd_watchdog_seconds", "loop_watchdog",
         "loop_watchdog_probe_interval_s", "loop_watchdog_probe_timeout_s",
-        "loop_watchdog_max_strikes", "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
+        "loop_watchdog_max_strikes", "liveness_starvation_load_factor",
+        "liveness_starvation_max_hold_s",
+        "unauthorized_dm_behavior", "unauthorized_dm_decline_message",
     )
 
     def __post_init__(self) -> None:
@@ -785,6 +795,10 @@ class GatewayConfig:
             loop_watchdog_probe_interval_s=bounded_float("loop_watchdog_probe_interval_s", DEFAULT_LOOP_WATCHDOG_INTERVAL_S, 1.0, 3600.0),
             loop_watchdog_probe_timeout_s=bounded_float("loop_watchdog_probe_timeout_s", DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, 1.0, 600.0),
             loop_watchdog_max_strikes=max_strikes,
+            liveness_starvation_load_factor=bounded_float(
+                "liveness_starvation_load_factor", DEFAULT_LIVENESS_STARVATION_LOAD_FACTOR, 0.1, 1000.0),
+            liveness_starvation_max_hold_s=bounded_float(
+                "liveness_starvation_max_hold_s", DEFAULT_LIVENESS_STARVATION_MAX_HOLD_S, 1.0, 86400.0),
             max_concurrent_sessions=max_concurrent_sessions,
             unauthorized_dm_behavior=_normalize_choice(data.get("unauthorized_dm_behavior"), UNAUTHORIZED_DM_BEHAVIORS, "pair"),
             unauthorized_dm_decline_message=str(data.get("unauthorized_dm_decline_message") or "").strip(),

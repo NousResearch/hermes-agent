@@ -28,7 +28,8 @@ from gateway.restart import (
 )
 from gateway.run_shutdown import _log_suppressed, _send_error
 from gateway.shutdown_watchdog import (
-    DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
+    DEFAULT_HEARTBEAT_INTERVAL_S, DEFAULT_LIVENESS_STARVATION_LOAD_FACTOR,
+    DEFAULT_LIVENESS_STARVATION_MAX_HOLD_S, DEFAULT_LOOP_WATCHDOG_INTERVAL_S,
     DEFAULT_LOOP_WATCHDOG_MAX_STRIKES, DEFAULT_LOOP_WATCHDOG_TIMEOUT_S, loop_heartbeat_forever,
 )
 from typing import Any, Dict, Optional, Tuple
@@ -680,6 +681,14 @@ class GatewayStartupMixin:
                     )),
                     max_strikes=int(getattr(
                         config, "loop_watchdog_max_strikes", DEFAULT_LOOP_WATCHDOG_MAX_STRIKES
+                    )),
+                    starvation_load_factor=float(getattr(
+                        config, "liveness_starvation_load_factor",
+                        DEFAULT_LIVENESS_STARVATION_LOAD_FACTOR,
+                    )),
+                    starvation_max_hold_s=float(getattr(
+                        config, "liveness_starvation_max_hold_s",
+                        DEFAULT_LIVENESS_STARVATION_MAX_HOLD_S,
                     )),
                 )
             except Exception:

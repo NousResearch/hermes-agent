@@ -30,19 +30,20 @@ def test_failed_sync_exits_nonzero_and_retries_after_source_repair(tmp_path, mon
     assert load_sync_manifest(home)["agents"]["claude-code"]["digest"] != original_digest
 
 
-@pytest.mark.parametrize("dry_run", [True, False])
-def test_partial_import_reports_failure_without_marking_source_fully_synced(tmp_path, monkeypatch, dry_run):
+@pytest.mark.parametrize("mode", ["dry-run", "apply", "noninteractive-preview"])
+def test_partial_import_reports_failure_without_marking_source_fully_synced(tmp_path, monkeypatch, mode):
     home, source = tmp_path / "home", tmp_path / "source"
     source.mkdir()
     monkeypatch.setenv("HERMES_HOME", str(home))
     (source / "settings.json").write_text("{broken", encoding="utf-8")
     (source / "CLAUDE.md").write_text("- Prefer concise replies.\n", encoding="utf-8")
+    monkeypatch.setattr("sys.stdin.isatty", lambda: False)
     args = SimpleNamespace(agent="claude-code", source=str(source), overwrite=False,
-                           dry_run=dry_run, yes=True, sync=False)
+                           dry_run=mode == "dry-run", yes=mode != "noninteractive-preview", sync=False)
     with pytest.raises(SystemExit) as failed:
         import_agent_command(args)
     assert failed.value.code == 1
     entry = load_sync_manifest(home)["agents"].get("claude-code", {})
     assert "digest" not in entry
-    if not dry_run:
+    if mode == "apply":
         assert "Prefer concise replies" in (home / "memories" / "MEMORY.md").read_text(encoding="utf-8")

@@ -607,6 +607,8 @@ def import_agent_command(args) -> None:
         if not sys.stdin.isatty():
             print_info("Non-interactive session — preview only.")
             print_info(f"To execute, re-run with: hermes import-agent {agent} --yes")
+            if summary.get("error"):
+                raise SystemExit(1)
             return
         if not prompt_yes_no("Proceed with import?", default=True):
             print_info("Import cancelled.")

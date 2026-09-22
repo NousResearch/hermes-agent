@@ -349,7 +349,9 @@ def test_config_gate_off_no_ledger_writes(ledger_env, monkeypatch):
 
     import hermes_cli.config as _cfg
 
-    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {"skills": {"ledger": False}})
+    off = {"skills": {"ledger": False}}
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: off)
+    monkeypatch.setattr(_cfg, "load_config_readonly", lambda *a, **k: off)
 
     assert _create()["success"] is True
     patched = json.loads(

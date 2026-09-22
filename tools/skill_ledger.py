@@ -89,8 +89,8 @@ def blobs_dir() -> Path:
 def ledger_enabled() -> bool:
     """Config gate ``skills.ledger`` (default True); lazy import keeps this importable without the CLI."""
     try:
-        from hermes_cli.config import cfg_get, load_config
-        return bool(cfg_get(load_config(), "skills", "ledger", default=True))
+        from hermes_cli.config import cfg_get, load_config_readonly  # read-only hot path: no deepcopy
+        return bool(cfg_get(load_config_readonly(), "skills", "ledger", default=True))
     except Exception as e:  # pragma: no cover — best-effort config read
         logger.debug("skill_ledger: config read failed (%s); defaulting on", e)
         return True

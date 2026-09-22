@@ -185,6 +185,7 @@ def _apply_mcp_change(config: dict, targets: List[str], action: str) -> Set[str]
 def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = "cli"):
     """Print a summary of enabled/disabled toolsets and MCP tool filters."""
     from hermes_cli.tools_config import CONFIGURABLE_TOOLSETS, _get_effective_configurable_toolsets
+    from tools.mcp_tool_schema import _normalize_name_filter
 
     effective_all = _get_effective_configurable_toolsets()
     effective = [(k, l, d) for (k, l, d) in effective_all if _toolset_allowed_for_platform(k, platform)]
@@ -213,11 +214,18 @@ def _print_tools_list(enabled_toolsets: set, mcp_servers: dict, platform: str = 
                     f"{srv_name}: expected a mapping, got {type(srv_cfg).__name__} — skipped")
                 continue
             tools_cfg = srv_cfg.get("tools") or {}
-            exclude, include = tools_cfg.get("exclude") or [], tools_cfg.get("include")
-            if isinstance(include, list):
-                _print_info(f"{srv_name}  [include only: {', '.join(include) or '(none)'}]")
+            if not isinstance(tools_cfg, dict):
+                _print_warning(
+                    f"{srv_name}.tools: expected a mapping, got {type(tools_cfg).__name__} — skipped")
+                continue
+            include_raw = tools_cfg.get("include")
+            include = _normalize_name_filter(include_raw, f"mcp_servers.{srv_name}.tools.include")
+            exclude = _normalize_name_filter(tools_cfg.get("exclude"), f"mcp_servers.{srv_name}.tools.exclude")
+            # Match runtime precedence, including an explicit empty whitelist.
+            if isinstance(include_raw, (str, list, tuple, set)):
+                _print_info(f"{srv_name}  [include only: {', '.join(sorted(include)) or '(none)'}]")
             elif exclude:
-                _print_info(f"{srv_name}  [excluded: {color(', '.join(exclude), Colors.YELLOW)}]")
+                _print_info(f"{srv_name}  [excluded: {color(', '.join(sorted(exclude)) or '(none)', Colors.YELLOW)}]")
             else:
                 _print_info(f"{srv_name}  {color('all tools enabled', Colors.DIM)}")
 

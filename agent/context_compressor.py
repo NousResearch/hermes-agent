@@ -3483,11 +3483,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         head = record[:head_len].rstrip("\n")
         tail = record[-tail_len:].lstrip("\n") if tail_len else ""
         elided = len(record) - len(head) - len(tail)
-        marker = marker_template.format(elided=elided)
-        res = head + marker + tail
-        if len(res) > limit:
-            res = head[:max(0, head_len - (len(res) - limit))] + marker + tail
-        return res
+        return head + marker_template.format(elided=elided) + tail
 
     def _record_summary_input_coverage(self, coverage: Dict[str, int]) -> None:
         """Expose lean sampling coverage without including transcript content in telemetry."""

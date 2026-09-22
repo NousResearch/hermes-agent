@@ -3378,6 +3378,8 @@ export const zhOverrides = {
     queueLostDiscardTip: '网关在该轮次进行中重启，无法完成。丢弃后其后的排队轮次将继续执行。',
     queueResume: '继续',
     queueResumeTip: '已被停止操作暂停 — 继续发送排队的回合',
+    queueSteerRefusedTitle: '未能引导',
+    queueSteerRefusedBody: '当前回合无法接受这次修正。你的消息仍在队列中，并已移到最前面。',
     queueStuckTitle: '排队消息未发送',
     queueStuckBody: '排队的对话多次发送失败。它仍在队列中，请重试发送。',
     queueDroppedTitle: '已丢弃排队内容',

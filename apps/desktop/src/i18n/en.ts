@@ -3497,6 +3497,9 @@ export const en: Translations = {
       'Re-select the terminal lines (Ctrl/Cmd+L) before sending — this chip has no original text.',
     queuedTerminalSelectionExpiredBody:
       'This queued terminal selection is no longer available. Re-select the lines (Ctrl/Cmd+L) and queue the message again.',
+    queueSteerRefusedTitle: 'Steer not taken',
+    queueSteerRefusedBody:
+      'The live turn could not take the redirect. Your message stays queued and is now first in line.',
     previewUnavailable: 'Preview unavailable',
     previewLabel: label => `Preview ${label}`,
     couldNotPreview: label => `Could not preview ${label}`,

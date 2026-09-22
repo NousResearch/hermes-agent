@@ -545,7 +545,7 @@ class TestReasoningEchoModeParsing:
 
 
 class TestStaleThinkingWireTruthHonoursOverride:
-    """The preflight estimator and the compressor tail walk must agree, override included."""
+    """The preflight estimator and the compressor tail walk must agree on the ACTIVE route."""
 
     ROUTE = ("chat_completions", "opencode-go", "deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1")
 
@@ -554,31 +554,88 @@ class TestStaleThinkingWireTruthHonoursOverride:
         assert stale_thinking_reaches_wire(*self.ROUTE) is True
         assert stale_thinking_reaches_wire(*self.ROUTE, forced_strip=True) is False
 
-    def test_both_consumers_agree_under_never(self, monkeypatch):
-        """Both sides read ``read_reasoning_echo_mode``, so a disagreement cannot open a compaction loop."""
-        from agent import reasoning_params
+    def _agent(self, mode=""):
+        return SimpleNamespace(api_mode="chat_completions", provider="opencode-go",
+                               model="deepseek-v4.1-flash", base_url="https://opencode.ai/zen/go/v1",
+                               _reasoning_echo_mode=mode)
+
+    def _compressor(self, mode=""):
         from agent.context_compressor import ContextCompressor
+        comp = object.__new__(ContextCompressor)
+        comp.api_mode, comp.provider = "chat_completions", "opencode-go"
+        comp.model, comp.base_url = "deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1"
+        comp.reasoning_echo_mode = mode
+        return comp
+
+    def test_both_consumers_agree_under_never(self):
+        from agent.turn_context import _agent_stale_thinking_on_wire
+        assert _agent_stale_thinking_on_wire(self._agent("never")) is False
+        assert self._compressor("never")._stale_thinking_on_wire() is False
+
+    def test_both_consumers_agree_without_the_override(self):
+        from agent.turn_context import _agent_stale_thinking_on_wire
+        assert _agent_stale_thinking_on_wire(self._agent("")) is True
+        assert self._compressor("")._stale_thinking_on_wire() is True
+
+    def test_consumers_read_the_active_route_not_config(self, monkeypatch):
+        """A FALLBACK entry's mode is not in config["model"]; both sides must still see it.
+
+        Regression: reading config in the consumers left a primary-in-auto with a
+        ``never`` fallback stripping the payload while the estimator and the tail walk
+        charged and protected stale thinking as if it were sent.
+        """
+        from agent import reasoning_params
         from agent.turn_context import _agent_stale_thinking_on_wire
 
+        monkeypatch.setattr(reasoning_params, "read_reasoning_echo_mode", lambda: None)  # config: auto
+        assert _agent_stale_thinking_on_wire(self._agent("never")) is False
+        assert self._compressor("never")._stale_thinking_on_wire() is False
+        # The inverse: a fallback forced to echo while config says never.
         monkeypatch.setattr(reasoning_params, "read_reasoning_echo_mode", lambda: "never")
-        agent = SimpleNamespace(api_mode="chat_completions", provider="opencode-go",
-                                model="deepseek-v4.1-flash", base_url="https://opencode.ai/zen/go/v1")
-        assert _agent_stale_thinking_on_wire(agent) is False
-        comp = object.__new__(ContextCompressor)
-        comp.api_mode, comp.provider = "chat_completions", "opencode-go"
-        comp.model, comp.base_url = "deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1"
-        assert comp._stale_thinking_on_wire() is False
+        assert _agent_stale_thinking_on_wire(self._agent("always")) is True
+        assert self._compressor("always")._stale_thinking_on_wire() is True
 
-    def test_both_consumers_agree_without_the_override(self, monkeypatch):
-        from agent import reasoning_params
+    def test_same_route_recalibration_keeps_the_mode(self):
+        """A provider-reported window / grown local window must not clear the override.
+
+        Those call ``update_model`` without a mode (they do not change the echo policy);
+        an explicit value — switch or fallback — still wins.
+        """
         from agent.context_compressor import ContextCompressor
-        from agent.turn_context import _agent_stale_thinking_on_wire
+        comp = ContextCompressor(
+            model="m", base_url="u", api_key="k", provider="p",
+            api_mode="chat_completions", reasoning_echo_mode="never",
+        )
+        assert comp.reasoning_echo_mode == "never"
 
-        monkeypatch.setattr(reasoning_params, "read_reasoning_echo_mode", lambda: None)
-        agent = SimpleNamespace(api_mode="chat_completions", provider="opencode-go",
-                                model="deepseek-v4.1-flash", base_url="https://opencode.ai/zen/go/v1")
-        assert _agent_stale_thinking_on_wire(agent) is True
-        comp = object.__new__(ContextCompressor)
-        comp.api_mode, comp.provider = "chat_completions", "opencode-go"
-        comp.model, comp.base_url = "deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1"
-        assert comp._stale_thinking_on_wire() is True
+        comp.update_model(model="m", context_length=999, base_url="u", api_key="k",
+                          provider="p", api_mode="chat_completions")
+        assert comp.reasoning_echo_mode == "never"
+
+        comp.update_model(model="m2", context_length=999, base_url="u", api_key="k",
+                          provider="p", api_mode="chat_completions", reasoning_echo_mode="")
+        assert comp.reasoning_echo_mode == ""
+
+
+class TestSwitchRollbackCarriesTheEchoMode:
+    """A failed switch rebuild must restore the mode, not leave the failed target's behind."""
+
+    def test_snapshot_restores_the_mode(self):
+        from run_agent import AIAgent
+        from agent.agent_runtime_helpers import _restore_switch_snapshot, _snapshot_switch_state
+
+        agent = object.__new__(AIAgent)
+        agent._reasoning_echo_mode = "never"
+        agent._reasoning_echo_flag = False
+        agent.model, agent.provider = "deepseek-v4.1-flash", "opencode-go"
+        snapshot = _snapshot_switch_state(agent)
+
+        # The failed switch mutated the mode (e.g. to a route that echoes).
+        agent._reasoning_echo_mode = ""
+        agent._reasoning_echo_flag = True
+        agent.model = "some-other-model"
+
+        _restore_switch_snapshot(agent, snapshot)
+        assert agent._reasoning_echo_mode == "never"
+        assert agent._reasoning_echo_flag is False
+        assert agent.model == "deepseek-v4.1-flash"

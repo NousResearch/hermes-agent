@@ -2545,11 +2545,18 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
 
     def update_model(
         self, model: str, context_length: int, base_url: str = "", api_key: Any = "", provider: str = "",
-        api_mode: str = "", max_tokens: int | None = None,
+        api_mode: str = "", max_tokens: int | None = None, reasoning_echo_mode: str | None = None,
     ) -> None:
-        """Update model info after a model switch or fallback activation."""
+        """Update model info after a model switch or fallback activation.
+
+        ``reasoning_echo_mode=None`` keeps the current mode: same-route recalibrations (a
+        provider-reported window, a grown local window, a tier cap) do not change the echo
+        policy, so they must not silently clear a ``never`` override.
+        """
         runtime_changed = (model, provider, base_url, api_mode) != (self.model, self.provider, self.base_url, self.api_mode)
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        if reasoning_echo_mode is not None:
+            self.reasoning_echo_mode = reasoning_echo_mode or ""
         self.context_length = context_length
         # max_tokens=None means "unspecified": keep the existing output reservation.
         # A switch that genuinely changes the output budget passes the new value explicitly. (#43547)
@@ -2673,9 +2680,13 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
         model_thresholds: dict[str, float] | None = None, threshold_tokens_cap: Any = None,
         proactive_prune_tokens: int = 0, proactive_prune_min_result_chars: int = 8000,
         proactive_prune_min_reclaim_tokens: int = 4096, min_tail_user_messages: int = 1, tail_mode: str = "lean",
-        custom_providers: list | None = None,
+        custom_providers: list | None = None, reasoning_echo_mode: str = "",
     ):
         self.model, self.base_url, self.api_key, self.provider, self.api_mode = model, base_url, api_key, provider, api_mode
+        # ``model.reasoning_echo`` mode for THIS route ("always" / "never" / "" for auto). Owned by the
+        # route, not re-read from config: a fallback entry carries its own value, and the compaction
+        # trigger estimator and the tail walk must agree on the active route or compaction loops.
+        self.reasoning_echo_mode = reasoning_echo_mode or ""
         # "lean" = small clamped tail + verbatim-user summary section; "legacy" = 0.20*window tail.
         self.tail_mode = tail_mode if tail_mode in ("legacy", "lean") else "lean"
         # Per-model context_length overrides live in custom_providers; without them deferred
@@ -4818,19 +4829,22 @@ Write only the summary body. Do not include any preamble or prefix."""
             return idx  # no assistant reply immediately following
         return self._align_boundary_forward(messages, idx + 1)
 
-    def _stale_thinking_on_wire(self) -> bool:
-        """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops.
+    def _reasoning_echo_forced_strip(self) -> bool:
+        """True when this route's ``model.reasoning_echo: never`` forces the strict strip side.
 
-        ``forced_strip`` reads ``model.reasoning_echo`` through the shared ``read_reasoning_echo_mode``,
-        the same source the preflight estimator (``turn_context._agent_stale_thinking_on_wire``) uses,
-        so a ``never`` override cannot leave the estimator and the walk disagreeing.
+        Read from the route field, never from config: a fallback entry's mode is not in
+        ``config["model"]``, so a config read here would disagree with the payload policy.
         """
+        from agent.reasoning_params import REASONING_ECHO_NEVER
+        return getattr(self, "reasoning_echo_mode", "") == REASONING_ECHO_NEVER
+
+    def _stale_thinking_on_wire(self) -> bool:
+        """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops."""
         try:
             from agent.message_sanitization import stale_thinking_reaches_wire
-            from agent.reasoning_params import REASONING_ECHO_NEVER, read_reasoning_echo_mode
             return stale_thinking_reaches_wire(
                 *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url")),
-                forced_strip=read_reasoning_echo_mode() == REASONING_ECHO_NEVER,
+                forced_strip=self._reasoning_echo_forced_strip(),
             )
         except Exception:
             return False

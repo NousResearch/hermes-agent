@@ -1310,6 +1310,7 @@ def restore_primary_runtime(agent) -> bool:
             model=rt["compressor_model"], context_length=rt["compressor_context_length"],
             base_url=rt["compressor_base_url"], api_key=rt["compressor_api_key"],
             provider=rt["compressor_provider"], api_mode=rt.get("compressor_api_mode", ""),
+            reasoning_echo_mode=rt.get("reasoning_echo_mode", ""),
         )
         # Same rule as fallback activation: refresh an existing verdict only; never-probed sessions stay lazy.
         if getattr(agent, "_compression_feasibility_checked", False) is True:
@@ -1974,7 +1975,7 @@ def _apply_switched_provider_request_overrides(agent, new_provider):
 _SWITCH_SNAPSHOT_FIELDS = (
     "model", "provider", "requested_provider", "base_url", "api_mode", "api_key", "client",
     "_anthropic_client", "_anthropic_api_key", "_anthropic_base_url", "_is_anthropic_oauth",
-    "_config_context_length", "_reasoning_echo_flag", "runtime_capabilities",
+    "_config_context_length", "_reasoning_echo_flag", "_reasoning_echo_mode", "runtime_capabilities",
     "_credential_pool", "_credential_pool_entry_id",
 )
 _MISSING = object()
@@ -2220,6 +2221,8 @@ def _update_switch_compressor(agent, custom_providers, effective_context_length,
             api_key=agent.api_key,  # context_compressor forwards to call_llm; callable preserved
             provider=agent.provider,
             api_mode=agent.api_mode,
+            # ``_swap_switch_runtime`` already re-synced this from config for the new primary.
+            reasoning_echo_mode=getattr(agent, "_reasoning_echo_mode", ""),
         )
     except Exception:
         _restore_switch_snapshot(agent, snapshot)

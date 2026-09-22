@@ -1965,6 +1965,9 @@ def _update_fallback_context_compressor(agent) -> None:
     compressor.update_model(  # callable api_key preserved → call_llm
         model=agent.model, context_length=fb_context_length, base_url=agent.base_url,
         api_key=getattr(agent, "api_key", ""), provider=agent.provider, api_mode=agent.api_mode,
+        # The fallback entry's mode (set on the agent just above); a config read here would see the
+        # primary's, leaving the estimator and the tail walk disagreeing on the active route.
+        reasoning_echo_mode=getattr(agent, "_reasoning_echo_mode", ""),
     )
     # Fallback activation is an error path: refresh an EXISTING verdict eagerly (the ceiling was voided by
     # update_model()), but a session that never probed keeps its lazy compaction-time probe rather than

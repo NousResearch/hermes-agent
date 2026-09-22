@@ -48,6 +48,24 @@ class ProviderTransport(ABC):
         """Optional: ``{'cached_tokens', 'creation_tokens'}`` or None (default)."""
         return None
 
+    def supports_reasoning_effort_updates(
+        self, *, model: Any, provider: Any = None, base_url: Any = None,
+        capabilities: Any = None,
+    ) -> bool:
+        """Whether this exact route lowers durable effort markers in band.
+
+        Effort-selection policies use this fail-closed capability instead of
+        guessing from model names or mutating provider request payloads.
+        """
+        return False
+
+    def reasoning_effort_update_levels(
+        self, *, model: Any, provider: Any = None, base_url: Any = None,
+        capabilities: Any = None,
+    ) -> tuple[str, ...]:
+        """Logical effort choices accepted by the in-band update mechanism."""
+        return ()
+
     def map_finish_reason(self, raw_reason: str) -> str:
         """Map a provider stop reason via ``_STOP_REASON_MAP`` (unknown -> 'stop'); passthrough when no map."""
         return raw_reason if self._STOP_REASON_MAP is None else self._STOP_REASON_MAP.get(raw_reason, "stop")

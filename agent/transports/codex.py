@@ -675,6 +675,37 @@ class ResponsesApiTransport(ProviderTransport):
     def api_mode(self) -> str:
         return "codex_responses"
 
+    def supports_reasoning_effort_updates(
+        self, *, model: Any, provider: Any = None, base_url: Any = None,
+        capabilities: Any = None,
+    ) -> bool:
+        from types import SimpleNamespace
+        from agent.codex_responses_adapter import classify_responses_route
+
+        route = classify_responses_route(SimpleNamespace(provider=provider, base_url=base_url))
+        return _supports_reasoning_effort_updates(model, {
+            "provider": provider,
+            "base_url": base_url,
+            "capabilities": capabilities,
+            "is_codex_backend": route.is_codex_backend,
+        })
+
+    def reasoning_effort_update_levels(
+        self, *, model: Any, provider: Any = None, base_url: Any = None,
+        capabilities: Any = None,
+    ) -> tuple[str, ...]:
+        if not self.supports_reasoning_effort_updates(
+            model=model, provider=provider, base_url=base_url, capabilities=capabilities,
+        ):
+            return ()
+        from types import SimpleNamespace
+        from agent.codex_responses_adapter import classify_responses_route
+
+        route = classify_responses_route(SimpleNamespace(provider=provider, base_url=base_url))
+        return _codex_efforts_for_route(
+            model, base_url, is_codex_backend=route.is_codex_backend,
+        )
+
     def _resolve_issuer_kind(self, params: dict[str, Any]) -> str:
         """Classify the current Responses endpoint from transport params (stashed for normalize_response)."""
         from agent.codex_responses_adapter import _classify_responses_issuer

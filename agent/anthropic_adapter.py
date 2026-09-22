@@ -631,6 +631,15 @@ def _supports_effort_updates(model: str) -> bool:
     return family in ("fable", "mythos") and (major > 5 or (major == 5 and minor >= 1))
 
 
+def supports_reasoning_effort_updates(model: str, base_url: str | None = None) -> bool:
+    """Whether this Anthropic route accepts native in-band effort updates."""
+    return (
+        not (_is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url))
+        and _supports_adaptive_thinking(model)
+        and _supports_effort_updates(model)
+    )
+
+
 def _resolve_effort_markers(
     messages: List[Dict], model: str, reasoning_config: Optional[Dict[str, Any]], base_url: str | None,
 ) -> tuple[List[Dict], Optional[str], bool]:
@@ -643,8 +652,7 @@ def _resolve_effort_markers(
     requested = requested_effort(reasoning_config)
     if (
         requested is None
-        or (_is_third_party_anthropic_endpoint(base_url) and not _is_nous_portal_endpoint(base_url))
-        or not (_supports_adaptive_thinking(model) and _supports_effort_updates(model))
+        or not supports_reasoning_effort_updates(model, base_url)
     ):
         return strip_effort_updates(messages), None, False
     resolved, top_level = resolve_effort_updates(messages, requested)

@@ -1321,16 +1321,41 @@ def _relocate_basetemp_outside_operator_home(config) -> None:
         return
     # The system temp dir may itself be inside the home (Windows TEMP under the
     # Hermes home). The repo is no escape either: the default install checks it
-    # out *inside* the home (~/.hermes/hermes-agent). A sibling of the native
-    # home is outside it by construction.
-    safe_root = None if not Path(tempfile.gettempdir()).resolve().is_relative_to(native) else native.parent
-    safe = Path(tempfile.mkdtemp(prefix="hermes-pytest-basetemp-", dir=safe_root))
+    # out *inside* the home (~/.hermes/hermes-agent). The relocated basetemp goes
+    # into ONE prunable root outside the home, never loose into the operator's
+    # $HOME (123 ``hermes-pytest-basetemp-*`` dirs piled up there in a day, one per
+    # test file the per-file runner spawned). It is removed when this pytest exits
+    # and, for runs that were killed before that, swept once it is 24h idle.
+    safe = Path(tempfile.mkdtemp(prefix="b-", dir=_pytest_disk_temp_root(native)))
     assert not safe.resolve().is_relative_to(native), (
         f"pytest basetemp {safe} still resolves inside the operator's Hermes home {native}; "
         "refusing to run the suite against the live install (pass --basetemp outside it)"
     )
     factory._given_basetemp = safe
     config.option.basetemp = str(safe)
+    config._hermes_relocated_basetemp = safe
+
+
+def _pytest_disk_temp_root(native: Path) -> Path:
+    """The root for relocated basetemps: the disk-backed runner root when the host has
+    one (``scripts/run_tests_parallel.py::_runner_scratch_root``), else a plain (not
+    dot-prefixed — hidden-dir search tests would see every fixture as hidden) sibling of
+    the native home. Entries idle for a day are swept on the way in."""
+    from hermes_constants_scratch import prune_idle_entries
+
+    if os.name != "nt" and os.path.isdir("/var/tmp"):  # no-tmp: ok — disk-backed FHS root
+        root = Path("/var/tmp/hermes-pytest")  # no-tmp: ok — /var/tmp is disk-backed by FHS, never tmpfs
+    else:
+        root = native.parent / "hermes-pytest"
+    root.mkdir(parents=True, exist_ok=True)
+    prune_idle_entries(root, 24, frozenset())
+    return root
+
+
+def _remove_relocated_basetemp(config) -> None:
+    safe = getattr(config, "_hermes_relocated_basetemp", None)
+    if safe is not None:
+        shutil.rmtree(safe, ignore_errors=True)
 
 
 def _pinned_mcp_sdk_version() -> str:
@@ -1365,6 +1390,10 @@ def require_mcp_2_sdk():
         pytest.skip(f"requires mcp=={pinned} (not installed); install the [mcp] extra")
     if Version(found) < Version(pinned):
         pytest.skip(f"requires mcp=={pinned} (found {found}); install the [mcp] extra")
+
+
+def pytest_unconfigure(config):  # noqa: D401 — pytest hook
+    _remove_relocated_basetemp(config)
 
 
 @pytest.hookimpl(trylast=True)  # after _pytest.tmpdir has built config._tmp_path_factory

@@ -384,6 +384,38 @@ async function advanceBackoff() {
 }
 
 describe('default-route profile adoption', () => {
+  it('keeps a peer primary on its registered gateway across boot, reconnect and soft switch', async () => {
+    const originalUrl = window.location.href
+    window.history.replaceState(null, '', '/?peer=1&profile=coder&connectionId=coder-remote')
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+      getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+      getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    try {
+      render(<Harness />)
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+      FakeWebSocket.instances.at(-1)!.drop()
+      await advanceBackoff()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+      act(() => connectionApplied?.())
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+      expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'coder-remote', profile: 'coder' })
+      expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+    } finally {
+      window.history.replaceState(null, '', originalUrl)
+    }
+  })
+
   it.each([null, 'coder-remote'])(
     'dials the saved startup route before an ambient sender can replace it (%s)',
     async connectionId => {

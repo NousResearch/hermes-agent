@@ -15,7 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv  # noqa: F401
-from utils import atomic_replace, fast_safe_load
+from utils import atomic_replace, fast_safe_load, load_yaml_file_readonly
 
 logger = logging.getLogger(__name__)
 
@@ -632,9 +632,9 @@ def _load_secrets_config(home_path: Path) -> dict:
             return data.get("secrets") or {}
         except Exception:
             pass
+    # Routed profiles re-enter their scope on every poll/turn; only re-parse after the file changed.
     try:
-        with open(config_path, "r", encoding="utf-8") as f:
-            data = fast_safe_load(f) or {}
+        data = load_yaml_file_readonly(config_path) or {}
     except Exception:  # noqa: BLE001
         return {}
     return data.get("secrets") or {}

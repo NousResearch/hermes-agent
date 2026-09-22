@@ -923,9 +923,6 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
-        # Named profiles stopped inheriting the root auth.json (#111724): name every profile that
-        # now has no provider of its own so nobody finds out from a dead bot.
-        ('Profile credential notice failed: %s', _print_profiles_without_credentials_notice),
         # Relay ignores legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars; migrate each profile to
         # relay-plugins.toml so those exporter settings remain effective.
         ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),

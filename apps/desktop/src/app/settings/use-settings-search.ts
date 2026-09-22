@@ -208,6 +208,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: t.interfaceMode.hint,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.interfaceMode}`,
+      keywords: ['simple', 'advanced', 'mode', 'interface', 'chrome', 'minimal', 'focus'],
+      label: t.interfaceMode.title,
+      target: { setting: APPEARANCE_SETTING_IDS.interfaceMode, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.toolViewDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.toolView}`,
@@ -301,7 +310,7 @@ export function useSettingsSearchCatalog(enabled: boolean) {
               keywords: ['HUD', 'summon', 'modifier', 'tap', 'Ctrl', 'Alt', 'Command', 'Option'],
               label: t.settings.hudModifier.title,
               description: t.settings.hudModifier.description,
-              target: { view: 'keybinds' as const, subpage: 'shortcuts', setting: 'hud-modifier' }
+              target: { view: 'keybinds' as const, subpage: 'hud-gesture', setting: 'hud-modifier' }
             }
           ]
         : [])

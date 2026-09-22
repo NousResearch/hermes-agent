@@ -1300,7 +1300,9 @@ class TestCafConversion:
         """_convert_caf_to_wav uses ffmpeg when available."""
         caf_path = tmp_path / "voice.caf"
         caf_path.write_bytes(b"caff\x00" * 20)
-        wav_path = str(tmp_path / "voice.wav")
+        work_dir = tmp_path / "converted"
+        work_dir.mkdir()
+        wav_path = str(work_dir / "voice.wav")
 
         def fake_run(cmd, **kwargs):
             Path(wav_path).write_bytes(b"RIFF\x00\x00\x00\x00")
@@ -1313,7 +1315,7 @@ class TestCafConversion:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         from tools.transcription_tools import _convert_caf_to_wav
-        result = _convert_caf_to_wav(str(caf_path))
+        result = _convert_caf_to_wav(str(caf_path), str(work_dir))
         assert result == wav_path
         assert Path(result).exists()
 
@@ -1335,6 +1337,50 @@ class TestCafConversion:
 
         assert result["success"] is True
         mock_convert.assert_not_called()
+
+    @pytest.mark.parametrize("outcome", ["success", "provider-error"])
+    def test_caf_conversion_preserves_neighbors_and_removes_owned_output(
+        self, tmp_path, monkeypatch, outcome
+    ):
+        """Cloud CAF conversion must not clobber a sibling ``<stem>.wav`` nor
+        leave its converted output behind, whether the provider succeeds or
+        raises."""
+        from tools import transcription_audio as audio
+        from tools import transcription_tools as stt
+
+        source = tmp_path / "voice.caf"
+        source.write_bytes(b"caff fixture")
+        neighbor = source.with_suffix(".wav")
+        neighbor.write_bytes(b"existing recording")
+        outputs = []
+        monkeypatch.setattr(stt, "_load_stt_config", lambda: {
+            "provider": "groq", "cloud_trim_silence": False,
+        })
+        monkeypatch.setattr(audio, "_find_ffmpeg_binary", lambda: "ffmpeg")
+
+        def encode(command, **_kwargs):
+            output = Path(command[-1])
+            outputs.append(output)
+            output.write_bytes(b"converted recording")
+
+        def transcribe(file_path, *_args):
+            assert Path(file_path).read_bytes() == b"converted recording"
+            if outcome == "provider-error":
+                raise RuntimeError("transcription failed")
+            return {"success": True, "transcript": "hello"}
+
+        monkeypatch.setattr(audio, "_run_quiet", encode)
+        monkeypatch.setattr(stt, "_dispatch_stt_provider", transcribe)
+        if outcome == "provider-error":
+            with pytest.raises(RuntimeError, match="transcription failed"):
+                stt.transcribe_audio(str(source))
+        else:
+            assert stt.transcribe_audio(str(source))["success"] is True
+        assert source.read_bytes() == b"caff fixture"
+        assert neighbor.read_bytes() == b"existing recording"
+        assert outputs and all(
+            not path.exists() and not path.parent.exists() for path in outputs
+        )
 
 
 class TestTranscribeCredentialReadGuard:

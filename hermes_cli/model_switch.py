@@ -395,7 +395,8 @@ def resolve_startup_model_route(
     from hermes_cli.models import parse_model_input
     from hermes_cli.providers import custom_provider_slug
     custom_ids = {custom_provider_slug(str(entry.get("name") or key), str(key))
-                  for key, entry in (user_providers or {}).items() if isinstance(entry, dict)}
+                  for key, entry in (user_providers if isinstance(user_providers, dict) else {}).items()
+                  if isinstance(entry, dict)}
     custom_ids.update(custom_provider_slug(str(entry.get("name") or ""))
                       for entry in (custom_providers or []) if isinstance(entry, dict) and _clean(entry.get("name")))
     qualified_provider, qualified_model = parse_model_input(raw, "", custom_ids=custom_ids)
@@ -1077,7 +1078,7 @@ def _config_declares_model(
     """A model declared in the user's ``providers:``/``custom_providers:`` config is accepted even
     when the remote /v1/models does not list it (cloud/aliased models). Custom entries match by
     slug alias or by base_url."""
-    if user_providers:
+    if isinstance(user_providers, dict):
         from hermes_cli.config import is_provider_enabled
         cfg = user_providers.get(target_provider)
         if cfg is not None and is_provider_enabled(cfg) and new_model in _declared_model_ids(cfg.get("models", {})):
@@ -1587,7 +1588,7 @@ def _validate_switch(st: _Switch) -> Optional[ModelSwitchResult]:
     else:
         headers = st.validation_headers or (
             _extra_headers_from_config(st.user_providers.get(st.target_provider))
-            if st.user_providers and st.target_provider in st.user_providers else None)
+            if isinstance(st.user_providers, dict) and st.target_provider in st.user_providers else None)
     # A ``providers.<key>`` endpoint is the user's own: validate it as a custom endpoint (an id its
     # listing lacks is soft-accepted) whether the slug arrived as ``custom:<key>`` or the bare key
     # the picker rows carry — otherwise the bare spelling fell into the built-in live-listing

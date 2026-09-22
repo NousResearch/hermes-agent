@@ -148,6 +148,7 @@ import { type NewSessionSplitHandler, startNewSessionDrag } from '../new-session
 
 import { SidebarSectionAddButton } from './chrome'
 import { SidebarCronJobsSection } from './cron-jobs-section'
+import { shouldShowCronSection } from './cron-section-visibility'
 import { SidebarFilterMenu } from './filter-menu'
 import { useGatewaySessionGroups } from './gateway-group-model'
 import { SidebarLoadMoreRow } from './load-more-row'
@@ -1989,7 +1990,7 @@ export function ChatSidebar({
                 )
               })}
 
-            {!trimmedQuery && !worktreeGroupingActive && cronJobs.length > 0 && (
+            {shouldShowCronSection({ cronJobsCount: cronJobs.length, trimmedQuery }) && (
               <SidebarCronJobsSection
                 jobs={cronJobs}
                 label={s.cronJobs}

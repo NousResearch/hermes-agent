@@ -354,6 +354,18 @@ def _resolve_wait_seconds(args) -> float:
     return max(1.0, wait)
 
 
+def _post_timeout_seconds(args, wait_seconds: float) -> float:
+    """POST timeout for a turn.
+
+    With NEITHER knob set, DM_TIMEOUT_S *is* the POST timeout: it is the value the runner
+    waits on and the seam a test monkeypatch steers, so adding slack to it hid the knob from
+    the stack under test and blocked to the runner cap. An explicit knob keeps its slack.
+    """
+    if getattr(args, "wait_seconds", None) is None and _peer_value("dm_wait_seconds", None) is None:
+        return float(DM_TIMEOUT_S)
+    return wait_seconds + _DM_TIMEOUT_SLACK_S
+
+
 def _sender_profile() -> str:
     """This host's profile name, sent as ``X-Hermes-Sender-Profile``."""
     env = (os.environ.get("HERMES_PROFILE") or "").strip()
@@ -673,7 +685,7 @@ def _peer_dm(args, message: str, peer_name: str, profile: str | None, base: str,
     try:
         result = _deliver_with_replay(
             f"{base}/api/sessions/{urllib.parse.quote(session_id, safe='')}/chat", key,
-            body=_turn_body(message, message_key="message"), timeout=wait_seconds + _DM_TIMEOUT_SLACK_S,
+            body=_turn_body(message, message_key="message"), timeout=_post_timeout_seconds(args, wait_seconds),
             headers=headers, idempotency_key=idempotency_key)
     except urllib.error.HTTPError as exc:
         return _peer_refusal(peer_name, exc)

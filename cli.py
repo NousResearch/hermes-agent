@@ -1007,15 +1007,35 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         skills_prompt, loaded_skills, missing_skills = result
         if missing_skills:
             missing_display = ", ".join(missing_skills)
-            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly.
-            if loaded_skills:
+            # A typo'd name must not crash a kanban worker; only a fully-missing set fails loudly —
+            # and for a DISPATCHER-OWNED board worker even that is a warning. Its ``--skills`` names
+            # are pinned by the BOARD (the review lane's bundled ``sdlc-review``, or
+            # ``kanban_create(skills=...)``), not typed by a human standing at the prompt, so a skill
+            # the operator archived / disabled / renamed after the pin was written must not take the
+            # whole card down: the worker exited rc=1 before it ever had a session, and the card went
+            # un-workable with the previous attempt's output reported as the cause (t_f7f07208).
+            # Interactive ``hermes -s <typo>`` is unchanged — a human typo still fails loudly.
+            from agent.delegation_context import owned_kanban_task
+
+            board_worker = bool(owned_kanban_task())
+            if loaded_skills or board_worker:
                 logger.warning(
                     "Unknown skill(s) requested, skipping: %s. "
                     "Continuing with: %s. "
                     "List available skills with `hermes skills list`.",
                     missing_display,
-                    ", ".join(loaded_skills),
+                    ", ".join(loaded_skills) if loaded_skills else "(no requested skill resolved)",
                 )
+                if not loaded_skills:
+                    # Also print it: a board worker's stdout IS its task log, and that log is what
+                    # the dispatcher reads when the attempt dies without a terminal board call.
+                    try:
+                        self._console_print(
+                            f"Warning: none of the pinned --skills names resolved "
+                            f"({missing_display}); continuing without them."
+                        )
+                    except Exception:
+                        pass
             else:
                 raise ValueError(f"Unknown skill(s): {missing_display}")
         if skills_prompt:

@@ -14,7 +14,7 @@ from pathlib import Path
 import pytest
 
 import utils
-from utils import rmtree_readonly
+from utils import rmtree_readonly, unlink_readonly
 
 
 def _read_only_object_dir(root: Path) -> Path:
@@ -55,6 +55,111 @@ def test_removes_read_only_file_in_writable_directory(tmp_path):
     rmtree_readonly(root)
 
     assert not root.exists()
+
+
+def test_unlink_readonly_recovers_file_and_parent_permissions(tmp_path, monkeypatch):
+    """Single-file replacement uses the same permission recovery as tree removal."""
+    parent = tmp_path / "profile" / "tools"
+    parent.mkdir(parents=True)
+    victim = parent / "helper.py"
+    victim.write_text("old", encoding="utf-8")
+    victim.chmod(stat.S_IREAD)
+    parent.chmod(stat.S_IREAD | stat.S_IEXEC)
+    original_unlink = os.unlink
+    attempts = 0
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("read-only entry")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(utils.os, "unlink", fail_once)
+
+    unlink_readonly(victim)
+
+    assert attempts == 2
+    assert not victim.exists()
+    parent.chmod(stat.S_IRWXU)
+
+
+@pytest.mark.require_symlinks
+def test_unlink_readonly_symlink_does_not_chmod_external_target(tmp_path, monkeypatch):
+    """A failed link unlink may repair its parent but never the external target."""
+    external = tmp_path / "external"
+    external.write_text("keep", encoding="utf-8")
+    external.chmod(stat.S_IREAD)
+    original_mode = stat.S_IMODE(external.stat().st_mode)
+    parent = tmp_path / "profile"
+    parent.mkdir()
+    link = parent / "outside"
+    link.symlink_to(external)
+    parent.chmod(stat.S_IREAD | stat.S_IEXEC)
+    original_unlink = os.unlink
+    attempts = 0
+
+    def fail_once(path, *args, **kwargs):
+        nonlocal attempts
+        attempts += 1
+        if attempts == 1:
+            raise PermissionError("read-only parent")
+        return original_unlink(path, *args, **kwargs)
+
+    monkeypatch.setattr(utils.os, "unlink", fail_once)
+
+    unlink_readonly(link)
+
+    assert attempts == 2
+    assert not link.exists()
+    assert external.read_text(encoding="utf-8") == "keep"
+    assert stat.S_IMODE(external.stat().st_mode) == original_mode
+    parent.chmod(stat.S_IRWXU)
+    external.chmod(stat.S_IRWXU)
+
+
+@pytest.mark.require_symlinks
+@pytest.mark.skipif(os.name != "posix", reason="POSIX parent modes drive unlink permission")
+def test_read_only_parent_symlink_does_not_chmod_external_target(tmp_path, monkeypatch):
+    """Permission recovery may make the parent writable, but must never follow a child link."""
+    external = tmp_path / "external"
+    external.write_text("keep", encoding="utf-8")
+    external.chmod(0o400)
+    original_mode = stat.S_IMODE(external.stat().st_mode)
+
+    root = tmp_path / "clone"
+    root.mkdir()
+    (root / "outside").symlink_to(external)
+    root.chmod(0o555)
+
+    def fail_unlink_once(path, **kwargs):
+        callback = kwargs["onexc"]
+        callback(os.unlink, str(root / "outside"), PermissionError("read-only parent"))
+        os.rmdir(path)
+
+    monkeypatch.setattr(utils.shutil, "rmtree", fail_unlink_once)
+
+    rmtree_readonly(root)
+
+    assert not root.exists()
+    assert external.read_text(encoding="utf-8") == "keep"
+    assert stat.S_IMODE(external.stat().st_mode) == original_mode
+
+
+def test_typeerror_during_removal_is_not_misread_as_api_fallback(tmp_path, monkeypatch):
+    """A callback TypeError is a real failure, not a signal to rerun deletion."""
+    attempts: list = []
+
+    def _fake(path, **kwargs):
+        attempts.append((path, kwargs))
+        raise TypeError("callback bug")
+
+    monkeypatch.setattr(utils.shutil, "rmtree", _fake)
+
+    with pytest.raises(TypeError, match="callback bug"):
+        rmtree_readonly(tmp_path)
+
+    assert len(attempts) == 1
 
 
 def test_non_permission_failures_propagate(tmp_path, monkeypatch):

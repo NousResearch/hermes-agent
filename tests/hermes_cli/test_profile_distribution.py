@@ -309,6 +309,41 @@ class TestInstall:
         assert (plan.target_dir / "tools" / "helper.py").exists(), \
             "omitted distribution_owned must keep copying undeclared dirs"
 
+    def test_install_omitted_allowlist_never_copies_git_metadata(self, profile_env):
+        """Local-directory sources are often repositories; VCS metadata is never payload."""
+        staged = _make_staging_dir(profile_env, "legacy_git")
+        (staged / ".git" / "objects" / "pack").mkdir(parents=True)
+        (staged / ".git" / "objects" / "pack" / "pack.idx").write_bytes(b"index")
+        nested = staged / "tools" / "helper" / ".git"
+        nested.mkdir(parents=True)
+        (nested / "config").write_text("[core]\n", encoding="utf-8")
+
+        plan = install_distribution(str(staged), name="legacy_git")
+
+        assert not (plan.target_dir / ".git").exists()
+        assert not list(plan.target_dir.rglob(".git"))
+
+    def test_update_replaces_readonly_distribution_directory(self, profile_env):
+        """An owned directory copied read-only must not permanently block later updates."""
+        manifest = DistributionManifest(
+            name="readonly_update", version="0.1.0", distribution_owned=["tools"],
+        )
+        staged = _make_staging_dir(profile_env, "readonly_update", manifest=manifest)
+        tools = staged / "tools"
+        tools.mkdir()
+        source_file = tools / "helper.py"
+        source_file.write_text("VALUE = 1\n", encoding="utf-8")
+        plan = install_distribution(str(staged), name="readonly_update")
+        installed_tools = plan.target_dir / "tools"
+        installed_file = installed_tools / "helper.py"
+        installed_file.chmod(stat.S_IREAD)
+        installed_tools.chmod(stat.S_IREAD | stat.S_IEXEC)
+        source_file.write_text("VALUE = 2\n", encoding="utf-8")
+
+        update_distribution("readonly_update")
+
+        assert installed_file.read_text(encoding="utf-8") == "VALUE = 2\n"
+
     def test_install_allowlist_supports_nested_paths(self, profile_env):
         """Documented nested entries like skills/research/ and cron/digest.json
         must select exactly that subtree/file, not be silently dropped."""

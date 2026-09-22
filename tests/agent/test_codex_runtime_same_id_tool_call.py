@@ -17,6 +17,7 @@ that carries non-empty arguments.
 
 from types import SimpleNamespace
 
+from agent.codex_responses_adapter import _normalize_codex_response
 from agent.codex_runtime import _CodexResponseAssembler
 
 
@@ -105,3 +106,47 @@ def test_message_items_untouched():
     kinds = [str(getattr(it, "type", "")) for it in out]
     assert kinds.count("message") == 1
     assert len(_calls(out)) == 1
+
+
+# --- Non-streamed normalize path (agent/transports/codex.py -> _normalize_codex_response) ---
+#
+# The same provider behavior surfaces identically on the non-streamed route: one logical
+# function_call arrives as two same-id ``response.output`` items (a ``{}`` twin plus the real
+# one).  _OutputScan.scan would emit one tool_call per item; the dedupe collapses them.
+
+
+def _resp(items):
+    return SimpleNamespace(id="r", status="completed", output=items, usage=None, error=None, output_text=None)
+
+
+def test_normalize_empty_then_full_same_id_single_call():
+    empty = SimpleNamespace(type="function_call", id="fc_1", call_id="call_1", name="read_file",
+                            status="completed", arguments="{}")
+    full = SimpleNamespace(type="function_call", id="fc_1", call_id="call_1", name="read_file",
+                           status="completed", arguments='{"path":"x"}')
+    msg, _ = _normalize_codex_response(_resp([empty, full]))
+    calls = [(getattr(t, "id", None), getattr(getattr(t, "function", None), "arguments", None))
+             for t in msg.tool_calls]
+    assert len(calls) == 1, calls
+    assert calls[0] == ("call_1", '{"path":"x"}')  # keeps the populated twin
+
+
+def test_normalize_full_then_empty_same_id_keeps_full():
+    empty = SimpleNamespace(type="function_call", id="fc_1", call_id="call_1", name="read_file",
+                            status="completed", arguments="{}")
+    full = SimpleNamespace(type="function_call", id="fc_1", call_id="call_1", name="read_file",
+                           status="completed", arguments='{"path":"x"}')
+    msg, _ = _normalize_codex_response(_resp([full, empty]))
+    calls = [(getattr(t, "id", None), getattr(getattr(t, "function", None), "arguments", None))
+             for t in msg.tool_calls]
+    assert len(calls) == 1, calls
+    assert calls[0] == ("call_1", '{"path":"x"}')
+
+
+def test_normalize_distinct_calls_preserved():
+    fc1 = SimpleNamespace(type="function_call", id="fc_1", call_id="call_1", name="a",
+                          status="completed", arguments='{"k":1}')
+    fc2 = SimpleNamespace(type="function_call", id="fc_2", call_id="call_2", name="b",
+                          status="completed", arguments='{"k":2}')
+    msg, _ = _normalize_codex_response(_resp([fc1, fc2]))
+    assert len(msg.tool_calls) == 2

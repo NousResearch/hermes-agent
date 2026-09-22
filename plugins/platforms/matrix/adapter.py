@@ -12,7 +12,8 @@ Env vars (config.yaml ``matrix:`` keys alias several — env wins):
   MATRIX_AUTO_THREAD (default true), MATRIX_DM_AUTO_THREAD, MATRIX_DM_MENTION_THREADS,
   MATRIX_SESSION_SCOPE auto|room|thread; MATRIX_MAX_MESSAGE_LENGTH (default 16000),
   MATRIX_MAX_MEDIA_BYTES, MATRIX_ROOM_IDENTITY_TTL_SECONDS; MATRIX_APPROVAL_REQUIRE_SENDER (default
-  true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300).
+  true), MATRIX_APPROVAL_TIMEOUT_SECONDS (default 300); MATRIX_HISTORY_BACKFILL (default true),
+  MATRIX_HISTORY_BACKFILL_LIMIT (default 50).
 
 Note: any room with <=2 joined members is auto-classified as a DM (see
 ``_resolve_room_identity``), regardless of ``m.direct`` account data or an explicit room name —
@@ -2111,7 +2112,7 @@ class MatrixAdapter(BasePlatformAdapter):
             ctx = await self._resolve_message_context(room_id, sender, event_id, body, source_content, relates_to)
         if ctx is None:
             return None
-        body, _is_dm, _chat_type, _thread_id, display_name, source = ctx
+        body, is_dm, _chat_type, thread_id, display_name, source = ctx
         body, reply_to, reply_to_text, reply_to_author_id, reply_to_author_name = (
             await self._extract_reply_context(room_id, body, relates_to))
         media_msgtype = extra.pop("media_msgtype", None)
@@ -2121,6 +2122,8 @@ class MatrixAdapter(BasePlatformAdapter):
             extra["message_type"] = MessageType.COMMAND if body.startswith("/") else MessageType.TEXT
         elif _is_bare_media_filename(media_msgtype, body):
             body = ""  # transport filename, not user text
+        extra["channel_context"] = await self._maybe_room_history_backfill(
+            room_id, event_id, is_dm=is_dm, thread_id=thread_id, relates_to=relates_to, reply_to=reply_to)
         return MessageEvent(
             text=body, source=source, raw_message=source_content, message_id=event_id,
             reply_to_message_id=reply_to, reply_to_text=reply_to_text, reply_to_author_id=reply_to_author_id,
@@ -2661,6 +2664,166 @@ class MatrixAdapter(BasePlatformAdapter):
             lambda: self._client.invite_user(RoomID(room_id), UserID(user_id)),
             ("Matrix: invited %s to %s", user_id, room_id), "Matrix: invite error: %s")
 
+    def _matrix_history_backfill(self) -> bool:
+        """Return whether history backfill is enabled for shared rooms."""
+        configured = self.config.extra.get("history_backfill")
+        if configured is not None:
+            if isinstance(configured, str):
+                return configured.lower() not in {"false", "0", "no", "off"}
+            return bool(configured)
+        return os.getenv("MATRIX_HISTORY_BACKFILL", "true").lower() in {
+            "true",
+            "1",
+            "yes",
+            "on",
+        }
+
+    def _matrix_history_backfill_limit(self) -> int:
+        """Max messages to scan backwards when assembling room context."""
+        configured = self.config.extra.get("history_backfill_limit")
+        if configured is not None:
+            try:
+                return int(configured)
+            except (ValueError, TypeError):
+                pass
+        raw = os.getenv("MATRIX_HISTORY_BACKFILL_LIMIT", "50")
+        try:
+            return int(raw)
+        except (ValueError, TypeError):
+            return 50
+
+    async def _maybe_room_history_backfill(
+        self, room_id: str, event_id: str, *, is_dm: bool, thread_id: Optional[str],
+        relates_to: dict, reply_to: Optional[str],
+    ) -> Optional[str]:
+        """Prepend recent room scrollback on mention-gated / thread / reply dispatch."""
+        if is_dm or not self._matrix_history_backfill():
+            return None
+        in_real_thread = relates_to.get("rel_type") == "m.thread"
+        thread_root = relates_to.get("event_id") if in_real_thread else None
+        in_bot_thread = bool(thread_root and thread_root in self._threads)
+        auto_threaded = bool(thread_id and thread_id == event_id and not in_real_thread)
+        has_mention_gap = self._require_mention and room_id not in self._free_rooms and not in_bot_thread
+        if (has_mention_gap or in_real_thread or reply_to) and not auto_threaded:
+            try:
+                backfill = await self._fetch_room_context(room_id, event_id)
+                if backfill:
+                    return backfill
+            except Exception as exc:
+                logger.debug("Matrix: room history backfill failed: %s", exc)
+        return None
+
+    async def _fetch_room_context(
+        self,
+        room_id: str,
+        before_event_id: str,
+    ) -> str:
+        """Fetch recent room messages for conversational context.
+
+        Scans backwards from *before_event_id* and collects messages until
+        it hits a message sent by this bot (the natural partition point) or
+        reaches ``history_backfill_limit``.  Returns a formatted block like::
+
+            [Recent room messages]
+            [Alice] some message
+            [Bob] another message
+
+        Returns an empty string when no context is available.  Undecrypted
+        E2EE events (empty body) are skipped rather than raising.
+        """
+        limit = self._matrix_history_backfill_limit()
+        if limit <= 0:
+            return ""
+
+        events = await self.fetch_history(room_id, limit=limit)
+        if not events:
+            return ""
+
+        collected: list[tuple[str, str]] = []
+        for evt in events:
+            eid = str(evt.get("event_id", "") or "")
+            if eid and eid == before_event_id:
+                continue
+            sender = str(evt.get("sender", "") or "")
+            if self._user_id and sender == self._user_id:
+                break
+            msgtype = str(evt.get("msgtype", "") or "")
+            if msgtype and msgtype not in {"m.text", "m.notice"}:
+                continue
+            text = str(evt.get("body", "") or "").strip()
+            if not text:
+                continue
+            name = await self._get_display_name(room_id, sender)
+            collected.append((eid, f"[{name}] {text}"))
+
+        if not collected:
+            return ""
+
+        collected.reverse()
+        return "[Recent room messages]\n" + "\n".join(line for _id, line in collected)
+
+    async def fetch_history(
+        self,
+        room_id: str,
+        limit: int = 20,
+        from_token: str = "",
+    ) -> list[dict[str, Any]]:
+        """Fetch recent Matrix room history using the live client."""
+        if not self._client:
+            return []
+        limit = max(1, min(int(limit or 20), 100))
+        try:
+            from mautrix.types import PaginationDirection, SyncToken
+        except ImportError:
+            PaginationDirection = type("_PaginationDirectionStub", (), {"BACKWARD": "b"})
+            SyncToken = str  # type: ignore[misc,assignment]
+        try:
+            direction = getattr(PaginationDirection, "BACKWARD", "b")
+            if hasattr(self._client, "messages"):
+                response = await self._client.messages(
+                    RoomID(room_id),
+                    from_token=SyncToken(from_token) if from_token else None,
+                    direction=direction,
+                    limit=limit,
+                )
+            elif hasattr(self._client, "get_messages"):
+                response = await self._client.get_messages(
+                    RoomID(room_id),
+                    start=SyncToken(from_token) if from_token else None,
+                    direction=direction,
+                    limit=limit,
+                )
+            else:
+                logger.debug("Matrix: client has no messages/get_messages method")
+                return []
+            chunk = getattr(response, "chunk", None)
+            if chunk is None and isinstance(response, dict):
+                chunk = response.get("chunk")
+            return [self._serialize_history_event(evt) for evt in (chunk or [])]
+        except Exception as exc:
+            logger.warning("Matrix: fetch history error: %s", exc)
+            return []
+
+    def _serialize_history_event(self, event: Any) -> dict[str, Any]:
+        content = getattr(event, "content", None)
+        if content is None and isinstance(event, dict):
+            content = event.get("content", {})
+        if not isinstance(content, dict):
+            content = dict(content) if hasattr(content, "items") else {}
+        return {
+            "event_id": str(
+                getattr(event, "event_id", "")
+                or (event.get("event_id", "") if isinstance(event, dict) else "")
+            ),
+            "sender": str(
+                getattr(event, "sender", "")
+                or (event.get("sender", "") if isinstance(event, dict) else "")
+            ),
+            "timestamp": _matrix_event_timestamp_seconds(event),
+            "msgtype": str(content.get("msgtype", "")),
+            "body": str(content.get("body", "")),
+        }
+
     _VALID_PRESENCE_STATES = frozenset(("online", "offline", "unavailable"))
 
     async def set_presence(self, state: str = "online", status_msg: str = "") -> bool:
@@ -2861,18 +3024,35 @@ class MatrixAdapter(BasePlatformAdapter):
             protected = re.sub(pattern, lambda match: _protect(match.group(0)), protected)
         return protected, placeholders
 
+    @staticmethod
+    def _localpart_mention_pattern(localpart: str) -> str:
+        """Regex for @localpart mentions that won't match longer localparts.
+
+        Python's ``\\b`` treats hyphens as word boundaries, so ``hermes``
+        would falsely match inside ``hermes-kelly``.  Use explicit boundaries
+        that treat ``-`` as part of a localpart continuation instead.
+        """
+        escaped = re.escape(localpart)
+        return (
+            r"(?:^|(?<![@\w-]))@?"
+            + escaped
+            + r"(?::[\w.-]+)?(?![\w-])"
+        )
+
     def _is_bot_mentioned(
         self, body: str, formatted_body: Optional[str] = None, mention_user_ids: Optional[list] = None) -> bool:
-        """True if the bot is mentioned; ``m.mentions.user_ids`` (MSC3952) is authoritative
-        even when the body has no ``@bot`` text (pills may live only in formatted_body)."""
-        if mention_user_ids and self._user_id and self._user_id in mention_user_ids:
-            return True
+        """True if the bot is mentioned; ``m.mentions.user_ids`` (MSC3952) is exclusive
+        when present. Localpart matching treats hyphens as part of the token so
+        ``hermes`` does not match inside ``hermes-kelly``."""
+        if mention_user_ids:
+            return bool(self._user_id and self._user_id in mention_user_ids)
         if not body and not formatted_body:
             return False
         if self._user_id and self._user_id in body:
             return True
         localpart = self._user_localpart()
-        if localpart and re.search(r"\b" + re.escape(localpart) + r"\b", body, re.IGNORECASE):
+        if localpart and re.search(
+            self._localpart_mention_pattern(localpart), body, re.IGNORECASE):
             return True
         return bool(formatted_body and self._user_id and f"matrix.to/#/{self._user_id}" in formatted_body)
 
@@ -3128,6 +3308,8 @@ _YAML_BRIDGE = (  # (yaml key, env var, kind) for apply_yaml_bridge
     ("allowed_users", "MATRIX_ALLOWED_USERS", "csv"), ("free_response_rooms", "MATRIX_FREE_RESPONSE_ROOMS", "csv"),
     ("allowed_rooms", "MATRIX_ALLOWED_ROOMS", "csv"), ("ignore_user_patterns", "MATRIX_IGNORE_USER_PATTERNS", "csv"),
     ("max_message_length", "MATRIX_MAX_MESSAGE_LENGTH", "str"),
+    ("history_backfill", "MATRIX_HISTORY_BACKFILL", "lower"),
+    ("history_backfill_limit", "MATRIX_HISTORY_BACKFILL_LIMIT", "str"),
 )
 
 

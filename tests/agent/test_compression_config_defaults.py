@@ -1,7 +1,5 @@
-"""``_parse_compression_config`` promises "Defaults here MUST match DEFAULT_CONFIG" — the config-load
-failure path hands it ``{}`` and every key falls back inline. Regression for the one key that did not:
-``threshold_tokens`` fell to None (no cap) while ``threshold`` kept 0.50, so a broken config.yaml
-silently restored the pre-#115986 500K trigger on 1M-window models."""
+"""A failed config load hands ``_parse_compression_config`` ``{}``; every key must fall back to
+DEFAULT_CONFIG, and an explicit ``threshold_tokens: null`` must stay the ratio-only opt-out."""
 
 from types import SimpleNamespace
 
@@ -16,13 +14,13 @@ def _agent():
 
 
 @pytest.mark.parametrize(
-    ("section", "expected"),
+    ("agent_cfg", "expected"),
     [
-        ({}, DEFAULT_CONFIG["compression"]["threshold_tokens"]),  # absent → shipped default
-        ({"threshold_tokens": None}, None),  # explicit null → ratio-only opt-out
+        ({}, DEFAULT_CONFIG["compression"]["threshold_tokens"]),  # config-load failure → shipped default
+        ({"compression": {"threshold_tokens": None}}, None),  # explicit null → ratio-only opt-out
     ],
 )
-def test_absent_threshold_tokens_falls_back_like_every_other_key(section, expected):
-    cs = _parse_compression_config(_agent(), {"compression": section} if section else {})
+def test_threshold_tokens_default_and_null_opt_out(agent_cfg, expected):
+    cs = _parse_compression_config(_agent(), agent_cfg)
     assert cs.threshold_tokens == expected
     assert cs.threshold == DEFAULT_CONFIG["compression"]["threshold"]

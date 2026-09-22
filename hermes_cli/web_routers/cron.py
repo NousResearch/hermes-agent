@@ -66,9 +66,30 @@ def _normalize_dashboard_cron_updates(updates: Dict[str, Any], profile_home: Pat
     return normalized
 
 
+def _job_owner_profile(job_id: str, profile: Optional[str]) -> Optional[str]:
+    """Profile that holds ``job_id`` (its jobs.json and the state.db with its run sessions).
+
+    ``profile`` is a caller *hint*, not proof of ownership: the Desktop lists
+    jobs cross-profile (``?profile=all``) while its per-item calls carry the
+    ambient active profile. Trusting that hint opened a profile that does not
+    hold the job, so the ``cron_{job_id}_*`` id-range scan matched nothing and
+    answered ``200 {"runs": []}`` — the UI rendered "No runs yet" for a job
+    that had run many times (#115345). A hint that does hold the job still
+    wins, so deliberately scoped lookups (the same job id in two profiles,
+    e.g. a copied jobs.json) keep reading the named profile.
+    """
+    if profile:
+        jobs = _call_cron_for_profile(profile, "list_jobs", True)
+        if any(j.get("id") == job_id or j.get("name") == job_id for j in jobs):
+            return profile
+    return _find_cron_job_profile(job_id)
+
+
 def _job_profile(job_id: str, profile: Optional[str]) -> str:
-    """Profile owning ``job_id`` (explicit or discovered); 404 when none."""
-    selected = profile or _find_cron_job_profile(job_id)
+    """Owning profile for the get/update/pause/resume/trigger/delete family; 404 when no profile
+    holds the job. Same hint validation as the run lookup, so a wrong-profile hint from the
+    cross-profile list cannot 404 (or act on the wrong store for) a job the server can locate."""
+    selected = _job_owner_profile(job_id, profile)
     if not selected:
         raise _job_not_found()
     return selected
@@ -110,7 +131,7 @@ def _list_cron_job_runs_sync(job_id: str, profile: Optional[str] = None, limit: 
     SessionInfo. Backed by ``SessionDB.list_cron_job_runs`` — a bounded id-range
     scan, so cost scales with the requested window, not total cron history.
     """
-    selected = profile or _find_cron_job_profile(job_id)
+    selected = _job_owner_profile(job_id, profile)
     # job_id may be a human name; resolve to the canonical id used in run-session ids.
     canonical = job_id
     if selected:

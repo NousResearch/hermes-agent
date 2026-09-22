@@ -1,4 +1,4 @@
-import type { ModelOptionsResponse } from '@hermes/shared'
+import { DEFAULT_REASONING_EFFORT, type ModelOptionsResult } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { useQuery } from '@tanstack/react-query'
 
@@ -7,7 +7,6 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
 import { currentPickerSelection } from '@/lib/model-status-label'
-import { DEFAULT_REASONING_EFFORT } from '@/lib/reasoning-effort'
 import { $modelPresets, applyModelPreset, modelPresetKey, setModelPreset } from '@/store/model-presets'
 import { notifyError } from '@/store/notifications'
 import {
@@ -59,6 +58,7 @@ export function useModelMenuController({
   const currentModel = useStore(view.$model)
   const currentProvider = useStore(view.$provider)
   const currentReasoningEffort = useStore(view.$reasoningEffort)
+  const currentReasoningEffortWire = useStore(view.$reasoningEffortWire)
   const modelPresets = useStore($modelPresets)
   const defaultEffort = useStore($defaultReasoningEffort) || DEFAULT_REASONING_EFFORT
   const touchesPrimary = view.kind === 'primary'
@@ -70,7 +70,7 @@ export function useModelMenuController({
   // never repaint that fallback once the catalog resolved.
   const modelOptions = useQuery({
     queryKey: modelOptionsQueryKey(profile, activeSessionId, ownerConnectionId),
-    queryFn: (): Promise<ModelOptionsResponse> =>
+    queryFn: (): Promise<ModelOptionsResult> =>
       requestModelOptions({ gateway, profile, request: requestGateway, sessionId: activeSessionId })
   })
 
@@ -85,7 +85,12 @@ export function useModelMenuController({
       markComposerSelectionManual()
       setCurrentReasoningEffort(next)
     } else if (activeSessionId) {
-      sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: next }))
+      // The wire level belonged to the previous pick; the gateway re-stamps it.
+      sessionTileDelegate()?.updateSession(activeSessionId, state => ({
+        ...state,
+        reasoningEffort: next,
+        reasoningEffortWire: ''
+      }))
     }
 
     // Preset-only without a session: the gateway's `config.set` falls back to
@@ -101,7 +106,11 @@ export function useModelMenuController({
       if (touchesPrimary) {
         setCurrentReasoningEffort(previous)
       } else {
-        sessionTileDelegate()?.updateSession(activeSessionId, state => ({ ...state, reasoningEffort: previous }))
+        sessionTileDelegate()?.updateSession(activeSessionId, state => ({
+          ...state,
+          reasoningEffort: previous,
+          reasoningEffortWire: ''
+        }))
       }
 
       setModelPreset(provider, model, { effort: previous })
@@ -155,6 +164,7 @@ export function useModelMenuController({
 
     current: {
       effort: currentReasoningEffort,
+      effortWire: currentReasoningEffortWire,
       fast: currentFastMode,
       model: optionsModel,
       provider: optionsProvider

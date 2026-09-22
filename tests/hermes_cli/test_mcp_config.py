@@ -303,6 +303,35 @@ class TestMcpTest:
         assert "Connected" in out
         assert "Tools discovered: 2" in out
 
+    def test_exit_codes_distinguish_failure_from_unknown_server(self, tmp_path, capsys, monkeypatch):
+        """0 connected, 1 connection failed, 3 not in config — never argparse's 2, never a silent 0."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
+        from hermes_cli.mcp_config import cmd_mcp_test
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", lambda name, cfg, **kw: [])
+        assert cmd_mcp_test(_make_args(name="ink")) == 0
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("Server returned an error response")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp_test(_make_args(name="ink")) == 1
+        assert cmd_mcp_test(_make_args(name="doesnotexist")) == 3
+        assert "not found in config" in capsys.readouterr().out
+
+    def test_cli_dispatcher_forwards_test_exit_code(self, tmp_path, monkeypatch):
+        """``hermes mcp test`` reaches ``main()`` with the handler's code (the dispatcher used to drop it)."""
+        _seed_config(tmp_path, {"ink": {"url": "https://mcp.ml.ink/mcp"}})
+        from hermes_cli.main import cmd_mcp
+
+        def failing_probe(name, cfg, **kw):
+            raise RuntimeError("boom")
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", failing_probe)
+        assert cmd_mcp(_make_args(name="ink", mcp_action="test")) == 1
+        assert cmd_mcp(_make_args(name="doesnotexist", mcp_action="test")) == 3
+        assert cmd_mcp(_make_args(mcp_action="list")) is None
+
     def test_probe_uses_configured_connect_timeout(self, monkeypatch):
         """OAuth-capable probes must not hard-code a short 30s timeout."""
         import asyncio
@@ -532,6 +561,34 @@ class TestProbeEnvResolution:
 
         assert tools == [("do_thing", "a tool")]
         assert seen["config"]["headers"]["Authorization"] == "Bearer jwt-token-xyz"
+
+    def test_probe_propagates_explicit_connect_timeout_to_config(self, monkeypatch):
+        """An explicit `connect_timeout=` override (e.g. `hermes mcp login`'s 315s, extended so a
+        user has time to finish an OAuth browser flow) must reach `config["connect_timeout"]` —
+        that's what tools/mcp_tool_transport.py::_negotiate_session bounds session.initialize()
+        with. Left stale at its unrelated 60s default, the still-pending OAuth callback wait gets
+        cancelled mid-flow well before the caller's intended deadline."""
+        import hermes_cli.mcp_config as mc
+
+        seen = {}
+
+        class _FakeServer:
+            _tools = []
+
+            async def shutdown(self):
+                return None
+
+        async def _fake_connect(name, config):
+            seen["config"] = config
+            return _FakeServer()
+
+        monkeypatch.setattr("tools.mcp_tool_discovery._connect_server", _fake_connect)
+
+        mc._probe_single_server(
+            "travelermd", {"url": "https://mcp.traveler.md/mcp", "auth": "oauth"}, connect_timeout=315.0
+        )
+
+        assert seen["config"]["connect_timeout"] == 315.0
 
 
 class TestProbeCapabilityGating:
@@ -788,6 +845,38 @@ class TestMcpLogin:
         # The login path must grant a human enough time to finish the browser
         # OAuth round-trip — far longer than the 30s probe default.
         assert seen["connect_timeout"] >= 180
+
+    def test_login_clears_tokens_but_keeps_discovered_server_metadata(self, tmp_path, capsys, monkeypatch):
+        """Re-login wipes the stale grant and client registration but spares ``.meta.json``: when the
+        authorization server's metadata document cannot be re-fetched (a WAF-fronted split-host
+        server), the cached ``authorization_endpoint`` is what keeps the announced authorize URL off
+        the SDK's ``{mcp-origin}/authorize`` guess (#115329)."""
+        _seed_config(tmp_path, {
+            "tv": {"url": "https://mcp.example.com/mcp", "auth": "oauth"},
+        })
+        token_dir = tmp_path / "mcp-tokens"
+        token_dir.mkdir()
+        (token_dir / "tv.json").write_text('{"access_token": "stale"}', encoding="utf-8")
+        (token_dir / "tv.client.json").write_text('{"client_id": "old"}', encoding="utf-8")
+        (token_dir / "tv.meta.json").write_text(
+            '{"issuer": "https://www.example.com", "authorization_endpoint": "https://www.example.com/oauth/authorize",'
+            ' "token_endpoint": "https://www.example.com/oauth/token"}', encoding="utf-8")
+        state_at_probe = {}
+
+        def mock_probe(name, cfg, connect_timeout=30):
+            state_at_probe.update({p.name: p.exists() for p in token_dir.glob("tv*")})
+            state_at_probe["meta"] = (token_dir / "tv.meta.json").exists()
+            (token_dir / "tv.json").write_text('{"access_token": "fresh"}', encoding="utf-8")
+            return [("a", "d")]
+
+        monkeypatch.setattr("hermes_cli.mcp_config._probe_single_server", mock_probe)
+        from hermes_cli.mcp_config import cmd_mcp_login
+
+        cmd_mcp_login(_make_args(name="tv"))
+
+        assert state_at_probe["meta"] is True
+        assert state_at_probe.get("tv.json") is None and state_at_probe.get("tv.client.json") is None
+        assert "Authenticated — 1 tool(s) available" in capsys.readouterr().out
 
 
 # ---------------------------------------------------------------------------

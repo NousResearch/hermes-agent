@@ -7,7 +7,7 @@ import re
 import threading
 import time
 
-from agent.memory_provider import spawn_context_thread
+from plugins.memory.honcho.client import spawn_context_thread
 
 logger = logging.getLogger("plugins.memory.honcho")
 
@@ -85,7 +85,7 @@ class DialecticMixin:
                 self._dialectic_empty_streak += 1
 
         self._prefetch_thread_started_at = time.monotonic()
-        thread = spawn_context_thread(_run, name=thread_name)
+        thread = spawn_context_thread(_run, name=thread_name, owner=self)
         thread.start()
         self._prefetch_thread = thread
         return thread

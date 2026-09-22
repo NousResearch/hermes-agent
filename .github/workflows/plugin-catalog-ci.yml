@@ -126,12 +126,23 @@ jobs:
             fi
 
             # Manifest schema + declared-vs-registered capability check.
-            if hermes plugins validate "$PLUGIN_DIR"; then
-              echo "✅ PASS: $entry"
-            else
+            if ! hermes plugins validate --install-deps "$PLUGIN_DIR"; then
               echo "::error file=$entry::hermes plugins validate failed"
-              FAILED=1
+              FAILED=1; echo "::endgroup::"; continue
             fi
+
+            # SELF-UPDATER GATE (README rule 3): the pin is the only update path.
+            # A desktop bundle that both fetches from GitHub AND writes/renames
+            # plugin files is a self-updater; either half alone is fine (a
+            # plugin may read the API, or manage its own data files).
+            SELF_UPDATE=$(grep -rlE 'releases/latest|raw\.githubusercontent\.com' \
+                --include='*.js' --include='*.mjs' --include='*.cjs' --include='*.ts' "$PLUGIN_DIR" \
+              | xargs -r grep -lE 'writeTextFile|renamePath|writeFile\(' || true)
+            if [ -n "$SELF_UPDATE" ]; then
+              echo "::error file=$entry::self-updating code in catalog build (fetches GitHub AND writes plugin files): $SELF_UPDATE"
+              FAILED=1; echo "::endgroup::"; continue
+            fi
+            echo "✅ PASS: $entry"
             echo "::endgroup::"
           done <<< "$CHANGED_FILES"
 

@@ -85,7 +85,7 @@ def _hindsight(seen, tmp_path):
 def _honcho(seen, tmp_path):
     from plugins.memory.honcho import HonchoMemoryProvider
 
-    return [HonchoMemoryProvider._spawn_write(_probe_home(seen), "honcho-test", "failed %s")]
+    return [HonchoMemoryProvider()._spawn_write(_probe_home(seen), "honcho-test", "failed %s")]
 
 
 _PROVIDERS = {

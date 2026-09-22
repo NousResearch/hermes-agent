@@ -61,12 +61,13 @@ def _native_vision_result(
     """
     from tools.vision_tools import (
         _EMBED_MAX_DIMENSION,
-        _EMBED_TARGET_BYTES,
         _build_native_vision_tool_result,
         _resize_image_for_vision,
     )
+    from tools.vision_tools_history_budget import resolve_embed_target_bytes
 
-    data_url = _resize_image_for_vision(screenshot_path, mime_type="image/png", max_base64_bytes=_EMBED_TARGET_BYTES,
+    data_url = _resize_image_for_vision(screenshot_path, mime_type="image/png",
+                                        max_base64_bytes=resolve_embed_target_bytes(),
                                         max_dimension=_EMBED_MAX_DIMENSION, force_jpeg=True)
     native_result = _build_native_vision_tool_result(image_url=str(screenshot_path), question=question,
                                                      image_data_url=data_url,

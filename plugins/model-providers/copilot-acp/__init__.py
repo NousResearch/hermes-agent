@@ -21,6 +21,31 @@ class CopilotACPProfile(ProviderProfile):
 
         return CopilotACPClient(**client_kwargs)
 
+    def fetch_models(
+        self, *, api_key: str | None = None, base_url: str | None = None, timeout: float = 15.0
+    ) -> list[str] | None:
+        """Enabled models advertised by a short-lived signed-in ACP session (``session/new``).
+
+        The CLI may keep its login in an OS credential store with no token Hermes can reuse, so
+        the session is the only source that reflects the account's enablement. ``api_key`` /
+        ``base_url`` are ignored: the subprocess owns auth. None when the CLI is missing, refuses
+        ``--acp``, or the probe fails/times out — callers fall back to their next source.
+        """
+        from hermes_cli.auth import resolve_external_process_provider_credentials
+
+        try:
+            creds = resolve_external_process_provider_credentials(self.name)
+            if not str(creds.get("base_url") or "").startswith("acp://"):
+                return None
+            client = self.create_client(
+                api_key=creds.get("api_key"), base_url=creds.get("base_url"),
+                command=creds.get("command"), args=creds.get("args"))
+            return client.list_models(timeout_seconds=timeout) or None
+        except Exception:
+            # Missing CLI (AuthError), refused --acp / failed spawn (RuntimeError), probe
+            # timeout — the base fetch_models contract is "None if the fetch failed".
+            return None
+
 
 copilot_acp = CopilotACPProfile(
     name="copilot-acp", aliases=("github-copilot-acp", "copilot-acp-agent"),
@@ -28,7 +53,6 @@ copilot_acp = CopilotACPProfile(
     env_vars=(),  # Managed by ACP subprocess
     base_url="acp://copilot",  # ACP internal scheme
     auth_type="external_process",
-    supports_model_listing=False,  # model listing is handled by the ACP subprocess
     # How to launch the CLI; env var names predate this profile (formerly hardcoded in
     # hermes_cli/auth.py), so existing setups keep working.
     process_command="copilot",

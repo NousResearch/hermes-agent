@@ -11,7 +11,7 @@ approval:
   prompt_smart_deny: "      選擇 [o/D]: "
   smart_deny_once_inputs: "o,once"
   smart_deny_deny_inputs: "d,deny"
-  timeout:         "      ⏱ 逾時 — 已拒絕指令"
+  timeout:         "      ⏱ {waited} 內沒有回應——未執行該指令。再次要求即可重試，或提高上限：hermes config set approvals.timeout {suggested}"
   allowed_once:    "      ✓ 本次允許"
   allowed_session: "      ✓ 本次工作階段內允許"
   allowed_always:  "      ✓ 已加入永久允許清單"
@@ -86,6 +86,9 @@ gateway:
     switch_failed:         "分支已建立，但無法切換到該分支。"
     branched_one:          "⑂ 已分支至 **{title}**（已複製 {count} 則訊息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切換回原始工作階段。"
     branched_many:         "⑂ 已分支至 **{title}**（已複製 {count} 則訊息）\n原始：`{parent}`\n分支：`{new}`\n使用 `/resume` 切換回原始工作階段。"
+    branched_thread_one:   "⑂ 已在新討論串中分支到 **{title}**（已複製 {count} 則訊息）\n討論串：{thread}\n原始：`{parent}` — 本聊天保持在原會話\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
+    branched_thread_many:  "⑂ 已在新討論串中分支到 **{title}**（已複製 {count} 則訊息）\n討論串：{thread}\n原始：`{parent}` — 本聊天保持在原會話\n分支：`{new}`\n使用 `/branch --here` 可在本聊天中分支。"
+    thread_fallback:       "此處無法建立討論串，因此分支取代了本聊天的會話。"
 
   commands:
     usage:                 "用法：`/commands [page]`"
@@ -179,7 +182,7 @@ gateway:
       blocked:             "blocked; needs attention"
       review_requested:    "handed off for review; the implementation is done"
       changes_requested:   "review requested changes (BLOCK); implementation is not approved"
-      block_loop_detected: "routed to triage after repeated blocks; needs a decision"
+      block_loop_detected: "routed to triage after repeated blocks; orchestration attention needed"
       status_default:      "status changed"
       status_joiner:       ", "
       message:             "[kanban] Task {task_id} {status}.\nTitle: {title}\nAssignee: @{assignee}\nBoard: {board}\n\nCheck the result or decide the next step."

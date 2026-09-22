@@ -35,7 +35,18 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 # support files first, so a disk-only capture would restore a hollow skill.
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
-_NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive"}
+_NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
+# Transient/regeneratable local artifacts that must never be swept into a
+# snapshot, no matter how deep they sit under the skill dir — a stray venv or
+# node_modules turns a multi-KB ledger capture into gigabytes of blobs (#107539).
+# agent.curator_backup applies the same set to the whole-tree tarball.
+TRANSIENT_DIRS = frozenset({
+    ".venv", "venv", "env", ".env",
+    "node_modules", "__pycache__",
+    ".pytest_cache", ".mypy_cache", ".ruff_cache",
+    ".git",
+})
+_SNAPSHOT_EXCLUDE_DIRS = TRANSIENT_DIRS
 
 # Explicit actor override: the CLI sets "user", the curator walk sets "curator".
 _actor_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
@@ -121,14 +132,18 @@ def read_blob(sha256: str) -> Optional[bytes]:
 
 def snapshot_paths(root: Optional[Path], *, complete_package: bool = False) -> List[Dict[str, str]]:
     """{path, sha256} for every file under *root*, each stored as a blob; [] when root is
-    None/missing. Raises on I/O failure — callers decide whether that is fatal (rollback safety
-    capture) or swallowed (telemetry). ``complete_package`` unions in the newest curator
-    tarball's files (disk hashes win)."""
+    None/missing. Transient local artifacts (venvs, node_modules, caches, .git) are
+    excluded wherever they appear under *root*. Raises on I/O failure — callers decide
+    whether that is fatal (rollback safety capture) or swallowed (telemetry).
+    ``complete_package`` unions in the newest curator tarball's files (disk hashes win)."""
     if root is None:
         return []
     root = Path(root)  # gone from disk -> []; the complete_package fill may still recover it
     files = ([root] if root.is_file()
-             else sorted(p for p in root.rglob("*") if p.is_file()) if root.is_dir() else [])
+             else sorted(p for p in root.rglob("*") if p.is_file()
+                         and not any(part in _SNAPSHOT_EXCLUDE_DIRS
+                                     for part in p.relative_to(root).parts[:-1]))
+             if root.is_dir() else [])
     out = [{"path": str(f), "sha256": _store_blob(f.read_bytes())} for f in files]
     return fill_snapshot_from_curator_backup(root, out) if complete_package else out
 
@@ -243,6 +258,18 @@ def fill_snapshot_from_curator_backup(
     return out
 
 
+def _delta(before: List[Dict[str, str]], after: List[Dict[str, str]]) -> Tuple[List[Dict[str, str]], List[Dict[str, str]]]:
+    """Drop paths whose hash is identical on both sides. ``rollback_entry`` writes every *before*
+    path and removes *after*-only paths, so unchanged files are dead weight there — and a full
+    package manifest per edit made a 4,000-file skill cost 1.5 MB of ledger per patch (650 MB
+    over one summer). Deletions/creations are preserved: a path present on one side only stays."""
+    b_sha = {str(i.get("path")): i.get("sha256") for i in before}
+    a_sha = {str(i.get("path")): i.get("sha256") for i in after}
+    same = {p for p, s in b_sha.items() if a_sha.get(p) == s}
+    return ([i for i in before if str(i.get("path")) not in same],
+            [i for i in after if str(i.get("path")) not in same])
+
+
 def append_entry(
     action: str, skill: str, before: Optional[List[Dict[str, str]]] = None,
     after: Optional[List[Dict[str, str]]] = None, actor: Optional[str] = None,
@@ -251,6 +278,9 @@ def append_entry(
     if not ledger_enabled():
         return None
     try:
+        # pre-rollback deliberately records before == after (the current state of every touched path).
+        if action != "pre-rollback":
+            before, after = _delta(before or [], after or [])
         entry = {
             "id": uuid.uuid4().hex[:12], "ts": datetime.now(timezone.utc).isoformat(),
             "actor": actor if actor in _VALID_ACTORS else derive_actor(),
@@ -264,6 +294,87 @@ def append_entry(
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
         return None
+
+
+def _read_ledger(what: str, *, quiet_missing: bool = False) -> Optional[bytes]:
+    """Raw ledger bytes, or ``None`` (after a warning) when the file cannot be read or is not UTF-8.
+    ``quiet_missing`` keeps a merely absent ledger silent — normal for a fresh install."""
+    try:
+        raw = ledger_path().read_bytes()
+        raw.decode("utf-8")
+        return raw
+    except (OSError, UnicodeError) as exc:
+        if not (quiet_missing and isinstance(exc, FileNotFoundError)):
+            logger.warning("skill_ledger: ledger unreadable (%s); %s", exc, what)
+        return None
+
+
+def compact_ledger() -> Tuple[int, int, int]:
+    """Rewrite the ledger with every entry's unchanged paths dropped (see ``_delta``); ids, order and
+    rollback semantics are preserved. Returns ``(entries, bytes_before, bytes_after)``. Atomic: the
+    new file replaces the old only once fully written. Malformed lines are kept verbatim. Follow with
+    ``gc_blobs()``: dropped references leave blobs nothing can restore."""
+    path = ledger_path()
+    raw = _read_ledger("compaction skipped")
+    if raw is None:
+        return 0, 0, 0
+    text = raw.decode("utf-8")
+    out, kept = [], 0
+    for line in text.splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            out.append(line)
+            continue
+        if isinstance(row, dict) and row.get("action") != "pre-rollback":
+            row["before"], row["after"] = _delta(row.get("before") or [], row.get("after") or [])
+            line = json.dumps(row, ensure_ascii=False)
+        out.append(line)
+        kept += 1
+    data = ("\n".join(out) + "\n").encode("utf-8") if out else b""
+    tmp = path.with_name(path.name + ".compact.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return kept, len(raw), len(data)
+
+
+def gc_blobs() -> Tuple[int, int]:
+    """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
+    write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
+    (#107539). Malformed ledger lines, or an unreadable/undecodable ledger, abort the sweep
+    (blobs are kept) — an entry we cannot read may still hold references."""
+    blobs = blobs_dir()
+    if not blobs.is_dir():
+        return 0, 0
+    referenced: set = set()
+    raw = _read_ledger("blob GC skipped")
+    if raw is None:  # an unavailable ledger is not evidence that its blobs are unreferenced
+        return 0, 0
+    for line in raw.decode("utf-8").splitlines():
+        if not line.strip():
+            continue
+        try:
+            row = json.loads(line)
+        except json.JSONDecodeError:
+            row = None
+        if not isinstance(row, dict):
+            logger.warning("skill_ledger: malformed ledger line; blob GC skipped")
+            return 0, 0
+        for item in (row.get("before") or []) + (row.get("after") or []):
+            referenced.add(str(item.get("sha256", "")))
+    deleted = freed = 0
+    for blob in blobs.iterdir():
+        if blob.is_file() and blob.name not in referenced:
+            try:
+                size = blob.stat().st_size
+                blob.unlink()
+            except OSError:
+                continue
+            deleted += 1
+            freed += size
+    return deleted, freed
 
 
 def record_mutation(
@@ -305,12 +416,11 @@ def capture_before(
 
 def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Read the ledger, newest first. Malformed lines are skipped."""
-    try:
-        lines = ledger_path().read_text(encoding="utf-8").splitlines()
-    except OSError:  # missing or unreadable ledger == empty
+    raw = _read_ledger("listing empty", quiet_missing=True)  # missing/unreadable/undecodable == empty
+    if raw is None:
         return []
     rows: List[Dict[str, Any]] = []
-    for line in lines:
+    for line in raw.decode("utf-8").splitlines():
         with suppress(json.JSONDecodeError):
             row = json.loads(line) if line.strip() else None
             if isinstance(row, dict) and (not skill or row.get("skill") == skill):

@@ -18,9 +18,11 @@ import hashlib
 import json
 from unittest.mock import MagicMock
 
+import pytest
 
 from plugins.memory.honcho.client import HonchoClientConfig
 from plugins.memory.honcho.session import HonchoSessionManager
+from plugins.memory.honcho.session_peers import HonchoPeerUnresolvedError
 
 
 # ---------------------------------------------------------------------------
@@ -108,7 +110,7 @@ def _patch_manager_for_resolution_test(mgr: HonchoSessionManager) -> None:
     fake_peer = MagicMock()
     mgr._get_or_create_peer = MagicMock(return_value=fake_peer)
     mgr._get_or_create_honcho_session = MagicMock(
-        return_value=(MagicMock(), [])
+        return_value=(MagicMock(), [], None)
     )
 
 
@@ -337,10 +339,11 @@ class TestPeerResolutionOrder:
         assert session.user_peer_id == "Igor"
 
 
-    def test_everything_missing_falls_back_to_session_key(self):
-        """Deepest fallback: no runtime identity, no peer_name, no pin.
-        Must still produce a deterministic peer_id from the session key."""
-        # Config with no peer_name and default pin_peer_name=False
+    @pytest.mark.parametrize("key", ["telegram:123", "rheijo5"])
+    def test_everything_missing_refuses_to_mint_a_peer(self, key):
+        """No runtime identity, no peer_name, no pin: the resolver used to derive
+        ``user-telegram-123`` / ``user-default-rheijo5`` from the session key, which
+        put desktop sessions on a phantom peer (#93326). It must refuse instead."""
         mgr = HonchoSessionManager(
             honcho=MagicMock(),
             config=self._config(peer_name=None, pin_peer_name=False),
@@ -348,8 +351,22 @@ class TestPeerResolutionOrder:
         )
         _patch_manager_for_resolution_test(mgr)
 
-        session = mgr.get_or_create("telegram:123")
-        assert session.user_peer_id == "user-telegram-123"
+        with pytest.raises(HonchoPeerUnresolvedError, match="peerName"):
+            mgr.get_or_create(key)
+        assert mgr._get_or_create_peer.call_count == 0
+        assert mgr._get_or_create_honcho_session.call_count == 0
+        assert key not in mgr._cache
+
+    def test_peer_name_alone_is_the_declared_owner(self):
+        """No runtime identity: the configured peerName is the peer, unpinned or not."""
+        mgr = HonchoSessionManager(
+            honcho=MagicMock(),
+            config=self._config(peer_name="Igor", pin_peer_name=False),
+            runtime_user_peer_name=None,
+        )
+        _patch_manager_for_resolution_test(mgr)
+
+        assert mgr.get_or_create("rheijo5").user_peer_id == "Igor"
 
 
 class TestCrossPlatformMemoryUnification:
@@ -533,6 +550,40 @@ class TestPinTransition:
         assert sig_pinned["memory.pin_user_identity"] is True
         assert sig_unpinned["memory.pin_user_identity"] is False
         assert not any(k.startswith("honcho.") for k in sig_pinned)
+
+    def test_identity_signature_reflects_both_session_prefixes(self, tmp_path, monkeypatch):
+        """Flipping either session prefix mid-flight must invalidate the cached agent: both feed the
+        ``resolve_session_name`` output frozen into the provider's ``_session_key`` at construction."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = {"apiKey": "k", "peerName": "Igor", "aiPeer": "hermes"}
+        provider = HonchoMemoryProvider()
+
+        cfg_path.write_text(json.dumps({**base, "sessionPeerPrefix": True, "sessionAiPeerPrefix": False}))
+        sig_user_only = provider.identity_signature()["session_prefixing"]
+        cfg_path.write_text(json.dumps({**base, "sessionPeerPrefix": True, "sessionAiPeerPrefix": True}))
+        sig_both = provider.identity_signature()["session_prefixing"]
+
+        assert sig_user_only != sig_both
+
+    def test_identity_signature_reflects_a_repointed_host_workspace(self, tmp_path, monkeypatch):
+        """``hermes honcho peers map`` can repoint a host block's workspace; the cached agent's manager
+        is bound to the old one until the signature changes."""
+        from plugins.memory.honcho import HonchoMemoryProvider
+
+        cfg_path = tmp_path / "honcho.json"
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        base = {"apiKey": "k", "peerName": "Igor", "aiPeer": "hermes"}
+        provider = HonchoMemoryProvider()
+
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "old"}}}))
+        sig_old = provider.identity_signature()["workspace"]
+        cfg_path.write_text(json.dumps({**base, "hosts": {"hermes": {"workspace": "new"}}}))
+        sig_new = provider.identity_signature()["workspace"]
+
+        assert (sig_old, sig_new) == ("old", "new")
 
 
 class TestProfilePeerUniqueness:

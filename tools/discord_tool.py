@@ -453,18 +453,29 @@ def _ensure_subissue_context(
     context_name = _subissue_context_name(issue_repo, issue_number, name)
     key = _subissue_context_key(issue_repo, issue_number)
     with _SUBISSUE_CONTEXT_LOCK:
+        contexts = _read_subissue_contexts()
+        existing = contexts.get(key)
+        if isinstance(existing, dict):
+            recorded_guild = str(existing.get("guild_id") or "")
+            recorded_channel = str(existing.get("channel_id") or "")
+            if recorded_guild != str(guild_id) or recorded_channel != str(channel_id):
+                return tool_error(
+                    f"Sub-issue {key} is already bound to Discord guild {recorded_guild} channel "
+                    f"{recorded_channel}; refusing a different destination.")
         parent = _discord_request("GET", f"/channels/{channel_id}", token)
         if parent.get("type") not in _OPERATIONAL_PARENT_TYPES:
             return tool_error(
                 "Sub-issue contexts require a normal text or announcement channel; Discord does not support "
                 "nested threads in a forum post. Keep the epic in its forum post and use a dedicated operational channel.")
-        contexts = _read_subissue_contexts()
-        existing = contexts.get(key)
         thread: Optional[Dict[str, Any]] = None
         recovered = False
-        if isinstance(existing, dict) and str(existing.get("channel_id")) == str(channel_id):
+        if isinstance(existing, dict):
             thread = _validated_context_thread(token, str(existing.get("thread_id", "")), channel_id)
-            recovered = thread is not None
+            if thread is None:
+                return tool_error(
+                    f"Recorded sub-issue context {existing.get('thread_id')} is unavailable; refusing to create "
+                    f"a second context for {key}.")
+            recovered = True
         if thread is None:
             thread = _find_active_subissue_thread(token, guild_id, channel_id, context_name)
             recovered = thread is not None

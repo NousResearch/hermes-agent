@@ -458,3 +458,77 @@ class TestSanitizerFallback:
 
         assert result == "&lt;p&gt;x&lt;/p&gt;"
         assert "sanitiz" in caplog.text.lower()
+
+
+class TestStandaloneSendFallback:
+    """A missing optional dependency must not warn on the standalone path either.
+
+    ``_attach_parts`` (class path) separates ``ImportError`` — an expected,
+    documented opt-out — from a real conversion failure. The standalone sender
+    shipped with one broad ``except``, so a host without the optional ``markdown``
+    package warned on every cron send.
+    """
+
+    def _pconfig(self, html_format=True):
+        from types import SimpleNamespace
+        return SimpleNamespace(
+            token=None,
+            api_key=None,
+            extra={"address": "a@b.ch", "smtp_host": "smtp.test.com", "html_format": html_format},
+        )
+
+    def _send(self, monkeypatch, caplog, *, markdown_missing):
+        import asyncio
+        import builtins
+        import plugins.platforms.email.adapter as adapter_mod
+
+        sent = {}
+
+        class FakeServer:
+            def login(self, *a, **k):
+                return None
+
+            def send_message(self, msg):
+                sent["msg"] = msg
+
+            def quit(self):
+                return None
+
+        monkeypatch.setattr(adapter_mod, "_open_smtp", lambda *a, **k: FakeServer())
+        monkeypatch.setattr(
+            adapter_mod, "_get_secret", lambda key, default="": "x" if key == "EMAIL_PASSWORD" else default
+        )
+
+        if markdown_missing:
+            real_import = builtins.__import__
+
+            def mock_import(name, *args, **kwargs):
+                if name == "markdown":
+                    raise ImportError("No module named 'markdown'")
+                return real_import(name, *args, **kwargs)
+
+            monkeypatch.setattr(builtins, "__import__", mock_import)
+
+        with caplog.at_level(logging.WARNING, logger=adapter_mod.logger.name):
+            result = asyncio.run(adapter_mod._standalone_send(self._pconfig(), "c@d.ch", "**bold**"))
+        return result, sent, caplog.text
+
+    def test_missing_markdown_sends_plain_without_warning(self, monkeypatch, caplog):
+        result, sent, log_text = self._send(monkeypatch, caplog, markdown_missing=True)
+        assert result.get("success") is True
+        assert "HTML conversion failed" not in log_text
+        parts = sent["msg"].get_payload()
+        assert isinstance(parts, list)
+        assert [p.get_content_type() for p in parts] == ["text/plain"]
+
+    def test_real_conversion_failure_warns(self, monkeypatch, caplog):
+        import plugins.platforms.email.adapter as adapter_mod
+
+        def boom(_body):
+            raise RuntimeError("kaboom")
+
+        monkeypatch.setattr(adapter_mod, "_markdown_to_html_email", boom)
+        result, sent, log_text = self._send(monkeypatch, caplog, markdown_missing=False)
+        assert result.get("success") is True
+        assert "HTML conversion failed" in log_text
+        assert "kaboom" in log_text

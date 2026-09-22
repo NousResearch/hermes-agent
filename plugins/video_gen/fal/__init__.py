@@ -49,6 +49,15 @@ FAL_FAMILIES: Dict[str, Dict[str, Any]] = {
     "seedance-2.0-mini": _family("Seedance 2.0 Mini", "~30-90s", "cheap", "ByteDance. Faster/cheaper Seedance tier, audio + lip-sync, 4-15s.",
                                  "bytedance/seedance-2.0/mini/text-to-video", "bytedance/seedance-2.0/mini/image-to-video", aspect_ratios=_SIX_ASPECTS,
                                  resolutions=("480p", "720p"), durations=(4, 15), audio=True),
+    # Boreal (Sep 2026) is ONE endpoint for both modalities — an optional `image_url` flips it to i2v — so both slots name the same
+    # path. Numeric duration 1-20 (sent as int), 720p/1080p/2k tiers ($0.01/$0.03/$0.12 per second), speech + sound + on-screen
+    # text always generated (no toggle), `negative_prompt` declared, no `seed`. i2v drops aspect_ratio so the clip follows the
+    # image instead of centre-cropping it to the tool's 16:9 default.
+    "boreal": _family("Creatify Boreal", "~30-90s", "cheap", "Creatify. Presenter/UGC/product clips with spoken dialogue, sound and on-screen text, 1-20s, "
+                      "$0.01/s at 720p. Best with [VISUAL]/[SPEECH]/[SOUNDS]/[TEXT] prompt sections.", "creatify/boreal", "creatify/boreal",
+                      duration_int=True, image_drop_keys=("aspect_ratio",), aspect_ratios=("16:9", "9:16", "1:1", "4:3", "3:4"),
+                      resolutions=("720p", "1080p", "2k"), resolution_aliases={"2k": "2k", "1440p": "2k", "2160p": "2k", "4k": "2k"},
+                      durations=(1, 20), audio_native=True, negative=True),
     # ─── Expensive / premium tier ──────────────────────────────────────
     "veo3.1": _family("Veo 3.1", "~60-120s", "premium", "Google DeepMind. Cinematic, native audio, strong prompt adherence.", "fal-ai/veo3.1",
                       "fal-ai/veo3.1/image-to-video", aspect_ratios=("16:9", "9:16"), resolutions=("720p", "1080p", "4k"), durations=(4, 8), duration_enum=(4, 6, 8),
@@ -350,8 +359,8 @@ class FALVideoGenProvider(VideoGenProvider):
 
     def get_setup_schema(self) -> Dict[str, Any]:
         return {"name": "FAL", "badge": "paid", "env_vars": [{"key": "FAL_KEY", "prompt": "FAL.ai API key", "url": "https://fal.ai/dashboard/keys"}],
-                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, Grok Imagine, "
-                       "Gemini Omni — text-to-video & image-to-video"}
+                "tag": "LTX 2.3/2.5, Pixverse, Seedance 2.0/2.5/Mini, Creatify Boreal, Veo 3.1, MiniMax H3, FLUX 3, Kling 3.0/4K/O3, Wan 3.0, Happy Horse, "
+                       "Grok Imagine, Gemini Omni — text-to-video & image-to-video"}
 
     def capabilities(self) -> Dict[str, Any]:
         # RESOLVED family's surface so the dynamic tool schema gates params on what the selected model honors; union fallback (never raises).

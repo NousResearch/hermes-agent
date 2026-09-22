@@ -711,17 +711,12 @@ def _make_check_fn(server_name: str):
 
 
 def _declared_app_offerable(server_name: str) -> bool:
-    """True unless the registered declaration is unavailable on this host."""
+    """True unless the registered declaration is unavailable on this host. Called only for a
+    connected server, so a reachable loopback port outranks the interactive-session rule."""
     from hermes_platform import declaration
-    from hermes_platform.host import facts
     from hermes_platform.resolver.availability import availability
-    from tools.mcp_liveness import liveness_for
 
     decl = declaration.lookup(server_name)
     if decl is None:
         return True
-    live = liveness_for(server_name)
-    return bool(
-        availability(decl).offerable
-        and (live.kind != "interactive_session" or facts.interactive_session())
-    )
+    return bool(availability(decl).offerable)

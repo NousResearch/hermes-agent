@@ -169,6 +169,20 @@ def test_hydrated_error_shape_for_registered_declaration(tmp_path, monkeypatch):
     assert payload["retry"] == "after_user_action"
 
 
+def test_connected_interactive_session_server_is_offerable_from_a_service_session(tmp_path, monkeypatch):
+    import hermes_cli.agent_plugins as agent_plugins
+    from hermes_platform.host import facts
+    from tools import mcp_tool_handlers
+
+    declaration.register("example-server", _decl(tmp_path))
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {"kind": "interactive_session"}, raising=False)
+    monkeypatch.setattr(facts, "interactive_session", lambda: False)
+    try:
+        assert mcp_tool_handlers._declared_app_offerable("example-server") is True
+    finally:
+        declaration.unregister("example-server")
+
+
 def test_undeclared_error_text_is_unchanged(monkeypatch):
     from tools import mcp_tool_discovery, mcp_tool_handlers
 

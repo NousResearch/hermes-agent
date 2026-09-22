@@ -357,6 +357,16 @@ def _maintain_size() -> None:
 
 
 
+def _rewrite_ledger(path: Path, lines: List[bytes], op: str) -> bytes:
+    """Atomically replace the ledger at *path* with *lines* (one physical row each, no
+    terminators): write ``<name>.<op>.tmp`` fully, then ``os.replace`` it over the ledger.
+    Returns the bytes written so callers can report the new size."""
+    data = b"\n".join(lines) + b"\n" if lines else b""
+    tmp = path.with_name(path.name + f".{op}.tmp")
+    tmp.write_bytes(data)
+    os.replace(tmp, path)
+    return data
+
 def _trim_oldest(max_bytes: int) -> int:
     """Rewrite the ledger without its oldest lines until it is at most *max_bytes*;
     the newest entry always survives. Lines in the retained tail are never rewritten
@@ -380,13 +390,10 @@ def _trim_oldest(max_bytes: int) -> int:
         kept.append(line)
         size += addition
     kept.reverse()
-    data = b"\n".join(kept) + b"\n" if kept else b""
     dropped = len(lines) - len(kept)
     if dropped <= 0:
         return 0
-    tmp = path.with_name(path.name + ".trim.tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    _rewrite_ledger(path, kept, "trim")
     return dropped
 
 
@@ -414,10 +421,7 @@ def compact_ledger() -> Tuple[int, int, int]:
             line = json.dumps(row, ensure_ascii=False)
         out.append(line)
         kept += 1
-    data = ("\n".join(out) + "\n").encode("utf-8") if out else b""
-    tmp = path.with_name(path.name + ".compact.tmp")
-    tmp.write_bytes(data)
-    os.replace(tmp, path)
+    data = _rewrite_ledger(path, [line.encode("utf-8") for line in out], "compact")
     return kept, len(raw), len(data)
 
 

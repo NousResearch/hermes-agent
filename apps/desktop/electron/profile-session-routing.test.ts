@@ -8,10 +8,46 @@ import {
   fetchRegistrySessionRows,
   fetchRemoteProfileSessions,
   findRemoteOwnerProfileForSession,
+  isAllProfilesSessionListRequest,
   mergeProfileSessionWindow,
   spliceRegistrySessionRows,
   tagRegistrySessionResponse
 } from './profile-session-routing'
+
+test('registered gateway requests keep the all-profiles sidebar scope eligible for aggregation', () => {
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=all'), true)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions/sidebar?recents_profile=all'), true)
+  assert.equal(isAllProfilesSessionListRequest('GET', '/api/profiles/sessions?profile=default'), false)
+  assert.equal(isAllProfilesSessionListRequest('POST', '/api/profiles/sessions?profile=all'), false)
+})
+
+test('registered gateways with the same profile retain distinct ownership in the aggregate', async () => {
+  const rows = await fetchRegistrySessionRows(
+    [
+      { connectionId: 'gateway-remote', kind: 'remote', backends: [{ descriptor: 'remote', profileLabel: null }] },
+      { connectionId: 'gateway-ssh', kind: 'ssh', backends: [{ descriptor: 'ssh', profileLabel: 'default' }] }
+    ],
+    new URLSearchParams({ limit: '20', offset: '0' }),
+    async descriptor => {
+      if (descriptor === 'remote') {
+        return { sessions: [{ id: 'remote-default', profile: 'default' }], total: 1 }
+      }
+
+      return { sessions: [{ id: 'ssh-default' }], total: 1 }
+    }
+  )
+
+  const merged: unknown[] = []
+  spliceRegistrySessionRows(merged, rows, {})
+
+  assert.deepEqual(
+    merged.map(row => [(row as any).id, (row as any).profile, (row as any).connection_id]),
+    [
+      ['remote-default', 'default', 'gateway-remote'],
+      ['ssh-default', 'default', 'gateway-ssh']
+    ]
+  )
+})
 
 test('remote sidebar slices all follow the selected profile', () => {
   const slices = buildSidebarSessionSliceParams(

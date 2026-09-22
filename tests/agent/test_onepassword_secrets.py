@@ -194,6 +194,45 @@ def test_inject_values_survive_special_characters(monkeypatch, tmp_path):
     assert secrets == {"A": values["op://V/I/a"], "B": values["op://V/I/b"]}
 
 
+def test_blank_inject_value_falls_back_instead_of_applying_empty(monkeypatch, tmp_path):
+    """A blank value must be unusable through BOTH paths, not just `op read`.
+
+    `_run_op_read` rejects `not value.strip()` so an exit-0 empty value never clobbers a good
+    credential with "". The batch path has to agree: if it accepted whitespace, the same
+    reference would resolve to a usable secret or not depending only on how many references
+    happened to be mapped alongside it.
+    """
+    fake_op = tmp_path / "op"
+    fake_op.write_text("")
+    reads: list[str] = []
+
+    def fake_run(cmd, **kwargs):
+        if "inject" in cmd:  # batch "succeeds" but hands back a whitespace-only value for B
+            template = Path(cmd[cmd.index("-i") + 1]).read_text(encoding="utf-8")
+            out = Path(cmd[cmd.index("-o") + 1])
+            template = template.replace("{{ op://V/I/a }}", "good-value")
+            template = template.replace("{{ op://V/I/b }}", "   ")
+            out.write_text(template, encoding="utf-8")
+            return _ok("")
+        ref = cmd[cmd.index("--") + 1]
+        reads.append(ref)
+        if ref == "op://V/I/b":  # op read applies the same rule and refuses it
+            return _ok("   ")
+        return _ok("good-value")
+
+    monkeypatch.setattr(op.subprocess, "run", fake_run)
+
+    secrets, warnings = op.fetch_onepassword_secrets(
+        references={"A": "op://V/I/a", "B": "op://V/I/b"}, binary=fake_op, use_cache=False
+    )
+    # The blank value was not accepted as authoritative; the batch was rejected wholesale and
+    # every reference was re-read individually.
+    assert reads == ["op://V/I/a", "op://V/I/b"]
+    assert secrets == {"A": "good-value"}
+    assert "B" not in secrets
+    assert len(warnings) == 1 and "op://V/I/b" in warnings[0]
+
+
 
 
 

@@ -188,7 +188,10 @@ def _run_op_inject(op: Path, references: Dict[str, str], *, account: str = "",
             return {}, _scrub(proc.stderr or "")[:200] or f"op inject exited {proc.returncode}"
 
         resolved = _parse_inject_output(out.read_text(encoding="utf-8"))
-        # An empty value would clobber a good credential with "" — treat as unresolved.
+        # Blank is unresolved, mirroring _run_op_read's `not value.strip()`. Both paths must
+        # agree: if the batch accepted a value `op read` refuses, the same credential would
+        # resolve differently depending only on how many references happened to be mapped
+        # beside it. Relaxing this to `v != ""` here alone would introduce that divergence.
         resolved = {n: v for n, v in resolved.items() if v.strip()}
         missing = sorted(set(references) - set(resolved))
         if missing:

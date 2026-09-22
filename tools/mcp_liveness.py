@@ -115,7 +115,7 @@ def status(server_name: str) -> Status | None:
         return None
     available = availability(decl)
     live = liveness_for(server_name)
-    if available.state == "missing_app":
+    if available.state in {"missing_app", "unsupported_os"}:
         state: LivenessState = "missing_app"
     elif available.state == "version_too_old":
         state = "version_too_old"

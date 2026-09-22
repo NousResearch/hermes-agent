@@ -156,8 +156,8 @@ def test_hook_timeout_memo_never_pairs_a_new_sig_with_an_old_value(config_home):
     t = threading.Thread(target=writer, daemon=True); t.start()
     try:
         for _ in range(2000):
-            sig, value = pluginsmod._HOOK_TIMEOUT_CACHE
-            if sig in sig_of:
-                assert sig_of[sig] == value, "memo published a new sig with a stale value"
+            for sig, value in list(pluginsmod._HOOK_TIMEOUT_CACHE.values()):
+                if sig in sig_of:
+                    assert sig_of[sig] == value, "memo published a new sig with a stale value"
     finally:
         stop.set(); t.join(timeout=5)

@@ -1131,18 +1131,15 @@ for _name, _method in list(vars(PluginContext).items()):
 del _name, _method
 
 
-# Sentinel distinct from every real signature AND from None (which
-# _load_config_cache_sig returns when there is no config file to key on).
-_UNRESOLVED_HOOK_TIMEOUT_SIG: Any = object()
-# Published as ONE ``(sig, value)`` tuple swapped atomically (a module-global rebind is a single
-# STORE under the GIL), so a lock-free reader can never observe a new sig paired with an old value.
-_HOOK_TIMEOUT_CACHE: Tuple[Any, Optional[float]] = (_UNRESOLVED_HOOK_TIMEOUT_SIG, None)
+# Keyed by the scope-resolved config path (like `_LOAD_CONFIG_CACHE`) so multiplexed profiles do not
+# evict each other. Each value is ONE `(sig, value)` tuple stored with a single dict item assignment
+# (atomic under the GIL), so a lock-free reader can never observe a new sig paired with an old value.
+_HOOK_TIMEOUT_CACHE: Dict[str, Tuple[Any, Optional[float]]] = {}
 
 
 def _reset_hook_callback_timeout_cache() -> None:
-    """Drop the memoized hook-callback timeout. For tests and config reloads."""
-    global _HOOK_TIMEOUT_CACHE
-    _HOOK_TIMEOUT_CACHE = (_UNRESOLVED_HOOK_TIMEOUT_SIG, None)
+    """Drop the memoized hook-callback timeouts. For tests and config reloads."""
+    _HOOK_TIMEOUT_CACHE.clear()
 
 
 def _resolve_hook_callback_timeout() -> float:
@@ -1157,18 +1154,19 @@ def _resolve_hook_callback_timeout() -> float:
     """
     try:
         from hermes_cli.config import _load_config_cache_sig, get_config_path
-        _, sig = _load_config_cache_sig(get_config_path())
+        config_path = get_config_path()
+        path_key = str(config_path)
+        _, sig = _load_config_cache_sig(config_path)
     except Exception:
-        sig = None
+        path_key, sig = "", None
 
-    global _HOOK_TIMEOUT_CACHE
-    cached_sig, cached_value = _HOOK_TIMEOUT_CACHE  # one read of the published tuple
-    if sig is not None and cached_sig == sig and isinstance(cached_value, float):
-        return cached_value
+    cached = _HOOK_TIMEOUT_CACHE.get(path_key)  # one read of the published tuple
+    if cached is not None and sig is not None and cached[0] == sig and isinstance(cached[1], float):
+        return cached[1]
 
     resolved = _resolve_hook_callback_timeout_uncached()
     if sig is not None:
-        _HOOK_TIMEOUT_CACHE = (sig, resolved)
+        _HOOK_TIMEOUT_CACHE[path_key] = (sig, resolved)
     return resolved
 
 

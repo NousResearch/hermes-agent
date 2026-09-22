@@ -64,3 +64,7 @@ The initial read-only phase (before writer shutdown) is **superseded for writer-
 - `2026-09-22-final-lsof.txt`
 
 The artifact inventory contains every matching root/profile `state.db*` path with size and mtime, plus any discovered retired artifact manifests. Final lsof verification was run after shutdown and returned no matching open state DB/WAL/SHM handles (the receipt file is empty when no matches exist).
+
+## Final respawn check
+
+A fresh writer, PID `75641` (`hermes-fork-main-20260922`), was observed during review and was stopped with the authorized TERM/KILL sequence. The final receipt is `2026-09-22-final-lsof-after-75641.txt`; it records an empty matching-handle result.

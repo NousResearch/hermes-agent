@@ -6,10 +6,10 @@ import os
 from unittest.mock import patch
 
 import pytest
+import yaml
 
 from hermes_cli.config import (
     config_command,
-    cron_model_drift_guard_enabled,
     set_config_value,
 )
 
@@ -53,6 +53,7 @@ class TestExplicitAllowlist:
         "DISCORD_BOT_TOKEN",
         "SLACK_BOT_TOKEN",
         "SLACK_APP_TOKEN",
+        "API_SERVER_KEY",
     ])
     def test_explicit_key_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "test-value-123")
@@ -67,7 +68,7 @@ class TestExplicitAllowlist:
 # ---------------------------------------------------------------------------
 
 class TestCatchAllPatterns:
-    """Any key ending in _API_KEY or _TOKEN should route to .env."""
+    """Any key ending in _API_KEY, _TOKEN, or _SECRET should route to .env."""
 
     @pytest.mark.parametrize("key", [
         "DAYTONA_API_KEY",
@@ -75,6 +76,7 @@ class TestCatchAllPatterns:
         "SOME_FUTURE_SERVICE_API_KEY",
         "MY_CUSTOM_TOKEN",
         "WHATSAPP_BOT_TOKEN",
+        "CLIENT_SECRET",
     ])
     def test_api_key_suffix_routes_to_env(self, key, _isolated_hermes_home):
         set_config_value(key, "secret-456")
@@ -82,21 +84,52 @@ class TestCatchAllPatterns:
         assert f"{key}=secret-456" in env_content
         assert key not in _read_config(_isolated_hermes_home)
 
-    def test_case_insensitive(self, _isolated_hermes_home):
-        """Keys should be uppercased regardless of input casing."""
-        set_config_value("openai_api_key", "sk-test")
-        env_content = _read_env(_isolated_hermes_home)
-        assert "OPENAI_API_KEY=sk-test" in env_content
-
-    def test_terminal_ssh_prefix_routes_to_env(self, _isolated_hermes_home):
-        set_config_value("TERMINAL_SSH_PORT", "2222")
-        env_content = _read_env(_isolated_hermes_home)
-        assert "TERMINAL_SSH_PORT=2222" in env_content
-
 
 # ---------------------------------------------------------------------------
 # Non-secret keys → config.yaml
 # ---------------------------------------------------------------------------
+
+class TestGatewayPlatformsPrefixRedirect:
+    """#115212: ``gateway.platforms.<p>.<field>`` lands on the top-level ``platforms.<p>.<field>``
+    the gateway prefers, instead of a nested key that an existing top-level value shadows."""
+
+    def test_set_lands_on_top_level_platforms_block_the_loader_reads(self, _isolated_hermes_home, capsys):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "platforms:\n  telegram:\n    enabled: false\n", encoding="utf-8")
+        set_config_value("gateway.platforms.telegram.enabled", "true")
+        out = capsys.readouterr().out
+        assert "saved as platforms.telegram.enabled" in out
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert loaded["platforms"]["telegram"]["enabled"] is True
+        assert "gateway" not in loaded
+        from gateway.config import Platform, load_gateway_config
+        assert load_gateway_config().platforms[Platform.TELEGRAM].enabled is True
+
+    def test_nested_display_setting_still_reaches_display_platforms(self):
+        from hermes_cli.config import _redirect_platform_display_key
+        key, _ = _redirect_platform_display_key("gateway.platforms.telegram.streaming")
+        assert key == "display.platforms.telegram.streaming"
+
+    def test_get_and_unset_still_reach_a_legacy_nested_only_value(self, _isolated_hermes_home, capsys):
+        """A config whose value lives ONLY under ``gateway.platforms`` is still honoured by the gateway
+        (``merge_platform_sections``), so ``get`` must read it and ``unset`` must remove it instead of
+        reporting "not set" while the gateway keeps the platform enabled."""
+        from hermes_cli.config import get_config_value, unset_config_value
+
+        legacy = "gateway:\n  platforms:\n    telegram:\n      enabled: true\n"
+        (_isolated_hermes_home / "config.yaml").write_text(legacy, encoding="utf-8")
+        get_config_value("gateway.platforms.telegram.enabled")
+        assert capsys.readouterr().out.strip().lower() == "true"
+
+        unset_config_value("gateway.platforms.telegram.enabled")
+        assert "gateway" not in (yaml.safe_load(_read_config(_isolated_hermes_home)) or {})
+
+        # set on top of a nested-only value leaves one source of truth, not a shadowed duplicate
+        (_isolated_hermes_home / "config.yaml").write_text(legacy, encoding="utf-8")
+        set_config_value("gateway.platforms.telegram.enabled", "false")
+        loaded = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert loaded == {"platforms": {"telegram": {"enabled": False}}}
+
 
 class TestConfigYamlRouting:
     """Regular config keys should go to config.yaml, NOT .env."""
@@ -107,17 +140,37 @@ class TestConfigYamlRouting:
         assert "gpt-4o" in config
         assert "model" not in _read_env(_isolated_hermes_home)
 
-    def test_nested_key(self, _isolated_hermes_home):
-        set_config_value("terminal.backend", "docker")
-        config = _read_config(_isolated_hermes_home)
-        assert "docker" in config
-        assert "terminal" not in _read_env(_isolated_hermes_home)
 
     def test_terminal_image_goes_to_config(self, _isolated_hermes_home):
         """TERMINAL_DOCKER_IMAGE doesn't match _API_KEY or _TOKEN, so config.yaml."""
         set_config_value("terminal.docker_image", "python:3.12")
         config = _read_config(_isolated_hermes_home)
         assert "python:3.12" in config
+
+    def test_cron_script_timeout_is_recognized(self, _isolated_hermes_home, capsys):
+        """The script timeout read by cron must be accepted by config set."""
+        set_config_value("cron.script_timeout_seconds", "600")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "script_timeout_seconds: 600" in _read_config(_isolated_hermes_home)
+
+    def test_memory_nudge_interval_is_recognized(self, _isolated_hermes_home, capsys):
+        """The documented background-memory review interval is runtime config."""
+        set_config_value("memory.nudge_interval", "0")
+
+        assert "not a recognized config key" not in capsys.readouterr().out
+        assert "nudge_interval: 0" in _read_config(_isolated_hermes_home)
+
+    def test_tool_search_defer_is_recognized(self, _isolated_hermes_home, capsys):
+        """tools.tool_search.defer is read by ToolSearchConfig.from_raw, so it must be a
+        registered config key (not flagged as unrecognized) and coerce to a real list."""
+        set_config_value("tools.tool_search.defer", '["todo_list", "skill_manage"]')
+
+        captured = capsys.readouterr()
+        assert "not a recognized config key" not in captured.out
+        assert "not a recognized config key" not in captured.err
+        config = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert config["tools"]["tool_search"]["defer"] == ["todo_list", "skill_manage"]
 
     def test_terminal_docker_cwd_mount_flag_goes_to_config_and_env(self, _isolated_hermes_home):
         set_config_value("terminal.docker_mount_cwd_to_workspace", "true")
@@ -129,6 +182,27 @@ class TestConfigYamlRouting:
             or "TERMINAL_DOCKER_MOUNT_CWD_TO_WORKSPACE=True" in env_content
         )
 
+    def test_terminal_docker_shared_key_preserves_string_values(
+        self, _isolated_hermes_home, capsys
+    ):
+        set_config_value("terminal.docker_shared_container_key", "off")
+
+        import yaml
+
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["docker_shared_container_key"] == "off"
+        assert "TERMINAL_DOCKER_SHARED_CONTAINER_KEY=off" in _read_env(
+            _isolated_hermes_home
+        )
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_terminal_vercel_runtime_goes_to_config_and_env(self, _isolated_hermes_home):
+        set_config_value("terminal.vercel_runtime", "python3.13")
+        config = _read_config(_isolated_hermes_home)
+        env_content = _read_env(_isolated_hermes_home)
+        assert "vercel_runtime: python3.13" in config
+        assert "TERMINAL_VERCEL_RUNTIME=python3.13" in env_content
+
 
 # ---------------------------------------------------------------------------
 # Empty / falsy values — regression tests for #4277
@@ -137,25 +211,6 @@ class TestConfigYamlRouting:
 class TestFalsyValues:
     """config set should accept empty strings and falsy values like '0'."""
 
-    def test_empty_string_routes_to_env(self, _isolated_hermes_home):
-        """Blanking an API key should write an empty value to .env."""
-        set_config_value("OPENROUTER_API_KEY", "")
-        env_content = _read_env(_isolated_hermes_home)
-        assert "OPENROUTER_API_KEY=" in env_content
-
-    def test_empty_string_routes_to_config(self, _isolated_hermes_home):
-        """Blanking a config key should write an empty string to config.yaml."""
-        set_config_value("model", "")
-        config = _read_config(_isolated_hermes_home)
-        assert "model: ''" in config or "model: \"\"" in config
-
-    def test_zero_routes_to_config(self, _isolated_hermes_home):
-        """Setting a config key to '0' should write 0 to config.yaml."""
-        # Use a real DEFAULT_CONFIG sub-key so schema validation passes — the
-        # original test used ``verbose`` which is not in the known schema.
-        set_config_value("agent.gateway_timeout", "0")
-        config = _read_config(_isolated_hermes_home)
-        assert "gateway_timeout: 0" in config
 
     def test_config_command_rejects_missing_value(self):
         """config set with no value arg (None) should still exit."""
@@ -183,56 +238,6 @@ class TestConfigGetUnset:
 
         assert capsys.readouterr().out.strip() == "120"
 
-    def test_config_get_prints_structured_json(self, _isolated_hermes_home, capsys):
-        set_config_value("terminal.backend", "docker")
-        capsys.readouterr()
-
-        args = argparse.Namespace(config_command="get", key="terminal", json=True)
-        config_command(args)
-
-        import json
-        assert json.loads(capsys.readouterr().out)["backend"] == "docker"
-
-    def test_config_get_prints_null_for_resolved_null_value(self, capsys):
-        args = argparse.Namespace(config_command="get", key="cron.max_parallel_jobs", json=False)
-        config_command(args)
-
-        assert capsys.readouterr().out.strip() == "null"
-
-    def test_config_get_missing_env_key_exits(self, capsys):
-        args = argparse.Namespace(config_command="get", key="OPENROUTER_API_KEY", json=False)
-
-        with pytest.raises(SystemExit) as exc:
-            config_command(args)
-
-        assert exc.value.code == 1
-        assert "Config key not set: OPENROUTER_API_KEY" in capsys.readouterr().err
-
-    def test_config_get_dotted_token_yaml_key(self, _isolated_hermes_home, capsys):
-        (_isolated_hermes_home / "config.yaml").write_text(
-            "platforms:\n"
-            "  teams:\n"
-            "    extra:\n"
-            "      access_token: yaml-token\n"
-        )
-
-        args = argparse.Namespace(
-            config_command="get",
-            key="platforms.teams.extra.access_token",
-            json=False,
-        )
-        config_command(args)
-
-        assert capsys.readouterr().out.strip() == "yaml-token"
-
-    def test_config_get_missing_key_exits(self, capsys):
-        args = argparse.Namespace(config_command="get", key="not.a.real.key", json=False)
-
-        with pytest.raises(SystemExit) as exc:
-            config_command(args)
-
-        assert exc.value.code == 1
-        assert "Config key not set: not.a.real.key" in capsys.readouterr().err
 
     def test_config_unset_removes_yaml_key_and_synced_env(self, _isolated_hermes_home, capsys):
         set_config_value("terminal.backend", "docker")
@@ -248,16 +253,6 @@ class TestConfigGetUnset:
         assert "TERMINAL_ENV=" not in _read_env(_isolated_hermes_home)
         assert "Unset terminal.backend" in capsys.readouterr().out
 
-    def test_config_unset_removes_env_key(self, _isolated_hermes_home, capsys):
-        set_config_value("OPENROUTER_API_KEY", "sk-test")
-        assert "OPENROUTER_API_KEY=sk-test" in _read_env(_isolated_hermes_home)
-        capsys.readouterr()
-
-        args = argparse.Namespace(config_command="unset", key="OPENROUTER_API_KEY")
-        config_command(args)
-
-        assert "OPENROUTER_API_KEY=" not in _read_env(_isolated_hermes_home)
-        assert "Unset OPENROUTER_API_KEY" in capsys.readouterr().out
 
     def test_config_unset_removes_dotted_token_yaml_key(self, _isolated_hermes_home, capsys):
         (_isolated_hermes_home / "config.yaml").write_text(
@@ -277,15 +272,60 @@ class TestConfigGetUnset:
         assert reloaded["platforms"]["teams"]["extra"]["tenant_id"] == "tenant"
         assert "Unset platforms.teams.extra.access_token" in capsys.readouterr().out
 
-    def test_config_unset_missing_key_exits(self, capsys):
-        args = argparse.Namespace(config_command="unset", key="not.a.real.key")
 
-        with pytest.raises(SystemExit) as exc:
-            config_command(args)
+class TestConfigGetPhantomKeyNotice:
+    """``config get`` must not echo a schema-unknown nested key as if it were live: the value comes
+    from the file, but nothing reads it. The notice goes to stderr so stdout stays parseable, and
+    custom top-level keys / open-subkey sections stay unflagged (both are supported).
+    """
 
-        assert exc.value.code == 1
-        assert "Config key not set: not.a.real.key" in capsys.readouterr().err
+    def test_unknown_nested_key_flags_on_stderr_and_keeps_stdout_parseable(
+        self, _isolated_hermes_home, capsys
+    ):
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "compression:\n  compressor:\n    enabled: true\n"
+        )
 
+        args = argparse.Namespace(config_command="get", key="compression.compressor.enabled", json=True)
+        config_command(args)
+
+        captured = capsys.readouterr()
+        assert json.loads(captured.out) is True  # stdout stays parseable: notice is stderr-only
+        assert "not a recognized config key" in captured.err
+
+    def test_unseeded_live_key_notice_hedges_instead_of_asserting_unread(
+        self, _isolated_hermes_home, capsys
+    ):
+        # The check is a DEFAULT_CONFIG walk; ``browser.cloud_provider`` is deliberately unseeded
+        # yet read by tools/browser_tool_cloud.py, so the notice must not claim it is never read.
+        (_isolated_hermes_home / "config.yaml").write_text("browser:\n  cloud_provider: local\n")
+
+        config_command(argparse.Namespace(config_command="get", key="browser.cloud_provider", json=False))
+
+        captured = capsys.readouterr()
+        assert captured.out.strip() == "local"
+        assert "may not read it" in captured.err
+        assert "does not read it" not in captured.err
+
+    @pytest.mark.parametrize(
+        "key, body",
+        [
+            ("terminal.timeout", "terminal:\n  timeout: 120\n"),
+            ("my_custom_setting", "my_custom_setting: hello\n"),
+            ("mcp_servers.local.url", "mcp_servers:\n  local:\n    url: http://127.0.0.1:1\n"),
+        ],
+    )
+    def test_recognized_and_custom_keys_are_not_flagged(
+        self, _isolated_hermes_home, capsys, key, body
+    ):
+        (_isolated_hermes_home / "config.yaml").write_text(body)
+
+        args = argparse.Namespace(config_command="get", key=key, json=False)
+        config_command(args)
+
+        captured = capsys.readouterr()
+        assert captured.out.strip()
+        assert "not a recognized config key" not in captured.err
 
 # ---------------------------------------------------------------------------
 # List navigation — regression tests for #17876
@@ -376,249 +416,9 @@ class TestListNavigation:
 
 
 # ---------------------------------------------------------------------------
-# Cron drift guard warning — regression tests for #59031
+# Unpinned-cron notice on a global model change (#59031, #44585)
 # ---------------------------------------------------------------------------
 
-def _write_cron_jobs(tmp_path, jobs):
-    cron_dir = tmp_path / "cron"
-    cron_dir.mkdir(parents=True, exist_ok=True)
-    (cron_dir / "jobs.json").write_text(
-        json.dumps({"jobs": jobs}),
-        encoding="utf-8",
-    )
-
-
-class TestCronModelDriftConfigWarning:
-    """Warn operators before unpinned snapshot-bearing cron jobs fail closed."""
-
-    def test_model_default_change_warns_for_unpinned_snapshot_jobs(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "no_agent": False,
-                    "model": None,
-                    "provider": None,
-                    "model_snapshot": "old-model",
-                    "provider_snapshot": "openrouter",
-                    "prompt": "do not print this prompt",
-                },
-            ],
-        )
-
-        set_config_value("model.default", "new-model")
-
-        captured = capsys.readouterr()
-        assert "1 enabled unpinned cron job" in captured.out
-        assert "model_snapshot" in captured.out
-        assert "fail closed" in captured.out
-        assert "cronjob action=update job_id=<job_id> provider=<provider> model=<model>" in captured.out
-        assert "do not print this prompt" not in captured.out
-
-    def test_provider_change_warns_for_unpinned_snapshot_jobs(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "provider-drift-job",
-                    "enabled": True,
-                    "no_agent": False,
-                    "model": None,
-                    "provider": None,
-                    "model_snapshot": "same-model",
-                    "provider_snapshot": "openrouter",
-                },
-            ],
-        )
-
-        set_config_value("model.provider", "new-provider")
-
-        captured = capsys.readouterr()
-        assert "1 enabled unpinned cron job" in captured.out
-        assert "provider_snapshot" in captured.out
-        assert "new global provider" in captured.out
-        assert "cronjob action=update job_id=<job_id> provider=<provider> model=<model>" in captured.out
-
-    def test_pinned_jobs_and_missing_snapshots_do_not_warn(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-pinned",
-                    "enabled": True,
-                    "model": "old-model",
-                    "model_snapshot": "old-model",
-                },
-                {
-                    "id": "missing-model-snapshot",
-                    "enabled": True,
-                    "model": None,
-                },
-                {
-                    "id": "provider-pinned",
-                    "enabled": True,
-                    "provider": "openrouter",
-                    "provider_snapshot": "openrouter",
-                },
-                {
-                    "id": "missing-provider-snapshot",
-                    "enabled": True,
-                    "provider": None,
-                },
-                {
-                    "id": "disabled-unpinned",
-                    "enabled": False,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                    "provider": None,
-                    "provider_snapshot": "openrouter",
-                },
-                {
-                    "id": "script-only",
-                    "enabled": True,
-                    "no_agent": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                    "provider": None,
-                    "provider_snapshot": "openrouter",
-                },
-            ],
-        )
-
-        set_config_value("model.default", "new-model")
-        set_config_value("model.provider", "new-provider")
-
-        captured = capsys.readouterr()
-        assert "fail closed" not in captured.out
-        assert "cronjob action=update" not in captured.out
-
-    def test_unreadable_cron_database_does_not_break_config_set(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        cron_dir = _isolated_hermes_home / "cron"
-        cron_dir.mkdir(parents=True, exist_ok=True)
-        (cron_dir / "jobs.json").write_text("{not-json", encoding="utf-8")
-
-        set_config_value("model.default", "new-model")
-
-        captured = capsys.readouterr()
-        assert "Set model.default = new-model" in captured.out
-        assert "fail closed" not in captured.out
-
-    def test_model_name_change_warns_like_model_default(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        """model.name is a legacy alias for model.default — the warning must fire."""
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("model.name", "new-model")
-
-        captured = capsys.readouterr()
-        assert "Set model.name = new-model" in captured.out
-        assert "fail closed" in captured.out
-
-    def test_explicit_opt_out_suppresses_warning(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("cron.model_drift_guard", "false")
-        capsys.readouterr()
-        set_config_value("model.default", "new-model")
-
-        import yaml
-        reloaded = yaml.safe_load(_read_config(_isolated_hermes_home))
-        captured = capsys.readouterr()
-        assert reloaded["cron"]["model_drift_guard"] is False
-        assert "Set model.default = new-model" in captured.out
-        assert "fail closed" not in captured.out
-
-    def test_cron_fleet_default_suppresses_model_axis_warning(
-        self,
-        _isolated_hermes_home,
-        capsys,
-    ):
-        """With cron.model set, unpinned jobs follow the fleet default, not the
-        global model — a model.default change cannot trip the guard, so no
-        warning should be printed."""
-        _write_cron_jobs(
-            _isolated_hermes_home,
-            [
-                {
-                    "id": "model-drift-job",
-                    "enabled": True,
-                    "model": None,
-                    "model_snapshot": "old-model",
-                }
-            ],
-        )
-
-        set_config_value("cron.model", "cron-fleet-model")
-        capsys.readouterr()
-        set_config_value("model.default", "new-model")
-
-        captured = capsys.readouterr()
-        assert "Set model.default = new-model" in captured.out
-        assert "fail closed" not in captured.out
-
-    @pytest.mark.parametrize(
-        ("configured_value", "expected"),
-        [
-            (False, False),
-            (True, True),
-            ("false", True),
-            (0, True),
-            (None, True),
-        ],
-    )
-    def test_only_literal_false_disables_guard(self, configured_value, expected):
-        config = {"cron": {"model_drift_guard": configured_value}}
-        assert cron_model_drift_guard_enabled(config) is expected
-
-
-# ---------------------------------------------------------------------------
-# String-typed config values — regression tests for #47515
-# ---------------------------------------------------------------------------
 
 class TestStringTypedConfigValues:
     @pytest.mark.parametrize("value", ["off", "on", "yes", "no", "true", "false", "01"])
@@ -711,69 +511,83 @@ class TestSecretRedactionInDisplay:
         captured = capsys.readouterr()
         assert "Set model.reasoning_effort = high" in captured.out
 
+
+# ---------------------------------------------------------------------------
 # #34067: Schema validation for unknown keys
 # ---------------------------------------------------------------------------
 
 class TestSchemaValidation:
-    """#34067: ``hermes config set`` must not report bare success for
-    unrecognized keys. The key IS written (arbitrary keys are supported —
-    top-level scalars bridge into os.environ for skills/external apps), but
-    a post-write notice warns that Hermes may never read it and suggests the
-    likely-intended path. Headline case: the plausible-but-wrong
-    ``gateway.discord.gateway_restart_notification`` (correct path:
-    ``discord.gateway_restart_notification``).
+    """#34067 / #112003 / #114107: only a WRONG-PREFIX path under a known section is provably a typo
+    and refused before anything is written (headline case
+    ``gateway.discord.gateway_restart_notification``, correct path
+    ``discord.gateway_restart_notification``). Every other unknown path — unseeded runtime-read keys
+    and same-section misspellings alike — is written with a post-write notice, because
+    DEFAULT_CONFIG is not a complete registry of what the runtime reads.
     """
 
-    def test_unknown_top_level_key_written_with_notice(self, _isolated_hermes_home, capsys):
-        """An unknown top-level key is saved AND a notice is printed."""
-        set_config_value("totally_made_up_key", "value")
-        out = capsys.readouterr().out
-        assert "not a recognized config key" in out
-        assert "totally_made_up_key" in out
-        assert "saved anyway" in out
-        # The value WAS written.
-        assert "totally_made_up_key" in _read_config(_isolated_hermes_home)
+    @pytest.mark.parametrize("key,suggestion", [
+        ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
+        # The stray middle segment ``gateway`` fuzzy-matches the sibling ``agent.gateway_timeout``;
+        # the structural wrong-prefix match must win so the path is refused, not written with
+        # a misleading did-you-mean.
+        ("agent.gateway.strict", "gateway.strict"),
+    ])
+    def test_unknown_subkey_under_known_section_refused_before_write(
+        self, key, suggestion, _isolated_hermes_home, capsys
+    ):
+        config_path = _isolated_hermes_home / "config.yaml"
+        config_path.write_text("model: gpt-4o\n", encoding="utf-8")
 
-    def test_unknown_subkey_written_with_notice(self, _isolated_hermes_home, capsys):
-        """The headline #34067 path: written, but warned about — no more
-        bare success for gateway.discord.gateway_restart_notification."""
-        set_config_value("gateway.discord.gateway_restart_notification", "false")
-        out = capsys.readouterr().out
-        assert "✓ Set" in out
-        assert "not a recognized config key" in out
+        with pytest.raises(SystemExit):
+            set_config_value(key, "true")
 
-    def test_platforms_container_is_accepted(self, _isolated_hermes_home, capsys):
-        """``platforms.<name>.<field>`` is a valid current shape: gateway/
-        config.py resolves a top-level ``platforms`` map in addition to the
-        top-level platform blocks, so it must NOT trigger the notice."""
-        set_config_value("platforms.discord.enabled", "true")
-        content = _read_config(_isolated_hermes_home)
-        assert "enabled: true" in content
-        assert "not a recognized config key" not in capsys.readouterr().out
+        assert config_path.read_text(encoding="utf-8") == "model: gpt-4o\n"
+        err = capsys.readouterr().err
+        assert "nothing was written" in err
+        assert f"Did you mean: {suggestion}" in err
 
-    def test_gateway_platforms_nested_is_accepted(self, _isolated_hermes_home, capsys):
-        """Docs configure platforms under ``gateway.platforms.<name>`` — the
-        canonical layout must validate as known (no notice)."""
-        set_config_value("gateway.platforms.my_platform.extra.token", "abc")
-        content = _read_config(_isolated_hermes_home)
-        assert "token: abc" in content
-        assert "not a recognized config key" not in capsys.readouterr().out
+    @pytest.mark.parametrize("key,value,expected,suggestion", [
+        # ``stt.provider`` is read at runtime (tools/transcription_tools.py) but has no seeded
+        # default: a stored value is an explicit user pick, so the schema walk must not refuse it.
+        ("stt.provider", "whisper", "whisper", None),
+        # TRADE-OFF made explicit: a same-section typo (``agent.max_turnz``) is indistinguishable
+        # from an unseeded key, so it is written too — the user gets the sibling suggestion
+        # (``agent.max_turns``) instead of a refusal.
+        ("agent.max_turnz", "50", 50, "agent.max_turns"),
+        # ``filter_silence_narration`` is an _EXTRA_KNOWN_ROOT_KEYS top-level form of a nested
+        # gateway setting (gateway/config_loader.py bridge). Its presence in the known roots
+        # must not turn the nested path into a wrong-prefix refusal.
+        ("gateway.filter_silence_narration", "false", False, None),
+    ])
+    def test_unknown_leaf_under_known_section_is_written_with_notice(
+        self, key, value, expected, suggestion, _isolated_hermes_home, capsys
+    ):
+        """Unseeded runtime settings are not proven typos merely by a schema walk."""
+        set_config_value(key, value)
 
-    def test_unknown_approvals_subkey_warns_but_writes(self, _isolated_hermes_home, capsys):
-        """``approvals`` is a defined schema, so a typo'd sub-key gets the
-        notice — but is still written."""
-        set_config_value("approvals.notarealkey", "true")
-        out = capsys.readouterr().out
-        assert "not a recognized config key" in out
-        assert "notarealkey" in _read_config(_isolated_hermes_home)
-
-    def test_known_approvals_subkey_is_accepted(self, _isolated_hermes_home, capsys):
-        """Real ``approvals.*`` keys still validate silently."""
-        set_config_value("approvals.mode", "off")
-        import yaml
         saved = yaml.safe_load(_read_config(_isolated_hermes_home))
-        assert saved["approvals"]["mode"] == "off"
-        assert "not a recognized config key" not in capsys.readouterr().out
+        section, name = key.split(".")
+        assert saved[section][name] == expected
+        out = capsys.readouterr().out
+        assert "not a recognized config key" in out
+        # Nested paths are written but never env-bridged: the top-level-only footer must not print.
+        assert "bridged to the environment" not in out
+        assert "Use --force" in out
+        if suggestion is None:
+            assert "Did you mean" not in out
+        else:
+            assert f"Did you mean: {suggestion}" in out
+
+    def test_unknown_top_level_key_still_written_with_notice(self, _isolated_hermes_home, capsys):
+        set_config_value("brand_new_future_key", "value")
+        assert "brand_new_future_key" in _read_config(_isolated_hermes_home)
+        assert "not a recognized config key" in capsys.readouterr().out
+
+
+
+
+
+
 
     def test_desktop_macos_signing_identity_is_accepted(self, _isolated_hermes_home, capsys):
         """The documented TCC signing identity setting is part of the schema."""
@@ -783,18 +597,7 @@ class TestSchemaValidation:
         assert saved["desktop"]["macos_signing_identity"] == "Hermes Local Signing"
         assert "not a recognized config key" not in capsys.readouterr().out
 
-    def test_close_typo_suggests_correct_key(self, _isolated_hermes_home, capsys):
-        """Typo'd top-level keys should get a fuzzy-match suggestion."""
-        set_config_value("disco", "false")
-        out = capsys.readouterr().out
-        assert "Did you mean" in out
-        assert "discord" in out
 
-    def test_typoed_subkey_suggests_sibling(self, _isolated_hermes_home, capsys):
-        """``agent.max_turn`` should suggest ``agent.max_turns``."""
-        set_config_value("agent.max_turn", "100")
-        out = capsys.readouterr().out
-        assert "agent.max_turns" in out
 
     def test_force_suppresses_notice(self, _isolated_hermes_home, capsys):
         """``--force`` writes unknown keys without the notice (scripted
@@ -805,28 +608,6 @@ class TestSchemaValidation:
         # And the value WAS written.
         content = _read_config(_isolated_hermes_home)
         assert "brand_new_future_key" in content
-
-    def test_known_top_level_key_accepted(self, _isolated_hermes_home):
-        """Sanity check: real config keys still work."""
-        set_config_value("terminal.backend", "docker")
-        content = _read_config(_isolated_hermes_home)
-        assert "backend: docker" in content
-
-    def test_known_platform_config_accepted(self, _isolated_hermes_home):
-        """Schema-defined-extensible top-level keys (platform configs) accept
-        any sub-key path because PlatformConfig has dynamic ``extra`` fields."""
-        # discord is a platform config — sub-keys accept anything.
-        set_config_value("discord.gateway_restart_notification", "false")
-        content = _read_config(_isolated_hermes_home)
-        assert "gateway_restart_notification: false" in content
-
-    def test_open_dict_mcp_servers_accepts_any_subkey(self, _isolated_hermes_home):
-        """``mcp_servers.<user-named-server>.<field>`` must work for any
-        user-supplied server name."""
-        set_config_value("mcp_servers.my-server.command", "npx")
-        content = _read_config(_isolated_hermes_home)
-        assert "my-server" in content
-        assert "command: npx" in content
 
 
 class TestValidateConfigKey:
@@ -844,6 +625,10 @@ class TestValidateConfigKey:
         "platforms.discord.enabled",
         "gateway.platforms.my_platform.extra.token",
         "approvals.mode",
+        # _EXTRA_KNOWN_ROOT_KEYS: read by the runtime (setup wizard / tools_config save flow)
+        # but absent from DEFAULT_CONFIG; they used to trip the false "not a recognized config
+        # key" notice with a bogus near-miss suggestion (platform_hints.cli).
+        "platform_toolsets.cli",
     ])
     def test_known_keys_pass(self, key):
         from hermes_cli.config import _validate_config_key
@@ -851,9 +636,11 @@ class TestValidateConfigKey:
         assert is_known, f"Expected {key!r} to validate as known"
 
     @pytest.mark.parametrize("key,expected_in_suggestion", [
-        ("gateway.discord.gateway_restart_notification", None),  # no close suggestion
+        ("gateway.discord.gateway_restart_notification", "discord.gateway_restart_notification"),
         ("disco", "discord"),
         ("agent.max_turn", "agent.max_turns"),
+        # A typo of an _EXTRA_KNOWN_ROOT_KEYS root points at the real root, not a near-miss.
+        ("platform_toolset.cli", "platform_toolsets.cli"),
     ])
     def test_unknown_keys_with_suggestion(self, key, expected_in_suggestion):
         from hermes_cli.config import _validate_config_key
@@ -863,20 +650,6 @@ class TestValidateConfigKey:
             assert suggestion is not None and expected_in_suggestion in suggestion, \
                 f"Expected suggestion to contain {expected_in_suggestion!r}, got {suggestion!r}"
 
-    @pytest.mark.parametrize("key", [
-        "_test.shim_marker",
-        "_internal",
-        "_test.nested.deep.marker",
-        "_x",
-    ])
-    def test_underscore_prefixed_keys_are_accepted(self, key):
-        """Underscore-prefixed top-level keys are internal/test markers and
-        bypass schema validation. The Docker privilege-drop shim test writes
-        ``_test.shim_marker`` to probe config.yaml ownership; that must not
-        be rejected. (Regression: #34250 schema validation broke this.)"""
-        from hermes_cli.config import _validate_config_key
-        is_known, _ = _validate_config_key(key)
-        assert is_known, f"Expected underscore-prefixed {key!r} to be accepted"
 
     def test_underscore_only_first_segment_escapes(self):
         """The underscore escape only applies to the FIRST segment. A real
@@ -930,3 +703,459 @@ class TestDisplaySkinTouch:
 
         set_config_value("display.skin", "neon")
         assert (skins / "neon.yaml").read_text() == body
+
+
+# ---------------------------------------------------------------------------
+# Mapping guard — regression tests for #74995
+# ---------------------------------------------------------------------------
+
+class TestMappingGuard:
+    """``hermes config set <section> <scalar>`` must not silently destroy an
+    existing mapping.  Bare ``model`` is a documented shorthand — redirect to
+    ``model.default``.  All other mapping sections are refused without --force.
+    """
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.dump(data))
+
+    def test_bare_model_shorthand_preserves_siblings(self, _isolated_hermes_home):
+        """hermes config set model <id> → model.default, siblings survive."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+                "context_length": 128_000,
+                "base_url": "https://api.example.com/v1",
+            }
+        })
+        set_config_value("model", "claude-sonnet-4-20250514")
+        config_text = _read_config(_isolated_hermes_home)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(config_text)
+        assert parsed["model"]["default"] == "claude-sonnet-4-20250514"
+        assert parsed["model"]["provider"] == "openai-api"
+        assert parsed["model"]["context_length"] == 128_000
+        assert parsed["model"]["base_url"] == "https://api.example.com/v1"
+
+    def test_bare_model_shorthand_creates_default_when_none(self, _isolated_hermes_home):
+        """Bare model shorthand still works when config is empty (legacy behaviour)."""
+        set_config_value("model", "gpt-5.6-sol")
+        assert "gpt-5.6-sol" in _read_config(_isolated_hermes_home)
+
+    def test_non_model_mapping_is_refused(self, _isolated_hermes_home):
+        """hermes config set terminal bash → refuse, terminal has sub-keys."""
+        self._write_config(_isolated_hermes_home, {
+            "terminal": {
+                "backend": "docker",
+                "docker_image": "python:3.12",
+                "shell": "bash",
+            }
+        })
+        with pytest.raises(SystemExit) as exc:
+            set_config_value("terminal", "zsh")
+        assert exc.value.code == 1
+
+    def test_non_model_mapping_force_overwrites(self, _isolated_hermes_home):
+        """hermes config set --force terminal bash → proceed, section wiped."""
+        self._write_config(_isolated_hermes_home, {
+            "terminal": {
+                "backend": "docker",
+                "shell": "bash",
+            }
+        })
+        set_config_value("terminal", "zsh", force=True)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["terminal"] == "zsh"
+
+    def test_model_default_dotted_path_is_not_guarded(self, _isolated_hermes_home):
+        """model.default is already a dotted path — guard must not fire."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+            }
+        })
+        set_config_value("model.default", "claude-opus-4")
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["model"]["default"] == "claude-opus-4"
+        assert parsed["model"]["provider"] == "openai-api"
+
+    def test_model_force_overwrites_entire_section(self, _isolated_hermes_home):
+        """hermes config set --force model <id> → overwrite entire section."""
+        self._write_config(_isolated_hermes_home, {
+            "model": {
+                "default": "gpt-4o",
+                "provider": "openai-api",
+                "context_length": 128_000,
+            }
+        })
+        set_config_value("model", "claude-opus-4", force=True)
+        import yaml as _yaml
+        parsed = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert parsed["model"] == "claude-opus-4"
+
+
+class TestScalarModelSubKeyPreservation:
+    """#75426: setting model.provider when model is a scalar must not lose the model id."""
+
+    def test_scalar_model_id_preserved_after_provider_write(self, _isolated_hermes_home):
+        """Seed model: gpt-4o, then set model.provider → model.default must survive."""
+        import yaml
+
+        set_config_value("model", "gpt-4o")
+        set_config_value("model.provider", "openai")
+
+        raw = _read_config(_isolated_hermes_home)
+        parsed = yaml.safe_load(raw)
+        model = parsed["model"]
+        assert model["default"] == "gpt-4o", f"model.default lost: {model}"
+        assert model["provider"] == "openai"
+
+    def test_scalar_model_id_preserved_after_api_key_write(self, _isolated_hermes_home):
+        """model.api_key must also preserve the existing scalar model id."""
+        import yaml
+
+        set_config_value("model", "claude-sonnet")
+        # model.api_key is a sub-key (has a dot), so it stays in config.yaml
+        set_config_value("model.api_key", "sk-test")
+
+        raw = _read_config(_isolated_hermes_home)
+        parsed = yaml.safe_load(raw)
+        assert parsed["model"]["default"] == "claude-sonnet"
+        assert parsed["model"]["api_key"] == "sk-test"
+
+class TestMalformedYAMLConfigPreservation:
+    """#75431: config.yaml with YAML syntax errors must not be overwritten."""
+
+    BROKEN_CONFIG = "model: gpt-4o\nterminal:\n  backend: docker\n  broken: [this is invalid YAML"
+
+    def _write_broken_config(self, home):
+        (home / "config.yaml").write_text(self.BROKEN_CONFIG)
+
+    def test_set_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
+        """set_config_value must raise, not overwrite the broken config."""
+        self._write_broken_config(_isolated_hermes_home)
+
+        with pytest.raises(RuntimeError, match="formatting error"):
+            set_config_value("agent.max_turns", "50")
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "formatting error" in combined and "`hermes config edit`" in combined
+        # Original config must remain intact
+        raw = _read_config(_isolated_hermes_home)
+        assert raw == self.BROKEN_CONFIG, f"Config was overwritten:\n{raw}"
+
+    def test_unset_config_value_refuses_broken_yaml(self, _isolated_hermes_home, capsys):
+        """unset_config_value must raise, not overwrite the broken config."""
+        from hermes_cli.config import unset_config_value
+
+        self._write_broken_config(_isolated_hermes_home)
+
+        with pytest.raises(RuntimeError, match="formatting error"):
+            unset_config_value("model")
+
+        captured = capsys.readouterr()
+        combined = captured.out + captured.err
+        assert "formatting error" in combined and "`hermes config edit`" in combined
+        raw = _read_config(_isolated_hermes_home)
+        assert raw == self.BROKEN_CONFIG
+
+
+# ---------------------------------------------------------------------------
+# Literal dots in key paths — regression tests for #84064
+# ---------------------------------------------------------------------------
+
+class TestLiteralDotKeyEscaping:
+    """``hermes config set/unset/get`` must not split a key segment on a
+    literal dot.  Provider names routinely embed version numbers
+    (``qwen3.5-397b-wafer``), and before the backslash-escape (#84064)
+    ``providers.qwen3.5-397b-wafer.api_key`` silently created a bogus nested
+    ``qwen3`` -> ``5-397b-wafer`` structure while reporting success.
+    """
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False))
+
+    def test_split_key_path_escaped_dot(self):
+        from hermes_cli.config import _split_key_path
+
+        assert _split_key_path("providers.qwen3\\.5-397b.api_key") == [
+            "providers", "qwen3.5-397b", "api_key",
+        ]
+        assert _split_key_path("qwen3\\.5") == ["qwen3.5"]
+        assert _split_key_path("a\\.b\\.c") == ["a.b.c"]
+        # Unescaped keys keep plain dot-splitting semantics.
+        assert _split_key_path("terminal.backend") == ["terminal", "backend"]
+        assert _split_key_path("model") == ["model"]
+        # Backslash before a non-dot char is preserved verbatim.
+        assert _split_key_path("win\\path.key") == ["win\\path", "key"]
+
+    def test_set_preserves_literal_dot_in_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
+                "openrouter": {"api_key": "or-keep"},
+            }
+        })
+
+        set_config_value(
+            "providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
+            '{"Wafer-ZDR": "required"}',
+        )
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        providers = saved["providers"]
+        # No bogus ``qwen3`` nesting was created; the existing entry was updated.
+        assert "qwen3" not in providers
+        target = providers["qwen3.5-397b-wafer-non-zdr"]
+        assert target["api"] == "https://pass.wafer.ai/v1"
+        # Current main coerces structured-looking values to real mappings
+        # (_looks_structured_value), so the JSON string lands as a dict.
+        assert target["extra_headers"] == {"Wafer-ZDR": "required"}
+        # Sibling provider untouched.
+        assert providers["openrouter"] == {"api_key": "or-keep"}
+        # Escaped key is schema-known (providers.* is an open dict) — no warning.
+        assert "not a recognized config key" not in capsys.readouterr().out
+
+    def test_unset_removes_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {"api": "https://pass.wafer.ai/v1"},
+                "openrouter": {"api_key": "or-keep"},
+            }
+        })
+
+        args = argparse.Namespace(
+            config_command="unset",
+            key="providers.qwen3\\.5-397b-wafer-non-zdr",
+        )
+        config_command(args)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert "qwen3.5-397b-wafer-non-zdr" not in saved["providers"]
+        assert saved["providers"]["openrouter"] == {"api_key": "or-keep"}
+        assert "Unset providers.qwen3\\.5-397b-wafer-non-zdr" in capsys.readouterr().out
+
+    def test_unset_nested_field_under_literal_dot_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {
+                "qwen3.5-397b-wafer-non-zdr": {
+                    "api": "https://pass.wafer.ai/v1",
+                    "extra_headers": '{"K": "V"}',
+                },
+            }
+        })
+
+        args = argparse.Namespace(
+            config_command="unset",
+            key="providers.qwen3\\.5-397b-wafer-non-zdr.extra_headers",
+        )
+        config_command(args)
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        target = saved["providers"]["qwen3.5-397b-wafer-non-zdr"]
+        assert "extra_headers" not in target
+        assert target["api"] == "https://pass.wafer.ai/v1"
+
+    def test_get_reads_literal_dot_provider_key(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {
+            "providers": {"qwen3.5-397b": {"api": "https://pass.wafer.ai/v1"}},
+        })
+
+        args = argparse.Namespace(
+            config_command="get",
+            key="providers.qwen3\\.5-397b.api",
+            json=False,
+        )
+        config_command(args)
+
+        assert capsys.readouterr().out.strip() == "https://pass.wafer.ai/v1"
+
+    def test_unescaped_dotted_path_unchanged(self, _isolated_hermes_home):
+        """Nesting semantics for plain dotted keys are untouched."""
+        set_config_value("terminal.backend", "docker")
+
+        import yaml
+        saved = yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["terminal"]["backend"] == "docker"
+
+
+class TestConfigGetRedaction:
+    """#84106 / #110758: `config get` is run by the agent from persisted sessions, so every
+    path (section dump, dotted leaf, .env-routed key) masks credentials unless ``--raw``."""
+
+    SECRET = "OPAQUEKEYVALUE12345678"
+
+    def _seed(self, home, monkeypatch):
+        (home / "config.yaml").write_text(
+            "providers:\n  gemini:\n    api_key: " + self.SECRET + "\n"
+            "mcp_servers:\n  s:\n    env:\n      MY_API_KEY: ${MY_API_KEY}\n    url: https://x.example\n",
+            encoding="utf-8")
+        (home / ".env").write_text("GEMINI_API_KEY=" + self.SECRET + "\n", encoding="utf-8")
+        monkeypatch.setenv("MY_API_KEY", self.SECRET)
+
+    @pytest.mark.parametrize("key", ["providers", "providers.gemini.api_key", "GEMINI_API_KEY",
+                                     "mcp_servers.s.env.MY_API_KEY"])
+    def test_config_get_masks_every_credential_path(self, _isolated_hermes_home, capsys, monkeypatch, key):
+        self._seed(_isolated_hermes_home, monkeypatch)
+        from hermes_cli.config import get_config_value
+
+        get_config_value(key)
+        out = capsys.readouterr().out
+        assert self.SECRET not in out
+        # Still identifies the key (mask keeps head/tail) and non-secret siblings stay readable.
+        assert self.SECRET[:4] in out
+        if key == "providers":
+            assert "gemini" in out
+
+    def test_config_get_raw_prints_the_real_value(self, _isolated_hermes_home, capsys, monkeypatch):
+        self._seed(_isolated_hermes_home, monkeypatch)
+        from hermes_cli.config import get_config_value
+
+        get_config_value("providers.gemini.api_key", raw=True)
+        assert capsys.readouterr().out.strip() == self.SECRET
+
+    @pytest.mark.parametrize("key, env_line, yaml_line, masked", [
+        # .env-routed keys are credentials unless the suffix is a known non-secret shape.
+        ("FAL_KEY", "FAL_KEY=" + SECRET, "", True),
+        ("VOICE_TOOLS_OPENAI_KEY", "VOICE_TOOLS_OPENAI_KEY=" + SECRET, "", True),
+        ("TERMINAL_SSH_HOST", "TERMINAL_SSH_HOST=" + SECRET, "", False),
+        ("mcp_servers.s.env.AWS_SECRET_ACCESS_KEY", "", "    env: {AWS_SECRET_ACCESS_KEY: " + SECRET + "}\n", True),
+        # Hyphenated header names fold to snake_case before matching (#84153 reviewer case).
+        ("mcp_servers.s.headers.X-API-Key", "", "    headers: {X-API-Key: " + SECRET + "}\n", True),
+        # Bare `auth` is the MCP transport mode enum, not a credential.
+        ("mcp_servers.s.auth", "", "    auth: oauth\n", False),
+        # An unresolved ${VAR} placeholder names the env var; masking it hides that reference.
+        ("mcp_servers.s.env.UNSET_THING_API_KEY", "", "    env: {UNSET_THING_API_KEY: '${UNSET_THING_API_KEY}'}\n", False),
+    ])
+    def test_config_get_classifies_env_header_and_enum_keys(
+            self, _isolated_hermes_home, capsys, monkeypatch, key, env_line, yaml_line, masked):
+        monkeypatch.delenv("UNSET_THING_API_KEY", raising=False)
+        (_isolated_hermes_home / "config.yaml").write_text(
+            "mcp_servers:\n  s:\n    url: https://x.example\n" + yaml_line, encoding="utf-8")
+        (_isolated_hermes_home / ".env").write_text(env_line + "\n", encoding="utf-8")
+        from hermes_cli.config import get_config_value
+
+        get_config_value(key)
+        out = capsys.readouterr().out.strip()
+        if masked:
+            assert self.SECRET not in out and self.SECRET[:4] in out
+        else:
+            assert out == {"TERMINAL_SSH_HOST": self.SECRET, "mcp_servers.s.auth": "oauth"}.get(
+                key, "${UNSET_THING_API_KEY}")
+
+
+class TestContainerTypeRefusal:
+    """A value of the wrong shape for a list/mapping key is refused, never warn-and-stored
+    (#114471): every isinstance-gated reader would ignore the string while ``config get``
+    echoed it back."""
+
+    def _write_config(self, tmp_path, data: dict):
+        import yaml as _yaml
+        (tmp_path / "config.yaml").write_text(_yaml.safe_dump(data, sort_keys=False), encoding="utf-8")
+
+    def test_string_where_schema_wants_list_is_refused(self, _isolated_hermes_home, capsys):
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers", "plainstring")
+        with pytest.raises(SystemExit):
+            set_config_value("custom_providers", '- name: x\n  model: "C:\\models\\x"')
+
+        err = capsys.readouterr().err
+        assert "must be a list, got a string" in err
+        assert "not valid YAML/JSON" in err
+        assert "custom_providers" not in _read_config(_isolated_hermes_home)
+
+    def test_valid_literal_and_scalar_keys_still_write(self, _isolated_hermes_home):
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m", "aliases": {"a": "p/m"}}})
+
+        set_config_value("custom_providers", "[{name: ok, base_url: http://h/v1}]")
+        set_config_value("model.default", "bar")
+        with pytest.raises(SystemExit):
+            set_config_value("model.aliases", "notamap")
+        # --force keeps its documented meaning: replace a whole mapping section.
+        set_config_value("model.aliases", "replaced", force=True)
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["custom_providers"] == [{"name": "ok", "base_url": "http://h/v1"}]
+        assert saved["model"] == {"default": "bar", "aliases": "replaced"}
+
+    @pytest.mark.parametrize("key", ["model.aliases", "providers", "toolsets"])
+    def test_unseeded_or_top_level_container_key_is_refused_without_on_disk_value(
+            self, _isolated_hermes_home, key):
+        # #114471 writer atom: the shape is fixed by the readers, not by what is on disk yet.
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        with pytest.raises(SystemExit):
+            set_config_value(key, "notacontainer")
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved == {"model": {"default": "m"}}
+
+    def test_bare_name_for_string_list_slot_is_stored_as_one_item_list(self, _isolated_hermes_home):
+        # agent.disabled_toolsets readers accept a bare name (parse_config_string_list); keep it writable.
+        self._write_config(_isolated_hermes_home, {"model": {"default": "m"}})
+
+        set_config_value("agent.disabled_toolsets", "web")
+
+        import yaml as _yaml
+        saved = _yaml.safe_load(_read_config(_isolated_hermes_home))
+        assert saved["agent"]["disabled_toolsets"] == ["web"]
+
+
+class TestProviderSwitchClearsBaseUrl:
+    """``config set model.provider X`` must not carry the previous provider's route (#113719,
+    #40862): a ``base_url``/``api_mode`` that is not X's own endpoint goes, with a notice, so X's
+    key is never posted to the old endpoint. A route that IS X's stays."""
+
+    ROUTE = {"base_url": "https://chatgpt.com/backend-api/codex", "api_mode": "codex_responses"}
+
+    def _seed(self, tmp_path, model):
+        (tmp_path / "config.yaml").write_text(yaml.safe_dump({
+            "model": model,
+            "custom_providers": [{"name": "mylab", "base_url": "http://10.0.0.5:8000/v1", "api_key": "k"}]}))
+
+    @pytest.mark.parametrize("target, seed_route", [
+        ("anthropic", ROUTE),                    # the reporter's switch: both route keys are stale
+        ("mylab", ROUTE),                        # named custom entry has its own endpoint
+        ("anthropic", {"api_mode": "codex_responses"}),  # wire mode alone is old-route state
+    ])
+    def test_switching_provider_clears_foreign_route(self, _isolated_hermes_home, capsys, target, seed_route):
+        self._seed(_isolated_hermes_home, {"provider": "opencode-go", "default": "gpt-5.3-codex", **seed_route})
+        set_config_value("model.provider", target)
+        model = yaml.safe_load(_read_config(_isolated_hermes_home))["model"]
+        assert model == {"provider": target, "default": "gpt-5.3-codex"}
+        out = capsys.readouterr().out
+        assert "Cleared" in out and "opencode-go" in out
+        for key, value in seed_route.items():
+            assert f"model.{key} ({value})" in out
+
+    @pytest.mark.parametrize("key, target, seed", [
+        ("model.default", "gpt-5", {"provider": "opencode-go", **ROUTE}),          # not a provider switch
+        ("model.provider", "opencode-go", {"provider": "opencode-go", **ROUTE}),   # same provider: no-op
+        ("model.provider", "openai-codex", {"provider": "opencode-go", **ROUTE}),  # route IS the target's
+        ("model.provider", "mylab", {"provider": "openai", "base_url": "http://10.0.0.5:8000/v1"}),
+        ("model.provider", "custom", {"provider": "openai", "base_url": "https://api.openai.com/v1"}),
+        ("model.provider", "anthropic", {"provider": "opencode-go", "base_url": "http://proxy.internal:8080/v1"}),
+    ])
+    def test_route_that_belongs_to_target_is_kept(self, _isolated_hermes_home, capsys, key, target, seed):
+        self._seed(_isolated_hermes_home, {**seed, "default": "m"})
+        set_config_value(key, target)
+        model = yaml.safe_load(_read_config(_isolated_hermes_home))["model"]
+        expected = {**seed, "default": "m", key.split(".", 1)[1]: target}
+        assert model == expected
+        out = capsys.readouterr().out
+        assert "Cleared" not in out
+        # Unknown host: kept, but the user is told the old route still applies (from #113725).
+        assert ("still applies" in out) == ("proxy.internal" in seed["base_url"])

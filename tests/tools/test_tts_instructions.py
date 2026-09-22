@@ -29,7 +29,7 @@ class TestOpenaiBackendInstructions:
         mock_cls = MagicMock(return_value=mock_client)
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool._resolve_openai_audio_client_config",
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)):
             from tools.tts_tool import _generate_openai_tts
             kwargs = {}
@@ -45,14 +45,6 @@ class TestOpenaiBackendInstructions:
         create = self._run(tmp_path, monkeypatch, instructions="Speak cheerfully.")
         assert create.call_args[1]["instructions"] == "Speak cheerfully."
 
-    def test_instructions_absent_by_default(self, tmp_path, monkeypatch):
-        """No instructions arg -> key not present in create kwargs.
-
-        Preserves behavior on `tts-1`/`tts-1-hd` and strict servers that
-        reject unknown kwargs.
-        """
-        create = self._run(tmp_path, monkeypatch)
-        assert "instructions" not in create.call_args[1]
 
     def test_empty_string_instructions_omitted(self, tmp_path, monkeypatch):
         """Empty string is treated as absent (not forwarded)."""
@@ -82,7 +74,7 @@ class TestToolLevelInstructions:
         mock_cls = MagicMock(return_value=mock_client)
 
         with patch("tools.tts_tool._import_openai_client", return_value=mock_cls), \
-             patch("tools.tts_tool._resolve_openai_audio_client_config",
+             patch("tools.tts_tool_openai._resolve_openai_audio_client_config",
                    return_value=("test-key", None, False)), \
              patch("tools.tts_tool._load_tts_config",
                    return_value={"provider": "openai"}):

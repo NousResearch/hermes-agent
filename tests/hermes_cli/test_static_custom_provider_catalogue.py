@@ -65,7 +65,7 @@ def _run_switch(
              side_effect=lambda model, provider: model,
          ), \
          patch(
-             "hermes_cli.models.validate_requested_model",
+             "hermes_cli.models_validate.validate_requested_model",
              return_value=validation,
          ), \
          patch("hermes_cli.models.detect_provider_for_model", return_value=None), \

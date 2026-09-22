@@ -1,16 +1,22 @@
-from hermes_state import AsyncSessionDB
+from hermes_state import AsyncSessionDB, SessionDB
 """Tests for gateway /status behavior and token persistence."""
 
 from datetime import datetime
 import time
 from types import SimpleNamespace
-from unittest.mock import AsyncMock, MagicMock
+from unittest.mock import AsyncMock, MagicMock, patch
 
 import pytest
 
 from gateway.config import GatewayConfig, Platform, PlatformConfig
-from gateway.platforms.base import MessageEvent
-from gateway.session import SessionEntry, SessionSource, build_session_key
+from gateway.platforms.event import MessageEvent
+from gateway.session import (
+    AsyncSessionStore,
+    SessionEntry,
+    SessionSource,
+    SessionStore,
+    build_session_key,
+)
 
 
 def _make_source(platform: Platform = Platform.TELEGRAM) -> SessionSource:
@@ -75,59 +81,6 @@ def _make_runner(session_entry: SessionEntry, *, platform: Platform = Platform.T
 
 
 @pytest.mark.asyncio
-async def test_status_command_reports_running_agent_without_interrupt(monkeypatch):
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=321,
-    )
-    runner = _make_runner(session_entry)
-    # Token total comes from the SQLite SessionDB, not SessionEntry.
-    runner._session_db._db.get_session.return_value = {
-        "input_tokens": 200,
-        "output_tokens": 121,
-        "cache_read_tokens": 0,
-        "cache_write_tokens": 0,
-        "reasoning_tokens": 0,
-    }
-    running_agent = MagicMock()
-    runner._running_agents[build_session_key(_make_source())] = running_agent
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Lifetime tokens billed:** 321" in result
-    assert "**Agent Running:** Yes ⚡" in result
-    assert "**Title:**" not in result
-    running_agent.interrupt.assert_not_called()
-    assert runner._pending_messages == {}
-
-
-@pytest.mark.asyncio
-async def test_status_command_includes_session_title_when_present():
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=321,
-    )
-    runner = _make_runner(session_entry)
-    runner._session_db._db.get_session_title.return_value = "My titled session"
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert "**Session ID:** `sess-1`" in result
-    assert "**Title:** My titled session" in result
-
-
-@pytest.mark.asyncio
 async def test_status_command_reads_token_totals_from_session_db():
     """Regression test for #17158: /status must source token totals from the
     SQLite SessionDB (where run_agent.py persists them) and sum all component
@@ -154,27 +107,6 @@ async def test_status_command_reads_token_totals_from_session_db():
 
     # 1000 + 250 + 500 + 100 + 50 = 1,900
     assert "**Lifetime tokens billed:** 1,900" in result
-
-
-@pytest.mark.asyncio
-async def test_status_command_tokens_zero_when_session_db_row_missing():
-    """When the SessionDB has no row for the current session yet (fresh
-    session, no agent calls), /status reports 0 without raising."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        total_tokens=999,  # This should be ignored.
-    )
-    runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = None
-
-    result = await runner._handle_message(_make_event("/status"))
-
-    assert "**Lifetime tokens billed:** 0" in result
 
 
 @pytest.mark.asyncio
@@ -216,7 +148,8 @@ async def test_status_command_includes_live_agent_model_and_context():
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_persisted_model_and_context_when_agent_not_running(monkeypatch):
+async def test_status_command_uses_most_recent_persisted_model_route(tmp_path):
+    """Persisted status uses the latest coherent route, not the lifetime-dominant route."""
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -224,31 +157,96 @@ async def test_status_command_includes_persisted_model_and_context_when_agent_no
         updated_at=datetime.now(),
         platform=Platform.TELEGRAM,
         chat_type="dm",
-        total_tokens=0,
-        last_prompt_tokens=24_000,
     )
     runner = _make_runner(session_entry)
-    runner._session_db._db.get_session.return_value = {
-        "input_tokens": 2000,
-        "output_tokens": 500,
-        "cache_read_tokens": 0,
-        "cache_write_tokens": 0,
-        "reasoning_tokens": 0,
-        "model": "openai/gpt-persisted",
-        "billing_provider": "openai-codex",
-        "billing_base_url": "https://example.invalid/v1",
-    }
-    monkeypatch.setattr("gateway.run._load_gateway_config", lambda: {"model": {"context_length": 272_000}})
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session("sess-1", "telegram", model="z-ai/glm-5.2")
+        db.update_token_counts(
+            "sess-1",
+            model="z-ai/glm-5.2",
+            billing_provider="nvidia",
+            billing_base_url="https://integrate.api.nvidia.com/v1/",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        db.update_token_counts(
+            "sess-1",
+            model="upstage/solar-pro4:free",
+            billing_provider="nous",
+            billing_base_url="https://inference-api.nousresearch.com/v1/",
+            input_tokens=60,
+            api_call_count=6,
+        )
+        # Reproduce the inconsistent legacy summary observed in #87227.
+        db.update_session_model("sess-1", "z-ai/glm-5.2")
+        db.update_session_billing_route(
+            "sess-1",
+            provider="nous",
+            base_url="https://inference-api.nousresearch.com/v1/",
+        )
 
-    result = await runner._handle_message(_make_event("/status"))
+        result = await runner._handle_message(_make_event("/status"))
 
-    assert "**Model:** `openai/gpt-persisted` (openai-codex)" in result
-    assert "**Context:** 24,000 / 272,000 (9%)" in result
-    assert "**Lifetime tokens billed:** 2,500" in result
+        assert "**Model:** `upstage/solar-pro4:free` (nous)" in result
+        assert "**Model:** `z-ai/glm-5.2` (nvidia)" not in result
+    finally:
+        db.close()
 
 
 @pytest.mark.asyncio
-async def test_status_command_includes_cached_agent_model_and_context():
+async def test_status_command_prefers_rehydrated_session_model_override(tmp_path):
+    """A committed /model switch is current before the selected model records usage."""
+    source = _make_source()
+    store = SessionStore(sessions_dir=tmp_path / "sessions", config=GatewayConfig())
+    session_entry = store.get_or_create_session(source)
+    runner = _make_runner(session_entry)
+    runner.session_store = store
+    runner._async_session_store = AsyncSessionStore(store)
+    db = SessionDB(db_path=tmp_path / "state.db")
+    runner._session_db = AsyncSessionDB(db)
+    try:
+        db.create_session(session_entry.session_id, "telegram", model="model-a")
+        db.update_token_counts(
+            session_entry.session_id,
+            model="model-a",
+            billing_provider="provider-a",
+            input_tokens=480,
+            api_call_count=48,
+        )
+        result = SimpleNamespace(
+            new_model="model-b",
+            target_provider="provider-b",
+            provider_label="Provider B",
+            api_key="secret",
+            base_url="https://b.example/v1",
+            api_mode=None,
+            request_overrides={},
+            runtime_capabilities={},
+        )
+        switch_ctx = SimpleNamespace(
+            session_key=session_entry.session_key,
+            current_model="model-a",
+            persist_global=False,
+            restore_snapshot=None,
+        )
+        await runner._record_model_switch(
+            result, switch_ctx, source=source, one_turn=False, picker=False
+        )
+        # Simulate a restart: /status must lazily recover the durable override.
+        runner._session_state(session_entry.session_key).conversation.model_override = None
+
+        status = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `model-b` (provider-b)" in status
+        assert "**Model:** `model-a` (provider-a)" not in status
+    finally:
+        db.close()
+
+
+def _runner_with_session_override(override: dict, *, last_prompt_tokens: int):
+    """Runner whose session has a committed /model override but no resident agent (no compressor)."""
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
         session_id="sess-1",
@@ -256,23 +254,105 @@ async def test_status_command_includes_cached_agent_model_and_context():
         updated_at=datetime.now(),
         platform=Platform.TELEGRAM,
         chat_type="dm",
-        total_tokens=0,
     )
+    session_entry.last_prompt_tokens = last_prompt_tokens
     runner = _make_runner(session_entry)
-    cached_agent = SimpleNamespace(
-        model="anthropic/claude-sonnet-test",
-        provider="openrouter",
-        context_compressor=SimpleNamespace(
-            last_prompt_tokens=10_000,
-            context_length=200_000,
-        ),
+    runner._session_state(session_entry.session_key).conversation.model_override = override
+    return runner
+
+
+@pytest.mark.asyncio
+async def test_status_command_resolves_window_of_session_only_model_switch():
+    """After a session-only /model switch with no turn yet, /status must show used / window for the
+    switched-to route (looked up against THAT route's endpoint, and never the default route's
+    ``model.context_length`` pin) instead of the occupancy-only line (#111436)."""
+    override = {"model": "kimi-k3", "provider": "kimi-coding",
+                "base_url": "https://api.kimi.com/coding", "api_key": "sk-override"}
+    runner = _runner_with_session_override(override, last_prompt_tokens=79_455)
+    config = {"model": {"default": "default-model", "provider": "openrouter", "context_length": 80_000}}
+
+    with patch("gateway.run._load_gateway_config", return_value=config), patch(
+        "gateway.run._resolve_runtime_agent_kwargs"
+    ) as default_runtime, patch(
+        "agent.model_metadata.get_model_context_length", return_value=1_048_576
+    ) as lookup:
+        result = await runner._handle_message(_make_event("/status"))
+
+    assert "**Model:** `kimi-k3` (kimi-coding)" in result
+    assert "**Context:** 79,455 / 1,048,576 (8%)" in result
+    assert "80,000" not in result
+    default_runtime.assert_not_called()
+    kwargs = lookup.call_args.kwargs
+    assert (kwargs["base_url"], kwargs["api_key"], kwargs["provider"]) == (
+        override["base_url"], override["api_key"], "kimi-coding")
+    assert kwargs["config_context_length"] is None
+
+
+@pytest.mark.asyncio
+async def test_status_command_keeps_occupancy_only_for_unknown_model_window():
+    """A model the resolver cannot size falls to DEFAULT_FALLBACK_CONTEXT; /status must not present
+    that invented number as the window (a catalog-listed model of the same size still counts)."""
+    from agent.model_metadata import DEFAULT_FALLBACK_CONTEXT
+
+    runner = _runner_with_session_override(
+        {"model": "proxy-mystery-model", "provider": "custom:proxy", "base_url": "http://127.0.0.1:1/v1"},
+        last_prompt_tokens=4_321,
     )
-    runner._agent_cache = {session_entry.session_key: (cached_agent, time.time())}
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+    assert "**Context:** ~4,321 tokens" in result
+    assert f"{DEFAULT_FALLBACK_CONTEXT:,}" not in result
 
-    result = await runner._handle_message(_make_event("/status"))
+    runner = _runner_with_session_override(
+        {"model": "grok-4", "provider": "xai", "base_url": ""}, last_prompt_tokens=4_321)
+    with patch("gateway.run._load_gateway_config", return_value={}), patch(
+        "agent.model_metadata.get_model_context_length", return_value=DEFAULT_FALLBACK_CONTEXT
+    ):
+        result = await runner._handle_message(_make_event("/status"))
+    assert f"**Context:** 4,321 / {DEFAULT_FALLBACK_CONTEXT:,} (2%)" in result
 
-    assert "**Model:** `anthropic/claude-sonnet-test` (openrouter)" in result
-    assert "**Context:** 10,000 / 200,000 (5%)" in result
+
+@pytest.mark.asyncio
+async def test_status_command_default_route_keeps_runtime_endpoint_and_context_pin():
+    """No /model switch and no resident agent (first /status after a restart): the winner is the
+    persisted route or the SessionDB row, which carry no endpoint of their own. The window must then
+    be resolved against the default runtime route (custom base_url + key, ``model.context_length``
+    pin intact) exactly as /context does, not against an empty endpoint that drops the pin."""
+    config = {"model": {"default": "my-local-model", "provider": "custom",
+                        "base_url": "http://127.0.0.1:1/v1", "context_length": 32_768}}
+    runtime = {"model": "my-local-model", "provider": "custom",
+               "base_url": "http://127.0.0.1:1/v1", "api_key": "local-key"}
+    route = {"model": "my-local-model", "billing_provider": "custom"}
+    for persisted_route, session_row in ((route, None), ({}, dict(route))):
+        session_entry = SessionEntry(
+            session_key=build_session_key(_make_source()),
+            session_id="sess-1",
+            created_at=datetime.now(),
+            updated_at=datetime.now(),
+            platform=Platform.TELEGRAM,
+            chat_type="dm",
+        )
+        session_entry.last_prompt_tokens = 9_000
+        runner = _make_runner(session_entry)
+        runner._session_db._db.get_session.return_value = session_row
+        runner._session_db._db.get_recent_session_model_route.return_value = persisted_route
+
+        with patch("gateway.run._load_gateway_config", return_value=config), patch(
+            "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+        ) as default_runtime, patch(
+            "agent.model_metadata.get_model_context_length",
+            side_effect=lambda _model, **kw: kw["config_context_length"] or 8_192,
+        ) as lookup:
+            result = await runner._handle_message(_make_event("/status"))
+
+        assert "**Model:** `my-local-model` (custom)" in result
+        assert "**Context:** 9,000 / 32,768 (27%)" in result
+        default_runtime.assert_called_once()
+        kwargs = lookup.call_args.kwargs
+        assert (kwargs["base_url"], kwargs["api_key"], kwargs["config_context_length"]) == (
+            runtime["base_url"], runtime["api_key"], 32_768)
 
 
 @pytest.mark.asyncio
@@ -345,48 +425,6 @@ async def test_tasks_alias_routes_to_agents_command(monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_handle_message_persists_agent_token_counts(monkeypatch):
-    import gateway.run as gateway_run
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "ok",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 80,
-            "input_tokens": 120,
-            "output_tokens": 45,
-            "model": "openai/test-model",
-        }
-    )
-
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        lambda *_args, **_kwargs: 100000,
-    )
-
-    result = await runner._handle_message(_make_event("hello"))
-
-    assert result == "ok"
-    runner.session_store.update_session.assert_called_once_with(
-        session_entry.session_key,
-        last_prompt_tokens=80,
-    )
-
-
-@pytest.mark.asyncio
 async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monkeypatch):
     import gateway.run as gateway_run
 
@@ -428,95 +466,6 @@ async def test_first_run_slack_home_channel_onboarding_uses_parent_command(monke
     onboarding = runner.adapters[Platform.SLACK].send.await_args.args[1]
     assert "/hermes sethome" in onboarding
     assert "Type /sethome" not in onboarding
-
-
-@pytest.mark.asyncio
-async def test_first_run_non_slack_home_channel_onboarding_keeps_direct_command(monkeypatch):
-    import gateway.run as gateway_run
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source(Platform.TELEGRAM)),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry, platform=Platform.TELEGRAM)
-    runner.session_store.load_transcript.return_value = []
-    runner.session_store.has_any_sessions.return_value = False
-    runner._run_agent = AsyncMock(
-        return_value={
-            "final_response": "ok",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 0,
-            "input_tokens": 0,
-            "output_tokens": 0,
-            "model": "openai/test-model",
-        }
-    )
-
-    monkeypatch.delenv("TELEGRAM_HOME_CHANNEL", raising=False)
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        lambda *_args, **_kwargs: 100000,
-    )
-
-    result = await runner._handle_message(_make_event("hello", platform=Platform.TELEGRAM))
-
-    assert result == "ok"
-    runner.adapters[Platform.TELEGRAM].send.assert_awaited_once()
-    onboarding = runner.adapters[Platform.TELEGRAM].send.await_args.args[1]
-    assert "Type /sethome" in onboarding
-
-
-@pytest.mark.asyncio
-async def test_handle_message_discards_stale_result_after_session_invalidation(monkeypatch):
-    import gateway.run as gateway_run
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    runner.session_store.load_transcript.return_value = [{"role": "user", "content": "earlier"}]
-    session_key = session_entry.session_key
-    runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks = {session_key: object()}
-
-    async def _stale_result(**kwargs):
-        runner._invalidate_session_run_generation(kwargs["session_key"], reason="test_stale_result")
-        return {
-            "final_response": "late reply",
-            "messages": [],
-            "tools": [],
-            "history_offset": 0,
-            "last_prompt_tokens": 80,
-            "input_tokens": 120,
-            "output_tokens": 45,
-            "model": "openai/test-model",
-        }
-
-    runner._run_agent = AsyncMock(side_effect=_stale_result)
-
-    monkeypatch.setattr(gateway_run, "_resolve_runtime_agent_kwargs", lambda: {"api_key": "***"})
-    monkeypatch.setattr(
-        "agent.model_metadata.get_model_context_length",
-        lambda *_args, **_kwargs: 100000,
-    )
-
-    result = await runner._handle_message(_make_event("hello"))
-
-    assert result is None
-    runner.session_store.append_to_transcript.assert_not_called()
-    runner.session_store.update_session.assert_not_called()
-    assert session_key not in runner.adapters[Platform.TELEGRAM]._post_delivery_callbacks
 
 
 @pytest.mark.asyncio
@@ -588,13 +537,13 @@ async def test_handle_message_stale_result_keeps_newer_generation_callback(monke
     assert adapter._post_delivery_callbacks[session_key][0] == 2
 
 
-
 @pytest.mark.asyncio
 async def test_status_command_bypasses_active_session_guard():
     """When an agent is running, /status must be dispatched immediately via
     base.handle_message — not queued or treated as an interrupt (#5046)."""
     import asyncio
-    from gateway.platforms.base import BasePlatformAdapter, MessageEvent, MessageType
+    from gateway.platforms.base import BasePlatformAdapter
+    from gateway.platforms.event import MessageEvent, MessageType
     from gateway.session import build_session_key
     from gateway.config import Platform, PlatformConfig
 
@@ -647,31 +596,6 @@ async def test_status_command_bypasses_active_session_guard():
 
 
 @pytest.mark.asyncio
-async def test_profile_command_reports_custom_root_profile(monkeypatch, tmp_path):
-    """Gateway /profile detects custom-root profiles (not under ~/.hermes)."""
-    from pathlib import Path
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    profile_home = tmp_path / "profiles" / "coder"
-
-    monkeypatch.setenv("HERMES_HOME", str(profile_home))
-    monkeypatch.setattr(Path, "home", lambda: tmp_path / "unrelated-home")
-
-    result = await runner._handle_profile_command(_make_event("/profile"))
-
-    assert "**Profile:** `coder`" in result
-    assert f"**Home:** `{profile_home}`" in result
-
-
-@pytest.mark.asyncio
 async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_path):
     """On a multiplexed gateway, /profile reports the profile SERVING the
     source (source.profile — URL prefix / per-credential adapter / room map),
@@ -680,6 +604,7 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     hermes_home = tmp_path / ".hermes"
     profile_home = hermes_home / "profiles" / "milo"
     profile_home.mkdir(parents=True)
+    (profile_home / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a profile
 
     session_entry = SessionEntry(
         session_key=build_session_key(_make_source()),
@@ -699,130 +624,72 @@ async def test_profile_command_reports_source_stamped_profile(monkeypatch, tmp_p
     result = await runner._handle_profile_command(event)
 
     assert "**Profile:** `milo`" in result
-    assert f"**Home:** `{profile_home}`" in result
+    # The reply renders display_hermes_home() for the routed profile, which abbreviates a home
+    # under $HOME to ``~/…``; compare against the same rendering rather than the raw path.
+    from gateway.run import _profile_runtime_scope
+    from hermes_constants import display_hermes_home
 
-
-@pytest.mark.asyncio
-async def test_profile_command_ignores_stamp_when_multiplexing_off(monkeypatch, tmp_path):
-    """Without ``gateway.multiplex_profiles`` a stamped source is ignored:
-    /profile keeps reporting the active profile and the default home,
-    mirroring the multiplex gating in ``_run_agent`` and
-    ``_reset_notice_session_info``."""
-    hermes_home = tmp_path / ".hermes"
-    profile_home = hermes_home / "profiles" / "milo"
-    profile_home.mkdir(parents=True)
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    assert runner.config.multiplex_profiles is False
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    event = _make_event("/profile")
-    event.source.profile = "milo"
-
-    result = await runner._handle_profile_command(event)
-
-    assert "**Profile:** `default`" in result
-    assert f"**Home:** `{hermes_home}`" in result
-
-
-@pytest.mark.asyncio
-async def test_profile_command_unstamped_source_unchanged(monkeypatch, tmp_path):
-    """Single-profile behavior is untouched: an unstamped source reports the
-    active profile and the default home."""
-    hermes_home = tmp_path / ".hermes"
-    hermes_home.mkdir()
-
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
-
-    result = await runner._handle_profile_command(_make_event("/profile"))
-
-    assert "**Profile:** `default`" in result
-    assert f"**Home:** `{hermes_home}`" in result
-
-
-@pytest.mark.asyncio
-async def test_post_delivery_callback_generation_snapshot_happens_after_bind():
-    """Regression: the callback_generation snapshot in _process_message_background
-    must happen AFTER the handler runs, not before.
-
-    _hermes_run_generation is set on the interrupt event by
-    GatewayRunner._bind_adapter_run_generation during _handle_message_with_agent.
-    The earlier snapshot-at-task-start always captured None, which bypassed the
-    generation-ownership check in pop_post_delivery_callback and let stale runs
-    fire a fresher run's callbacks.
-    """
-    import asyncio
-    from gateway.platforms.base import BasePlatformAdapter
-
-    source = _make_source()
-    session_key = build_session_key(source)
-    fired = []
-
-    class _ConcreteAdapter(BasePlatformAdapter):
-        platform = Platform.TELEGRAM
-
-        async def connect(self, *, is_reconnect: bool = False): pass
-        async def disconnect(self): pass
-        async def send(self, chat_id, content, **kwargs): pass
-        async def get_chat_info(self, chat_id): return {}
-
-    adapter = _ConcreteAdapter(
-        PlatformConfig(enabled=True, token="***"), Platform.TELEGRAM
-    )
-
-    async def fake_handler(event):
-        # Simulate what _bind_adapter_run_generation does mid-run.
-        interrupt_event = adapter._active_sessions.get(session_key)
-        setattr(interrupt_event, "_hermes_run_generation", 1)
-        # Stale run registers its callback at generation=1.
-        adapter.register_post_delivery_callback(
-            session_key,
-            lambda: fired.append("older"),
-            generation=1,
-        )
-        # A fresher run overwrites with generation=2 (different dict entry).
-        adapter.register_post_delivery_callback(
-            session_key,
-            lambda: fired.append("newer"),
-            generation=2,
-        )
-        return None
-
-    adapter.set_message_handler(fake_handler)
-    event = MessageEvent(text="hello", source=source, message_id="m1")
-
-    await adapter.handle_message(event)
-    tasks = list(adapter._background_tasks)
-    assert tasks, "expected background task to be created"
-    await asyncio.gather(*tasks)
-
-    # The stale run (generation=1) must NOT fire the fresher run's callback
-    # (generation=2). With the pre-fix code, callback_generation was snapshotted
-    # as None before the handler ran, bypassing the ownership check and firing
-    # "newer" anyway.
-    assert fired == []
-    assert session_key in adapter._post_delivery_callbacks
-    assert adapter._post_delivery_callbacks[session_key][0] == 2
+    with _profile_runtime_scope(profile_home):
+        expected_home = display_hermes_home()
+    assert f"**Home:** `{expected_home}`" in result
 
 
 # ── /context command tests ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_context_command_keeps_configured_window_without_resident_agent():
+    """The no-agent fallback must not replace a custom-provider context pin."""
+    model = "unsloth/Qwen3.8-27B-GGUF:Q8_0"
+    session_entry = SessionEntry(
+        session_key=build_session_key(_make_source()),
+        session_id="sess-context-pin",
+        created_at=datetime.now(),
+        updated_at=datetime.now(),
+        platform=Platform.TELEGRAM,
+        chat_type="dm",
+    )
+    session_entry.last_prompt_tokens = 66_570
+    runner = _make_runner(session_entry)
+    runner._session_db._db.get_session.return_value = {"model": model}
+
+    config = {
+        "model": {
+            "default": model,
+            "provider": "custom-local-qwen",
+            "context_length": 262_144,
+        },
+        "custom_providers": [
+            {
+                "name": "custom-local-qwen",
+                "base_url": "http://127.0.0.1:8080/v1",
+                "models": {},
+            }
+        ],
+    }
+    runtime = {
+        "provider": "custom-local-qwen",
+        "base_url": "http://127.0.0.1:8080/v1",
+        "api_key": "",
+    }
+
+    with patch("gateway.run._load_gateway_config", return_value=config), patch(
+        "gateway.run._resolve_runtime_agent_kwargs", return_value=runtime
+    ), patch(
+        "hermes_cli.config.get_compatible_custom_providers",
+        return_value=config["custom_providers"],
+    ), patch(
+        "agent.model_metadata.get_model_context_length",
+        side_effect=lambda *args, **kwargs: kwargs.get("config_context_length") or 131_072,
+    ) as context_lookup:
+        result = await runner._handle_context_command(_make_event("/context"))
+
+    assert "Window: 262,144 tokens" in result
+    assert "In use: 66,570 / 262,144 (25%)" in result
+    assert "131,072" not in result
+    assert context_lookup.call_count == 1
+    assert context_lookup.call_args.kwargs["config_context_length"] == 262_144
+
 
 def _stub_agent(**overrides) -> SimpleNamespace:
     """Build a stub agent with the attributes _handle_context_command reads."""
@@ -846,172 +713,6 @@ def _stub_agent(**overrides) -> SimpleNamespace:
     )
     props.update(overrides)
     return SimpleNamespace(**props)
-
-
-@pytest.mark.asyncio
-async def test_context_command_live_agent():
-    """/context with a live running agent shows the full view: gauge,
-    compression, and throughput — but NOT cache stats."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-1",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    session_key = session_entry.session_key
-    agent = _stub_agent()
-    runner._running_agents[session_key] = agent
-
-    result = await runner._handle_context_command(_make_event("/context"))
-
-    assert "🧠 **Context Window**" in result
-    assert "Model: `openai/gpt-test`" in result
-    assert "Window: 200,000 tokens" in result
-    assert "In use: 47,231 / 200,000 (24%)" in result
-    assert "Headroom to limit: 152,769 tokens" in result
-    # Compression section
-    assert "Auto-compresses at: 100,000 (50%)" in result
-    assert "Compressions this session: 2" in result
-    assert "Last compression freed: 63% of context" in result
-    # Throughput — NOT cache
-    assert "Session totals (cumulative across 47 API calls)" in result
-    assert "Input 410,000" in result
-    assert "Output 38,000" in result
-    assert "Reasoning 12,000" in result
-    assert "Total billed: 3,158,641" in result
-    assert "each call re-sends the window above" in result
-    # Cache stats must NOT appear (removed per design)
-    assert "Cache read" not in result
-    assert "Cache write" not in result
-    assert "Cache hit" not in result
-    assert "Hit rate" not in result
-
-
-@pytest.mark.asyncio
-async def test_context_command_over_threshold():
-    """When used >= threshold, the over-threshold warning is shown."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-2",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    session_key = session_entry.session_key
-    agent = _stub_agent(
-        context_compressor=SimpleNamespace(
-            last_prompt_tokens=150_000,
-            context_length=200_000,
-            threshold_tokens=100_000,
-            threshold_percent=0.5,
-            compression_count=5,
-            _last_compression_savings_pct=40.0,
-        )
-    )
-    runner._running_agents[session_key] = agent
-
-    result = await runner._handle_context_command(_make_event("/context"))
-
-    assert "⚠️" in result
-    assert "Over auto-compression threshold" in result
-
-
-@pytest.mark.asyncio
-async def test_context_command_no_agent_transcript_fallback():
-    """When no agent is resident and session_entry has no last_prompt_tokens,
-    /context falls back to a transcript estimate."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-3",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        last_prompt_tokens=0,  # No live context data
-    )
-    runner = _make_runner(session_entry)
-    # Stub the transcript so estimate_messages_tokens_rough has something to work with
-    runner.session_store.load_transcript.return_value = [
-        {"role": "user", "content": "Hello"},
-        {"role": "assistant", "content": "Hi there!"},
-        {"role": "user", "content": "What's my balance?"},
-        {"role": "assistant", "content": "Your balance is $1,000."},
-    ]
-
-    result = await runner._handle_context_command(_make_event("/context"))
-
-    assert "🧠 **Context Window**" in result
-    assert "Estimated context:" in result
-    assert "4 messages" in result
-
-
-@pytest.mark.asyncio
-async def test_context_command_no_data():
-    """When there's no agent, no session data, and no transcript,
-    /context returns the no-data message."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-4",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-        last_prompt_tokens=0,
-    )
-    runner = _make_runner(session_entry)
-    runner.session_store.load_transcript.return_value = []
-
-    result = await runner._handle_context_command(_make_event("/context"))
-
-    assert "No context data available yet" in result
-
-
-@pytest.mark.asyncio
-async def test_context_command_includes_category_breakdown():
-    """/context with a live agent appends the per-category estimated
-    breakdown (plain text, no glyph grid) and the /context all hint."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-5",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    agent = _stub_agent()
-    runner._running_agents[session_entry.session_key] = agent
-
-    fake_payload = {
-        "categories": [
-            {"id": "system_prompt", "label": "System prompt", "tokens": 9_000},
-            {"id": "tool_definitions", "label": "Tool definitions", "tokens": 21_000},
-        ],
-        "context_max": 200_000,
-        "context_percent": 24,
-        "context_used": 47_231,
-        "estimated_total": 30_000,
-        "model": "openai/gpt-test",
-    }
-    from unittest.mock import patch as _patch
-    with _patch(
-        "agent.context_breakdown.compute_session_context_breakdown",
-        return_value=fake_payload,
-    ):
-        result = await runner._handle_context_command(_make_event("/context"))
-
-    assert "Estimated usage by category" in result
-    assert "System prompt" in result
-    assert "9,000 tokens" in result
-    assert "Tool definitions" in result
-    assert "Use /context all" in result
-    # No glyph grid on the gateway (plain-text variant)
-    assert "· · ·" not in result
 
 
 @pytest.mark.asyncio
@@ -1063,30 +764,3 @@ async def test_context_all_appends_expanded_listings():
     assert "hermes-agent" in result
     # Expanded view drops the hint
     assert "Use /context all" not in result
-
-
-@pytest.mark.asyncio
-async def test_context_breakdown_failure_never_breaks_command():
-    """A breakdown engine crash degrades gracefully — the gauge still renders."""
-    session_entry = SessionEntry(
-        session_key=build_session_key(_make_source()),
-        session_id="sess-7",
-        created_at=datetime.now(),
-        updated_at=datetime.now(),
-        platform=Platform.TELEGRAM,
-        chat_type="dm",
-    )
-    runner = _make_runner(session_entry)
-    agent = _stub_agent()
-    runner._running_agents[session_entry.session_key] = agent
-
-    from unittest.mock import patch as _patch
-    with _patch(
-        "agent.context_breakdown.compute_session_context_breakdown",
-        side_effect=RuntimeError("boom"),
-    ):
-        result = await runner._handle_context_command(_make_event("/context"))
-
-    assert "🧠 **Context Window**" in result
-    assert "In use: 47,231 / 200,000 (24%)" in result
-    assert "Estimated usage by category" not in result

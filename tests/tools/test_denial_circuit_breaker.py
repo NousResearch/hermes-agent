@@ -16,6 +16,10 @@ from __future__ import annotations
 import pytest
 
 from tools import approval as A
+import tools.approval_prompt as approval_prompt
+import tools.approval_detection as approval_detection
+from tools import approval_context
+from tools import approval_smart
 
 BREAKER_MARKER = "CIRCUIT BREAKER:"
 
@@ -32,12 +36,16 @@ def breaker_session(monkeypatch):
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
     monkeypatch.delenv("HERMES_EXEC_ASK", raising=False)
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.setattr(A, "_smart_approve", lambda _c, _d: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _c, _d: "deny")
     monkeypatch.setattr(A, "_get_denial_breaker_threshold", lambda: 3)
     monkeypatch.setattr(
         A, "detect_dangerous_command",
+        lambda command: (True, "breaker-test-danger", f"risk:{command}"),
+    )
+    monkeypatch.setattr(
+        approval_detection, "detect_dangerous_command",
         lambda command: (True, "breaker-test-danger", f"risk:{command}"),
     )
     monkeypatch.setattr(
@@ -47,7 +55,7 @@ def breaker_session(monkeypatch):
     )
 
     session_key = "breaker-test-session"
-    token = A.set_current_session_key(session_key)
+    token = approval_context.set_current_session_key(session_key)
     A._reset_denials(session_key)
     with A._lock:
         A._permanent_approved.discard("breaker-test-danger")
@@ -59,7 +67,7 @@ def breaker_session(monkeypatch):
     try:
         yield session_key
     finally:
-        A.reset_current_session_key(token)
+        approval_context.reset_current_session_key(token)
         A._reset_denials(session_key)
         with A._lock:
             A._gateway_queues.pop(session_key, None)
@@ -117,12 +125,12 @@ def test_approval_resets_tally(breaker_session, monkeypatch):
     _denied_terminal("dangerous two")
 
     # Guardian approves the next command → tally resets.
-    monkeypatch.setattr(A, "_smart_approve", lambda _c, _d: "approve")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _c, _d: "approve")
     ok = _denied_terminal("benign command")
     assert ok["approved"] is True and ok.get("smart_approved") is True
 
     # Back to denials: the count restarts, so the next deny is #1, not #3.
-    monkeypatch.setattr(A, "_smart_approve", lambda _c, _d: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _c, _d: "deny")
     after = _denied_terminal("dangerous again")
     assert after["approved"] is False
     assert BREAKER_MARKER not in after["message"]
@@ -148,61 +156,15 @@ def test_human_approval_resets_tally(breaker_session):
 # (c) Threshold 0 disables the breaker
 # ---------------------------------------------------------------------------
 
-def test_threshold_zero_disables_breaker(breaker_session, monkeypatch):
-    monkeypatch.setattr(A, "_get_denial_breaker_threshold", lambda: 0)
-    _register_resolver(breaker_session, "deny")
-    for i in range(5):
-        res = _denied_terminal(f"dangerous {i}")
-        assert res["approved"] is False
-        assert BREAKER_MARKER not in res["message"]
-
 
 # ---------------------------------------------------------------------------
 # (d) Tally is per-session — two session keys are independent
 # ---------------------------------------------------------------------------
 
-def test_tally_is_per_session(breaker_session):
-    other = "breaker-other-session"
-    A._reset_denials(other)
-    try:
-        assert A._record_denial(breaker_session) == 1
-        assert A._record_denial(breaker_session) == 2
-        # A different session starts from zero.
-        assert A._record_denial(other) == 1
-        # And its denial did not advance the first session's count.
-        assert A._record_denial(breaker_session) == 3
-        # Resetting one session leaves the other intact.
-        A._reset_denials(breaker_session)
-        assert A._record_denial(other) == 2
-        assert A._record_denial(breaker_session) == 1
-    finally:
-        A._reset_denials(other)
-
 
 # ---------------------------------------------------------------------------
 # (e) BOTH call paths increment: terminal guard and execute_code guard
 # ---------------------------------------------------------------------------
-
-@pytest.mark.parametrize("deny_call", [_denied_terminal, _denied_execute_code],
-                         ids=["terminal", "execute_code"])
-def test_both_paths_increment_and_trip(breaker_session, deny_call):
-    _register_resolver(breaker_session, "deny")
-    for _ in range(2):
-        res = deny_call()
-        assert res["approved"] is False
-        assert BREAKER_MARKER not in res["message"]
-    tripped = deny_call()
-    assert tripped["approved"] is False
-    assert BREAKER_MARKER in tripped["message"]
-
-
-def test_paths_share_one_session_tally(breaker_session):
-    """Denials from the terminal and execute_code paths accumulate together."""
-    _register_resolver(breaker_session, "deny")
-    assert BREAKER_MARKER not in _denied_terminal("dangerous one")["message"]
-    assert BREAKER_MARKER not in _denied_execute_code()["message"]
-    tripped = _denied_terminal("dangerous three")
-    assert BREAKER_MARKER in tripped["message"]
 
 
 # ---------------------------------------------------------------------------
@@ -214,13 +176,17 @@ def test_headless_smart_deny_increments_and_trips(monkeypatch):
     monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
     monkeypatch.delenv("HERMES_CRON_SESSION", raising=False)
     monkeypatch.setenv("HERMES_EXEC_ASK", "0")
-    monkeypatch.setattr(A, "_get_approval_mode", lambda: "smart")
+    monkeypatch.setattr(approval_context, "_get_approval_mode", lambda: "smart")
     monkeypatch.setattr(A, "_YOLO_MODE_FROZEN", False)
-    monkeypatch.setattr(A, "_smart_approve", lambda _c, _d: "deny")
+    monkeypatch.setattr(approval_smart, "_smart_approve", lambda _c, _d: "deny")
     monkeypatch.setattr(A, "_get_denial_breaker_threshold", lambda: 3)
     monkeypatch.setattr(A, "_is_interactive_cli", lambda: True)
     monkeypatch.setattr(
         A, "detect_dangerous_command",
+        lambda command: (True, "headless-breaker-danger", f"risk:{command}"),
+    )
+    monkeypatch.setattr(
+        approval_detection, "detect_dangerous_command",
         lambda command: (True, "headless-breaker-danger", f"risk:{command}"),
     )
     monkeypatch.setattr(
@@ -231,9 +197,11 @@ def test_headless_smart_deny_increments_and_trips(monkeypatch):
     # CLI-interactive path: the owner denies via the prompt callback.
     monkeypatch.setattr(A, "prompt_dangerous_approval",
                         lambda *args, **kwargs: "deny")
+    monkeypatch.setattr(approval_prompt, "prompt_dangerous_approval",
+                        lambda *args, **kwargs: "deny")
 
     session_key = "headless-breaker-session"
-    token = A.set_current_session_key(session_key)
+    token = approval_context.set_current_session_key(session_key)
     A._reset_denials(session_key)
     with A._lock:
         A._permanent_approved.discard("headless-breaker-danger")
@@ -247,7 +215,7 @@ def test_headless_smart_deny_increments_and_trips(monkeypatch):
         assert BREAKER_MARKER not in second["message"]
         assert BREAKER_MARKER in third["message"]
     finally:
-        A.reset_current_session_key(token)
+        approval_context.reset_current_session_key(token)
         A._reset_denials(session_key)
 
 

@@ -1,6 +1,6 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { useStore } from '@nanostores/react'
-import { useCallback } from 'react'
+import { useCallback, useEffect, useMemo } from 'react'
 
 import type { HermesGateway } from '@/hermes'
 import { sessionTitle } from '@/lib/chat-runtime'
@@ -11,7 +11,9 @@ import {
   type DesktopThemeCommandOption,
   filterDesktopCommandsCatalog,
   isDesktopSlashExtensionCommand,
-  isDesktopSlashSuggestion
+  isDesktopSlashSuggestion,
+  rankSkillCommands,
+  slashCompletionGroup
 } from '@/lib/desktop-slash-commands'
 import { $slashCompletionsEpoch, cachedSlashCompletion, hasCachedSlashCompletion } from '@/lib/slash-completion-cache'
 import { normalize } from '@/lib/text'
@@ -55,6 +57,10 @@ const SESSION_INLINE_LIMIT = 7
 /** Live `/` completions backed by the gateway's `complete.slash` RPC. */
 export function useSlashCompletions(options: {
   gateway: HermesGateway | null
+  /** Skill completions are per session: project-local skills follow the
+   *  session's repo, so the catalog and each query are fetched and cached per
+   *  session. */
+  sessionId?: string | null
   /** Desktop theme list — `/skin` is owned client-side, so its arg completions
    *  come from here, not the backend (whose skin list is CLI/TUI-only). */
   skinThemes?: DesktopThemeCommandOption[]
@@ -63,9 +69,28 @@ export function useSlashCompletions(options: {
   adapter: Unstable_TriggerAdapter
   loading: boolean
 } {
-  const { gateway, skinThemes, activeSkin } = options
+  const { gateway, sessionId, skinThemes, activeSkin } = options
   const enabled = Boolean(gateway)
   const epoch = useStore($slashCompletionsEpoch)
+  const sessionParams = useMemo(() => (sessionId ? { session_id: sessionId } : {}), [sessionId])
+  const catalogKey = sessionId ? `catalog:${sessionId}` : 'catalog'
+
+  // Warm argument_mode before the first `/` so Space treats /review as text.
+  useEffect(() => {
+    if (!gateway) {
+      return
+    }
+
+    void cachedSlashCompletion(catalogKey, () =>
+      gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
+    )
+      .then(catalog => {
+        filterDesktopCommandsCatalog(catalog)
+      })
+      .catch(() => {
+        // Next keystroke retries; don't block the composer on a warm-up miss.
+      })
+  }, [gateway, epoch, catalogKey, sessionParams])
 
   const fetcher = useCallback(
     async (query: string): Promise<CompletionPayload> => {
@@ -137,7 +162,9 @@ export function useSlashCompletions(options: {
       try {
         if (!query) {
           const catalog = filterDesktopCommandsCatalog(
-            await cachedSlashCompletion('catalog', () => gateway.request<CommandsCatalogLike>('commands.catalog'))
+            await cachedSlashCompletion(catalogKey, () =>
+              gateway.request<CommandsCatalogLike>('commands.catalog', sessionParams)
+            )
           )
 
           // Prefer the categorized layout so the popover renders section headers
@@ -145,7 +172,7 @@ export function useSlashCompletions(options: {
           // backend didn't categorize.
           const sections = catalog.categories?.length ? catalog.categories : [{ name: '', pairs: catalog.pairs ?? [] }]
 
-          const items = sections.flatMap(section =>
+          const items = sections.flatMap<CompletionEntry>(section =>
             section.pairs.map(([command, meta]) => ({
               text: command,
               display: command,
@@ -161,18 +188,27 @@ export function useSlashCompletions(options: {
           // Re-add the leftovers under one Skills header (which also gives them
           // the skill pill accent and makes them offerable mid-message).
           const categorized = new Set(items.map(item => item.text.toLowerCase()))
+          const skillRows: CompletionEntry[] = []
 
           for (const [command, meta] of catalog.pairs ?? []) {
             if (!categorized.has(command.toLowerCase()) && isDesktopSlashExtensionCommand(command)) {
-              items.push({ text: command, display: command, group: 'Skills', meta })
+              skillRows.push({ text: command, display: command, group: 'Skills', meta })
             }
           }
+
+          // Browsing, not searching: rank the skills the user actually reaches
+          // for to the top and drop never-used built-ins entirely. Typing a
+          // query takes the other branch, where nothing is hidden.
+          items.push(...rankSkillCommands(skillRows, catalog.skills, { pruneUnusedBuiltins: true }))
 
           return { items, query }
         }
 
-        const result = await cachedSlashCompletion(`slash:${text.toLowerCase()}`, () =>
-          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', { text })
+        const result = await cachedSlashCompletion(`slash:${sessionId ?? ''}:${text.toLowerCase()}`, () =>
+          gateway.request<{ items?: CompletionEntry[]; replace_from?: number }>('complete.slash', {
+            text,
+            ...sessionParams
+          })
         )
 
         // Arg-completion items (replace_from > 1) carry just the arg stub —
@@ -198,7 +234,9 @@ export function useSlashCompletions(options: {
             ...item,
             // Arg suggestions (e.g. `/handoff <platform>`) live under one
             // header; otherwise split skills out from built-in commands.
-            group: isArgCompletion ? 'Options' : isDesktopSlashExtensionCommand(item.text) ? 'Skills' : 'Commands',
+            // Kind comes from the backend — the desktop table is a visibility
+            // gate (`isDesktopSlashSuggestion`), not a classifier.
+            group: isArgCompletion ? 'Options' : slashCompletionGroup(item.text, item.kind),
             // Arg items carry their own meta (the personality/toolset/platform
             // blurb). Only command rows get the registry description — looking
             // one up for `/personality none` would clobber it with the parent
@@ -208,18 +246,25 @@ export function useSlashCompletions(options: {
 
         // Keep each group contiguous so headers render once: Commands before
         // Skills (stable within a group, preserving backend relevance order).
+        // Do not re-sort skills by usage here — complete.slash already ranked
+        // by fuzzy score, then usage. A second usage pass buried exact name
+        // matches that the table had mis-filed as skills.
         const groupOrder = ['Commands', 'Skills', 'Options']
 
-        const items = isArgCompletion
-          ? decorated
-          : [...decorated].sort((a, b) => groupOrder.indexOf(a.group) - groupOrder.indexOf(b.group))
+        if (isArgCompletion) {
+          return { items: decorated, query }
+        }
+
+        const items = [...decorated].sort(
+          (a, b) => groupOrder.indexOf(a.group ?? '') - groupOrder.indexOf(b.group ?? '')
+        )
 
         return { items, query }
       } catch {
         return { items: [], query }
       }
     },
-    [gateway, skinThemes, activeSkin]
+    [gateway, skinThemes, activeSkin, sessionId, catalogKey, sessionParams]
   )
 
   const toItem = useCallback((entry: CompletionEntry, index: number): Unstable_TriggerItem => {
@@ -261,9 +306,9 @@ export function useSlashCompletions(options: {
         return true
       }
 
-      return hasCachedSlashCompletion(query ? `slash:${text.toLowerCase()}` : 'catalog')
+      return hasCachedSlashCompletion(query ? `slash:${sessionId ?? ''}:${text.toLowerCase()}` : catalogKey)
     },
-    [skinThemes]
+    [skinThemes, sessionId, catalogKey]
   )
 
   return useLiveCompletionAdapter({ enabled, epoch, fetcher, isCached, toItem })

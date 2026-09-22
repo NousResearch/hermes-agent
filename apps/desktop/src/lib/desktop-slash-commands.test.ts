@@ -1,19 +1,82 @@
-import { describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 
 import {
+  type CommandCatalogMeta,
+  type CommandsCatalogLike,
   desktopSkinSlashCompletions,
+  type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
+  isDesktopSlashExtensionCommand,
   isDesktopSlashSuggestion,
   isModelPickerCommand,
   isPickerCommand,
-  resolveDesktopCommand
+  rankSkillCommands,
+  rememberDesktopCommandsCatalog,
+  resolveDesktopCommand,
+  slashCompletionGroup,
+  TS_ONLY_NO_DESKTOP_SURFACE
 } from './desktop-slash-commands'
+import desktopSlashRegistry from './desktop-slash-registry.json'
+
+function registryCatalog(
+  modes: Record<string, DesktopSlashArgumentMode | null>,
+  aliases: Record<string, string> = {}
+): CommandsCatalogLike {
+  const commands: Record<string, CommandCatalogMeta> = {}
+  const canon: Record<string, string> = {}
+
+  for (const [name, argument_mode] of Object.entries(modes)) {
+    commands[name] = { argument_mode, desktop: null }
+    canon[name] = name
+  }
+
+  for (const [alias, target] of Object.entries(aliases)) {
+    commands[alias] = commands[target]
+    canon[alias] = target
+  }
+
+  return { commands, canon }
+}
+
+const REGISTRY_CATALOG = registryCatalog(
+  {
+    '/approvals': 'options',
+    '/review': 'text',
+    '/refine': 'text',
+    '/usage': null,
+    '/version': null,
+    '/agents': null,
+    '/steer': 'text',
+    '/stop': null,
+    '/bg': 'text',
+    '/btw': 'text',
+    '/debug': null,
+    '/goal': 'mixed',
+    '/personality': 'options',
+    '/queue': 'text',
+    '/retry': null,
+    '/rollback': null,
+    '/tools': 'options',
+    '/undo': null,
+    '/loop': 'mixed',
+    '/lcm': 'text'
+  },
+  { '/tasks': '/agents', '/background': '/bg', '/q': '/queue', '/proactive': '/loop' }
+)
 
 describe('desktop slash command curation', () => {
+  beforeEach(() => {
+    rememberDesktopCommandsCatalog(REGISTRY_CATALOG)
+  })
+
+  afterEach(() => {
+    rememberDesktopCommandsCatalog(undefined)
+  })
+
   it('keeps core desktop chat commands in suggestions', () => {
     expect(isDesktopSlashSuggestion('/new')).toBe(true)
     expect(isDesktopSlashSuggestion('/branch')).toBe(true)
@@ -25,6 +88,31 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/approvals')).toBe(true)
     expect(isDesktopSlashCommand('/approvals')).toBe(true)
     expect(resolveDesktopCommand('/approvals')?.surface).toEqual({ kind: 'exec' })
+    expect(isDesktopSlashSuggestion('/review')).toBe(true)
+    expect(isDesktopSlashCommand('/review')).toBe(true)
+    expect(resolveDesktopCommand('/review')?.surface).toEqual({ kind: 'exec' })
+    expect(resolveDesktopCommand('/review')?.argumentMode).toBe('text')
+  })
+
+  it('treats registry and plugin commands as exec when the catalog says so', () => {
+    expect(resolveDesktopCommand('/refine')?.argumentMode).toBe('text')
+    expect(isDesktopSlashSuggestion('/refine')).toBe(true)
+    expect(isDesktopSlashSuggestion('/background')).toBe(false)
+    expect(isDesktopSlashCommand('/bg')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/bg')).toBe('text')
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(desktopSlashCommandArgumentMode('/btw')).toBe('text')
+    expect(resolveDesktopCommand('/lcm')?.surface).toEqual({ kind: 'exec' })
+    expect(desktopSlashCommandArgumentMode('/lcm')).toBe('text')
+  })
+
+  it('groups complete.slash rows by backend kind, not the desktop table', () => {
+    // A registry command the table has never heard of is still a command.
+    expect(slashCompletionGroup('/refine', 'command')).toBe('Commands')
+    expect(slashCompletionGroup('/docx', 'skill')).toBe('Skills')
+    // Older backends omit kind — fall back to the table.
+    expect(slashCompletionGroup('/new')).toBe('Commands')
+    expect(slashCompletionGroup('/docx')).toBe('Skills')
   })
 
   it('surfaces skill and quick commands (extensions) in suggestions and lets them run', () => {
@@ -42,6 +130,18 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashSuggestion('/skills')).toBe(false)
     expect(isDesktopSlashSuggestion('/voice')).toBe(false)
     expect(isDesktopSlashSuggestion('/curator')).toBe(false)
+  })
+
+  it('/voice points at the composer voice button instead of the generic advanced message', () => {
+    // /voice arms server-side capture — on the desktop the composer's own
+    // voice conversation (mic menu / Ctrl+B) is the surface. A user typing
+    // /voice must be told where the button IS, not shrugged at.
+    expect(resolveDesktopCommand('/voice')?.surface).toEqual({ kind: 'unavailable', reason: 'composer-voice' })
+    expect(isDesktopSlashCommand('/voice')).toBe(false)
+
+    const message = desktopSlashUnavailableMessage('/voice')
+    expect(message).toContain('microphone button')
+    expect(message).toContain('Ctrl+B')
   })
 
   it('routes /compact to /compress (context compression), not the TUI display toggle', () => {
@@ -72,6 +172,27 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/pets')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
     expect(isDesktopSlashSuggestion('/pets')).toBe(false)
     expect(isDesktopSlashCommand('/pets')).toBe(false)
+  })
+
+  it('does not run /login on desktop before the catalog is loaded', () => {
+    rememberDesktopCommandsCatalog(undefined)
+    expect(isDesktopSlashCommand('/login')).toBe(false)
+    expect(desktopSlashUnavailableMessage('/login')).toBe('/login is managed from the desktop sidebar.')
+  })
+
+  it('routes /wake through the desktop wake action instead of the slash worker', () => {
+    expect(resolveDesktopCommand('/wake')?.surface).toEqual({ kind: 'action', action: 'wake' })
+    expect(desktopSlashCommandArgumentMode('/wake')).toBe('options')
+    expect(isDesktopSlashSuggestion('/wake')).toBe(true)
+    expect(isDesktopSlashCommand('/wake')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/wake')).toBeNull()
+  })
+
+  it('routes /stop through the desktop action that cancels the active turn', () => {
+    expect(resolveDesktopCommand('/stop')?.surface).toEqual({ kind: 'action', action: 'stop' })
+    expect(isDesktopSlashSuggestion('/stop')).toBe(true)
+    expect(isDesktopSlashCommand('/stop')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/stop')).toBeNull()
   })
 
   it('treats /browser as an executable action command (local-gateway connect)', () => {
@@ -121,14 +242,15 @@ describe('desktop slash command curation', () => {
   })
 
   it('keeps commands with richer CLI semantics on the slash worker', () => {
-    for (const name of ['/agents', '/steer', '/stop', '/usage']) {
+    for (const name of ['/agents', '/steer', '/usage']) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
   })
 
   it('still routes commands without dedicated RPCs through exec()', () => {
+    // /btw is an action (prompt.btw) — the slash-worker print never reached Desktop.
     const execNames = [
-      '/background',
+      '/bg',
       '/debug',
       '/goal',
       '/personality',
@@ -143,6 +265,13 @@ describe('desktop slash command curation', () => {
     for (const name of execNames) {
       expect(resolveDesktopCommand(name)?.surface).toEqual({ kind: 'exec' })
     }
+  })
+
+  it('routes /btw to the prompt.btw side-question action', () => {
+    expect(resolveDesktopCommand('/btw')?.surface).toEqual({ kind: 'action', action: 'btw' })
+    expect(isDesktopSlashCommand('/btw')).toBe(true)
+    expect(isDesktopSlashSuggestion('/btw')).toBe(true)
+    expect(desktopSlashUnavailableMessage('/btw')).toBeNull()
   })
 
   it('distinguishes free prose from finite slash option lists', () => {
@@ -290,5 +419,106 @@ describe('desktop slash command curation', () => {
     expect(resolveDesktopCommand('/clear')?.surface).toEqual({ kind: 'unavailable', reason: 'terminal' })
     // Skill / quick commands aren't in the registry.
     expect(resolveDesktopCommand('/gif-search')).toBeNull()
+  })
+})
+
+describe('rankSkillCommands', () => {
+  const rows = [
+    { text: '/research' },
+    { text: '/research-paper-writing' },
+    { text: '/work' },
+    { text: '/ship-it' },
+    { text: '/manim-video' },
+    { text: '/docx' }
+  ]
+
+  const skills = {
+    '/research': { usage: 60, origin: 'local' as const },
+    '/research-paper-writing': { usage: 0, origin: 'bundled' as const },
+    '/work': { usage: 172, origin: 'local' as const },
+    '/manim-video': { usage: 0, origin: 'bundled' as const },
+    '/docx': { usage: 0, origin: 'local' as const }
+  }
+
+  it('puts the most-used skill first and breaks ties alphabetically', () => {
+    expect(rankSkillCommands(rows, skills).map(row => row.text)).toEqual([
+      '/work',
+      '/research',
+      '/docx',
+      '/manim-video',
+      '/research-paper-writing',
+      '/ship-it'
+    ])
+  })
+
+  it('drops never-used built-ins when browsing, keeping everything else', () => {
+    const browsing = rankSkillCommands(rows, skills, { pruneUnusedBuiltins: true }).map(row => row.text)
+
+    expect(browsing).toEqual(['/work', '/research', '/docx', '/ship-it'])
+    // A user's own unused skill survives — only shipped-and-ignored goes.
+    expect(browsing).toContain('/docx')
+    // Unclassified rows (quick commands, skills newer than the map) survive too.
+    expect(browsing).toContain('/ship-it')
+  })
+
+  it('leaves the backend order untouched when the catalog carries no usage', () => {
+    expect(rankSkillCommands(rows, undefined, { pruneUnusedBuiltins: true })).toEqual(rows)
+  })
+
+  it('ranks an alias by the canonical command it resolves to', () => {
+    const ranked = rankSkillCommands([{ text: '/sessions' }, { text: '/research' }], {
+      '/research': { usage: 5, origin: 'local' },
+      '/resume': { usage: 900, origin: 'local' }
+    })
+
+    expect(ranked.map(row => row.text)).toEqual(['/sessions', '/research'])
+  })
+})
+
+describe('registry-derived block-list (contract with hermes_cli/commands.py)', () => {
+  beforeEach(() => rememberDesktopCommandsCatalog(undefined))
+
+  it('marks every registry row with a reason unavailable offline, without a hand-typed copy', () => {
+    for (const [name, reason] of Object.entries(desktopSlashRegistry)) {
+      if (reason === null || reason === 'hidden') {
+        continue
+      }
+
+      const spec = resolveDesktopCommand(name)
+
+      // A desktop-owned action (e.g. /model picker) may override the registry.
+      if (spec?.surface.kind === 'unavailable') {
+        expect(spec.surface.reason).toBe(reason)
+      }
+
+      expect(isDesktopSlashSuggestion(name)).toBe(false)
+    }
+  })
+
+  it('recognizes offered built-ins and their aliases offline as Commands, never as skills (#116159)', () => {
+    // Cold catalog: nothing remembered, nothing cached. /context has no
+    // desktop disposition and no hand-typed TS row, so only the dump can
+    // vouch for it — and it must, or the popover files it under Skills and
+    // Enter takes the extension path.
+    for (const name of ['/context', '/ctx', '/usage']) {
+      expect(desktopSlashRegistry[name as keyof typeof desktopSlashRegistry]).toBeNull()
+      expect(isDesktopSlashExtensionCommand(name)).toBe(false)
+      expect(slashCompletionGroup(name)).toBe('Commands')
+      expect(isDesktopSlashCommand(name)).toBe(true)
+      expect(resolveDesktopCommand(name)?.surface.kind).toBe('exec')
+    }
+
+    // Control: an unknown skill command still groups as a skill offline.
+    expect(slashCompletionGroup('/gif-search')).toBe('Skills')
+  })
+
+  it('keeps the TS-only list disjoint from the registry dump', () => {
+    for (const names of Object.values(TS_ONLY_NO_DESKTOP_SURFACE)) {
+      for (const name of names) {
+        expect(name in desktopSlashRegistry, `${name} is in the Python registry — drop the TS row`).toBe(false)
+        expect(isDesktopSlashSuggestion(name)).toBe(false)
+        expect(isDesktopSlashCommand(name)).toBe(false)
+      }
+    }
   })
 })

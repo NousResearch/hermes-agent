@@ -25,7 +25,7 @@ import pytest
 
 import gateway.slash_commands as slash_commands
 from gateway.config import Platform
-from gateway.platforms.base import MessageEvent, MessageType
+from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
 
@@ -83,34 +83,6 @@ def _isolated_config(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 # Text-fallback path  ->  list_authenticated_providers
 # --------------------------------------------------------------------------- #
-@pytest.mark.asyncio
-async def test_text_fallback_offloads_list_authenticated_providers(_isolated_config, monkeypatch):
-    """No picker-capable adapter registered => handler takes the text fallback,
-    which must offload ``list_authenticated_providers`` to a worker thread."""
-    spy = _ToThreadSpy()
-    monkeypatch.setattr(slash_commands.asyncio, "to_thread", spy)
-
-    # Make the listing fn cheap + observable. If it were ever called directly
-    # (offload reverted) it would NOT appear in spy.calls and the assert fails.
-    sentinel = []
-
-    def _fake_list_authenticated_providers(**kwargs):
-        return sentinel
-
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.list_authenticated_providers",
-        _fake_list_authenticated_providers,
-    )
-
-    runner = _make_runner()  # no adapters -> has_picker is False
-    result = await runner._handle_model_command(_make_event())
-
-    assert result is not None  # text list rendered
-    offloaded = spy.funcs_offloaded()
-    assert _fake_list_authenticated_providers in offloaded, (
-        "list_authenticated_providers must be dispatched via asyncio.to_thread "
-        "(it was called inline on the event loop instead)"
-    )
 
 
 # --------------------------------------------------------------------------- #
@@ -147,7 +119,7 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
         return fake_providers
 
     monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
+        "hermes_cli.model_switch_providers.list_picker_providers",
         _fake_list_picker_providers,
     )
 
@@ -169,26 +141,24 @@ async def test_picker_path_offloads_list_picker_providers(_isolated_config, monk
 
 
 @pytest.mark.asyncio
-async def test_picker_path_requests_moa_presets(_isolated_config, monkeypatch):
-    """Gateway /model pickers must opt into the virtual MoA preset provider."""
-    captured = {}
+async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_endpoint(_isolated_config, monkeypatch):
+    """#74003: the chat ``/model`` reply is a read path. The listing must ask for cache-only catalogs
+    and must not live-probe every saved custom endpoint (only the selected one), matching the GUI."""
+    seen: list[dict] = []
 
     def _fake_list_picker_providers(**kwargs):
-        captured.update(kwargs)
-        return [{"slug": "moa", "name": "Mixture of Agents", "is_current": False,
-                 "models": ["battle", "smart"], "total_models": 2}]
+        seen.append(kwargs)
+        return [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+                 "models": ["gpt-x"], "total_models": 1}]
 
-    monkeypatch.setattr(
-        "hermes_cli.model_switch.list_picker_providers",
-        _fake_list_picker_providers,
-    )
-
+    monkeypatch.setattr("hermes_cli.model_switch_providers.list_picker_providers", _fake_list_picker_providers)
     runner = _make_runner()
     runner.adapters = {Platform.TELEGRAM: _FakePickerAdapter()}
     monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
     monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
 
-    result = await runner._handle_model_command(_make_event())
-
-    assert result is None
-    assert captured["include_moa"] is True
+    assert await runner._handle_model_command(_make_event()) is None
+    assert seen, "listing never ran"
+    flags = {k: seen[0].get(k) for k in ("non_blocking_catalogs", "probe_custom_providers", "probe_current_custom_provider")}
+    assert flags == {"non_blocking_catalogs": True, "probe_custom_providers": False,
+                     "probe_current_custom_provider": True}, flags

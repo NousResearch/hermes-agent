@@ -78,7 +78,7 @@ hermes [global-options] <command> [subcommand/options]
 | `hermes dashboard` | 启动用于管理配置、API 密钥和会话的 Web 控制台。 |
 | `hermes profile` | 管理 profile——多个隔离的 Hermes 实例。 |
 | `hermes completion` | 打印 shell 补全脚本（bash/zsh/fish）。 |
-| `hermes version` | 显示版本信息。 |
+| `hermes --version` | 显示版本信息。 |
 | `hermes update` | 拉取最新代码并重新安装依赖。`--check` 预览而不安装；`--backup` 在拉取前对 `HERMES_HOME` 进行快照。 |
 | `hermes uninstall` | 从系统中删除 Hermes。 |
 
@@ -95,7 +95,7 @@ hermes chat [options]
 | `-q`, `--query "..."` | 单次非交互式 prompt。 |
 | `-m`, `--model <model>` | 覆盖本次运行的模型。 |
 | `-t`, `--toolsets <csv>` | 启用逗号分隔的 toolset 集合。 |
-| `--provider <provider>` | 强制指定 provider：`auto`、`openrouter`、`nous`、`openai-codex`、`copilot-acp`、`copilot`、`anthropic`、`gemini`、`huggingface`、`novita`（别名 `novita-ai`、`novitaai`）、`openai-api`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`alibaba`、`alibaba-coding-plan`（别名 `alibaba_coding`）、`deepseek`、`nvidia`、`ollama-cloud`、`xai`（别名 `grok`）、`xai-oauth`（别名 `grok-oauth`）、`qwen-oauth`、`bedrock`、`opencode-zen`、`opencode-go`、`azure-foundry`、`lmstudio`、`stepfun`、`tencent-tokenhub`（别名 `tencent`、`tokenhub`）。 |
+| `--provider <provider>` | 强制指定 provider：`auto`、`openrouter`、`nous`、`openai-codex`、`copilot-acp`、`copilot`、`anthropic`、`gemini`、`huggingface`、`novita`（别名 `novita-ai`、`novitaai`）、`openai-api`、`zai`、`kimi-coding`、`kimi-coding-cn`、`minimax`、`minimax-cn`、`minimax-oauth`、`kilocode`、`xiaomi`、`arcee`、`gmi`、`alibaba`、`alibaba-coding-plan`（别名 `alibaba_coding`）、`deepseek`、`nvidia`、`ollama-cloud`、`xai`（别名 `grok`）、`xai-oauth`（别名 `grok-oauth`）、`qwen-oauth`、`bedrock`、`opencode-zen`、`opencode-go`、`ai-gateway`、`azure-foundry`、`lmstudio`、`stepfun`、`tencent-tokenhub`（别名 `tencent`、`tokenhub`）。 |
 | `-s`, `--skills <name>` | 为会话预加载一个或多个 skill（可重复或逗号分隔）。 |
 | `-v`, `--verbose` | 详细输出。 |
 | `-Q`, `--quiet` | 程序化模式：抑制横幅/spinner/工具预览。 |
@@ -227,7 +227,7 @@ hermes gateway <subcommand>
 | `--no-supervise` | 在 `run` 时：在 s6-overlay Docker 镜像内部，跳过 s6 自动监管，退回到 pre-s6 前台语义——gateway 作为容器主进程运行，无自动重启。在 s6 镜像之外为空操作。等同于设置 `HERMES_GATEWAY_NO_SUPERVISE=1`。 |
 
 :::tip WSL 用户
-使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](/reference/faq#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails)。
+使用 `hermes gateway run` 而非 `hermes gateway start`——WSL 的 systemd 支持不稳定。用 tmux 包裹以保持持久运行：`tmux new -s hermes 'hermes gateway run'`。详见 [WSL FAQ](./faq.md#wsl-gateway-keeps-disconnecting-or-hermes-gateway-start-fails)。
 :::
 
 ## `hermes lsp`
@@ -249,7 +249,7 @@ hermes lsp <subcommand>
 | `restart` | 关闭正在运行的客户端，以便下次编辑时重新启动。 |
 | `which <id>` | 打印某个服务器的已解析二进制路径。 |
 
-完整指南、支持的语言和配置项，请参阅 [LSP — 语义诊断](/user-guide/features/lsp)。
+完整指南、支持的语言和配置项，请参阅 [LSP — 语义诊断](../user-guide/features/lsp.md)。
 
 ## `hermes setup`
 
@@ -333,7 +333,7 @@ hermes slack manifest --slashes-only  # 仅输出 features.slash_commands 数组
 
 ## `hermes auth`
 
-管理同一 provider 的密钥轮换凭据池。完整文档请参阅 [凭据池](/user-guide/features/credential-pools)。
+管理同一 provider 的密钥轮换凭据池。完整文档请参阅 [凭据池](../user-guide/features/credential-pools.md)。
 
 ```bash
 hermes auth                                              # 交互式向导
@@ -393,7 +393,7 @@ hermes kanban [--board <slug>] <action> [options]
 |------|---------|
 | `--board <slug>` | 操作特定看板。默认为当前看板（通过 `hermes kanban boards switch`、`HERMES_KANBAN_BOARD` 环境变量或 `default` 设置）。 |
 
-**这是人工/脚本操作界面。** 调度器生成的 agent worker 通过专用的 `kanban_*` [toolset](/user-guide/features/kanban#how-workers-interact-with-the-board)（`kanban_show`、`kanban_complete`、`kanban_block`、`kanban_create`、`kanban_link`、`kanban_comment`、`kanban_heartbeat`；编排器 profile 还可使用 `kanban_list` 和 `kanban_unblock`）驱动看板，而非调用 `hermes kanban`。Worker 的环境中固定了 `HERMES_KANBAN_BOARD`，因此物理上无法看到其他看板。
+**这是人工/脚本操作界面。** 调度器生成的 agent worker 通过专用的 `kanban_*` [toolset](../user-guide/features/kanban.md#how-workers-interact-with-the-board)（`kanban_show`、`kanban_complete`、`kanban_block`、`kanban_create`、`kanban_link`、`kanban_comment`、`kanban_heartbeat`；编排器 profile 还可使用 `kanban_list` 和 `kanban_unblock`）驱动看板，而非调用 `hermes kanban`。Worker 的环境中固定了 `HERMES_KANBAN_BOARD`，因此物理上无法看到其他看板。
 
 | 操作 | 用途 |
 |--------|---------|
@@ -421,7 +421,7 @@ hermes kanban [--board <slug>] <action> [options]
 | `dispatch` | 对活跃看板执行一次调度器扫描。标志：`--dry-run`、`--max N`、`--failure-limit N`、`--json`。 |
 | `context <id>` | 打印 worker 将看到的完整上下文（标题 + 正文 + 父任务结果 + 评论）。 |
 | `specify <id>` / `specify --all` | 通过辅助 LLM 将 triage 列中的任务细化为具体规格（标题 + 包含目标、方案、验收标准的正文），然后将其提升到 `todo`。标志：`--tenant`（将 `--all` 限定到一个 tenant）、`--author`、`--json`。在 `config.yaml` 的 `auxiliary.triage_specifier` 下配置模型。 |
-| `decompose <id>` / `decompose --all` | 将 triage 列中的任务按描述拆分为子任务图，路由到专业 profile（编排器驱动路径）。当 LLM 判断任务不适合拆分时，回退到 specify 风格的单任务提升。与 `specify` 相同的标志。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 下配置模型。当 `kanban.auto_decompose: true`（默认）时，每次调度器 tick 也会自动运行。参见 [自动与手动编排](/user-guide/features/kanban#auto-vs-manual-orchestration)。 |
+| `decompose <id>` / `decompose --all` | 将 triage 列中的任务按描述拆分为子任务图，路由到专业 profile（编排器驱动路径）。当 LLM 判断任务不适合拆分时，回退到 specify 风格的单任务提升。与 `specify` 相同的标志。在 `config.yaml` 的 `auxiliary.kanban_decomposer` 下配置模型。当 `kanban.auto_decompose: true`（默认）时，每次调度器 tick 也会自动运行。参见 [自动与手动编排](../user-guide/features/kanban.md#auto-vs-manual-orchestration)。 |
 | `gc` | 删除已归档任务的 scratch 工作区。 |
 
 示例：
@@ -444,7 +444,7 @@ hermes kanban boards rm atm10-server --delete
 
 所有操作也可作为 gateway 中的斜杠命令使用（`/kanban …`），参数界面相同——包括 `boards` 子命令和 `--board` 标志。
 
-完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、八种协作模式、四个用户故事、并发正确性证明——请参阅仓库中的 `docs/hermes-kanban-v1-spec.pdf` 或 [Kanban 用户指南](/user-guide/features/kanban)。
+完整设计——与 Cline Kanban / Paperclip / NanoClaw / Gemini Enterprise 的对比、八种协作模式、四个用户故事、并发正确性证明——请参阅 [Kanban 用户指南](../user-guide/features/kanban.md)。
 
 ## `hermes webhook`
 
@@ -1112,7 +1112,7 @@ hermes claw migrate [options]
 
 迁移涵盖 30+ 个类别，包括 persona、memory、skill、模型 provider、消息平台、agent 行为、会话策略、MCP 服务器、TTS 等。条目要么**直接导入**到 Hermes 等效项，要么**归档**以供手动审查。
 
-**直接导入：** SOUL.md、MEMORY.md、USER.md、AGENTS.md、skill（4 个源目录）、默认模型、自定义 provider、MCP 服务器、消息平台 token 和许可名单（Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost）、agent 默认值（推理努力程度、压缩、人工延迟、时区、沙箱）、会话重置策略、审批规则、TTS 配置、浏览器设置、工具设置、执行超时、命令许可名单、gateway 配置以及来自 3 个来源的 API 密钥。
+**直接导入：** SOUL.md、MEMORY.md、USER.md、AGENTS.md、skill（4 个源目录）、默认模型、自定义 provider、MCP 服务器、消息平台 token 和许可名单（Telegram、Discord、Slack、WhatsApp、Signal、Matrix、Mattermost）、agent 默认值（推理努力程度、压缩、人工延迟、时区、沙箱）、审批规则、TTS 配置、浏览器设置、工具设置、执行超时、命令许可名单、gateway 配置以及来自 3 个来源的 API 密钥。
 
 **归档以供手动审查：** Cron 任务、plugin、hook/webhook、memory 后端（QMD）、skill 注册表配置、UI/身份、日志、多 agent 设置、频道绑定、IDENTITY.md、TOOLS.md、HEARTBEAT.md、BOOTSTRAP.md。
 
@@ -1145,14 +1145,14 @@ hermes claw migrate --source /home/user/old-openclaw
 hermes dashboard [options]
 ```
 
-启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](/user-guide/features/web-dashboard)。
+启动 Web 控制台——基于浏览器的界面，用于管理配置、API 密钥和监控会话。需要 `cd ~/.hermes/hermes-agent && uv pip install -e ".[web]"`（FastAPI + Uvicorn）。内嵌浏览器 Chat 标签页始终可用，但额外需要 `pty` extra（`cd ~/.hermes/hermes-agent && uv pip install -e ".[web,pty]"`）以及 POSIX PTY 环境（如 Linux、macOS 或 WSL2）。完整文档请参阅 [Web 控制台](../user-guide/features/web-dashboard.md)。
 
 | 选项 | 默认值 | 说明 |
 |--------|---------|-------------|
 | `--port` | `9119` | Web 服务器运行端口 |
 | `--host` | `127.0.0.1` | 绑定地址 |
 | `--no-open` | — | 不自动打开浏览器 |
-| `--insecure` | 关闭 | 允许绑定到非 localhost 主机。会在网络上暴露控制台凭据；仅在受信任的网络控制下使用。 |
+| `--insecure` | 关闭 | **已弃用 / 无实际作用。** 此参数曾用于在非回环绑定上绕过鉴权；自 2026 年 6 月安全加固后，公网绑定始终需要用户名/密码或 OAuth 鉴权提供方。若需保持仅本地访问，请绑定 `127.0.0.1` 并通过隧道连接。 |
 | `--stop` | — | 停止正在运行的 `hermes dashboard` 进程并退出。 |
 | `--status` | — | 列出正在运行的 `hermes dashboard` 进程并退出。 |
 
@@ -1246,7 +1246,7 @@ hermes update [--check] [--backup] [--restart-gateway]
 
 | 命令 | 说明 |
 |---------|-------------|
-| `hermes version` | 打印版本信息。 |
+| `hermes --version` | 打印版本信息。 |
 | `hermes update` | 拉取最新变更并重新安装依赖。 |
 | `hermes uninstall [--full] [--yes]` | 删除 Hermes，可选择删除所有 config/数据。 |
 

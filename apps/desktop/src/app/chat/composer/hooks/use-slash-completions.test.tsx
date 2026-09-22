@@ -18,6 +18,29 @@ const CATALOG = {
   ]
 }
 
+// A catalog shaped like a real install: a couple of skills the user lives in,
+// a bundled one they have never opened, and one of their own they haven't
+// either.
+const RANKED_CATALOG = {
+  categories: [{ name: 'Session', pairs: [['/new', 'Start a new session']] }],
+  pairs: [
+    ['/new', 'Start a new session'],
+    ['/docx', 'Edit Word documents'],
+    ['/research', 'Look it up before answering'],
+    ['/research-paper-writing', 'Write an academic paper'],
+    ['/work', 'Kick off a task in a fresh worktree']
+  ],
+  skills: {
+    '/docx': { usage: 0, origin: 'local' },
+    '/research': { usage: 60, origin: 'local' },
+    '/research-paper-writing': { usage: 0, origin: 'bundled' },
+    '/work': { usage: 172, origin: 'local' }
+  }
+}
+
+const commandsOf = (items: readonly Unstable_TriggerItem[]) =>
+  items.map(item => (item.metadata as { command?: string })?.command)
+
 function harness(gateway: HermesGateway) {
   const api: { search?: (query: string) => readonly Unstable_TriggerItem[] } = {}
 
@@ -94,5 +117,71 @@ describe('useSlashCompletions', () => {
     const inline = (await completions(api, '')).filter(isSkillItem)
 
     expect(inline.map(item => (item.metadata as { command?: string })?.command)).toEqual(['/work'])
+  })
+
+  // An alphabetical `/` menu buries the skills someone runs daily under the
+  // ones that shipped with Hermes and were never opened.
+  it('orders skills by use and hides never-used built-ins on a bare slash', async () => {
+    const request = vi.fn().mockResolvedValue(RANKED_CATALOG)
+    const api = harness({ request } as unknown as HermesGateway)
+
+    const skills = commandsOf((await completions(api, '')).filter(isSkillItem))
+
+    expect(skills).toEqual(['/work', '/research', '/docx'])
+  })
+
+  // Typing is a search, and a search that hides a match is broken. Order
+  // stays the backend's (fuzzy score, then usage) — a second client usage
+  // sort is what buried `/review` under skills.
+  it('keeps backend order on a typed query and does not hide matches', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? RANKED_CATALOG
+          : {
+              items: [
+                {
+                  text: '/research-paper-writing',
+                  display: '/research-paper-writing',
+                  kind: 'skill',
+                  meta: 'Write a paper'
+                },
+                { text: '/research', display: '/research', kind: 'skill', meta: 'Look it up' }
+              ]
+            }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+
+    expect(commandsOf(await completions(api, 'research'))).toEqual(['/research-paper-writing', '/research'])
+  })
+
+  it('keeps a registry command in Commands even when the desktop table has no row', async () => {
+    const request = vi.fn().mockImplementation((method: string) =>
+      Promise.resolve(
+        method === 'commands.catalog'
+          ? CATALOG
+          : {
+              items: [
+                { text: '/refine', display: '/refine', kind: 'command', meta: 'Review this conversation' },
+                { text: '/docx', display: '/docx', kind: 'skill', meta: 'Edit Word documents' },
+                { text: '/compress', display: '/compress', kind: 'command', meta: 'Compress context' }
+              ]
+            }
+      )
+    )
+
+    const api = harness({ request } as unknown as HermesGateway)
+    const items = await completions(api, 're')
+
+    const groupOf = (command: string) =>
+      (items.find(item => (item.metadata as { command?: string })?.command === command)?.metadata as { group?: string })
+        ?.group
+
+    expect(commandsOf(items)).toEqual(['/refine', '/compress', '/docx'])
+    expect(groupOf('/refine')).toBe('Commands')
+    expect(groupOf('/compress')).toBe('Commands')
+    expect(groupOf('/docx')).toBe('Skills')
   })
 })

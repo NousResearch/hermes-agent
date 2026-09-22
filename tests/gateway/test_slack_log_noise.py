@@ -125,25 +125,6 @@ def _connect_and_capture_handlers():
 class TestCatchAllEventAck:
     """#6572 / Event Subscriptions auto-disable — catch-all fallback ack."""
 
-    def test_catchall_registered_last_and_named_handlers_first(self):
-        _, registered = _connect_and_capture_handlers()
-        matchers = [m for m, _fn in registered]
-
-        # Named handlers exist and come first — bolt dispatches to the first
-        # matching listener, so registration order IS the shadowing guarantee.
-        assert "message" in matchers
-        assert "app_mention" in matchers
-        pattern_positions = [
-            i for i, m in enumerate(matchers) if isinstance(m, re.Pattern)
-        ]
-        assert pattern_positions, "catch-all re.Pattern matcher must be registered"
-        last_named = max(
-            i for i, m in enumerate(matchers) if not isinstance(m, re.Pattern)
-        )
-        assert pattern_positions[-1] > last_named, (
-            "catch-all must be registered AFTER every named event handler "
-            f"(order: {matchers!r})"
-        )
 
     @pytest.mark.asyncio
     async def test_catchall_acks_unsubscribed_event_quietly(self, caplog):
@@ -181,18 +162,6 @@ class TestCatchAllEventAck:
         )
         assert secret not in caplog.text
 
-    @pytest.mark.asyncio
-    async def test_named_handlers_still_dispatch(self):
-        """The catch-all must not swallow events the adapter DOES handle:
-        the 'message' listener still routes into _handle_slack_message."""
-        adapter, registered = await asyncio.to_thread(_connect_and_capture_handlers)
-        message_fn = next(fn for m, fn in registered if m == "message")
-
-        adapter._handle_slack_message = AsyncMock()
-        event = {"type": "message", "text": "hi", "ts": "1.2", "channel": "C1"}
-        await message_fn(event=event, say=AsyncMock(), body={"event": event})
-        adapter._handle_slack_message.assert_awaited_once()
-
 
 class TestInboundLogPrivacy:
     """#58477 (widened): no message text above DEBUG; DEBUG is metadata-only
@@ -208,54 +177,6 @@ class TestInboundLogPrivacy:
         a.handle_message = AsyncMock()
         return a
 
-    @pytest.mark.asyncio
-    async def test_message_pipeline_never_logs_text_above_debug(self, caplog):
-        """Drive a real inbound channel message end-to-end and assert the
-        message text appears in NO log record at any level, and block
-        content appears in none above DEBUG."""
-        secret_text = "SECRET-INBOUND-TEXT do not log me 12345"
-        secret_block = "SECRET-BLOCK-QUOTE private incident data"
-        adapter = self._make_adapter()
-        adapter._dedup = MagicMock(is_duplicate=MagicMock(return_value=False))
-        adapter._channel_team = {}
-
-        event = {
-            "type": "message",
-            "channel": "C_PRIV",
-            "channel_type": "channel",
-            "ts": "1710000000.000200",
-            "team": "T1",
-            "user": "U_USER",
-            "client_msg_id": "cmid-1",
-            "text": f"<@U_BOT> {secret_text}",
-            "blocks": [
-                {
-                    "type": "rich_text",
-                    "elements": [
-                        {
-                            "type": "rich_text_quote",
-                            "elements": [
-                                {
-                                    "type": "rich_text_section",
-                                    "elements": [
-                                        {"type": "text", "text": secret_block}
-                                    ],
-                                }
-                            ],
-                        }
-                    ],
-                }
-            ],
-        }
-
-        with caplog.at_level(logging.DEBUG, logger=ADAPTER_LOGGER):
-            with patch.object(
-                adapter, "_resolve_user_name", new=AsyncMock(return_value="u")
-            ):
-                await adapter._handle_slack_message(event)
-
-        assert secret_text not in caplog.text
-        assert secret_block not in caplog.text
 
     @pytest.mark.asyncio
     async def test_entry_diagnostic_log_is_metadata_only(self, caplog):

@@ -1,21 +1,14 @@
 import { cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
+import { stubResizeObserver } from '@/test/jsdom'
 import type { ConfigFieldSchema } from '@/types/hermes'
 
 import { ConfigField } from './config-field'
 import { rankSearchOption, SearchableSelect } from './searchable-select'
 
-// Radix Popover + cmdk call scrollIntoView / pointer-capture / ResizeObserver
-// APIs jsdom lacks.
-class TestResizeObserver {
-  disconnect() {}
-  observe() {}
-  unobserve() {}
-}
-
 beforeAll(() => {
-  vi.stubGlobal('ResizeObserver', TestResizeObserver)
+  stubResizeObserver()
   Element.prototype.scrollIntoView = vi.fn()
   Element.prototype.hasPointerCapture = vi.fn(() => false)
   Element.prototype.releasePointerCapture = vi.fn()
@@ -88,6 +81,22 @@ describe('SearchableSelect', () => {
     fireEvent.click(screen.getByRole('combobox'))
 
     expect(screen.queryByText('System default')).toBeNull()
+  })
+
+  it('lets the option list size to its content instead of the shrink-wrapped trigger', () => {
+    // The trigger shrink-wraps to its current value inside the settings grid
+    // (~120px for "Europe/Berlin"); pinning the popover width to it clipped
+    // every IANA row after "Africa/A…". The popover may grow to cover a wider
+    // trigger, but must never be capped at the trigger's width.
+    render(<SearchableSelect onChange={vi.fn()} options={options} value="Europe/Berlin" />)
+
+    fireEvent.click(screen.getByRole('combobox'))
+
+    const content = screen.getByRole('listbox', { hidden: true }).closest('[data-slot="popover-content"]')
+    const classes = content?.className.split(/\s+/) ?? []
+
+    expect(classes.some(c => c.startsWith('min-w-') && c.includes('radix-popover-trigger-width'))).toBe(true)
+    expect(classes.some(c => /^w-[[(].*radix-popover-trigger-width/.test(c))).toBe(false)
   })
 
   it('shows the placeholder when the value is blank', () => {

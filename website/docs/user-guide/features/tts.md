@@ -14,7 +14,7 @@ If you have a paid [Nous Portal](https://portal.nousresearch.com) subscription, 
 
 ## Text-to-Speech
 
-Convert text to speech with ten providers:
+Convert text to speech with eleven providers:
 
 | Provider | Quality | Cost | API Key |
 |----------|---------|------|---------|
@@ -25,6 +25,7 @@ Convert text to speech with ten providers:
 | **Mistral (Voxtral TTS)** | Excellent | Paid | `MISTRAL_API_KEY` |
 | **Google Gemini TTS** | Excellent | Free tier | `GEMINI_API_KEY` |
 | **xAI TTS** | Excellent | Paid | `XAI_API_KEY` |
+| **DeepInfra TTS** | Good | Paid | `DEEPINFRA_API_KEY` |
 | **NeuTTS** | Good | Free (local) | None needed |
 | **KittenTTS** | Good | Free (local) | None needed |
 | **Piper** | Good | Free (local) | None needed |
@@ -43,7 +44,7 @@ Convert text to speech with ten providers:
 ```yaml
 # In ~/.hermes/config.yaml
 tts:
-  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "neutts" | "kittentts" | "piper"
+  provider: "edge"              # "edge" | "elevenlabs" | "openai" | "minimax" | "mistral" | "gemini" | "xai" | "deepinfra" | "neutts" | "kittentts" | "piper" — or "nous" for the managed Tool Gateway (written when you pick Nous Subscription in `hermes tools`)
   speed: 1.0                    # Global speed multiplier (provider-specific settings override this)
   edge:
     voice: "en-US-AriaNeural"   # 322 voices, 74 languages
@@ -55,12 +56,16 @@ tts:
     model: "gpt-4o-mini-tts"
     voice: "alloy"              # alloy, echo, fable, onyx, nova, shimmer
     base_url: "https://api.openai.com/v1"  # Override for OpenAI-compatible TTS endpoints
+    pcm_sample_rate: 24000      # Streaming PCM rate expected from the endpoint (auto-overridden by X-Audio-Sample-Rate)
     speed: 1.0                  # 0.25 - 4.0
     # language: "es"            # Sent as lang_code — only for OpenAI-compatible endpoints that support it (e.g. Kokoro)
+    # consent_attestation: "I have the speaker's consent"  # Required by some OpenAI-compatible servers for cloned voices
+  streaming:
+    min_len: 20                 # Streaming TTS: shortest first sentence (chars) spoken on its own; CJK setups use ~6
   minimax:
     region: "global"           # "global" or "cn"; see selection rules below
     model: "speech-02-hd"     # speech-02-hd (default), speech-02-turbo
-    voice_id: "English_Graceful_Lady"  # See https://platform.minimax.io/faq/system-voice-id
+    voice_id: "English_expressive_narrator"  # See https://platform.minimax.io/faq/system-voice-id
     speed: 1                    # 0.5 - 2.0
     vol: 1                      # 0 - 10
     pitch: 0                    # -12 - 12
@@ -143,12 +148,16 @@ tts:
 
 The rewrite uses `auxiliary.tts_audio_tags` and defaults to your main chat model. Override that auxiliary task if you want tag insertion handled by a cheaper or faster model.
 
+**Streaming sample rate (OpenAI-compatible endpoints)**: streaming playback receives headerless raw PCM, so Hermes must know its sample rate. The official OpenAI API emits 24 kHz. A compatible server that reports its rate — the `X-Audio-Sample-Rate` response header, or `rate=` in the `Content-Type` (`audio/pcm; rate=44100`) — is honored automatically: the speaker, the temp-WAV player and the gateway audio stream all open at the reported rate once the response arrives. For servers that report nothing, set `tts.openai.pcm_sample_rate` to the endpoint's output rate (e.g. `22050` for Piper-backed servers); otherwise speech plays at the wrong speed and pitch. Invalid values log a warning and fall back to `24000`.
+
 **Language (OpenAI-compatible endpoints)**: `tts.openai.language` is forwarded to the endpoint as a `lang_code` request parameter. It is intended for OpenAI-compatible TTS servers that support `lang_code` — for example [Kokoro-FastAPI](https://github.com/remsky/Kokoro-FastAPI), where `language: "es"` selects the Spanish phonemizer instead of the English default. Leave it unset when using the official OpenAI API, which does not accept this parameter. When unset, nothing extra is sent.
+
+**Cloned-voice consent (OpenAI-compatible endpoints)**: some self-hosted OpenAI-compatible TTS servers reject a cloned voice with `400 consent_required` unless the request carries a `consent_attestation` field. Set `tts.openai.consent_attestation` to the attestation text your server expects; Hermes forwards it verbatim in the request body on every OpenAI-compatible path (whole-file synthesis, streaming, and the desktop's client-direct voice). Leave it unset for the official OpenAI API — when unset, the field is not sent.
 
 
 ### Input length limits
 
-Each provider has a documented per-request input-character cap. Hermes truncates text before calling the provider so requests never fail with a length error:
+Each provider has a documented per-request input-character cap. Hermes splits longer replies into ordered, sentence-aware chunks before calling the provider, so the full normalized text is preserved instead of silently truncated:
 
 | Provider | Default cap (chars) |
 |----------|---------------------|
@@ -181,7 +190,7 @@ tts:
     max_text_length: 8192   # raise or lower the provider cap
 ```
 
-Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally disable truncation.
+Only positive integers are honored. Zero, negative, non-numeric, or boolean values fall through to the provider default, so a broken config can't accidentally bypass the provider request limit.
 
 ### Telegram Voice Bubbles & ffmpeg
 
@@ -255,6 +264,19 @@ tts:
 
 **Advanced knobs** (`tts.piper.length_scale` / `noise_scale` / `noise_w_scale` / `volume` / `normalize_audio`, `use_cuda`) correspond 1:1 to Piper's `SynthesisConfig`. They're ignored on older `piper-tts` versions.
 
+### Warm-up and unload via speech toggles (local engines)
+
+Local engines (Piper, KittenTTS) load their model lazily, so without help the *first* spoken reply after you turn speech on pays the whole model load — and on a fresh install the voice download — as silence before the first word. Hermes treats the speech-output toggles as the signal that TTS is about to be needed:
+
+- **Desktop** — **Read replies aloud** is a desktop-local preference, independent of the gateway's `voice.auto_tts` setting in Settings → Voice. It migrates the shared value once, then later gateway configuration changes do not override the desktop toggle. If local storage is full or unavailable, the choice still lasts for this window; persistence across a reload remains best-effort. Turning on **Read replies aloud**, or starting a **voice conversation**, pre-loads the configured engine in the background right away. Turning both off again unloads the resident model (a Piper voice is tens of MB; KittenTTS up to ~80MB) so it isn't parked in RAM for nothing.
+- **CLI / TUI** — `/voice tts` (and `/voice on` when `voice.auto_tts` is set) do the same; `/voice off` releases.
+
+Each toggle holds a *lease* on the engine; the model is only unloaded when the last lease across surfaces is released, so switching off read-aloud in one Desktop window never pulls the voice out from under a conversation running in another. For cloud providers there is no model to hold — the toggle only makes sure a lazily-installed SDK (edge-tts, ElevenLabs, Mistral) is present. Warm-up is best-effort: if the engine can't load, the toggle still succeeds and the first reply falls back to loading on demand as before.
+
+The Desktop calls `POST /api/audio/tts-lease` with `{"lease": "<name>", "active": true|false}`; other frontends can use the same endpoint.
+
+The same lease also reaches user-declared providers, so a self-hosted TTS server can preload and unload its model on the toggles: a [command provider](#custom-command-providers) runs its optional `warm_command` / `release_command`, and a [Python plugin provider](#python-plugin-providers) gets `warm()` / `release()`.
+
 ### Custom command providers
 
 If a TTS engine you want isn't natively supported (VoxCPM, MLX-Kokoro, XTTS CLI, a voice-cloning script, anything else that exposes a CLI), you can wire it in as a **command-type provider** without writing any Python. Hermes writes the input text to a temp UTF-8 file, runs your shell command, and reads the audio file the command produced.
@@ -283,6 +305,20 @@ tts:
       command: "piper -m /path/to/custom.onnx -f {output_path} < {input_path}"
       output_format: wav
 ```
+
+**Supported `output_format` values:** `mp3` (default), `wav`, `ogg`, `flac`, `m4a`, `aac`, `amr`, `opus`. Your command must actually produce that format (e.g. via `ffmpeg`); Hermes only validates the declared value and names the output file accordingly. An unknown value falls back to `mp3`. The chosen format is also exposed to the command as the `{format}` placeholder.
+
+**Subprocess environment:** command providers (TTS and STT) run with Hermes secrets scrubbed from the child environment — gateway bot tokens, LLM provider API keys, and internal relay credentials are removed; `PATH`, `HOME`, locale, and other normal variables are kept. If your command template needs its own API key from the environment (e.g. a `curl` one-liner), list the variable names under `env_passthrough` in the provider config:
+
+```yaml
+tts:
+  providers:
+    mycloud:
+      type: command
+      command: 'curl -s -H "Authorization: Bearer $MYCLOUD_API_KEY" ... -o {output_path}'
+      env_passthrough: [MYCLOUD_API_KEY]
+```
+
 
 #### Example: Doubao (Chinese seed-tts-2.0)
 
@@ -328,11 +364,12 @@ Use `{{` and `}}` for literal braces.
 
 | Key                | Default | Meaning                                                                                                    |
 |--------------------|---------|------------------------------------------------------------------------------------------------------------|
-| `timeout`          | `120`   | Seconds; the process tree is killed on expiry (Unix `killpg`, Windows `taskkill /T`).                       |
+| `timeout`          | `120`   | Idle seconds; stdout or stderr output resets the deadline. The process tree is killed after inactivity (Unix `killpg`, Windows `taskkill /T`). |
 | `output_format`    | `mp3`   | One of `mp3` / `wav` / `ogg` / `flac`. Auto-inferred from the output extension if Hermes picks a path.      |
 | `voice_compatible` | `false` | When `true`, Hermes converts MP3/WAV output to Opus/OGG via ffmpeg so Telegram renders a voice bubble.      |
-| `max_text_length`  | `5000`  | Input is truncated to this length before rendering the command.                                             |
+| `max_text_length`  | `5000`  | Maximum input characters per command invocation; longer text is split into ordered chunks.                  |
 | `voice` / `model`  | empty   | Passed to the command as placeholder values only.                                                           |
+| `warm_command` / `release_command` | unset | Shell commands run when a surface toggles speech output on / when the last lease across surfaces is released — e.g. `curl -s localhost:5002/load?model={model}` to preload a local TTS server, and its `unload` counterpart. Best-effort and non-blocking: run in the background with the same `timeout`, `env_passthrough` and `{voice}` / `{model}` / `{speed}` placeholders as `command`; output is discarded and failures are only logged at debug. |
 
 #### Behavior notes
 
@@ -422,6 +459,7 @@ Override these on your provider class for richer integration:
 - `get_setup_schema()` → return `{name, badge, tag, env_vars: [{key, prompt, url}]}` to power the picker row in `hermes tools` / `hermes setup`. Without this, the plugin still works but its row in the picker is minimal.
 - `stream(text, *, voice, model, format, **extra)` → iterator yielding audio bytes for streaming delivery (default raises `NotImplementedError`).
 - `voice_compatible` property → set `True` if your output is Opus-compatible and the gateway should deliver it as a voice bubble (default `False` = regular audio attachment).
+- `warm()` / `release()` → called when a surface toggles speech output on / when the last lease across surfaces is released, while your provider is the configured `tts.provider` — preload or unload a local model server here. Both default to no-ops; exceptions are logged at debug and never fail the toggle.
 
 See `agent/tts_provider.py` for the full ABC including docstrings.
 
@@ -444,14 +482,15 @@ Local transcription works out of the box when `faster-whisper` is installed. If 
 ```yaml
 # In ~/.hermes/config.yaml
 stt:
-  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai"
+  provider: "local"           # "local" | "groq" | "openai" | "mistral" | "xai" | "elevenlabs" | "deepinfra"
+  language: "en"              # Global language hint applied to every provider unless a per-provider language overrides it; set "" to restore auto-detect
   local:
     model: "base"             # tiny, base, small, medium, large-v3
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   groq:
     language: ""              # optional ISO-639-1 hint; blank = use HERMES_LOCAL_STT_LANGUAGE if set, else auto-detect
   openai:
-    model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe
+    model: "whisper-1"        # whisper-1, gpt-4o-mini-transcribe, gpt-4o-transcribe, gpt-transcribe
   mistral:
     model: "voxtral-mini-latest"  # voxtral-mini-latest, voxtral-mini-2602
   xai:
@@ -471,15 +510,24 @@ stt:
 | `medium` | ~1.5 GB | Slower | Great |
 | `large-v3` | ~3 GB | Slowest | Best |
 
+The first use downloads the selected model from `huggingface.co`; later loads prefer the local cache and do not require an online revision check. On networks where the Hub is unavailable, export an accessible mirror in the shell or service that starts Hermes:
+
+```bash
+HF_ENDPOINT=https://your-hugging-face-mirror.example
+HF_HUB_DISABLE_XET=1
+```
+
+`HF_HUB_DISABLE_XET=1` keeps downloads on the mirror's regular HTTP path instead of contacting Xet CAS hosts that do not honor `HF_ENDPOINT`.
+
 **Groq API** — Requires `GROQ_API_KEY`. Good cloud fallback when you want a free hosted STT option. Set `stt.groq.language` (or the global `HERMES_LOCAL_STT_LANGUAGE` env var) to skip Whisper's auto-detect and reduce latency on known-language audio.
 
-**OpenAI API** — Accepts `VOICE_TOOLS_OPENAI_KEY` first and falls back to `OPENAI_API_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, and `gpt-4o-transcribe`.
+**OpenAI API** — Accepts `VOICE_TOOLS_OPENAI_KEY` first and falls back to `OPENAI_API_KEY`. Supports `whisper-1`, `gpt-4o-mini-transcribe`, `gpt-4o-transcribe`, and `gpt-transcribe`.
 
 **Mistral API (Voxtral Transcribe)** — Requires `MISTRAL_API_KEY`. Uses Mistral's [Voxtral Transcribe](https://docs.mistral.ai/capabilities/audio/speech_to_text/) models. Supports 13 languages, speaker diarization, and word-level timestamps. Install with `cd ~/.hermes/hermes-agent && uv pip install -e ".[mistral]"`.
 
 **xAI Grok STT** — Requires `XAI_API_KEY`. Posts to `https://api.x.ai/v1/stt` as multipart/form-data. Good choice if you're already using xAI for chat or TTS and want one API key for everything. Auto-detection order puts it after Groq — explicitly set `stt.provider: xai` to force it.
 
-**Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
+**Custom local CLI fallback** — Set `HERMES_LOCAL_STT_COMMAND` if you want Hermes to call a local transcription command directly. The command template supports `{input_path}`, `{output_dir}`, `{language}`, and `{model}` placeholders. Hermes tokenizes the rendered template into an argument list and executes it without a shell, so operators such as `|`, `>`, `&&`, and `;` are passed as literal arguments. Your command must write a `.txt` transcript somewhere under `{output_dir}`.
 
 #### Example: Doubao / Volcengine ASR
 
@@ -492,6 +540,14 @@ export VOLCENGINE_ACCESS_TOKEN="your-access-token"
 export HERMES_LOCAL_STT_COMMAND='doubao-speech transcribe {input_path} --out {output_dir}/transcript.txt'
 ```
 
+If a trusted local template intentionally needs pipes, redirects, or another shell feature, invoke the shell explicitly. Keep dynamic paths outside the shell program and pass them as positional arguments:
+
+```bash
+export HERMES_LOCAL_STT_COMMAND='sh -c '\''whisper "$1" --output_format txt --output_dir "$2" | tee "$2/whisper.log"'\'' _ {input_path} {output_dir}'
+```
+
+On Windows, use an explicit `cmd /c` or PowerShell wrapper instead. An explicit wrapper makes shell interpretation an opt-in part of the configured argv rather than an implicit property of every local STT template.
+
 ```yaml
 stt:
   provider: local_command
@@ -501,10 +557,12 @@ Hermes writes the incoming voice message to `{input_path}`, runs the command, an
 
 ### Fallback Behavior
 
-If your configured provider isn't available, Hermes automatically falls back:
+An **explicit** `stt.provider` selection (written in `config.yaml`, e.g. via `hermes tools`) is honored strictly — if that provider can't run, transcription fails with a clear error (`stt is configured to use <provider> (set via hermes tools), but <failure>. Run 'hermes tools' to change it.`) instead of silently switching engines. Note that `stt.provider: local` written in your config counts as an explicit selection.
+
+When **no provider has ever been selected**, Hermes auto-detects from what's available:
 - **Local faster-whisper unavailable** → Tries a local `whisper` CLI or `HERMES_LOCAL_STT_COMMAND` before cloud providers
-- **Groq key not set** → Falls back to local transcription, then OpenAI
-- **OpenAI key not set** → Falls back to local transcription, then Groq
+- **Groq key not set** → Skipped; next available provider
+- **OpenAI key not set** → Skipped; next available provider
 - **Mistral key/SDK not set** → Skipped in auto-detect; falls through to next available provider
 - **Nothing available** → Voice messages pass through with an accurate note to the user
 
@@ -536,7 +594,7 @@ stt:
       format: json
 ```
 
-This complements the legacy `HERMES_LOCAL_STT_COMMAND` escape hatch — that env var still works untouched via the built-in `local_command` path. Use `stt.providers.<name>` when you want **multiple** shell-driven STT engines, a name you can pick via `stt.provider`, or anything that needs per-provider `language` / `model` / `timeout`.
+This complements the legacy `HERMES_LOCAL_STT_COMMAND` escape hatch via the built-in `local_command` path. Unlike the shell-driven command-provider registry, the legacy template is tokenized into argv and runs without implicit shell interpretation. Use `stt.providers.<name>` when you want **multiple** shell-driven STT engines, a name you can pick via `stt.provider`, or anything that needs per-provider `language` / `model` / `timeout`.
 
 #### STT placeholders
 
@@ -586,14 +644,14 @@ The shell command runs under the same user as Hermes with full filesystem access
 
 ### Python plugin providers (STT)
 
-For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 6 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
+For STT engines that aren't built-in AND can't be expressed as a shell command (need a Python SDK, OAuth-refreshing auth, streaming chunks, etc.), register a Python plugin via `ctx.register_transcription_provider()`. The plugin **coexists with** the 8 built-in providers (`local`, `local_command`, `groq`, `openai`, `mistral`, `xai`, `elevenlabs`, `deepinfra`) and the `stt.providers.<name>: type: command` registry — built-ins keep their native implementations and always win on name collision; command providers win over plugins of the same name (config is more local than plugin install).
 
 #### When to pick which (STT)
 
 | Backend has…                                                 | Use                                                              |
 |--------------------------------------------------------------|------------------------------------------------------------------|
 | A single shell command that takes an audio file and emits text | `stt.providers.<name>: type: command` (no Python needed)        |
-| Only the legacy single-command escape hatch is wanted        | `HERMES_LOCAL_STT_COMMAND` env var (preserved for back-compat)  |
+| Only the legacy single-command escape hatch is wanted        | `HERMES_LOCAL_STT_COMMAND` env var (argv-tokenized; no implicit shell) |
 | A Python SDK with no CLI                                     | `register_transcription_provider()` plugin                      |
 | OAuth-refreshing auth, streaming chunks, voice-list metadata | `register_transcription_provider()` plugin                      |
 | A built-in already covers it (`local`, `groq`, `openai`, …)  | Set `stt.provider: <name>` — built-ins are inline               |

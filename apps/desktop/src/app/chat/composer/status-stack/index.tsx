@@ -1,18 +1,23 @@
 import { useStore } from '@nanostores/react'
-import { type ReactNode, useEffect, useLayoutEffect, useMemo, useRef } from 'react'
-import { useNavigate } from 'react-router-dom'
+import { type ReactNode, useEffect, useMemo } from 'react'
+import { useNavigate } from 'react-router'
 
 import { blurComposerInput } from '@/app/chat/composer/focus'
-import { chatSurfaceRoot, clearSurfaceVar, setSurfaceVar, STATUS_STACK_VAR } from '@/app/chat/surface-vars'
+import { useComposerSurfaceId } from '@/app/chat/composer/scope'
+import { useSessionView } from '@/app/chat/session-view'
 import { AGENTS_ROUTE } from '@/app/routes'
+import type { SubmitTextOptions } from '@/app/session/hooks/use-prompt-actions/utils'
 import { BillingBanner } from '@/components/billing-banner'
 import { composerDockCard } from '@/components/chat/composer-dock'
 import { StatusSection } from '@/components/chat/status-section'
+import { FreeTierNoticeStrip, useFreeTierNoticeOwner } from '@/components/free-tier/notice-strip'
+import { usePaneVisible } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
+import { GlyphSpinner } from '@/components/ui/glyph-spinner'
 import { Tip, TipKeybindLabel } from '@/components/ui/tooltip'
 import { type Translations, useI18n } from '@/i18n'
-import { useSessionSlice } from '@/lib/use-session-slice'
+import { useSessionSlice, useStoreSelector } from '@/lib/use-session-slice'
 import { cn } from '@/lib/utils'
 import { $billingBlock } from '@/store/billing-block'
 import {
@@ -24,13 +29,18 @@ import {
   type StatusGroup,
   stopBackgroundProcess
 } from '@/store/composer-status'
-import { refreshSessionGoal } from '@/store/goals'
+import { $freeTierRoute, $freeTierStatus, freeTierStripPending } from '@/store/free-tier'
 import { $previewStatusBySession, dismissPreviewArtifact } from '@/store/preview-status'
-import { $threadScrolledUp } from '@/store/thread-scroll'
+import { $sessionControlBySession, refreshSessionControl } from '@/store/session-control'
+import { $threadScrolledUpBySession } from '@/store/thread-scroll'
 import { openSessionInNewWindow } from '@/store/windows'
 
 import { PreviewStatusRow } from './preview-row'
+import { SessionControlSections } from './session-control'
+import { useSessionValue } from './session-control-utils'
 import { StatusItemRow } from './status-row'
+import { SubagentSection } from './subagent-section'
+import { useSubagentSnapshot } from './use-subagent-snapshot'
 
 // Slow safety-net poll for silent exits (processes without notify_on_complete
 // emit no event when they die). Only armed while a running row is on screen.
@@ -70,9 +80,12 @@ const groupLabel = (group: StatusGroup, s: Translations['statusStack']) => {
   return group.type === 'subagent' ? s.subagents(group.items.length) : s.background(group.items.length)
 }
 
+const hasRunningTodo = (group: StatusGroup) =>
+  group.type === 'todo' && group.items.some(item => item.todoStatus === 'in_progress' && item.state === 'running')
+
 interface ComposerStatusStackProps {
-  /** The queue, built by the composer (it owns the queue's callbacks). Rendered
-   *  as the last group so it stays fused to the composer like before. */
+  onSubmit?: (value: string, options?: SubmitTextOptions) => Promise<boolean> | boolean
+  /** The queue, built by the composer (it owns the queue's callbacks). */
   queue: ReactNode
   sessionId: null | string
 }
@@ -82,9 +95,11 @@ interface ComposerStatusStackProps {
  * every session-scoped status — subagents, background tasks, queue — grouped by
  * type and separated by light dividers. Collapses to nothing when empty.
  */
-export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackProps) {
+export function ComposerStatusStack({ onSubmit, queue, sessionId }: ComposerStatusStackProps) {
   const { t } = useI18n()
   const navigate = useNavigate()
+  const storedSessionId = useStore(useSessionView().$storedId)
+  useSubagentSnapshot(sessionId)
   // Subscribe to THIS session's slice only. Both maps churn on other
   // sessions' activity (subagent ticks, background polls, preview updates in
   // any tile); a whole-map `useStore` re-rendered every mounted stack — one
@@ -93,17 +108,47 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // items actually changed.
   const items = useSessionSlice($statusItemsBySession, sessionId)
   const previews = useSessionSlice($previewStatusBySession, sessionId)
-  const scrolledUp = useStore($threadScrolledUp)
-  const billing = useStore($billingBlock)
+  const controlEntry = useSessionValue($sessionControlBySession, sessionId)
 
-  const groups = useMemo(() => groupStatusItems(items), [items])
+  const surfaceId = useComposerSurfaceId()
+  const scrollSessionId = sessionId ?? surfaceId
+
+  const scrolledUp = useStoreSelector($threadScrolledUpBySession, map =>
+    Boolean(scrollSessionId && map[scrollSessionId])
+  )
+
+  const billing = useStore($billingBlock)
+  const freeTierStatus = useStore($freeTierStatus)
+  const freeTierRoute = useStore($freeTierRoute)
+  // One claimed owner across every mounted composer, so a split view shows the
+  // notice once — and a non-owning stack adds no empty row to its card.
+  const ownsFreeTierNotice = useFreeTierNoticeOwner()
+  const freeTierNotice = ownsFreeTierNotice && freeTierStripPending(freeTierStatus, freeTierRoute)
+
+  const isStructuredSupported = controlEntry?.capability === 'supported'
+
+  const groups = useMemo(() => {
+    const raw = groupStatusItems(items)
+
+    if (isStructuredSupported) {
+      return raw.filter(g => g.type !== 'goal')
+    }
+
+    return raw
+  }, [items, isStructuredSupported])
 
   // Seed from the registry on session open; event-driven refreshes (terminal /
-  // process tool completions) live in use-message-stream.
+  // process tool completions) live in use-message-stream. This must NOT reset
+  // the gone-polling latch: a mount/remount is not proof of a fresh runtime
+  // binding (a boot-restored tile can remount repeatedly while still bound to
+  // a dead runtime id), so clearing it here re-arms an endless 4001 storm
+  // against that id. The latch is reset at the actual rebind seams instead —
+  // gateway reconnect and runtime re-mint (see resetBackgroundPollingGuard
+  // call sites in use-gateway-boot.ts and store/gateway.ts).
   useEffect(() => {
     if (sessionId) {
       void refreshBackgroundProcesses(sessionId)
-      void refreshSessionGoal(sessionId)
+      void refreshSessionControl(sessionId)
     }
   }, [sessionId])
 
@@ -113,34 +158,42 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
   // dead `localhost:5174` chips stick around. On-disk file previews are kept.
   const visiblePreviews = previews.filter(item => hasRunningBackground || !isLocalhostPreview(item.target))
 
+  // Keep-alive keeps every ever-active tab mounted, so without this gate each
+  // background tile's safety-net poll fires every 5s — N sessions means N
+  // gateway round-trips plus shared-map churn forever. Hidden tabs skip the
+  // poll (event-driven refreshes in use-message-stream still land through the
+  // store) and resume it on reveal via `paneVisible` in the dep array.
+  const paneVisible = usePaneVisible()
+
   useEffect(() => {
-    if (!sessionId || !hasRunningBackground) {
+    if (!sessionId || !hasRunningBackground || !paneVisible) {
       return
     }
 
-    const timer = setInterval(() => void refreshBackgroundProcesses(sessionId), BACKGROUND_POLL_MS)
+    const timer = setInterval(() => {
+      if (document.visibilityState === 'visible') {
+        void refreshBackgroundProcesses(sessionId)
+      }
+    }, BACKGROUND_POLL_MS)
 
     return () => clearInterval(timer)
-  }, [hasRunningBackground, sessionId])
+  }, [hasRunningBackground, sessionId, paneVisible])
 
   const openAgents = () => navigate(AGENTS_ROUTE)
 
   const openSubagent = (item: ComposerStatusItem) =>
     item.sessionId ? void openSessionInNewWindow(item.sessionId, { watch: true }) : openAgents()
 
-  // Preview links live as child rows of the background group — a localhost dev
-  // server and its preview are the same thing — so they no longer float as an
-  // odd, differently-indented standalone block under the stack.
   const previewRows =
     visiblePreviews.length > 0 && sessionId
       ? visiblePreviews.map(item => (
-          <PreviewStatusRow item={item} key={item.id} onDismiss={id => dismissPreviewArtifact(sessionId, id)} />
+          <PreviewStatusRow
+            item={item}
+            key={item.id}
+            onDismiss={id => dismissPreviewArtifact(sessionId, id, storedSessionId ?? sessionId)}
+          />
         ))
       : []
-
-  const hasBackgroundGroup = groups.some(g => g.type === 'background')
-
-  const previewBlock = <div className="px-1 py-0.5">{previewRows}</div>
 
   const sections: { key: string; node: ReactNode }[] = []
 
@@ -151,7 +204,35 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
     sections.push({ key: 'billing', node: <BillingBanner sessionId={sessionId} /> })
   }
 
+  // Below the billing wall (a blocker outranks an offer), above everything the
+  // session itself is doing. The strip retires itself the moment any of its
+  // actions acks the notice.
+  if (freeTierNotice) {
+    sections.push({ key: 'free-tier', node: <FreeTierNoticeStrip /> })
+  }
+
+  const hasControlContent = Boolean(
+    controlEntry &&
+    (controlEntry.error ||
+      controlEntry.snapshot?.goal ||
+      controlEntry.snapshot?.loop ||
+      controlEntry.snapshot?.heartbeat)
+  )
+
+  if (sessionId && controlEntry && hasControlContent) {
+    sections.push({
+      key: 'session-control',
+      node: <SessionControlSections entry={controlEntry} onSubmit={onSubmit} sessionId={sessionId} />
+    })
+  }
+
   for (const group of groups) {
+    if (group.type === 'subagent' && sessionId) {
+      sections.push({ key: group.type, node: <SubagentSection key={sessionId} sessionId={sessionId} /> })
+
+      continue
+    }
+
     sections.push({
       key: group.type,
       node: (
@@ -171,7 +252,16 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
               </Tip>
             ) : undefined
           }
-          defaultCollapsed={group.type !== 'todo' && group.type !== 'goal'}
+          collapsedIndicator={
+            hasRunningTodo(group) ? (
+              <GlyphSpinner
+                ariaLabel={t.statusStack.running}
+                className="text-[0.8rem] leading-none text-muted-foreground/80"
+                spinner="braille"
+              />
+            ) : undefined
+          }
+          defaultCollapsed={group.type !== 'todo'}
           icon={<Codicon className="text-muted-foreground/70" name={GROUP_ICON[group.type]} size="0.8rem" />}
           label={groupLabel(group, t.statusStack)}
         >
@@ -187,69 +277,27 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
         </StatusSection>
       )
     })
-
-    // Preview links belong to the background group (a localhost dev server and
-    // its preview are the same thing), but they must stay VISIBLE even when that
-    // group is collapsed — the whole point is a one-tap open. Render them as an
-    // always-visible block right after the background section, not as collapsible
-    // children that get swallowed the moment a background task appears.
-    if (group.type === 'background' && previewRows.length > 0) {
-      sections.push({ key: 'preview', node: previewBlock })
-    }
-  }
-
-  // No background group to host them (e.g. a standalone on-disk file preview):
-  // still render them as their own always-visible block.
-  if (previewRows.length > 0 && !hasBackgroundGroup) {
-    sections.push({ key: 'preview', node: previewBlock })
   }
 
   if (queue) {
     sections.push({ key: 'queue', node: queue })
   }
 
+  // Artifact links stay visible at the bottom, nearest the composer, even when
+  // the queue or background group expands.
+  if (previewRows.length > 0) {
+    sections.push({ key: 'preview', node: <div className="status-artifacts">{previewRows}</div> })
+  }
+
+  // Micro actions are the TOP-MOST thing in the whole overlay lane — above the
+  // status card, above the billing wall, above everything. They're the only
+  // rows up here you press instead of read, so nothing may ever stack on top
+  // of them. Rendered outside the card (below) so the pills float.
   const visible = sections.length > 0
-  const stackRef = useRef<HTMLDivElement | null>(null)
 
-  // The stack is out of flow (overlays the thread), so the composer's measured
-  // height never sees it. Publish our own measured height — bucketed like the
-  // composer's, to avoid style invalidation churn — so the thread's
-  // last-message clearance can add it and the stack never hides messages.
-  // Scoped to THIS surface: tiles render their own stack (see surface-vars.ts).
-  useLayoutEffect(() => {
-    const el = stackRef.current
-
-    if (!visible || !el) {
-      return
-    }
-
-    // Resolve the owning surface NOW, while the node is attached. The cleanup
-    // below runs after the stack collapsed and React removed the div, so
-    // closest() from the detached node misses [data-chat-surface] and would
-    // clear the document root instead — leaving the stale height on the
-    // surface, which keeps inflating the thread's bottom clearance until the
-    // next publish.
-    const root = chatSurfaceRoot(el)
-    let last = -1
-
-    const sync = () => {
-      const bucket = Math.round(el.getBoundingClientRect().height / 8) * 8
-
-      if (bucket !== last) {
-        last = bucket
-        setSurfaceVar(el, STATUS_STACK_VAR, `${bucket}px`)
-      }
-    }
-
-    const observer = new ResizeObserver(sync)
-    observer.observe(el)
-    sync()
-
-    return () => {
-      observer.disconnect()
-      clearSurfaceVar(root, STATUS_STACK_VAR)
-    }
-  }, [visible])
+  // No height to publish: the stack is an in-flow child of the composer dock,
+  // so the dock's own measurement (--composer-measured-height) already covers
+  // it and the thread clears both with one number.
 
   if (!visible) {
     return null
@@ -257,12 +305,12 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
 
   return (
     <div
-      // Sits in the overlay lane above the composer. The composer root has pt-2
-      // before the actual surface; translate by that amount so the stack returns
-      // to its original attachment point without intruding into the repo strip.
-      className="absolute inset-x-0 bottom-full z-3 max-h-[40vh] translate-y-2 overflow-y-auto"
+      // In flow in the dock column, directly above the composer. The dock is
+      // bottom-anchored, so this grows upward over the thread without needing
+      // to be positioned — and it shares the dock's left edge for free.
+      className="flex max-h-[40vh] min-h-0 flex-col overflow-hidden"
+      data-slot="composer-status-stack"
       onPointerDownCapture={() => blurComposerInput()}
-      ref={stackRef}
     >
       {/* The card paints the shared --composer-fill (rest / scrolled / focused
           all match the composer surface by construction); on scroll we only
@@ -270,20 +318,32 @@ export function ComposerStatusStack({ queue, sessionId }: ComposerStatusStackPro
           Rounded top, square bottom; the bottom border is TRANSPARENT — the
           composer surface's visible top border (which sits at a higher z) is the
           single shared seam, so the two read as one fused capsule. */}
-      <div
-        className={cn(
-          composerDockCard('top'),
-          // Inset (mx-2) so the stack reads slightly narrower than the composer
-          // surface below it — the original look.
-          'mx-2 overflow-hidden rounded-b-none border-b border-b-transparent pt-0.5',
-          'transition-opacity duration-200 ease-out',
-          scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
-        )}
-      >
-        {sections.map(section => (
-          <div key={section.key}>{section.node}</div>
-        ))}
-      </div>
+      {sections.length > 0 && (
+        <div
+          className={cn(
+            composerDockCard('top'),
+            // Inset (mx-2) so the stack reads slightly narrower than the composer
+            // surface below it — the original look.
+            'mx-2 flex min-h-0 max-h-[inherit] shrink flex-col overflow-hidden rounded-b-none border-b border-b-transparent'
+          )}
+        >
+          <div className="min-h-0 overflow-y-auto overscroll-y-contain" data-slot="status-stack-scroll">
+            <div
+              className={cn(
+                'transition-opacity duration-200 ease-out',
+                scrolledUp ? 'opacity-30 group-hover/composer:opacity-100' : 'opacity-100'
+              )}
+              data-slot="status-stack-content"
+            >
+              {sections.map(section => (
+                <div data-slot="status-stack-section" key={section.key}>
+                  {section.node}
+                </div>
+              ))}
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   )
 }

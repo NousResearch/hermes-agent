@@ -1,10 +1,18 @@
+import { stripAnsi } from '@hermes/shared/ansi'
+
 import { type ToolTitleKey, translateNow } from '@/i18n'
 import { normalizeExternalUrl } from '@/lib/external-link'
+import { isFileMediaPath, mediaKind } from '@/lib/media'
 import { summarizeShellCommand } from '@/lib/summarize-command'
-import { capitalize, normalize } from '@/lib/text'
+import { capitalize, firstStringField, normalize } from '@/lib/text'
+import { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool } from '@/lib/tool-render-class'
+import { envelopeErrorText, toolResultRecord } from '@/lib/tool-result-metadata'
 import { extractToolErrorMessage, formatToolResultSummary } from '@/lib/tool-result-summary'
 
+import { skillActivityTitle } from '../skill-activity'
+
 import {
+  browserExecStepLabel,
   compactPreview,
   contextValue,
   formatDurationSeconds,
@@ -31,11 +39,10 @@ export * from './format'
 export * from './targets'
 export * from './types'
 
-const FILE_EDIT_TOOL_NAMES = new Set(['edit_file', 'patch', 'write_file'])
-
-export function isFileEditTool(toolName: string): boolean {
-  return FILE_EDIT_TOOL_NAMES.has(toolName)
-}
+// The transcript's render budget prices a turn by the same classification, so
+// it lives in `@/lib/tool-render-class` where both sides can reach it without
+// pulling this module's formatting/i18n weight into the cost path.
+export { CONNECTION_CARD_KEY, isCardTool, isFileEditTool, isSilentTool }
 
 export interface DiffLineStats {
   added: number
@@ -57,7 +64,7 @@ export function countDiffLineStats(diff: string): DiffLineStats {
   return { added, removed }
 }
 
-function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
+export function fileEditPath(args: Record<string, unknown>, result: Record<string, unknown>): string {
   return (
     firstStringField(args, ['path', 'file', 'filepath']) ||
     firstStringField(result, ['path', 'file', 'filepath', 'resolved_path']) ||
@@ -347,6 +354,7 @@ const DEFAULT_COUNT_NOUN_BY_TOOL: Record<string, string> = {
   search_files: 'result',
   session_search_recall: 'result',
   todo: 'todo',
+  todo_list: 'todo',
   web_search: 'result'
 }
 
@@ -516,6 +524,16 @@ function toolResultCount(
     }
   }
 
+  // Memory success payloads put the live total on `entry_count` — keep the noun
+  // as entry/entries instead of falling through the generic `*_count` path.
+  if (part.toolName === 'memory') {
+    const entryTotal = countFromUnknown(resultRecord.entry_count)
+
+    if (entryTotal !== null) {
+      return countMetric(entryTotal, 'entry')
+    }
+  }
+
   const directCount = countFromRecord(resultRecord, fallbackNounByTool)
 
   if (directCount !== null) {
@@ -585,18 +603,6 @@ function summarizeBrowserSnapshot(snapshot: string): string {
   return labels.length ? `${stats}\nTop controls: ${labels.join(', ')}` : stats
 }
 
-export function firstStringField(record: Record<string, unknown>, keys: readonly string[]): string {
-  for (const key of keys) {
-    const value = record[key]
-
-    if (typeof value === 'string' && value.trim()) {
-      return value.trim()
-    }
-  }
-
-  return ''
-}
-
 function collectResultItems(value: unknown): unknown[] {
   if (Array.isArray(value)) {
     return value
@@ -657,11 +663,12 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
   const extractedError = extractToolErrorMessage(part.result)
 
   if (part.isError) {
-    return extractedError || (typeof part.result === 'string' && part.result.trim()) || 'Tool returned an error.'
-  }
-
-  if (typeof result.error === 'string' && result.error.trim()) {
-    return result.error.trim()
+    return (
+      extractedError ||
+      envelopeErrorText(part.toolResultMetadata) ||
+      (typeof part.result === 'string' && part.result.trim()) ||
+      'Tool returned an error.'
+    )
   }
 
   if (extractedError) {
@@ -672,7 +679,7 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
     return firstStringField(result, ['message', 'reason', 'detail']) || 'Tool returned success=false.'
   }
 
-  if (typeof result.status === 'string' && /\b(error|failed|failure)\b/i.test(result.status)) {
+  if (typeof result.status === 'string' && /^(error|failed|failure|fatal|exception)$/i.test(result.status.trim())) {
     return firstStringField(result, ['message', 'reason', 'detail']) || `Tool returned status "${result.status}".`
   }
 
@@ -695,18 +702,42 @@ function toolErrorText(part: ToolPart, result: Record<string, unknown>): string 
 }
 
 function toolStatus(part: ToolPart, resultRecord: Record<string, unknown>): ToolStatus {
-  if (part.result === undefined) {
+  if (part.result === undefined && part.completedAt === undefined) {
     return 'running'
   }
 
-  if (!toolErrorText(part, resultRecord)) {
+  // A call the user stopped is expected to have no result; don't warn about it.
+  if (part.result === undefined && !part.isError) {
+    return part.interrupted ? 'notice' : 'warning'
+  }
+
+  // Explicit success wins over isError / nested-error heuristics. Memory writes
+  // return `{ success: true }` when the batch landed; a stale outer `isError`
+  // envelope must not paint a real save amber.
+  if (resultRecord.success === true || resultRecord.ok === true) {
     return 'success'
   }
 
+  const error = toolErrorText(part, resultRecord)
+
+  if (!error) {
+    return 'success'
+  }
+
+  // A guessed read path missing is routine exploration, not a broken tool.
+  // Keep the explanation available without a destructive alarm. Writes and
+  // permission failures deliberately do not take this path.
+  if (part.toolName === 'read_file' && /^File not found:/i.test(error)) {
+    return 'notice'
+  }
+
+  if (part.toolName === 'terminal' && error === 'Command failed with exit code 1.') {
+    return 'notice'
+  }
+
   // A rejected memory write is a budget negotiation, not a failure: the store
-  // refuses an over-limit batch and the agent immediately retries a smaller
-  // one. Painting the row destructive-red puts an alarm next to routine
-  // bookkeeping the user never has to act on. Amber says "noted" instead.
+  // refuses an over-limit batch and the agent retries smaller. Soft warning —
+  // never destructive-red beside routine bookkeeping.
   return part.toolName === 'memory' ? 'warning' : 'error'
 }
 
@@ -721,6 +752,11 @@ function durationLabel(resultRecord: Record<string, unknown>): string | undefine
 }
 
 function toolPreviewTarget(toolName: string, args: Record<string, unknown>, result: Record<string, unknown>): string {
+  // Reading an existing file is not producing a deliverable.
+  if (toolName === 'read_file' || toolName === 'search_files' || toolName === 'list_files') {
+    return ''
+  }
+
   const direct =
     firstStringField(result, ['preview', 'url', 'target']) ||
     firstStringField(args, ['preview', 'url', 'target', 'path', 'file', 'filepath']) ||
@@ -752,18 +788,14 @@ function toolImageUrl(args: Record<string, unknown>, result: Record<string, unkn
     return ''
   }
 
-  // Only inline-render images the renderer can actually fetch: data URLs or
-  // remote http(s). A bare filesystem path (e.g. vision_analyze's input image)
-  // resolves against the dev-server origin and 404s — fall back to the tool's
-  // codicon instead of a broken <img>.
+  // Filesystem images are resolved by the activity renderer through the
+  // authenticated media pipeline before they reach an <img>. This matters for
+  // vision_analyze, whose input commonly lives on the local or remote gateway.
   const isDataImage = candidate.toLowerCase().startsWith('data:image/')
   const isRemoteImage = /^https?:\/\//i.test(candidate) && /\.(png|jpe?g|gif|webp|bmp|svg)(\?|#|$)/i.test(candidate)
+  const isLocalImage = isFileMediaPath(candidate) && mediaKind(candidate) === 'image'
 
-  return isDataImage || isRemoteImage ? candidate : ''
-}
-
-function stripAnsi(value: string): string {
-  return value.replace(new RegExp(`${String.fromCharCode(27)}\\[[0-9;]*m`, 'g'), '')
+  return isDataImage || isRemoteImage || isLocalImage ? candidate : ''
 }
 
 export function stripInlineDiffChrome(value: string): string {
@@ -1296,6 +1328,12 @@ function dynamicTitle(
   result: Record<string, unknown>,
   fallback: ToolTitleParts
 ): ToolTitleParts {
+  const skillTitle = skillActivityTitle(part)
+
+  if (skillTitle) {
+    return { title: skillTitle }
+  }
+
   const verb = (gerund: string, past: string) => (part.result === undefined ? gerund : past)
 
   const titledAction = (action: string, title: string): ToolTitleParts =>
@@ -1379,6 +1417,19 @@ function dynamicTitle(
     }
   }
 
+  if (part.toolName === 'browser_exec') {
+    // The browser_exec schema asks the model to open `code` with a one-line
+    // `# …` comment describing the step in plain language; the CLI/TUI
+    // already surface it (agent/display.py). Mirror that here so desktop
+    // rows read "Searching Amazon for paper towels" instead of the generic
+    // "Browser Exec".
+    const label = browserExecStepLabel(firstStringField(args, ['code']))
+
+    if (label) {
+      return { title: label }
+    }
+  }
+
   if (isFileEditTool(part.toolName)) {
     const path = fileEditPath(args, result)
 
@@ -1390,13 +1441,34 @@ function dynamicTitle(
   return fallback
 }
 
+/** Status + detected preview target only — for feeds that never render the
+ *  row (the live completion handler) and must not pay for titles/details. */
+export function toolPreviewOutcome(part: ToolPart): { previewTarget: string; status: ToolStatus } {
+  const resultRecord = toolResultRecord(part)
+
+  return {
+    previewTarget: toolPreviewTarget(part.toolName, parseMaybeObject(part.args), resultRecord),
+    status: toolStatus(part, resultRecord)
+  }
+}
+
 export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
   const argsRecord = parseMaybeObject(part.args)
-  const resultRecord = parseMaybeObject(part.result)
+  const resultRecord = toolResultRecord(part)
   const meta = toolMeta(part.toolName)
   const status = toolStatus(part, resultRecord)
-  const error = toolErrorText(part, resultRecord)
-  const baseTitle = part.result === undefined ? meta.pending : meta.done
+  // Skip residual error-heuristic text once status is success (stale isError
+  // envelope over a landed memory write would otherwise foul the subtitle).
+  const error = status === 'success' ? '' : toolErrorText(part, resultRecord)
+  // Over-budget memory refusals stay amber — don't claim "Saved".
+  const memoryMissed = part.toolName === 'memory' && part.result !== undefined && status !== 'success'
+
+  const baseTitle =
+    part.result === undefined
+      ? meta.pending
+      : memoryMissed
+        ? translateNow('assistant.tool.memoryWriteNoted')
+        : meta.done
 
   const titleParts = dynamicTitle(
     part,
@@ -1405,7 +1477,12 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     titlePartsFromAction(baseTitle, part.result === undefined ? meta.pendingAction : undefined)
   )
 
-  const title = titleParts.title
+  const unavailable = part.result === undefined && part.completedAt !== undefined
+
+  const title = unavailable
+    ? translateNow(part.interrupted ? 'assistant.tool.resultInterrupted' : 'assistant.tool.resultUnavailable')
+    : titleParts.title
+
   const titleEnriched = title !== baseTitle
   const baseSubtitle = error || toolSubtitle(part, argsRecord, resultRecord)
 
@@ -1467,7 +1544,7 @@ export function buildToolView(part: ToolPart, inlineDiff: string): ToolView {
     status,
     subtitle,
     title,
-    titleAction: titleParts.action,
+    titleAction: unavailable ? undefined : titleParts.action,
     tone: meta.tone
   }
 }

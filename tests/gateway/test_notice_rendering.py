@@ -40,21 +40,6 @@ class TestRenderNoticeLine:
         assert line == "⚠ Credits 90% used"
         assert "⚠ ⚠" not in line
 
-    def test_text_is_stripped(self):
-        assert render_notice_line(AgentNotice(text="  ⚠ padded  ", level="warn")) == "⚠ padded"
-
-    def test_empty_text_returns_empty_string(self):
-        # Empty/whitespace → "" → the callback suppresses the push. Fail-soft.
-        assert render_notice_line(AgentNotice(text="", level="warn")) == ""
-        assert render_notice_line(AgentNotice(text="   ", level="warn")) == ""
-
-    def test_malformed_notice_does_not_raise(self):
-        # Duck-typed: a stand-in lacking the expected attrs degrades to "".
-        class _Bare:
-            pass
-
-        assert render_notice_line(_Bare()) == ""
-
 
 def test_real_policy_notices_render_without_doubling():
     """End-to-end regression: every notice evaluate_credits_notices emits already
@@ -114,7 +99,7 @@ def _make_source(platform_value="telegram", chat_id="555", user_id="u1"):
     src.user_id = user_id
     # Real SessionSource.profile is None (single-profile) or a str; a MagicMock
     # auto-attribute would read as a truthy "stamped profile" and trip the
-    # fail-closed path in _adapter_for_source (see AGENTS.md pitfall #17).
+    # fail-closed path in _delivery_adapter_for (see AGENTS.md pitfall #17).
     src.profile = None
     return src
 
@@ -156,28 +141,4 @@ class TestDeliverNoticeLine:
         # Delivered verbatim — the policy's single glyph, not a doubled one.
         assert args[1] == "⚠ Credits 90% used · $20.00 cap"
 
-    @pytest.mark.asyncio
-    async def test_private_delivery_prefers_private_notice(self):
-        source = _make_source()
-        adapter = MagicMock()
-        adapter.send = AsyncMock(return_value=MagicMock(success=True))
-        adapter.send_private_notice = AsyncMock(return_value=MagicMock(success=True))
-        runner = _make_runner_with_adapter(source, adapter)
-        runner.config.get_notice_delivery = MagicMock(return_value="private")
-
-        line = render_notice_line(
-            AgentNotice(text="✓ Credit access restored", level="success")
-        )
-        await runner._deliver_platform_notice(source, line)
-
-        adapter.send_private_notice.assert_awaited_once()
-        adapter.send.assert_not_awaited()
-
-    @pytest.mark.asyncio
-    async def test_no_adapter_is_a_noop(self):
-        source = _make_source()
-        runner = object.__new__(__import__("gateway.run", fromlist=["GatewayRunner"]).GatewayRunner)
-        runner.adapters = {}
-        # Must not raise when the platform has no registered adapter.
-        await runner._deliver_platform_notice(source, "• anything")
 

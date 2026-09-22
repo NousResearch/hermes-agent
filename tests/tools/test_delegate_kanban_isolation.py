@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import json
+import logging
 import os
 import shlex
 import sys
@@ -37,10 +38,11 @@ def _make_running_kanban_task(monkeypatch, tmp_path):
     monkeypatch.setenv("HERMES_KANBAN_ATTACHMENTS_ROOT", str(attachments_root))
 
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
 
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         tid = kb.create_task(
             conn,
@@ -99,9 +101,11 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
 
     import run_agent
     from tools import delegate_tool
+    import tools.delegate_tool_config as delegate_tool_config
 
     monkeypatch.setattr(run_agent, "AIAgent", FakeAgent)
     monkeypatch.setattr(delegate_tool, "_load_config", lambda: {})
+    monkeypatch.setattr(delegate_tool_config, "_load_config", lambda: {})
 
     class Parent:
         enabled_toolsets = ["terminal", "kanban"]
@@ -129,103 +133,6 @@ def test_build_child_agent_strips_kanban_toolset_even_when_parent_is_worker(monk
     assert "kanban" in captured["disabled_toolsets"]
 
 
-def test_delegate_child_terminal_env_scrubs_parent_kanban_keys(monkeypatch):
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/parent-workspace")
-    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock")
-
-    from agent.delegation_context import delegated_child_context
-    from tools.environments.local import _sanitize_subprocess_env
-
-    with delegated_child_context():
-        env = _sanitize_subprocess_env({
-            "HERMES_KANBAN_TASK": "t_parent",
-            "HERMES_KANBAN_RUN_ID": "123",
-            "HERMES_KANBAN_WORKSPACE": "/tmp/parent-workspace",
-            "HERMES_KANBAN_CLAIM_LOCK": "lock",
-            "PATH": "/usr/bin",
-        })
-
-    assert env["PATH"] == "/usr/bin"
-    assert "HERMES_KANBAN_TASK" not in env
-    assert "HERMES_KANBAN_RUN_ID" not in env
-    assert "HERMES_KANBAN_WORKSPACE" not in env
-    assert "HERMES_KANBAN_CLAIM_LOCK" not in env
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
-
-
-def test_delegate_child_foreground_terminal_env_scrubs_parent_kanban_keys(monkeypatch):
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/parent-workspace")
-    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock")
-
-    from agent.delegation_context import delegated_child_context
-    from tools.environments.local import _make_run_env
-
-    with delegated_child_context():
-        env = _make_run_env({"PATH": "/usr/bin"})
-
-    assert "HERMES_KANBAN_TASK" not in env
-    assert "HERMES_KANBAN_RUN_ID" not in env
-    assert "HERMES_KANBAN_WORKSPACE" not in env
-    assert "HERMES_KANBAN_CLAIM_LOCK" not in env
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
-
-
-def test_delegate_child_process_marker_scrubs_foreground_terminal_kanban_keys(monkeypatch):
-    """A delegated child subprocess has only the env marker, not the ContextVar."""
-    monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", "1")
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
-    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", "123")
-    monkeypatch.setenv("HERMES_KANBAN_DB", "/tmp/parent-kanban.db")
-    monkeypatch.setenv("HERMES_KANBAN_WORKSPACE", "/tmp/parent-workspace")
-    monkeypatch.setenv("HERMES_KANBAN_CLAIM_LOCK", "lock")
-
-    from tools.environments.local import _make_run_env
-
-    env = _make_run_env({"PATH": "/usr/bin"})
-
-    assert "HERMES_KANBAN_TASK" not in env
-    assert "HERMES_KANBAN_RUN_ID" not in env
-    assert "HERMES_KANBAN_DB" not in env
-    assert "HERMES_KANBAN_WORKSPACE" not in env
-    assert "HERMES_KANBAN_CLAIM_LOCK" not in env
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
-
-
-def test_delegate_child_execute_code_env_preserves_process_marker(monkeypatch, tmp_path):
-    """execute_code has its own env scrubber; it must preserve child lineage."""
-    home = tmp_path / ".hermes"
-    home.mkdir()
-    monkeypatch.setenv("HERMES_HOME", str(home))
-
-    from tools.code_execution_tool import _scrub_child_env
-
-    env = _scrub_child_env(
-        {
-            "HERMES_HOME": str(home),
-            "HERMES_DELEGATED_CHILD_CONTEXT": "1",
-            "HERMES_KANBAN_TASK": "t_parent",
-            "HERMES_KANBAN_RUN_ID": "123",
-            "HERMES_KANBAN_DB": str(home / "kanban.db"),
-            "HERMES_KANBAN_WORKSPACE": str(tmp_path / "parent-workspace"),
-            "PATH": "/usr/bin",
-        },
-        is_passthrough=lambda _: False,
-        is_windows=False,
-    )
-
-    assert env["HERMES_HOME"] == str(home)
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
-    assert env["PATH"] == "/usr/bin"
-    assert "HERMES_KANBAN_TASK" not in env
-    assert "HERMES_KANBAN_RUN_ID" not in env
-    assert "HERMES_KANBAN_DB" not in env
-    assert "HERMES_KANBAN_WORKSPACE" not in env
-
-
 def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     monkeypatch,
     tmp_path,
@@ -248,7 +155,7 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
     monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT", raising=False)
 
     from agent.delegation_context import delegated_child_context
-    from tools.code_execution_tool import _scrub_child_env
+    from tools.code_execution_env import _scrub_child_env
 
     with delegated_child_context():
         env = _scrub_child_env(
@@ -259,197 +166,57 @@ def test_delegate_child_execute_code_env_bridges_contextvar_and_scrubs_kanban(
 
     assert os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT") is None
     assert env["HERMES_HOME"] == str(home)
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
+    assert env["HERMES_DELEGATED_CHILD_CONTEXT"]  # fenced board root (path), not a bare flag
     assert "HERMES_KANBAN_TASK" not in env
     assert "HERMES_KANBAN_RUN_ID" not in env
-    assert "HERMES_KANBAN_DB" not in env
-    assert "HERMES_KANBAN_WORKSPACE" not in env
     assert "HERMES_KANBAN_CLAIM_LOCK" not in env
+    # Board location and workspace routing ride along with the fence marker.
+    assert env["HERMES_KANBAN_DB"] == str(home / "kanban.db")
+    assert env["HERMES_KANBAN_WORKSPACE"] == str(tmp_path / "parent-workspace")
 
 
-@pytest.mark.skipif(sys.platform == "win32", reason="execute_code UDS sandbox is POSIX-only")
-def test_delegate_child_execute_code_cannot_complete_parent_by_importing_kanban_db(
+def test_auto_heartbeat_reports_failure_without_mutating_fenced_child_board(
     monkeypatch,
     tmp_path,
+    caplog,
 ):
-    """E2E: execute_code sandbox inherits child lineage, not parent Kanban env."""
-    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(
-        monkeypatch,
-        tmp_path,
-    )
-
+    """An inherited child marker fences both bridge writes instead of faking success, and says
+    so once at WARNING (the DEBUG-only refusal hid a starving claim for a day). An in-process
+    delegate child stays fenced too, quietly, without consuming the worker's heartbeat window."""
+    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
     from agent.delegation_context import delegated_child_context
-    from tools import code_execution_tool as cet
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools
 
-    code = "\n".join([
-        "import json, os, sqlite3",
-        "from pathlib import Path",
-        "from agent.delegation_context import is_delegated_child_process_context",
-        "from hermes_cli import kanban_db as kb",
-        "observed = {",
-        "    'marker': os.environ.get('HERMES_DELEGATED_CHILD_CONTEXT'),",
-        "    'is_child': is_delegated_child_process_context(),",
-        "    'kanban_keys': sorted(k for k in os.environ if k.startswith('HERMES_KANBAN_')),",
-        "}",
-        "conn = sqlite3.connect(Path(os.environ['HERMES_HOME']) / 'kanban.db')",
-        "conn.row_factory = sqlite3.Row",
-        "try:",
-        f"    kb.complete_task(conn, {tid!r}, summary='child db bypass')",
-        "except PermissionError as exc:",
-        "    observed['permission_error'] = str(exc)",
-        "else:",
-        "    observed['permission_error'] = None",
-        "finally:",
-        "    conn.close()",
-        "print(json.dumps(observed, sort_keys=True))",
-    ])
-
-    monkeypatch.setattr(
-        "tools.approval.check_execute_code_guard",
-        lambda *_args, **_kwargs: {"approved": True},
-    )
-    monkeypatch.setattr(
-        cet,
-        "_load_config",
-        lambda: {"timeout": 15, "max_tool_calls": 50, "mode": "strict"},
-    )
-
-    with delegated_child_context():
-        raw = cet.execute_code(code, task_id="child-execute-code", enabled_tools=[])
-
-    payload = json.loads(raw)
-    assert payload["status"] == "success", payload.get("error", "")
-    observed = json.loads(payload["output"].strip())
-    assert observed["marker"] == "1"
-    assert observed["is_child"] is True
-    assert observed["kanban_keys"] == []
-    assert "delegate_task child contexts cannot mutate Kanban" in observed["permission_error"]
-
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
-        task = kb.get_task(conn, tid)
-        run = kb.latest_run(conn, tid)
+        task_before = kb.get_task(conn, tid)
+        events_before = kb.list_events(conn, tid)
+        monkeypatch.setenv("HERMES_DELEGATED_CHILD_CONTEXT", str(tmp_path / ".hermes"))
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+        # raising=False: a regression that drops the module flag must fail on the
+        # symptom assertions below, not on this attribute probe.
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_fence_warned", False, raising=False)
+
+        with caplog.at_level(logging.WARNING, logger="tools.kanban_tools"):
+            assert kanban_tools.heartbeat_current_worker_from_env() is False
+            monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+            assert kanban_tools.heartbeat_current_worker_from_env() is False
+        fence_warnings = [r for r in caplog.records if "HERMES_DELEGATED_CHILD_CONTEXT" in r.getMessage()]
+        assert len(fence_warnings) == 1 and tid in fence_warnings[0].getMessage()
+
+        monkeypatch.delenv("HERMES_DELEGATED_CHILD_CONTEXT")
+        monkeypatch.setattr(kanban_tools, "_auto_heartbeat_last_attempt", 0.0)
+        with delegated_child_context("child-1"):
+            assert kanban_tools.heartbeat_current_worker_from_env() is False
+        assert kanban_tools._auto_heartbeat_last_attempt == 0.0
+
+        task_after = kb.get_task(conn, tid)
+        assert task_after.claim_expires == task_before.claim_expires
+        assert task_after.last_heartbeat_at == task_before.last_heartbeat_at
+        assert kb.list_events(conn, tid) == events_before
     finally:
         conn.close()
-
-    assert task.status == "running"
-    assert run.status == "running"
-
-
-def test_delegated_child_subprocess_env_preserves_inherit_semantics_until_needed(monkeypatch):
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
-    monkeypatch.setenv("HERMES_KANBAN_DB", "/tmp/parent-kanban.db")
-
-    from agent.delegation_context import (
-        delegated_child_context,
-        delegated_child_subprocess_env,
-    )
-
-    assert delegated_child_subprocess_env() is None
-
-    with delegated_child_context():
-        env = delegated_child_subprocess_env()
-
-    assert env is not None
-    assert env["HERMES_DELEGATED_CHILD_CONTEXT"] == "1"
-    assert "HERMES_KANBAN_TASK" not in env
-    assert "HERMES_KANBAN_DB" not in env
-
-
-def test_delegate_child_local_execute_cannot_complete_parent_via_kanban_cli(
-    monkeypatch,
-    tmp_path,
-):
-    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(
-        monkeypatch,
-        tmp_path,
-    )
-
-    from agent.delegation_context import delegated_child_context
-    from tools.environments.local import LocalEnvironment
-
-    code = (
-        "from hermes_cli import kanban; "
-        "import argparse; "
-        "p=argparse.ArgumentParser(); "
-        "sub=p.add_subparsers(dest='cmd'); "
-        "kanban.build_parser(sub); "
-        f"args=p.parse_args(['kanban','complete',{tid!r},'--summary','child cli bypass']); "
-        "raise SystemExit(kanban.kanban_command(args))"
-    )
-    env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
-    try:
-        with delegated_child_context():
-            result = env.execute(
-                _python_with_repo_path(code),
-                timeout=15,
-            )
-    finally:
-        env.cleanup()
-
-    assert result["returncode"] == 1
-    assert "delegate_task child contexts cannot mutate Kanban tasks" in result["output"]
-
-    conn = kb.connect()
-    try:
-        task = kb.get_task(conn, tid)
-        run = kb.latest_run(conn, tid)
-    finally:
-        conn.close()
-
-    assert task.status == "running"
-    assert run.status == "running"
-
-
-def test_delegate_child_subprocess_cannot_complete_parent_by_importing_kanban_db(
-    monkeypatch,
-    tmp_path,
-):
-    """The DB mutation layer, not only the CLI/tool handlers, is guarded."""
-    kb, tid, _workspace, _attachments_root = _make_running_kanban_task(
-        monkeypatch,
-        tmp_path,
-    )
-
-    from agent.delegation_context import delegated_child_context
-    from tools.environments.local import LocalEnvironment
-
-    code = (
-        "import os, sqlite3; "
-        "from pathlib import Path; "
-        "from hermes_cli import kanban_db as kb; "
-        "conn=sqlite3.connect(Path(os.environ['HERMES_HOME']) / 'kanban.db'); "
-        "conn.row_factory=sqlite3.Row; "
-        "\ntry:\n"
-        f"    kb.complete_task(conn, {tid!r}, summary='child db bypass')\n"
-        "except Exception as exc:\n"
-        "    print(type(exc).__name__ + ': ' + str(exc))\n"
-        "    raise SystemExit(7)\n"
-        "else:\n"
-        "    raise SystemExit(0)\n"
-    )
-    env = LocalEnvironment(cwd=str(tmp_path), timeout=15)
-    try:
-        with delegated_child_context():
-            result = env.execute(
-                _python_with_repo_path(code),
-                timeout=15,
-            )
-    finally:
-        env.cleanup()
-
-    assert result["returncode"] == 7
-    assert "delegate_task child contexts cannot mutate Kanban tasks or boards" in result["output"]
-
-    conn = kb.connect()
-    try:
-        task = kb.get_task(conn, tid)
-        run = kb.latest_run(conn, tid)
-    finally:
-        conn.close()
-
-    assert task.status == "running"
-    assert run.status == "running"
 
 
 def test_delegate_child_kanban_cli_cannot_delete_parent_board(
@@ -491,52 +258,9 @@ def test_delegate_child_kanban_cli_cannot_delete_parent_board(
     assert kb.board_dir("victim").is_dir()
 
 
-def test_delegate_child_kanban_mutator_guard_rejects_explicit_task_id(monkeypatch):
-    """Defense in depth: direct handler access still cannot mutate a board."""
-    monkeypatch.setenv("HERMES_KANBAN_TASK", "t_parent")
-    from agent.delegation_context import delegated_child_context
-    from tools import kanban_tools
-
-    with delegated_child_context():
-        raw = kanban_tools._handle_complete({
-            "task_id": "t_parent",
-            "summary": "should not complete",
-        })
-
-    payload = json.loads(raw)
-    assert payload["error"]
-    assert "delegate_task child" in payload["error"]
-
-
-def test_delegate_child_attach_guard_leaves_no_row_or_file(monkeypatch, tmp_path):
-    kb, tid, _workspace, attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
-
-    from agent.delegation_context import delegated_child_context
-    from tools import kanban_tools
-
-    with delegated_child_context():
-        raw = kanban_tools._handle_attach({
-            "task_id": tid,
-            "filename": "leak.txt",
-            "content_base64": "bGVhay1ieXRlcw==",
-            "content_type": "text/plain",
-        })
-
-    payload = json.loads(raw)
-    assert payload["error"]
-    assert "delegate_task child" in payload["error"]
-
-    conn = kb.connect()
-    try:
-        assert kb.list_attachments(conn, tid) == []
-    finally:
-        conn.close()
-    task_dir = attachments_root / tid
-    assert not task_dir.exists() or list(task_dir.iterdir()) == []
-
-
 def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_path):
     kb, tid, _workspace, attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from hermes_cli import kanban_db_connect as kbc
 
     from agent.delegation_context import delegated_child_context
     from tools import kanban_tools
@@ -556,7 +280,7 @@ def test_delegate_child_attach_url_guard_leaves_no_row_or_file(monkeypatch, tmp_
     assert payload["error"]
     assert "delegate_task child" in payload["error"]
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         assert kb.list_attachments(conn, tid) == []
     finally:
@@ -571,6 +295,7 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
 ):
     """Deterministic E2E: a delegated child cannot complete its parent task."""
     kb, tid, workspace, _attachments_root = _make_running_kanban_task(monkeypatch, tmp_path)
+    from hermes_cli import kanban_db_connect as kbc
     from tools import delegate_tool
     from tools import kanban_tools
 
@@ -610,7 +335,7 @@ def test_child_attempting_default_complete_does_not_finish_parent_or_delete_work
 
     result = delegate_tool._run_single_child(0, "try to complete parent", Child(), Parent())
 
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         task = kb.get_task(conn, tid)
         run = kb.latest_run(conn, tid)

@@ -38,6 +38,42 @@ export function hasCachedSlashCompletion(key: string): boolean {
 }
 
 /**
+ * Read a cached completion response without fetching. For data that improves a
+ * response but must not cost a round trip to get — the catalog's per-skill
+ * usage map, which refines the ordering of a typed query but is not worth
+ * delaying that query for.
+ */
+export function peekCachedSlashCompletion<T>(key: string): T | undefined {
+  return hasCachedSlashCompletion(key) ? queryClient.getQueryData<T>([SLASH_COMPLETIONS_KEY, key]) : undefined
+}
+
+// `@` path completions are a directory listing, which unlike the command
+// catalog CAN change under the user (a build writes files, a branch switch
+// rewrites a tree). They get the same de-duplication but a short TTL: long
+// enough that walking back up a path you just walked down is instant, short
+// enough that the listing never looks stale.
+const PATH_COMPLETIONS_KEY = 'path-completions'
+const PATH_COMPLETIONS_TTL_MS = 15_000
+
+/** Serve an `@` path completion from cache, fetching only when stale. */
+export function cachedPathCompletion<T>(key: string, fetcher: () => Promise<T>): Promise<T> {
+  return queryClient.fetchQuery({
+    queryKey: [PATH_COMPLETIONS_KEY, key],
+    queryFn: fetcher,
+    gcTime: PATH_COMPLETIONS_TTL_MS,
+    staleTime: PATH_COMPLETIONS_TTL_MS,
+    retry: false
+  })
+}
+
+/** True when `cachedPathCompletion(key)` will resolve without a round trip. */
+export function hasCachedPathCompletion(key: string): boolean {
+  const state = queryClient.getQueryState([PATH_COMPLETIONS_KEY, key])
+
+  return state?.data !== undefined && Date.now() - state.dataUpdatedAt < PATH_COMPLETIONS_TTL_MS
+}
+
+/**
  * Bumped on every invalidation. The composer's completion adapter de-dupes by
  * query, so an unchanged `/` would never re-ask on its own — it watches this
  * instead to know the answer it's holding is no longer current.

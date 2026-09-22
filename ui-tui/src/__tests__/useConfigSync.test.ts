@@ -47,6 +47,54 @@ describe('applyDisplay', () => {
     expect(s.streaming).toBe(false)
   })
 
+  it('hydrates the destructive slash confirmation policy from approvals', () => {
+    const setBell = vi.fn()
+
+    applyDisplay(
+      {
+        config: {
+          approvals: { destructive_slash_confirm: false },
+          display: {}
+        }
+      },
+      setBell
+    )
+
+    expect($uiState.get().destructiveSlashConfirm).toBe(false)
+
+    applyDisplay(
+      {
+        config: {
+          approvals: { destructive_slash_confirm: true },
+          display: {}
+        }
+      },
+      setBell
+    )
+
+    expect($uiState.get().destructiveSlashConfirm).toBe(true)
+  })
+
+  it('defaults destructive slash confirmation on and preserves it across config RPC failure', () => {
+    const setBell = vi.fn()
+
+    applyDisplay({ config: { display: {} } }, setBell)
+    expect($uiState.get().destructiveSlashConfirm).toBe(true)
+
+    applyDisplay(
+      {
+        config: {
+          approvals: { destructive_slash_confirm: false },
+          display: {}
+        }
+      },
+      setBell
+    )
+    applyDisplay(null, setBell)
+
+    expect($uiState.get().destructiveSlashConfirm).toBe(false)
+  })
+
   it('coerces legacy true + "on" alias to top', () => {
     const setBell = vi.fn()
 

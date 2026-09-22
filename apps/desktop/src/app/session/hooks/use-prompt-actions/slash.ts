@@ -1,10 +1,12 @@
 import { skillInvocationText } from '@hermes/shared'
+import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,
@@ -15,20 +17,26 @@ import {
   resolveDesktopCommand
 } from '@/lib/desktop-slash-commands'
 import { isMissingRpcMethod } from '@/lib/gateway-rpc'
+import { applyReasoningSlashResult, reasoningSlashParams } from '@/lib/reasoning-slash'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { openCommandPalettePage } from '@/store/command-palette'
 import { setComposerDraft } from '@/store/composer'
-import { enqueueQueuedPrompt } from '@/store/composer-queue'
 import { applyGoalStatusText } from '@/store/goals'
 import { dismissNotification, notify, notifyError } from '@/store/notifications'
 import { setPetScale } from '@/store/pet-gallery'
 import { $petGenInput, openPetGenerate } from '@/store/pet-generate'
-import { $activeGatewayProfile, $newChatProfile, ensureGatewayProfile, normalizeProfileKey } from '@/store/profile'
+import {
+  $activeGatewayProfile,
+  $newChatProfile,
+  captureNewChatSource,
+  ensureGatewayProfile,
+  normalizeProfileKey
+} from '@/store/profile'
 import {
   $connection,
   $sessions,
   $yoloActive,
-  resolveComposerSessionKey,
+  setActiveSessionId,
   setCurrentUsage,
   setModelPickerOpen,
   setSessionPickerOpen,
@@ -36,6 +44,15 @@ import {
   setYoloActive
 } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
+import {
+  applyWakeStartResult,
+  applyWakeStatus,
+  applyWakeStopResult,
+  type WakeInputDeviceStatus,
+  type WakeStartResponse,
+  type WakeStatusResponse,
+  type WakeStopResponse
+} from '@/store/wake-word'
 
 import type {
   BrowserManageResponse,
@@ -45,21 +62,63 @@ import type {
   SlashExecResponse
 } from '../../../types'
 
+import { queueKickoffIfSessionBusy } from './queue-if-busy'
 import { resolveTargetSessionId } from './resolve-target-session'
 import {
   type GatewayRequest,
   isSessionIdCandidate,
-  isTargetSessionBusy,
   renderCommandsCatalog,
   renderRpcResult,
   slashStatusText,
-  type SubmitTextOptions
+  type SubmitTextOptions,
+  withSessionNotFoundResume
 } from './utils'
 
 // Manual compression is LLM-bound and routinely outlives the desktop's 30s
-// default WS request timeout on large sessions — give it the TUI client's
-// 120s RPC budget (HERMES_TUI_RPC_TIMEOUT_MS default) instead.
-const SESSION_COMPRESS_TIMEOUT_MS = 120_000
+// default WS request timeout on large sessions. The gateway blocks its own
+// compute-host wait for up to compression.context_total_ceiling_seconds + 30s
+// (capped at 630s, tui_gateway/server.py _COMPUTE_HOST_COMPRESS_WAIT_CAP_SECS)
+// and then answers `status: 'pending'` rather than an error, so this budget
+// must sit above that cap or the desktop reports a false timeout while the
+// host is still compressing (#97948).
+export const SESSION_COMPRESS_TIMEOUT_MS = 660_000
+const WAKE_START_TIMEOUT_MS = 180_000
+
+const wakeDeviceLabel = (device?: WakeInputDeviceStatus): string => {
+  if (!device) {
+    return 'system default'
+  }
+
+  const selector = device.selector
+  const name = device.name?.trim() || (selector == null ? 'system default' : String(selector))
+
+  return device.hostapi?.trim() ? `${name} (${device.hostapi.trim()})` : name
+}
+
+const renderWakeStatus = (status: WakeStatusResponse): string => {
+  const lines = [
+    'Wake Word Status',
+    `State: ${status.listening ? 'LISTENING' : 'OFF'}`,
+    `Phrase: "${status.phrase?.trim() || 'hey hermes'}"`,
+    `Provider: ${status.provider?.trim() || 'unknown'}`,
+    `Surface: ${status.owner_surface?.trim() || status.configured_surface?.trim() || 'auto'}`,
+    `Input: ${wakeDeviceLabel(status.input_device)}`
+  ]
+
+  if (status.audio_silent) {
+    lines.push('Audio: silent')
+  }
+
+  if (status.input_device?.error?.trim()) {
+    lines.push(`Input error: ${status.input_device.error.trim()}`)
+  }
+
+  if (status.hint?.trim()) {
+    lines.push(`Hint: ${status.hint.trim()}`)
+  }
+
+  return lines.join('\n')
+}
 
 /** Everything a slash handler needs about the invocation it's serving. */
 interface SlashActionCtx {
@@ -217,6 +276,17 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
         ): Promise<void> => {
           if (dispatch.type === 'exec' || dispatch.type === 'plugin') {
+            // `/goal clear|pause|resume|status` can come back as a TYPED exec
+            // dispatch (command.dispatch routing) instead of the plain-output
+            // shape handled below. This branch used to render and return
+            // without touching the goal store, so "✓ Goal cleared." printed
+            // while the stale "Goal paused" card kept showing until the chat
+            // was reopened (#80348). Mirror the output into the store exactly
+            // like the plain-output path does.
+            if (name === 'goal' && dispatch.output) {
+              applyGoalStatusText(sessionId, dispatch.output)
+            }
+
             renderSlashOutput(dispatch.output ?? '(no output)')
 
             return
@@ -276,25 +346,25 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           // view's — see isTargetSessionBusy. `busyRef` mirrors whatever chat
           // is on screen, while this command runs against the session
           // resolveTargetSessionId picked, routinely a different one.
-          if (isTargetSessionBusy($sessionStates.get(), sessionId, busyRef.current)) {
-            // The backend already executed the command — for `/goal <text>`
-            // the goal is set and `message` is its kickoff prompt. Dropping
-            // it here loses the kickoff silently (the goal exists but the
-            // agent never hears about it, #63352). Queue it on the composer
-            // queue instead: it fires when the running turn settles, and the
-            // queue panel above the composer shows it in the meantime.
-            //
-            // Park it on the same stored session the output writer is bound to
-            // rather than re-reading the globals here — a session switch between
-            // dispatch and this branch would otherwise queue the kickoff on
-            // whichever chat is now in front.
-            const queueKey = resolveComposerSessionKey(storedSessionId, $sessions.get()) || storedSessionId || sessionId
+          //
+          // Parked on the same stored session the output writer is bound to
+          // rather than re-reading the globals — a session switch between
+          // dispatch and this branch would otherwise queue the kickoff on
+          // whichever chat is now in front (#63352).
+          const queued = queueKickoffIfSessionBusy({
+            displayText,
+            foregroundBusy: busyRef.current,
+            sessionId,
+            storedSessionId,
+            text: message
+          })
 
-            if (enqueueQueuedPrompt(queueKey, { attachments: [], text: message, displayText })) {
-              renderSlashOutput('session busy — message queued to send when the current turn finishes')
-            } else {
-              renderSlashOutput('session busy — /interrupt the current turn before sending this command')
-            }
+          if (queued !== 'idle') {
+            renderSlashOutput(
+              queued === 'queued'
+                ? 'session busy — message queued to send when the current turn finishes'
+                : 'session busy — /interrupt the current turn before sending this command'
+            )
 
             return
           }
@@ -358,12 +428,12 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
           await handleDispatch(dispatch)
         } catch (err) {
-          // "not a quick/plugin/skill command" just means the fallback had
-          // nothing to add — the slash.exec failure (worker timeout, crash) is
+          // "not a quick/plugin/bundle/skill command" (older gateways: without
+          // "bundle/") just means the fallback had nothing to add — the slash.exec failure (worker timeout, crash) is
           // the real error, so don't bury it under the routing noise.
           const dispatchMessage = err instanceof Error ? err.message : String(err)
 
-          if (slashExecError && /not a quick\/plugin\/skill command/i.test(dispatchMessage)) {
+          if (slashExecError && /not a quick\/plugin\/(?:bundle\/)?skill command/i.test(dispatchMessage)) {
             const original = slashExecError instanceof Error ? slashExecError.message : String(slashExecError)
             renderSlashOutput(`error: /${name} failed: ${original}`)
 
@@ -427,10 +497,104 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
         new: async () => {
+          prepareDefaultNewSession()
           startFreshSessionDraft()
         },
         branch: async () => {
           await branchCurrentSession()
+        },
+        // Desktop owns the active turn, while the historical slash worker
+        // only stops background terminal processes. Interrupt the exact chat
+        // first (the same backend path as the composer Stop button), then keep
+        // the existing process cleanup so /stop retains both meanings.
+        stop: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
+          const lines: string[] = []
+
+          try {
+            await withSessionNotFoundResume(
+              initialSessionId,
+              storedSessionId,
+              liveId => requestGateway('session.interrupt', { session_id: liveId }),
+              {
+                requestGateway,
+                onRecovered: recoveredId => {
+                  if (activeSessionIdRef.current === initialSessionId) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
+                }
+              }
+            )
+            lines.push('Stopped the active turn.')
+          } catch (err) {
+            lines.push(`Could not stop the active turn: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          try {
+            const result = await requestGateway<unknown>('process.stop', {})
+            const processMessage = renderRpcResult(result, ctx.name)
+
+            if (processMessage) {
+              lines.push(processMessage)
+            }
+          } catch (err) {
+            lines.push(`Could not stop background processes: ${err instanceof Error ? err.message : String(err)}`)
+          }
+
+          renderSlashOutput(lines.join('\n'))
+        },
+        // /btw uses prompt.btw (the TUI's path). It must NOT go through
+        // runExec: the slash worker prints the answer after process_command
+        // returns, past the stdout capture window (#99065). The RPC replies
+        // with a task id; the answer arrives later as btw.complete.
+        btw: async ctx => {
+          const question = ctx.arg.trim()
+
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+
+          if (!question) {
+            renderSlashOutput(
+              'Usage: /btw <question> — answered from a snapshot of this conversation without interrupting it.'
+            )
+
+            return
+          }
+
+          try {
+            const result = await requestGateway<{ task_id?: string }>('prompt.btw', {
+              session_id: sessionId,
+              text: question
+            })
+
+            renderSlashOutput(
+              result.task_id
+                ? `btw ${result.task_id} — answering from a conversation snapshot`
+                : 'btw — answering from a conversation snapshot'
+            )
+          } catch (err) {
+            // Older gateways without the dedicated RPC still have the
+            // slash-worker route — same compatibility fallback as runRpc.
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
         },
         // /compress (alias /compact) runs the gateway's dedicated
         // session.compress RPC — the TUI's path
@@ -453,7 +617,8 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             return
           }
 
-          const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+          const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
+          let sessionId = initialSessionId
           const focusTopic = ctx.arg.trim()
           const noticeId = `session-compress:${sessionId}`
 
@@ -472,14 +637,50 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           })
 
           try {
-            const result = await requestGateway<SessionCompressResponse>(
-              'session.compress',
+            // Same stale-runtime recovery as prompt.submit: after sleep/wake a
+            // dead id 404s session.compress while plain chat still works, so
+            // /compress reported "session not found" on a healthy session.
+            // NOT alsoTimeout — compress is legitimately LLM-slow and a
+            // timeout here must not be retried as a dead session.
+            const { result, sessionId: liveSessionId } = await withSessionNotFoundResume(
+              sessionId,
+              storedSessionId,
+              liveId =>
+                requestGateway<SessionCompressResponse>(
+                  'session.compress',
+                  {
+                    session_id: liveId,
+                    ...(focusTopic ? { focus_topic: focusTopic } : {})
+                  },
+                  SESSION_COMPRESS_TIMEOUT_MS
+                ),
               {
-                session_id: sessionId,
-                ...(focusTopic ? { focus_topic: focusTopic } : {})
-              },
-              SESSION_COMPRESS_TIMEOUT_MS
+                requestGateway,
+                onRecovered: recoveredId => {
+                  // Move the in-flight claim onto the live id so the coalesce
+                  // guard releases the right key in `finally`.
+                  compressInFlightRef.current.delete(sessionId)
+                  compressInFlightRef.current.add(recoveredId)
+
+                  if (activeSessionIdRef.current === initialSessionId) {
+                    activeSessionIdRef.current = recoveredId
+                    setActiveSessionId(recoveredId)
+                  }
+                }
+              }
             )
+
+            sessionId = liveSessionId
+
+            // The gateway's compute-host wait expired but compression is still
+            // running there; it pushes session.info + a `compacted` status edge
+            // when the host finishes. Not an error (#97948).
+            if (result?.status === 'pending') {
+              const pendingMessage = result.message || 'compression still running in the background'
+              notify({ durationMs: 8_000, id: noticeId, kind: 'info', message: pendingMessage })
+
+              return
+            }
 
             // Replace the transcript with the post-compress history so the
             // summarized bubbles actually disappear. `messages` is the same
@@ -571,6 +772,46 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             compressInFlightRef.current.delete(sessionId)
           }
         },
+        // /reasoning runs the gateway's `config.set key=reasoning` — the Ink
+        // TUI's path. Through slash.exec the display words only reached
+        // config.yaml and the Thinking gate ($showReasoning) waited for the
+        // next config refresh; the effort level was set on a throwaway CLI.
+        reasoning: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput, sessionId } = resolved
+          const params = reasoningSlashParams(ctx.arg, sessionId)
+
+          try {
+            if (!params) {
+              const current = await requestGateway<{ display?: string; value?: string }>('config.get', {
+                key: 'reasoning',
+                session_id: sessionId
+              })
+
+              renderSlashOutput(`reasoning: ${current.value || 'medium'} · display ${current.display || 'hide'}`)
+
+              return
+            }
+
+            const result = await requestGateway<{ value?: string }>('config.set', params)
+
+            applyReasoningSlashResult(result.value)
+            renderSlashOutput(`reasoning: ${result.value || params.value}`)
+          } catch (err) {
+            if (isMissingRpcMethod(err)) {
+              await runExec(ctx)
+
+              return
+            }
+
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
+          }
+        },
         // /yolo maps to the status-bar YOLO control — a per-session approval
         // bypass, same scope as the TUI's Shift+Tab. With no session yet we arm
         // it locally; the session-create path applies it on the first message.
@@ -590,6 +831,71 @@ export function useSlashCommand(deps: SlashCommandDeps) {
             appendSessionTextMessage(sid, 'system', copy.yoloSystem(active))
           } catch {
             notify({ kind: 'error', title: copy.yoloTitle, message: copy.yoloToggleFailed })
+          }
+        },
+        // /wake must stay in the gateway process that owns the Desktop wake
+        // lease. Sending it through slash.exec creates a separate HermesCLI in
+        // the slash worker, which can claim the machine-wide microphone lock
+        // while the Desktop UI still reports the GUI listener as off.
+        wake: async ctx => {
+          const resolved = await withSlashOutput(ctx)
+
+          if (!resolved) {
+            return
+          }
+
+          const { render: renderSlashOutput } = resolved
+          const requested = ctx.arg.trim().toLowerCase()
+
+          if (requested && !['on', 'off', 'status'].includes(requested)) {
+            renderSlashOutput('usage: /wake [on|off|status]')
+
+            return
+          }
+
+          const status = async (): Promise<WakeStatusResponse> => {
+            const current = await requestGateway<WakeStatusResponse>('wake.status', {
+              client_capture: true,
+              surface: 'gui'
+            })
+
+            applyWakeStatus(current)
+
+            return current
+          }
+
+          try {
+            let action = requested
+
+            // Bare /wake is an authoritative toggle. Query the gateway instead
+            // of trusting a potentially stale renderer cache.
+            if (!action) {
+              action = (await status()).listening ? 'off' : 'on'
+            }
+
+            if (action === 'on') {
+              const started = await requestGateway<WakeStartResponse>(
+                'wake.start',
+                { persist: true, surface: 'gui', client_capture: true },
+                WAKE_START_TIMEOUT_MS
+              )
+
+              applyWakeStartResult(started)
+
+              if (!started?.started) {
+                renderSlashOutput(
+                  `Failed to start wake word: ${started?.hint?.trim() || started?.reason?.trim() || 'unknown error'}`
+                )
+
+                return
+              }
+            } else if (action === 'off') {
+              applyWakeStopResult(await requestGateway<WakeStopResponse>('wake.stop', { persist: true }))
+            }
+
+            renderSlashOutput(renderWakeStatus(await status()))
+          } catch (err) {
+            renderSlashOutput(`error: ${err instanceof Error ? err.message : String(err)}`)
           }
         },
         // /handoff hands this session to a messaging platform. The platform is
@@ -651,6 +957,9 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
             $newChatProfile.set(key)
             await ensureGatewayProfile(key)
+            // Capture the source the swap landed on (null on the v1 profile path)
+            // so the draft's owner matches the socket that will mint it.
+            captureNewChatSource()
             notify({ kind: 'success', message: copy.newChatsProfile(match.name) })
           } catch (err) {
             notifyError(err, copy.setProfileFailed)

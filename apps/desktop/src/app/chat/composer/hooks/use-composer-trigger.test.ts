@@ -1,11 +1,26 @@
 import type { Unstable_TriggerAdapter, Unstable_TriggerItem } from '@assistant-ui/core'
 import { act, renderHook } from '@testing-library/react'
 import { createRef } from 'react'
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import { rememberDesktopCommandsCatalog } from '@/lib/desktop-slash-commands'
 
 import { composerPlainText, renderComposerContents, RICH_INPUT_SLOT } from '../rich-editor'
 
 import { useComposerTrigger } from './use-composer-trigger'
+
+beforeEach(() => {
+  rememberDesktopCommandsCatalog({
+    commands: {
+      '/goal': { argument_mode: 'mixed', desktop: null },
+      '/personality': { argument_mode: 'options', desktop: null }
+    }
+  })
+})
+
+afterEach(() => {
+  rememberDesktopCommandsCatalog(undefined)
+})
 
 /** A live contentEditable seeded with `text`, caret parked at the end. */
 function mountEditor(text: string) {
@@ -221,5 +236,74 @@ describe('useComposerTrigger — free-text slash arguments', () => {
     })
     expect(composerPlainText(editor)).toBe('/personality creative ')
     expect(editor.querySelector('[data-slash-kind]')?.getAttribute('data-ref-text')).toBe('/personality creative')
+  })
+})
+
+describe('useComposerTrigger — chip survival (the plaintext-demotion bug class)', () => {
+  it('keeps a leading command pill through a Backspace path-ascend', () => {
+    // The reported repro: `/work @folder…` then Backspace — both chips went
+    // plaintext because ascend re-rendered the whole editor from text.
+    const editor = mountEditor('/work @Desktop/')
+    const { hook } = mountTrigger(editor, [])
+
+    expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+
+    act(() => hook.result.current.refreshTrigger())
+    expect(hook.result.current.trigger).toMatchObject({ kind: '@', query: 'Desktop/' })
+
+    let ran = false
+    act(() => {
+      ran = hook.result.current.ascendTriggerPath()
+    })
+
+    expect(ran).toBe(true)
+    expect(composerPlainText(editor)).toBe('/work @')
+    expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+  })
+
+  it('keeps a leading command pill when a folder pick commits its ref chip', () => {
+    const editor = mountEditor('/work @Desk')
+
+    const folder: Unstable_TriggerItem = {
+      id: 'folder:Desktop',
+      type: 'folder',
+      label: 'Desktop',
+      metadata: { rawText: '@folder:Desktop', insertId: 'Desktop' }
+    }
+
+    const { hook } = mountTrigger(editor, [folder])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(folder))
+
+    expect(composerPlainText(editor)).toBe('/work @folder:`Desktop` ')
+    expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
+    expect(editor.querySelector('[data-ref-kind="folder"]')).not.toBeNull()
+  })
+
+  it('commits in place when Chromium has split the token across text nodes', () => {
+    // Chromium fragments text nodes around contenteditable=false chips; the
+    // commit path must span the fragments instead of bailing to a full
+    // re-render.
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    document.body.append(editor)
+    editor.append(document.createTextNode('please run /c'), document.createTextNode('le'))
+
+    const caret = document.createRange()
+    caret.setStart(editor.lastChild!, 2)
+    caret.collapse(true)
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(caret)
+
+    const { hook } = mountTrigger(editor, [item('/clean')])
+
+    act(() => hook.result.current.refreshTrigger())
+    act(() => hook.result.current.replaceTriggerWithChip(item('/clean')))
+
+    expect(composerPlainText(editor)).toBe('please run /clean ')
+    expect(editor.querySelector('[data-slash-kind]')).not.toBeNull()
   })
 })

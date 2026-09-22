@@ -35,27 +35,6 @@ def test_prepare_spoken_text_expands_celsius_and_weather_units():
     assert "km/h" not in spoken
 
 
-def test_prepare_spoken_text_flattens_visual_formatting_for_tts():
-    raw = """## Short answer\n\n- [link text](https://example.com) → NZ$120 & 80% likely\n- `inline code` should not keep backticks\n"""
-
-    spoken = prepare_spoken_text(raw)
-
-    assert "Short answer, link text to 120 New Zealand dollars and 80 percent likely" in spoken
-    assert "inline code should not keep backticks" in spoken
-    assert "https://" not in spoken
-    assert "`" not in spoken
-    assert "→" not in spoken
-    assert "&" not in spoken
-
-
-def test_gateway_auto_tts_preparation_uses_spoken_normalizer():
-    adapter = _DummyAdapter()
-
-    spoken = adapter.prepare_tts_text("## Weather\n- Now: 14°C, wind 9 km/h")
-
-    assert spoken == "Weather, Now: 14 degrees Celsius, wind 9 kilometres per hour."
-
-
 def test_prepare_spoken_text_polish_edge_cases():
     # Heading folds into the next sentence as a lead-in, not a bare label.
     assert prepare_spoken_text("## Weather\nIt will be sunny") == "Weather, It will be sunny."

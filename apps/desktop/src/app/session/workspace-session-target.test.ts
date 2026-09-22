@@ -1,54 +1,30 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import { $activeGatewayProfile, $newChatProfile } from '@/store/profile'
+import { $projectScope, $projectTree, ALL_PROJECTS } from '@/store/projects'
 import {
   $currentBranch,
   $currentCwd,
   $newChatWorkspaceTarget,
+  type NewChatWorkspaceTarget,
   setCurrentBranch,
   setCurrentCwd,
   setNewChatWorkspaceTarget
 } from '@/store/session'
 
-import { newSessionOpensTab, startWorkspaceSession } from './workspace-session-target'
+import { deferred } from '../../test/deferred'
 
-function deferred<T>() {
-  let resolve!: (value: T) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
-
-/**
- * The sidebar "+" is a create affordance, not a discard one: with a chat
- * already loaded it must stack a tab (⌘T) rather than replace the surface
- * (⌘N), which would throw away a conversation that may still be mid-turn.
- */
-describe('newSessionOpensTab', () => {
-  it('opens a tab once a conversation is on screen', () => {
-    expect(newSessionOpensTab('runtime-a', 'stored-a')).toBe(true)
-  })
-
-  it('opens a tab for a live runtime whose stored id has not landed yet', () => {
-    expect(newSessionOpensTab('runtime-a', null)).toBe(true)
-  })
-
-  it('opens a tab for a selected session still resuming into a runtime', () => {
-    expect(newSessionOpensTab(null, 'stored-a')).toBe(true)
-  })
-
-  it('replaces the empty surface when nothing is open', () => {
-    expect(newSessionOpensTab(null, null)).toBe(false)
-  })
-})
+import { startWorkspaceSession } from './workspace-session-target'
 
 describe('startWorkspaceSession', () => {
   afterEach(() => {
     setCurrentBranch('')
     setCurrentCwd('')
     setNewChatWorkspaceTarget(undefined)
+    $projectScope.set(ALL_PROJECTS)
+    $projectTree.set([])
+    $activeGatewayProfile.set('default')
+    $newChatProfile.set(null)
     vi.restoreAllMocks()
   })
 
@@ -63,7 +39,7 @@ describe('startWorkspaceSession', () => {
 
     const activeSessionIdRef = { current: null }
 
-    const startFreshSessionDraft = vi.fn((options?: { workspaceTarget: string }) => {
+    const startFreshSessionDraft = vi.fn((options?: { workspaceTarget: NewChatWorkspaceTarget }) => {
       setNewChatWorkspaceTarget(options?.workspaceTarget)
       setCurrentCwd(options?.workspaceTarget || '')
     })
@@ -100,5 +76,56 @@ describe('startWorkspaceSession', () => {
     expect($newChatWorkspaceTarget.get()).toBe('/normalized-b')
     expect($currentCwd.get()).toBe('/normalized-b')
     expect($currentBranch.get()).toBe('main')
+  })
+
+  it('keeps a Home new-session request detached even when another project scope is active', () => {
+    $projectScope.set('p_voice')
+    $projectTree.set([
+      {
+        id: 'p_voice',
+        label: 'Voice Assistant',
+        path: '/Users/oschmidt/Checkouts/voice-assistant',
+        repos: [],
+        sessionCount: 0
+      }
+    ])
+
+    const requestGateway = vi.fn()
+    const activeSessionIdRef = { current: null }
+
+    const startFreshSessionDraft = vi.fn((options?: { workspaceTarget: NewChatWorkspaceTarget }) => {
+      setNewChatWorkspaceTarget(options?.workspaceTarget)
+      setCurrentCwd(options?.workspaceTarget || '')
+    })
+
+    startWorkspaceSession({
+      activeSessionIdRef,
+      path: null,
+      requestGateway,
+      startFreshSessionDraft
+    })
+
+    expect(startFreshSessionDraft).toHaveBeenCalledWith({ workspaceTarget: null })
+    expect(requestGateway).not.toHaveBeenCalled()
+    expect($newChatWorkspaceTarget.get()).toBeNull()
+    expect($currentCwd.get()).toBe('')
+  })
+
+  // #79005 flaw 3: the project "+" must pin the profile the tree is shown
+  // under; otherwise session.create reads $activeGatewayProfile after a swap.
+  it('pins the new chat to the profile the project tree is displayed under', () => {
+    $activeGatewayProfile.set('work')
+    $newChatProfile.set(null)
+
+    startWorkspaceSession({
+      activeSessionIdRef: { current: null },
+      path: '/workspace-work',
+      requestGateway: vi.fn(() => new Promise<never>(() => {})),
+      startFreshSessionDraft: vi.fn()
+    })
+
+    $activeGatewayProfile.set('personal')
+
+    expect($newChatProfile.get()).toBe('work')
   })
 })

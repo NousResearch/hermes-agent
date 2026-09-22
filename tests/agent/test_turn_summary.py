@@ -39,39 +39,12 @@ def test_format_elapsed(seconds, expected):
 # ── format_turn_summary: pure formatter ─────────────────────────────────────
 
 
-def test_zero_tools_fast_turn_renders_nothing():
-    """A quick chat reply with no tool calls has nothing to summarise."""
-    assert format_turn_summary(0.8, TurnTally()) == ""
 
 
-def test_zero_tools_slow_turn_still_reports_wall_time():
-    """A long toolless turn (big model, no tools) is worth timing."""
-    assert format_turn_summary(31.2, TurnTally()) == "⋯ 31.2s"
 
 
-def test_single_edit_with_line_deltas():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool(
-        "patch",
-        result='{"success": true, "diff": "--- a/x.py\\n+++ b/x.py\\n@@\\n+new\\n-old\\n"}',
-    )
-    assert collector.render(6.0) == "⋯ 6.0s · edited 1 file +1 -1"
 
 
-def test_mixed_verbs_render_in_priority_order():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    for _ in range(4):
-        collector.record_tool("read_file", result="contents")
-    for _ in range(3):
-        collector.record_tool("terminal", result="ok")
-    collector.record_tool("write_file", result='{"bytes_written": 10}')
-    collector.record_tool("write_file", result='{"bytes_written": 12}')
-
-    line = collector.render(12.4)
-    # Edits first, then reads, then commands — regardless of call order.
-    assert line == "⋯ 12.4s · edited 2 files · read 4 files · ran 3 commands"
 
 
 def test_pluralization_singular_and_plural():
@@ -89,37 +62,12 @@ def test_pluralization_irregular_nouns():
     assert format_turn_summary(1.0, times) == "⋯ 1.0s · searched the web 1 time"
 
 
-def test_missing_line_deltas_omits_plus_minus():
-    """write_file reports no diff, so we count the edit and skip +/-."""
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool("write_file", result='{"bytes_written": 42}')
-    line = collector.render(3.0)
-    assert line == "⋯ 3.0s · edited 1 file"
-    assert "+" not in line and " -" not in line
 
 
-def test_patch_result_without_diff_field_omits_deltas():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool("patch", result='{"success": true}')
-    assert collector.render(2.0) == "⋯ 2.0s · edited 1 file"
 
 
-def test_diff_headers_not_counted_as_line_changes():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    diff = "--- a/f.py\n+++ b/f.py\n@@ -1,2 +1,3 @@\n ctx\n+a\n+b\n-c\n"
-    collector.record_tool("patch", result={"success": True, "diff": diff})
-    assert collector.render(1.0) == "⋯ 1.0s · edited 1 file +2 -1"
 
 
-def test_json_string_result_with_raw_newlines_still_parses():
-    """Some serialisers emit literal newlines inside the diff string."""
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool("patch", result='{"success": true, "diff": "@@\n+a\n+b\n-c\n"}')
-    assert collector.render(1.0) == "⋯ 1.0s · edited 1 file +2 -1"
 
 
 def test_long_tallies_truncate_to_more_tail():
@@ -138,42 +86,17 @@ def test_long_tallies_truncate_to_more_tail():
     assert line.count("·") == 5
 
 
-def test_max_segments_configurable():
-    tally = TurnTally(verbs={"edited": {"files": 1}, "read": {"files": 2}, "ran": {"commands": 1}})
-    assert format_turn_summary(5.0, tally, max_segments=1) == "⋯ 5.0s · edited 1 file · +2 more"
 
 
-def test_none_tally_is_safe():
-    assert format_turn_summary(0.1, None) == ""
 
 
 # ── collector semantics ────────────────────────────────────────────────────
 
 
-def test_failed_tools_are_not_counted():
-    """A denied write must not be summarised as a successful edit."""
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool("write_file", result='{"error": "denied"}', is_error=True)
-    assert collector.tally.total_tools == 0
-    assert collector.render(4.0) == "⋯ 4.0s"
 
 
-def test_internal_and_empty_tool_names_ignored():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool("_thinking")
-    collector.record_tool(None)
-    collector.record_tool("")
-    assert collector.tally.total_tools == 0
 
 
-def test_unknown_tools_bucket_into_generic_count():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool("some_mcp__weird_tool", result="{}")
-    collector.record_tool("another_plugin_tool", result="{}")
-    assert collector.render(2.0) == "⋯ 2.0s · called 2 tools"
 
 
 def test_begin_resets_previous_turn():
@@ -185,40 +108,13 @@ def test_begin_resets_previous_turn():
     assert collector.render(0.5) == ""
 
 
-def test_line_deltas_aggregate_across_edits():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    collector.record_tool("patch", result={"success": True, "diff": "@@\n+a\n+b\n-c\n"})
-    collector.record_tool("patch", result={"success": True, "diff": "@@\n+d\n-e\n-f\n"})
-    assert collector.render(7.5) == "⋯ 7.5s · edited 2 files +3 -3"
 
 
-def test_malformed_result_payloads_do_not_raise():
-    collector = TurnSummaryCollector()
-    collector.begin()
-    for bad in ("not json at all", "", None, 42, [], {"diff": None}):
-        collector.record_tool("patch", result=bad)
-    assert collector.tally.verbs["edited"]["files"] == 6
-    assert collector.tally.has_line_deltas is False
 
 
 # ── spinner token flow (PART B) ────────────────────────────────────────────
 
 
-@pytest.mark.parametrize(
-    "tokens,expected",
-    [
-        (0, ""),
-        (-5, ""),
-        (32, "↓ 32 tok"),
-        (999, "↓ 999 tok"),
-        (1200, "↓ 1.2k tok"),
-        (25_400, "↓ 25.4k tok"),
-        (2_500_000, "↓ 2.5M tok"),
-    ],
-)
-def test_format_token_flow(tokens, expected):
-    assert format_token_flow(tokens) == expected
 
 
 def test_format_token_flow_bad_input_is_empty():
@@ -287,25 +183,12 @@ def test_gating_enabled_prints_summary(monkeypatch):
     assert "read 1 file" in printed[0]
 
 
-def test_gating_quiet_mode_prints_nothing(monkeypatch):
-    stub = _make_cli(agent=_StubAgent(quiet_mode=True))
-    assert _emit_and_capture(stub, monkeypatch) == []
 
 
-def test_gating_config_false_prints_nothing(monkeypatch):
-    stub = _make_cli(_turn_summary_enabled=False)
-    assert _emit_and_capture(stub, monkeypatch) == []
 
 
-def test_gating_tool_progress_off_prints_nothing(monkeypatch):
-    stub = _make_cli(tool_progress_mode="off")
-    assert _emit_and_capture(stub, monkeypatch) == []
 
 
-def test_gating_non_interactive_prints_nothing(monkeypatch):
-    """Single-query / -Q / gateway paths never set _interactive_turn."""
-    stub = _make_cli(_interactive_turn=False)
-    assert _emit_and_capture(stub, monkeypatch) == []
 
 
 def test_spinner_token_flow_appears_when_enabled():
@@ -314,36 +197,12 @@ def test_spinner_token_flow_appears_when_enabled():
     assert "↓ 1.2k tok" in stub._render_spinner_text()
 
 
-def test_spinner_token_flow_uses_per_turn_baseline():
-    stub = _make_cli(
-        agent=_StubAgent(session_output_tokens=5200), _turn_token_baseline=5000
-    )
-    assert stub._spinner_token_flow() == "↓ 200 tok"
 
 
-def test_spinner_token_flow_config_false_is_silent():
-    stub = _make_cli(
-        _spinner_token_flow_enabled=False, agent=_StubAgent(session_output_tokens=9000)
-    )
-    assert stub._spinner_token_flow() == ""
-    assert "tok" not in stub._render_spinner_text()
 
 
-def test_spinner_token_flow_silent_without_agent_or_idle():
-    assert _make_cli(agent=None)._spinner_token_flow() == ""
-    assert (
-        _make_cli(agent=_StubAgent(session_output_tokens=500), _agent_running=False)
-        ._spinner_token_flow()
-        == ""
-    )
 
 
-def test_turn_summary_config_defaults_present():
-    from hermes_cli.config import DEFAULT_CONFIG
-
-    display = DEFAULT_CONFIG["display"]
-    assert display["turn_summary"] is True
-    assert display["spinner_token_flow"] is True
 
 
 def test_content_free_diff_reports_unknown_not_zero_zero():

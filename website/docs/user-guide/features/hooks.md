@@ -1563,7 +1563,7 @@ Pairs with `transform_tool_result`, which runs afterward for every tool, includi
 
 ### `transform_llm_output`
 
-Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller). Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.
+Fires **once per turn** after the tool-calling loop completes and the model has produced a final response, **before** that response is delivered to the user (CLI, gateway, or programmatic caller) and **before** the assistant row is persisted — the replacement is what the session stores, what `/resume` shows and what the next turn replays, so the transcript never diverges from what the user saw. Hermes' own trailers (the file-mutation warning, the abnormal-exit note) are appended afterwards and are not part of `response_text`. Lets a plugin rewrite the assistant's final text using classical-programming methods — no extra inference tokens burned on SOUL flavor text or a skill-driven transform.
 
 **Callback signature:**
 

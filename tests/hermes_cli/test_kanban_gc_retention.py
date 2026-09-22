@@ -61,14 +61,22 @@ def test_gc_worker_logs_rejects_negative_window(board):
     assert log.exists()
 
 
-def test_cmd_gc_negative_days_errors_and_deletes_nothing(board, capsys):
+@pytest.mark.parametrize(
+    ("days", "expect_rc", "expect_kept"),
+    [
+        pytest.param(-1, 2, True, id="negative-refuses"),
+        pytest.param(0, 0, True, id="zero-disables"),
+        pytest.param(30, 0, False, id="positive-collects"),
+    ],
+)
+def test_cmd_gc_retention_bounds(board, days, expect_rc, expect_kept):
     with kbc.connect_closing() as conn:
         tid = _done_task_with_old_event(conn)
     log = _old_log_file()
-    assert kanban_ops._cmd_gc(_args(event_days=-1, log_days=-1)) != 0
+    assert kanban_ops._cmd_gc(_args(event_days=days, log_days=days)) == expect_rc
     with kbc.connect_closing() as conn:
-        assert _event_rows(conn, tid) > 0
-    assert log.exists()
+        assert (_event_rows(conn, tid) > 0) is expect_kept
+    assert log.exists() is expect_kept
 
 
 def test_cmd_gc_negative_days_leaves_workspaces_untouched(board):
@@ -89,46 +97,22 @@ def test_cmd_gc_negative_days_leaves_workspaces_untouched(board):
     assert (ws / "scratch.txt").exists()
 
 
-def test_cmd_gc_zero_days_disables_sweeps(board):
-    with kbc.connect_closing() as conn:
-        tid = _done_task_with_old_event(conn)
-    log = _old_log_file()
-    assert kanban_ops._cmd_gc(_args(event_days=0, log_days=0)) == 0
-    with kbc.connect_closing() as conn:
-        assert _event_rows(conn, tid) > 0
-    assert log.exists()
-
-
-def test_cmd_gc_positive_days_still_collects(board):
-    with kbc.connect_closing() as conn:
-        tid = _done_task_with_old_event(conn)
-    log = _old_log_file()
-    assert kanban_ops._cmd_gc(_args(event_days=30, log_days=30)) == 0
-    with kbc.connect_closing() as conn:
-        assert _event_rows(conn, tid) == 0
-    assert not log.exists()
-
-
-def test_slash_kanban_gc_negative_days_blocked(board):
-    """``/kanban gc`` from a chat session lands on the same _cmd_gc guard."""
+@pytest.mark.parametrize(
+    ("days", "expected"),
+    [
+        pytest.param("-1", "must be >= 0", id="negative-blocked"),
+        pytest.param("0", "GC complete", id="zero-disables"),
+    ],
+)
+def test_slash_kanban_gc_retention_bounds(board, days, expected):
+    """``/kanban gc`` from a chat session goes through the same parser type
+    and the same _cmd_gc guard as the shell command."""
     from hermes_cli import kanban
     with kbc.connect_closing() as conn:
         tid = _done_task_with_old_event(conn)
     log = _old_log_file()
-    out = kanban.run_slash("gc --event-retention-days -1 --log-retention-days -1")
-    assert "retention days must be >= 0" in out
-    with kbc.connect_closing() as conn:
-        assert _event_rows(conn, tid) > 0
-    assert log.exists()
-
-
-def test_slash_kanban_gc_zero_disables(board):
-    from hermes_cli import kanban
-    with kbc.connect_closing() as conn:
-        tid = _done_task_with_old_event(conn)
-    log = _old_log_file()
-    out = kanban.run_slash("gc --event-retention-days 0 --log-retention-days 0")
-    assert "GC complete" in out
+    out = kanban.run_slash(f"gc --event-retention-days {days} --log-retention-days {days}")
+    assert expected in out
     with kbc.connect_closing() as conn:
         assert _event_rows(conn, tid) > 0
     assert log.exists()

@@ -1125,23 +1125,24 @@ def _handle_block(args: dict, **kw) -> str:
                f"{sorted(_GOAL_MODE_BLOCK_ALLOWED_KINDS)} (got {kind!r}). If the task is actually "
                f"finished or cannot proceed for another reason, call kanban_complete instead — "
                f"the completion judge will evaluate it.")
-        routed, landed_status = kb.route_worker_block_to_orchestrator(
+        routed, landed_status, routed_to = kb.route_worker_block_to_orchestrator(
             conn,
             tid,
             reason=reason,
             expected_run_id=_worker_run_id(tid),
         )
         if routed:
+            routed_to = routed_to or "task-intake-router"
             return _ok_landed(
                 kb,
                 conn,
                 tid,
                 landed_status or "ready",
-                routed_to="task-orchestrator",
+                routed_to=routed_to,
                 note=(
-                    "worker handoff routed to Task Orchestrator"
+                    f"worker handoff routed to {routed_to}"
                     if landed_status != "triage"
-                    else "Task Orchestrator handoff needs a scoped decision; card left in triage"
+                    else "intake routing needs a scoped decision; card left in triage"
                 ),
             )
         ok = kb.block_task(conn, tid, reason=reason, kind=kind, expected_run_id=_worker_run_id(tid))

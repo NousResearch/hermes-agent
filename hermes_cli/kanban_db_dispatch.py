@@ -118,6 +118,7 @@ class DispatchResult:
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
     auto_reassigned_invalid: list[str] = field(default_factory=list)
+    routed_to_specialist: list[tuple[str, str]] = field(default_factory=list)
     auto_assigned_default: list[str] = field(default_factory=list)
     """Unassigned task ids that had ``kanban.default_assignee`` applied this
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
@@ -2581,8 +2582,17 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
-        from hermes_cli.kanban_worker_routing import recover_generated_assignee
+        from hermes_cli.kanban_worker_routing import (
+            recover_generated_assignee,
+            route_orchestrator_task,
+        )
         row_assignee = recover_generated_assignee(conn, row, default_assignee, dry_run=dry_run, result=result)
+        if row_assignee in {"task-orchestrator", "task-intake-router", "intake-router"}:
+            row_assignee = route_orchestrator_task(
+                conn, row, dry_run=dry_run, result=result,
+            )
+            if not row_assignee:
+                continue
         if not row_assignee:
             # Honour kanban.default_assignee so an unassigned task doesn't
             # park in 'ready' forever.

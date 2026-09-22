@@ -380,7 +380,7 @@ def test_block_happy_path(worker_env):
     conn = kbc.connect()
     try:
         task = kb.get_task(conn, worker_env)
-        assert (task.status, task.assignee) == ("ready", "task-orchestrator")
+        assert (task.status, task.assignee) == ("ready", "task-intake-router")
     finally:
         conn.close()
 
@@ -458,11 +458,11 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
 
 
 def test_block_dependency_without_open_parent_is_routed(worker_env):
-    """A worker dependency handoff returns to Task Orchestrator, never blocked."""
+    """A worker dependency handoff returns to intake routing, never blocked."""
     from tools import kanban_tools as kt
 
     d = json.loads(kt._handle_block({"reason": "upstream input is missing", "kind": "dependency"}))
-    assert (d["ok"], d["status"], d["routed_to"]) == (True, "ready", "task-orchestrator")
+    assert (d["ok"], d["status"], d["routed_to"]) == (True, "ready", "task-intake-router")
 
 
 def test_heartbeat_extends_claim_expires(worker_env):

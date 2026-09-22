@@ -181,3 +181,43 @@ def recover_generated_assignee(conn, row, default_assignee, *, dry_run, result):
             })
     result.auto_reassigned_invalid.append(row["id"])
     return default_assignee
+
+
+def route_orchestrator_task(conn, row, *, dry_run: bool, result) -> Optional[str]:
+    """Hand a routed task to its repair owner before any worker is spawned."""
+    if row["assignee"] not in {"task-orchestrator", "task-intake-router", "intake-router"}:
+        return row["assignee"]
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_repair_routing import repair_profile_for_task
+
+    profile = repair_profile_for_task(row["title"], row["body"])
+    if profile is None:
+        if not dry_run:
+            with kb.write_txn(conn):
+                changed = conn.execute(
+                    "UPDATE tasks SET status = 'triage', assignee = 'task-intake-router' "
+                    "WHERE id = ? AND status = 'ready' AND assignee IN "
+                    "('task-orchestrator', 'task-intake-router', 'intake-router')",
+                    (row["id"],),
+                ).rowcount
+                if changed:
+                    kb._append_event(conn, row["id"], "orchestrator_scope_required", {
+                        "reason": "no deterministic repair profile matched",
+                        "assignee": "task-intake-router",
+                    })
+        return None
+    if not dry_run:
+        with kb.write_txn(conn):
+            changed = conn.execute(
+                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                "last_failure_error = NULL WHERE id = ? AND status = 'ready' "
+                "AND assignee IN ('task-orchestrator', 'task-intake-router', 'intake-router')",
+                (profile, row["id"]),
+            ).rowcount
+            if changed:
+                kb._append_event(conn, row["id"], "assigned", {
+                    "from": row["assignee"], "assignee": profile,
+                    "source": "task_orchestrator_repair_routing",
+                })
+    result.routed_to_specialist.append((row["id"], profile))
+    return profile

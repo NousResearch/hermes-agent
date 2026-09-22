@@ -217,7 +217,7 @@ def test_watchdog_ignores_failure_loop_from_a_previous_task_run(
         assert kb.get_task(conn, current.id).status == "running"
 
 
-def test_watchdog_blocks_worker_and_creates_one_linked_repair(
+def test_watchdog_defers_worker_and_creates_one_linked_repair(
     kanban_home: Path, tmp_path: Path
 ) -> None:
     """Removing idempotent repair linkage would fan out duplicate repairs."""
@@ -247,9 +247,9 @@ def test_watchdog_blocks_worker_and_creates_one_linked_repair(
             terminate_fn=_verified_termination,
         )
 
-        assert first.blocked == [original.id]
-        assert second.blocked == []
-        assert kb.get_task(conn, original.id).status == "blocked"
+        assert first.deferred == [original.id]
+        assert second.deferred == []
+        assert kb.get_task(conn, original.id).status == "todo"
         repairs = conn.execute(
             "SELECT id, assignee, status FROM tasks "
             "WHERE created_by = 'worker-health-watchdog'"
@@ -395,7 +395,7 @@ def test_provider_stall_repair_borrows_project_workspace_for_route_diagnosis(
 def test_watchdog_waits_for_repair_then_restarts_original(
     kanban_home: Path, tmp_path: Path
 ) -> None:
-    """Restarting before a done repair receipt would reproduce the same loop."""
+    """The dispatcher owns promotion after a done repair receipt."""
     import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     config = WatchdogConfig(
         enabled=True,
@@ -420,7 +420,7 @@ def test_watchdog_waits_for_repair_then_restarts_original(
 
         waiting = run_watchdog_tick(conn, config=config, now=original.started_at + 2)
         assert waiting.restarted == []
-        assert kb.get_task(conn, original.id).status == "blocked"
+        assert kb.get_task(conn, original.id).status == "todo"
 
         repair = kb.claim_task(conn, repair_id)
         assert repair is not None
@@ -432,7 +432,7 @@ def test_watchdog_waits_for_repair_then_restarts_original(
         )
         resumed = run_watchdog_tick(conn, config=config, now=original.started_at + 3)
 
-        assert resumed.restarted == [original.id]
+        assert resumed.restarted == []
         assert kb.get_task(conn, original.id).status == "ready"
 
 
@@ -470,7 +470,6 @@ def test_watchdog_does_not_restart_a_newer_non_watchdog_block(
             expected_run_id=repair.current_run_id,
         )
 
-        assert kb.unblock_task(conn, original.id)
         retried = kb.claim_task(conn, original.id)
         assert retried is not None
         assert kb.block_task(
@@ -484,7 +483,7 @@ def test_watchdog_does_not_restart_a_newer_non_watchdog_block(
         result = run_watchdog_tick(conn, config=config, now=original.started_at + 2)
 
         assert result.restarted == []
-        assert result.needs_operator == [original.id]
+        assert result.needs_operator == []
         assert kb.get_task(conn, original.id).status == "blocked"
 
 
@@ -525,7 +524,7 @@ def test_watchdog_keeps_original_blocked_when_repair_fails(
         result = run_watchdog_tick(conn, config=config, now=original.started_at + 2)
 
         assert result.needs_operator == [original.id]
-        assert kb.get_task(conn, original.id).status == "blocked"
+        assert kb.get_task(conn, original.id).status == "todo"
 
 
 def test_watchdog_refuses_to_release_unterminated_worker(
@@ -599,9 +598,9 @@ def test_watchdog_stops_after_recovery_attempt_limit(
             terminate_fn=_verified_termination,
         )
 
-        assert result.blocked == [original.id]
+        assert result.deferred == [original.id]
         assert result.needs_operator == [original.id]
-        assert kb.get_task(conn, original.id).status == "blocked"
+        assert kb.get_task(conn, original.id).status == "todo"
         assert (
             conn.execute(
                 "SELECT COUNT(*) FROM tasks WHERE created_by = 'worker-health-watchdog'"

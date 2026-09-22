@@ -135,7 +135,8 @@ class _CatalogBackend:
         """Probe the entry's in-memory configuration with ephemeral credentials; save both only
         after the server answered. A failure writes nothing, so a failed reinstall keeps the
         previous configuration."""
-        from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
+        from agent.secret_scope import (
+            current_secret_scope, current_secret_scope_home, reset_secret_scope, set_secret_scope)
         from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
         from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
 
@@ -148,7 +149,11 @@ class _CatalogBackend:
         for key, value in env.items():
             if key not in secret_names and value:
                 cfg = _inline_non_secret_value(cfg, key, value)
-        token = set_secret_scope({**dict(current_secret_scope() or {}), **env})
+        # The merged scope keeps the bound scope's home stamp: dropping it would
+        # reopen the env fallthrough under a routed profile with multiplex off.
+        token = set_secret_scope(
+            {**dict(current_secret_scope() or {}), **env},
+            profile_home=current_secret_scope_home())
         try:
             tools = [str(tool[0]) for tool in (_probe_single_server(name, cfg) or [])]
         finally:

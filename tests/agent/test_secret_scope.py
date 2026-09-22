@@ -92,6 +92,118 @@ class TestScopedSingleProfile:
             ss.reset_secret_scope(token)
 
 
+class TestRoutedForeignHomeScope:
+    """Multiplex OFF but the bound scope serves a DIFFERENT home (routed profile:
+    dashboard/desktop backend, per-profile cron ticker). os.environ is the LAUNCH
+    profile's env there, so a scoped miss must fail closed exactly like multiplex —
+    the .env-overlay fallthrough is only safe when the scope's home IS ours."""
+
+    def test_scoped_miss_under_foreign_home_returns_default(self, monkeypatch, tmp_path):
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        token = ss.set_secret_scope({})
+        try:
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("OPENAI_API_KEY", "d") == "d"
+        finally:
+            ss.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
+
+    def test_scoped_miss_under_own_home_keeps_env_overlay(self, monkeypatch, tmp_path):
+        """The deliberate single-profile overlay: a scope bound for the process's
+        own home still falls through to os.environ (systemd / op run credentials)."""
+        from hermes_constants import get_process_hermes_home, set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
+        home_token = set_hermes_home_override(str(get_process_hermes_home()))
+        token = ss.set_secret_scope({})
+        try:
+            assert ss.serves_routed_profile() is False
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-own-env"
+        finally:
+            ss.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
+
+    def test_scope_hit_under_foreign_home_still_wins(self, monkeypatch, tmp_path):
+        """A scoped hit is unaffected: only the miss branch changes."""
+        from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        home_token = set_hermes_home_override(str(tmp_path / "other-profile"))
+        token = ss.set_secret_scope({"OPENAI_API_KEY": "sk-served-profile"})
+        try:
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-served-profile"
+        finally:
+            ss.reset_secret_scope(token)
+            reset_hermes_home_override(home_token)
+
+    def test_stamped_foreign_scope_miss_fails_closed_without_override(self, monkeypatch, tmp_path):
+        """The kanban/MCP shape: a foreign-home scope bound WITHOUT the HERMES_HOME
+        override (deliberate — those paths need the dispatcher's policy reads).
+        The profile_home stamp makes serves_routed_profile see it anyway."""
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+        token = ss.set_secret_scope({}, profile_home=str(tmp_path / "other-profile"))
+        try:
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("OPENAI_API_KEY", "d") == "d"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_stamped_own_home_scope_keeps_env_overlay(self, monkeypatch):
+        """A scope stamped with the process's own home is not routed: env
+        fallthrough stays, matching launch_secret_scope's documented precedence."""
+        from hermes_constants import get_process_hermes_home
+
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-own-env")
+        token = ss.set_secret_scope({}, profile_home=str(get_process_hermes_home()))
+        try:
+            assert ss.serves_routed_profile() is False
+            assert ss.get_secret("OPENAI_API_KEY") == "sk-own-env"
+        finally:
+            ss.reset_secret_scope(token)
+
+    def test_profile_runtime_scope_binds_foreign_home_e2e(self, monkeypatch, tmp_path):
+        """End to end through the real binder: ``_profile_runtime_scope`` (the same
+        guard the desktop backend and routed turns use) installs the home override +
+        secret scope together. Inside it, a miss must not borrow launch env, while
+        the foreign profile's own .env resolves and the adapter-facing reader agrees."""
+        from gateway.platforms._shared import get_scoped_secret
+        from gateway.run import _profile_runtime_scope
+
+        foreign = tmp_path / "profiles" / "team_b"
+        foreign.mkdir(parents=True)
+        (foreign / ".env").write_text("TEAM_B_KEY=from-b\n", encoding="utf-8")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-launch-profile")
+
+        with _profile_runtime_scope(foreign, hydrate_secrets=False):
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("TEAM_B_KEY") == "from-b"
+            # The reader adapters actually call takes the same fail-closed path.
+            assert get_scoped_secret("OPENAI_API_KEY") is None
+
+    def test_worker_profile_scope_bind_home_false_e2e(self, monkeypatch, tmp_path):
+        """The kanban spawn-env build binds the assignee's secret scope with
+        ``bind_home=False`` — no home override, because the passthrough POLICY
+        belongs to the dispatcher. The profile_home stamp must still make scoped
+        misses fail closed, or the dispatcher's env leaks into B's worker env."""
+        from hermes_cli.kanban_db_dispatch import _worker_profile_scope
+
+        foreign = tmp_path / "profiles" / "assignee"
+        foreign.mkdir(parents=True)
+        (foreign / ".env").write_text("ASSIGNEE_KEY=from-assignee\n", encoding="utf-8")
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-dispatcher")
+
+        with _worker_profile_scope(str(foreign), bind_home=False):
+            assert ss.serves_routed_profile() is True
+            assert ss.get_secret("OPENAI_API_KEY") is None
+            assert ss.get_secret("ASSIGNEE_KEY") == "from-assignee"
+
+
 class TestScopeIsolation:
     """Two scopes never see each other's secrets."""
 

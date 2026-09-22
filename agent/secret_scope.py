@@ -18,7 +18,7 @@ import threading
 from collections import OrderedDict
 from contextvars import ContextVar, Token
 from pathlib import Path
-from typing import Dict, Mapping, Optional, Tuple
+from typing import Dict, Mapping, NamedTuple, Optional, Tuple
 
 from utils import file_signature
 
@@ -38,19 +38,34 @@ def is_multiplex_active() -> bool:
     return _MULTIPLEX_ACTIVE
 
 
+class _BoundScope(NamedTuple):
+    """An installed secret scope plus the home it was built for, when the binder
+    declared one — the provenance ``serves_routed_profile`` needs when the binding
+    deliberately skips the HERMES_HOME override (kanban spawn-env builds, MCP
+    owner scopes)."""
+
+    mapping: Mapping[str, str]
+    profile_home: Optional[str]
+
+
 def serves_routed_profile() -> bool:
     """True when the current task runs for a profile other than the process's own: always under
     multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
-    per-profile cron ticker). The MCP registry scope and the check_fn cache key both follow this
-    predicate so a served profile's view never aliases the launch profile's (#111151)."""
+    per-profile cron ticker) or a secret scope stamped with a foreign home is bound. The MCP
+    registry scope and the check_fn cache key both follow this predicate so a served profile's
+    view never aliases the launch profile's (#111151)."""
     if is_multiplex_active():
         return True
     from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key
+    own = hermes_home_key(get_process_hermes_home())
+    bound = _SECRET_SCOPE.get()
+    if bound is not None and bound.profile_home and hermes_home_key(bound.profile_home) != own:
+        return True
     override = get_hermes_home_override()
-    return override is not None and hermes_home_key(override) != hermes_home_key(get_process_hermes_home())
+    return override is not None and hermes_home_key(override) != own
 
 
-_SECRET_SCOPE: ContextVar[Optional[Mapping[str, str]]] = ContextVar("_SECRET_SCOPE", default=None)
+_SECRET_SCOPE: ContextVar[Optional[_BoundScope]] = ContextVar("_SECRET_SCOPE", default=None)
 
 
 class UnscopedSecretError(RuntimeError):
@@ -81,9 +96,15 @@ class UnscopedSecretError(RuntimeError):
             self.add_note(developer_detail)
 
 
-def set_secret_scope(secrets: Optional[Mapping[str, str]]) -> Token:
-    """Install the active profile's secret mapping; ``None`` clears. Returns a reset token."""
-    return _SECRET_SCOPE.set(secrets)
+def set_secret_scope(secrets: Optional[Mapping[str, str]], *, profile_home: Optional[str] = None) -> Token:
+    """Install the active profile's secret mapping; ``None`` clears. Returns a reset token.
+
+    ``profile_home`` stamps the home the mapping was built for so
+    ``serves_routed_profile`` detects a foreign-home scope even when the binder
+    deliberately skips the HERMES_HOME override."""
+    if secrets is None:
+        return _SECRET_SCOPE.set(None)
+    return _SECRET_SCOPE.set(_BoundScope(secrets, str(profile_home) if profile_home else None))
 
 
 def reset_secret_scope(token: Token) -> None:
@@ -92,7 +113,14 @@ def reset_secret_scope(token: Token) -> None:
 
 def current_secret_scope() -> Optional[Mapping[str, str]]:
     """The active secret mapping, or None when no scope is installed."""
-    return _SECRET_SCOPE.get()
+    bound = _SECRET_SCOPE.get()
+    return bound.mapping if bound is not None else None
+
+
+def current_secret_scope_home() -> Optional[str]:
+    """The home the active scope was stamped with, or None when unstamped/unbound."""
+    bound = _SECRET_SCOPE.get()
+    return bound.profile_home if bound is not None else None
 
 
 # Genuinely-global env vars: process/deployment settings, NOT profile secrets.
@@ -156,12 +184,12 @@ def get_secret(name: str, default: Optional[str] = None) -> Optional[str]:
     """
     if _is_global_env(name):
         return _environ_or(name, default)
-    scope = _SECRET_SCOPE.get()
-    if scope is not None:
-        val = scope.get(name)
+    bound = _SECRET_SCOPE.get()
+    if bound is not None:
+        val = bound.mapping.get(name)
         if val is not None:
             return val
-        return default if _MULTIPLEX_ACTIVE else _environ_or(name, default)
+        return default if (_MULTIPLEX_ACTIVE or serves_routed_profile()) else _environ_or(name, default)
     if _MULTIPLEX_ACTIVE:
         raise UnscopedSecretError(
             name,

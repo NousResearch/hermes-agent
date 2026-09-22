@@ -2601,7 +2601,8 @@ def _worker_profile_scope(hermes_home: str, *, bind_home: bool = True):
     is_launch_home = str(home.resolve()) == str(Path(get_process_hermes_home()).resolve())
     home_token = set_hermes_home_override(str(home)) if bind_home else None
     secret_token = set_secret_scope(
-        launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home))
+        launch_secret_scope(home) if is_launch_home else build_profile_secret_scope(home),
+        profile_home=str(home))
     terminal_token = install_profile_terminal_scope(
         home, env_overlay=launch_terminal_env() if is_launch_home else None) if bind_home else None
     try:

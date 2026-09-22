@@ -131,7 +131,11 @@ def discord_request(method: str, route: str, token: str, payload: dict[str, Any]
     body = json.dumps(payload).encode("utf-8") if payload is not None else None
     request = Request(
         f"{DISCORD_API}{route}", body, method=method,
-        headers={"Authorization": f"Bot {token}", "Content-Type": "application/json"},
+        headers={
+            "Authorization": f"Bot {token}",
+            "Content-Type": "application/json",
+            "User-Agent": "Hermes-Agent/pipeline-projection",
+        },
     )
     try:
         with opener(request, timeout=20) as response:

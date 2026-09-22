@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import sys
 from pathlib import Path
 
 import pytest
@@ -13,6 +14,7 @@ SCRIPT = Path(__file__).parents[2] / "scripts" / "pipeline_projection.py"
 SPEC = importlib.util.spec_from_file_location("pipeline_projection", SCRIPT)
 assert SPEC and SPEC.loader
 pipeline = importlib.util.module_from_spec(SPEC)
+sys.modules[SPEC.name] = pipeline
 SPEC.loader.exec_module(pipeline)
 
 
@@ -53,6 +55,7 @@ def test_publish_creates_once_then_edits_same_canonical_message(tmp_path):
 
     assert [request.get_method() for request in requests] == ["POST", "PATCH"]
     assert requests[1].full_url.endswith("/channels/123/messages/9001")
+    assert requests[0].headers["User-agent"] == "Hermes-Agent/pipeline-projection"
     assert json.loads(ledger.read_text()) == {"epic:444": "9001"}
 
 

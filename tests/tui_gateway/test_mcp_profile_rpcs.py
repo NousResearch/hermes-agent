@@ -14,6 +14,7 @@ from __future__ import annotations
 import os
 from pathlib import Path
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import pytest
 
@@ -109,6 +110,27 @@ def test_list_reflects_the_scoped_profile(hermes_root):
     work_server = _result(_call("mcp.servers.list", {"profile": "work"}))["servers"][0]
     assert work_server["transport"] == "stdio"
     assert work_server["command"] == "svc-a-bin"
+
+
+def test_profiles_describe_reports_mcp_enabled_flags(hermes_root):
+    """The profile summary uses the same ``enabled`` semantics as MCP loading."""
+    config = {"mcp_servers": {
+        "disabled-server": {"command": "disabled-bin", "enabled": False},
+        "enabled-server": {"url": "https://mcp.example.com/enabled", "enabled": True},
+        "default-server": {"command": "default-bin"},
+        "malformed-server": "ignored",
+    }}
+    with patch("hermes_cli.config.load_config", return_value=config):
+        payload = _result(_call("profiles.describe", {"name": "work"}))
+
+    servers = {server["name"]: server for server in payload["mcp_servers"]}
+    assert {name: server["enabled"] for name, server in servers.items()} == {
+        "default-server": True,
+        "disabled-server": False,
+        "enabled-server": True,
+    }
+    assert servers["enabled-server"]["transport"] == "http"
+    assert servers["default-server"]["transport"] == "stdio"
 
 
 def test_status_is_profile_scoped_and_credential_safe(hermes_root):

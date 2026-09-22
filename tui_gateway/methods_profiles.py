@@ -457,6 +457,7 @@ def _(rid, params: dict) -> dict:
         from agent.skill_utils import iter_skill_index_files
         from hermes_cli.config import load_config
         from hermes_cli.skills_config import get_disabled_skills
+        from hermes_cli.tools_config import _parse_enabled_flag
         cfg = load_config() or {}
         disabled = {s.lower() for s in get_disabled_skills(cfg)}
         skills_root = profile_dir / "skills"
@@ -468,7 +469,7 @@ def _(rid, params: dict) -> dict:
         soul = _try(lambda: soul_path.read_text(encoding="utf-8", errors="replace") if soul_path.is_file() else "", "")
         mcp_cfg = cfg.get("mcp_servers")
         mcp_out = _try(lambda: [
-            {"name": str(srv_name), "enabled": not is_truthy_value(entry.get("disabled", False)),
+            {"name": str(srv_name), "enabled": _parse_enabled_flag(entry.get("enabled", True), default=True),
              "transport": str(entry.get("transport") or "http") if entry.get("url") else "stdio"}
             for srv_name in sorted(mcp_cfg.keys()) for entry in (mcp_cfg[srv_name],)
             if isinstance(entry, dict)

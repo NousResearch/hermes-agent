@@ -26,7 +26,7 @@ import {
   type ComposerInsertMode,
   type ComposerTarget,
   requestComposerGetDraft,
-  requestComposerInsert,
+  requestComposerInsertAcked,
   requestComposerSetDraft,
   requestComposerSubmit
 } from '@/app/chat/composer/focus'
@@ -1649,16 +1649,18 @@ export const host = {
 
     /** Append text to a composer's draft through the app's own insert modes
      *  ('block' = paragraph at end, 'inline' = same line, 'prefix' = start —
-     *  the slash-command seat). Fire-and-forget like the internal bus; text
-     *  is trimmed by the app, empty is a no-op. */
+     *  the slash-command seat). Acknowledged like `setDraft`: resolves true
+     *  when a mounted surface claimed and applied the text, false when the
+     *  text trims to nothing or no surface answers for the address within the
+     *  bus settle window — never a silent no-op. */
     insertText: (
       sessionId: null | string,
       text: string,
       opts?: { mode?: ComposerInsertMode }
-    ): void => {
+    ): Promise<boolean> => {
       const { target } = resolveComposerAddress(sessionId === null ? undefined : sessionId)
 
-      requestComposerInsert(text, { mode: opts?.mode ?? 'block', target })
+      return requestComposerInsertAcked(text, { mode: opts?.mode ?? 'block', target })
     },
 
     /** Send `text` as if the user typed it + pressed Enter, and return

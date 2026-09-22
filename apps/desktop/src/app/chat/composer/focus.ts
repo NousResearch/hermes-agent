@@ -32,11 +32,21 @@ interface InsertDetail {
   mode: ComposerInsertMode
   target: ComposerTarget
   text: string
+  /** Present when the caller wants an acknowledgement (plugin SDK
+   *  `host.composer.insertText`); the claiming subscriber echoes it back on
+   *  {@link INSERT_REPLY_EVENT}. Internal fire-and-forget inserts omit it. */
+  token?: number
 }
 
 interface InsertRefsDetail {
   refs: InlineRefInput[]
   target: ComposerTarget
+}
+
+/** Reply the claiming surface sends for a tokened insert. */
+interface InsertReplyDetail {
+  ok: boolean
+  token: number
 }
 
 interface AttachImagesDetail {
@@ -46,6 +56,7 @@ interface AttachImagesDetail {
 
 const FOCUS_EVENT = 'hermes:composer-focus'
 const INSERT_EVENT = 'hermes:composer-insert'
+const INSERT_REPLY_EVENT = 'hermes:composer-insert-reply'
 const ATTACH_IMAGES_EVENT = 'hermes:composer-attach-images'
 const INSERT_REFS_EVENT = 'hermes:composer-insert-refs'
 const SUBMIT_EVENT = 'hermes:composer-submit'
@@ -282,6 +293,73 @@ export const requestComposerInsert = (
   dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolve(target), text: trimmed })
 }
 
+/** Acked insert for the plugin SDK (`host.composer.insertText`).
+ *
+ *  Same trim + deferred dispatch as {@link requestComposerInsert}, plus a
+ *  token the claiming surface echoes on {@link INSERT_REPLY_EVENT}. Resolves
+ *  false when the text trims to nothing, when no mounted surface claims the
+ *  address, or when none answers within the settle window — so a plugin gets
+ *  the same fail-closed success signal as `setDraft`/`submit` instead of a
+ *  silent no-op. Internal callers keep the fire-and-forget form above. */
+export const requestComposerInsertAcked = (
+  text: string,
+  { mode = 'block', target = 'active' }: { mode?: ComposerInsertMode; target?: ComposerTarget | 'active' } = {}
+): Promise<boolean> => {
+  const trimmed = text.trim()
+  const pending = insertReplies
+
+  if (!trimmed || !pending) {
+    return Promise.resolve(false)
+  }
+
+  const token = ++insertToken
+  const resolvedTarget = resolve(target)
+
+  return new Promise<boolean>(resolve => {
+    pending.set(token, resolve)
+
+    dispatch<InsertDetail>(INSERT_EVENT, { mode, target: resolvedTarget, text: trimmed, token })
+
+    // No claimant (unmounted address, input disabled, mid-teardown) must not
+    // strand the promise: settle false and drop the slot.
+    window.setTimeout(() => {
+      if (pending.get(token) === resolve) {
+        pending.delete(token)
+        resolve(false)
+      }
+    }, INSERT_REPLY_TIMEOUT_MS)
+  })
+}
+
+/** Subscriber-side ack for {@link requestComposerInsertAcked}: the surface that
+ *  appended the text reports success so the plugin's promise settles. A token-less
+ *  insert (the internal bus) is a no-op here. */
+export const ackComposerInsert = (token: number | undefined, ok: boolean) => {
+  if (token === undefined || typeof window === 'undefined') {
+    return
+  }
+
+  window.dispatchEvent(new CustomEvent<InsertReplyDetail>(INSERT_REPLY_EVENT, { detail: { ok, token } }))
+}
+
+const INSERT_REPLY_TIMEOUT_MS = 50
+
+let insertToken = 0
+
+const insertReplies = typeof window === 'undefined' ? null : new Map<number, (ok: boolean) => void>()
+
+if (typeof window !== 'undefined') {
+  window.addEventListener(INSERT_REPLY_EVENT, event => {
+    const reply = (event as CustomEvent<InsertReplyDetail>).detail
+    const resolve = reply && insertReplies?.get(reply.token)
+
+    if (resolve) {
+      insertReplies?.delete(reply.token)
+      resolve(reply.ok === true)
+    }
+  })
+}
+
 export const onComposerFocusRequest = (handler: (detail: FocusDetail) => void) =>
   subscribe<FocusDetail>(FOCUS_EVENT, handler)
 
@@ -454,10 +532,10 @@ export const requestComposerSetDraft = (
 /** Subscribe one mounted composer to draft read/write requests. `getIds` is
  *  consulted per request (the surface's session identity changes as the user
  *  navigates); `isActive` reports whether the focus bus currently routes to
- *  this composer. Requests this surface owns — it is the active target, or
- *  they name one of its ids — are answered; the rest are ignored so N mounted
- *  composers coexist on the bus. `read` answers with the live text; `write`
- *  replaces the draft and reports success. */
+ *  this composer. An `active` request is answered only by the surface the bus
+ *  routes to; an id-addressed request only by a surface owning one of its ids
+ *  — the rest stay ignored so N mounted composers coexist on the bus. `read`
+ *  answers with the live text; `write` replaces the draft and reports success. */
 export const onComposerDraftRequests = (
   address: { getIds: () => string[]; isActive: () => boolean },
   handlers: { read: () => null | string; write: (text: string) => boolean }
@@ -468,10 +546,26 @@ export const onComposerDraftRequests = (
 
   const listener = (event: Event) => {
     const e = event as CustomEvent<DraftRequestDetail>
-    const ids = address.getIds()
 
-    if (!e.detail || (!e.detail.active && !e.detail.ids?.some(id => ids.includes(id)))) {
+    if (!e.detail) {
       return
+    }
+
+    // `active` requests belong to exactly ONE surface — the composer the focus
+    // bus routes to. Every mounted surface claiming them (the previous
+    // behavior) let listener registration order decide instead: with keep-alive
+    // tabs in the stack a buried composer answered the read, and a `set`
+    // painted onto every mounted draft.
+    if (e.detail.active) {
+      if (!address.isActive()) {
+        return
+      }
+    } else {
+      const ids = address.getIds()
+
+      if (!e.detail.ids?.some(id => ids.includes(id))) {
+        return
+      }
     }
 
     if (e.type === GET_DRAFT_EVENT) {

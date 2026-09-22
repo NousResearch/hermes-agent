@@ -427,8 +427,10 @@ session id yet.
 import { host } from '@hermes/plugin-sdk'
 
 // Append to the active composer (modes: 'block' | 'inline' | 'prefix';
-// 'prefix' seats a slash command at the start).
-host.composer.insertText(null, 'draft note', { mode: 'inline' })
+// 'prefix' seats a slash command at the start). Acknowledged like setDraft:
+// true when a mounted surface applied the text, false when the text is blank
+// or no live surface answers for the address.
+const inserted = await host.composer.insertText(null, 'draft note', { mode: 'inline' })
 
 // Replace a session's whole draft — '@'-ref and '/command' tokens hydrate
 // into chips exactly like an official paste. False when no mounted surface

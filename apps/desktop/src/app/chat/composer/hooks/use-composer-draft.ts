@@ -35,6 +35,7 @@ import {
   type QueueEditState
 } from '../composer-utils'
 import {
+  ackComposerInsert,
   type ComposerInsertMode,
   focusComposerInput,
   getActiveComposer,
@@ -183,11 +184,11 @@ export function useComposerDraft({
   )
 
   const appendExternalText = useCallback(
-    (text: string, mode: ComposerInsertMode) => {
+    (text: string, mode: ComposerInsertMode): boolean => {
       const value = text.trim()
 
       if (!value) {
-        return
+        return false
       }
 
       // 'prefix' puts the value at the START of the draft — slash commands
@@ -197,13 +198,15 @@ export function useComposerDraft({
 
         paintDraft(`${value} ${rest}`.trimEnd())
 
-        return
+        return true
       }
 
       const base = mode === 'inline' ? draftRef.current.trimEnd() : draftRef.current
       const sep = mode === 'inline' ? (base ? ' ' : '') : base && !base.endsWith('\n') ? '\n\n' : ''
 
       paintDraft(`${base}${sep}${value}`)
+
+      return true
     },
     [paintDraft]
   )
@@ -262,9 +265,11 @@ export function useComposerDraft({
       setFocusRequestId(id => id + 1)
     })
 
-    const offInsert = onComposerInsertRequest(({ mode, target: requested, text }) => {
+    const offInsert = onComposerInsertRequest(({ mode, target: requested, text, token }) => {
       if (requested === target) {
-        appendExternalText(text, mode)
+        // A tokened insert came from the plugin SDK — echo whether the text
+        // actually landed, so its promise never settles on a silent no-op.
+        ackComposerInsert(token, appendExternalText(text, mode))
       }
     })
 

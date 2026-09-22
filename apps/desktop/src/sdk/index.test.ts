@@ -1,5 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { ackComposerInsert } from '@/app/chat/composer/focus'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { host } from '@/sdk'
 import { setActiveSessionId, setAwaitingResponse, setBusy } from '@/store/session'
@@ -265,27 +266,40 @@ describe('host workspace scope', () => {
 })
 
 describe('host.composer draft facade', () => {
-  const flush = () => new Promise(resolve => setTimeout(resolve, 0))
-
   it('routes insertText by address: tile for a session, resolved-active for null', async () => {
     const seen: { mode: string; target: string }[] = []
 
     const off = (event: Event) => {
-      const { mode, target } = (event as CustomEvent).detail
+      const { mode, target, token } = (event as CustomEvent).detail
 
       seen.push({ mode, target })
+
+      // A mounted surface acknowledges the insert like the real composer does.
+      ackComposerInsert(token, true)
     }
 
     window.addEventListener('hermes:composer-insert', off)
-    host.composer.insertText('sess-1', ' snippet ', { mode: 'inline' })
-    host.composer.insertText(null, 'to active')
-    await flush()
+
+    const [tileOk, activeOk] = await Promise.all([
+      host.composer.insertText('sess-1', ' snippet ', { mode: 'inline' }),
+      host.composer.insertText(null, 'to active')
+    ])
+
     window.removeEventListener('hermes:composer-insert', off)
 
+    expect(tileOk).toBe(true)
+    expect(activeOk).toBe(true)
     expect(seen).toEqual([
       { mode: 'inline', target: 'tile:sess-1' },
       { mode: 'block', target: 'main' }
     ])
+  })
+
+  it('reports insertText failure on blank text or when no surface answers', async () => {
+    await expect(host.composer.insertText('sess-1', '   ')).resolves.toBe(false)
+    // Nothing listens on the insert bus here → the ack settles false, never
+    // a silent success the plugin would act on.
+    await expect(host.composer.insertText(null, 'to nobody')).resolves.toBe(false)
   })
 
   it('reads the live draft through a bus reply', async () => {

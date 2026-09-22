@@ -243,7 +243,10 @@ def _real_progress_runner(monkeypatch, tmp_path):
         progress_queue=queue.Queue(), _run_still_current=lambda: True,
         _progress_metadata={"thread_id": "$thread"}, _progress_reply_to="$user",
     )
-    runner = TurnRunner(SimpleNamespace(_adapter_for_source=lambda source: adapter), ctx)
+    runner = TurnRunner(SimpleNamespace(
+        _adapter_for_source=lambda source: adapter,
+        _delivery_adapter_for=lambda source: adapter,
+    ), ctx)
     return runner, adapter, events, typing
 
 

@@ -381,6 +381,14 @@ def _build_children(
     }
     children = []
     for i, t in enumerate(task_list):
+        # Sidecar-Adoption STEP 3b: a task pre-routed by annotate_sidecar_routes() never
+        # gets a real child agent -- that's the entire point (skip the subagent spin-up
+        # cost). ``child=None`` is a valid sentinel: _Batch.run_child checks
+        # delegate_tool_sidecar_route.routed_entry() BEFORE touching ``child``.
+        from tools.delegate_tool_sidecar_route import routed_entry
+        if routed_entry(t) is not None:
+            children.append((i, t, None))
+            continue
         _task_schema = task_schemas[i] if i < len(task_schemas) else None
         _child_context = t.get("context")
         if _task_schema is not None:
@@ -500,6 +508,11 @@ def delegate_task(
     max_children = _get_max_concurrent_children()
     task_list, err = _normalize_task_list(goal, context, tasks, output_schema, top_role, max_children)
     if not err:
+        # Sidecar-Adoption STEP 3b: opt-in pre-build interception, right after normalization
+        # and before schema/image coercion and _build_children (per t_9dbf5547's spec).
+        # No-op (same list object back) when kanban.sidecar_routing_enabled is off.
+        from tools.delegate_tool_sidecar_route import annotate_sidecar_routes
+        task_list, _ = annotate_sidecar_routes(task_list)
         task_schemas, err = _coerce_task_schemas(task_list, output_schema)
     if not err:
         task_images, err = _coerce_task_images(task_list, images)

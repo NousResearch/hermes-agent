@@ -57,6 +57,10 @@ class _Batch:
         }
 
     def run_child(self, i: int, task: Dict[str, Any], child: Any) -> Dict[str, Any]:
+        from tools.delegate_tool_sidecar_route import routed_entry
+        _routed = routed_entry(task)
+        if _routed is not None:
+            return _routed
         from tools.delegate_tool import _run_single_child
         return _run_single_child(task_index=i, goal=task["goal"], child=child, parent_agent=self.parent_agent, **self.owner_kwargs())
 

@@ -2276,6 +2276,31 @@ def _dispatch_lane_task(
                 result.skipped_gate_precheck.append((task_id, precheck["reason"]))
                 return False
 
+    # Sidecar-Adoption STEP 3a: opt-in pre-spawn interception. Same shape as the gate
+    # precheck above -- pure classify, cheap in-process dispatch, fall through to a normal
+    # spawn on ineligibility/failure. kanban.sidecar_routing_enabled in config.yaml, default
+    # False. On a real sidecar "ok" result, write it via the existing complete_task path and
+    # skip _call_spawn_fn entirely (never Popen a full worker for this task).
+    if _sidecar_route.sidecar_routing_enabled():
+        task_for_sidecar = _kb.get_task(conn, task_id)
+        if task_for_sidecar is not None:
+            sidecar_result = _sidecar_route.try_sidecar_route(task_for_sidecar)
+            if sidecar_result is not None:
+                if not dry_run:
+                    with _kb.write_txn(conn):
+                        _kb._append_event(
+                            conn, task_id, "sidecar_routed",
+                            {"operation": sidecar_result.get("operation")},
+                        )
+                    _kb.complete_task(
+                        conn, task_id,
+                        result=json.dumps(sidecar_result.get("payload")),
+                        summary=f"Auto-routed to sidecar_service operation {sidecar_result.get('operation')!r}.",
+                        metadata={"sidecar_result": sidecar_result},
+                    )
+                result.spawned.append((task_id, assignee, ""))
+                return True
+
     # Rule 4 (no-infinite-retry): once consecutive_failures hits
     # RETRY_CAP_ESCALATION_THRESHOLD, escalate to a PO via decision-hud
     # instead of letting the ordinary breaker's retry budget keep respawning
@@ -3293,3 +3318,4 @@ from hermes_cli import kanban_db as _kb  # noqa: E402
 from hermes_cli import kanban_db_connect as _kbc  # noqa: E402
 from hermes_cli import kanban_db_workspace as _kbw  # noqa: E402
 from hermes_cli import kanban_gate_precheck as _gate_precheck  # noqa: E402
+from hermes_cli import kanban_sidecar_route as _sidecar_route  # noqa: E402

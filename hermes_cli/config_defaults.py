@@ -1934,6 +1934,10 @@ DEFAULT_CONFIG = {
         # unproven heuristic with a materially different risk profile than other
         # dispatch guards, so it stays fully opt-in until an operator turns it on.
         "gate_precheck_enabled": False,
+        # Sidecar-Adoption STEP 3a: opt-in dispatch-time sidecar auto-routing
+        # (hermes_cli/kanban_sidecar_route.py). False (default) = always spawn normally;
+        # an operator must explicitly enable this, same as gate_precheck_enabled above.
+        "sidecar_routing_enabled": False,
     },
     # Bot Mode cross-connection relay (tools/bot_relay.py): envelopes queued by message_agent for
     # agents on other connections wait in an on-disk outbox until the Desktop drains them.

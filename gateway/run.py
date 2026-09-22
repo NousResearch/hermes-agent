@@ -5140,11 +5140,23 @@ async def _start_gateway_replace_existing_instance(existing_pid: int, replace: b
     # Never signal a process not provably ours (a poisoned PID record → cross-profile restart loop).
     if _replace_target_belongs_to_other_profile(existing_pid):
         from gateway.status import _get_process_hermes_home
+        refusal_home = _get_process_hermes_home()
         logger.error(
             "Refusing --replace: PID %d cannot be proven to belong "
             "to this profile's gateway (HERMES_HOME %s). Remove the "
             "stale PID record or stop the owning profile explicitly.",
-            existing_pid, _get_process_hermes_home())
+            existing_pid, refusal_home)
+        # A clean sys.exit(1) with the explanation only in errors.log reads as a crash under a
+        # service supervisor (journalctl shows the banner, then status=1/FAILURE). The refusal and
+        # its remedy belong on stderr too, so the unit log can be diagnosed without the file.
+        print(
+            f"\n❌ Refusing --replace: PID {existing_pid} cannot be proven to belong to this "
+            f"profile's gateway (HERMES_HOME {refusal_home}).\n"
+            f"   This is a policy refusal, not a crash — but under Restart=always it respawns "
+            f"forever.\n"
+            f"   Remove the stale PID record, stop the owning profile explicitly, or fold the\n"
+            f"   fleet onto one gateway:  hermes gateway migrate --multiplex\n",
+            file=sys.stderr)
         return False
     existing_start_time = get_process_start_time(existing_pid)
     logger.info("Replacing existing gateway instance (PID %d) with --replace.", existing_pid)

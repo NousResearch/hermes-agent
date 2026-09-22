@@ -499,10 +499,11 @@ def _reconcile_and_provision(*, timeout_seconds: float, carries_inference: bool 
     """The lifecycle body, run under profile lock THEN shared lock (the documented order).
 
     1. The shared store is the identity of record for this Hermes root. If it holds an identity
-       that differs from the profile's, the profile adopts it (a stale guest never outlives a
-       sibling profile's sign-in, and never overwrites it). An adopted free-tier identity claims
-       ``active_provider`` under the same rule as a mint; an adopted ACCOUNT always does (the user
-       signed in somewhere on this machine).
+       that differs from the profile's, the profile adopts it — except a shared free-tier guest
+       never replaces a profile account (signed-in or quarantined ``relogin_required``); the
+       profile's sign-in heals the shared store instead. A stale profile guest still adopts a
+       sibling's account. An adopted free-tier identity claims ``active_provider`` under the same
+       rule as a mint; an adopted ACCOUNT always does (the user signed in somewhere on this machine).
     2. Otherwise the profile's own identity stands.
     3. Nothing anywhere: mint, persisting the credential before exchanging it.
     """
@@ -518,6 +519,11 @@ def _reconcile_and_provision(*, timeout_seconds: float, carries_inference: bool 
         with _nous_shared_store_lock(timeout_seconds=max(timeout_seconds, 5.0)):
             shared = _read_shared_nous_state()
             if shared and _shared_identity_key(shared) != _shared_identity_key(profile_state):
+                if (is_guest_state(shared) and profile_state
+                        and not is_guest_state(profile_state)):
+                    _write_shared_nous_state(profile_state)
+                    logger.debug("Shared Nous store healed from profile account (guest not adopted)")
+                    return profile_state
                 state = dict(shared)
                 _store_provider_state(
                     auth_store, "nous", state,

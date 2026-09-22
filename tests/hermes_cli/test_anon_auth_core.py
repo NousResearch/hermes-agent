@@ -385,6 +385,47 @@ class TestIdentityOfRecordIsTheSharedStore:
         assert _load_auth_store()["providers"]["nous"]["refresh_token"] == "rt-sibling"
         assert _shared_store(tmp_path)["refresh_token"] == "rt-sibling", "the profile must never overwrite the shared account"
 
+    def test_shared_guest_never_replaces_a_profile_account(self, portal, tmp_path):
+        from hermes_cli.auth_nous import _write_shared_nous_state, persist_nous_credentials
+        sibling_guest = anon_auth.ensure_portal_identity(explicit=True)
+        assert anon_auth.is_guest_state(sibling_guest)
+        _write_shared_nous_state(sibling_guest)
+        persist_nous_credentials({"access_token": _jwt(client_id="hermes-cli", account_tier="free"),
+                                  "refresh_token": "rt-account", "expires_at": "2030-01-01T00:00:00+00:00",
+                                  "auth_method": "oauth_device_code"})
+        before_minted = portal.minted
+        state = anon_auth.ensure_portal_identity(explicit=True)
+        assert not anon_auth.is_guest_state(state)
+        assert state["refresh_token"] == "rt-account"
+        assert _load_auth_store()["providers"]["nous"]["refresh_token"] == "rt-account"
+        assert _shared_store(tmp_path)["refresh_token"] == "rt-account"
+        assert portal.minted == before_minted, "must not mint over a profile account"
+
+    def test_shared_guest_never_replaces_a_quarantined_account(self, portal, tmp_path):
+        from hermes_cli.auth import _auth_store_lock, _save_auth_store
+        from hermes_cli.auth_nous import _write_shared_nous_state
+        guest = anon_auth.ensure_portal_identity(explicit=True)
+        _write_shared_nous_state(guest)
+        with _auth_store_lock():
+            store = _load_auth_store()
+            store["providers"]["nous"] = {
+                "auth_method": "oauth_device_code",
+                "portal_base_url": PORTAL,
+                "last_auth_error": {
+                    "relogin_required": True,
+                    "code": "nous_refresh_failed",
+                    "provider": "nous",
+                },
+            }
+            _save_auth_store(store)
+        before_minted = portal.minted
+        state = anon_auth.ensure_portal_identity(explicit=True)
+        assert state["auth_method"] == "oauth_device_code"
+        assert state["last_auth_error"]["relogin_required"] is True
+        assert "refresh_token" not in state
+        assert not anon_auth.is_guest_state(state)
+        assert portal.minted == before_minted
+
     def test_mint_persists_before_any_exchange_and_first_use_exchanges_once(self, portal):
         first = anon_auth.ensure_portal_identity(explicit=True)
         assert anon_auth.is_guest_state(first) and "access_token" not in first

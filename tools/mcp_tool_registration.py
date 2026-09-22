@@ -96,15 +96,23 @@ def _server_key_for_task(server) -> object:
 
 def _deregister_mcp_tool_all_scopes(server, tool_name: str) -> None:
     """Deregister one server tool from every profile overlay that owns it. *server* is the
-    live task or a connection key."""
+    live task or a connection key. A slot entry owned by another toolset is never removed:
+    a cached/lazy name is not proof this server still owns the registry name."""
     from tools.registry import registry
 
     key = server if isinstance(server, (str, tuple)) else _server_key_for_task(server)
+    toolset = f"mcp-{_key_name(key)}"
     with _core._lock:
         scopes = set(_core._server_tool_scopes.get(key, ()))
         if not scopes:
             scopes = {_core._server_registry_scope(key)}
     for scope in scopes:
+        entry = registry.snapshot_registration(tool_name, scope=scope)
+        if entry is not None and entry.toolset != toolset:
+            logger.debug(
+                "MCP server '%s': not deregistering '%s' in scope %s; owned by toolset '%s'",
+                _key_name(key), tool_name, scope, entry.toolset)
+            continue
         registry.deregister(tool_name, scope=scope)
     _forget_mcp_tool_server(tool_name)
     _restore_server_toolset_alias(key)
@@ -133,7 +141,11 @@ def _remove_server_scope(key, scope: str) -> None:
     from tools.registry import registry
 
     server_name = _key_name(key)
-    for tool_name in registry.get_tool_names_for_toolset(f"mcp-{server_name}"):
+    toolset = f"mcp-{server_name}"
+    for tool_name in registry.get_tool_names_for_toolset(toolset):
+        entry = registry.snapshot_registration(tool_name, scope=scope)
+        if entry is not None and entry.toolset != toolset:
+            continue  # the profile's overlay slot is foreign-owned; remove only ours
         registry.deregister(tool_name, scope=scope)
     with _core._lock:
         scopes = set(_core._server_tool_scopes.get(key, ()))

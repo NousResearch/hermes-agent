@@ -1,6 +1,7 @@
 """Regression test for #17929: AIAgent.__init__ should try fallback_model
 when primary provider credentials are exhausted."""
 import pytest
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 from run_agent import AIAgent
 
@@ -47,6 +48,90 @@ def test_init_tries_fallback_when_primary_returns_none():
         assert agent.provider == "tencent-token-plan"
         assert agent.model == "kimi2.5"
         assert agent._fallback_activated is True
+
+
+def test_init_fallback_reresolves_api_mode_without_override():
+    """A fallback's default wire must replace the primary's resolved wire."""
+    from agent.agent_init import _routed_client_kwargs
+
+    fallback = _mock_client(base_url="https://chatgpt.com/backend-api/codex")
+    agent = SimpleNamespace(
+        provider="anthropic",
+        model="claude-opus-5",
+        api_mode="anthropic_messages",
+        _fallback_activated=False,
+    )
+
+    def fake_resolve(provider, **_kwargs):
+        if provider == "openai-codex":
+            return fallback, "gpt-6-astra"
+        return None, None
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve):
+        _routed_client_kwargs(
+            agent,
+            [{"provider": "openai-codex", "model": "gpt-6-astra"}],
+            60,
+        )
+
+    assert agent.provider == "openai-codex"
+    assert agent.model == "gpt-6-astra"
+    assert agent.api_mode == "codex_responses"
+
+
+def test_init_primary_route_keeps_its_resolved_api_mode():
+    """The fallback-only repair must not re-resolve a working primary route."""
+    from agent.agent_init import _routed_client_kwargs
+
+    primary = _mock_client(base_url="https://api.anthropic.com")
+    agent = SimpleNamespace(
+        provider="anthropic",
+        model="claude-opus-5",
+        api_mode="anthropic_messages",
+        _fallback_activated=False,
+    )
+
+    with patch(
+        "agent.auxiliary_client.resolve_provider_client",
+        return_value=(primary, "claude-opus-5"),
+    ):
+        _routed_client_kwargs(agent, None, 60)
+
+    assert agent.provider == "anthropic"
+    assert agent.model == "claude-opus-5"
+    assert agent.api_mode == "anthropic_messages"
+
+
+def test_init_fallback_keeps_explicit_api_mode_override():
+    """An entry-level transport pin wins over fallback route detection."""
+    from agent.agent_init import _routed_client_kwargs
+
+    fallback = _mock_client(base_url="https://chatgpt.com/backend-api/codex")
+    agent = SimpleNamespace(
+        provider="anthropic",
+        model="claude-opus-5",
+        api_mode="anthropic_messages",
+        _fallback_activated=False,
+    )
+
+    def fake_resolve(provider, **kwargs):
+        if provider == "anthropic":
+            return None, None
+        assert kwargs["api_mode"] == "chat_completions"
+        return fallback, "gpt-6-astra"
+
+    with patch("agent.auxiliary_client.resolve_provider_client", side_effect=fake_resolve):
+        _routed_client_kwargs(
+            agent,
+            [{
+                "provider": "openai-codex",
+                "model": "gpt-6-astra",
+                "api_mode": "chat_completions",
+            }],
+            60,
+        )
+
+    assert agent.api_mode == "chat_completions"
 
 
 def test_init_raises_when_no_fallback_configured():

@@ -4,6 +4,7 @@ import { test, vi } from 'vitest'
 
 import { createBackendConnectionState } from './backend-connection-state'
 import { createFirstRunSetupGate } from './first-run-setup-gate'
+import { ensureLocalGateway } from './local-gateway'
 import {
   createPrimaryRemoteConnection,
   FirstRunSetupResetError,
@@ -187,34 +188,54 @@ test('continue local waits for update exclusion and ensures the prepared runtime
   assert.deepEqual(options.resolveRemote.mock.calls, [[]])
 })
 
-test('invalidating a pending runtime discovery prevents setup and bootstrap', async () => {
+const localStartupPhases = [
+  ['resolveRemote', null],
+  ['waitForLocalStart', undefined],
+  ['prepareLocalBackend', bootstrapBackend],
+  ['waitForDecision', 'continue-local'],
+  ['ensureLocalRuntime', { ...bootstrapBackend, command: 'hermes' }]
+] as const
+
+test.each(localStartupPhases)('invalidating pending %s prevents gateway ensure and descriptor publication', async (phase, value) => {
   const state = createBackendConnectionState()
   const attempt = state.startAttempt()
-  let finish!: (backend: typeof bootstrapBackend) => void
-  let started!: () => void
-
-  const resolving = new Promise<void>(resolve => {
-    started = resolve
-  })
+  let entered!: () => void
+  let release!: () => void
+  const paused = new Promise<void>(resolve => { entered = resolve })
+  const resumed = new Promise<void>(resolve => { release = resolve })
+  const endpoint = { profile_id: '/private/profile', instance_id: 'owner', authority_epoch: 1, runtime_protocol: 1, api_origin: 'http://127.0.0.1:1234', capabilities: ['session-authority-v1'], supervisor: 'none' }
+  const runEnsure = vi.fn(async () => ({ code: 0, stdout: JSON.stringify({ state: 'ready', endpoint }) }))
+  const publish = vi.fn(connection => connection)
 
   const options = startupOptions({
     assertCurrentAttempt: () => state.assertCurrentAttempt(attempt),
-    prepareLocalBackend: async () => {
-      started()
+    signal: new AbortController().signal,
+    [phase]: vi.fn(async () => {
+      entered()
+      await resumed
 
-      return new Promise<typeof bootstrapBackend>(resolve => {
-        finish = resolve
-      })
-    }
+      return value
+    })
   })
 
-  const pending = runPrimaryBackendStartup(options)
-  await resolving
+  // Cross the same setup-to-canonical-ensure seam as the primary caller.
+  const pending = runPrimaryBackendStartup(options).then(setup => {
+    assert.equal(setup.kind, 'local')
+
+    return ensureLocalGateway(runEnsure)
+  }).then(publish)
+
+  state.setPromise(attempt, pending)
+  await paused
   state.invalidate()
-  finish(bootstrapBackend)
-  await assert.rejects(pending, /superseded/)
-  assert.equal(options.waitForDecision.mock.calls.length, 0)
-  assert.equal(options.ensureLocalRuntime.mock.calls.length, 0)
+  release()
+  await pending.catch(() => {})
+  assert.deepEqual({ ensures: runEnsure.mock.calls.length, publications: publish.mock.calls.length }, { ensures: 0, publications: 0 })
+  await assert.rejects(pending, /superseded by a newer connection attempt/)
+
+  for (const [nextPhase] of localStartupPhases.slice(localStartupPhases.findIndex(([name]) => name === phase) + 1)) {
+    assert.equal(options[nextPhase].mock.calls.length, 0, `stale ${phase} must not enter ${nextPhase}`)
+  }
 })
 
 test('reset rejects with a typed error and never enters either backend', async () => {

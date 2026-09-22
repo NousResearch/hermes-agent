@@ -5,7 +5,9 @@ import { configureWindowsGatewayTicketClient, createLocalGatewayDials, ensureLoc
 import { mintGatewayTicketWithPython } from './local-gateway-python'
 const localGatewayDials = createLocalGatewayDials()
 configureWindowsGatewayTicketClient(async (endpoint, purpose) => {
-  const backend = await ensureRuntime(await resolveHermesBackend([]), () => undefined)
+  const backend = await ensureRuntime(await resolveHermesBackend([]), () => localBackendLifecycle.assertCanStart())
+  localBackendLifecycle.assertCanStart()
+
   if (backend.kind !== 'python' || backend.shell) {
     throw new Error('Gateway ticket bootstrap requires the installed Hermes Python runtime')
   }
@@ -214,11 +216,11 @@ import { createFirstRunSetupGate } from './first-run-setup-gate'
 import { registerFsIpc } from './fs-ipc'
 import { downloadViaTokenToFile } from './gateway-download-transport'
 import {
+  downloadGatewayFile,
   filenameFromContentDisposition,
   fsPumpDeps,
   gatewayFilePath,
   gatewayFileRequestPaths,
-  isNotFoundError,
   parseDataUrlToBuffer,
   pumpStreamToFile,
   resolveGatewayFileBackend,
@@ -284,7 +286,7 @@ import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
 import { createNativeAccessTokenCoordinator, NativeAuthChangedError } from './native-access-token'
-import { oauthSessionIsLive, resolveJsonBody, resolveOauthRestAuth, resolveReadinessProbeAuth } from './native-auth-decisions'
+import { oauthSessionIsLive, resolveJsonBody, resolveReadinessProbeAuth } from './native-auth-decisions'
 import {
   nativeRefreshUrl,
   type NativeTokenSet,
@@ -5038,6 +5040,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
 
   if (!backend.bootstrap) {
     await advanceBootProgress('runtime.external', `Using ${backend.label}`, 32)
+    assertStillOwned()
 
     return backend
   }
@@ -5054,7 +5057,10 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
   if (backend.kind === 'bootstrap-needed') {
     rememberLog('[bootstrap] no Hermes install found; starting first-launch bootstrap')
 
-    if (await handOffWindowsBootstrapRecovery('bootstrap-needed')) {
+    const handedOff = await handOffWindowsBootstrapRecovery('bootstrap-needed')
+    assertStillOwned()
+
+    if (handedOff) {
       const handoffError: Error & { isBootstrapFailure?: boolean; bootstrapHandedOff?: boolean } = new Error(
         'Hermes recovery was handed off to Hermes Setup. The desktop will restart when recovery completes.'
       )
@@ -5117,6 +5123,7 @@ async function runEnsureRuntime(backend: any, assertStillOwned: () => void): Pro
     })
 
     bootstrapAbortController = null
+    assertStillOwned()
 
     if (bootstrapResult.cancelled) {
       const cancelledError = new Error('Hermes install was cancelled.') as any
@@ -8006,28 +8013,13 @@ async function saveGatewayFile(payload: GatewayFileSavePayload = {}) {
 
   const url = `${connection.baseUrl}${requestPaths.download}`
 
-  try {
-    if (connection.authMode === 'oauth') {
-      return await requestWithOauthFallback(connection.baseUrl, {
-        ensureNativeAccessToken,
-        requestWithBearer: bearer => downloadViaTokenToFile(url, null, ctx, finalizeGatewayDownload, { bearer }),
-        requestWithCookie: () => downloadViaOauthSessionToFile(url, ctx)
-      })
-    }
-
-    return await downloadViaTokenToFile(url, connection.token, ctx, finalizeGatewayDownload, {
-      gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined
-    })
-  } catch (error) {
-    // Desktop and the remote gateway update independently. A gateway predating
-    // /api/fs/download 404s here; fall back (ONLY on 404) to the older capped
-    // data-URL route so downloads keep working against older backends.
-    if (isNotFoundError(error)) {
-      return await saveGatewayFileViaDataUrl(connection, requestPaths.dataUrl, ctx)
-    }
-
-    throw error
-  }
+  return downloadGatewayFile(connection.baseUrl, connection.authMode === 'oauth', {
+    ensureNativeAccessToken,
+    requestWithBearer: bearer => downloadViaTokenToFile(url, null, ctx, finalizeGatewayDownload, { bearer }),
+    requestWithCookie: () => downloadViaOauthSessionToFile(url, ctx),
+    requestWithToken: () => downloadViaTokenToFile(url, connection.token, ctx, finalizeGatewayDownload, { gatewayDescriptor: connection.gatewayEndpoint ? connection : undefined }),
+    requestWithDataUrl: () => saveGatewayFileViaDataUrl(connection, requestPaths.dataUrl, ctx)
+  })
 }
 
 // Compatibility fallback: fetch the file through the capped
@@ -12140,6 +12132,7 @@ function forgetFailedPoolEntry(poolKey: string, entry: any) {
 }
 
 function assertPoolEntryStillOwned(poolKey: string, entry: any) {
+  localBackendLifecycle.assertCanStart()
   assertDescriptorStillOwned(backendPool, poolKey, entry)
 }
 
@@ -12187,8 +12180,12 @@ async function dialPoolBackend(profile, entry, opts: { forceLocal?: boolean; poo
   const connection = await ensureLocalGateway(async () => {
     const backend = await ensureRuntime(
       await resolveHermesBackend(['--profile', profile, 'gateway', 'ensure', '--json']),
-      () => assertPoolEntryStillOwned(poolKey, entry)
+      () => {
+        profileDeletionGate.assertCanStart(profile)
+        assertPoolEntryStillOwned(poolKey, entry)
+      }
     )
+
     profileDeletionGate.assertCanStart(profile)
     assertPoolEntryStillOwned(poolKey, entry)
 
@@ -12362,6 +12359,12 @@ async function startHermes(requestedProfile?: string) {
   migrateActiveProfileIfMissing()
 
   const connectionAttempt = backendConnectionState.startAttempt()
+
+  const assertCurrentAttempt = () => {
+    localBackendLifecycle.assertCanStart()
+    backendConnectionState.assertCurrentAttempt(connectionAttempt)
+  }
+
   const primaryProfile = requestedProfile || primaryProfileKey()
 
   // Legacy path callers without an explicit profile belong to the primary
@@ -12378,14 +12381,15 @@ async function startHermes(requestedProfile?: string) {
       // resolveRemote() may take arbitrarily long (settings resolve / ws-ticket
       // mint). If a newer attempt started meanwhile (e.g. the user switched
       // remotes and Apply invalidated this attempt), bail before probing.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
+      assertCurrentAttempt()
 
       await advanceBootProgress('backend.remote', `Connecting to remote Hermes backend at ${remote.baseUrl}`, 24)
+      assertCurrentAttempt()
       await waitForHermes(remote.baseUrl, remote.token, undefined, remote.authMode, remote.headers)
 
       // Second async boundary: the health probe itself can outlive the
       // attempt. A late success here must not publish a stale descriptor.
-      backendConnectionState.assertCurrentAttempt(connectionAttempt)
+      assertCurrentAttempt()
 
       updateBootProgress({
         phase: 'backend.ready',
@@ -12399,6 +12403,7 @@ async function startHermes(requestedProfile?: string) {
     }
 
     await advanceBootProgress('backend.resolve', 'Resolving Hermes backend', 8)
+    assertCurrentAttempt()
     // Resolve for the desktop's primary profile so a per-profile remote
     // override on the active profile is honored (falls back to env / global).
 
@@ -12410,6 +12415,7 @@ async function startHermes(requestedProfile?: string) {
     // ~/.local/bin-installed CLIs. Single-flight with the whenReady warmup;
     // failure-hardened — a broken shell profile never blocks boot.
     const loginShellPath = await ensureLoginShellPath()
+    assertCurrentAttempt()
 
     if (loginShellPath.applied) {
       rememberLog('[env] merged login-shell PATH into process.env for backend spawn')
@@ -12431,12 +12437,12 @@ async function startHermes(requestedProfile?: string) {
 
     const setup = await runPrimaryBackendStartup({
       signal: localBackendLifecycle.signal,
-      assertCurrentAttempt: () => backendConnectionState.assertCurrentAttempt(connectionAttempt),
+      assertCurrentAttempt,
       connectRemote,
-      ensureLocalRuntime: backend =>
-        ensureRuntime(backend, () => backendConnectionState.assertCurrentAttempt(connectionAttempt)),
+      ensureLocalRuntime: backend => ensureRuntime(backend, assertCurrentAttempt),
       prepareLocalBackend: async () => {
         await advanceBootProgress('backend.runtime', 'Resolving Hermes runtime', 28)
+        assertCurrentAttempt()
 
         return resolveHermesBackend(backendArgs)
       },
@@ -12453,7 +12459,7 @@ async function startHermes(requestedProfile?: string) {
       waitForLocalStart: waitForUpdateToFinish
     })
 
-    backendConnectionState.assertCurrentAttempt(connectionAttempt)
+    assertCurrentAttempt()
 
     if (setup.kind === 'remote') {
       // Paths from the remote backend belong to a host the Windows desktop
@@ -12468,10 +12474,16 @@ async function startHermes(requestedProfile?: string) {
     // Local WSL backend — paths are bridgeable.
     setWslBridgeProfileState(primaryProfile, true)
 
-    const connection = await ensureLocalGateway(() => runGatewayEnsure({ ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}, GUEST_ONBOARDING) }, resolveHermesCwd(), HERMES_HOME))
-    void showPluginCompatNoticeOnce()
+    const connection = await ensureLocalGateway(() => {
+      // ensureLocalGateway yields even without an update waiter. Recheck in
+      // its callback so a superseded attempt cannot invoke gateway ensure.
+      assertCurrentAttempt()
 
-    backendConnectionState.assertCurrentAttempt(connectionAttempt)
+      return runGatewayEnsure({ ...setup.backend, env: desktopBackendSpawnEnv(setup.backend.env || {}, GUEST_ONBOARDING) }, resolveHermesCwd(), HERMES_HOME)
+    })
+
+    assertCurrentAttempt()
+    void showPluginCompatNoticeOnce()
 
     backendStartFailure = null
     updateBootProgress({ phase: 'backend.ready', message: 'Hermes gateway is ready', progress: 94, running: true, error: null })
@@ -15971,57 +15983,19 @@ async function handleHermesApiRequest(request) {
     const connection = await ensureBackend(routeProfile, { passive: request?.passive })
     const timeoutMs = resolveTimeoutMs(request?.timeoutMs, DEFAULT_FETCH_TIMEOUT_MS)
 
-    const url = `${connection.baseUrl}${apiRoute.requestPath}`
-
-    // OAuth gateways authenticate REST via EITHER a native bearer token
-    // (cookieless RFC 8252 flow) OR the HttpOnly session cookie held in the OAuth
-    // partition. Prefer the native bearer when present (mirroring
-    // mintGatewayWsTicket): the native flow never sets a cookie, so routing an
-    // oauth-mode REST call through the cookie-only path returns 401 no_cookie even
-    // though a valid bearer is held. Cookie mode rides Electron's net stack bound
-    // to the OAuth partition so the cookie attaches automatically. Token/local
-    // modes keep using the static session-token header.
-    if (connection.authMode === 'oauth') {
-      // The OAuth path rides electron.net with JSON headers; multipart isn't
-      // wired there. Fail loudly rather than corrupting the upload.
-      if (request?.upload) {
-        throw new Error('File uploads are not supported against OAuth-gated remote backends yet.')
-      }
-
-      // Native bearer first (cookieless). ensureNativeAccessToken transparently
-      // refreshes a near-expiry AT via /auth/native/refresh; a null return means
-      // no native session (resolveOauthRestAuth then selects the cookie path).
-      const nativeAt = await ensureNativeAccessToken(connection.baseUrl).catch(() => null)
-      const restAuth = resolveOauthRestAuth(nativeAt)
-
-      if (restAuth.kind === 'bearer') {
-        response = await fetchJson(url, null, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs,
-          bearer: restAuth.token
-        })
-      } else {
-        response = await fetchJsonViaOauthSession(url, {
-          method: request?.method,
-          body: request?.body,
-          timeoutMs
-        })
-      }
-    } else if (connection.gatewayEndpoint) {
+    if (connection.gatewayEndpoint) {
       response = await redialLocalGateway({
         ensure: () => ensureBackend(routeProfile),
         forget: () => forgetLocalGatewayDescriptor(routeProfile),
-        use: current => fetchJson(`${current.baseUrl}${apiRoute.requestPath}`, current.token, {
+        use: current => fetchJsonForBackend(current, apiRoute.requestPath, {
           method: request?.method,
           body: request?.body,
           upload: request?.upload,
-          timeoutMs,
-          gatewayDescriptor: current
+          timeoutMs
         })
       })
     } else {
-      response = await fetchJson(url, connection.token, {
+      response = await fetchJsonForBackend(connection, apiRoute.requestPath, {
         method: request?.method,
         body: request?.body,
         upload: request?.upload,

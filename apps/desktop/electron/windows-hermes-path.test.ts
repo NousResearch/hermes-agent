@@ -145,7 +145,7 @@ test('resolveVenvHermesCommand: probes the venv python before trusting it (retur
     }
   })
 
-  const result = await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['serve'], deps)
+  const result = await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['gateway', 'ensure', '--json'], deps)
 
   assert.equal(probed, true, 'must probe the venv interpreter; a broken venv must not be re-selected forever')
   assert.equal(result, null, 'a failed probe must fall through (return null) so the resolver reaches bootstrap')
@@ -153,11 +153,11 @@ test('resolveVenvHermesCommand: probes the venv python before trusting it (retur
 
 test('resolveVenvHermesCommand: returns the resolved python backend descriptor when the probe passes', async () => {
   const deps = makeDeps()
-  const result = await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['serve', '--port', '0'], deps)
+  const result = await resolveVenvHermesCommand('/root/venv/Scripts/hermes.exe', ['gateway', 'ensure', '--json'], deps)
 
   assert.ok(result, 'a passing probe must return a backend descriptor, not null')
   assert.equal(result.command, '/root/venv/Scripts/python.exe')
-  assert.deepEqual(result.args, ['-m', 'hermes_cli.main', 'serve', '--port', '0'])
+  assert.deepEqual(result.args, ['-m', 'hermes_cli.main', 'gateway', 'ensure', '--json'])
   assert.equal(result.bootstrap, false)
   assert.equal(result.kind, 'python')
   assert.equal(result.shell, false)

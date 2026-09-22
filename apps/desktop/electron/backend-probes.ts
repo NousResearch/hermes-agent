@@ -159,7 +159,7 @@ function hermesRuntimeImportProbe() {
  *
  * @param {string} pythonPath - Absolute path to a python.exe / python.
  * @param {object} [opts.env] - Additional environment for the probe.
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
 async function canImportHermesCli(pythonPath: string, opts: { env?: Record<string, string> } = {}) {
   if (!pythonPath) {
@@ -198,7 +198,7 @@ async function canImportHermesCli(pythonPath: string, opts: { env?: Record<strin
  *   .cmd/.bat shims on Windows spawn needs shell:true to find
  *   the cmd interpreter; mirrors the same flag isCommandScript() drives
  *   in resolveHermesBackend.
- * @returns {boolean}
+ * @returns {Promise<boolean>}
  */
 /**
  * An explicit desktop backend command is a deployment contract, not a PATH

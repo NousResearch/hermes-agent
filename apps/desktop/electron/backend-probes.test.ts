@@ -1,17 +1,19 @@
 /**
  * Tests for electron/backend-probes.ts.
  *
- * Run with: node --test electron/backend-probes.test.ts
+ * Run with: npm exec -- vitest run --project electron electron/backend-probes.test.ts
  * (Wired into npm test:desktop:platforms in package.json.)
  */
 
 import assert from 'node:assert/strict'
+import { execFile } from 'node:child_process'
 import fs from 'node:fs'
 import net from 'node:net'
 import os from 'node:os'
 import path from 'node:path'
+import { promisify } from 'node:util'
 
-import { test } from 'vitest'
+import { test, vi } from 'vitest'
 
 import {
   canImportHermesCli,
@@ -23,6 +25,7 @@ import {
   shouldTrustHermesOverride,
   verifyHermesCli
 } from './backend-probes'
+import { ensureLocalGateway, runGatewayEnsure } from './local-gateway'
 
 // Resolve the host's own Node binary -- guaranteed to be on disk and
 // runnable. We use it as both a stand-in for "a python that doesn't
@@ -77,6 +80,136 @@ test('execProbe keeps the parent event loop available to the child', async () =>
 
   assert.ifError(unexpectedSocketError)
 })
+
+test('runtime discovery serves a child callback before publishing the gateway descriptor', async () => {
+  const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-runtime-probe-'))
+  const events: string[] = []
+  let unexpectedSocketError: Error | undefined
+
+  const server = net.createServer(socket => {
+    socket.on('error', error => {
+      // A child exiting after receipt can reset the accepted socket on Windows.
+      if ((error as NodeJS.ErrnoException).code !== 'ECONNRESET') {
+        unexpectedSocketError ??= error
+      }
+    })
+    events.push('callback')
+    socket.end('pong')
+  })
+
+  try {
+    // Do not expose the real home, credentials or Python site customizations.
+    const env = Object.fromEntries(
+      ['PATH', 'Path', 'SystemRoot', 'SYSTEMROOT', 'WINDIR', 'COMSPEC', 'TEMP', 'TMP']
+        .filter(key => process.env[key] !== undefined)
+        .map(key => [key, process.env[key]])
+    )
+
+    Object.assign(env, {
+      HOME: home,
+      USERPROFILE: home,
+      HERMES_HOME: home,
+      PYTHONPATH: home,
+      PYTHONNOUSERSITE: '1',
+      HERMES_PROBE_TIMEOUT_MS: '2000'
+    })
+
+    for (const key of new Set([...Object.keys(process.env), ...Object.keys(env)])) {
+      vi.stubEnv(key, env[key])
+    }
+
+    vi.resetModules()
+    const { canImportHermesCli: probe } = await import('./backend-probes')
+    let python: string | undefined
+
+    for (const candidate of ['python3', 'python']) {
+      try {
+        const { stdout } = await promisify(execFile)(candidate, ['-c', 'import sys; print(sys.executable)'], {
+          env,
+          timeout: 2000,
+          windowsHide: true
+        })
+
+        python = stdout.trim()
+
+        break
+      } catch {
+        /* Try the other conventional Python command. */
+      }
+    }
+
+    assert.ok(python, 'the runtime discovery contract requires a real Python interpreter')
+    await new Promise<void>((resolve, reject) => {
+      server.once('error', reject)
+      server.listen(0, '127.0.0.1', resolve)
+    })
+    const address = server.address()
+    assert.ok(address && typeof address === 'object')
+
+    const endpoint = {
+      profile_id: home,
+      instance_id: 'fixture-owner',
+      authority_epoch: 1,
+      runtime_protocol: 1,
+      api_origin: `http://127.0.0.1:${address.port}`,
+      capabilities: ['session-authority-v1'],
+      supervisor: 'none'
+    }
+
+    fs.mkdirSync(path.join(home, 'hermes_cli'))
+
+    for (const file of ['yaml.py', 'dotenv.py', 'hermes_cli/__init__.py']) {
+      fs.writeFileSync(path.join(home, file), '')
+    }
+
+    fs.writeFileSync(
+      path.join(home, 'hermes_cli/config.py'),
+      `
+import socket
+with socket.create_connection(('127.0.0.1', ${address.port}), timeout=10) as sock:
+    with sock.makefile('rb') as reply:
+        assert reply.read() == b'pong', 'parent callback must reply, not just accept TCP'
+`
+    )
+    fs.writeFileSync(
+      path.join(home, 'hermes_cli/main.py'),
+      `
+import sys
+assert sys.argv[1:] == ['gateway', 'ensure', '--json']
+print(${JSON.stringify(JSON.stringify({ state: 'ready', endpoint }))})
+`
+    )
+
+    const connection = await ensureLocalGateway(async () => {
+      assert.equal(
+        await probe(python, { env }),
+        true,
+        'runtime import must receive the parent callback before gateway ensure'
+      )
+
+      return runGatewayEnsure(
+        { command: python, args: ['-m', 'hermes_cli.main', 'gateway', 'ensure', '--json'], env, shell: false },
+        home,
+        home
+      )
+    })
+
+    events.push('published')
+    assert.deepEqual(events, ['callback', 'published'])
+    assert.deepEqual(connection.gatewayEndpoint, endpoint)
+    assert.equal(connection.token, '')
+  } finally {
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => server.close(error => (error ? reject(error) : resolve())))
+    }
+
+    vi.unstubAllEnvs()
+    vi.resetModules()
+    fs.rmSync(home, { recursive: true, force: true })
+  }
+
+  assert.ifError(unexpectedSocketError)
+}, 15_000)
 
 test('canImportHermesCli returns false when path is falsy', async () => {
   assert.equal(await canImportHermesCli(''), false)
@@ -138,7 +271,7 @@ test('verifyHermesCli returns true when --version exits 0', async () => {
   try {
     // Use node as the launcher and our script as the "command". Pass
     // shell:false (default) -- node is a real binary, no shim.
-    // execFileSync passes ['--version'] as args, which node ignores
+    // The probe passes ['--version'] as args, which node handles
     // gracefully (well, it prints its version and exits 0, which is
     // perfect -- exit code 0 is the only signal we read).
     assert.equal(await verifyHermesCli(NODE_BIN), true)

@@ -15,7 +15,7 @@ def _turn(result):
     return SimpleNamespace(
         result=result, agent=SimpleNamespace(_session_title_hint="Bot Chat"), terminal_callback=None,
         receipt_committed=True, receipt_attempted=False, marker_key="", error_retained=False,
-        error_detail="", prompt_text="ping",
+        error_detail="", prompt_text="ping", server_message_id=123,
     )
 
 
@@ -28,6 +28,7 @@ def test_live_bot_chat_completion_empties_marker_only_for_successful_turns(monke
 
     payload, _, status = srv._complete_turn_payload(session, _turn({"final_response": " *NO_REPLY* "}), None, 80)
     assert (status, payload["text"]) == ("complete", "")
+    assert payload["server_message_id"] == 123
 
     prose = "[SILENT] is mentioned here, but this is a real answer."
     payload, _, _ = srv._complete_turn_payload(session, _turn({"final_response": prose}), None, 80)

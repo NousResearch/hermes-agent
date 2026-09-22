@@ -490,6 +490,7 @@ class _TurnRun:
     run_kwargs: Any = None
     error_retained: bool = False
     error_detail: str = ""
+    server_message_id: int | None = None
     prompt_text: str = ""
     marker_key: str = ""
     receipt_attempted: bool = False
@@ -745,6 +746,13 @@ def _absorb_turn_result(
     if isinstance(result, dict):
         if isinstance(result.get("messages"), list):
             status_note = _commit_turn_history(session, result, st.history, st.history_version)
+            for message in reversed(result["messages"]):
+                if message.get("role") != "assistant":
+                    continue
+                row_id = message.get("_row_id")
+                if isinstance(row_id, int):
+                    st.server_message_id = row_id
+                break
         # Auto-compression may have rotated agent.session_id: sync session_key before
         # title/goal/finalize use it, keep pending_title (user intent), restart the slash
         # worker so worker-backed commands target the live session.
@@ -773,6 +781,8 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if _is_bot_mode_session(session):
         raw = _bot_mode_delivery_text(raw, successful=status == "complete")
     payload = {"text": raw, "usage": _get_usage(agent), "status": status}
+    if st.server_message_id is not None:
+        payload["server_message_id"] = st.server_message_id
     if last_reasoning:
         payload["reasoning"] = last_reasoning
     if status_note:

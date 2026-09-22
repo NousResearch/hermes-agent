@@ -133,25 +133,6 @@ def test_read_only_resolver_never_probes_or_mutates_an_exhausted_pool(tmp_path, 
     assert not (home / "auth.lock").exists()
 
 
-def test_read_only_resolver_does_not_back_up_a_malformed_auth_store(tmp_path, monkeypatch):
-    from hermes_cli.auth import resolve_codex_runtime_credentials
-
-    home = tmp_path / "home"
-    home.mkdir()
-    auth_path = home / "auth.json"
-    malformed = b'{"credential_pool":'
-    auth_path.write_bytes(malformed)
-    monkeypatch.setenv("HERMES_HOME", str(home))
-    monkeypatch.setenv("CODEX_HOME", str(tmp_path / "missing-codex-home"))
-
-    with pytest.raises(AuthError):
-        resolve_codex_runtime_credentials(read_only=True)
-
-    assert auth_path.read_bytes() == malformed
-    assert not auth_path.with_suffix(".json.corrupt").exists()
-    assert not (home / "auth.lock").exists()
-
-
 def _singleton_only_codex_home(tmp_path, monkeypatch, *, tokens: dict, codex_cli_tokens: dict):
     """HERMES_HOME whose Codex credentials are the ``providers.openai-codex`` singleton only, with a
     valid Codex CLI login sitting beside it in ``CODEX_HOME``."""

@@ -528,7 +528,7 @@ def _load_global_auth_store() -> Dict[str, Any]:
         except Exception:
             pass
     try:
-        store = _load_auth_store(global_path, preserve_corrupt=False)
+        store = _load_auth_store(global_path)
     except Exception:
         _global_auth_store_cache = None
         return {}
@@ -658,9 +658,7 @@ def _empty_auth_store() -> Dict[str, Any]:
     return {"version": AUTH_STORE_VERSION, "providers": {}}
 
 
-def _load_auth_store(
-    auth_file: Optional[Path] = None, *, preserve_corrupt: bool = True,
-) -> Dict[str, Any]:
+def _load_auth_store(auth_file: Optional[Path] = None) -> Dict[str, Any]:
     auth_file = auth_file or _auth_file_path()
     if not auth_file.exists():
         return _empty_auth_store()
@@ -679,21 +677,18 @@ def _load_auth_store(
         # Genuine corruption: unparseable JSON or non-UTF-8 bytes. Preserve a copy, but never
         # advertise a backup that was not written.
         corrupt_path = auth_file.with_suffix(".json.corrupt")
-        preserved = False
-        if preserve_corrupt:
-            try:
-                shutil.copy2(auth_file, corrupt_path)
-                preserved = True
-            except Exception:
-                logger.debug(
-                    "auth: could not preserve a copy of the corrupt store at %s",
-                    corrupt_path, exc_info=True)
+        try:
+            shutil.copy2(auth_file, corrupt_path)
+            preserved = True
+        except Exception:
+            preserved = False
+            logger.debug("auth: could not preserve a copy of the corrupt store at %s", corrupt_path,
+                         exc_info=True)
         logger.warning(
-            "auth: failed to parse %s (%s), starting with empty store.%s",
+            "auth: failed to parse %s (%s), starting with empty store. %s %s",
             auth_file, exc,
-            (f" Corrupt file preserved at {corrupt_path}" if preserved else
-             " Corrupt backup skipped for this read-only operation." if not preserve_corrupt else
-             f" A copy could NOT be preserved at {corrupt_path}"))
+            "Corrupt file preserved at" if preserved else "A copy could NOT be preserved at",
+            corrupt_path)
         return _empty_auth_store()
 
     if isinstance(raw, dict) and (
@@ -872,16 +867,12 @@ def is_runtime_provider_routable(provider_id: str) -> bool:
     return True
 
 
-def read_credential_pool(
-    provider_id: Optional[str] = None, *, preserve_corrupt: bool = True,
-) -> Dict[str, Any]:
+def read_credential_pool(provider_id: Optional[str] = None) -> Dict[str, Any]:
     """Return the persisted credential pool, or one provider slice.
 
     In profile mode the global-root ``auth.json`` is a read-only fallback applied per provider ONLY
     when the profile has zero entries for it (``hermes auth add`` in the profile shadows global)."""
-    store = (_load_auth_store() if preserve_corrupt else
-             _load_auth_store(preserve_corrupt=False))
-    pool = store.get("credential_pool")
+    pool = _load_auth_store().get("credential_pool")
     pool = pool if isinstance(pool, dict) else {}
     global_pool = _load_global_auth_store().get("credential_pool")
     global_pool = global_pool if isinstance(global_pool, dict) else {}

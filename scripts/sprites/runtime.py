@@ -45,6 +45,10 @@ def configure() -> None:
     if not isinstance(value, dict) or not all(isinstance(k, str) and isinstance(v, str) and '\0' not in k + v for k, v in value.items()):
         raise ValueError('Invalid runtime environment')
     private_replace(CONFIG, json.dumps(value))
+    sys.path.insert(0, str(ROOT))
+    from scripts.sprites.runtime_env import sync_environment
+    owner = pwd.getpwnam('hermes')
+    sync_environment(Path('/opt/data'), value, owner.pw_uid, owner.pw_gid)
     if not Path('/opt/data/config.yaml').exists():
         subprocess.run(['s6-setuidgid', 'hermes', str(ROOT / '.venv/bin/python'), '-c',
                         'from hermes_cli.config import load_config, save_config; save_config(load_config())'],

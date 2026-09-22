@@ -35,6 +35,16 @@ _IS_WINDOWS = platform.system() == "Windows"
 
 logger = logging.getLogger(__name__)
 
+
+def _spawn_kill_on_exit(cmd, **kwargs):
+    """Process-lifetime job, or plain Popen if local_runtime cannot be imported."""
+    try:
+        from hermes_cli.local_runtime.processes import kill_on_exit_job, spawn_contained
+    except ImportError:
+        return subprocess.Popen(cmd, **kwargs)
+    return spawn_contained(cmd, job=kill_on_exit_job(), **kwargs)
+
+
 # --- Terminal temp-cache pruning ---
 # get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
 # stale artifacts don't vanish on reboot: the gateway housekeeping loop prunes hourly
@@ -930,7 +940,7 @@ class LocalEnvironment(BaseEnvironment):
             cmd_string = _prepend_shell_init(cmd_string, _resolve_shell_init_files())
         args = [bash, *(["-l"] if login else []), "-c", cmd_string]
         self._recover_cwd()
-        proc = subprocess.Popen(
+        proc = _spawn_kill_on_exit(
             args, text=True, env=_make_run_env(self.env), encoding="utf-8", errors="replace",
             stdout=subprocess.PIPE, stderr=subprocess.STDOUT,
             stdin=subprocess.PIPE if stdin_data is not None else subprocess.DEVNULL,

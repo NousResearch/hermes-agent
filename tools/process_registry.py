@@ -513,6 +513,7 @@ class ProcessSession:
     session_key: str = ""                       # Gateway session key (reset protection)
     pid: Optional[int] = None
     process: Optional[subprocess.Popen] = None  # Popen handle (local only)
+    job: Any = None                             # Windows session job (pipe spawn); closed on kill
     env_ref: Any = None                         # Environment object (sandbox spawns)
     cwd: Optional[str] = None
     started_at: float = 0.0                     # time.time() of spawn
@@ -595,6 +596,54 @@ _CHECKPOINT_DEFAULTS = {
     for f in ProcessSession.__dataclass_fields__.values()
     if f.name in _CHECKPOINT_FIELDS
 }
+
+_session_job_warn_lock = threading.Lock()
+_session_job_warned = False
+
+
+def _open_session_job():
+    """Per-session Windows job, or None off Windows / if creation fails (one warning)."""
+    global _session_job_warned
+    if not _IS_WINDOWS:
+        return None
+    try:
+        from hermes_cli.local_runtime.processes import _WindowsJob
+    except ImportError:
+        return None
+    try:
+        return _WindowsJob()
+    except OSError as exc:
+        with _session_job_warn_lock:
+            first = not _session_job_warned
+            _session_job_warned = True
+        if first:
+            logger.warning("session kill-on-exit job creation failed: %s", exc)
+        return None
+
+
+def _spawn_in_session_job(cmd, *, job, **kwargs):
+    try:
+        from hermes_cli.local_runtime.processes import spawn_contained
+    except ImportError:
+        return subprocess.Popen(cmd, **kwargs)
+    return spawn_contained(cmd, job=job, session=True, **kwargs)
+
+
+def _close_job(job) -> None:
+    """Close a session job. Never raises; a repeated close is harmless.
+
+    Only a ``_WindowsJob`` is closed. Anything else is ignored so cleanup
+    cannot change a kill receipt.
+    """
+    if job is None:
+        return
+    try:
+        from hermes_cli.local_runtime.processes import _WindowsJob
+        if not isinstance(job, _WindowsJob):
+            return
+        job.close()
+    except Exception:
+        logger.warning("session job close failed", exc_info=True)
 
 
 class ProcessRegistry(ProcessCheckpointMixin):
@@ -939,7 +988,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         return ProcessRegistry._config_seconds("daemon_term_grace_seconds", 2.0)
 
     @classmethod
-    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None) -> None:
+    def _terminate_host_pid(cls, pid: int, expected_start: Optional[int] = None, *, job=None) -> None:
         """Terminate a host-visible PID and its descendants.
         ``expected_start`` (kernel start time at spawn) is re-validated first: a mismatch
         or dead PID means the number was recycled onto a stranger and we refuse to touch
@@ -953,6 +1002,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             logger.warning(
                 "Refusing to terminate host pid %d: start-time mismatch — "
                 "PID was recycled onto an unrelated process.", pid)
+            _close_job(job)
             return
 
         def _sigterm_quietly():
@@ -966,15 +1016,18 @@ class ProcessRegistry(ProcessCheckpointMixin):
                     stdin=subprocess.DEVNULL)
             except (FileNotFoundError, subprocess.TimeoutExpired, OSError):
                 _sigterm_quietly()
+            _close_job(job)
             return
         import psutil
         gone = (psutil.NoSuchProcess, psutil.AccessDenied, OSError)
         try:
             parent = psutil.Process(pid)
         except psutil.NoSuchProcess:
+            _close_job(job)
             return
         except (OSError, PermissionError):
             _sigterm_quietly()
+            _close_job(job)
             return
         # Snapshot before signalling: once the parent exits, psutil can no longer
         # reliably find children that it failed to reap.
@@ -1020,6 +1073,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # parent/child tree, leaving survivors un-killed. Re-probing every target is
         # deterministic.
         if grace <= 0:
+            _close_job(job)
             return
         _wait_for_exit(targets)
         for proc in targets:
@@ -1027,6 +1081,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 if cls._proc_alive(proc):
                     proc.kill()  # SIGKILL on POSIX
                     logger.info("Escalated to SIGKILL for pid %d (ignored SIGTERM within %.1fs grace)", proc.pid, grace)
+        _close_job(job)
 
     @staticmethod
     def _live_descendants(pid: int) -> List[int]:
@@ -1221,17 +1276,27 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # share the foreground process group and background spawns would stop the whole
         # session (observed as dead TUIs in state T). Cgroup isolation is unaffected —
         # the scope attaches to the invoked process, not the spawning session.
-        proc = subprocess.Popen(
-            spawn_argv, text=True, cwd=session.cwd, env=spawn_env, encoding="utf-8",
-            errors="replace", stdout=subprocess.PIPE, stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
-            start_new_session=True, **_popen_kwargs)
+        session_job = _open_session_job()
+        try:
+            proc = _spawn_in_session_job(
+                spawn_argv, job=session_job, text=True, cwd=session.cwd, env=spawn_env,
+                encoding="utf-8", errors="replace", stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT, stdin=subprocess.DEVNULL,
+                start_new_session=True, **_popen_kwargs)
+        except BaseException:
+            _close_job(session_job)
+            raise
+        session.job = session_job
         session.process = proc
         session.pid = proc.pid
         session.host_start_time = self._safe_host_start_time(session.pid)
         try:
             self._track_started(session, self._reader_loop, f"proc-reader-{session.id}")
         except Exception:
-            self._reap_untracked(session, proc)
+            try:
+                self._reap_untracked(session, proc)
+            finally:
+                _close_job(session.job)
             raise
         return session
 
@@ -1257,6 +1322,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
                 proc.kill()
         with suppress(Exception):
             proc.wait(timeout=5)
+        _close_job(session.job)
 
     def adopt_local(
         self, proc: subprocess.Popen, *, command: str, cwd: Optional[str], task_id: str = "",
@@ -2078,6 +2144,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             # above already handled the main process; this catches stragglers.
             if session.systemd_unit:
                 _stop_systemd_unit(session.systemd_unit)
+            _close_job(session.job)
             with session._lock:
                 result = self._exit_snapshot(session, "already_exited")
             # Only suppress the autonomous turn after its output is present in
@@ -2087,6 +2154,7 @@ class ProcessRegistry(ProcessCheckpointMixin):
             return result
         try:
             early = self._signal_kill(session, session_id, consume_output)
+            _close_job(session.job)
             if early is not None:
                 return early
             # Additive to the PID kill: stopping the scope reaps double-forked

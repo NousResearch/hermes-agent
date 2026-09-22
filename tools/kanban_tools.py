@@ -1019,6 +1019,19 @@ def _handle_complete(args: dict, **kw) -> str:
         # judge by calling kanban_complete before acceptance criteria are met. Only enforce when a judge is
         # actually reachable — see _goal_judge_available for why an unavailable judge fails open.
         task = kb.get_task(conn, tid)
+        from hermes_cli.kanban_completion_policy import (
+            CompletionPolicyError,
+            enforce_repository_handoff,
+        )
+        try:
+            enforce_repository_handoff(task=task, metadata=metadata)
+        except CompletionPolicyError as receipt_err:
+            return tool_error(
+                f"kanban_complete blocked: {receipt_err}. Your task is still in-flight "
+                "(no state change). Commit and push repository changes, open the PR, then retry "
+                "with the exact receipt; for read-only/no-change work set "
+                "metadata.repository_changes=false."
+            )
         verifier_rejection = _verifier_handoff_rejection(
             task, (summary or result or "").strip(), metadata,
         )

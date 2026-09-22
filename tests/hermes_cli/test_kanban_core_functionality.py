@@ -1575,6 +1575,8 @@ def test_worker_context_requires_terminal_kanban_receipt(kanban_home):
         assert "Do not search for alternate worktrees" in context
         assert "## Completion contract" in context
         assert "kanban_complete" in context
+        assert "metadata.repository_changes=false" in context
+        assert "commit_sha, pushed_branch, repository, base_branch, and pr_url" in context
         assert "never exit with only conversational text" in context
     finally:
         conn.close()

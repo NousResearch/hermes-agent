@@ -3,13 +3,158 @@
 from __future__ import annotations
 
 import os
+import re
 import sqlite3
+import subprocess
 from contextlib import closing
 from pathlib import Path
+from urllib.parse import urlparse
 
 
 class CompletionPolicyError(ValueError):
     """A registered completion contract could not be satisfied."""
+
+
+_FULL_SHA_RE = re.compile(r"[0-9a-fA-F]{40}")
+_REPOSITORY_RE = re.compile(r"[A-Za-z0-9_.-]+/[A-Za-z0-9_.-]+")
+
+
+def _git(workspace: Path, *args: str) -> str:
+    try:
+        result = subprocess.run(
+            ["git", "-C", str(workspace), *args],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            timeout=20,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise CompletionPolicyError(f"could not inspect repository completion evidence: {exc}") from exc
+    if result.returncode != 0:
+        detail = (result.stderr or result.stdout or "git command failed").strip()
+        raise CompletionPolicyError(f"could not inspect repository completion evidence: {detail}")
+    return result.stdout.strip()
+
+
+def _remote_repository(url: str) -> str | None:
+    """Return ``OWNER/REPO`` for a GitHub remote URL."""
+    value = (url or "").strip()
+    if value.startswith("git@github.com:"):
+        path = value.removeprefix("git@github.com:")
+    else:
+        parsed = urlparse(value)
+        if parsed.hostname != "github.com":
+            return None
+        path = parsed.path.lstrip("/")
+    path = path.removesuffix(".git").strip("/")
+    return path if _REPOSITORY_RE.fullmatch(path) else None
+
+
+def _require_clean_workspace(workspace: Path) -> None:
+    if _git(workspace, "status", "--porcelain=v1", "--untracked-files=all"):
+        raise CompletionPolicyError(
+            "repository completion receipt rejected: worktree has uncommitted changes"
+        )
+
+
+def enforce_repository_handoff(*, task, metadata) -> None:
+    """Validate the terminal receipt for a dispatcher-managed Git worktree.
+
+    Scratch work and ordinary directories retain their existing completion
+    behavior. A managed worktree must state whether it changed the repository.
+    Changed work is bound to the live clean checkout, remote-tracking refs, and
+    an exact GitHub PR URL before the task can leave the in-flight state.
+    """
+    if task is None or task.workspace_kind != "worktree":
+        return
+    if not task.workspace_path:
+        raise CompletionPolicyError(
+            "repository completion receipt rejected: worktree path is unresolved"
+        )
+    receipt = metadata if isinstance(metadata, dict) else {}
+    changed = receipt.get("repository_changes")
+    if not isinstance(changed, bool):
+        raise CompletionPolicyError(
+            "repository completion receipt must set metadata.repository_changes to true or false"
+        )
+    workspace = Path(task.workspace_path).expanduser()
+    if not workspace.is_dir():
+        raise CompletionPolicyError(
+            "repository completion receipt rejected: assigned worktree no longer exists"
+        )
+    _git(workspace, "rev-parse", "--show-toplevel")
+    _require_clean_workspace(workspace)
+    if changed is False:
+        return
+
+    required = ("commit_sha", "pushed_branch", "repository", "base_branch", "pr_url")
+    missing = [name for name in required if not isinstance(receipt.get(name), str) or not receipt[name].strip()]
+    if missing:
+        raise CompletionPolicyError(
+            "repository completion receipt is missing: " + ", ".join(missing)
+        )
+    commit_sha = receipt["commit_sha"].strip().lower()
+    pushed_branch = receipt["pushed_branch"].strip()
+    repository = receipt["repository"].strip()
+    base_branch = receipt["base_branch"].strip()
+    pr_url = receipt["pr_url"].strip()
+    if not _FULL_SHA_RE.fullmatch(commit_sha):
+        raise CompletionPolicyError("repository completion receipt commit_sha must be a full 40-character SHA")
+    if not _REPOSITORY_RE.fullmatch(repository):
+        raise CompletionPolicyError("repository completion receipt repository must be OWNER/REPO")
+    expected_pr_prefix = f"https://github.com/{repository}/pull/"
+    if not pr_url.startswith(expected_pr_prefix) or not pr_url.removeprefix(expected_pr_prefix).isdigit():
+        raise CompletionPolicyError(
+            "repository completion receipt pr_url must be an exact GitHub PR URL for repository"
+        )
+    head = _git(workspace, "rev-parse", "HEAD").lower()
+    if head != commit_sha:
+        raise CompletionPolicyError(
+            f"repository completion receipt commit_sha does not match worktree HEAD {head}"
+        )
+    branch = _git(workspace, "branch", "--show-current")
+    if branch != pushed_branch or (task.branch_name and task.branch_name != pushed_branch):
+        raise CompletionPolicyError(
+            f"repository completion receipt pushed_branch does not match assigned branch {task.branch_name or branch}"
+        )
+    if base_branch == pushed_branch:
+        raise CompletionPolicyError("repository completion receipt base_branch must differ from pushed_branch")
+    tracking_refs = _git(
+        workspace,
+        "for-each-ref",
+        "--format=%(refname:short)",
+        "--points-at",
+        "HEAD",
+        "refs/remotes",
+    ).splitlines()
+    remote_names = [
+        ref.split("/", 1)[0]
+        for ref in tracking_refs
+        if ref.endswith(f"/{pushed_branch}") and "/" in ref
+    ]
+    if not remote_names:
+        raise CompletionPolicyError(
+            "repository completion receipt has no remote-tracking ref proving the branch was pushed at commit_sha"
+        )
+    matched_remote = None
+    for remote_name in remote_names:
+        if (_remote_repository(_git(workspace, "remote", "get-url", remote_name)) or "").lower() == repository.lower():
+            matched_remote = remote_name
+            break
+    if matched_remote is None:
+        raise CompletionPolicyError(
+            "repository completion receipt repository does not match the pushed branch remote"
+        )
+    base_ref = f"refs/remotes/{matched_remote}/{base_branch}"
+    _git(workspace, "rev-parse", "--verify", "--end-of-options", base_ref + "^{commit}")
+    try:
+        _git(workspace, "merge-base", "--is-ancestor", base_ref, "HEAD")
+    except CompletionPolicyError as exc:
+        raise CompletionPolicyError(
+            "repository completion receipt base_branch is not an ancestor of commit_sha"
+        ) from exc
 
 
 def _load_bundled_github_pr_feedback_guard():

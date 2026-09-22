@@ -4865,7 +4865,10 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         "## Completion contract",
         "Before your worker exits, call kanban_complete with a factual result, or call "
         "kanban_block only for a concrete unresolved prerequisite. A no-op or unavailable-evidence "
-        "outcome is still a completion when the task permits it; never exit with only conversational text.",
+        "outcome is still a completion when the task permits it; never exit with only conversational text. "
+        "For an assigned Git worktree, a read-only/no-change handoff must set "
+        "metadata.repository_changes=false. A repository-changing handoff must set it true and provide "
+        "commit_sha, pushed_branch, repository, base_branch, and pr_url after the clean exact head is pushed.",
         "",
     ])
     _ctx_attachments(lines, list_attachments(conn, task_id))

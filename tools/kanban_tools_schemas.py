@@ -115,7 +115,11 @@ KANBAN_COMPLETE_SCHEMA = _schema(
                 "Free-form dict of structured facts about this "
                 "attempt — {\"changed_files\": [...], \"tests_run\": 12, "
                 "\"findings\": [...]}. Surfaced to downstream "
-                "workers alongside ``summary``."
+                "workers alongside ``summary``. For an assigned Git worktree, "
+                "always include ``repository_changes``. Set it to false for "
+                "read-only/no-change work. When true, also include the exact "
+                "``commit_sha``, ``pushed_branch``, ``repository`` (OWNER/REPO), "
+                "``base_branch``, and ``pr_url``."
         )),
         "result": _prop("string", (
                 "Short result log line (legacy field, maps to "

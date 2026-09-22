@@ -10,7 +10,9 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
 
 import pytest
 
@@ -144,6 +146,124 @@ def test_complete_happy_path(worker_env):
         assert run.metadata == {"files": 2}
     finally:
         conn.close()
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _repository_worker(worker_env: str, tmp_path: Path, *, changed: bool) -> tuple[Path, str, str]:
+    """Attach the worker card to a real clean Git branch with pushed refs."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    _git(repo.parent, "init", "-b", "main", str(repo))
+    _git(repo, "config", "user.email", "worker@example.com")
+    _git(repo, "config", "user.name", "Kanban Worker")
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "base")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-u", "origin", "main")
+    branch = "codex/kanban-receipt"
+    _git(repo, "checkout", "-b", branch)
+    if changed:
+        (repo / "tracked.txt").write_text("base\nchange\n", encoding="utf-8")
+        _git(repo, "add", "tracked.txt")
+        _git(repo, "commit", "-m", "change")
+        _git(repo, "push", "-u", "origin", branch)
+    # Preserve the locally proven remote-tracking refs while giving the receipt
+    # validator the canonical repository identity it must match.
+    _git(repo, "remote", "set-url", "origin", "https://github.com/mrkillbob/hermes-agent.git")
+    head = _git(repo, "rev-parse", "HEAD")
+    with kbc.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_kind='worktree', workspace_path=?, branch_name=? WHERE id=?",
+                (str(repo), branch, worker_env),
+            )
+    return repo, branch, head
+
+
+def test_complete_rejects_repository_change_without_pr_receipt(worker_env, tmp_path):
+    """A committed and pushed worktree cannot disappear behind a prose-only handoff."""
+    _repo, branch, head = _repository_worker(worker_env, tmp_path, changed=True)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({
+        "summary": "implemented the repository change",
+        "metadata": {
+            "repository_changes": True,
+            "commit_sha": head,
+            "pushed_branch": branch,
+            "repository": "mrkillbob/hermes-agent",
+            "base_branch": "main",
+        },
+    }))
+
+    assert "pr_url" in out["error"]
+    assert "still in-flight" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_complete_accepts_exact_repository_pr_receipt(worker_env, tmp_path):
+    """A clean worktree may complete when its pushed head and PR receipt agree."""
+    _repo, branch, head = _repository_worker(worker_env, tmp_path, changed=True)
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({
+        "summary": "implemented and published the repository change",
+        "metadata": {
+            "repository_changes": True,
+            "commit_sha": head,
+            "pushed_branch": branch,
+            "repository": "mrkillbob/hermes-agent",
+            "base_branch": "main",
+            "pr_url": "https://github.com/mrkillbob/hermes-agent/pull/123",
+        },
+    }))
+
+    assert out["ok"] is True, out
+
+
+def test_complete_accepts_explicit_no_repository_changes(worker_env, tmp_path):
+    """Read-only worktree tasks need an explicit no-change receipt, not a PR."""
+    _repo, _branch, _head = _repository_worker(worker_env, tmp_path, changed=False)
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({
+        "summary": "read-only diagnostic complete",
+        "metadata": {"repository_changes": False},
+    }))
+
+    assert out["ok"] is True, out
+
+
+def test_complete_rejects_worktree_without_change_declaration(worker_env, tmp_path):
+    """A clean diagnostic worktree still states explicitly that it changed no repository files."""
+    _repo, _branch, _head = _repository_worker(worker_env, tmp_path, changed=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({"summary": "read-only diagnostic complete"}))
+
+    assert "repository_changes" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
 
 
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):

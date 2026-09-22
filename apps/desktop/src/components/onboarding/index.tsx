@@ -225,7 +225,7 @@ export function DesktopOnboardingOverlay({
       scope,
       profile: scope.profile ?? undefined,
       requestGateway:
-        scope.profile && (onboarding.targetScope || scope.connectionId)
+        scope.connectionId || (scope.profile && onboarding.targetScope)
           ? (method, params) => requestOnboardingGateway(scope, method, params)
           : requestGateway,
       onCompleted: () => onCompletedRef.current?.()

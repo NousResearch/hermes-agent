@@ -181,3 +181,63 @@ it('keeps an explicitly untagged owner through Change → Add provider', async (
   expect(api.mock.calls.every(([request]) => !(request as { connectionId?: string }).connectionId)).toBe(true)
   client.clear()
 })
+
+it.each([null, undefined])('pins a registry owner when its profile is %s', async profile => {
+  const localRequest = vi.fn(async (_method: string, _params?: Record<string, unknown>) => ({ ok: true }))
+
+  const localDial = vi.fn(async () => {
+    throw new Error('A registry-owned setup must not dial the legacy connection')
+  })
+
+  const remoteDial = vi.fn(async () => ({
+    connectionId: 'athena',
+    profile: 'default',
+    sharedRemote: true,
+    mode: 'remote',
+    authMode: 'token',
+    baseUrl: 'https://athena.invalid',
+    wsUrl: 'wss://athena.invalid/api/ws',
+    token: 'fixture-only'
+  }))
+
+  const api = vi.fn(async () => ({ providers: [provider] }))
+  Object.defineProperty(window, 'hermesDesktop', {
+    configurable: true,
+    value: {
+      api,
+      getConnection: localDial,
+      getConnectionFor: remoteDial,
+      touchBackend: vi.fn(async () => undefined)
+    }
+  })
+  configureGatewayRegistry({ onEvent: vi.fn() })
+  setPrimaryGateway({ connectionState: 'open', request: localRequest } as never, 'default')
+  setPrimaryGatewayConnection({ connectionId: 'local' })
+  setApiRequestConnection('local')
+  setApiRequestProfile('default')
+
+  await act(async () => {
+    startManualProviderOAuth('openai-codex', { connectionId: 'athena', profile })
+  })
+  render(
+    <DesktopOnboardingOverlay
+      enabled={false}
+      profile="default"
+      requestGateway={async (method, params) => (await localRequest(method, params)) as never}
+    />
+  )
+  await waitFor(() => expect(mocks.begin).toHaveBeenCalledOnce())
+  const context = mocks.begin.mock.calls[0][1] as OnboardingContext
+
+  await startOAuthLogin('openai-codex', context.scope)
+  expect(api).toHaveBeenLastCalledWith(
+    expect.objectContaining({ connectionId: 'athena', path: '/api/providers/oauth/openai-codex/start' })
+  )
+  await context.requestGateway('setup.status')
+  await context.requestGateway('setup.runtime_check', { provider: 'openai-codex' })
+  expect(remoteDial).toHaveBeenCalledWith({ connectionId: 'athena', profile: 'default' })
+  expect(mocks.rpc).toHaveBeenCalledWith('setup.status', { profile: 'default' })
+  expect(mocks.rpc).toHaveBeenCalledWith('setup.runtime_check', { provider: 'openai-codex', profile: 'default' })
+  expect(localDial).not.toHaveBeenCalled()
+  expect(localRequest).not.toHaveBeenCalled()
+})

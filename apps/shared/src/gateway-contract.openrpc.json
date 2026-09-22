@@ -4256,6 +4256,13 @@
             "title": "Has Desktop Half",
             "type": "boolean"
           },
+          "servers": {
+            "items": {
+              "$ref": "#/components/schemas/PluginServerRow"
+            },
+            "title": "Servers",
+            "type": "array"
+          },
           "catalog_name": {
             "anyOf": [
               {
@@ -4365,7 +4372,8 @@
           "status",
           "portable",
           "install_dir",
-          "has_desktop_half"
+          "has_desktop_half",
+          "servers"
         ],
         "title": "AgentPluginRow",
         "type": "object"
@@ -19367,6 +19375,42 @@
         ],
         "title": "PingResult",
         "type": "object"
+      },
+      "PluginServerRow": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "state": {
+            "$ref": "#/components/schemas/PluginServerState"
+          },
+          "sentence": {
+            "title": "Sentence",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "state",
+          "sentence"
+        ],
+        "title": "PluginServerRow",
+        "type": "object"
+      },
+      "PluginServerState": {
+        "enum": [
+          "connected",
+          "app_not_running",
+          "endpoint_unavailable",
+          "no_interactive_session",
+          "version_too_old",
+          "missing_app",
+          "unknown"
+        ],
+        "title": "PluginServerState",
+        "type": "string"
       },
       "PluginSettingField": {
         "additionalProperties": false,

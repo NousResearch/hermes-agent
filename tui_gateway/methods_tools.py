@@ -1472,6 +1472,40 @@ def _(rid, params: dict) -> dict:
 
 
 # ─── Plugins ─────────────────────────────────────────────────────────────────
+def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) -> list[dict]:
+    if not portable or plugin_dir is None:
+        return []
+    package = _tools_mod("hermes_cli.agent_plugins").load_agent_plugin(plugin_dir, plugin_dir)
+    namespace = package.manifest.get("extensions", {}).get("com.nousresearch.hermes", {})
+    declared = namespace.get("servers", {})
+    if not isinstance(declared, dict):
+        return []
+    server_namespace = _tools_mod("hermes_cli.plugins_manifest")._portable_skill_namespace(key)
+    liveness = _tools_mod("tools.mcp_liveness")
+    core = _tools_mod("tools.mcp_tool_common")._core
+    resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
+    rows = []
+    for name in sorted(declared):
+        internal_name = f"{server_namespace}__{name}"
+        connection_key = resolve_key(internal_name)
+        server = core._servers.get(connection_key)
+        connected = server is not None and (server.session is not None or server._is_recycled_stdio())
+        if connected:
+            rows.append({"name": name, "state": "connected", "sentence": ""})
+            continue
+        decl = _tools_mod("hermes_platform.declaration").lookup(internal_name)
+        status = liveness.status(internal_name)
+        if decl is None or status is None:
+            rows.append({"name": name, "state": "unknown", "sentence": ""})
+            continue
+        rows.append({
+            "name": name,
+            "state": status.state,
+            "sentence": liveness.describe(decl, status.availability, status.state),
+        })
+    return rows
+
+
 def _plugin_rows() -> list[dict]:
     pc = _tools_mod("hermes_cli.plugins_cmd")
     cat = _tools_mod("hermes_cli.plugins_cmd_catalog")
@@ -1489,13 +1523,15 @@ def _plugin_rows() -> list[dict]:
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
         _dir_path = Path(str(_dir)) if _dir else None
+        portable = pc._is_portable_plugin_dir(_dir)
         out.append({
             "name": name, "key": key, "version": str(version or ""), "description": desc or "",
-            "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
+            "source": source, "status": status, "portable": portable,
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
             # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
             "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
+            "servers": _plugin_server_rows(_dir_path, key, portable=portable),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out

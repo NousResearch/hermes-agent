@@ -632,6 +632,22 @@ class PluginSettingField(Result):
     has_value: bool | None = None
 
 
+class PluginServerState(WireEnum):
+    connected = "connected"
+    app_not_running = "app_not_running"
+    endpoint_unavailable = "endpoint_unavailable"
+    no_interactive_session = "no_interactive_session"
+    version_too_old = "version_too_old"
+    missing_app = "missing_app"
+    unknown = "unknown"
+
+
+class PluginServerRow(Result):
+    name: str
+    state: PluginServerState
+    sentence: str
+
+
 class AgentPluginRow(Result):
     """``methods_tools._plugin_rows`` + ``plugins_cmd_catalog.catalog_row_fields`` provenance."""
 
@@ -644,6 +660,7 @@ class AgentPluginRow(Result):
     portable: bool
     install_dir: str
     has_desktop_half: bool
+    servers: list[PluginServerRow]
     catalog_name: str | None = None
     catalog_tier: str | None = None
     installed_sha: str | None = None

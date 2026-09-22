@@ -1132,6 +1132,13 @@ def _(rid, params: dict) -> dict:
         temperature = float(params["temperature"]) if params.get("temperature") is not None else 0.3
     except (TypeError, ValueError):
         temperature = 0.3
+    reasoning_effort = params.get("reasoning_effort")
+    reasoning_config = None
+    if reasoning_effort not in (None, ""):
+        from hermes_constants import parse_reasoning_effort
+        reasoning_config = parse_reasoning_effort(reasoning_effort)
+        if reasoning_config is None:
+            return _err(rid, 4002, f"unknown reasoning_effort: {reasoning_effort}")
     if not template and not str(instructions).strip() and not str(user_input).strip():
         return _err(rid, 4030, "llm.oneshot requires a template or instructions/input")
     session = _sessions.get(params.get("session_id") or "")
@@ -1142,6 +1149,7 @@ def _(rid, params: dict) -> dict:
                 instructions=instructions, user_input=user_input, template=template, variables=variables,
                 task=(params.get("task") or "title_generation").strip() or "title_generation",
                 max_tokens=_int_param(params, "max_tokens", 1024) or 1024, temperature=temperature,
+                reasoning_config=reasoning_config,
                 main_runtime=_main_runtime_from_agent(session.get("agent")) if session else None)})
     except (KeyError, ValueError) as e:
         return _err(rid, 4031 if isinstance(e, KeyError) else 4032, str(e))

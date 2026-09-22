@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import array
 import inspect
+from collections import OrderedDict
 from contextlib import suppress
 import logging
 import mimetypes
@@ -126,6 +127,17 @@ def _matrix_voice_metadata_for_file(path: Path) -> Dict[str, Any]:
     return metadata
 
 _MATRIX_BANG_COMMAND_RE = re.compile(r"^!([A-Za-z][A-Za-z0-9_-]*)(?=$|\s)(.*)$", re.DOTALL)
+
+
+def _normalize_reaction_key(key: str) -> str:
+    """Strip Unicode variation selectors (U+FE0E text, U+FE0F emoji) from a reaction key.
+
+    Clients disagree on whether to append U+FE0F to text-presentation emoji:
+    Element sends "❌" (U+274C), Beeper sends "❌️" (U+274C U+FE0F). Stripping
+    both selectors makes them compare equal. We deliberately do NOT fold ZWJ,
+    skin-tone modifiers, or whitespace — those change emoji identity.
+    """
+    return key.replace("\ufe0e", "").replace("\ufe0f", "")
 
 
 def _resolve_matrix_bang_command(name: str) -> str | None:
@@ -818,6 +830,111 @@ class MatrixAdapter(BasePlatformAdapter):
     # Class-level defaults keep object.__new__-built test instances working.
     max_message_length = DEFAULT_MAX_MESSAGE_LENGTH
     _SPLIT_THRESHOLD = DEFAULT_MAX_MESSAGE_LENGTH - 100
+    # Reply-walk budget for resolving a nested reply's true thread root (Bug 1).
+    _reply_event_cache_max = 2048   # bounded LRU of (room, event) -> routing facts
+    _reply_lookup_max_hops = 16     # max chain depth before giving up
+    _reply_lookup_timeout = 3.0     # whole-chain bound incl. fetch/decrypt, seconds
+
+    def _remember_reply_event(self, room_id: str, event_id: str, sender: str,
+                              relates_to: dict, legacy_reply_to: str | None = None) -> None:
+        """Bounded, room-keyed routing facts only; never retain message bodies.
+
+        Stores only the fields the reply walk consumes (rel_type, the relation's
+        event_id, and the nested reply target) plus any legacy top-level
+        ``m.in_reply_to`` — enough to walk a reply chain back to its thread root.
+        Edit bodies (``m.new_content``) and other relation payloads are dropped.
+        Used only to resolve *which* thread a nested reply belongs to — never for
+        authorization.
+        """
+        if not event_id:
+            return
+        if not hasattr(self, "_reply_events"):
+            self._reply_events = OrderedDict()
+        relation = relates_to or {}
+        routing = {
+            "rel_type": relation.get("rel_type"),
+            "event_id": relation.get("event_id"),
+            "m.in_reply_to": (relation.get("m.in_reply_to") or {}).get("event_id"),
+        }
+        key = (room_id, event_id)
+        self._reply_events[key] = (sender, routing, legacy_reply_to)
+        self._reply_events.move_to_end(key)
+        while len(self._reply_events) > self._reply_event_cache_max:
+            self._reply_events.popitem(last=False)
+
+    async def _resolve_reply_target(self, room_id: str, event_id: str) -> tuple[str | None, str | None]:
+        """Bound the whole recovery chain, including decryption, not each hop.
+
+        Returns (thread_root_event_id, target_sender) or (None, None) when no thread
+        evidence is found. Fetch/decryption failures never grant anything — they just
+        leave the root unresolved so the caller keeps main's synthetic-thread policy.
+        """
+        try:
+            return await asyncio.wait_for(
+                self._walk_reply_target(room_id, event_id), self._reply_lookup_timeout)
+        except Exception:
+            # Cancellation still propagates (CancelledError is a BaseException).
+            return None, None
+
+    async def _walk_reply_target(self, room_id: str, event_id: str) -> tuple[str | None, str | None]:
+        """Walk a reply chain up to its thread root.
+
+        Follows ``m.in_reply_to`` (nested or legacy) and ``m.replace`` (edits) until it
+        reaches an event carrying ``rel_type: m.thread``; that event's ``event_id`` is the
+        thread root. If the chain ends without any thread evidence, returns (None, None)
+        so the caller preserves main's synthetic-thread policy rather than inventing a
+        thread from an ordinary reply chain.
+        """
+        seen = set()
+        target_sender = None
+        for _ in range(self._reply_lookup_max_hops):
+            if not event_id or event_id in seen:
+                return None, None
+            seen.add(event_id)
+            record = getattr(self, "_reply_events", {}).get((room_id, event_id))
+            if record is not None:
+                self._reply_events.move_to_end((room_id, event_id))  # true LRU: refresh on read
+            if record is None:
+                try:
+                    event = await self._client.get_event(RoomID(room_id), EventID(event_id))
+                    if str(event.room_id) != room_id or str(event.event_id) != event_id:
+                        return None, None
+                    if str(event.type) == "m.room.encrypted":
+                        sender = str(event.sender)
+                        event = await self._client.crypto.decrypt_megolm_event(event)
+                        if (str(event.room_id) != room_id or str(event.event_id) != event_id
+                                or str(event.sender) != sender):
+                            return None, None
+                    content = event.content
+                    if hasattr(content, "serialize"):
+                        content = content.serialize()
+                    if str(event.type) != "m.room.message" or not isinstance(content, dict):
+                        return None, None
+                    self._remember_reply_event(
+                        room_id, event_id, str(event.sender),
+                        content.get("m.relates_to") or {},
+                        (content.get("m.in_reply_to") or {}).get("event_id"))
+                    record = self._reply_events[(room_id, event_id)]
+                except Exception:
+                    return None, None
+            sender, relation, legacy_reply = record
+            if target_sender is None:
+                target_sender = sender
+            # Thread evidence: stop here and report the root this event points at.
+            if relation.get("rel_type") == "m.thread" and relation.get("event_id"):
+                return str(relation["event_id"]), target_sender
+            # Follow the chain: edits point at the original; replies point at the parent.
+            parent = None
+            if relation.get("rel_type") == "m.replace" and relation.get("event_id"):
+                parent = relation["event_id"]
+            elif relation.get("m.in_reply_to"):
+                parent = relation["m.in_reply_to"]
+            elif legacy_reply:
+                parent = legacy_reply
+            if not parent:
+                return None, None  # no thread evidence -> unresolved
+            event_id = str(parent)
+        return None, None  # hop exhaustion -> unresolved
 
     def _resolve_store_dir(self) -> Path:
         """Pin the crypto-store dir to the active profile (connect() runs inside the profile
@@ -1419,6 +1536,9 @@ class MatrixAdapter(BasePlatformAdapter):
         """Send one m.room.message event (45s cap) and return its event ID as str."""
         event_id = await asyncio.wait_for(
             self._client.send_message_event(RoomID(chat_id), EventType.ROOM_MESSAGE, msg_content), timeout=45)
+        self._remember_reply_event(
+            chat_id, str(event_id), self._user_id, msg_content.get("m.relates_to") or {},
+            (msg_content.get("m.in_reply_to") or {}).get("event_id"))
         return str(event_id)
 
     async def create_handoff_thread(self, parent_chat_id: str, name: str) -> Optional[str]:
@@ -1661,7 +1781,7 @@ class MatrixAdapter(BasePlatformAdapter):
 
     _EA_REACTIONS = {"once": "✅", "session": "🌀", "always": "♾️", "deny": "❌"}
     _EA_LEGEND = {"once": "✅ = approve once", "session": "🌀 = approve for this session",
-                  "always": "♾️ = approve always", "deny": "❎ = deny"}
+                  "always": "♾️ = approve always", "deny": "❌ = deny"}
     _EA_TYPED_HINT = {"session": "Reply `!approve session` to approve this pattern for the session, ",
                       "always": "`!approve always` to approve permanently, "}
 
@@ -2064,6 +2184,21 @@ class MatrixAdapter(BasePlatformAdapter):
                 body = quote_block + self._strip_mention(reply_text)
             else:
                 body = self._strip_mention(body)
+        # Bug 1: a nested reply (m.in_reply_to -> a bot reply that is itself in a
+        # thread) carries no direct m.thread relation, so thread_id is still None.
+        # Walk the reply chain to recover the true thread root so we continue the
+        # existing thread instead of orphaning a new one (invisible in Element).
+        # This runs AFTER the mention gates, so a resolved root never grants a
+        # require_mention bypass — it only routes an already-accepted message into
+        # the right thread. Falls through to the synthetic policy below when no
+        # thread evidence is found (ordinary reply chains stay non-threads).
+        if not thread_id:
+            reply_to = ((relates_to.get("m.in_reply_to") or {}).get("event_id")
+                        or (source_content.get("m.in_reply_to") or {}).get("event_id"))
+            if reply_to:
+                resolved_root, _ = await self._resolve_reply_target(room_id, reply_to)
+                if resolved_root:
+                    thread_id = resolved_root
         # Real thread roots are preserved above; synthetic roots (this event) follow policy: DM
         # @mention threads / DM auto-thread, or room auto-thread unless session_scope pins the room.
         if not thread_id:
@@ -2081,6 +2216,9 @@ class MatrixAdapter(BasePlatformAdapter):
             guild_id=identity.server_name, parent_chat_id=room_id if thread_id else None, message_id=event_id)
         if thread_id:
             await self._threads.mark_async(thread_id)  # covers real roots and synthetic ones alike
+        self._remember_reply_event(
+            room_id, event_id, sender, relates_to,
+            (source_content.get("m.in_reply_to") or {}).get("event_id"))
         self._background_read_receipt(room_id, event_id)
         return body, is_dm, chat_type, thread_id, display_name, source
 
@@ -2458,7 +2596,14 @@ class MatrixAdapter(BasePlatformAdapter):
             return True, prompt, None
         if not await self._validate_matrix_prompt_reactor(room_id, reacts_to, sender, prompt, label):
             return True, prompt, None
-        selection = (prompt.choices if choices is None else choices).get(key)
+        # Bug 2: clients disagree on variation selectors (Element "❌" vs Beeper
+        # "❌️" = U+274C U+FE0F). Normalize both the incoming key and the choice
+        # map keys before matching. If two distinct raw keys normalize to the
+        # same value the match is ambiguous — reject rather than guess.
+        choice_map = prompt.choices if choices is None else choices
+        norm_key = _normalize_reaction_key(key)
+        matches = [v for k, v in choice_map.items() if _normalize_reaction_key(k) == norm_key]
+        selection = matches[0] if len(matches) == 1 else None
         if selection is None:
             await self._send_invalid_reaction_feedback(room_id, reacts_to, invalid_text)
         return True, prompt, selection

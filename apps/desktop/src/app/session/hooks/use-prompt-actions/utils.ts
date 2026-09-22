@@ -737,4 +737,8 @@ export interface SubmitTextOptions {
   /** Stable stored session id for optimistic/cache updates and stale-runtime
    *  recovery. Distinct from the runtime session id minted by the gateway. */
   storedSessionId?: string | null
+  /** The composer-queue entry this send drains (queue drains only). A
+   *  SESSION_NOT_OWNED refusal flips that entry to the patient retry policy
+   *  instead of burning the fast auto-drain budget. */
+  queueEntryId?: string
 }

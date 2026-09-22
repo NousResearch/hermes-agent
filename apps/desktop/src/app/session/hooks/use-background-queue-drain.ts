@@ -6,8 +6,13 @@ import { resetBrowseState } from '@/store/composer-input-history'
 import {
   $parkedQueueSessions,
   $queuedPromptsBySession,
+  clearQueuedPromptHeld,
   getQueuedPrompts,
+  HELD_DRAIN_MAX_WAIT_MS,
+  HELD_DRAIN_RETRY_MS,
+  isQueuedPromptHeld,
   MAX_AUTO_DRAIN_ATTEMPTS,
+  MAX_HELD_DRAIN_ATTEMPTS,
   type QueuedPromptEntry,
   removeQueuedPrompt,
   shouldAutoDrain
@@ -51,6 +56,7 @@ export function useBackgroundQueueDrain({
   const submitTextRef = useRef(submitText)
   const drainingSessionIdsRef = useRef(new Set<string>())
   const drainFailuresRef = useRef(new Map<string, number>())
+  const heldDrainFailuresRef = useRef(new Map<string, number>())
   const retryTimersRef = useRef<number[]>([])
   const [retryTick, setRetryTick] = useState(0)
 
@@ -59,7 +65,7 @@ export function useBackgroundQueueDrain({
     submitTextRef.current = submitText
   }, [submitText])
 
-  const scheduleRetry = useCallback(() => {
+  const scheduleRetry = useCallback((delayMs: number = BACKGROUND_DRAIN_RETRY_MS) => {
     if (typeof window === 'undefined') {
       return
     }
@@ -67,7 +73,7 @@ export function useBackgroundQueueDrain({
     const timer = window.setTimeout(() => {
       retryTimersRef.current = retryTimersRef.current.filter(id => id !== timer)
       setRetryTick(tick => tick + 1)
-    }, BACKGROUND_DRAIN_RETRY_MS)
+    }, delayMs)
 
     retryTimersRef.current.push(timer)
   }, [])
@@ -91,7 +97,44 @@ export function useBackgroundQueueDrain({
 
       drainingSessionIdsRef.current.add(sessionKey)
 
+      // The entry's held marker can appear/advance while the attempt is in
+      // flight, so read it live instead of trusting the captured copy.
+      const heldSinceOf = (): number | undefined => {
+        const live = getQueuedPrompts(sessionKey).find(candidate => candidate.id === entry.id)
+
+        return live && isQueuedPromptHeld(live) ? live.held.since : undefined
+      }
+
       const onFail = () => {
+        const heldSince = heldSinceOf()
+
+        if (heldSince !== undefined) {
+          // The chat is held by another surface (a hidden delivery turn, another
+          // window): a refusal is EXPECTED — retry lightly (never on the fast
+          // budget) until the wait cap, then stop with the standard toast and
+          // leave the entry queued for a manual send.
+          const heldFailures = (heldDrainFailuresRef.current.get(entry.id) ?? 0) + 1
+          heldDrainFailuresRef.current.set(entry.id, heldFailures)
+
+          if (Date.now() - heldSince < HELD_DRAIN_MAX_WAIT_MS && heldFailures < MAX_HELD_DRAIN_ATTEMPTS) {
+            scheduleRetry(HELD_DRAIN_RETRY_MS)
+
+            return
+          }
+
+          heldDrainFailuresRef.current.delete(entry.id)
+          clearQueuedPromptHeld(sessionKey, entry.id)
+          drainFailuresRef.current.set(entry.id, MAX_AUTO_DRAIN_ATTEMPTS)
+          notify({
+            id: `composer-background-queue-stuck-${sessionKey}`,
+            kind: 'error',
+            title: t.composer.queueStuckTitle,
+            message: t.composer.queueStuckBody
+          })
+
+          return
+        }
+
         const failures = (drainFailuresRef.current.get(entry.id) ?? 0) + 1
         drainFailuresRef.current.set(entry.id, failures)
 
@@ -123,6 +166,7 @@ export function useBackgroundQueueDrain({
             submitTextRef.current(liveEntry.text, {
               attachments: liveEntry.attachments,
               fromQueue: true,
+              queueEntryId: liveEntry.id,
               sessionId: runtimeSessionId,
               storedSessionId: sessionKey
             })
@@ -133,6 +177,7 @@ export function useBackgroundQueueDrain({
           }
 
           drainFailuresRef.current.delete(liveEntry.id)
+          heldDrainFailuresRef.current.delete(liveEntry.id)
           removeQueuedPrompt(sessionKey, liveEntry.id)
           resetBrowseState(runtimeSessionId)
 

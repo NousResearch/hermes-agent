@@ -1498,10 +1498,11 @@ def _plugins_update(rid, params):
     if not sidecar:
         return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
     try:
-        sha, changed = cat.repin_catalog_plugin(target, sidecar)
+        result = cat.repin_catalog_plugin(target, sidecar)
     except pc.PluginOperationError as e:
         return _err(rid, 4021, str(e))
-    return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
+    return _ok(rid, {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,
+                     "warnings": list(result.warnings)})
 
 
 def _plugins_remove(rid, params):

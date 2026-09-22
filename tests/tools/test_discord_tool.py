@@ -502,12 +502,12 @@ class TestEnsureSubissueContext:
         mock_req.side_effect = request
         with monkeypatch.context() as patch_context:
             patch_context.setattr(tool, "_write_subissue_contexts", fail_receipt_write)
-            with pytest.raises(OSError, match="receipt write interrupted"):
-                discord_core(
-                    action="ensure_subissue_context", guild_id="99", channel_id="11",
-                    issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
-                    handoff="HANDOFF — #485",
-                )
+            interrupted = json.loads(discord_core(
+                action="ensure_subissue_context", guild_id="99", channel_id="11",
+                issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
+                handoff="HANDOFF — #485",
+            ))
+        assert "receipt write interrupted" in interrupted["error"]
         retried = json.loads(discord_core(
             action="ensure_subissue_context", guild_id="99", channel_id="11",
             issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",

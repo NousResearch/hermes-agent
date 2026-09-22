@@ -149,6 +149,63 @@ def test_route_with_the_active_private_credential_pool_is_compatible():
     assert agent.model == "fast-model"
 
 
+def test_independently_loaded_same_credential_pool_allows_midturn_route():
+    """Real pool reloads create new objects; compare credential identity, not object identity."""
+    from agent.credential_pool import CredentialPool, PooledCredential
+    from agent.midturn_model_router import maybe_apply_midturn_route
+
+    def pool(credential_id: str, token: str = "base-key") -> CredentialPool:
+        return CredentialPool("same-provider", [PooledCredential(
+            provider="same-provider", id=credential_id, label="test", auth_type="api_key",
+            priority=0, source="manual", access_token=token,
+        )])
+
+    agent = _agent()
+    agent._credential_pool = pool("stable-credential")
+    assert agent._credential_pool is not pool("stable-credential")
+
+    def reloaded_runtime(provider, model):
+        runtime = _runtime(provider, model)
+        runtime["credential_pool"] = pool("stable-credential")
+        return runtime
+
+    applied = maybe_apply_midturn_route(
+        agent, messages=[{"role": "tool", "content": "completed inspection"}],
+        original_user_message="Inspect the data.", config_loader=_config,
+        runtime_resolver=reloaded_runtime,
+        controller=lambda *_args: {"choice": "routine", "confidence": 1.0},
+    )
+    assert applied is True
+    assert agent.model == "fast-model"
+
+
+def test_different_pool_credential_identity_is_rejected():
+    from agent.credential_pool import CredentialPool, PooledCredential
+    from agent.midturn_model_router import maybe_apply_midturn_route
+
+    def pool(credential_id: str) -> CredentialPool:
+        return CredentialPool("same-provider", [PooledCredential(
+            provider="same-provider", id=credential_id, label="test", auth_type="api_key",
+            priority=0, source="manual", access_token="base-key",
+        )])
+
+    agent = _agent()
+    agent._credential_pool = pool("original-credential")
+
+    def different_pool(provider, model):
+        runtime = _runtime(provider, model)
+        runtime["credential_pool"] = pool("other-credential")
+        return runtime
+
+    assert maybe_apply_midturn_route(
+        agent, messages=[{"role": "tool", "content": "completed inspection"}],
+        original_user_message="Inspect the data.", config_loader=_config,
+        runtime_resolver=different_pool,
+        controller=lambda *_args: {"choice": "routine", "confidence": 1.0},
+    ) is False
+    assert agent.model == "base-model"
+
+
 def test_midturn_route_400_does_not_activate_cross_provider_fallback_and_restores_runtime():
     """A temporary route must not turn one rejected request into a persistent provider hop."""
     from agent.error_classifier import classify_api_error

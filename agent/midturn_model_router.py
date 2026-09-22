@@ -37,6 +37,25 @@ def _active_runtime(agent: Any) -> dict[str, Any]:
     }
 
 
+def _same_pool_identity(active_pool: Any, target_pool: Any, api_key: Any) -> bool:
+    """Match a freshly reloaded pool to the exact active credential and provider.
+
+    Runtime resolution reloads ``CredentialPool`` per call, so object equality is not
+    meaningful. The live pool keeps its cursor, leases, and rotation state.
+    """
+    if active_pool is target_pool:
+        return True
+    if active_pool is None or target_pool is None:
+        return False
+    try:
+        if type(active_pool) is not type(target_pool) or active_pool.provider != target_pool.provider:
+            return False
+        active_id = active_pool.entry_id_for_api_key(api_key)
+        return bool(active_id) and active_id == target_pool.entry_id_for_api_key(api_key)
+    except (AttributeError, TypeError, ValueError):
+        return False
+
+
 def _same_runtime(agent: Any, route: TurnRoute) -> bool:
     target = route.runtime
     active = _active_runtime(agent)
@@ -50,7 +69,9 @@ def _same_runtime(agent: Any, route: TurnRoute) -> bool:
         # transplant a route's credential or pool into the cached agent; accepting a
         # different one would quietly send the selected model on an unknown runtime.
         and target.get("api_key") == active["api_key"]
-        and target.get("credential_pool") == getattr(agent, "_credential_pool", None)
+        and _same_pool_identity(
+            getattr(agent, "_credential_pool", None), target.get("credential_pool"), active["api_key"],
+        )
     )
 
 

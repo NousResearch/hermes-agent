@@ -132,6 +132,12 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
     scope_token = None
     try:
         scope_token = await _install_owner_secret_scope()
+        # Config loading may have happened before an external secret source was
+        # hydrated for this owner (multiplex startup). Unresolved placeholders
+        # deliberately survive interpolation, so render them again now that the
+        # owning profile's scope is installed instead of retrying a frozen
+        # ${VAR} header forever.
+        config = _config._interpolate_env_vars(config)
         await server.start(config)
     except asyncio.CancelledError:
         raise  # start() already reaps server._task; shutdown() here could swallow the cancel

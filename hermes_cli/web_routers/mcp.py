@@ -282,7 +282,7 @@ async def cancel_mcp_oauth_flow(flow_id: str, request: Request):
     flow = _mcp_oauth_flows.get(flow_id)
     if flow is None:  # expired/GC'd is the goal state of a cancel — not an error
         return {"ok": True, "status": "expired"}
-    flow.mark_error("Cancelled by user")
+    flow.mark_error("Cancelled by user", cancelled=True)
     return {"ok": True, "status": flow.snapshot()["status"]}
 
 
@@ -470,12 +470,16 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
         raise HTTPException(status_code=400, detail=str(exc)) from exc
 
     effective_profile = body.profile or profile
+    # Secrets are persisted to .env here (before install_entry runs); non-secret
+    # values ride preloaded_env into install_entry → config.yaml, so .env stays
+    # secrets-only and nothing re-prompts on a non-TTY server.
     if body.env:
         def _write_env():
             with _profile_scope(effective_profile):
-                for k, v in body.env.items():
-                    if v:
-                        save_env_value(k, v)
+                for spec in entry.auth.env or []:
+                    value = (body.env or {}).get(spec.name)
+                    if spec.secret and value:
+                        save_env_value(spec.name, value)
 
         await asyncio.to_thread(_write_env)
 
@@ -494,7 +498,10 @@ async def install_mcp_catalog_entry(body: MCPCatalogInstall, profile: Optional[s
     # No git step — install synchronously; install_entry goes through the
     # call-time config/env resolvers so the profile scope covers it.
     try:
-        await scoped_to_thread(effective_profile, lambda: mcp_catalog.install_entry(entry, enable=body.enable))
+        await scoped_to_thread(
+            effective_profile,
+            lambda: mcp_catalog.install_entry(entry, enable=body.enable, preloaded_env=body.env or None),
+        )
     except HTTPException:
         raise
     except Exception as exc:

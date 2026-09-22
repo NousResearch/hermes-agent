@@ -159,8 +159,9 @@ export class JsonRpcGatewayClient {
       createRequestId: this.options.createRequestId,
       heartbeatDeadlineMs: this.options.heartbeatDeadlineMs,
       heartbeatIntervalMs: this.options.heartbeatIntervalMs,
-      // Desktop/web have always counted any inbound frame as liveness; the
-      // TUI (stdio/attach owner) keeps its stricter pong-based contract.
+      // Desktop/web and the TUI alike count any inbound frame as liveness
+      // (#115251): streamed deltas are life; only a silent drop trips the
+      // deadline.
       heartbeatLiveness: 'any-inbound',
       onEvent: event => this.handleEvent(event),
       onHeartbeatFailure: error => this.invalidate(error.message),
@@ -252,6 +253,9 @@ export class JsonRpcGatewayClient {
         void this.fetchReplay()
       }
 
+      // Every rejection below names its failure class. The boot overlay renders this message verbatim, and
+      // a bare connectErrorMessage collapses "server refused the token", "TLS/DNS/refused before open" and
+      // "nothing answered" into one sentence nobody can act on (#41566).
       const onError = () => {
         if (settled || this.socket !== socket) {
           return
@@ -260,7 +264,8 @@ export class JsonRpcGatewayClient {
         settled = true
         cleanup()
         this.setState('error')
-        reject(new Error(this.options.connectErrorMessage))
+        // A browser/renderer 'error' event carries no detail; the class is the message.
+        reject(this.connectFailure('WebSocket error before open'))
       }
 
       // A server that closes during the handshake (auth gate, 4401/4403)
@@ -270,7 +275,7 @@ export class JsonRpcGatewayClient {
       // and moved the generation to 'closed'; the branch below only runs
       // when `onSocketClose` intercepted that transition and left the
       // half-open socket bound.
-      const onClose = () => {
+      const onClose = (event: CloseEvent) => {
         if (settled) {
           return
         }
@@ -283,7 +288,11 @@ export class JsonRpcGatewayClient {
           this.setState('error')
         }
 
-        reject(new Error(this.options.connectErrorMessage))
+        reject(
+          this.connectFailure(
+            `WebSocket closed during handshake: code ${event.code}${event.reason ? ` ${event.reason}` : ''}`
+          )
+        )
       }
 
       socket.addEventListener('open', onOpen, { once: true })
@@ -312,10 +321,14 @@ export class JsonRpcGatewayClient {
             this.setState('error')
           }
 
-          reject(new Error(this.options.connectErrorMessage))
+          reject(this.connectFailure(`no WebSocket open within ${this.options.connectTimeoutMs} ms`))
         }, this.options.connectTimeoutMs)
       }
     })
+  }
+
+  private connectFailure(detail: string): Error {
+    return new Error(`${this.options.connectErrorMessage} (${detail})`)
   }
 
   close(): void {
@@ -510,7 +523,7 @@ export class JsonRpcGatewayClient {
             continue
           }
 
-          this.dispatchIfNewer(event as GatewayEvent)
+          this.dispatchIfNewer({ ...event, replayed: true } as GatewayEvent)
         }
       }
     } catch {
@@ -572,7 +585,7 @@ export class JsonRpcGatewayClient {
 
     for (const parked of hold.values()) {
       for (const event of parked) {
-        this.dispatchIfNewer(event)
+        this.dispatchIfNewer({ ...event, replayed: true })
       }
     }
   }

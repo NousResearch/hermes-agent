@@ -1403,7 +1403,63 @@ class TestEnvWriteDenylist:
         with pytest.raises(ValueError, match="denylist"):
             save_env_value(protected_key, "1")
 
+    @pytest.mark.parametrize(
+        "protected_key",
+        [
+            # git exec helpers / redirection (same mechanism as GIT_SSH_COMMAND)
+            "GIT_CONFIG_PARAMETERS", "GIT_CONFIG_COUNT", "GIT_CONFIG_GLOBAL",
+            "GIT_CONFIG_SYSTEM", "GIT_CONFIG_NOSYSTEM", "GIT_CONFIG_KEY_17",
+            "GIT_CONFIG_VALUE_17",
+            "GIT_SSH", "GIT_ASKPASS", "GIT_EDITOR", "GIT_SEQUENCE_EDITOR",
+            "GIT_PAGER", "GIT_EXTERNAL_DIFF", "GIT_PROXY_COMMAND",
+            "GIT_TEMPLATE_DIR", "GIT_DIR",
+            # credential-prompt exec helpers
+            "SSH_ASKPASS", "SUDO_ASKPASS",
+            # loader families beyond the named members
+            "LD_PROFILE", "DYLD_PRINT_LIBRARIES",
+            # shell init / interactive hooks
+            "BASH_ENV", "ENV", "ZDOTDIR", "PROMPT_COMMAND", "VIMINIT", "EXINIT",
+            # invoked-command injection
+            "MANPAGER",
+            # interpreter / toolchain injection
+            "PERL5OPT", "PERL5LIB", "PERLLIB", "RUBYOPT", "RUBYLIB",
+            "PYTHONBREAKPOINT", "PYTHONCASEOK", "CLASSPATH",
+            "JAVA_TOOL_OPTIONS", "_JAVA_OPTIONS", "JDK_JAVA_OPTIONS",
+            "GOFLAGS", "RUSTFLAGS",
+        ],
+    )
+    def test_exec_influence_keys_are_not_writable(self, protected_key):
+        """Every member of the subprocess-execution class is refused, including the
+        unbounded GIT_CONFIG_KEY_n / GIT_CONFIG_VALUE_n pairs and loader prefixes."""
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
+
         assert protected_key not in load_env()
+
+    @pytest.mark.parametrize(
+        "allowed_key",
+        [
+            # Non-exec git env names a user may legitimately persist.
+            "GIT_COMMITTER_NAME", "GIT_AUTHOR_NAME", "GIT_TERMINAL_PROMPT",
+            "GIT_EDITOR_WIDE",  # near-miss: not the real GIT_EDITOR
+            # POSIX case: lowercase exec names are different, inert variables.
+            "git_config_parameters", "ld_preload",
+        ],
+    )
+    def test_non_exec_near_misses_still_writable(self, allowed_key):
+        save_env_value(allowed_key, "test-value-123")
+        env = load_env()
+        assert env[allowed_key] == "test-value-123"
+
+    @pytest.mark.parametrize("protected_key", ["Ld_Preload", "Git_Config_Parameters"])
+    def test_windows_policy_denies_mixed_case_exec_names(self, protected_key, monkeypatch):
+        """Windows env names are case-insensitive, so the writer must refuse the mixed-case
+        spelling of a denied exec-influence name too."""
+        import hermes_cli.config as config_mod
+
+        monkeypatch.setattr(config_mod, "_IS_WINDOWS", True)
+        with pytest.raises(ValueError, match="denylist"):
+            save_env_value(protected_key, "1")
 
     def test_preexisting_optional_mcps_override_still_loads(self, tmp_path):
         """The writer gate must not migrate or ignore operator-owned .env state."""
@@ -1959,6 +2015,18 @@ def test_empty_dict_default_sections_are_open_containers():
     known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
     assert known is False
     assert suggestion == "compression.model_thresholds"
+
+
+def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
+    """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
+    ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["lsp"]["warmup_timeout"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["broken_retry_seconds"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["exclude_roots"] == []
+    for key in ("lsp.warmup_timeout", "lsp.broken_retry_seconds", "lsp.exclude_roots"):
+        assert _validate_config_key(key) == (True, None)
 
 
 class TestSaveConfigExplicitPathAuthority:

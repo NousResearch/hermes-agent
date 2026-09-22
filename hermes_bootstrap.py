@@ -319,8 +319,24 @@ def activate_durable_lazy_target() -> None:
         pass  # a failed activation just leaves the backend reporting itself unavailable
 
 
+def export_scratch_tmp_env() -> None:
+    """Point ``TMPDIR``/``TMP``/``TEMP`` at ``HERMES_HOME/cache/scratch`` unless the user set them.
+
+    System temp is tmpfs on most Linux hosts and containers; Hermes' browser profiles, PTY
+    probes and every ``tempfile`` default a child script makes would eat RAM there. Runs at
+    import so every entry point and every child they spawn inherits it; ``hermes_cli.main``
+    re-runs it after ``--profile`` re-homes the process. Never raises.
+    """
+    try:
+        from hermes_constants import export_scratch_tmp_env as _export
+        _export()
+    except Exception:
+        pass  # a missing/unwritable home just leaves the system temp dir in place
+
+
 # Apply on import — entry points only need ``import hermes_bootstrap`` first.
 apply_windows_utf8_bootstrap()
 suppress_platform_ver_console()
 activate_durable_lazy_target()
 install_happy_eyeballs_socket_connect()
+export_scratch_tmp_env()

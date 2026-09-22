@@ -27,7 +27,7 @@ import { isMissingRpcMethod } from '@/lib/gateway-rpc'
 import { recoverInFlightTurnJournal } from '@/lib/inflight-turn-journal'
 import { setSessionYolo } from '@/lib/yolo-session'
 import { $clarifyRequests } from '@/store/clarify'
-import { announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
+import { announceGoneSessionDraft, announceNewSessionDraftKey, migrateSessionDraft } from '@/store/composer'
 import { clearQueuedPrompts, migrateQueuedPrompts } from '@/store/composer-queue'
 import { $connectionRequests } from '@/store/connection-request'
 import {
@@ -117,6 +117,7 @@ import {
   dropSessionState,
   focusOpenSession,
   holdSessionOwnerUntilForeground,
+  isSessionInForeground,
   openSessionTile,
   patchSessionTile,
   publishSessionState,
@@ -317,7 +318,10 @@ async function desktopSessionCreateParams(
   }
 
   const profile =
-    capturedRoute?.profile || requestedProfile || $newChatProfile.get() || normalizeProfileKey($activeGatewayProfile.get())
+    capturedRoute?.profile ||
+    requestedProfile ||
+    $newChatProfile.get() ||
+    normalizeProfileKey($activeGatewayProfile.get())
 
   if (capturedRoute) {
     await ensureGatewayAgent(capturedRoute.connectionId, profile)
@@ -437,7 +441,8 @@ export function useSessionActions({
     if (
       activeSessionIdRef.current !== storedIdRotation.runtimeSessionId ||
       selectedStoredSessionId !== storedIdRotation.previousStoredSessionId ||
-      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId)
+      (routedStoredSessionId !== null && routedStoredSessionId !== storedIdRotation.previousStoredSessionId) ||
+      !isSessionInForeground(storedIdRotation.previousStoredSessionId)
     ) {
       return
     }
@@ -811,15 +816,17 @@ export function useSessionActions({
         // to fall through into the last project folder while main chat was
         // occupied (openTab path for "New session in Home").
         const explicitTarget =
-          options?.profile !== undefined || options?.cwd !== undefined || options?.workspaceScope?.ownerRoute !== undefined
+          options?.profile !== undefined ||
+          options?.cwd !== undefined ||
+          options?.workspaceScope?.ownerRoute !== undefined
 
         const defaultTarget = options?.route === undefined && !explicitTarget ? defaultNewSessionTarget() : null
 
         const capturedRoute =
           options?.route !== undefined
             ? options.route
-            : options?.workspaceScope?.ownerRoute ??
-              (defaultTarget ? defaultTarget.route : resolveNewChatOwnerRoute(options?.profile))
+            : (options?.workspaceScope?.ownerRoute ??
+              (defaultTarget ? defaultTarget.route : resolveNewChatOwnerRoute(options?.profile)))
 
         // A named local profile uses the legacy profile-only transport (no
         // connectionId). Tab-strip "+" omits `options.profile`; the draft or
@@ -2171,6 +2178,11 @@ export function useSessionActions({
             return
           }
 
+          // The id is verifiably dead, but the text the user typed into it is
+          // still stashed under that key (#111868). Announce it so the
+          // composer's swap onto the fresh draft carries it over with an
+          // inline, undoable notice instead of leaving it stranded.
+          announceGoneSessionDraft(storedSessionId)
           startFreshSessionDraft(true)
 
           return

@@ -1696,6 +1696,8 @@ hooks_auto_accept: false         # See "Consent model" below
 
 Event names must be one of the [plugin hook events](#plugin-hooks); typos produce a "Did you mean X?" warning and are skipped. Unknown keys inside a single entry are ignored; missing `command` is a skip-with-warning. `timeout > 300` is clamped with a warning. `fail_closed: true` on an event other than `pre_tool_call` warns and is ignored (only blocking-capable events can fail closed).
 
+On Windows, a `command` that starts with an existing script file — the `~/.hermes/agent-hooks/x.sh` shape the examples below use — is spawned through that file's own interpreter (Git Bash for `.sh`/`.bash`, the running Hermes Python for `.py`), because `CreateProcess` has no shebang support and rejects a bare script with `WinError 193`. Every other command, and every POSIX platform, passes `argv` straight to `Popen`, where the kernel already honours the shebang.
+
 ### JSON wire protocol
 
 Each time the event fires, Hermes spawns a subprocess for every matching hook (matcher permitting), pipes a JSON payload to **stdin**, and reads **stdout** back as JSON.

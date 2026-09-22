@@ -186,6 +186,14 @@ type BotsMessages = {
     settingsTitle: string
     settingsDesc: string
     nameLabel: string
+    holdDetection: string
+    holdDetectionHint: string
+    compressHistory: string
+    compressHistoryHint: (member: string) => string
+    compressing: (member: string) => string
+    compressDone: (member: string, compressed: number, detail: string) => string
+    compressNothing: (member: string) => string
+    compressFailed: (member: string, error: string) => string
     searchToAdd: string
     searchToAddPlaceholder: string
     removeFromSelection: string
@@ -442,6 +450,16 @@ const en: BotsMessages = {
     settingsTitle: 'Group settings',
     settingsDesc: 'Rename the group or set a room picture. Members and history are kept.',
     nameLabel: 'Group name',
+    holdDetection: 'Detect stop directives',
+    holdDetectionHint: 'Let room messages put addressed members on hold until they are mentioned again.',
+    compressHistory: 'Compress history',
+    compressHistoryHint: (member: string) =>
+      `Compress ${member}'s hidden room history so the member stops failing with empty replies`,
+    compressing: (member: string) => `Compressing ${member}'s room history…`,
+    compressDone: (member: string, compressed: number, detail: string) =>
+      `Compressed ${compressed} room session${compressed === 1 ? '' : 's'} for ${member}${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `Nothing to compress for ${member} — no room session yet`,
+    compressFailed: (member: string, error: string) => `Could not compress ${member}'s room history: ${error}`,
     searchToAdd: 'Search bots to add',
     searchToAddPlaceholder: 'Search bots to add…',
     removeFromSelection: 'Remove from selection',
@@ -469,7 +487,8 @@ const en: BotsMessages = {
     heldMembersStatus: members => `Paused: ${members}`,
     holdReleaseHint: 'Mention a paused bot or send @all resume to release them.',
     needsYourInput: 'A bot in this group chat needs your input',
-    noMembersToSend: group => `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
+    noMembersToSend: group =>
+      `${group} has no members to send to — add a bot, or reopen the room if members are still loading.`,
     pictureGenerationFailed: 'Group picture generation failed',
     nameTaken: name => `A group named “${name}” already exists.`,
     memberCount: count => `${count} bots`,
@@ -690,6 +709,16 @@ const ja: BotsMessages = {
     settingsTitle: 'グループ設定',
     settingsDesc: 'グループ名の変更や部屋の画像の設定ができます。メンバーと履歴は保持されます。',
     nameLabel: 'グループ名',
+    holdDetection: '停止指示を検出',
+    holdDetectionHint: 'ルームのメッセージで、再びメンションされるまで対象メンバーを保留にします。',
+    compressHistory: '履歴を圧縮',
+    compressHistoryHint: (member: string) =>
+      `${member} の非表示のルーム履歴を圧縮し、空の応答で失敗しなくなるようにします`,
+    compressing: (member: string) => `${member} のルーム履歴を圧縮中…`,
+    compressDone: (member: string, compressed: number, detail: string) =>
+      `${member} のルームセッション ${compressed} 件を圧縮しました${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} に圧縮する履歴はありません — ルームセッションがまだありません`,
+    compressFailed: (member: string, error: string) => `${member} のルーム履歴を圧縮できませんでした: ${error}`,
     searchToAdd: '追加するボットを検索',
     searchToAddPlaceholder: '追加するボットを検索…',
     removeFromSelection: '選択から外す',
@@ -717,7 +746,8 @@ const ja: BotsMessages = {
     heldMembersStatus: members => `一時停止中: ${members}`,
     holdReleaseHint: '一時停止中のボットにメンションするか、@all resume を送信して再開します。',
     needsYourInput: 'このグループチャットのボットが入力を待っています',
-    noMembersToSend: group => `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
+    noMembersToSend: group =>
+      `${group} に送信先のメンバーがいません。ボットを追加するか、メンバーの読み込み中であればルームを開き直してください。`,
     pictureGenerationFailed: 'グループ画像の生成に失敗しました',
     nameTaken: name => `「${name}」という名前のグループはすでに存在します。`,
     memberCount: count => `ボット${count}体`,
@@ -934,6 +964,15 @@ const zh: BotsMessages = {
     settingsTitle: '群组设置',
     settingsDesc: '重命名群组或设置房间图片。成员和历史都会保留。',
     nameLabel: '群组名称',
+    holdDetection: '检测停止指令',
+    holdDetectionHint: '允许房间消息将指定成员保持暂停，直到再次提及该成员。',
+    compressHistory: '压缩历史',
+    compressHistoryHint: (member: string) => `压缩 ${member} 隐藏的房间历史，避免该成员因空回复而失败`,
+    compressing: (member: string) => `正在压缩 ${member} 的房间历史…`,
+    compressDone: (member: string, compressed: number, detail: string) =>
+      `已压缩 ${member} 的 ${compressed} 个房间会话${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 没有可压缩的历史 — 还没有房间会话`,
+    compressFailed: (member: string, error: string) => `无法压缩 ${member} 的房间历史: ${error}`,
     searchToAdd: '搜索要添加的机器人',
     searchToAddPlaceholder: '搜索要添加的机器人…',
     removeFromSelection: '从选择中移除',
@@ -1177,6 +1216,15 @@ const zhHant: BotsMessages = {
     settingsTitle: '群組設定',
     settingsDesc: '重新命名群組或設定房間圖片。成員和歷史都會保留。',
     nameLabel: '群組名稱',
+    holdDetection: '偵測停止指令',
+    holdDetectionHint: '允許房間訊息暫停指定成員，直到再次提及該成員。',
+    compressHistory: '壓縮歷史',
+    compressHistoryHint: (member: string) => `壓縮 ${member} 隱藏的房間歷史，避免該成員因空回覆而失敗`,
+    compressing: (member: string) => `正在壓縮 ${member} 的房間歷史…`,
+    compressDone: (member: string, compressed: number, detail: string) =>
+      `已壓縮 ${member} 的 ${compressed} 個房間會話${detail ? ` — ${detail}` : ''}`,
+    compressNothing: (member: string) => `${member} 沒有可壓縮的歷史 — 還沒有房間會話`,
+    compressFailed: (member: string, error: string) => `無法壓縮 ${member} 的房間歷史: ${error}`,
     searchToAdd: '搜尋要加入的機器人',
     searchToAddPlaceholder: '搜尋要加入的機器人…',
     removeFromSelection: '從選取中移除',

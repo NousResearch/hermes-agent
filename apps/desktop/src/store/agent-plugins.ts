@@ -59,15 +59,19 @@ export const $agentPluginsError = atom<string | null>(null)
 export const $agentPluginBusy = atom<string | null>(null)
 
 // Rows the Plugins page actually lists (and search should surface): plugins
-// the USER installed. Repo-bundled built-ins ship enabled-by-default and are
-// configured from their own surfaces, so they're pure noise here. The prefix
+// the USER installed, plus the few repo-bundled lifecycle plugins that use the
+// ordinary enable/disable contract and have no settings surface of their own
+// (#98861). Every other built-in (providers, platforms, browser/web backends,
+// dashboard auth, observability, unknown future keys) ships enabled-by-default
+// and is configured from its own surface, so it's pure noise here. The prefix
 // list is the fallback for older backends whose rows predate a reliable
 // `source` field — same curation stance as desktop-slash-commands.ts.
 const HIDDEN_KEY_PREFIXES = ['dashboard_auth/', 'model-providers/', 'platforms/']
+const MANAGEABLE_BUNDLED_KEYS = new Set(['disk-cleanup', 'security-guidance'])
 
 export const isDesktopRelevantPlugin = (row: AgentPluginRow): boolean => {
   if (row.source === 'bundled') {
-    return false
+    return MANAGEABLE_BUNDLED_KEYS.has(row.key ?? row.name)
   }
 
   const key = row.key
@@ -272,6 +276,37 @@ export async function updateAgentPlugin(
     await loadAgentPlugins(request, profile)
 
     return !result.unchanged
+  } catch (e) {
+    notifyError(e, failMessage)
+
+    return false
+  } finally {
+    $agentPluginBusy.set(null)
+  }
+}
+
+/** Uninstall a user-installed agent plugin (backend `plugins.manage remove`;
+ *  deletes `<HERMES_HOME>/plugins/<name>` and its install metadata). Drops the
+ *  row locally on success — callers rescan so a unified package's desktop half
+ *  is pruned too. Returns whether the plugin was removed. */
+export async function removeAgentPlugin(
+  request: GatewayRequest,
+  name: string,
+  failMessage: string,
+  profile?: string | null
+): Promise<boolean> {
+  $agentPluginBusy.set(name)
+
+  try {
+    const result = await request<{ ok?: boolean }>('plugins.manage', withProfile({ action: 'remove', name }, profile))
+
+    if (!result?.ok) {
+      throw new Error(failMessage)
+    }
+
+    $agentPlugins.set($agentPlugins.get().filter(row => row.name !== name))
+
+    return true
   } catch (e) {
     notifyError(e, failMessage)
 

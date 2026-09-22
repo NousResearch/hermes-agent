@@ -2638,7 +2638,7 @@ class TestFormatMessage:
 
         args = {"target": target, "pattern": pattern}
         ctx = SimpleNamespace(source=None, progress_mode="all", last_was_terminal_block=[False])
-        runner = SimpleNamespace(_adapter_for_source=lambda source: adapter)
+        runner = SimpleNamespace(_delivery_adapter_for=lambda source: adapter)
         message = TurnRunner(runner, ctx)._progress_build_message("search_files", pattern, args)
         client = adapter._app.client
         client.chat_postMessage.return_value = {"ok": True, "ts": "123.456"}
@@ -3070,7 +3070,10 @@ class TestThreadReplyHandling:
         from gateway.session import SessionEntry
 
         # Deserialize a legacy routing entry so lifecycle flags have real defaults.
+        # The thread key with a per-user suffix comes from the adapter's isolation flags (the runner
+        # seeds them into PlatformConfig.extra); this store has no bearing on the key any more.
         session_key = "agent:main:slack:group:T_TEAM:C123:123.000:U_USER"
+        adapter_with_session_store.config.extra["thread_sessions_per_user"] = True
         mock_session_store._entries = {session_key: SessionEntry.from_dict({
             "session_key": session_key,
             "session_id": "slack-thread-session",

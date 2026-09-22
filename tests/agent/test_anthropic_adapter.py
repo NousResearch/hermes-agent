@@ -1933,3 +1933,22 @@ def test_oauth_system_prompt_sanitizer_preserves_docs_url():
     assert "built by claude-code." in system_text  # a sentence-final dot is prose
     assert "claude-code's docs" in system_text  # so is a possessive
     assert kwargs["system"][-1]["text"].count("claude-code") == 3  # the caller's block, not the CC prefix
+
+
+def test_unsupported_inline_image_subtype_downgrades_to_text_for_anthropic(monkeypatch):
+    """Sibling of the Responses guard: a data:image/svg+xml (or bmp/tiff) part forwarded verbatim as
+    ``media_type`` 400s the Anthropic request on every replay — it must become a text placeholder
+    while the valid PNG still goes as an image block and ``image/jpg`` is normalized to JPEG."""
+    import tools.vision_tools_image_prep as prep
+    monkeypatch.setattr(prep, "_rasterize_svg_to_png", lambda svg_path, out_path: False)
+    messages = [{"role": "user", "content": [
+        {"type": "image_url", "image_url": {"url": "data:image/png;base64,iVBORw0KGgo="}},
+        {"type": "image_url", "image_url": {"url": "data:image/svg+xml;base64,PHN2Zy8+"}},
+        {"type": "image_url", "image_url": {"url": "data:image/jpg;base64,/9j/4AAQ"}},
+    ]}]
+    _, result = convert_messages_to_anthropic(messages)
+    blocks = result[0]["content"]
+    assert [b["type"] for b in blocks] == ["image", "text", "image"]
+    assert blocks[0]["source"] == {"type": "base64", "media_type": "image/png", "data": "iVBORw0KGgo="}
+    assert blocks[1]["text"] == "[image omitted: image/svg+xml is not a supported image format]"
+    assert blocks[2]["source"]["media_type"] == "image/jpeg"

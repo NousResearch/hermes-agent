@@ -11,6 +11,7 @@ import {
   deleteSession,
   getAllSessionMessages,
   getCronJobs,
+  getCustomEndpoints,
   getGlobalModelInfo,
   getGlobalModelOptions,
   getHermesConfig,
@@ -762,6 +763,18 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+
+  it('scopes custom endpoint reads to the requested settings profile', async () => {
+    await getCustomEndpoints('content-studio')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/providers/custom-endpoints',
+        profile: 'content-studio',
+        priority: 'foreground'
       })
     )
   })

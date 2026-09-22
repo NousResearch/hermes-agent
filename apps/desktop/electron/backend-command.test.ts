@@ -42,6 +42,56 @@ test('dashboardFallbackArgs preserves a --profile flag ahead of serve', () => {
   ])
 })
 
+test('dashboardFallbackArgs skips a profile named "serve" and rewrites the subcommand', () => {
+  // The profile VALUE 'serve' is not the subcommand: rewriting at index 1
+  // yields `--profile dashboard --no-open serve`, which still runs `serve`.
+  const serve = ['-m', 'hermes_cli.main', '--profile', 'serve', 'serve', '--host', '127.0.0.1', '--port', '0']
+  assert.deepEqual(dashboardFallbackArgs(serve), [
+    '-m',
+    'hermes_cli.main',
+    '--profile',
+    'serve',
+    'dashboard',
+    '--no-open',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
+})
+
+test('dashboardFallbackArgs skips a -p profile value named "serve"', () => {
+  const serve = ['-p', 'serve', 'serve', '--host', '127.0.0.1', '--port', '0']
+  assert.deepEqual(dashboardFallbackArgs(serve), [
+    '-p',
+    'serve',
+    'dashboard',
+    '--no-open',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
+})
+
+test('dashboardFallbackArgs rewrites through a --profile=serve self-contained flag', () => {
+  const serve = ['--profile=serve', 'serve', '--host', '127.0.0.1', '--port', '0']
+  assert.deepEqual(dashboardFallbackArgs(serve), [
+    '--profile=serve',
+    'dashboard',
+    '--no-open',
+    '--host',
+    '127.0.0.1',
+    '--port',
+    '0'
+  ])
+})
+
+test('dashboardFallbackArgs leaves a serve-looking profile value alone when there is no subcommand', () => {
+  const args = ['--profile', 'serve']
+  assert.deepEqual(dashboardFallbackArgs(args), args)
+})
+
 test('dashboardFallbackArgs is a no-op (copy) when there is no serve token', () => {
   const args = ['-m', 'hermes_cli.main', 'dashboard', '--no-open']
   const out = dashboardFallbackArgs(args)

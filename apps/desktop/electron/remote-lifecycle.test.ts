@@ -752,11 +752,132 @@ test.skipIf(process.platform === 'win32')(
         false,
         'a duplicate conflicting profile must remain foreign'
       )
+
+      const serveNamedProfile = spawnInstaller(['--profile', 'serve', 'serve', '--isolated', ...backendFlags])
+
+      assert.equal(await waitForEntrypoint(serveNamedProfile), true)
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          serveNamedProfile.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'serve'
+        ),
+        true,
+        'a profile named "serve" must not mask the real serve subcommand'
+      )
+      assert.equal(
+        await pidIsOurDashboard(
+          ssh,
+          serveNamedProfile.pid,
+          SPAWN_NONCE,
+          launcher,
+          '/unrelated/hermes-home',
+          OWNERSHIP_ID,
+          'ops'
+        ),
+        false,
+        'a "serve"-named profile must still match the expected profile exactly'
+      )
     } finally {
       for (const process of children) {
         process.kill('SIGTERM')
       }
 
+      await rm(temp, { force: true, recursive: true })
+    }
+  }
+)
+
+test.skipIf(process.platform !== 'linux')(
+  'terminateOwnedDashboardForUpdate SIGTERMs a serve pinned to a "serve"-named profile',
+  async () => {
+    const temp = await mkdtemp(path.join(os.tmpdir(), 'hermes wrapper ownership '))
+    const installDir = path.join(temp, 'install dir')
+    const venvBin = path.join(installDir, 'venv', 'bin')
+    const pythonLink = path.join(venvBin, 'python')
+    const entrypoint = path.join(installDir, 'hermes')
+    const launcher = path.join(temp, 'hermes launcher')
+    const python = (await exec('command -v python3')).stdout.trim()
+    const tokenPath = path.join(os.homedir(), spawnTokenPath(OWNERSHIP_ID, SPAWN_NONCE).replace(/^~\//, ''))
+
+    await mkdir(venvBin, { recursive: true })
+    await symlink(python, pythonLink)
+    await writeFile(entrypoint, 'import time\ntime.sleep(30)\n', 'utf8')
+    await writeFile(launcher, `#!/bin/bash\nexec "${pythonLink}" "${entrypoint}" "$@"\n`, 'utf8')
+    await chmod(launcher, 0o755)
+
+    const child = spawn(
+      launcher,
+      [
+        '--profile',
+        'serve',
+        'serve',
+        '--isolated',
+        '--host',
+        '127.0.0.1',
+        '--port',
+        '0',
+        '--ssh-session-token-file',
+        tokenPath,
+        '--ssh-owner-nonce',
+        SPAWN_NONCE
+      ],
+      { stdio: 'ignore' }
+    )
+
+    const exited = new Promise(resolve => child.once('exit', resolve))
+
+    try {
+      let execed = false
+
+      for (let attempt = 0; attempt < 40 && !execed; attempt += 1) {
+        const command = (await exec(`ps -ww -o command= -p ${child.pid}`)).stdout
+
+        execed = command.includes(entrypoint)
+
+        if (!execed) {
+          await new Promise(resolve => setTimeout(resolve, 25))
+        }
+      }
+
+      assert.equal(execed, true, 'wrapper must exec into the fake installer entrypoint')
+
+      const raw = await readFile(`/proc/${child.pid}/stat`, 'utf8')
+
+      const creationTime = `linux:${raw
+        .slice(raw.lastIndexOf(')') + 2)
+        .trim()
+        .split(/\s+/)[19]}`
+
+      const lock = ownedLock({
+        pid: child.pid,
+        profile: 'serve',
+        hermesPath: launcher,
+        hermesHome: '/unrelated/hermes-home',
+        creationTime
+      })
+
+      const ssh = {
+        exec: async (command: string) => {
+          if (/cat .*\.json/.test(command)) {
+            return `${JSON.stringify(lock)}\n`
+          }
+
+          return (await exec(command, { shell: '/bin/bash' })).stdout
+        }
+      }
+
+      const result = await terminateOwnedDashboardForUpdate(ssh, lock)
+
+      assert.equal(result.terminated, true)
+      await exited
+      assert.equal(child.signalCode, 'SIGTERM')
+    } finally {
+      child.kill('SIGKILL')
       await rm(temp, { force: true, recursive: true })
     }
   }

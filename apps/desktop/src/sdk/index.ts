@@ -61,6 +61,7 @@ import {
   type SpawnPriority
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { applyDesktopLayoutPreset } from '@/store/pane-focus'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -696,7 +697,10 @@ export const host = {
   notify,
   notifyError,
 
-  // NOTE: every host door is async-safe — wrapped so a sync throw from an
+  /** Apply an already-registered layout preset by its exact id. */
+  applyLayoutPreset: (id: string): boolean => applyDesktopLayoutPreset(id),
+
+  // NOTE: every async host door is async-safe — wrapped so a sync throw from an
   // internal helper (e.g. no desktop bridge in a plain browser) becomes a
   // rejection a plugin's .catch() sees, never an error-boundary crash.
 

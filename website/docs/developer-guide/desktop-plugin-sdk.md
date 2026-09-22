@@ -521,6 +521,7 @@ host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
 host.newChat(profile?)                     // fresh chat draft, optionally in another profile
+host.applyLayoutPreset(id)                 // select an existing registered preset → boolean
 host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            // dock a plugin-rendered tab into the MAIN
                                            //   workspace zone and reveal it; returns a disposer
@@ -536,6 +537,26 @@ host.profileRoutes()                       // [{ profile, targetProfile, connect
 host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no foreground swap
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
+```
+
+`host.applyLayoutPreset(id)` selects an already-registered static layout; it
+does not create, import, enumerate, or make presets portable. Pass the exact,
+opaque registry id. Plugin contribution ids are namespaced, so a Skin plugin
+with id `skin` that registers local layout id `workspace` applies
+`skin:workspace`. Call it only from an explicit user action such as a mode-button
+click. It returns `true` when that preset was found and applied, or `false` when
+the id is unknown or its data is not a valid layout. Feature-detect older builds:
+
+```javascript
+// Inside the plugin whose id is exactly "skin":
+const WORKSPACE_LAYOUT_ID = 'skin:workspace'
+const WORKSPACE_LAYOUT = { type: 'group', id: 'skin-workspace', panes: ['workspace'], active: 'workspace' }
+ctx.register({ id: 'workspace', area: 'layouts', data: WORKSPACE_LAYOUT })
+
+const onWorkspaceModeClick = () =>
+  typeof host.applyLayoutPreset === 'function' && host.applyLayoutPreset(WORKSPACE_LAYOUT_ID)
+
+jsx('button', { onClick: onWorkspaceModeClick, children: 'Workspace mode' })
 ```
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
@@ -607,7 +628,7 @@ For token-level detail, listen with `host.onEvent` (`message.start`,
 
 `host.onEvent` streams live gateway events (message deltas,
 session lifecycle, tool activity). Listeners are isolated — a throw in your
-listener can't affect app dispatch. Every `host` door is async-safe: a sync throw
+listener can't affect app dispatch. Every asynchronous `host` door is async-safe: a sync throw
 from an internal helper (e.g. no desktop bridge in a plain browser) becomes a
 rejection your `.catch()` sees, never an error-boundary crash.
 
@@ -935,7 +956,7 @@ not treat this pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.applyLayoutPreset`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

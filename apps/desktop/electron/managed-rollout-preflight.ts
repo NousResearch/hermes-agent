@@ -13,7 +13,7 @@ import type {
 import { validateRolloutPlan, validateRolloutTarget } from '../src/lib/managed-rollout-contract'
 import { canonicalCodeRoot, canonicalRepositoryId } from './managed-rollout-identity'
 import {
-  isVerifiedAssurance, isVerifiedGitSource,
+  isVerifiedAssurance, isVerifiedGitSource, reviewedGitSourceMetadata, REVIEWED_SOURCE_FRESHNESS_MS,
   type VerifiedAssuranceEvidence
 } from './managed-rollout-assurance'
 import type { ReviewedSourceBinding } from '../src/lib/managed-rollout-contract'
@@ -1123,6 +1123,7 @@ export function createPreflightReview(input: {
   for (const row of canonicalPlan.rows) {
     const source = row.reviewedSource
     const verifiedSource = input.verifiedSources?.get(row.installId)
+    const sourceMetadata = isVerifiedGitSource(verifiedSource) ? reviewedGitSourceMetadata(verifiedSource) : null
     const assurance = input.verifiedAssurance?.get(row.installId)
     const inventory = input.verifiedInventory?.get(row.installId)
     if (
@@ -1138,7 +1139,12 @@ export function createPreflightReview(input: {
       !Number.isFinite(input.nowMono) || input.nowMono! < inventory.observedMono ||
       input.nowMono! - inventory.observedMono > INVENTORY_FRESHNESS_MS
     ) blockers.push('inventory-evidence-stale-or-mismatched')
-    if (!source || !isVerifiedGitSource(verifiedSource) || JSON.stringify(source) !== JSON.stringify(verifiedSource)) {
+    if (
+      !source || !isVerifiedGitSource(verifiedSource) || JSON.stringify(source) !== JSON.stringify(verifiedSource) ||
+      !sourceMetadata || sourceMetadata.inventoryRevision !== canonicalPlan.inventoryRevision ||
+      !Number.isFinite(input.nowMono) || input.nowMono! < sourceMetadata.verifiedMono ||
+      input.nowMono! - sourceMetadata.verifiedMono > REVIEWED_SOURCE_FRESHNESS_MS
+    ) {
       blockers.push('reviewed-source-unverified')
       continue
     }

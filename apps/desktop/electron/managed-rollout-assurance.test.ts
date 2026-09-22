@@ -87,10 +87,14 @@ describe('managed rollout source and assurance admission', () => {
         target: { repositoryId: REPOSITORY, branch: 'main', sha: reviewed, protocol: 1 as const },
         trustedOriginUrl: ORIGIN,
         repositoryRoot: root,
-        branch: 'main'
+        branch: 'main',
+        inventoryRevision: 'inventory-7'
       }
-      const reader = { git: async (args: readonly string[], cwd: string) =>
-        (await execFile('git', [...args], { cwd, encoding: 'buffer', env: { ...process.env, GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0' } })).stdout }
+      const reader = {
+        git: async (args: readonly string[], cwd: string) =>
+          (await execFile('git', [...args], { cwd, encoding: 'buffer', env: { ...process.env, GIT_NO_LAZY_FETCH: '1', GIT_TERMINAL_PROMPT: '0' } })).stdout,
+        nowMono: () => 2_000
+      }
 
       expect(isVerifiedGitSource(source)).toBe(false)
       const verified = await verifyReviewedGitSource(source, expected, reader)
@@ -141,6 +145,15 @@ describe('managed rollout source and assurance admission', () => {
       })
       expect(review.blockers).toEqual([])
       expect(review.token).toBe('review-token')
+      expect(createPreflightReview({
+        plan, resolution: {
+          id: 'resolution-a', target: expected.target, fingerprint: 'a'.repeat(64),
+          cachePath: path.join(root, 'cache'), createdAt: now - 1_000, expiresAt: now + 60_000
+        },
+        reviewTokens: new ReviewTokenStore(), now, nowMono: 12_001,
+        verifiedSources: new Map([[installId, rowSource]]), verifiedAssurance: new Map([[installId, rowAssurance]]),
+        verifiedInventory: inventory
+      }).blockers).toContain('reviewed-source-unverified')
       expect(createPreflightReview({
         plan: { ...plan, rows: [{ ...plan.rows[0], sourceFingerprint: 'd'.repeat(64) }] },
         resolution: {

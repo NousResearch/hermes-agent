@@ -8,11 +8,14 @@ import { canonicalCodeRoot, canonicalRepositoryId } from './managed-rollout-iden
 const SHA256 = /^[0-9a-f]{64}$/
 const REQUIRED_CONTROL_RESULTS = new Set(['pass'])
 const verifiedEvidence = new WeakSet<object>()
-const verifiedSources = new WeakSet<object>()
+const verifiedSources = new WeakMap<object, { inventoryRevision: string; verifiedMono: number }>()
+export const REVIEWED_SOURCE_FRESHNESS_MS = 10_000
 
 export interface TrustedSourceReader {
   /** Execute a bounded, read-only Git query on the authenticated installation. */
   git(args: readonly string[], repositoryRoot: string): Promise<string | Uint8Array>
+  /** Main-process monotonic time captured after the last Git assertion. */
+  nowMono(): number
 }
 
 export interface TrustedAssuranceReader {
@@ -46,6 +49,7 @@ export interface SourceExpectation {
   trustedOriginUrl: string
   repositoryRoot: string
   branch: string
+  inventoryRevision: string
 }
 
 export class AdmissionEvidenceError extends Error {
@@ -109,12 +113,20 @@ export async function verifyReviewedGitSource(
   const { parseProtocolMetadata, PROTOCOL_RESOURCE_PATH } = await import('./managed-rollout-preflight')
   const protocol = await reader.git(['show', `${source.targetSha}:${PROTOCOL_RESOURCE_PATH}`], source.repositoryRoot)
   parseProtocolMetadata(typeof protocol === 'string' ? new TextEncoder().encode(protocol) : protocol)
-  verifiedSources.add(source)
+  const verifiedMono = reader.nowMono()
+  if (!Number.isFinite(verifiedMono) || verifiedMono < 0 || !expected.inventoryRevision)
+    refusal('reviewed-source-clock-or-revision-invalid')
+  verifiedSources.set(source, { inventoryRevision: expected.inventoryRevision, verifiedMono })
   return source
 }
 
 export function isVerifiedGitSource(value: unknown): value is ReviewedSourceBinding {
   return typeof value === 'object' && value !== null && verifiedSources.has(value)
+}
+
+export function reviewedGitSourceMetadata(value: ReviewedSourceBinding):
+  { inventoryRevision: string; verifiedMono: number } | null {
+  return verifiedSources.get(value) ?? null
 }
 
 /** Check one #92618 consumer envelope. The reader owns independent custody. */

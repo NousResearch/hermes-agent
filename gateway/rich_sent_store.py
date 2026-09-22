@@ -14,12 +14,19 @@ from __future__ import annotations
 import asyncio
 import json
 import os
+import threading
 import time
 from typing import Optional
 from utils import atomic_json_write
 
 _MAX_ENTRIES = 1000
 _MAX_TEXT_CHARS = 2000
+# ``atomic_json_write`` makes each WRITE atomic, not the load/merge/save triple.
+# ``record_async`` runs ``_update`` on worker threads, so two concurrent callers
+# (two inbound WhatsApp-Cloud messages, a Telegram send racing an edit) would
+# otherwise each load the same pre-state and the later ``os.replace`` drops the
+# other key.
+_LOCK = threading.Lock()
 
 
 def _store_path() -> str:
@@ -39,19 +46,20 @@ def _load(path: str) -> dict:
 def _update(chat_id, message_id, fields: dict) -> None:
     """Merge ``fields`` into the ``(chat_id, message_id)`` entry. No-op on any failure."""
     path = _store_path()
-    try:
-        os.makedirs(os.path.dirname(path), exist_ok=True)
-        data = _load(path)
-        key = f"{chat_id}:{message_id}"
-        entry = data.get(key)
-        entry = entry if isinstance(entry, dict) else {}
-        data[key] = {**entry, **fields, "ts": int(time.time())}
-        if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
-            for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
-                data.pop(k, None)
-        atomic_json_write(path, data, indent=None)  # atomic; tolerates concurrent writers racing
-    except Exception:
-        return
+    with _LOCK:
+        try:
+            os.makedirs(os.path.dirname(path), exist_ok=True)
+            data = _load(path)
+            key = f"{chat_id}:{message_id}"
+            entry = data.get(key)
+            entry = entry if isinstance(entry, dict) else {}
+            data[key] = {**entry, **fields, "ts": int(time.time())}
+            if len(data) > _MAX_ENTRIES:  # trim oldest by timestamp
+                for k, _ in sorted(data.items(), key=lambda kv: kv[1].get("ts", 0))[: len(data) - _MAX_ENTRIES]:
+                    data.pop(k, None)
+            atomic_json_write(path, data, indent=None)  # atomic write; the lock makes the triple atomic
+        except Exception:
+            return
 
 
 def record(chat_id, message_id, text: Optional[str]) -> None:

@@ -2,6 +2,7 @@
 
 import asyncio
 import threading
+import time
 
 import pytest
 
@@ -30,3 +31,29 @@ def test_record_async_runs_off_the_loop_thread(isolated_store, monkeypatch):
     loop_thread = asyncio.run(go())
     assert writer_thread and writer_thread[0] != loop_thread
     assert rich_sent_store.lookup("chat", "42") == "hello"
+
+
+def test_concurrent_record_async_calls_lose_no_entry(isolated_store, monkeypatch):
+    """Two off-loop RMWs for different keys must both land in the durable file.
+
+    ``atomic_json_write`` makes each write atomic, not load/merge/save. Slowing the
+    write forces the second caller to load the same pre-state unless ``_update`` is
+    serialized, in which case the later ``os.replace`` drops the other key.
+    """
+    real_write = rich_sent_store.atomic_json_write
+
+    def slow_write(path, data, *a, **kw):
+        time.sleep(0.2)
+        return real_write(path, data, *a, **kw)
+
+    monkeypatch.setattr(rich_sent_store, "atomic_json_write", slow_write)
+
+    async def go():
+        await asyncio.gather(
+            rich_sent_store.record_async("chat", "1", "one"),
+            rich_sent_store.record_async("chat", "2", "two"),
+        )
+
+    asyncio.run(go())
+    assert rich_sent_store.lookup("chat", "1") == "one"
+    assert rich_sent_store.lookup("chat", "2") == "two"

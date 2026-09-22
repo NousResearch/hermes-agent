@@ -114,7 +114,7 @@ async def test_room_inspection_reports_state_members_permissions_and_pins():
                                 "creator_override": False},
                         "required": {"send_message": 0, "send_event_type": "m.room.encrypted",
                                      "edit_pins": 75, "invite": 50,
-                                     "kick": 50, "ban": 50, "redact_other": 50},
+                                     "kick": 50, "ban": 50, "redact_other": 50, "send_redaction": 0},
                         "bot_can_edit_pins": False},
         "pins": {"events": [{"event_id": "$first", "sender": "@alice:server",
                              "body": "Pinned $first", "msgtype": "m.text", "thread_id": None,
@@ -164,7 +164,7 @@ async def test_room_permissions_include_version_12_creator_override():
         "bot": {"user_id": "@bot:server", "level": 0, "creator_override": True},
         "required": {"send_message": 25, "send_event_type": "m.room.encrypted",
                      "edit_pins": 75, "invite": 0,
-                     "kick": 50, "ban": 50, "redact_other": 50},
+                     "kick": 50, "ban": 50, "redact_other": 50, "send_redaction": 0},
         "bot_can_edit_pins": True,
     }
 
@@ -194,7 +194,7 @@ async def test_old_room_power_levels_accept_numeric_strings():
         "bot": {"user_id": "@bot:server", "level": 100, "creator_override": False},
         "required": {"send_message": 10, "send_event_type": "m.room.message",
                      "edit_pins": 75, "invite": 25,
-                     "kick": 50, "ban": 50, "redact_other": 50},
+                     "kick": 50, "ban": 50, "redact_other": 50, "send_redaction": 0},
         "bot_can_edit_pins": True,
     }
 
@@ -222,7 +222,7 @@ async def test_version_12_ignores_legacy_creator_property():
         "bot": {"user_id": "@bot:server", "level": 0, "creator_override": False},
         "required": {"send_message": 0, "send_event_type": "m.room.message",
                      "edit_pins": 75, "invite": 0,
-                     "kick": 50, "ban": 50, "redact_other": 50},
+                     "kick": 50, "ban": 50, "redact_other": 50, "send_redaction": 0},
         "bot_can_edit_pins": False,
     }
 
@@ -233,7 +233,7 @@ def _permissions(requester: tuple[int | None, bool | None], bot: tuple[int | Non
         "requester": {"user_id": "@alice:server", "level": requester[0], "creator_override": requester[1]},
         "bot": {"user_id": "@bot:server", "level": bot[0], "creator_override": bot[1]},
         "required": {"send_message": 0, "send_event_type": "m.room.message", "edit_pins": edit_pins,
-                     "invite": 0, "kick": 50, "ban": 50, "redact_other": 50},
+                     "invite": 0, "kick": 50, "ban": 50, "redact_other": 50, "send_redaction": 0},
         "bot_can_edit_pins": can_edit_pins,
     }
 
@@ -557,7 +557,7 @@ async def test_inspection_rechecks_owning_client_and_policy_after_await(
                 "requester": {"user_id": user, "level": 100, "creator_override": False},
                 "bot": {"user_id": f"@bot-{label}:server", "level": 0, "creator_override": False},
                 "required": {"send_message": 0, "send_event_type": "m.room.message", "edit_pins": 0,
-                             "invite": 0, "kick": 50, "ban": 50, "redact_other": 50},
+                             "invite": 0, "kick": 50, "ban": 50, "redact_other": 50, "send_redaction": 0},
                 "bot_can_edit_pins": True,
             },
             "pins": {"events": [{"event_id": "$pin", "sender": user, "body": label,

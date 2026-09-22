@@ -747,6 +747,40 @@ def test_default_spawn_does_not_auto_load_any_skill(kanban_home, monkeypatch):
     assert env.get("HERMES_PROFILE") == "some-profile"
 
 
+def test_default_spawn_strips_onepassword_bootstrap_but_keeps_provider_credentials(
+        kanban_home, monkeypatch):
+    """Same-profile workers keep provider auth, never the 1Password bootstrap token."""
+    captured = {}
+
+    class FakeProc:
+        pid = 99999
+
+    def fake_popen(cmd, **kwargs):
+        captured["env"] = kwargs["env"]
+        return FakeProc()
+
+    monkeypatch.setenv("OP_SERVICE_ACCOUNT_TOKEN", "op-bootstrap-secret")
+    monkeypatch.setenv(
+        "_HERMES_FORCE_OP_SERVICE_ACCOUNT_TOKEN", "forced-op-bootstrap-secret")
+    monkeypatch.setenv("ANTHROPIC_API_KEY", "provider-secret")
+    monkeypatch.setattr(kbd, "_restart_safe_worker_argv", lambda task, cmd: cmd)
+    monkeypatch.setattr("subprocess.Popen", fake_popen)
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="credential boundary", assignee="default")
+        task = kb.get_task(conn, tid)
+        assert task is not None
+        workspace = kbw.resolve_workspace(task)
+        assert kbd._default_spawn(task, str(workspace)) == 99999
+    finally:
+        conn.close()
+
+    assert "OP_SERVICE_ACCOUNT_TOKEN" not in captured["env"]
+    assert "_HERMES_FORCE_OP_SERVICE_ACCOUNT_TOKEN" not in captured["env"]
+    assert captured["env"]["ANTHROPIC_API_KEY"] == "provider-secret"
+
+
 # ---------------------------------------------------------------------------
 # Per-task force-loaded skills
 # ---------------------------------------------------------------------------

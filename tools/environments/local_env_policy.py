@@ -36,7 +36,7 @@ _STATIC_PROVIDER_ENV_BLOCKLIST = frozenset({
     "GATEWAY_ALLOWED_USERS", "GH_TOKEN", "GITHUB_APP_ID", "GITHUB_APP_PRIVATE_KEY_PATH",
     "GITHUB_APP_INSTALLATION_ID", "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET",
     "DAYTONA_API_KEY", "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET",
-    "GATEWAY_RELAY_DELIVERY_KEY", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
+    "GATEWAY_RELAY_DELIVERY_KEY", "OP_SERVICE_ACCOUNT_TOKEN", "VERCEL_OIDC_TOKEN", "VERCEL_TOKEN",
     "VERCEL_PROJECT_ID", "VERCEL_TEAM_ID",
 })
 
@@ -186,9 +186,12 @@ def _is_hermes_internal_secret(key: str) -> bool:
     """True for Hermes-internal secrets injected under *dynamic* names the static
     blocklist cannot enumerate: ``AUXILIARY_<TASK>_API_KEY``/``_BASE_URL`` (per-task
     side-LLM credentials) and ``GATEWAY_RELAY_*_SECRET``/``_KEY``/``_TOKEN`` (relay
-    auth; non-secret routing hints stay visible). Stripped on every spawn path
-    regardless of env_passthrough registration or ``inherit_credentials``."""
+    auth; non-secret routing hints stay visible), plus the 1Password bootstrap token.
+    Stripped on every spawn path regardless of force-prefix/env_passthrough registration
+    or ``inherit_credentials``."""
     upper = key.upper()
+    if upper == "OP_SERVICE_ACCOUNT_TOKEN":
+        return True
     if upper.startswith("AUXILIARY_") and upper.endswith(("_API_KEY", "_BASE_URL")):
         return True
     return upper.startswith("GATEWAY_RELAY_") and upper.endswith(("_SECRET", "_KEY", "_TOKEN"))
@@ -252,6 +255,9 @@ _ALWAYS_STRIP_KEYS: frozenset[str] = frozenset({
     # enumerated here to stay stripped on the inherit_credentials=True path.
     "GATEWAY_RELAY_ID", "GATEWAY_RELAY_SECRET", "GATEWAY_RELAY_DELIVERY_KEY",
     "HASS_TOKEN", "EMAIL_PASSWORD", "HERMES_DASHBOARD_SESSION_TOKEN",
+    # Secret-source bootstrap: ordinary children consume resolved credentials,
+    # never the service-account token that unlocks the user's 1Password vault.
+    "OP_SERVICE_ACCOUNT_TOKEN",
     # Remote-compute / infrastructure secrets
     "MODAL_TOKEN_ID", "MODAL_TOKEN_SECRET", "DAYTONA_API_KEY",
 })

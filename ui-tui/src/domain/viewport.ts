@@ -15,6 +15,34 @@ const upperBound = (offsets: ArrayLike<number>, target: number) => {
   return lo
 }
 
+/** Return the scroll offset of the adjacent user turn in `direction`. */
+export const userMessageScrollTarget = (
+  messages: readonly Msg[],
+  offsets: ArrayLike<number>,
+  top: number,
+  direction: -1 | 1
+): null | number => {
+  if (direction < 0) {
+    for (let i = messages.length - 1; i >= 0; i--) {
+      const offset = offsets[i]
+
+      if (messages[i]?.role === 'user' && offset !== undefined && offset < top - 0.5) {
+        return offset
+      }
+    }
+  } else {
+    for (let i = 0; i < messages.length; i++) {
+      const offset = offsets[i]
+
+      if (messages[i]?.role === 'user' && offset !== undefined && offset > top + 0.5) {
+        return offset
+      }
+    }
+  }
+
+  return null
+}
+
 export const stickyPromptFromViewport = (
   messages: readonly Msg[],
   offsets: ArrayLike<number>,

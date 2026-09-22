@@ -19,6 +19,7 @@ import { hasLeadGap, prevRenderedMsg } from '../domain/blockLayout.js'
 import { SECTION_NAMES, sectionMode } from '../domain/details.js'
 import { composeTabTitle, fmtProjectCwdBranch, shortCwd } from '../domain/paths.js'
 import { sessionScopedModelArg } from '../domain/slash.js'
+import { userMessageScrollTarget } from '../domain/viewport.js'
 import { type GatewayClient } from '../gatewayClient.js'
 import type { SubagentListResponse } from '../gatewayTypes.js'
 import type {
@@ -467,6 +468,28 @@ export function useMainApp(gw: GatewayClient) {
     [selection]
   )
 
+  const jumpToUserMessage = useCallback(
+    (direction: -1 | 1) => {
+      const scroll = scrollRef.current
+
+      if (!scroll) {
+        return
+      }
+
+      const target = userMessageScrollTarget(
+        historyItems,
+        virtualHistory.offsets,
+        scroll.getScrollTop() + scroll.getPendingDelta(),
+        direction
+      )
+
+      if (target !== null) {
+        scroll.scrollTo(target)
+      }
+    },
+    [historyItems, virtualHistory.offsets]
+  )
+
   const appendMessage = useCallback(
     (msg: Msg) => setHistoryItems(prev => appendTranscriptMessage(prev, msg)),
     [setHistoryItems]
@@ -872,7 +895,7 @@ export function useMainApp(gw: GatewayClient) {
     },
     composer: { actions: composerActions, refs: composerRefs, state: composerState },
     gateway,
-    terminal: { hasSelection, scrollRef, scrollWithSelection, selection, stdout },
+    terminal: { hasSelection, jumpToUserMessage, scrollRef, scrollWithSelection, selection, stdout },
     voice: {
       enabled: voiceEnabled,
       recordKey: voiceRecordKey,

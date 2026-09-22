@@ -1,0 +1,37 @@
+## Summary
+
+Adds **hermes-lossless-context-manager** as a community plugin in the catalog.
+
+Lossless Context Management is a SQLite-backed DAG context engine that never loses a message — even after compression. It exposes 15 retrieval tools and 3 hooks via the plugin interface, giving Hermes agents full drill-down capability through compressed context histories.
+
+---
+
+### What This Adds
+
+| Field | Value |
+|-------|-------|
+| **Name** | hermes-lossless-context-manager |
+| **Category** | general |
+| **Tier** | community |
+| **Maintainer** | @misterdas |
+| **SHA Pin** | `17dedb9843045337dd18ff185ec3f331a8eb1d56` |
+| **Tools** | 15 (`lcm_grep`, `lcm_recall`, `lcm_query_state`, `lcm_compute`, `lcm_compile_evidence`, `lcm_evidence_pack`, `lcm_retrieve`, `lcm_recent`, `lcm_load_session`, `lcm_describe`, `lcm_expand`, `lcm_expand_query`, `lcm_status`, `lcm_inspect`, `lcm_doctor`) |
+| **Hooks** | 3 (`pre_llm_call`, `subagent_start`, `subagent_stop`) |
+| **requires_hermes** | >=0.19 |
+
+### Why the Catalog Needs This
+
+hermes-lossless-context-manager is a well-established, actively maintained community plugin that solves a real problem: context loss during compression. Agents routinely lose message history when the context window compresses. hermes-lcm preserves every message in a SQLite store organized as a directed acyclic graph, enabling full reconstruction after compression.
+
+### Validation
+
+All 13 catalog checks pass ✅:
+- manifest, manifest fields, requires_hermes, config schema, requires_env, loadable, python dependencies, capability probe, declared tools, declared hooks, declared middleware, built-in tool collisions, security scan
+
+### Naming Note
+
+Originally filed under `hermes-lcm` but renamed to `hermes-lossless-context-manager` per maintainer feedback to avoid collision with the upstream `stephenschoettler/hermes-lcm` project.
+
+---
+
+**Related**: [misterdas/hermes-lossless-context-manager](https://github.com/misterdas/hermes-lossless-context-manager)

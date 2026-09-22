@@ -148,3 +148,21 @@ def test_prune_keeps_n_minus_one(hermes_home):
     downloads.mkdir(exist_ok=True)
     prune_old_tags(["b10290"])
     assert downloads.exists()
+
+
+def test_prune_unlinks_a_symlinked_runtime_entry(hermes_home, tmp_path):
+    """A symlinked entry is not a runtime tag: rmtree would skip it silently."""
+    from hermes_cli.local_runtime.binaries import prune_old_tags, runtimes_root
+
+    _install_fake_tag(hermes_home, "b10100")
+    target = tmp_path / "elsewhere"
+    target.mkdir()
+    (target / "marker.txt").write_text("keep", encoding="utf-8")
+    link = runtimes_root() / "b10999"
+    link.symlink_to(target, target_is_directory=True)
+
+    prune_old_tags(["b10100"])
+
+    assert not link.is_symlink() and not link.exists(), "the link itself is gone"
+    assert (target / "marker.txt").exists(), "the link target is never chased"
+    assert runtimes_root().joinpath("b10100").is_dir(), "kept tags survive"

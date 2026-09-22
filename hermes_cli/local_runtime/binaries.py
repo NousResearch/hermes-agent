@@ -302,9 +302,16 @@ def prune_old_tags(keep: list[str]) -> None:
     if not root.exists():
         return
     for entry in root.iterdir():
-        if entry.is_dir() and entry.name != "downloads" and entry.name not in keep:
+        if not entry.is_dir() or entry.name == "downloads" or entry.name in keep:
+            continue
+        if entry.is_symlink():
+            # is_dir() follows the link while rmtree() refuses a top-level symlink, and
+            # ignore_errors=True makes that refusal silent: the entry would be logged as
+            # pruned while staying on disk forever.
+            entry.unlink()
+        else:
             shutil.rmtree(entry, ignore_errors=True)
-            logger.info("pruned old runtime %s", entry.name)
+        logger.info("pruned old runtime %s", entry.name)
 
 
 def ensure_runtime_installed(tag: str, backend: str,

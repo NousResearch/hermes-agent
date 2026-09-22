@@ -179,6 +179,48 @@ class TestAuthenticate:
 class TestSessionOps:
 
     @pytest.mark.asyncio
+    async def test_new_session_keeps_model_catalog_when_default_agent_build_is_rate_limited(self):
+        def quota_exhausted():
+            raise RuntimeError("Codex provider quota exhausted (429); retry after 11983s.")
+
+        manager = SessionManager(agent_factory=quota_exhausted)
+        acp_agent = HermesACPAgent(session_manager=manager)
+        picker_context = MagicMock()
+        picker_context.with_overrides.return_value = picker_context
+        payload = {
+            "providers": [
+                {"slug": "anthropic", "name": "Anthropic", "models": ["claude-sonnet-4-6"]},
+                {"slug": "openrouter", "name": "OpenRouter", "models": ["deepseek-v4"]},
+            ],
+        }
+
+        with (
+            patch("hermes_cli.inventory.load_picker_context", return_value=picker_context),
+            patch("hermes_cli.inventory.build_models_payload", return_value=payload),
+        ):
+            response = await acp_agent.new_session(cwd="/tmp")
+
+        assert isinstance(response, NewSessionResponse)
+        assert [model.model_id for model in response.models.available_models] == [
+            "anthropic:claude-sonnet-4-6",
+            "openrouter:deepseek-v4",
+        ]
+
+    @pytest.mark.asyncio
+    async def test_degraded_new_session_refuses_prompts_until_model_is_selected(self):
+        manager = SessionManager(agent_factory=lambda: (_ for _ in ()).throw(RuntimeError("quota exhausted (429)")))
+        acp_agent = HermesACPAgent(session_manager=manager)
+
+        response = await acp_agent.new_session(cwd="/tmp")
+
+        prompt_response = await acp_agent.prompt(
+            prompt=[TextContentBlock(type="text", text="hello")], session_id=response.session_id
+        )
+
+        assert prompt_response.stop_reason == "refusal"
+
+
+    @pytest.mark.asyncio
     async def test_new_session_returns_authenticated_cross_provider_model_state(self):
         manager = SessionManager(
             agent_factory=lambda: SimpleNamespace(

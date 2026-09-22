@@ -153,6 +153,22 @@ class SessionState:
     message_ids: Any = None
 
 
+@dataclass
+class UnavailableAgent:
+    """Minimal session agent retained while the configured default cannot start.
+
+    ACP clients need the model catalog in the ``session/new`` response to select a
+    healthy provider.  This object intentionally cannot run turns; it is replaced
+    by a real ``AIAgent`` only after a successful model switch.
+    """
+
+    session_id: str
+    model: str = ""
+    provider: str = ""
+    base_url: str = ""
+    acp_unavailable_error: Exception | None = None
+
+
 class SessionManager:
     """Thread-safe manager for ACP sessions backed by Hermes AIAgent instances.
 
@@ -177,7 +193,15 @@ class SessionManager:
         """Create a new session with a unique ID and a fresh AIAgent."""
         cwd = _translate_acp_cwd(cwd)
         session_id = str(uuid.uuid4())
-        agent = self._make_agent(session_id=session_id, cwd=cwd)
+        try:
+            agent = self._make_agent(session_id=session_id, cwd=cwd)
+        except Exception as exc:
+            # Do not let a temporarily unavailable default provider erase the ACP
+            # picker.  The placeholder is deliberately turn-inert; selecting a
+            # catalog model rebuilds it through the normal _make_agent path.
+            logger.warning("ACP default agent unavailable; keeping session %s for model selection", session_id,
+                           exc_info=True)
+            agent = self._unavailable_agent(session_id, exc)
         state = self._install_state(session_id, agent, cwd, getattr(agent, "model", "") or "", [])
         logger.info("Created ACP session %s (cwd=%s)", session_id, cwd)
         return state
@@ -453,6 +477,25 @@ class SessionManager:
         return state
 
     # ---- internal -----------------------------------------------------------
+
+    @staticmethod
+    def _unavailable_agent(session_id: str, error: Exception) -> UnavailableAgent:
+        """Create a catalog-capable placeholder without retrying the failed provider."""
+        model = provider = ""
+        try:
+            from hermes_cli.config import load_config
+
+            model_config = load_config().get("model")
+            if isinstance(model_config, dict):
+                model = str(model_config.get("default") or "").strip()
+                provider = str(model_config.get("provider") or "").strip()
+            elif isinstance(model_config, str):
+                model = model_config.strip()
+        except Exception:
+            logger.debug("Could not read ACP default model for unavailable session", exc_info=True)
+        return UnavailableAgent(
+            session_id=session_id, model=model, provider=provider, acp_unavailable_error=error,
+        )
 
     def _make_agent(self, *, session_id: str, cwd: str, model: str | None = None,
                     requested_provider: str | None = None, base_url: str | None = None, api_mode: str | None = None,

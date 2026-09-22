@@ -723,6 +723,8 @@ def convert_messages_to_anthropic(
         if role == "system":
             update = effort_update(m)
             if update is not None:
+                if update.get("reset"):
+                    continue
                 # Per-message effort update (mid-conversation-output-config beta): an empty system
                 # message inside ``messages``; the adapter maps the effort and adds the beta header.
                 result.append({"role": "system", "content": [], "output_config": {"effort": update["effort"]}})

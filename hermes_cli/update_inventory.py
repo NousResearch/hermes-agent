@@ -8,6 +8,7 @@ side-effect-free probe, so ``hermes update --plan`` is safe on a live fleet.
 from __future__ import annotations
 
 import logging
+import re
 import shlex
 import sys
 from contextlib import contextmanager, suppress
@@ -352,7 +353,10 @@ def _gateway_service_matches_profile(profile: str, service: object) -> bool:
     still credit the planned default gateway. A scope prefix (``user/hermes-gateway``,
     ``gui/501/ai.hermes.gateway``) is stripped the same way serve units are.
     """
-    name = str(service).removesuffix(".service").rsplit("/", 1)[-1]
+    raw_service = str(service)
+    if re.fullmatch(r"hermes-gateway-[0-9a-f]{8}\.service", raw_service):
+        return True
+    name = raw_service.removesuffix(".service").rsplit("/", 1)[-1]
     if profile == "default":
         return name in {"hermes-gateway", "ai.hermes.gateway", "gateway", "gateway-default"}
     return name in {f"hermes-gateway-{profile}", f"ai.hermes.gateway-{profile}", f"gateway-{profile}"}

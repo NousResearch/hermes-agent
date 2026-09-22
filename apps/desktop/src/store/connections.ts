@@ -2,6 +2,7 @@ import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
 import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
@@ -74,10 +75,39 @@ const $activeConnectionProfile = computed(
   })
 )
 
-// Remember one profile per source, so switching machines is a re-home rather
-// than a reset to `default`. The map is local UI preference only; Electron
-// remains the authority for the connection registry and all secrets.
+// The CONNECTION twin of profile.ts's $activeGatewayProfile subscription.
+// The switch commit point (beginGatewaySwitch → invalidateProfileScopedQueries)
+// runs inside beforeActivate — BEFORE the activation publishes the new request
+// scope (applyActive → setApiRequestConnection) — so that invalidation's
+// immediate refetches ride the OUTGOING backend and repaint its data under the
+// incoming connection's route. When the connection id later moves, no kanban
+// query key changes (the pane's keys are unscoped), so nothing re-invalidates:
+// the pane keeps painting the previous gateway's boards. Invalidate here, on
+// the actual (connectionId) change, so the refetch lands on the backend the
+// tags now name.
+//
+// The profile twin suppresses its FIRST fire via `_lastRoutedProfile !==
+// null`, which relies on the profile atom being non-null at startup. The
+// connection id is legitimately null on the primary local route, so null
+// cannot double as "uninitialized" here — an explicit sentinel does.
+let _lastRoutedConnectionId: null | string | undefined
+
+/** Remember one profile per source, so switching machines is a re-home rather
+ * than a reset to `default`. The map is local UI preference only; Electron
+ * remains the authority for the connection registry and all secrets.
+ */
 $activeConnectionProfile.subscribe(({ connectionId, descriptorProfile, profile, registryScoped }) => {
+  // The connection twin (above) rides this existing subscription — the one
+  // listener already holding the computed open — instead of a second
+  // subscribe, so the store's task graph is unchanged.
+  const id = connectionId ?? null
+
+  if (_lastRoutedConnectionId !== undefined && _lastRoutedConnectionId !== id) {
+    invalidateProfileScopedQueries()
+  }
+
+  _lastRoutedConnectionId = id
+
   // A migrated v1 per-profile remote may expose a client-side alias such as
   // "work" while the registered source's actual profile is "default". Only
   // remember a source/profile pair after Electron confirms that exact v2

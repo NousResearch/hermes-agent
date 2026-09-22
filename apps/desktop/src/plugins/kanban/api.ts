@@ -7,10 +7,17 @@
  * (the app's standard, via the SDK). This module owns the query keys, the REST
  * calls, and the selected-board atom — every call passes `?board=<slug>` so the
  * desktop's selection never flips the server-wide current-board pointer.
+ *
+ * Every query key and the persisted board selection are scoped by the ACTIVE
+ * CONNECTION (`host.state.connectionId`): a board lives on ONE gateway, so a
+ * connection switch must be a clean cache miss (the hermes-bots roster
+ * pattern), and each gateway remembers its own selected board instead of
+ * pinning a slug the next gateway 404s on.
  */
 
 import {
   atom,
+  host,
   type PluginOs,
   type PluginRestOptions,
   type PluginStorage,
@@ -60,6 +67,12 @@ const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
 
+/** Cache-scope id for the active connection — the segment every query key
+ *  embeds. `'local'` (never '') for the local pool so the key is never empty. */
+export function kanbanConnectionScope(): string {
+  return String(host.state.connectionId?.get?.() || 'local')
+}
+
 /** One live `task_events` frame → precise cache invalidation: the board, plus
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
  *  fallback — the socket just makes the board feel instant. */
@@ -94,7 +107,14 @@ interface Persisted<T> {
 /** Bind the plugin's doors at register time and return a disposer the host
  *  runs on unload/disable — so nothing (store sync, socket) survives a toggle
  *  or duplicates on re-enable. The events socket is pinned to a board at
- *  handshake, so a board switch closes + reopens it. */
+ *  handshake, so a board switch closes + reopens it.
+ *
+ *  The events socket is ALSO re-opened when the active CONNECTION changes:
+ *  `pluginSocket` resolves the backend only at connect time, so a socket left
+ *  open across a switch keeps streaming the previous gateway's events against
+ *  the new connection's request scope. The board slug re-hydrates from the
+ *  per-connection storage key for the same reason — one gateway's slug pins a
+ *  board the next gateway 404s on. */
 export function bindApi(
   r: Rest,
   storage: PluginStorage,
@@ -112,7 +132,6 @@ export function bindApi(
     unsubs.push(atom.listen(value => storage.set(key, value)))
   }
 
-  persist($boardSlug, BOARD_SLUG_KEY, '')
   persist($introDismissed, INTRO_KEY, false)
   persist($lanesByProfile, LANES_KEY, false)
   persist($collapsedLanes, COLLAPSED_KEY, {})
@@ -124,6 +143,26 @@ export function bindApi(
     close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
   }
 
+  // Board selection is per-connection: hydrate under the connection's storage
+  // key, and re-hydrate + reopen the socket when the connection changes (the
+  // outgoing gateway's slug may 404 on the next one).
+  const slugStorageKey = () => `${BOARD_SLUG_KEY}.${kanbanConnectionScope()}`
+
+  const hydrateSlug = () => {
+    $boardSlug.set(storage.get(slugStorageKey(), ''))
+  }
+
+  hydrateSlug()
+  unsubs.push($boardSlug.listen(slug => storage.set(slugStorageKey(), slug)))
+  unsubs.push(
+    host.state.connectionId.listen(() => {
+      // Query keys embed the connection scope (kanbanConnectionScope), so the
+      // new connection is already a clean React Query cache miss — no
+      // invalidation needed here. Only the LIVE bindings (socket, slug) follow.
+      hydrateSlug()
+      open($boardSlug.get())
+    })
+  )
   open($boardSlug.get())
   unsubs.push($boardSlug.listen(open))
 
@@ -157,15 +196,20 @@ function withBoard(path: string, params: Record<string, string> = {}): string {
   return qs ? `${path}?${qs}` : path
 }
 
-// ── query keys (all board-scoped so switching boards is a clean cache miss) ──
+// ── query keys (connection- AND board-scoped so switching either is a clean
+// cache miss — one gateway's boards/tasks must never paint under another
+// connection's route) ─────────────────────────────────────────────────────────
 
-export const boardKey = (slug: string, archived: boolean) => ['kanban', 'board', slug, archived] as const
-export const taskKey = (slug: string, id: string) => ['kanban', 'task', slug, id] as const
-export const logKey = (slug: string, id: string) => ['kanban', 'log', slug, id] as const
-export const BOARDS_KEY = ['kanban', 'boards'] as const
-export const PROFILES_KEY = ['kanban', 'profiles'] as const
-export const PROJECTS_KEY = ['kanban', 'projects'] as const
-export const ORCHESTRATION_KEY = ['kanban', 'orchestration'] as const
+const scopeKey = (): readonly [string] => [kanbanConnectionScope()]
+
+export const boardKey = (slug: string, archived: boolean) =>
+  ['kanban', 'board', ...scopeKey(), slug, archived] as const
+export const taskKey = (slug: string, id: string) => ['kanban', 'task', ...scopeKey(), slug, id] as const
+export const logKey = (slug: string, id: string) => ['kanban', 'log', ...scopeKey(), slug, id] as const
+export const BOARDS_KEY = ['kanban', 'boards', ...scopeKey()] as const
+export const PROFILES_KEY = ['kanban', 'profiles', ...scopeKey()] as const
+export const PROJECTS_KEY = ['kanban', 'projects', ...scopeKey()] as const
+export const ORCHESTRATION_KEY = ['kanban', 'orchestration', ...scopeKey()] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 

@@ -76,7 +76,8 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  PROFILES_KEY
+  PROFILES_KEY,
+  taskKey
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
@@ -1207,7 +1208,7 @@ export function KanbanBoardPage() {
     },
     onSettled: (_data, _err, vars) => {
       void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
-      void qc.invalidateQueries({ queryKey: ['kanban', 'task', slug, vars.id] })
+      void qc.invalidateQueries({ queryKey: taskKey(slug, vars.id) })
     }
   })
 

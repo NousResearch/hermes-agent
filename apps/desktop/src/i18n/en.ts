@@ -221,6 +221,7 @@ export const en: Translations = {
     details: 'Details',
     copyDetail: 'Copy detail',
     copyDetailFailed: 'Could not copy notification detail',
+    compressDeferredDone: 'Context compression finished',
     backendOutOfDateTitle: 'Backend out of date',
     backendOutOfDateMessage:
       'Your Hermes backend is older than this desktop build and may not work correctly. Update to align them.',

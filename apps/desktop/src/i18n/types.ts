@@ -266,6 +266,7 @@ export interface Translations {
     dismiss: string
     details: string
     copyDetail: string
+    compressDeferredDone: string
     copyDetailFailed: string
     backendOutOfDateTitle: string
     backendOutOfDateMessage: string

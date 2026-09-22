@@ -52,6 +52,12 @@ describe('sessionMatchesSearch', () => {
     expect(sessionMatchesSearch(session, 'hermes-agent')).toBe(true)
   })
 
+  it('matches sessions by git branch', () => {
+    expect(sessionMatchesSearch(makeSession({ git_branch: 'feat/cool-thing' }), 'feat/cool-thing')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ git_branch: 'feat/cool-thing' }), 'cool')).toBe(true)
+    expect(sessionMatchesSearch(makeSession({ git_branch: 'main' }), 'main')).toBe(true)
+  })
+
   it('matches sessions by source platform and aliases', () => {
     expect(sessionMatchesSearch(makeSession({ source: 'telegram' }), 'Telegram')).toBe(true)
     expect(sessionMatchesSearch(makeSession({ source: 'whatsapp' }), 'WhatsApp')).toBe(true)

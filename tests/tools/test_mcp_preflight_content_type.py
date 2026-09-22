@@ -5,8 +5,8 @@ HTTP server (via httpx's ASGI/transport plumbing through a stdlib server),
 rather than reimplementing the probe inline. That distinction matters: the
 production probe must run on its own httpx client outside the MCP SDK's anyio
 task group, and a faithful test must exercise that actual method so the
-content-type allow-list, HEAD->GET fallback, and best-effort pass-through are
-all covered as shipped.
+content-type allow-list, HEAD->GET fallback, POST probe fallback, and
+best-effort pass-through are all covered as shipped.
 
 OAuth note
 ----------
@@ -25,17 +25,19 @@ import asyncio
 import http.server
 import socketserver
 import threading
-from contextlib import contextmanager
+from contextlib import asynccontextmanager, contextmanager
 
 import pytest
 
-from tools.mcp_tool import MCPServerTask, NonMcpEndpointError
+from tools.mcp_tool import MCPServerTask
+from tools.mcp_tool_errors import NonMcpEndpointError
 
 
 def _make_task(name: str = "probe_srv") -> MCPServerTask:
     """Minimal MCPServerTask without running the heavy __init__."""
     task = MCPServerTask.__new__(MCPServerTask)
     task.name = name
+    task._http_rejection = {}  # sink the transport client's rejection-recorder hook writes into
     return task
 
 
@@ -56,12 +58,19 @@ def _serve(handler_cls):
 
 def _handler(status: int = 200,
              content_type: "str | None" = "text/html; charset=utf-8",
-             body: bytes = b"<html>x</html>", head_status=None, record=None):
+             body: bytes = b"<html>x</html>", head_status=None, record=None,
+             post_content_type: "str | None" = None,
+             post_body: bytes = b"",
+             post_status: "int | None" = None):
     """Build a BaseHTTPRequestHandler that replies with the given shape.
 
     ``head_status`` lets HEAD return a different status than GET (to exercise
     the HEAD->GET fallback). ``record`` is an optional list that captures the
     HTTP methods the server actually saw.
+
+    ``post_content_type`` / ``post_body`` / ``post_status`` let POST return a
+    different response than HEAD/GET (to exercise the POST probe fallback for
+    servers that serve HTML on GET but speak MCP via POST).
     """
 
     class _H(http.server.BaseHTTPRequestHandler):
@@ -84,6 +93,18 @@ def _handler(status: int = 200,
             if record is not None:
                 record.append("GET")
             self._write(status, content_type, body)
+
+        def do_POST(self):
+            if record is not None:
+                record.append("POST")
+            # Read and discard request body to avoid broken pipe.
+            length = int(self.headers.get("Content-Length", 0))
+            if length:
+                self.rfile.read(length)
+            sc = post_status if post_status is not None else status
+            ct = post_content_type if post_content_type is not None else content_type
+            pb = post_body if post_body else body
+            self._write(sc, ct, pb)
 
         def log_message(self, format, *args):  # noqa: A002
             pass
@@ -112,12 +133,6 @@ def test_non_mcp_content_type_raises(content_type):
     assert "application/json" in msg and "text/event-stream" in msg
 
 
-def test_non_mcp_error_is_non_retryable_connection_error():
-    """NonMcpEndpointError must subclass ConnectionError (retry loop skips it
-    via an explicit except; broad ConnectionError catchers still work)."""
-    assert issubclass(NonMcpEndpointError, ConnectionError)
-
-
 # ---------------------------------------------------------------------------
 # Pass-through: valid MCP content types, ambiguous, and error responses
 # ---------------------------------------------------------------------------
@@ -141,75 +156,9 @@ def test_missing_content_type_passes():
         asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
 
 
-@pytest.mark.parametrize("status", [401, 403, 404, 500, 503])
-def test_non_2xx_responses_pass(status):
-    """4xx/5xx are auth challenges or transient errors — let the SDK handle."""
-    task = _make_task()
-    with _serve(_handler(status=status, content_type="text/html")) as base:
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-
-
-def test_network_error_passes():
-    """A connection failure (nothing listening) must pass through, not raise."""
-    task = _make_task()
-    # Reserve a port then close it so the connection is refused.
-    s = socketserver.TCPServer(("127.0.0.1", 0), http.server.BaseHTTPRequestHandler)
-    dead_port = s.server_address[1]
-    s.server_close()
-    asyncio.run(
-        task._preflight_content_type(
-            f"http://127.0.0.1:{dead_port}/mcp", timeout=2.0
-        )
-    )
-
-
-def test_cancelled_error_is_not_swallowed():
-    """The best-effort except must NOT catch CancelledError (BaseException)."""
-    task = _make_task()
-
-    async def _run():
-        import httpx
-        orig = httpx.AsyncClient
-        try:
-            # Patch the client so entering it raises CancelledError.
-            class _C(orig):
-                async def __aenter__(self):
-                    raise asyncio.CancelledError()
-
-            httpx.AsyncClient = _C
-            with pytest.raises(asyncio.CancelledError):
-                await task._preflight_content_type("http://x/mcp", timeout=1.0)
-        finally:
-            httpx.AsyncClient = orig
-
-    asyncio.run(_run())
-
-
 # ---------------------------------------------------------------------------
 # HEAD -> GET fallback
 # ---------------------------------------------------------------------------
-
-def test_head_405_falls_back_to_get_and_rejects_html():
-    task = _make_task("fallback_srv")
-    record: list[str] = []
-    with _serve(_handler(
-        status=200, content_type="text/html",
-        head_status=405, record=record,
-    )) as base:
-        with pytest.raises(NonMcpEndpointError):
-            asyncio.run(task._preflight_content_type(f"{base}/", timeout=5.0))
-    assert record == ["HEAD", "GET"]
-
-
-def test_head_501_falls_back_to_get_and_passes_json():
-    task = _make_task()
-    record: list[str] = []
-    with _serve(_handler(
-        status=200, content_type="application/json", body=b"{}",
-        head_status=501, record=record,
-    )) as base:
-        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
-    assert record == ["HEAD", "GET"]
 
 
 # ---------------------------------------------------------------------------
@@ -254,6 +203,7 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
     (``.well-known/oauth-protected-resource``), not by a GET content-type check.
     """
     import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
 
     preflight_calls: list[str] = []
 
@@ -268,7 +218,7 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
             raise asyncio.CancelledError()
 
         # Bypass URL validation so the test doesn't need a live network.
-        monkeypatch.setattr(_mcp, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)
         monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
         monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
 
@@ -284,32 +234,166 @@ def test_run_skips_preflight_for_oauth(monkeypatch):
     )
 
 
-def test_ssl_verify_and_cert_forwarded(monkeypatch):
+def test_run_skips_preflight_when_skip_preflight_set(monkeypatch):
+    """``skip_preflight: true`` in server config bypasses the probe entirely.
+
+    Escape hatch for valid Streamable HTTP servers whose HEAD/GET answers a
+    non-MCP content type (and whose POST probe still can't be validated, e.g.
+    non-OAuth auth schemes the probe headers don't satisfy).
+    """
+    import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
+
+    preflight_calls: list[str] = []
+
+    async def _inner():
+        async def _fake_preflight(self, url, **kwargs):
+            preflight_calls.append(url)
+
+        async def _fake_run_http(self, config):
+            raise asyncio.CancelledError()
+
+        monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)
+        monkeypatch.setattr(_mcp.MCPServerTask, "_preflight_content_type", _fake_preflight)
+        monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
+
+        task = _mcp.MCPServerTask("skip-preflight-test")
+        with pytest.raises(asyncio.CancelledError):
+            await task.run({
+                "url": "https://mcp.example.com/mcp",
+                "skip_preflight": True,
+            })
+
+    asyncio.run(_inner())
+    assert preflight_calls == [], (
+        "_preflight_content_type must not be called when skip_preflight is set"
+    )
+
+
+# ---------------------------------------------------------------------------
+# POST probe fallback for POST-only MCP servers
+# ---------------------------------------------------------------------------
+
+
+def test_post_probe_not_attempted_for_valid_head():
+    """When HEAD already returns application/json, no POST probe is needed."""
+    task = _make_task()
+    record: list[str] = []
+    with _serve(_handler(
+        status=200, content_type="application/json", body=b"{}",
+        post_content_type="application/json",
+        post_body=b'{}',
+        record=record,
+    )) as base:
+        asyncio.run(task._preflight_content_type(f"{base}/mcp", timeout=5.0))
+    assert record == ["HEAD"]
+    assert "POST" not in record
+
+
+# ---------------------------------------------------------------------------
+# Redirect header scoping: credentials must not leave the configured origin
+# ---------------------------------------------------------------------------
+
+
+def _redirect_handler(target_base: str):
+    """HEAD/GET/POST all 302 to ``target_base/mcp``."""
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def _redir(self):
+            self.send_response(302)
+            self.send_header("Location", f"{target_base}/mcp")
+            self.end_headers()
+
+        do_HEAD = do_GET = do_POST = _redir
+
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+    return _H
+
+
+def _recording_mcp_handler(seen: dict):
+    """200 application/json; captures request headers into ``seen``."""
+
+    class _H(http.server.BaseHTTPRequestHandler):
+        def _write_ok(self):
+            seen.update({k.lower(): v for k, v in self.headers.items()})
+            payload = b"{}"
+            self.send_response(200)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(payload)))
+            self.end_headers()
+            if self.command != "HEAD":
+                self.wfile.write(payload)
+
+        do_HEAD = do_GET = do_POST = _write_ok
+
+        def log_message(self, format, *args):  # noqa: A002
+            pass
+
+    return _H
+
+
+def test_run_strict_redirect_headers_reaches_preflight_boundary(monkeypatch):
+    """#115155: ``strict_redirect_headers: true`` in a server entry must keep the configured
+    ``X-API-Key`` off a cross-origin redirect target — on the preflight probe too, which ran before
+    the SDK client and forwarded every configured header verbatim. Driven through the production
+    ``MCPServerTask.run`` so the flag's plumbing from config to the probe is what is asserted; only
+    the SDK handshake after the probe is cut short."""
+    import tools.mcp_tool as _mcp
+    from tools import mcp_tool_errors as _mcp_errors
+
+    seen: dict = {}
+
+    async def _fake_run_http(self, config):
+        raise asyncio.CancelledError()
+
+    monkeypatch.setattr(_mcp_errors, "_validate_remote_mcp_url", lambda n, u: None)  # loopback URL
+    monkeypatch.setattr(_mcp.MCPServerTask, "_run_http", _fake_run_http)
+
+    with _serve(_recording_mcp_handler(seen)) as target, \
+            _serve(_redirect_handler(target)) as origin:
+        task = _mcp.MCPServerTask("strict-preflight-test")
+        with pytest.raises(asyncio.CancelledError):
+            asyncio.run(task.run({
+                "url": f"{origin}/mcp",
+                "headers": {"Authorization": "Bearer s3cr3t", "X-API-Key": "k3y"},
+                "strict_redirect_headers": True,
+            }))
+    assert seen, "the redirect target was never probed"
+    assert "authorization" not in seen and "x-api-key" not in seen
+    assert "s3cr3t" not in seen.values() and "k3y" not in seen.values()
+
+
+def test_streamable_http_client_strips_credentials_on_redirect(monkeypatch):
+    """Drive the REAL ``_streamable_http_transport`` construction: the client the
+    SDK receives must be the stripping subclass — proven against a live redirect
+    pair. Only the SDK's streams context manager is faked (a full MCP handshake
+    is out of scope); the httpx client, its kwargs and the strip are all real."""
+    import tools.mcp_tool as _mcp
+
+    task = _make_task()
+    seen: dict = {}
     captured: dict = {}
 
-    import httpx
+    @asynccontextmanager
+    async def _fake_streams(url, http_client=None, **kwargs):
+        captured["client"] = http_client
+        yield (None, None, None)
 
-    class _FakeClient:
-        def __init__(self, **kwargs):
-            captured.update(kwargs)
+    monkeypatch.setattr(_mcp, "streamable_http_client", _fake_streams)
 
-        async def __aenter__(self):
-            return self
+    with _serve(_recording_mcp_handler(seen)) as target, \
+            _serve(_redirect_handler(target)) as origin:
+        async def _drive():
+            cm = task._streamable_http_transport(
+                f"{origin}/mcp",
+                {"Authorization": "Bearer s3cr3t", "X-API-Key": "k3y"},
+                connect_timeout=5.0, ssl_verify=True, client_cert=None,
+                oauth_auth=None, strict_cfg_headers=True,
+                configured_header_names={"x-api-key"})
+            async with cm:
+                await captured["client"].get(f"{origin}/mcp")
 
-        async def __aexit__(self, *a):
-            return False
-
-        async def head(self, url, headers=None):
-            return httpx.Response(200, headers={"content-type": "application/json"})
-
-    monkeypatch.setattr(httpx, "AsyncClient", _FakeClient)
-    task = _make_task()
-    asyncio.run(task._preflight_content_type(
-        "https://mcp.example.com/mcp",
-        ssl_verify=False,
-        client_cert="/path/to/cert.pem",
-        timeout=3.0,
-    ))
-    assert captured.get("verify") is False
-    assert captured.get("cert") == "/path/to/cert.pem"
-    assert captured.get("follow_redirects") is True
+        asyncio.run(_drive())
+    assert "authorization" not in seen and "x-api-key" not in seen

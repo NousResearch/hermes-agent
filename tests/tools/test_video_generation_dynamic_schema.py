@@ -1,4 +1,4 @@
-"""Tests for the dynamic schema builder under the simplified surface."""
+"""Tests for the dynamic schema builder."""
 
 from __future__ import annotations
 
@@ -88,60 +88,12 @@ class TestDynamicSchemaBuilder:
         from tools.video_generation_tool import _build_dynamic_video_schema
 
         desc = _build_dynamic_video_schema()["description"]
-        assert "No video backend is configured" in desc
+        # No provider configured AND none available → description says so. The
+        # wording reflects the *resolved* active provider (mirrors execution),
+        # so it reads "available" rather than "configured".
+        assert "No video backend is available" in desc
         assert "hermes tools" in desc
 
-    def test_does_not_mention_edit_or_extend(self, cfg_home):
-        """The simplified surface only does text→video and image→video.
-        The description must not mention edit/extend anywhere."""
-        from tools.video_generation_tool import _build_dynamic_video_schema, _GENERIC_DESCRIPTION
-
-        desc = _build_dynamic_video_schema()["description"]
-        # Block words that would suggest functionality we removed
-        assert "edit" not in desc.lower() or "audio" in desc.lower()  # 'audio' contains 'audi' not 'edit'
-        # Stronger: no occurrence of the words "edit" or "extend" as standalone
-        for forbidden in (" edit ", " edits ", " extend ", " extends "):
-            assert forbidden not in desc.lower(), f"description leaks '{forbidden.strip()}'"
-        # Sanity: the generic blurb itself is also clean
-        for forbidden in ("edit", "extend"):
-            assert forbidden not in _GENERIC_DESCRIPTION.lower()
-
-    def test_both_modalities_advertises_auto_routing(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
-
-        _write_cfg(cfg_home, {"video_gen": {"provider": "both"}})
-        video_gen_registry.register_provider(_BothModalitiesProvider())
-
-        import hermes_cli.plugins as plugins_module
-        saved = plugins_module._ensure_plugins_discovered
-        plugins_module._ensure_plugins_discovered = lambda *a, **k: None
-        try:
-            desc = _build_dynamic_video_schema()["description"]
-        finally:
-            plugins_module._ensure_plugins_discovered = saved
-
-        assert "Active backend: Both" in desc
-        assert "text-to-video" in desc and "image-to-video" in desc
-        assert "routes automatically" in desc
-        # operations bullet is gone
-        assert "operations supported" not in desc
-
-    def test_image_only_model_warns_about_required_image_url(self, cfg_home):
-        from tools.video_generation_tool import _build_dynamic_video_schema
-
-        _write_cfg(cfg_home, {"video_gen": {"provider": "img-only"}})
-        video_gen_registry.register_provider(_ImageOnlyProvider())
-
-        import hermes_cli.plugins as plugins_module
-        saved = plugins_module._ensure_plugins_discovered
-        plugins_module._ensure_plugins_discovered = lambda *a, **k: None
-        try:
-            desc = _build_dynamic_video_schema()["description"]
-        finally:
-            plugins_module._ensure_plugins_discovered = saved
-
-        assert "image-to-video only" in desc
-        assert "image_url is REQUIRED" in desc
 
     def test_builder_wired_into_registry(self):
         from tools.registry import discover_builtin_tools, registry
@@ -151,3 +103,69 @@ class TestDynamicSchemaBuilder:
         assert entry.dynamic_schema_overrides is not None
         out = entry.dynamic_schema_overrides()
         assert "description" in out
+
+    def test_both_modalities_model_claims_both(self, cfg_home):
+        from tools.video_generation_tool import _build_dynamic_video_schema
+
+        video_gen_registry.register_provider(_BothModalitiesProvider())
+        _write_cfg(cfg_home, {"video_gen": {"provider": "both", "model": "family-a"}})
+
+        schema = _build_dynamic_video_schema()
+        # Dual-modality (#95681 diet): capability surfaces as PARAMS —
+        # image_url advertised; duration bounds from the model window.
+        props = schema["parameters"]["properties"]
+        assert "image_url" in props
+        assert props["duration"]["minimum"] == 1
+        assert props["duration"]["maximum"] == 15
+
+    def test_i2v_only_model_does_not_claim_text_to_video(self, cfg_home):
+        """A dual-modality backend with an i2v-only active model must not
+        contradict the model caveat with a 'supports both' line."""
+        from tools.video_generation_tool import _build_dynamic_video_schema
+
+        class _DualBackendI2VModel(VideoGenProvider):
+            @property
+            def name(self) -> str:
+                return "dual-i2v"
+
+            def is_available(self) -> bool:
+                return True
+
+            def list_models(self):
+                return [{
+                    "id": "gemini-like",
+                    "modalities": ["image"],
+                    "min_duration": 3,
+                    "max_duration": 10,
+                }]
+
+            def default_model(self):
+                return "gemini-like"
+
+            def capabilities(self):
+                return {
+                    "modalities": ["text", "image"],
+                    "min_duration": 1,
+                    "max_duration": 30,
+                }
+
+            def generate(self, prompt, **kwargs):
+                return {"success": True}
+
+        video_gen_registry.register_provider(_DualBackendI2VModel())
+        _write_cfg(
+            cfg_home,
+            {"video_gen": {"provider": "dual-i2v", "model": "gemini-like"}},
+        )
+
+        schema = _build_dynamic_video_schema()
+        desc = schema["description"]
+        assert "image-to-video only" in desc
+        assert "supports both text-to-video" not in desc
+        # Prefer the active model's duration window over the backend union
+        # — now expressed as param bounds, not prose.
+        props = schema["parameters"]["properties"]
+        assert props["duration"]["minimum"] == 3
+        assert props["duration"]["maximum"] == 10
+        # i2v-only still advertises image_url.
+        assert "image_url" in props

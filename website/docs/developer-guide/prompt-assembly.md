@@ -28,9 +28,9 @@ Primary files:
 
 The cached system prompt is assembled as three ordered tiers (see `agent/system_prompt.py`):
 
-1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, skills prompt, environment hints, platform hints
-2. **context** — caller-supplied `system_message` plus project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`)
-3. **volatile** — built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line
+1. **stable** — identity (`SOUL.md` or fallback), tool/model guidance, coding operating brief
+2. **context** — caller-supplied `system_message`, project context files (`.hermes.md` / `AGENTS.md` / `CLAUDE.md` / `.cursorrules`), then the worktree-dependent git workspace snapshot, operator instructions and platform hints
+3. **volatile** — skills index, built-in memory snapshot (`MEMORY.md`), user profile snapshot (`USER.md`), external memory-provider block, timestamp/session/model/provider line, then runtime environment hints (host / home / **current working directory**)
 
 The final system prompt is then joined as: `stable` → `context` → `volatile`.
 
@@ -38,6 +38,22 @@ This ordering matters for precedence discussions:
 - skills are part of the **stable** tier
 - memory/profile snapshots are part of the **volatile** tier
 - both are still in the cached system prompt (they are not injected as ad-hoc mid-turn overlays)
+
+Inside the context tier the shared project files come **before** anything naming the current worktree.
+Sessions of one project running in different git worktrees then share a prompt prefix covering the whole
+context block, instead of stopping at the first cwd-dependent line — that prefix is what a longest-prefix
+provider cache reuses. A session with no workspace snapshot keeps its trailing guidance in the stable
+tier; the runtime environment block always ends the volatile tier.
+
+Consequence for stored prompts: `_stored_prompt_matches_runtime()` (`agent/conversation_loop.py`) reads
+the first host-info paragraph after the rendered `# Hermes runtime environment` boundary, with a
+closing marker at the absolute end distinguishing this layout from legacy prose quoting the heading.
+The runtime boundary follows all project, operator, memory and plugin text, so examples in those
+blocks do not masquerade as the runtime cwd. Model/provider are read before the runtime boundary,
+excluding embedder descriptions. `Platform:` is deliberately not an identity field: a surface switch
+(desktop ↔ TUI) keeps the stored bytes and delivers the current surface's guidance as a one-shot note on
+the per-turn user-message channel (`agent/surface_switch.py`), so the cached prefix survives (#104414). Legacy prompts retain their original
+host-before-context anchor, so prompts persisted before the reorder still validate.
 
 When `skip_context_files` is set (e.g., subagent delegation), SOUL.md is not loaded and the hardcoded `DEFAULT_AGENT_IDENTITY` is used instead.
 
@@ -53,10 +69,10 @@ You value correctness, clarity, and efficiency.
 ...
 
 # Layer 2: Tool-aware behavior guidance
-You have persistent memory across sessions. Save durable facts using
-the memory tool: user preferences, environment details, tool quirks,
-and stable conventions. Memory is injected into every turn, so keep
-it compact and focused on facts that will still matter later.
+Task-learned procedures, pitfalls, and task-specific preferences belong
+in skills. Memory is the narrow exception for facts that apply to EVERY
+session regardless of task. Skill-writing instructions appear here only
+when skill_manage is available; its absence does not widen memory's scope.
 ...
 When the user references something from a past conversation or you
 suspect relevant cross-session context exists, use session_search
@@ -147,6 +163,14 @@ platform_hints:
   unmodified default, so a bad config value can never break prompt
   assembly or leak across platforms.
 
+Cron jobs run as platform `cron`, but their final response lands on the
+job's `deliver` channel, so a cron agent's prompt also carries that
+channel's hint (built-in text plus its `platform_hints.<channel>`
+override) under a `Delivery destination (<channel>):` line. A
+`platform_hints.slack.append` therefore reaches Slack-delivered scheduled
+jobs as well as live Slack chats; `platform_hints.cron` still governs the
+cron paragraph itself.
+
 The override is resolved when the system prompt is built (session start,
 and again on compaction since that rebuilds the prompt). It produces a
 byte-stable hint for a fixed config, so it lives in the **stable** tier
@@ -164,8 +188,8 @@ def load_soul_md() -> Optional[str]:
     if not soul_path.exists():
         return None
     content = soul_path.read_text(encoding="utf-8").strip()
-    content = _scan_context_content(content, "SOUL.md")  # Security scan
-    content = _truncate_content(content, "SOUL.md")       # Cap defaults to 20k chars, configurable
+    content = _scan_context_content(content, "SOUL.md", user_authored=True)  # Security scan: warn + load, never block
+    content = _truncate_content(content, "SOUL.md")       # Cap scales with model context window (20k floor); config override wins
     return content
 ```
 
@@ -174,13 +198,16 @@ When `load_soul_md()` returns content, it replaces the hardcoded `DEFAULT_AGENT_
 If `SOUL.md` doesn't exist, the system falls back to:
 
 ```
-You are Hermes Agent, an intelligent AI assistant created by Nous Research.
-You are helpful, knowledgeable, and direct. You assist users with a wide
-range of tasks including answering questions, writing and editing code,
-analyzing information, creative work, and executing actions via your tools.
-You communicate clearly, admit uncertainty when appropriate, and prioritize
-being genuinely useful over being verbose unless otherwise directed below.
-Be targeted and efficient in your exploration and investigations.
+You are Hermes Agent, built by Nous Research. Be direct: match the length
+of your reply to the weight of the ask — a one-line question gets a
+one-line answer, and finished work gets a short report of what changed,
+what's verified, and what's left, never a replay of the process. No
+filler ("Great question," "I'd be happy to"), no restating the request
+back, no re-summarizing what you already said, no narrating tool calls
+the user can see. Plain claims over adjectives; when unsure, say so
+plainly. Agree because it's right, not because the user said it. Depth
+is earned — give it when the user asks for detail, teaches, or the
+stakes demand it, not by default.
 ```
 
 ## How context files are injected
@@ -231,8 +258,8 @@ def build_context_files_prompt(cwd=None, skip_soul=False):
 | 4 | `.cursorrules`, `.cursor/rules/*.mdc` | CWD only | Cursor compatibility |
 
 All context files are:
-- **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts)
-- **Truncated** — capped at `context_file_max_chars` characters (default 20,000) using 70/20 head/tail ratio with a truncation marker
+- **Security scanned** — checked for prompt injection patterns (invisible unicode, "ignore previous instructions", credential exfiltration attempts). A hit replaces a project file with a `[BLOCKED: …]` marker; the user's own `SOUL.md` in `HERMES_HOME` is warned about and loaded anyway (it is human-approved on write, so it is the same trust class as `config.yaml`)
+- **Truncated** — capped at `context_file_max_chars` characters using a 70/20 head/tail split with a truncation marker. The cap scales with the model's context window (20,000-char floor, 500K ceiling); an explicit `context_file_max_chars` in `config.yaml` always wins.
 - **YAML frontmatter stripped** — `.hermes.md` frontmatter is removed (reserved for future config overrides)
 
 ## API-call-time-only layers

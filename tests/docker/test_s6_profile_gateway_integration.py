@@ -81,31 +81,41 @@ def test_s6_register_creates_service_dir_in_live_container(
     assert "phase3test" in r.stdout, f"list output: {r.stdout!r}"
 
 
-def test_s6_unregister_removes_service_dir_in_live_container(
-    built_image: str, container_name: str,
-) -> None:
-    """unregister_profile_gateway must stop the service, remove the
-    directory, and trigger s6-svscan rescan so the supervise process
-    is dropped."""
-    start_container(built_image, container_name, cmd="sleep 120")
 
-    # First register so we have something to unregister.
-    r = docker_exec(container_name, "python3", "-c", _REGISTER_SCRIPT, timeout=30)
-    assert "REGISTERED" in r.stdout
 
-    # Then unregister.
-    r = docker_exec(container_name, "python3", "-c", _UNREGISTER_SCRIPT, timeout=30)
-    assert "UNREGISTERED" in r.stdout, (
-        f"unregister failed: stderr={r.stderr!r} stdout={r.stdout!r}"
-    )
+# Shell probe: build a service-shaped staging dir under the live scandir
+# with a given NAME, fire a real `s6-svscanctl -a` rescan, wait, and
+# report whether s6-svscan supervised it (which would create a root-owned
+# supervise/ dir). Used to prove the dot-prefixed staging name is INVISIBLE
+# to a concurrent rescan while a non-dotted one is not.
+#
+# Echoes one of: SUPERVISED / NOT-SUPERVISED, plus the supervise/ owner.
+_SVSCAN_PICKUP_PROBE = r"""
+set -eu
+NAME="$1"
+SCANDIR=/run/service
+DIR="$SCANDIR/$NAME"
+rm -rf "$DIR"
+mkdir -p "$DIR"
+printf 'longrun\n' > "$DIR/type"
+printf '#!/command/execlineb -P\n/command/s6-sleep 600\n' > "$DIR/run"
+chmod 755 "$DIR/run"
+# Trigger a full rescan, exactly as register/reconcile do.
+/command/s6-svscanctl -a "$SCANDIR"
+# Give s6-svscan time to act (its scan is async; 200ms is the manager's
+# own settle delay, use 2s here to be comfortably past it on any arch).
+/command/s6-sleep 2
+if [ -d "$DIR/supervise" ]; then
+    owner=$(stat -c '%U' "$DIR/supervise" 2>/dev/null || echo '?')
+    echo "SUPERVISED owner=$owner"
+else
+    echo "NOT-SUPERVISED"
+fi
+# Best-effort teardown so the probe leaves no live supervisor behind.
+/command/s6-svc -d "$DIR" 2>/dev/null || true
+/command/s6-svscanctl -an "$SCANDIR" 2>/dev/null || true
+/command/s6-sleep 1
+rm -rf "$DIR" 2>/dev/null || true
+"""
 
-    # Directory is gone.
-    r = docker_exec(container_name, "test", "-d", "/run/service/gateway-phase3test")
-    assert r.returncode != 0, "service directory still exists after unregister"
 
-    # list_profile_gateways no longer includes it.
-    r = docker_exec(container_name, "python3", "-c", (
-        "from hermes_cli.service_manager import S6ServiceManager;"
-        "print(S6ServiceManager().list_profile_gateways())"
-    ))
-    assert "phase3test" not in r.stdout

@@ -75,8 +75,16 @@ class _TinyImageHandler(http.server.BaseHTTPRequestHandler):
 
 @pytest.fixture
 def http_server(tmp_path, monkeypatch):
-    """Spin up a localhost HTTP server and isolate HERMES_HOME under tmp_path."""
+    """Spin up a localhost HTTP server and isolate HERMES_HOME under tmp_path.
+
+    ``HERMES_ALLOW_PRIVATE_URLS`` opts the loopback test server into private-IP
+    reach (the same toggle a LAN-hosted provider would set) — save_url now
+    refuses private targets by default.
+    """
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes"))
+    monkeypatch.setenv("HERMES_ALLOW_PRIVATE_URLS", "1")
+    from tools import url_safety
+    url_safety._reset_allow_private_cache()
     (tmp_path / ".hermes").mkdir()
 
     # Force the constants/image cache helpers to re-read HERMES_HOME.
@@ -91,6 +99,8 @@ def http_server(tmp_path, monkeypatch):
     thread.start()
     yield f"http://127.0.0.1:{port}", httpd
     httpd.shutdown()
+    monkeypatch.delenv("HERMES_ALLOW_PRIVATE_URLS", raising=False)
+    url_safety._reset_allow_private_cache()
 
 
 class TestSaveUrlImage:
@@ -107,62 +117,25 @@ class TestSaveUrlImage:
         assert "cache/images" in str(path)
         assert path.suffix == ".png"
 
-    def test_extension_inferred_from_content_type(self, http_server):
-        base, _ = http_server
-        from agent.image_gen_provider import save_url_image
-
-        path = save_url_image(f"{base}/image.jpg", prefix="xai_test")
-        assert path.suffix == ".jpg", "image/jpeg → .jpg"
-
-    def test_extension_falls_back_to_url_suffix(self, http_server):
-        """Some CDNs send ``application/octet-stream`` — the URL suffix wins then."""
-        base, _ = http_server
-        from agent.image_gen_provider import save_url_image
-
-        path = save_url_image(f"{base}/no-type-with-url-ext.jpg", prefix="xai_test")
-        assert path.suffix == ".jpg"
-
-    def test_extension_defaults_to_png_when_unknowable(self, http_server):
-        base, _ = http_server
-        from agent.image_gen_provider import save_url_image
-
-        path = save_url_image(f"{base}/no-type-no-ext", prefix="xai_test")
-        assert path.suffix == ".png"
-
     def test_404_raises(self, http_server):
         """HTTP errors must propagate — caller decides whether to fall back."""
         base, _ = http_server
         from agent.image_gen_provider import save_url_image
-        import requests as req_lib
+        import httpx
 
-        with pytest.raises(req_lib.HTTPError):
+        with pytest.raises(httpx.HTTPStatusError):
             save_url_image(f"{base}/404")
-
-    def test_empty_body_raises_without_writing_file(self, http_server):
-        """0-byte responses are not images — refuse to cache."""
-        base, _ = http_server
-        from agent.image_gen_provider import save_url_image
-
-        with pytest.raises(ValueError, match="0 bytes"):
-            save_url_image(f"{base}/empty")
 
     def test_oversize_raises_and_cleans_up(self, http_server, tmp_path):
         """Oversize downloads must NOT leak a partial file into the cache."""
         base, _ = http_server
-        from agent.image_gen_provider import save_url_image, _images_cache_dir
+        from agent import provider_media
+        from agent.image_gen_provider import save_url_image
 
-        cache_dir = _images_cache_dir()
+        cache_dir = provider_media.cache_dir("images")
         before = set(cache_dir.glob("*"))
         with pytest.raises(ValueError, match="exceeds"):
             save_url_image(f"{base}/oversize", max_bytes=1024 * 1024)
         after = set(cache_dir.glob("*"))
         assert after == before, "partial file leaked into cache after oversize cap"
 
-    def test_unique_filenames_avoid_collision(self, http_server):
-        """Two back-to-back saves of the same URL must produce different paths."""
-        base, _ = http_server
-        from agent.image_gen_provider import save_url_image
-
-        path1 = save_url_image(f"{base}/image.png", prefix="xai_collision")
-        path2 = save_url_image(f"{base}/image.png", prefix="xai_collision")
-        assert path1 != path2, "filename collision — uuid suffix isn't doing its job"

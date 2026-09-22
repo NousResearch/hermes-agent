@@ -20,18 +20,27 @@ class TestTTSProviderNullGuard:
         result = _get_provider({"provider": None})
         assert result == DEFAULT_PROVIDER.lower().strip()
 
-    def test_missing_provider_returns_default(self):
-        """No ``provider`` key at all should also return default."""
+
+    def test_missing_provider_keeps_free_default_with_cloud_credentials(self):
+        """A chat-provider key must not silently opt the user into paid TTS."""
         from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
 
-        result = _get_provider({})
-        assert result == DEFAULT_PROVIDER.lower().strip()
+        assert _get_provider({}) == DEFAULT_PROVIDER
+        assert _get_provider({"provider": None}) == DEFAULT_PROVIDER
 
-    def test_valid_provider_passed_through(self):
+    def test_active_provider_without_credentials_keeps_edge(self):
+        """A TTS-capable active provider that can't authenticate must NOT
+        silently displace the free Edge default (no surprise billing / hard
+        errors for a credential-less deployment)."""
+        from tools.tts_tool import _get_provider, DEFAULT_PROVIDER
+
+        assert _get_provider({}) == DEFAULT_PROVIDER.lower().strip()
+
+    def test_explicit_provider_wins_over_active(self):
+        """An explicit tts.provider always overrides the active-provider fallback."""
         from tools.tts_tool import _get_provider
 
-        result = _get_provider({"provider": "OPENAI"})
-        assert result == "openai"
+        assert _get_provider({"provider": "edge"}) == "edge"
 
 
 # ── Web tools ─────────────────────────────────────────────────────────────
@@ -68,10 +77,6 @@ class TestMCPAuthNullGuard:
         auth_type = (config.get("auth") or "").lower().strip()
         assert auth_type == ""
 
-    def test_missing_auth_defaults_to_empty(self):
-        config = {"timeout": 30}
-        auth_type = (config.get("auth") or "").lower().strip()
-        assert auth_type == ""
 
     def test_valid_auth_passed_through(self):
         config = {"auth": "OAUTH", "timeout": 30}

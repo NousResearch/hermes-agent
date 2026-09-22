@@ -1,16 +1,26 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { createClientSessionState } from '@/lib/chat-runtime'
+import type { SessionInfo } from '@/types/hermes'
+
 import { $gateway } from './gateway'
 import {
+  clearPluginNotifyHandlers,
   dispatchNativeNotification,
+  dispatchPluginNativeNotification,
+  invokePluginNotifyAction,
+  invokePluginNotifyActivate,
   NATIVE_NOTIFICATION_KINDS,
   respondToApprovalAction,
   sendTestNativeNotification,
   setNativeNotifyEnabled,
   setNativeNotifyKind
 } from './native-notifications'
-import { $approvalRequest, setApprovalRequest } from './prompts'
-import { $activeSessionId, setActiveSessionId } from './session'
+import { __resetNativeNotifyBaselineForTests, markNativeNotifyBaseline } from './notify-baseline'
+import { $approvalRequest, clearAllPrompts, setApprovalRequest } from './prompts'
+import { markSessionGone, resetBackgroundPollingGuard } from './runtime-gone'
+import { $activeSessionId, setActiveSessionId, setSessions } from './session'
+import { dropSessionState, publishSessionState } from './session-states'
 
 const desktopWindow = window as unknown as { hermesDesktop?: Window['hermesDesktop'] }
 const initialHermesDesktop = desktopWindow.hermesDesktop
@@ -42,14 +52,34 @@ beforeEach(() => {
   }
 
   setActiveSessionId(null)
+  resetBackgroundPollingGuard()
   setWindowState({ focused: false, hidden: true })
+  __resetNativeNotifyBaselineForTests()
 })
 
 afterEach(() => {
+  clearPluginNotifyHandlers()
+
   if (initialHermesDesktop) {
     desktopWindow.hermesDesktop = initialHermesDesktop
   } else {
     delete desktopWindow.hermesDesktop
+  }
+
+  resetBackgroundPollingGuard()
+})
+
+it('captures durable navigation identity while keeping the runtime id for approval actions', () => {
+  const runtimeId = freshSession()
+  publishSessionState(runtimeId, createClientSessionState('durable-chat'))
+
+  try {
+    dispatchNativeNotification({ kind: 'approval', sessionId: runtimeId, title: 'Approval' })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: runtimeId, focusSessionId: 'durable-chat' })
+    )
+  } finally {
+    dropSessionState(runtimeId)
   }
 })
 
@@ -139,6 +169,155 @@ describe('dispatchNativeNotification preferences', () => {
   })
 })
 
+describe('dispatchNativeNotification session context', () => {
+  it('names the session on blocking-prompt titles only, falling back to the id tail without a row', () => {
+    setSessions([{ id: 'named-chat', title: 'Migrate the schema' } as SessionInfo])
+
+    try {
+      dispatchNativeNotification({ kind: 'input', sessionId: 'named-chat', title: 'Input needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Input needed — Migrate the schema' }))
+
+      dispatchNativeNotification({ kind: 'approval', sessionId: 'abcdef123456', title: 'Approval needed' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Approval needed — #123456' }))
+
+      setActiveSessionId('named-chat')
+      dispatchNativeNotification({ kind: 'turnDone', sessionId: 'named-chat', title: 'Hermes finished' })
+      expect(notify).toHaveBeenCalledWith(expect.objectContaining({ title: 'Hermes finished' }))
+    } finally {
+      setSessions([])
+    }
+  })
+})
+
+describe('dispatchNativeNotification post-connect baseline', () => {
+  it('suppresses a prompt replayed right after a socket opens', () => {
+    markNativeNotifyBaseline()
+    dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('suppresses a completion replayed right after a socket opens', () => {
+    const sessionId = freshSession()
+    setActiveSessionId(sessionId)
+    markNativeNotifyBaseline()
+    dispatchNativeNotification({ kind: 'turnDone', sessionId, title: 'done' })
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('fires again once the window has passed', () => {
+    vi.useFakeTimers()
+
+    try {
+      markNativeNotifyBaseline()
+      vi.advanceTimersByTime(5000)
+      dispatchNativeNotification({ kind: 'approval', sessionId: freshSession(), title: 'approve' })
+      expect(notify).toHaveBeenCalledTimes(1)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+})
+
+describe('dispatchPluginNativeNotification', () => {
+  it('fires while the user is away and tags the plugin id for dedupe', () => {
+    dispatchPluginNativeNotification('index-network', { body: 'New match', title: 'Opportunity' })
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({ body: 'New match', kind: 'plugin', tag: 'index-network', title: 'Opportunity' })
+    )
+  })
+
+  it('suppresses while the window is focused (the in-app toast covers foreground)', () => {
+    setWindowState({ focused: true, hidden: false })
+    dispatchPluginNativeNotification('focused-plugin', { title: 'Opportunity' })
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('is gated by the "plugin" kind preference', () => {
+    setNativeNotifyKind('plugin', false)
+    dispatchPluginNativeNotification('muted-plugin', { title: 'Opportunity' })
+    expect(notify).not.toHaveBeenCalled()
+  })
+
+  it('throttles per plugin, so two plugins cannot collapse each other', () => {
+    dispatchPluginNativeNotification('plugin-a', { title: 'a' })
+    dispatchPluginNativeNotification('plugin-a', { title: 'a again' })
+    dispatchPluginNativeNotification('plugin-b', { title: 'b' })
+    expect(notify).toHaveBeenCalledTimes(2)
+  })
+
+  it('does not register handlers for throttled or suppressed notifications', () => {
+    const onActivate = vi.fn()
+
+    // First fires and registers; the immediate repeat is throttled per plugin id.
+    dispatchPluginNativeNotification('leak-plugin', { onActivate: () => undefined, title: 'first' })
+    dispatchPluginNativeNotification('leak-plugin', { onActivate, title: 'throttled' })
+    expect(notify).toHaveBeenCalledTimes(1)
+
+    // The throttled call must not have registered anything: no notifyId ever
+    // reached the OS, so its handlers would leak. Invoking with the only
+    // minted id (from the first call) must not hit the throttled callback.
+    const payload = notify.mock.calls[0]?.[0] as { notifyId?: string }
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(onActivate).not.toHaveBeenCalled()
+
+    // Fully suppressed (kind disabled): nothing registered either.
+    setNativeNotifyKind('plugin', false)
+    const suppressed = vi.fn()
+    dispatchPluginNativeNotification('other-plugin', { onActivate: suppressed, title: 'muted' })
+    expect(notify).toHaveBeenCalledTimes(1)
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(suppressed).not.toHaveBeenCalled()
+  })
+
+  it('forwards icon, resolved activate path, and action buttons (deeplink-compatible)', () => {
+    // Unique tag (throttle is per plugin id); activate still uses the plugin deep link.
+    dispatchPluginNativeNotification('index-network-alerts', {
+      actions: [
+        { id: 'open', label: 'Open', activate: 'hermes://index-network/intent/1' },
+        { id: 'dismiss', label: 'Dismiss', onAction: () => undefined }
+      ],
+      activate: 'hermes://index-network/intent/1',
+      body: 'New match',
+      icon: '/tmp/index-network.png',
+      title: 'Opportunity'
+    })
+
+    expect(notify).toHaveBeenCalledWith(
+      expect.objectContaining({
+        activate: '/index-network/intent/1',
+        actions: [
+          { activate: '/index-network/intent/1', id: 'open', text: 'Open' },
+          { activate: undefined, id: 'dismiss', text: 'Dismiss' }
+        ],
+        icon: '/tmp/index-network.png',
+        kind: 'plugin',
+        notifyId: expect.stringMatching(/^index-network-alerts:/),
+        tag: 'index-network-alerts',
+        title: 'Opportunity'
+      })
+    )
+  })
+
+  it('registers onActivate / onAction handlers keyed by notifyId', () => {
+    const onActivate = vi.fn()
+    const onAction = vi.fn()
+
+    dispatchPluginNativeNotification('handlers-plugin', {
+      activate: 'hermes://index-network/intent/1',
+      onActivate,
+      actions: [{ id: 'dismiss', label: 'Dismiss', onAction }],
+      title: 'Opportunity'
+    })
+
+    const payload = notify.mock.calls[0]?.[0] as { notifyId?: string }
+    expect(payload.notifyId).toBeTruthy()
+    invokePluginNotifyActivate(payload.notifyId)
+    expect(onActivate).toHaveBeenCalledTimes(1)
+    expect(invokePluginNotifyAction(payload.notifyId, 'dismiss')).toBe(true)
+    expect(onAction).toHaveBeenCalledTimes(1)
+  })
+})
+
 describe('dispatchNativeNotification throttle', () => {
   it('collapses duplicate kind+session within the throttle window', () => {
     const sessionId = freshSession()
@@ -169,6 +348,7 @@ describe('respondToApprovalAction', () => {
   const request = vi.fn().mockResolvedValue({ resolved: true })
 
   beforeEach(() => {
+    clearAllPrompts()
     request.mockClear()
     $gateway.set({ request } as unknown as ReturnType<typeof $gateway.get>)
   })
@@ -183,13 +363,29 @@ describe('respondToApprovalAction', () => {
 
     await respondToApprovalAction('bg', 'approve')
 
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'once', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'once', session_id: 'bg' })
     expect($approvalRequest.get()).toBeNull()
+  })
+
+  it('answers the exact notification request without clearing the rest of its stack', async () => {
+    setActiveSessionId('bg')
+    setApprovalRequest({ command: 'first', description: 'first', requestId: 'r1', sessionId: 'bg' })
+    setApprovalRequest({ command: 'second', description: 'second', requestId: 'r2', sessionId: 'bg' })
+    await respondToApprovalAction('bg', 'approve:r1')
+    expect(request).toHaveBeenCalledWith('approval.respond', {
+      all: false,
+      choice: 'once',
+      request_id: 'r1',
+      session_id: 'bg'
+    })
+    expect($approvalRequest.get()?.requestId).toBe('r2')
+    await respondToApprovalAction('bg', 'approve:r1')
+    expect($approvalRequest.get()?.requestId).toBe('r2')
   })
 
   it('rejects via approval.respond {choice: "deny"}', async () => {
     await respondToApprovalAction('bg', 'reject')
-    expect(request).toHaveBeenCalledWith('approval.respond', { choice: 'deny', session_id: 'bg' })
+    expect(request).toHaveBeenCalledWith('approval.respond', { all: false, choice: 'deny', session_id: 'bg' })
   })
 
   it('ignores unknown action ids', async () => {
@@ -200,6 +396,14 @@ describe('respondToApprovalAction', () => {
   it('no-ops without a gateway', async () => {
     $gateway.set(null)
     await respondToApprovalAction('bg', 'approve')
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  it('does not retry an approval action for a runtime already marked gone', async () => {
+    markSessionGone('bg')
+
+    await respondToApprovalAction('bg', 'approve')
+
     expect(request).not.toHaveBeenCalled()
   })
 })

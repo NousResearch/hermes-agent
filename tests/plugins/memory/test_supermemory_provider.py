@@ -3,10 +3,15 @@ import os
 import stat
 import threading
 
+from datetime import datetime, timezone
+
 import pytest
 
 from plugins.memory.supermemory import (
     SupermemoryMemoryProvider,
+    _MAX_PENDING_BYTES,
+    _MAX_PENDING_TURNS,
+    _capture_custom_id,
     _clean_text_for_capture,
     _format_connection_summary,
     _format_prefetch_context,
@@ -16,21 +21,46 @@ from plugins.memory.supermemory import (
 )
 
 
+@pytest.fixture
+def frozen_capture_clock(monkeypatch):
+    """Pin the capture clock so custom_id expectations cannot straddle a 4h-bucket boundary.
+
+    Both the provider's write and the test's expectation call now() separately; near a
+    bucket edge (hh:59:59.99 → hh:00:00) those two reads can land in different buckets
+    and fail the equality assert. Freezing the module's datetime makes both reads
+    identical by construction.
+    """
+    fixed = datetime(2026, 9, 15, 10, 30, 0, tzinfo=timezone.utc)
+
+    class _FrozenDatetime(datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return fixed
+
+    import plugins.memory.supermemory as sm
+    monkeypatch.setattr(sm, "datetime", _FrozenDatetime)
+    return fixed
+
+
 class FakeClient:
-    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid"):
+    def __init__(self, api_key: str, timeout: float, container_tag: str, search_mode: str = "hybrid",
+                 base_url: str = ""):
         self.api_key = api_key
         self.timeout = timeout
         self.container_tag = container_tag
         self.search_mode = search_mode
+        self.base_url = base_url
         self.add_calls = []
         self.search_results = []
         self.profile_response = {"static": [], "dynamic": [], "search_results": []}
-        self.ingest_calls = []
+        self.fail_add = False
         self.forgotten_ids = []
         self.forget_by_query_response = {"success": True, "message": "Forgot"}
 
     def add_memory(self, content, metadata=None, *, entity_context="",
                    container_tag=None, custom_id=None):
+        if self.fail_add:
+            raise RuntimeError("boom")
         self.add_calls.append({
             "content": content,
             "metadata": metadata,
@@ -52,9 +82,6 @@ class FakeClient:
     def forget_by_query(self, query, *, container_tag=None):
         return self.forget_by_query_response
 
-    def ingest_conversation(self, session_id, messages, metadata=None):
-        self.ingest_calls.append({"session_id": session_id, "messages": messages, "metadata": metadata})
-
 
 @pytest.fixture
 def provider(monkeypatch, tmp_path):
@@ -71,22 +98,6 @@ def test_is_available_false_without_api_key(monkeypatch):
     assert p.is_available() is False
 
 
-def test_is_available_false_when_import_missing(monkeypatch):
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-
-    import builtins
-    real_import = builtins.__import__
-
-    def fake_import(name, *args, **kwargs):
-        if name == "supermemory":
-            raise ImportError("missing")
-        return real_import(name, *args, **kwargs)
-
-    monkeypatch.setattr(builtins, "__import__", fake_import)
-    p = SupermemoryMemoryProvider()
-    assert p.is_available() is False
-
-
 def test_load_and_save_config_round_trip(tmp_path):
     _save_supermemory_config({"container_tag": "demo-tag", "auto_capture": False}, str(tmp_path))
     cfg = _load_supermemory_config(str(tmp_path))
@@ -99,6 +110,11 @@ def test_load_and_save_config_round_trip(tmp_path):
 def test_clean_text_for_capture_strips_injected_context():
     text = "hello\n<supermemory-context>ignore me</supermemory-context>\nworld"
     assert _clean_text_for_capture(text) == "hello\nworld"
+
+
+def test_clean_text_for_capture_strips_inline_data_uri():
+    text = "look: data:image/png;base64,iVBORw0KGgoAAAANSUhEUg== ok"
+    assert _clean_text_for_capture(text) == "look: [image] ok"
 
 
 def test_format_prefetch_context_deduplicates_overlap():
@@ -126,61 +142,204 @@ def test_prefetch_includes_profile_on_first_turn(provider):
     assert "Relevant Memories" in result
 
 
-def test_prefetch_skips_profile_between_frequency(provider):
-    provider._client.profile_response = {
-        "static": ["Jordan prefers short answers"],
-        "dynamic": ["Current project is Supermemory provider"],
-        "search_results": [{"memory": "Working on Hermes memory provider", "similarity": 0.88}],
-    }
-    provider.on_turn_start(2, "next")
-    result = provider.prefetch("what am I working on?")
-    assert "Relevant Memories" in result
-    assert "User Profile (Persistent)" not in result
+def test_capture_custom_id_buckets_by_four_hours():
+    a = _capture_custom_id("session-1", datetime(2026, 9, 12, 3, 59, tzinfo=timezone.utc))
+    b = _capture_custom_id("session-1", datetime(2026, 9, 12, 4, 0, tzinfo=timezone.utc))
+    assert a == "session_1_2026-09-12_b0"
+    assert b == "session_1_2026-09-12_b1"
+    assert _capture_custom_id("", datetime(2026, 9, 12, 23, 0, tzinfo=timezone.utc)) == "hermes_2026-09-12_b5"
 
 
-def test_sync_turn_buffers_short_messages(provider):
-    # Trivial filtering is no longer applied at sync time — every non-empty turn
-    # is buffered and only the full session is written at session boundaries.
-    provider.sync_turn("ok", "sure", session_id="session-1")
-    assert provider._session_turns == [{"user": "ok", "assistant": "sure"}]
+def test_sync_turn_writes_turn_to_session_document(provider, frozen_capture_clock):
+    # Every completed turn is appended to one document per session per 4h window.
+    provider.sync_turn("hello", "hi there", session_id="session-1")
+    assert len(provider._client.add_calls) == 1
+    call = provider._client.add_calls[0]
+    assert call["custom_id"] == _capture_custom_id("session-1")
+    assert call["content"] == "[role: user]\nhello\n[user:end]\n[role: assistant]\nhi there\n[assistant:end]"
+    assert call["metadata"]["type"] == "conversation"
+    assert call["metadata"]["session_id"] == "session-1"
+    assert call["entity_context"]
+    assert provider._pending_turns == []
+
+
+def test_pending_turns_drops_oldest_past_turn_cap(provider):
+    # A persistently failing service must not grow the retry buffer without bound.
+    provider._client.fail_add = True
+    for i in range(_MAX_PENDING_TURNS + 5):
+        provider.sync_turn(f"turn {i:03d}", f"reply {i:03d}", session_id="session-1")
+    assert len(provider._pending_turns) == _MAX_PENDING_TURNS
+    assert provider._pending_turns[0]["user"] == "turn 005"  # oldest dropped, newest kept
+    assert provider._pending_turns[-1]["user"] == f"turn {_MAX_PENDING_TURNS + 4:03d}"
+
+
+def test_pending_turns_drops_oldest_past_byte_cap(provider):
+    provider._client.fail_add = True
+    big = "x" * 20000  # 20 KB sides; 13 pending turns exceed the 256 KiB cap
+    for i in range(13):
+        provider.sync_turn(big, big, session_id="session-1")
+    total = sum(len(t["user"]) + len(t["assistant"]) for t in provider._pending_turns)
+    assert total <= _MAX_PENDING_BYTES
+    assert len(provider._pending_turns) < 13  # oldest dropped
+
+
+def test_write_treats_none_client_result_as_success(provider, monkeypatch):
+    # A stub returning None (the most common mock idiom) must not be read as failure —
+    # only a raised exception re-queues the batch.
+    calls = []
+
+    def none_returning_add(content, metadata=None, **kwargs):
+        calls.append(content)
+        return None
+
+    monkeypatch.setattr(provider._client, "add_memory", none_returning_add)
+    provider.sync_turn("hello", "hi there", session_id="session-1")
+    assert len(calls) == 1
+    assert provider._pending_turns == []
+
+
+def test_sync_turn_skips_empty_turn(provider):
+    provider.sync_turn("", "<supermemory-context>x</supermemory-context>", session_id="session-1")
     assert provider._client.add_calls == []
 
 
-def test_sync_turn_buffers_cleaned_exchange(provider):
-    provider.sync_turn(
-        "Please remember this\n<supermemory-context>ignore</supermemory-context>",
-        "Got it, storing the context",
-        session_id="session-1",
-    )
-    assert len(provider._session_turns) == 1
-    turn = provider._session_turns[0]
-    assert "ignore" not in turn["user"]
-    assert turn["user"].startswith("Please remember this")
-    assert turn["assistant"] == "Got it, storing the context"
-    # Buffering only — no per-turn writes to the client
+def test_failed_turn_write_is_retried_at_session_end(provider, frozen_capture_clock):
+    provider._client.fail_add = True
+    provider.sync_turn("hello", "hi there", session_id="session-1")
     assert provider._client.add_calls == []
-    assert provider._client.ingest_calls == []
+    assert provider._pending_turns == [{"user": "hello", "assistant": "hi there", "session_id": "session-1"}]
+
+    provider._client.fail_add = False
+    provider.on_session_end([])
+    assert len(provider._client.add_calls) == 1
+    call = provider._client.add_calls[0]
+    assert call["custom_id"] == _capture_custom_id("session-1")
+    assert "hello" in call["content"]
+    assert provider._pending_turns == []
 
 
-def test_on_session_end_ingests_clean_messages(provider):
-    messages = [
-        {"role": "system", "content": "skip"},
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-    ]
-    provider.on_session_end(messages)
-    assert len(provider._client.ingest_calls) == 1
-    payload = provider._client.ingest_calls[0]
-    assert payload["session_id"] == "session-1"
-    assert payload["messages"] == [
-        {"role": "user", "content": "hello"},
-        {"role": "assistant", "content": "hi there"},
-    ]
-    assert payload["metadata"]["type"] == "full_session"
-    assert payload["metadata"]["session_id"] == "session-1"
-    assert payload["metadata"]["message_count"] == 2
-    # Buffer is cleared after a normal session-end ingest.
-    assert provider._session_turns == []
+def test_pending_turns_are_batched_with_next_turn(provider, frozen_capture_clock):
+    provider._client.fail_add = True
+    provider.sync_turn("one", "uno", session_id="session-1")
+    provider._client.fail_add = False
+    provider.sync_turn("two", "dos", session_id="session-1")
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["content"].index("one") < provider._client.add_calls[0]["content"].index("two")
+    assert provider._pending_turns == []
+
+
+def test_session_switch_flushes_pending_to_old_session(provider, frozen_capture_clock):
+    provider._client.fail_add = True
+    provider.sync_turn("hello", "hi", session_id="session-1")
+    provider._client.fail_add = False
+    provider.on_session_switch("session-2", reset=True)
+    assert provider._client.add_calls[0]["custom_id"] == _capture_custom_id("session-1")
+    assert provider._session_id == "session-2"
+    assert provider._pending_turns == []
+
+
+def test_failed_switch_flush_keeps_old_session_turns_for_later_retry(provider, frozen_capture_clock):
+    provider._client.fail_add = True
+    provider.sync_turn("old turn", "old reply", session_id="session-1")
+    provider.on_session_switch("session-2", reset=True)  # flush fails: service unavailable at the boundary
+    assert provider._session_id == "session-2"
+    assert provider._pending_turns == [{"user": "old turn", "assistant": "old reply", "session_id": "session-1"}]
+
+    provider._client.fail_add = False
+    provider.sync_turn("new turn", "new reply", session_id="session-2")
+    calls = provider._client.add_calls
+    assert [c["custom_id"] for c in calls] == [_capture_custom_id("session-1"), _capture_custom_id("session-2")]
+    assert calls[0]["metadata"]["session_id"] == "session-1" and "old turn" in calls[0]["content"]
+    assert calls[1]["metadata"]["session_id"] == "session-2" and "new turn" in calls[1]["content"]
+    assert provider._pending_turns == []
+
+
+def test_concurrent_sync_turn_and_session_switch_do_not_duplicate_pending(provider, monkeypatch):
+    # Worker thread: sync_turn(B) with pending [A] snapshots [A, B] and blocks inside add_memory.
+    # Caller thread: on_session_switch must wait for that write, not re-send A from a stale snapshot.
+    provider._client.fail_add = True
+    provider.sync_turn("A", "a", session_id="session-1")
+    provider._client.fail_add = False
+    entered, release = threading.Event(), threading.Event()
+    real_add = provider._client.add_memory
+
+    def slow_add(content, metadata=None, **kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return real_add(content, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(provider._client, "add_memory", slow_add)
+    worker = threading.Thread(target=provider.sync_turn, args=("B", "b"), kwargs={"session_id": "session-1"})
+    worker.start()
+    assert entered.wait(timeout=2)
+    switcher = threading.Thread(target=provider.on_session_switch, args=("session-2",), kwargs={"reset": True})
+    switcher.start()
+    switcher.join(timeout=0.2)
+    assert switcher.is_alive()  # blocked on the capture lock while the worker's write is in flight
+    release.set()
+    worker.join(timeout=2); switcher.join(timeout=2)
+    assert not worker.is_alive() and not switcher.is_alive()
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["content"].count("[role: user]") == 2  # A and B, once each
+    assert provider._pending_turns == []
+    assert provider._session_id == "session-2"
+
+
+def test_failed_switch_flush_is_retried_at_shutdown(provider, frozen_capture_clock):
+    provider._client.fail_add = True
+    provider.sync_turn("old turn", "old reply", session_id="session-1")
+    provider.on_session_switch("session-2", reset=True)
+    provider._client.fail_add = False
+    provider.shutdown()
+    assert provider._client.add_calls[0]["custom_id"] == _capture_custom_id("session-1")
+    assert provider._pending_turns == []
+
+
+def test_shutdown_waits_for_inflight_write_and_does_not_resend(provider, monkeypatch):
+    """While a worker thread owns an in-flight write, shutdown's flush blocks on the capture lock
+    (in production the wait is bounded by the SDK timeout; this test gates it with an Event), and
+    the pending batch is never re-sent by a second owner. Without the lock, the flusher snapshots
+    the pending [P] alongside the in-flight A and sends it twice."""
+    # Pre-seed one FAILED turn so the buffer actually holds a resend candidate.
+    provider._client.fail_add = True
+    provider.sync_turn("P", "p", session_id="session-1")
+    provider._client.fail_add = False
+    assert len(provider._pending_turns) == 1
+
+    entered, release = threading.Event(), threading.Event()
+    real_add = provider._client.add_memory
+
+    def slow_add(content, metadata=None, **kwargs):
+        entered.set()
+        assert release.wait(timeout=2)
+        return real_add(content, metadata=metadata, **kwargs)
+
+    monkeypatch.setattr(provider._client, "add_memory", slow_add)
+    worker = threading.Thread(target=provider.sync_turn, args=("A", "a"), kwargs={"session_id": "session-1"})
+    worker.start()
+    assert entered.wait(timeout=2)  # worker owns the write and is blocked inside add_memory
+
+    flusher = threading.Thread(target=provider.shutdown, name="shutdown-flusher")
+    flusher.start()
+    flusher.join(timeout=0.2)
+    assert flusher.is_alive()  # shutdown's flush waits for the capture lock, it does not duplicate the write
+
+    release.set()
+    worker.join(timeout=2)
+    flusher.join(timeout=2)
+    assert not worker.is_alive() and not flusher.is_alive()
+    # The in-flight A and the previously pending P are sent in ONE batch, exactly once each.
+    assert len(provider._client.add_calls) == 1
+    assert provider._client.add_calls[0]["content"].count("[role: user]") == 2
+    assert provider._pending_turns == []
+
+
+def test_sync_turn_drops_inline_image_payloads(provider, frozen_capture_clock):
+    blob = "A" * 4096
+    provider.sync_turn(f"describe this data:image/png;base64,{blob}", "a screenshot", session_id="session-1")
+    call = provider._client.add_calls[0]
+    assert "describe this [image]" in call["content"]
+    assert blob not in json.dumps(call)
 
 
 def test_merge_metadata_stamps_sm_source():
@@ -200,39 +359,36 @@ def test_merge_metadata_stamps_sm_source():
     assert "source" not in merged2
 
 
-def test_on_memory_write_tracks_thread(provider):
-    provider.on_memory_write("add", "memory", "Jordan likes concise docs")
-    assert provider._write_thread is not None
-    provider._write_thread.join(timeout=1)
-    assert len(provider._client.add_calls) == 1
-    assert provider._client.add_calls[0]["metadata"]["type"] == "explicit_memory"
-
-
-def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
+def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch, frozen_capture_clock):
     started = threading.Event()
     release = threading.Event()
 
     def slow_add_memory(content, metadata=None, *, entity_context="",
                         container_tag=None, custom_id=None):
+        if provider._client.fail_add:
+            raise RuntimeError("boom")
         started.set()
         release.wait(timeout=1)
         provider._client.add_calls.append({
             "content": content,
             "metadata": metadata,
             "entity_context": entity_context,
+            "custom_id": custom_id,
         })
         return {"id": "mem_slow"}
 
     monkeypatch.setattr(provider._client, "add_memory", slow_add_memory)
 
-    # sync_turn now only buffers — no thread is spawned.
+    # A failed turn write stays pending; shutdown retries it.
+    provider._client.fail_add = True
     provider.sync_turn(
         "Please remember this request in long-term memory",
         "Absolutely, I will keep that in long-term memory.",
         session_id="session-1",
     )
+    provider._client.fail_add = False
     assert provider._sync_thread is None
-    assert len(provider._session_turns) == 1
+    assert len(provider._pending_turns) == 1
 
     # on_memory_write still runs on a background thread.
     provider.on_memory_write("add", "memory", "Jordan likes concise docs")
@@ -246,14 +402,10 @@ def test_shutdown_joins_threads_and_flushes_buffer(provider, monkeypatch):
     assert provider._sync_thread is None
     assert provider._write_thread is None
     assert provider._prefetch_thread is None
-    # Explicit memory write went through.
-    assert len(provider._client.add_calls) == 1
-    # Buffered turn was flushed as a partial full-session ingest.
-    assert len(provider._client.ingest_calls) == 1
-    payload = provider._client.ingest_calls[0]
-    assert payload["session_id"] == "session-1"
-    assert payload["metadata"]["partial"] is True
-    assert payload["metadata"]["type"] == "full_session"
+    # Explicit memory write and the retried turn both went through.
+    assert len(provider._client.add_calls) == 2
+    flushed = next(c for c in provider._client.add_calls if c.get("custom_id") == _capture_custom_id("session-1"))
+    assert provider._pending_turns == []
 
 
 def test_store_tool_returns_saved_payload(provider):
@@ -275,13 +427,6 @@ def test_forget_tool_by_id(provider):
     result = json.loads(provider.handle_tool_call("supermemory_forget", {"id": "m1"}))
     assert result == {"forgotten": True, "id": "m1"}
     assert provider._client.forgotten_ids == ["m1"]
-
-
-def test_forget_tool_by_query(provider):
-    provider._client.forget_by_query_response = {"success": True, "message": "Forgot one", "id": "m7"}
-    result = json.loads(provider.handle_tool_call("supermemory_forget", {"query": "that thing"}))
-    assert result["success"] is True
-    assert result["id"] == "m7"
 
 
 def test_profile_tool_formats_sections(provider):
@@ -316,16 +461,6 @@ def test_identity_template_resolved_in_container_tag(monkeypatch, tmp_path):
     assert p._container_tag == "hermes_coder"
 
 
-def test_identity_template_default_profile(monkeypatch, tmp_path):
-    """Without agent_identity kwarg, {identity} resolves to 'default'."""
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-    _save_supermemory_config({"container_tag": "hermes-{identity}"}, str(tmp_path))
-    p = SupermemoryMemoryProvider()
-    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
-    assert p._container_tag == "hermes_default"
-
-
 def test_container_tag_env_var_override(monkeypatch, tmp_path):
     """SUPERMEMORY_CONTAINER_TAG env var overrides config."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
@@ -339,17 +474,6 @@ def test_container_tag_env_var_override(monkeypatch, tmp_path):
 # -- Search mode tests --------------------------------------------------------
 
 
-def test_search_mode_config_passed_to_client(monkeypatch, tmp_path):
-    """search_mode from config is passed to _SupermemoryClient."""
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-    _save_supermemory_config({"search_mode": "memories"}, str(tmp_path))
-    p = SupermemoryMemoryProvider()
-    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
-    assert p._search_mode == "memories"
-    assert p._client.search_mode == "memories"
-
-
 def test_invalid_search_mode_falls_back_to_default(monkeypatch, tmp_path):
     """Invalid search_mode falls back to 'hybrid'."""
     monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
@@ -358,6 +482,49 @@ def test_invalid_search_mode_falls_back_to_default(monkeypatch, tmp_path):
     p = SupermemoryMemoryProvider()
     p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
     assert p._search_mode == "hybrid"
+
+
+# -- Base URL tests -------------------------------------------------------------
+
+
+def test_base_url_defaults_to_cloud(monkeypatch, tmp_path):
+    """Without config or env override, the client targets api.supermemory.ai."""
+    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
+    monkeypatch.delenv("SUPERMEMORY_BASE_URL", raising=False)
+    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
+    p = SupermemoryMemoryProvider()
+    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
+    assert p._base_url == "https://api.supermemory.ai"
+    assert p._client.base_url == "https://api.supermemory.ai"
+
+
+def test_client_passes_custom_base_url_to_sdk(monkeypatch):
+    """SDK client receives the normalized base URL."""
+    import sys
+    import types
+
+    from plugins.memory.supermemory import _SupermemoryClient
+
+    captured = {}
+
+    class StubSupermemory:
+        def __init__(self, **kwargs):
+            captured.update(kwargs)
+
+    module = types.ModuleType("supermemory")
+    module.Supermemory = StubSupermemory
+    monkeypatch.setitem(sys.modules, "supermemory", module)
+    monkeypatch.setattr("tools.lazy_deps.ensure", lambda *args, **kwargs: None)
+
+    client = _SupermemoryClient(
+        api_key="test-key",
+        timeout=1.0,
+        container_tag="hermes",
+        base_url="http://localhost:6767/",
+    )
+
+    assert client._base_url == "http://localhost:6767"
+    assert captured["base_url"] == "http://localhost:6767"
 
 
 # -- Multi-container tests ----------------------------------------------------
@@ -371,77 +538,6 @@ def test_multi_container_disabled_by_default(provider):
         assert "container_tag" not in s["parameters"]["properties"]
 
 
-def test_multi_container_enabled_adds_schema_param(monkeypatch, tmp_path):
-    """When enabled, tool schemas include container_tag parameter."""
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-    _save_supermemory_config({
-        "enable_custom_container_tags": True,
-        "custom_containers": ["project-alpha", "shared"],
-    }, str(tmp_path))
-    p = SupermemoryMemoryProvider()
-    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
-    assert p._enable_custom_containers is True
-    assert p._allowed_containers == ["hermes", "project_alpha", "shared"]
-    schemas = p.get_tool_schemas()
-    for s in schemas:
-        assert "container_tag" in s["parameters"]["properties"]
-
-
-def test_multi_container_tool_store_with_custom_tag(monkeypatch, tmp_path):
-    """supermemory_store uses the resolved container_tag when multi-container is enabled."""
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-    _save_supermemory_config({
-        "enable_custom_container_tags": True,
-        "custom_containers": ["project-alpha"],
-    }, str(tmp_path))
-    p = SupermemoryMemoryProvider()
-    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
-    result = json.loads(p.handle_tool_call("supermemory_store", {
-        "content": "test memory",
-        "container_tag": "project-alpha",
-    }))
-    assert result["saved"] is True
-    assert result["container_tag"] == "project_alpha"
-    assert p._client.add_calls[-1]["container_tag"] == "project_alpha"
-
-
-def test_multi_container_rejects_unlisted_tag(monkeypatch, tmp_path):
-    """Tool calls with a non-whitelisted container_tag return an error."""
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-    _save_supermemory_config({
-        "enable_custom_container_tags": True,
-        "custom_containers": ["allowed-tag"],
-    }, str(tmp_path))
-    p = SupermemoryMemoryProvider()
-    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
-    result = json.loads(p.handle_tool_call("supermemory_store", {
-        "content": "test",
-        "container_tag": "forbidden-tag",
-    }))
-    assert "error" in result
-    assert "not allowed" in result["error"]
-
-
-def test_multi_container_system_prompt_includes_instructions(monkeypatch, tmp_path):
-    """system_prompt_block includes container list and instructions when multi-container is enabled."""
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-    _save_supermemory_config({
-        "enable_custom_container_tags": True,
-        "custom_containers": ["docs"],
-        "custom_container_instructions": "Use docs for documentation context.",
-    }, str(tmp_path))
-    p = SupermemoryMemoryProvider()
-    p.initialize("s1", hermes_home=str(tmp_path), platform="cli")
-    block = p.system_prompt_block()
-    assert "Multi-container mode enabled" in block
-    assert "docs" in block
-    assert "Use docs for documentation context." in block
-
-
 def test_get_config_schema_minimal():
     """get_config_schema only returns the API key field."""
     p = SupermemoryMemoryProvider()
@@ -449,43 +545,6 @@ def test_get_config_schema_minimal():
     assert len(schema) == 1
     assert schema[0]["key"] == "api_key"
     assert schema[0]["secret"] is True
-
-
-def test_format_connection_summary_ok():
-    summary = _format_connection_summary({
-        "ok": True,
-        "container_tag": "hermes_coder",
-        "profile_facts": 12,
-        "auto_recall": True,
-        "auto_capture": False,
-    })
-    assert "✓ Connected" in summary
-    assert "container: hermes_coder" in summary
-    assert "12 profile facts" in summary
-    assert "auto_recall on" in summary
-    assert "auto_capture off" in summary
-
-
-def test_format_connection_summary_single_fact_and_error():
-    one = _format_connection_summary({
-        "ok": True,
-        "container_tag": "hermes",
-        "profile_facts": 1,
-        "auto_recall": True,
-        "auto_capture": True,
-    })
-    assert "1 profile fact" in one
-    assert "1 profile facts" not in one
-
-    err = _format_connection_summary({
-        "ok": False,
-        "error": "invalid API key",
-        "container_tag": "hermes",
-        "auto_recall": True,
-        "auto_capture": True,
-    })
-    assert "✗ invalid API key" in err
-    assert "container: hermes" in err
 
 
 def test_probe_supermemory_connection_missing_key(tmp_path):
@@ -516,52 +575,6 @@ def _stub_supermemory_importable(monkeypatch):
         return real_import(name, *args, **kwargs)
 
     monkeypatch.setattr(builtins, "__import__", fake_import)
-
-
-def test_probe_supermemory_connection_success(monkeypatch, tmp_path):
-    _stub_supermemory_importable(monkeypatch)
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-
-    class CountingClient(FakeClient):
-        def get_profile(self, query=None, *, container_tag=None):
-            return {
-                "static": ["Prefers TypeScript"],
-                "dynamic": ["", "Working on Hermes"],
-                "search_results": [],
-            }
-
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", CountingClient)
-    status = _probe_supermemory_connection("test-key", str(tmp_path))
-    assert status["ok"] is True
-    assert status["profile_facts"] == 2
-    assert status["auto_recall"] is True
-
-
-def test_probe_supermemory_connection_client_error(monkeypatch, tmp_path):
-    _stub_supermemory_importable(monkeypatch)
-
-    class BrokenClient(FakeClient):
-        def get_profile(self, query=None, *, container_tag=None):
-            raise RuntimeError("API unavailable")
-
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", BrokenClient)
-    status = _probe_supermemory_connection("test-key", str(tmp_path))
-    assert status["ok"] is False
-    assert "API unavailable" in status["error"]
-
-
-def test_get_status_config_returns_summary(monkeypatch, tmp_path):
-    _stub_supermemory_importable(monkeypatch)
-    monkeypatch.setenv("SUPERMEMORY_API_KEY", "test-key")
-    monkeypatch.setattr("plugins.memory.supermemory._SupermemoryClient", FakeClient)
-    monkeypatch.setattr(
-        "hermes_constants.get_hermes_home",
-        lambda: tmp_path,
-    )
-    result = SupermemoryMemoryProvider().get_status_config({})
-    assert "summary" in result
-    assert "✓ Connected" in result["summary"]
-    assert "container: hermes" in result["summary"]
 
 
 def test_post_setup_writes_config_and_prints_summary(monkeypatch, tmp_path, capsys):

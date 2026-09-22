@@ -26,44 +26,51 @@ def test_mixin_defines_kanban_methods():
         assert hasattr(GatewayKanbanWatchersMixin, m), f"mixin missing {m}"
 
 
-def test_gateway_runner_inherits_mixin():
-    # Import here so a heavy gateway import only happens if the first test passed.
-    from gateway.run import GatewayRunner
+def test_gateway_dispatcher_stuck_warning_names_guard_reason(monkeypatch, caplog):
+    """The embedded dispatcher's "stuck" warning names the respawn-guard reason
+    holding the ready queue (#111910) instead of a bare zero-spawn count."""
+    import asyncio
+    import logging
 
-    assert issubclass(GatewayRunner, GatewayKanbanWatchersMixin)
-    # Each kanban method resolves to the mixin's implementation via the MRO.
-    for m in KANBAN_METHODS:
-        owner = next(c for c in GatewayRunner.__mro__ if m in c.__dict__)
-        assert owner is GatewayKanbanWatchersMixin, (
-            f"{m} resolved to {owner.__name__}, expected the mixin"
-        )
+    import gateway.kanban_watchers as kw
+    from hermes_cli import kanban_db_dispatch as kbd
 
+    held = kbd.DispatchResult(respawn_guarded=[("t_held", "active_pr")])
+    runner = object.__new__(kw.GatewayKanbanWatchersMixin)
+    runner._running = True
+    monkeypatch.setattr(runner, "_kanban_dispatcher_boot", lambda: (lambda: {}, object(), {}))
 
-def test_watcher_loops_are_coroutines():
-    # The two long-running watchers are async loops.
-    assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_notifier_watcher)
-    assert inspect.iscoroutinefunction(GatewayKanbanWatchersMixin._kanban_dispatcher_watcher)
+    class _Dispatcher:
+        def __init__(self, *a, **k):
+            pass
 
+        def tick_once(self):
+            return [("board", held)]
 
-def test_singleton_dispatcher_lock_is_exclusive(tmp_path):
-    """Only one holder of the dispatcher lock at a time — the backstop that
-    stops concurrent dispatchers double reclaiming and corrupting shared
-    kanban SQLite index pages under wal_autocheckpoint=0."""
-    import os
+        def ready_nonempty(self):
+            return True
 
-    from gateway.kanban_watchers import _acquire_singleton_lock, _release_singleton_lock
+    ticks = {"n": 0}
 
-    lock = tmp_path / "kanban" / ".dispatcher.lock"
+    async def _direct(fn, *args):
+        return fn(*args)
 
-    h1, st1 = _acquire_singleton_lock(lock)
-    assert st1 == "held" and h1 is not None
+    async def _sleep(_delay):
+        ticks["n"] += 1
+        if ticks["n"] > kw._HEALTH_WINDOW:
+            runner._running = False
 
-    # A second acquire while the first is held must be refused, not granted.
-    h2, st2 = _acquire_singleton_lock(lock)
-    assert st2 == "contended" and h2 is None
+    monkeypatch.setattr(kw, "_KanbanDispatcher", _Dispatcher)
+    monkeypatch.setattr(kw, "_resolve_dispatcher_settings", lambda cfg, kb: type("S", (), {"interval": 1.0})())
+    monkeypatch.setattr(kw, "_to_thread_process_service", _direct)
+    monkeypatch.setattr(kw, "_kanban_dispatch_allowed", lambda: True)
+    monkeypatch.setattr(kw, "_resolve_auto_decompose_settings", lambda load_config: (False, 0))
+    monkeypatch.setattr(kbd, "reap_worker_zombies", lambda: [])
+    monkeypatch.setattr(kw.asyncio, "sleep", _sleep)
 
-    # Releasing the first lets a fresh acquire succeed (lock is reusable).
-    _release_singleton_lock(h1)
-    h3, st3 = _acquire_singleton_lock(lock)
-    assert st3 == "held" and h3 is not None
-    _release_singleton_lock(h3)
+    with caplog.at_level(logging.WARNING, logger=kw.logger.name):
+        asyncio.run(asyncio.wait_for(runner._kanban_dispatcher_watcher(), timeout=5.0))
+
+    stuck = [r.getMessage() for r in caplog.records if "dispatcher stuck" in r.getMessage()]
+    assert stuck, [r.getMessage() for r in caplog.records]
+    assert "Last tick held back: active_pr=1." in stuck[0]

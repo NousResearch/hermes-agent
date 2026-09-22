@@ -62,13 +62,35 @@ required contexts, paginates exact-head check runs and legacy statuses, then
 re-reads the PR head/base. Optional failed/skipped telemetry does not veto accepted
 required checks. Missing, pending, failed, cancelled, timed-out, stale, skipped or
 neutral **required** evidence cannot complete the card. Neither can zero-run
-acceptance, unreadable policy or GitHub API failures. A repository without required
-checks needs a local-only contract. `gh` must be authenticated with read access to
-the repository's checks and rules; no remote writes are performed by this gate.
+acceptance, unreadable policy or generic GitHub API failures. `gh` must be
+authenticated with read access to the repository's checks and rules; no remote
+writes are performed by this gate.
+
+There is one narrow exception for plan-limited private repositories: GitHub must
+confirm `isPrivate`, and the branch-rules endpoint must return HTTP 403 with the
+exact message `Upgrade to GitHub Pro or make this repository public to enable this
+feature.` Classic branch protection must still be readable and its required checks
+are still enforced. Authentication failures, rate limits, arbitrary 403s, malformed
+responses and partial policy reads do not qualify.
+
+If that plan limitation is proven and classic protection declares no required
+checks, the gate instead requires **all observed exact-head CI**: every latest
+check run and the newest legacy status per context must be successful, with at
+least one piece of evidence. No observed check is optional in this mode: pending,
+failed, cancelled, timed-out, action-required, skipped, neutral or stale results
+reject completion. Pagination, the final head/base read and SQLite ownership
+guards still apply. This observes CI, not an expected-workflow inventory: without
+repository policy it cannot prove that an unobserved workflow should have run.
+Repositories with an available rules API but no required checks still need a
+`local-only` contract for non-CI work; this exception is not a generic no-policy
+fallback or a reason to downgrade an existing PR contract.
 
 Rejection retains the active card and workspace. Durable `pr_acceptance` events
 store PR URL, SHA, required contexts, check IDs/URLs, classifications and recovery
-instructions; `last_failure_error` surfaces the next step. Fix failures, rerun
+instructions. `rules_status` distinguishes `available` from `plan_unavailable`,
+and `policy_source` distinguishes `required_checks` from `observed_checks` (whose
+`required` list remains empty, not a fabricated repository policy).
+`last_failure_error` surfaces the next step. Fix failures, rerun
 infrastructure checks or wait, then retry completion. Use `kanban_block` when
 human action is needed. Generic GitHub `failure` cannot establish whether a test
 or artifact upload failed; inspect its retained URL. Explicit infrastructure

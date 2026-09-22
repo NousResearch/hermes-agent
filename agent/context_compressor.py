@@ -1517,6 +1517,15 @@ _OUTBOUND_ARG_EXEMPT_TOOLS = frozenset({
     "send_message", "send_draft", "create_draft", "update_draft",
     "plane_comment_add", "sendemail", "reply", "forward",
     "meet_say",
+    # Carried fix 2026-09-22 (DIVERSE-15): mid-turn pruning reaches the IN-FLIGHT
+    # tool call before dispatch, so shrunk args are what the tool EXECUTES/WRITES.
+    # terminal/write_file/patch/execute_code/browser_exec args are executed or
+    # persisted verbatim — a compression marker in them corrupts commands
+    # (SyntaxError, 2026-09-21 errors.log:775/:903), hollows written files
+    # (permanent loss) and kills scripts. browser_exec included: its code arg
+    # runs verbatim as Python (reviewer HIGH finding, 22/9). Never shrink these;
+    # history summaries still reclaim tokens.
+    "terminal", "write_file", "patch", "execute_code", "browser_exec",
 })
 
 

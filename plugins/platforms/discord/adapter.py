@@ -1786,12 +1786,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)", self.name, reason, failures,
                 threshold,
             )
-            # A closed transport (``socket_closed``) is a confirmed death, not a suspicion:
-            # the resume path replaces the socket, the next sample reads healthy, and this
-            # counter silently resets — while a resumed-but-deaf session stays event-starved
-            # until the multi-hour event-silence default elapses (#118487). Escalate the
-            # first ``socket_closed`` / ``client_closed`` strike (both mean the transport is
-            # gone); soft signals (ack staleness, latency, silence) keep the threshold.
+            # A closed transport is a confirmed death, not a suspicion: escalate on the
+            # first strike; soft signals keep the threshold (#118487).
             terminal = reason in ("socket_closed", "client_closed")
             if failures < threshold and not terminal:
                 continue

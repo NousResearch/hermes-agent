@@ -715,12 +715,8 @@ class GatewayModelCommandsMixin:
             source=event.source, session_key=session_key, model=_session_model,
         )
         platform_key = _platform_config_key(event.source.platform)
-        if raw_args:  # typed path — same applier the picker uses
-            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
-        rc = self._reasoning_config
-        # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
-        # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
-        from agent.reasoning_effort import declared_route_efforts, effort_display_label
+        # Route first: the declared vocabulary gates the typed path as well as the picker.
+        from agent.reasoning_effort import EFFORT_LADDER, declared_route_efforts, effort_display_label
         from gateway.run import _load_gateway_config
         _session_route = ((getattr(self, "_session_model_overrides", {}) or {}).get(session_key) or {})
         _cfg = {}
@@ -731,10 +727,21 @@ class GatewayModelCommandsMixin:
             _session_route.get("provider") or _model_cfg.get("provider"),
             _session_model or _model_cfg.get("default") or _model_cfg.get("model"),
         )
+        _declared = declared_route_efforts(*_route, config=_cfg)
+        if raw_args:  # typed path — same applier the picker uses
+            _asked = str(args or "").strip().lower()
+            # A level the route does not declare is refused with the levels it does take.
+            # Applying it would either 400 at the endpoint or be clamped to something the
+            # user never typed — silently, which is the bug this command had.
+            if _declared is not None and _asked in EFFORT_LADDER and _asked not in _declared:
+                return t("gateway.reasoning.undeclared_level", arg=_asked, levels=", ".join(_declared))
+            return self._apply_reasoning_selection(session_key, platform_key, args, persist_global=persist_global)
+        rc = self._reasoning_config
+        # Labels tell the truth about the route: a Hermes-internal step (``ultra``) that the wire
+        # clamps is shown as "ultra (sends max on this route)" instead of a distinct level (#61634).
         # Offer what the route declares, not the shared ladder: a relay that accepts four
         # levels should not present seven and fail (or silently clamp) on the other three.
         # Undeclared stays fail-open — the full ladder, as before (#114033 convention).
-        _declared = declared_route_efforts(*_route, config=_cfg)
         _offered = VALID_REASONING_EFFORTS if _declared is None else tuple(
             level for level in VALID_REASONING_EFFORTS if level in _declared
         )

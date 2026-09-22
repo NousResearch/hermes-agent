@@ -42,9 +42,9 @@ providers:
 """
 
 
-def _make_event():
+def _make_event(text="/reasoning"):
     return MessageEvent(
-        text="/reasoning",
+        text=text,
         source=SessionSource(
             platform=Platform.TELEGRAM, user_id="12345", chat_id="67890", user_name="testuser"
         ),
@@ -94,6 +94,16 @@ async def _collect_offered_values(tmp_path, monkeypatch, config_text):
     return [choice["value"] for choice in captured]
 
 
+async def _typed(tmp_path, monkeypatch, config_text, command):
+    hermes_home = tmp_path / "hermes"
+    hermes_home.mkdir()
+    (hermes_home / "config.yaml").write_text(config_text, encoding="utf-8")
+    monkeypatch.setattr(gateway_run, "_hermes_home", hermes_home)
+
+    runner = _make_runner([])
+    return await runner._handle_reasoning_command(_make_event(command))
+
+
 def test_picker_offers_only_the_declared_levels(tmp_path, monkeypatch):
     values = asyncio.run(_collect_offered_values(tmp_path, monkeypatch, CONFIG_DECLARED))
 
@@ -112,3 +122,26 @@ def test_undeclared_route_keeps_the_whole_ladder(tmp_path, monkeypatch):
     assert [v for v in values if v not in ("none", "reset", "show", "hide")] == list(
         VALID_REASONING_EFFORTS
     )
+
+
+def test_a_level_the_route_does_not_declare_is_refused_with_the_valid_ones(tmp_path, monkeypatch):
+    # Applying it would 400 at the endpoint or be clamped to a level the user never typed.
+    reply = asyncio.run(_typed(tmp_path, monkeypatch, CONFIG_DECLARED, "/reasoning medium"))
+
+    assert "medium" in reply
+    for declared in ("none", "low", "high", "max"):
+        assert declared in reply
+    assert "xhigh" not in reply
+
+
+def test_a_declared_level_still_applies(tmp_path, monkeypatch):
+    reply = asyncio.run(_typed(tmp_path, monkeypatch, CONFIG_DECLARED, "/reasoning high"))
+
+    assert "high" in reply
+    assert "not available" not in reply
+
+
+def test_an_undeclared_route_accepts_the_whole_ladder_as_before(tmp_path, monkeypatch):
+    reply = asyncio.run(_typed(tmp_path, monkeypatch, CONFIG_UNDECLARED, "/reasoning ultra"))
+
+    assert "not available" not in reply

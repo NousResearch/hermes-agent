@@ -58,16 +58,17 @@ def _default_terminal_temp_dir() -> "Path | None":
         return None
 
 
-def cleanup_terminal_temp_cache(max_idle_hours: float = TERMINAL_TEMP_MAX_IDLE_HOURS) -> int:
-    """Delete session temp artifacts idle for *max_idle_hours* (no write anywhere in a
-    directory's subtree); return count.
+def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HOURS) -> int:
+    """Delete session temp artifacts idle for *max_age_hours* (no write anywhere in a
+    directory's subtree; the kwarg name is the ``cleanup_*_cache`` signature the gateway
+    housekeeping loop calls every entry with); return count.
     Only the managed default dir is pruned — never a user-pointed ``terminal.temp_dir``."""
     from hermes_constants_scratch import subtree_touched_since
 
     root = _default_terminal_temp_dir()
     if root is None:
         return 0
-    cutoff = time.time() - (max_idle_hours * 3600)
+    cutoff = time.time() - (max_age_hours * 3600)
     try:
         entries = list(root.iterdir())
     except OSError:

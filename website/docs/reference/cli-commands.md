@@ -1171,6 +1171,8 @@ Restore a previously created Hermes backup into your Hermes home directory. All 
 | Option | Description |
 |--------|-------------|
 | `-f`, `--force` | Skip the existing-installation confirmation prompt. |
+| `--verify-only` | Don't restore anything: prove the archive restores by running the import pipeline into a throwaway home, print a JSON verification receipt, and exit nonzero when the drill fails. Never touches this profile. |
+| `--keep-candidate` | With `--verify-only`: keep the temporary restore for inspection instead of removing it on success. |
 
 :::warning
 Stop the gateway before importing to avoid conflicts with running processes.
@@ -1191,10 +1193,22 @@ Importing an older backup over newer work is still allowed, but it is no longer 
     Recover from a newer backup or snapshot: hermes snapshot list
 ```
 
+### Verifying a backup before a destructive recovery
+
+A readable zip is not proof that a restore works. `--verify-only` runs the real import pipeline into an isolated temporary home, checks the restored candidate (SQLite health, config parse, auth/cron structure, required objects), and prints a JSON receipt — without touching the profile it is run from:
+
+```bash
+hermes import ~/hermes-backup-20260423.zip --verify-only
+# { "status": "verified", "required_objects": 143, "restored_objects": 143, ... }
+```
+
+`status` is `verified` only when everything restored and every postcondition passed; anything else exits `1` (and keeps the candidate home for inspection). Use it as the gate before replacing or wiping an unhealthy profile.
+
 ### Examples
 ```bash
 hermes import ~/hermes-backup-20260423.zip           # Prompts before overwriting existing config
 hermes import ~/hermes-backup-20260423.zip --force   # Overwrite without prompting
+hermes import ~/hermes-backup-20260423.zip --verify-only  # Prove the backup restores, change nothing
 ```
 
 ## `hermes logs`

@@ -10,6 +10,7 @@ namespaced by ``prefix`` so ``backend_for_handle`` needs no lookup table.
 from __future__ import annotations
 
 import subprocess
+import sys
 from abc import ABC, abstractmethod
 from pathlib import Path
 from typing import Dict, List, Optional, Sequence
@@ -96,8 +97,9 @@ def _cfg() -> Dict:
 
 def external_backend_classes():
     from agent.vault_backends.bitwarden import BitwardenLoginBackend
+    from agent.vault_backends.keychain import MacOSKeychainLoginBackend
     from agent.vault_backends.onepassword import OnePasswordLoginBackend
-    return (OnePasswordLoginBackend, BitwardenLoginBackend)
+    return (OnePasswordLoginBackend, BitwardenLoginBackend, MacOSKeychainLoginBackend)
 
 
 def is_installed(name: str) -> bool:
@@ -110,6 +112,9 @@ def is_installed(name: str) -> bool:
     if name == "onepassword":
         from agent.secret_sources.onepassword import find_op
         return find_op() is not None
+    if name == "keychain":
+        # Ships with macOS itself; present whenever the OS is darwin.
+        return sys.platform == "darwin" and shutil.which("security") is not None
     return shutil.which("bw") is not None
 
 

@@ -17,6 +17,7 @@ server-side without ever seeing it.
 from __future__ import annotations
 
 import getpass
+from pathlib import Path
 
 
 def _console():
@@ -163,7 +164,10 @@ def _cmd_sources(args) -> None:
     enabled = {b.name for b in enabled_backends()}
     for name, cls in classes.items():
         if name in enabled:
-            status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
+            if name == "keychain" and cls().needs_unlock is False:
+                status = "[green]detected[/] · unattended (password sidecar configured)"
+            else:
+                status = "[green]detected[/] · the agent asks you to unlock it when it needs a login"
         elif is_installed(name):
             status = "[dim]turned off[/] (`hermes vault sources --enable {name}` to use it)".format(name=name)
         else:
@@ -180,6 +184,97 @@ def _cmd_rm(args) -> None:
         c.print(f"[green]Removed[/] {args.handle}")
     else:
         c.print(f"[red]No vault item with handle {args.handle!r}[/]")
+
+
+def _keychain_backend():
+    from agent.vault_backends.keychain import MacOSKeychainLoginBackend
+
+    return MacOSKeychainLoginBackend()
+
+
+def _cmd_keychain_init(args) -> None:
+    from agent.vault_backends.keychain import provision
+    from agent.vault_store import VaultError
+
+    c = _console()
+    try:
+        kc_path, pw_path = provision(
+            file=args.file and Path(args.file), force=args.force)
+    except VaultError as exc:
+        c.print(f"[red]Error:[/] {exc}")
+        return
+    c.print(f"[green]Keychain created.[/]")
+    c.print(f"  file:    {kc_path}")
+    c.print(f"  password sidecar (0600): {pw_path}")
+    c.print("[dim]Add a login with `hermes vault keychain add` or via a masked save prompt on a "
+            "login page. The agent fills it unattended; the password never enters a session.[/]")
+
+
+def _cmd_keychain_status(args) -> None:
+    from agent.vault_backends.base import is_enabled
+
+    c = _console()
+    backend = _keychain_backend()
+    info = backend.status()
+    c.print(f"macOS Keychain backend: {'[green]enabled[/]' if is_enabled('keychain') else '[red]turned off[/]'}")
+    c.print(f"  mode:            {info['mode']} {'[green]·[/]' if info['mode'] == 'unattended' else ' [yellow]· masked prompt per session[/]'}")
+    c.print(f"  keychain file:   {info['file']} {'[green]exists[/]' if info['file_exists'] else '[dim]missing — run `hermes vault keychain init`[/]'}")
+    c.print(f"  password file:   {info['password_file']} {'[green]exists (0600)[/]' if info['password_file_exists'] else '[dim]missing[/]'}")
+    c.print(f"  items:           {info['item_count']}")
+    if info["file_exists"]:
+        state = "[green]unlocked[/]" if info["unlocked"] else "[red]locked[/]"
+        c.print(f"  state:           {state}")
+
+
+def _cmd_keychain_add(args) -> None:
+    from agent.vault_store import VaultError, normalize_origin
+
+    c = _console()
+    backend = _keychain_backend()
+    origin = ""
+    while not origin:
+        origin = input("Origin (e.g. https://github.com): ").strip()
+    try:
+        normalized = normalize_origin(origin)
+    except VaultError as exc:
+        c.print(f"[red]Error:[/] {exc}")
+        return
+    scheme, _, netloc = normalized.partition("://")
+    if scheme not in ("http", "https"):
+        c.print("[red]Error:[/] the macOS Keychain binds server + account; only http/https origins are supported.")
+        return
+    default = 443 if scheme == "https" else 80
+    host, _, port = netloc.replace("]", "").partition(":")
+    server = netloc if (port and int(port) != default) else host
+    account = ""
+    while not account:
+        account = input("Account (username/email): ").strip()
+    label = input(f"Label (optional, default = {server}): ").strip() or None
+    password = ""
+    while not password:
+        password = getpass.getpass("Password (hidden): ")
+    try:
+        handle = backend.add_item(server, account, password, label=label)
+    except (VaultError, RuntimeError) as exc:
+        c.print(f"[red]Error:[/] {exc}")
+        return
+    finally:
+        del password
+    c.print(f"[green]Stored in the macOS Keychain.[/] handle=[bold]{handle}[/]")
+    c.print(f"[dim]The agent fills it on {', '.join(_fill_origins(server))} and never sees the password.[/]")
+
+
+def _fill_origins(server: str):
+    return [o for o in (f"https://{server}", f"http://{server}") if "://" in o]
+
+
+def _cmd_keychain_rm(args) -> None:
+    c = _console()
+    backend = _keychain_backend()
+    if backend.remove_item(args.handle):
+        c.print(f"[green]Removed[/] {args.handle}")
+    else:
+        c.print(f"[red]No keychain item with handle {args.handle!r} (kc:<server>|<account>)[/]")
 
 
 def register_cli(subparser) -> None:
@@ -203,11 +298,34 @@ def register_cli(subparser) -> None:
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
 
-    p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
+    p_src = subs.add_parser("sources", help="Show detected password sources (macOS Keychain, 1Password, Bitwarden); they are on automatically")
     group = p_src.add_mutually_exclusive_group()
-    group.add_argument("--disable", metavar="NAME", help="Stop using a detected manager: onepassword | bitwarden")
+    group.add_argument("--disable", metavar="NAME", help="Stop using a detected source: keychain | onepassword | bitwarden")
     group.add_argument("--enable", metavar="NAME", help="Undo --disable")
     p_src.set_defaults(_vault_handler=_cmd_sources)
+
+    p_kc = subs.add_parser(
+        "keychain",
+        help="Manage the macOS Keychain backend (dedicated passworded keychain file: init/status/add/rm)",
+    )
+    kc_subs = p_kc.add_subparsers(dest="keychain_action")
+
+    p_kc_init = kc_subs.add_parser("init", help="Create the keychain file + 0600 password sidecar (unattended fills)")
+    p_kc_init.add_argument("--file", metavar="PATH", default=None,
+                           help="Absolute keychain file path (default: <HERMES_HOME>/vault/keychain.keychain-db)")
+    p_kc_init.add_argument("--force", action="store_true",
+                           help="Re-create, deleting any existing items")
+    p_kc_init.set_defaults(_vault_handler=_cmd_keychain_init)
+
+    p_kc_status = kc_subs.add_parser("status", help="Show backend state: paths, mode, item count, lock state")
+    p_kc_status.set_defaults(_vault_handler=_cmd_keychain_status)
+
+    p_kc_add = kc_subs.add_parser("add", help="Store a login (prompts, password read hidden)")
+    p_kc_add.set_defaults(_vault_handler=_cmd_keychain_add)
+
+    p_kc_rm = kc_subs.add_parser("rm", help="Remove a keychain item by handle (kc:<server>|<account>)")
+    p_kc_rm.add_argument("handle", help="Item handle (see `hermes vault list` or `keychain status`)")
+    p_kc_rm.set_defaults(_vault_handler=_cmd_keychain_rm)
 
 
 def vault_command(args) -> None:

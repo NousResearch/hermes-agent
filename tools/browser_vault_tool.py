@@ -260,7 +260,7 @@ def browser_vault_list() -> str:
 
 
 def browser_vault_unlock(backend_name: str) -> str:
-    """Ask the user (via the surface's masked prompt) to unlock an external manager for this session."""
+    """Ask the user (via the surface's masked prompt) to unlock a credential backend for this session."""
     from agent.vault_backends import enabled_backends
     from agent.vault_backends.unlock import can_prompt_here, get_unlock_prompt_callback
 
@@ -592,9 +592,12 @@ BROWSER_VAULT_LIST_SCHEMA = {
         "ALWAYS call this first when a page asks for a password, card or address. Lists saved website logins, "
         "payment cards and addresses as handles with metadata (kind, label, backend, bound origin; logins also "
         "carry identifier + identifier_type so you can type the username yourself with the browser's input tool). "
-        "Secret values are NEVER returned. Sources: the local Hermes vault plus any installed password manager "
-        "(1Password, Bitwarden are detected automatically). A locked manager appears under `locked`; call "
-        "browser_vault_unlock (the user is prompted for their master password, you never see it) or, when it says "
+        "Secret values are NEVER returned. Sources: the local Hermes vault, the macOS "
+        "Keychain (dedicated file, `kc:` handles), and any installed password manager "
+        "(1Password, Bitwarden are detected automatically on macOS; the Keychain is on "
+        "whenever /usr/bin/security exists). A locked source appears under `locked`; call "
+        "browser_vault_unlock (the user is prompted for their master password, you never "
+        "see it) or, when it says "
         "unavailable_in_this_session, tell the user to unlock it from an interactive session. Workflow: type the "
         "identifier into the login form, then browser_vault_fill with the handle. No item for this origin: call "
         "browser_vault_save_login. Passwords are typed ONLY by these tools, never by you with the browser's input "
@@ -606,13 +609,15 @@ BROWSER_VAULT_LIST_SCHEMA = {
 BROWSER_VAULT_UNLOCK_SCHEMA = {
     "name": "browser_vault_unlock",
     "description": (
-        "Ask the user to unlock a password manager (1Password or Bitwarden) for this session. The master "
+        "Ask the user to unlock a credential backend for this session: a password manager "
+        "(1Password or Bitwarden) or the macOS Keychain when it has no configured password "
+        "sidecar. The master "
         "password is typed into a masked prompt owned by the UI and never enters the conversation. "
         "Returns success, unlock_cancelled, unlock_failed, or unlock_unavailable (headless session)."
     ),
     "parameters": {
         "type": "object",
-        "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden"],
+        "properties": {"backend": {"type": "string", "enum": ["onepassword", "bitwarden", "keychain"],
                                    "description": "Backend name from browser_vault_list `locked`."}},
         "required": ["backend"],
     },
@@ -634,7 +639,7 @@ BROWSER_VAULT_FILL_SCHEMA = {
         "properties": {
             "handle": {
                 "type": "string",
-                "description": "Handle from browser_vault_list (vault_… local, op:… 1Password, bw:… Bitwarden)",
+                "description": "Handle from browser_vault_list (vault_… local, kc:… macOS Keychain, op:… 1Password, bw:… Bitwarden)",
             }
         },
         "required": ["handle"],

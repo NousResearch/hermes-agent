@@ -277,7 +277,11 @@ def _external_read_only_message(skill_name: str) -> str:
 
 def is_curation_eligible(skill_name: str, skill_path: Optional[Path] = None) -> bool:
     """Agent-created: yes. Bundled: only with ``curator.prune_builtins``. Hub / external-dir / protected built-ins:
-    never (external owner). Org-shared skills are eligible here but protected from ARCHIVE/DELETE elsewhere."""
+    never (external owner). Org-shared skills are eligible here but protected from ARCHIVE/DELETE elsewhere.
+
+    *skill_path*, when given, is trusted as *skill_name*'s own directory (the contract in
+    :func:`set_state`): the external-dir check runs against it and the by-name library scan is
+    skipped. Pass it only for a directory the caller resolved or moved itself."""
     if ((skill_path is not None and is_external_skill_path(skill_path)) or is_protected_builtin(skill_name)
             or is_hub_installed(skill_name)):
         return False
@@ -555,8 +559,11 @@ def mark_agent_created(skill_name: str) -> None:
 def set_state(skill_name: str, state: str, *, skill_path: Optional[Path] = None) -> None:
     """Set lifecycle state (no-op if invalid / unmanageable). Emits archived/stale/restored; active<-stale is silent.
 
-    *skill_path* is the directory the caller just resolved or moved; passing it keeps the eligibility
-    guard from re-scanning the library by name for a path the caller already knows."""
+    *skill_path* must be *skill_name*'s OWN directory — the one it lived in before a move or the one
+    it lives in now — and is trusted as given: the eligibility guard answers from it instead of
+    re-scanning the library by name, so a directory belonging to another skill would be accepted
+    without question. Pass it only when the caller resolved or moved that directory itself; omit it
+    and the guard resolves by name, as it always did."""
     if state not in _VALID_STATES:
         logger.debug("set_state: invalid state %r for %s", state, skill_name)
         return

@@ -50,6 +50,26 @@ def _write_terminal_sequence(app, seq: str) -> None:
 class CLITerminalMixin:
     """Terminal repaint/resize recovery, input-mode healing, and clipboard helpers for the interactive CLI"""
 
+    def _set_terminal_activity(self, busy: bool, *, config=None) -> bool:
+        """Label the tab + drive its progress bar for the current turn state.
+
+        Cosmetic and never fatal: the writer fail-quiets, and a non-TTY run writes nothing.
+        Gated by ``display.terminal_title`` / ``display.terminal_progress``; see
+        ``hermes_cli.terminal_activity`` for the OSC details and the app-loop contract.
+        """
+        from hermes_cli.terminal_activity import set_activity
+        return set_activity(self, busy=busy, config=config)
+
+    def _on_session_title_changed(self, title: str, source: str = "") -> None:
+        """``agent._on_session_title`` hook: the auto-generated title landed, so relabel now.
+
+        Fires from the auto-title worker thread, hence the app-loop write. Refreshes only while
+        idle — a mid-turn relabel would drop the busy marker.
+        """
+        if getattr(self, "_terminal_title_busy", False):
+            return
+        self._set_terminal_activity(False)
+
     def _mark_terminal_io_broken(self, reason: str = "") -> None:
         """Stop UI paints after the PTY/stdout becomes unusable (#81521)."""
         from cli import logger

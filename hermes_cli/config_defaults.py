@@ -825,6 +825,10 @@ DEFAULT_CONFIG = {
         "tui_agents_nudge": True,
         "bell_on_complete": False,
         "bell_on_prompt": False,   # bell when a blocking prompt opens (clarify/approval/sudo)
+        # Label the terminal tab/window with the session (OSC 0) and drive its progress bar
+        # (OSC 9;4) while a turn runs. Config-only, read at startup.
+        "terminal_title": True,
+        "terminal_progress": True,
         # Stream reasoning live before the response; otherwise thinking models show only a spinner
         # for tens of seconds.
         "show_reasoning": True,

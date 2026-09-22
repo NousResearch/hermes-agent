@@ -2163,10 +2163,14 @@ display:
   resume_display: full    # full (show previous messages on resume) | minimal (one-liner only)
   bell_on_complete: false # Play terminal bell when agent finishes (great for long tasks)
   bell_on_prompt: false   # Play terminal bell when a blocking prompt opens (clarify, approval, sudo password, secret capture) — works over SSH
-  # Both bell flags also emit an OSC 9 desktop notification (Ghostty, iTerm2, Kitty, WezTerm raise an OS
-  # notification; other terminals ignore it) and, inside Warp (TERM_PROGRAM=WarpTerminal with the CLI-agent
-  # protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion, `permission_request` on
-  # blocking prompts) so Warp's tab status and notification mailbox track Hermes. No extra keys needed.
+  terminal_title: true    # CLI: label the terminal tab/window (OSC 0) with the session — "Hermes · <session title>", animated ◐◑ spinner while a turn runs; cleared on exit
+  terminal_progress: true # CLI: drive the terminal's own progress bar (OSC 9;4, Ghostty/iTerm2/WezTerm) — indeterminate while a turn runs, removed when it ends
+  # Both bell flags also emit a desktop notification — OSC 777 `notify;<title>;<body>` inside
+  # Ghostty (its OSC 9 carries no title), OSC 9 (Ghostty, iTerm2, Kitty, WezTerm raise an OS
+  # notification; other terminals ignore it) elsewhere — and, inside Warp (TERM_PROGRAM=WarpTerminal
+  # with the CLI-agent protocol advertised), a warp://cli-agent OSC 777 event (`stop` on completion,
+  # `permission_request` on blocking prompts) so Warp's tab status and notification mailbox track
+  # Hermes. No extra keys needed.
   show_reasoning: true    # Show model reasoning/thinking above each response (default: true; toggle with /reasoning show|hide)
   streaming: false        # Stream tokens to terminal as they arrive (real-time output)
   show_cost: false        # Show estimated $ cost in the CLI status bar

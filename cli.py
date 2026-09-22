@@ -498,6 +498,8 @@ def _run_cleanup(*, notify_session_finalize: bool = True):
         # step raising must not skip the reset. No-op unless the TUI ran.
         # See #36823.
         _reset_terminal_input_modes_on_exit()
+        # Same reasoning for the tab indicators: drop them before the slower teardown steps run.
+        _clear_terminal_indicators_on_exit()
 
         for step, swallow in _CLEANUP_STEPS:
             with suppress(swallow):
@@ -542,6 +544,17 @@ def _reset_terminal_input_modes_on_exit() -> None:
     with suppress(Exception), open("/dev/tty", "w", encoding="ascii") as tty:
         tty.write(_TERMINAL_INPUT_MODE_RESET_SEQ)
         tty.flush()
+
+
+def _clear_terminal_indicators_on_exit() -> None:
+    """Drop the tab title / progress bar we set, so the tab falls back to the shell's own label.
+
+    Same contract as the input-mode reset below: only clears what we actually emitted, and writes
+    to the terminal when there is one. See ``hermes_cli.terminal_activity``.
+    """
+    from hermes_cli.terminal_activity import reset_on_exit
+    with suppress(Exception):
+        reset_on_exit()
 
 
 from hermes_cli.worktree_ops import (
@@ -1441,6 +1454,9 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
                 _mark_tui_input_modes_active()
                 if self._tui_multiline_shortcuts:
                     _enable_extended_enter_keys(app.output)
+                # Label the tab before the first keypress (idle title = session or cwd); _run_cleanup
+                # drops it again on exit so the shell's own label comes back.
+                self._set_terminal_activity(False)
                 self._pet_start_anim()
                 app.run()
         except (EOFError, KeyboardInterrupt, BrokenPipeError):

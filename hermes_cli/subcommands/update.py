@@ -3,7 +3,10 @@
 from __future__ import annotations
 
 import argparse
+from types import MethodType
 from typing import Callable
+
+from hermes_cli.update_target import validate_target_request
 
 
 def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
@@ -11,6 +14,18 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
     update_parser = subparsers.add_parser(
         "update", help="Update Hermes Agent to the latest version",
         description="Pull the latest changes from git and reinstall dependencies")
+    update_parser.add_argument(
+        "--revision", default=None, metavar="HEX",
+        help="Pinned target revision (40 lowercase hexadecimal characters). "
+            "Must be supplied with --install-id and --current-sha.")
+    update_parser.add_argument(
+        "--install-id", default=None, metavar="HEX",
+        help="Pinned installation identity (32 lowercase hexadecimal characters). "
+            "Must be supplied with --revision and --current-sha.")
+    update_parser.add_argument(
+        "--current-sha", default=None, metavar="HEX",
+        help="Pinned current checkout SHA (40 lowercase hexadecimal characters). "
+            "Must be supplied with --revision and --install-id.")
     update_parser.add_argument(
         "--gateway", action="store_true", default=False,
         help="Gateway mode: use file-based IPC for prompts instead of stdin (used internally by /update)",
@@ -85,4 +100,18 @@ def build_update_parser(subparsers, *, cmd_update: Callable) -> None:
         # Internal: the pre-pull interpreter re-executes itself here after the code swap so the
         # rest of the update runs on the pulled code (hermes_cli/update_handoff.py).
     )
+    # ``argparse`` routes a parent parser through the subparser's
+    # ``parse_known_args`` method, so validate at that boundary rather than in
+    # the mutating handler.  This makes --check/--plan fail before any
+    # collaborator can be reached while preserving the normal handler seam.
+    _parse_known_args = update_parser.parse_known_args
+
+    def _parse_update_known_args(parser, args=None, namespace=None):
+        parsed, remainder = _parse_known_args(args, namespace)
+        parsed.target_request = validate_target_request(
+            parsed.revision, parsed.install_id, parsed.current_sha
+        )
+        return parsed, remainder
+
+    update_parser.parse_known_args = MethodType(_parse_update_known_args, update_parser)
     update_parser.set_defaults(func=cmd_update)

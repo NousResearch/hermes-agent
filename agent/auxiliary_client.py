@@ -4972,9 +4972,43 @@ def _resolve_xai_oauth_branch(req: _ResolveRequest) -> _ResolveResult:
                           "OAuth token found (run: hermes model -> xAI Grok OAuth — SuperGrok / Premium+)")
 
 
+_LLAMACPP_ALIASES = ("llamacpp", "llama.cpp", "llama-cpp")
+
+
+def _managed_llamacpp_endpoint() -> Optional[Dict[str, Any]]:
+    """Live endpoint of the supervised local llama.cpp server, or None when it is not running.
+
+    Best-effort: any failure (no state file, import error, server off) returns None so the caller
+    keeps its original fall-through instead of erroring an auxiliary/fallback call.
+    """
+    try:
+        from hermes_cli.local_runtime.endpoint import resolve_llamacpp_endpoint
+        return resolve_llamacpp_endpoint(wait_for_boot_s=2.0)
+    except Exception:  # noqa: BLE001 — endpoint resolution is best-effort
+        logger.debug("resolve_provider_client: managed llama.cpp endpoint unavailable", exc_info=True)
+        return None
+
+
 def _resolve_custom_branch(req: _ResolveRequest) -> _ResolveResult:
     """Custom endpoint (OPENAI_BASE_URL + OPENAI_API_KEY)."""
     provider, model, main_runtime = req.provider, req.model, req.main_runtime
+    # A llama.cpp alias with nothing explicit must resolve to the MANAGED local server — the same
+    # rung the main ladder takes (_resolve_llamacpp_runtime). Without it the fall-through below
+    # reached _try_custom_endpoint / _resolve_api_key_provider and handed back whichever cloud
+    # API-key provider happened to hold credentials, so the fallback path (try_activate_fallback
+    # resolves through THIS function) posted a local model slug to e.g. Gemini and got
+    # "unexpected model name format" (400) back, which then surfaced as a bogus
+    # "server rejected this request as too large" context rejection. Re-entering with the managed
+    # endpoint set keeps every downstream rule (alias /v1 tail, alias key scoping) in force, and
+    # the endpoint stays live: port and per-install key are re-read on every resolve.
+    if (req.original_provider in _LLAMACPP_ALIASES and not req.explicit_base_url
+            and req.main_runtime is None):
+        endpoint = _managed_llamacpp_endpoint()
+        if endpoint and str(endpoint.get("base_url") or "").strip():
+            return _resolve_custom_branch(req._replace(
+                explicit_base_url=str(endpoint["base_url"]),
+                explicit_api_key=req.explicit_api_key or str(endpoint.get("api_key") or ""),
+            ))
     # wrap_base: base for the Anthropic-wrap decision. anthropic_messages must keep the raw
     # /anthropic base while the plain OpenAI client uses the /v1-rewritten custom_base (never
     # /anthropic/chat/completions). Empty means "use custom_base".

@@ -1010,17 +1010,6 @@ class HindsightMemoryProvider(MemoryProvider):
         if self._recall_sync or not self._recall_async or self._recall_disabled():
             return
         key = (str(session_id or self._session_id or ""), int(turn_number), query)
-        with self._prefetch_lock:
-            if self._opportunistic_inflight == key or any(
-                (ready.session_id, ready.turn_number, ready.query) == key
-                for ready in self._opportunistic_ready
-            ):
-                return
-            if self._opportunistic_inflight is not None:
-                self._opportunistic_pending = key
-                return
-            generation = self._opportunistic_generation
-            self._opportunistic_inflight = key
 
         def _run() -> None:
             active_key = key
@@ -1038,8 +1027,25 @@ class HindsightMemoryProvider(MemoryProvider):
                     self._opportunistic_inflight = active_key
                     active_generation = current_generation
 
-        self._prefetch_thread = spawn_context_thread(_run, name="hindsight-prefetch")
-        self._prefetch_thread.start()
+        with self._prefetch_lock:
+            if self._opportunistic_inflight == key or any(
+                (ready.session_id, ready.turn_number, ready.query) == key
+                for ready in self._opportunistic_ready
+            ):
+                return
+            if self._opportunistic_inflight is not None:
+                self._opportunistic_pending = key
+                return
+            generation = self._opportunistic_generation
+            worker = spawn_context_thread(_run, name="hindsight-prefetch")
+            self._opportunistic_inflight = key
+            self._prefetch_thread = worker
+            try:
+                worker.start()
+            except Exception:
+                self._opportunistic_inflight = None
+                self._prefetch_thread = None
+                raise
 
     def recall_status(self) -> Optional[RecallStatus]:
         """Count injected by the last prefetch; None if nothing injected or ``recall_indicator=false``."""

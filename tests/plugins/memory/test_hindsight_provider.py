@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 import pytest
 
 from hermes_cli.memory_setup import _CANCELLED
+import plugins.memory.hindsight as hindsight_module
 from plugins.memory.hindsight import (
     HindsightMemoryProvider,
     RECALL_SCHEMA,
@@ -659,6 +660,60 @@ class TestPrefetch:
         assert second_completed.wait(timeout=2.0)
         p._prefetch_thread.join(timeout=2.0)
         assert queries == ["first query", "second query"]
+
+    def test_recall_async_publishes_worker_atomically_with_inflight(
+        self, provider_with_config, monkeypatch
+    ):
+        p = provider_with_config(recall_async=True)
+        start_entered = threading.Event()
+        release_start = threading.Event()
+        switch_completed = threading.Event()
+        real_spawn = hindsight_module.spawn_context_thread
+        spawned = []
+
+        def _spawn(*args, **kwargs):
+            worker = real_spawn(*args, **kwargs)
+            real_start = worker.start
+
+            def _delayed_start():
+                start_entered.set()
+                assert release_start.wait(timeout=2.0)
+                real_start()
+
+            worker.start = _delayed_start
+            spawned.append(worker)
+            return worker
+
+        monkeypatch.setattr(hindsight_module, "spawn_context_thread", _spawn)
+        p._client.arecall = AsyncMock(
+            return_value=SimpleNamespace(results=[SimpleNamespace(text="memory")])
+        )
+
+        kickoff = threading.Thread(
+            target=p.start_prefetch,
+            args=("current query",),
+            kwargs={"session_id": "test-session", "turn_number": 1},
+        )
+        kickoff.start()
+        assert start_entered.wait(timeout=2.0)
+        assert p._prefetch_thread is spawned[0]
+
+        switcher = threading.Thread(
+            target=lambda: (
+                p.on_session_switch("test-session", reason="compression"),
+                switch_completed.set(),
+            )
+        )
+        switcher.start()
+        assert not switch_completed.wait(timeout=0.05)
+
+        release_start.set()
+        kickoff.join(timeout=2.0)
+        switcher.join(timeout=2.0)
+        spawned[0].join(timeout=2.0)
+
+        assert switch_completed.is_set()
+        assert len(spawned) == 1
 
     def test_recall_async_drops_ready_result_across_session_switch(self, provider_with_config):
         p = provider_with_config(recall_async=True)

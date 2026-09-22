@@ -171,6 +171,26 @@ class TestReactionActions:
         assert result == {"success": False, "completed": False, "reason": "issue_or_epic_open"}
         assert [call.args[0] for call in discord_request.call_args_list] == ["GET"]
 
+    @patch(
+        "tools.discord_tool.get_secret",
+        side_effect=lambda name, default="": "token123" if name == "DISCORD_BOT_TOKEN" else "",
+    )
+    @patch("tools.discord_tool._discord_request", return_value={"parent_id": "1550141272243707914"})
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_complete_demand_without_profile_token_skips_github_and_reactions(
+        self, urlopen, discord_request, _get_secret, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")
+        urlopen.return_value = _mock_urlopen({"state": "closed"})
+
+        result = json.loads(discord_core(
+            action="complete_demand", channel_id="12", message_id="34",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="457", epic_number="456"))
+
+        assert result == {"success": False, "completed": False, "reason": "issue_or_epic_open"}
+        urlopen.assert_not_called()
+        assert [call.args[0] for call in discord_request.call_args_list] == ["GET"]
+
     @patch("tools.discord_tool.urllib.request.urlopen")
     def test_reaction_actions_use_the_bot_reaction_endpoint(self, mock_urlopen_fn, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")

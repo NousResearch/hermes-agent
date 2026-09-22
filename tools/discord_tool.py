@@ -406,11 +406,14 @@ def _remove_own_reaction(token: str, channel_id: str, message_id: str, emoji: st
 
 def _github_issue_closed(repo: str, number: str) -> bool:
     """Read an issue state from GitHub; failures fail closed and never complete a post."""
-    url = f"https://api.github.com/repos/{repo}/issues/{number}"
     token = (get_secret("GH_TOKEN", "") or get_secret("GITHUB_TOKEN", "") or "").strip()
-    headers = {"Accept": "application/vnd.github+json"}
-    if token:
-        headers["Authorization"] = f"Bearer {token}"
+    if not token:
+        return False
+    url = f"https://api.github.com/repos/{repo}/issues/{number}"
+    headers = {
+        "Accept": "application/vnd.github+json",
+        "Authorization": f"Bearer {token}",
+    }
     request = urllib.request.Request(url, headers=headers)
     try:
         with urllib.request.urlopen(request, timeout=15) as response:

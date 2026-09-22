@@ -3919,6 +3919,8 @@ export const esOverrides = {
     queueLostDiscard: 'Descartar',
     queueLostDiscardTip:
       'El gateway se reinició a mitad del turno y no puede terminarlo. Descártalo para que se ejecuten los turnos en cola que esperan detrás.',
+    queueSteerRefusedTitle: 'Redirección no aceptada',
+    queueSteerRefusedBody: 'El turno en vivo no pudo aceptar la redirección. Tu mensaje sigue en la cola y ahora es el primero.',
     queueStuckTitle: 'Mensaje en cola no enviado',
     queueStuckBody: 'Un turno en cola no llegó a enviarse. Sigue en la cola; vuelve a intentarlo.',
     queueDroppedTitle: 'Entrada en cola descartada',

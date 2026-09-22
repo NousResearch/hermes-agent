@@ -11,11 +11,12 @@ _REPAIR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     (("market data", "authority freshness", "stale market"), "market-data-authority-auditor"),
     (("upstream pr", "upstream issue", "nousresearch", "upstream/main"), "hermes-upstream-auditor"),
     (("local pr ci", "audit pr", "audit this pull request"), "pr-local-ci-auditor"),
+    (("github pr feedback", "complete-feedback", "inspect-pr"), "pr-repair-steward"),
     (("live-trading", "paper-safety", "paper-safety", "broker safety"), "paper-safety-guardian"),
     (("alpaca", "broker credential", "broker validation"), "coding-expert"),
     (("dashboard.secret", "state.db", "retired-wal", "gateway restart"), "hermes-maintenance-steward"),
     (("cron", "scheduled job", "cron job"), "hermes-maintenance-steward"),
-    (("rnd-", "dependency skew", "fuzz test", "permutation"), "rnd-adversarial-tester"),
+    (("rnd-", "resolve rnd", "adversarial-fuzz", "dependency skew", "fuzz test", "permutation"), "rnd-adversarial-tester"),
 )
 
 

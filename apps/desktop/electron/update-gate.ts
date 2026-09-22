@@ -2,6 +2,9 @@
 
 import { runBackendStartStep } from './backend-start-cancellation'
 
+// Shared with the renderer's progress-aware startup watchdog.
+export const UPDATE_WAIT_TIMEOUT_MS = 20 * 60 * 1000
+
 /**
  * update-gate.ts
  *

@@ -2,8 +2,9 @@
  * cold boot (initial getConnection(), the registry restore's descriptor
  * wait). Matches the main-process spawn budget
  * (DEFAULT_BACKEND_READY_TIMEOUT_MS in electron/backend-health.ts): a
- * healthy cold boot publishes well within this; anything longer means the
- * backend is not coming and the caller should fail instead of hanging.
+ * healthy cold boot publishes well within this. Boot-class callers use
+ * withBackendBootTimeout so explicit update-wait progress does not consume
+ * the cold-spawn budget before the backend is allowed to start.
  * Reconnect-class awaits against an already-spawned backend use the shorter
  * RECONNECT_ATTEMPT_TIMEOUT_MS below instead. */
 export const BACKEND_BOOT_WAIT_TIMEOUT_MS = 45_000

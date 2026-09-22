@@ -2,8 +2,9 @@ import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
 import type { DesktopConnectionsRegistry } from '@/global'
+import { withBackendBootTimeout } from '@/lib/backend-boot-wait'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
-import { BACKEND_BOOT_WAIT_TIMEOUT_MS, isTimeoutError, withTimeout } from '@/lib/with-timeout'
+import { isTimeoutError, withTimeout } from '@/lib/with-timeout'
 import { $connectionsRegistry } from '@/store/connection-registry-state'
 import { $defaultProfileRoute, refreshDefaultProfile } from '@/store/default-profile'
 import {
@@ -36,11 +37,6 @@ const LAST_PROFILE_STORAGE_KEY = 'hermes.desktop.lastProfileByConnection'
 const SWITCH_DIAL_TIMEOUT_MS = 20_000
 const SWITCH_COMMIT_TIMEOUT_MS = 20_000
 const SWITCH_REMEMBER_TIMEOUT_MS = 5_000
-// Matches the primary spawn budget: a healthy cold boot publishes well within
-// this; anything longer means the primary is not coming and the registry
-// restore should stop waiting for it. Shared constant so the boot-class
-// budgets can't drift apart (see with-timeout.ts).
-const BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS = BACKEND_BOOT_WAIT_TIMEOUT_MS
 
 export { $connectionsRegistry } from '@/store/connection-registry-state'
 
@@ -174,11 +170,7 @@ function waitForInitialConnection(): Promise<void> {
     })
   })
 
-  return withTimeout(
-    published,
-    BOOT_DESCRIPTOR_WAIT_TIMEOUT_MS,
-    'Timed out waiting for the primary connection descriptor'
-  ).catch(error => {
+  return withBackendBootTimeout(published, 'Timed out waiting for the primary connection descriptor').catch(error => {
     unlisten?.()
 
     if (!isTimeoutError(error)) {

@@ -1382,6 +1382,14 @@ export const zh = defineLocale({
       scopesRestored: (profiles: string) => `已恢复的 profile：${profiles}`,
       scopeNotRestored: (profile: string, error: string) => `Profile“${profile}”未恢复：${error}`
     },
+    managedRollouts: {
+      title: '托管发布',
+      noActive: '没有活动的发布快照。',
+      history: '发布历史',
+      unresolved: (count: number) => `未解决的栅栏：${count}`,
+      archived: '已归档',
+      active: '活动'
+    },
     gateway: {
       loading: '正在加载网关设置...',
       unavailableTitle: '网关设置不可用',

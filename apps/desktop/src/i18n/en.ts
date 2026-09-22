@@ -1421,6 +1421,14 @@ export const en: Translations = {
       scopesRestored: (profiles: string) => `Restored profiles: ${profiles}`,
       scopeNotRestored: (profile: string, error: string) => `Profile “${profile}” not restored: ${error}`
     },
+    managedRollouts: {
+      title: 'Managed rollouts',
+      noActive: 'No active rollout snapshot.',
+      history: 'Rollout history',
+      unresolved: (count: number) => `Unresolved fences: ${count}`,
+      archived: 'archived',
+      active: 'active'
+    },
     gateway: {
       loading: 'Loading gateway settings...',
       unavailableTitle: 'Gateway settings unavailable',

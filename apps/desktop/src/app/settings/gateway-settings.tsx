@@ -44,6 +44,7 @@ import { cloudTeamChanged, reconnectMovedCloudAgent } from './cloud-team-change'
 import { ConnectionsRegistrySection } from './connections-registry'
 import { CONTROL_TEXT } from './constants'
 import { ManagedUpdatesSection } from './managed-updates-section'
+import { ManagedRolloutsSection } from './managed-rollouts/managed-rollouts-section'
 import { EmptyState, ListRow, Pill, SettingsContent, SettingsSkeleton, ToggleRow } from './primitives'
 import { enrichSelectedSshHost, selectSshHost } from './ssh-host-selection'
 
@@ -225,6 +226,7 @@ function GatewayManagedUpdates() {
     <SettingsContent>
       {supported && !failed && hasSsh ? (
         <ManagedUpdatesSection />
+        <ManagedRolloutsSection />
       ) : (
         <EmptyState
           description={
@@ -1768,6 +1770,7 @@ function GatewayConnectionSettings({ embedded, standalone }: { embedded: boolean
               engine (#95942). Renders only when SSH sources are registered and
               the Electron main exposes connections.updateManaged. */}
           <ManagedUpdatesSection />
+          <ManagedRolloutsSection />
         </>
       )}
 

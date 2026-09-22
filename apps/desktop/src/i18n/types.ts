@@ -1200,6 +1200,14 @@ export interface Translations {
       scopesRestored: (profiles: string) => string
       scopeNotRestored: (profile: string, error: string) => string
     }
+    managedRollouts: {
+      title: string
+      noActive: string
+      history: string
+      unresolved: (count: number) => string
+      archived: string
+      active: string
+    }
     gateway: {
       loading: string
       unavailableTitle: string

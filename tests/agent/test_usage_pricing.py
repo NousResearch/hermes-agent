@@ -962,3 +962,67 @@ def test_flat_entries_unaffected_by_tier_machinery():
     )
     # 250k * $0.25/M + 10k * $1.50/M
     assert result.amount_usd == Decimal("0.0775")
+
+
+def test_custom_provider_at_first_party_host_routes_to_vendor_snapshot():
+    """A user-defined provider (providers.<name>) pointed at a first-party API
+    still buys that vendor's tokens: the base_url host routes the row to the
+    vendor's snapshot instead of the $0 "custom" lane (#118594)."""
+    route = resolve_billing_route(
+        "deepseek-flash", provider="custom", base_url="https://api.deepseek.com/v1"
+    )
+    assert route.provider == "deepseek"
+    assert route.model == "deepseek-flash"
+    assert route.billing_mode == "official_docs_snapshot"
+
+    # A vendor-prefixed id still keys on the bare model name, matching every
+    # other snapshot route.
+    prefixed = resolve_billing_route(
+        "deepseek/deepseek-flash", provider="custom", base_url="https://api.deepseek.com/v1"
+    )
+    assert prefixed.provider == "deepseek"
+    assert prefixed.model == "deepseek-flash"
+
+    anthropic_host = resolve_billing_route(
+        "claude-sonnet-5", provider="custom", base_url="https://api.anthropic.com"
+    )
+    assert anthropic_host.provider == "anthropic"
+    assert anthropic_host.billing_mode == "official_docs_snapshot"
+
+
+def test_custom_provider_first_party_host_prices_at_official_rates():
+    """The issue's lane: 199 calls through providers.deepseek-flash priced $0
+    while the built-in provider priced the same model — the snapshot entry must
+    apply through the user-defined provider too."""
+    result = estimate_usage_cost(
+        "deepseek-flash",
+        CanonicalUsage(input_tokens=100_000, output_tokens=20_000, cache_read_tokens=50_000),
+        provider="custom", base_url="https://api.deepseek.com/v1",
+    )
+    assert result.amount_usd == Decimal("0.02715")  # 100k×$0.15/M + 20k×$0.60/M + 50k×$0.003/M
+
+
+def test_custom_provider_unknown_and_local_hosts_stay_custom_unknown():
+    """Genuinely unknown and local endpoints keep the $0 custom/unknown route —
+    only a first-party host identifies the billing vendor."""
+    unknown = resolve_billing_route(
+        "deepseek-flash", provider="custom", base_url="https://llm.example.com/v1"
+    )
+    assert unknown.provider == "custom"
+    assert unknown.billing_mode == "unknown"
+
+    local = resolve_billing_route(
+        "deepseek-flash", provider="local", base_url="http://localhost:8000/v1"
+    )
+    assert local.provider == "local"
+    assert local.billing_mode == "unknown"
+
+
+def test_lookalike_host_does_not_inherit_vendor_pricing():
+    """api.deepseek.com.evil.io is not api.deepseek.com: a lookalike host must
+    not be billed at DeepSeek's rates."""
+    route = resolve_billing_route(
+        "deepseek-flash", provider="custom", base_url="https://api.deepseek.com.evil.io/v1"
+    )
+    assert route.provider == "custom"
+    assert route.billing_mode == "unknown"

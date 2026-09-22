@@ -340,6 +340,18 @@ _SNAPSHOT_PROVIDER_ALIASES = {
 # AI Studio and Vertex host the same Gemini models (the Vertex "google/" vendor
 # prefix is stripped with the rest of the path).
 _GOOGLE_PROVIDER_NAMES = {"google", "gemini", "vertex", "google-gemini", "google-ai-studio", "google-vertex", "vertex-ai"}
+# First-party API hosts that bill at the vendor's snapshot rates even through a
+# user-defined provider (``providers.<name>``): a base_url pointed at
+# api.deepseek.com still buys DeepSeek tokens at the documented rates, so the
+# row must not fall into the $0 "custom" lane. Only vendors with an
+# _OFFICIAL_DOCS_PRICING snapshot belong here.
+_FIRST_PARTY_API_HOSTS = (
+    ("api.openai.com", "openai"),
+    ("api.anthropic.com", "anthropic"),
+    ("api.deepseek.com", "deepseek"),
+    ("api.minimax.io", "minimax"),
+    ("api.minimaxi.com", "minimax-cn"),
+)
 
 
 def resolve_billing_route(
@@ -377,6 +389,12 @@ def resolve_billing_route(
             snapshot_provider = "google"
         elif provider_name == "fireworks" or host("api.fireworks.ai"):
             snapshot_provider = "fireworks"
+        elif provider_name in {"custom", "local"}:
+            # The endpoint's own host identifies the billing vendor; localhost
+            # and unknown hosts keep the $0 "custom"/"local" route below.
+            snapshot_provider = next(
+                (vendor for api_host, vendor in _FIRST_PARTY_API_HOSTS if host(api_host)), None
+            )
     if snapshot_provider:
         return BillingRoute(provider=snapshot_provider, model=bare, base_url=url, billing_mode="official_docs_snapshot")
     if provider_name in {"custom", "local"} or (base and base_url_hostname(base) in ("localhost", "127.0.0.1")):

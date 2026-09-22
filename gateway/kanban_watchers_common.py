@@ -87,6 +87,21 @@ def _resolve_auto_decompose_settings(load_config: Callable[[], Any]) -> "tuple[b
     return bool(kcfg.get("auto_decompose", True)), max(per_tick, 1)
 
 
+def _resolve_dispatch_enabled(load_config: Callable[[], Any], previous: bool) -> bool:
+    """Live ``kanban.dispatch_in_gateway``, re-read every dispatcher tick.
+
+    A config that cannot be read keeps *previous*: a transient read failure must
+    neither strand the singleton lock (nobody dispatches) nor free it under a
+    healthy holder (two gateways race).
+    """
+    try:
+        cfg = load_config()
+    except Exception:
+        return previous
+    kcfg = cfg.get("kanban", {}) if isinstance(cfg, dict) else {}
+    return bool(kcfg.get("dispatch_in_gateway", True))
+
+
 def _gc_retention_days() -> int:
     """``kanban.done_sub_retention_days`` (default 30; 0 disables), re-read per sweep; fails safe to 30."""
     try:

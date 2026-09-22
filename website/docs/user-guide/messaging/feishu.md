@@ -248,6 +248,13 @@ FEISHU_REQUIRE_MENTION=false
 
 For per-chat control, set `require_mention` on a `group_rules` entry — see [Per-Group Access Control](#per-group-access-control) below.
 
+In a free-response group the bot answers **every** message — including ones addressed to another person or another bot. Set `FEISHU_IGNORE_OTHER_USER_MENTIONS=true` to yield in that case: when a message carries mentions and none of them is this bot, it is skipped, while messages that @ this bot (alone or alongside others) and unaddressed messages still answer. This is what keeps two free-response bots in one group from both replying to a question meant for the other:
+
+```bash
+FEISHU_REQUIRE_MENTION=false
+FEISHU_IGNORE_OTHER_USER_MENTIONS=true
+```
+
 ### Bot Identity
 
 Hermes auto-detects the bot's `open_id` and display name on startup. You only need to set these manually when auto-detection cannot reach the Feishu API, or when your app uses tenant-scoped user IDs:
@@ -555,6 +562,7 @@ Inbound messages are deduplicated using message IDs with a 24-hour TTL. The dedu
 | `FEISHU_ALLOWED_USERS` | — | _(empty)_ | Comma-separated open_id list for user allowlist |
 | `FEISHU_ALLOW_BOTS` | — | `none` | Accept messages from other bots: `none`, `mentions`, or `all` |
 | `FEISHU_REQUIRE_MENTION` | — | `true` | Whether group messages must @mention the bot |
+| `FEISHU_IGNORE_OTHER_USER_MENTIONS` | — | `false` | Free-response groups: skip messages that @ someone else but not the bot |
 | `FEISHU_HOME_CHANNEL` | — | — | Chat ID for cron/notification output |
 | `FEISHU_ENCRYPT_KEY` | — | _(empty)_ | Encrypt key for webhook signature verification |
 | `FEISHU_VERIFICATION_TOKEN` | — | _(empty)_ | Verification token for webhook payload auth |

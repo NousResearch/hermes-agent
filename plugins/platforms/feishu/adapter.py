@@ -315,6 +315,7 @@ class FeishuAdapterSettings:
     group_rules: Dict[str, FeishuGroupRule] = field(default_factory=dict)
     allow_bots: str = "none"  # "none" | "mentions" | "all"
     require_mention: bool = True
+    ignore_other_user_mentions: bool = False  # free-response groups: skip messages addressed to someone else
     allow_all_dm: bool = False  # resolved per-profile so multiplexed adapters honor their own .env
 
 
@@ -1410,6 +1411,12 @@ class FeishuAdapter(BasePlatformAdapter):
             default_group_policy=str(extra.get("default_group_policy", "")).strip().lower(),
             group_rules=group_rules, allow_bots=allow_bots, allow_all_dm=allow_all_dm,
             require_mention=_to_boolean(extra.get("require_mention", _get_scoped_secret("FEISHU_REQUIRE_MENTION", "true"))),
+            ignore_other_user_mentions=_to_boolean(
+                extra.get(
+                    "ignore_other_user_mentions",
+                    _get_scoped_secret("FEISHU_IGNORE_OTHER_USER_MENTIONS", "false"),
+                )
+            ),
         )
 
     def _apply_settings(self, settings: FeishuAdapterSettings) -> None:
@@ -3370,6 +3377,16 @@ class FeishuAdapter(BasePlatformAdapter):
         if not self._allow_group_message(getattr(sender, "sender_id", None), chat_id, is_bot=is_bot):
             return "group_policy_rejected"
         if require_mention and not self._mentions_self(message):
+            return "group_policy_rejected"
+        # Free-response groups (require_mention off) may still want to yield when
+        # the message is addressed to someone else: mentions exist and none of
+        # them is this bot. @-ing this bot (alone or alongside others) answers.
+        if (
+            not require_mention
+            and self._ignore_other_user_mentions
+            and (getattr(message, "mentions", None) or [])
+            and not self._mentions_self(message)
+        ):
             return "group_policy_rejected"
         return None
 

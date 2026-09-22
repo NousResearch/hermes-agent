@@ -1141,9 +1141,17 @@ def _handle_unblock(args: dict, **kw) -> str:
     tid = args.get("task_id")
     _check(tid, "task_id is required")
     tid = str(tid)
+    confirmed_human = args.get("confirm_human") is True
     _enforce_worker_task_ownership(tid)
     with _board(args.get("board")) as (kb, conn):
-        _check(kb.unblock_task(conn, tid), f"could not unblock {tid} (not blocked or unknown)")
+        _check(
+            not kb.needs_human_confirmation(conn, tid) or confirmed_human,
+            f"cannot unblock {tid}: needs_input requires confirm_human=true",
+        )
+        _check(
+            kb.unblock_task(conn, tid, confirmed_human=confirmed_human),
+            f"could not unblock {tid} (not blocked or unknown)",
+        )
         return _ok(task_id=tid, **_fields(kb.get_task(conn, tid), ("status",)))
 
 

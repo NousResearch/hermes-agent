@@ -86,6 +86,57 @@ def test_block_loop_detected_event_emitted(kanban_home: Path) -> None:
         assert payload.get("kind") == "capability"
 
 
+def test_needs_input_requires_explicit_human_confirmation(kanban_home: Path) -> None:
+    """A human-decision block cannot be released by an unmarked unblock."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        assert kb.block_task(conn, tid, reason="approve deployment", kind="needs_input")
+
+        assert kb.unblock_task(conn, tid) is False
+        assert kb.get_task(conn, tid).status == "blocked"
+
+        assert kb.unblock_task(conn, tid, confirmed_human=True) is True
+        assert kb.get_task(conn, tid).status == "ready"
+
+
+def test_confirmed_needs_input_unblock_still_regates_on_open_parent(kanban_home: Path) -> None:
+    """Confirmation releases the hold but does not bypass dependency gating."""
+    with kbc.connect_closing() as conn:
+        parent = kb.create_task(conn, title="parent", assignee="worker")
+        child = _running_task(conn)
+        assert kb.link_tasks(
+            conn, parent_id=parent, child_id=child,
+            expected_child_run_id=kb.get_task(conn, child).current_run_id,
+        ) is False
+        assert kb.block_task(conn, child, reason="choose owner", kind="needs_input")
+
+        assert kb.unblock_task(conn, child, confirmed_human=True) is True
+        assert kb.get_task(conn, child).status == "todo"
+
+
+def test_cli_needs_input_unblock_requires_confirm_human(
+    kanban_home: Path, capsys: pytest.CaptureFixture[str],
+) -> None:
+    """The CLI passes an explicit human confirmation through to the DB gate."""
+    with kbc.connect_closing() as conn:
+        tid = _running_task(conn)
+        assert kb.block_task(conn, tid, reason="approve rollout", kind="needs_input")
+
+    args = argparse.Namespace(task_ids=[tid], reason=None, confirm_human=False)
+    assert kanban_cli._cmd_unblock(args) == 1
+    assert "requires --confirm-human" in capsys.readouterr().err
+
+    args.confirm_human = True
+    assert kanban_cli._cmd_unblock(args) == 0
+    with kbc.connect_closing() as conn:
+        assert kb.get_task(conn, tid).status == "ready"
+
+    parser = argparse.ArgumentParser()
+    kanban_cli.build_parser(parser.add_subparsers())
+    parsed = parser.parse_args(["kanban", "unblock", "--confirm-human", tid])
+    assert parsed.confirm_human is True
+
+
 # ---------------------------------------------------------------------------
 # Dependency routing
 # ---------------------------------------------------------------------------
@@ -142,7 +193,7 @@ def test_dependency_block_with_terminal_parents_parks_then_escalates(
         assert kb.get_task(conn, child).status == "blocked"
 
         # A cron/human unblocks; the worker re-declares the same impossible wait.
-        assert kb.unblock_task(conn, child)
+        assert kb.unblock_task(conn, child, confirmed_human=True)
         assert kb.claim_task(conn, child, claimer="worker") is not None
         assert kb.block_task(conn, child, reason="still waiting", kind="dependency")
         assert kb.get_task(conn, child).status == "triage"
@@ -196,5 +247,3 @@ def test_dependency_block_with_open_parent_stays_parked_across_dispatch_tick(
 # ---------------------------------------------------------------------------
 # Validation + back-compat
 # ---------------------------------------------------------------------------
-
-

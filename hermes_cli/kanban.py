@@ -1033,9 +1033,16 @@ def _cmd_unblock(args: argparse.Namespace) -> int:
     author = _profile_author() if reason else None
     suffix = f": {reason}" if reason else ""
     with kbc.connect_closing() as conn:
-        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(conn, tid))
+        confirmed_human = bool(getattr(args, "confirm_human", False))
+        op = _commented(conn, reason, author, "UNBLOCK", lambda tid: kb.unblock_task(
+            conn, tid, confirmed_human=confirmed_human,
+        ))
         return _bulk_apply(ids, op, lambda tid: f"Unblocked {tid}{suffix}",
-                           lambda tid: f"cannot unblock {tid} (not blocked/scheduled?)")
+                           lambda tid: (
+                               f"cannot unblock {tid}: needs_input requires --confirm-human"
+                               if kb.needs_human_confirmation(conn, tid) and not confirmed_human
+                               else f"cannot unblock {tid} (not blocked/scheduled?)"
+                           ))
 
 
 def _cmd_request_review(args: argparse.Namespace) -> int:

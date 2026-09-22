@@ -673,6 +673,23 @@ def test_unblock_happy_path(monkeypatch, worker_env):
         conn.close()
 
 
+def test_unblock_needs_input_requires_confirm_human(monkeypatch, worker_env):
+    """The model-tool surface cannot release a human-decision block implicitly."""
+    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="blocked", assignee="worker")
+        assert kb.block_task(conn, tid, reason="waiting for approval", kind="needs_input")
+
+    from tools import kanban_tools as kt
+    refused = json.loads(kt._handle_unblock({"task_id": tid}))
+    assert "confirm_human=true" in refused["error"]
+
+    confirmed = json.loads(kt._handle_unblock({"task_id": tid, "confirm_human": True}))
+    assert (confirmed["ok"], confirmed["status"]) == (True, "ready")
+
+
 def test_unblock_with_pending_parents_returns_todo(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
     home = tmp_path / ".hermes"

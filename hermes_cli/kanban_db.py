@@ -3641,11 +3641,27 @@ def _landing_status_after_parents(conn: sqlite3.Connection, task_id: str) -> str
     return "ready" if _parents_satisfied(conn, task_id) else "todo"
 
 
-def unblock_task(conn: sqlite3.Connection, task_id: str) -> bool:
+def needs_human_confirmation(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Whether releasing this blocked human-decision task needs confirmation."""
+    row = conn.execute(
+        "SELECT status, block_kind FROM tasks WHERE id = ?", (task_id,),
+    ).fetchone()
+    return bool(row and row["status"] == "blocked" and row["block_kind"] == "needs_input")
+
+
+def unblock_task(
+    conn: sqlite3.Connection, task_id: str, *, confirmed_human: bool = False,
+) -> bool:
     """``blocked``/``scheduled`` -> its resumable phase (parent re-gated; ``review``
     when that is where it left off), closing any leaked run first."""
     now = int(time.time())
     with write_txn(conn):
+        # ``needs_input`` records an outstanding human decision.  Keep the
+        # enforcement at this shared mutation boundary so CLI, tool, and any
+        # future surface cannot accidentally release it without an explicit
+        # acknowledgement.  Other block kinds retain their existing behavior.
+        if needs_human_confirmation(conn, task_id) and not confirmed_human:
+            return False
         resume_status = (
             _resume_status_from_events(conn, task_id)
             if _task_status(conn, task_id) == "blocked"

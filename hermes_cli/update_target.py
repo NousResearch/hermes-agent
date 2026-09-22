@@ -320,6 +320,14 @@ def _assert_reviewed_source(root: Path, request: TargetRequest, branch: str) -> 
     return origin
 
 
+def _assert_clean_checkout(root: Path) -> None:
+    status = _run_git(root, "status", "--porcelain=v1", "--untracked-files=all")
+    if status.returncode != 0:
+        _refuse("checkout-unverifiable", status)
+    if status.stdout.strip():
+        raise TargetAdmissionError("dirty-checkout")
+
+
 def _protocol_from_target(root: Path, revision: str) -> int:
     result = _run_git(root, "show", f"{revision}:{_PROTOCOL_PATH}", timeout=10)
     if result.returncode != 0:
@@ -389,11 +397,7 @@ def apply_pinned_target(
     if tracking != f"origin/{current_branch}":
         raise TargetAdmissionError("branch-not-admitted", "tracking branch is not origin/<current branch>")
 
-    status = _run_git(root, "status", "--porcelain=v1", "--untracked-files=all")
-    if status.returncode != 0:
-        _refuse("checkout-unverifiable", status)
-    if status.stdout.strip():
-        raise TargetAdmissionError("dirty-checkout")
+    _assert_clean_checkout(root)
 
     prior_sha = _git_value(root, "rev-parse", "HEAD")
     if prior_sha != request.current_sha:
@@ -409,11 +413,7 @@ def apply_pinned_target(
     # A fetch cannot authorize a concurrent working-tree change.
     if _git_value(root, "rev-parse", "HEAD") != request.current_sha:
         raise TargetAdmissionError("current-sha-mismatch")
-    status = _run_git(root, "status", "--porcelain=v1", "--untracked-files=all")
-    if status.returncode != 0:
-        _refuse("checkout-unverifiable", status)
-    if status.stdout.strip():
-        raise TargetAdmissionError("dirty-checkout")
+    _assert_clean_checkout(root)
 
     authorized_ref = f"origin/{current_branch}"
     if _run_git(root, "merge-base", "--is-ancestor", request.current_sha, authorized_ref).returncode != 0:
@@ -430,6 +430,7 @@ def apply_pinned_target(
     # the checkout even when the caller supplied a protocol=1 claim.
     protocol = _protocol_from_target(root, request.revision)
     _assert_reviewed_source(root, request, current_branch)
+    _assert_clean_checkout(root)
 
     if request.revision == prior_sha:
         return PinnedApplyResult("already-current", prior_sha, prior_sha, current_branch, origin, protocol)

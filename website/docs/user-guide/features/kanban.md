@@ -1241,6 +1241,13 @@ supervisor stops its children and escalates after a short cleanup grace period.
 A reclaim may therefore initially report that ownership is still held; retry
 after cleanup completes. Cleanup receipts survive event-log pruning and restart.
 
+The cleanup supervisor and model worker have distinct process identities. The
+supervisor records the worker's PID and start fingerprint before releasing its
+launch gate; that identity survives exec and authenticates provider-failure
+reports. Reclaim retains billing/authentication stop decisions and transient
+failure accounting even after dispatcher restart. Descendants cannot report as
+the original worker merely by inheriting its task environment.
+
 If the supervisor is killed before writing its receipt, ownership stays unresolved
 even if the original worker PID has disappeared. Neither lease expiry nor a scan
 that finds no worker is sufficient to clear that state. Legacy runs, custom spawn

@@ -60,8 +60,11 @@ def test_original_scope_cannot_replay_or_settle_from_root_exit_after_restart(boa
 
 @pytest.mark.linux_only
 @pytest.mark.parametrize('case', ['root_exit', 'detached', 'deadline', 'delayed', 'supervisor_loss',
-                                 'lost_receipt', 'manual_reclaim', 'stale', 'terminal_reaper'])
+                                 'lost_receipt', 'manual_reclaim', 'stale', 'terminal_reaper',
+                                 'billing', 'auth', 'rate_limit'])
 def test_native_supervisor_owns_descendants_and_cutoff_through_cleanup(board, tmp_path, monkeypatch, case):
+    provider_case = case in {'billing', 'auth', 'rate_limit'}
+    monkeypatch.setattr(kb, '_resolve_crash_grace_seconds', lambda: 0)
     workspace = tmp_path/'work'
     workspace.mkdir()
     publication, root_release, child_release = [workspace/name for name in ('children.json','root-release','child-release')]
@@ -74,13 +77,22 @@ while not Path(sys.argv[1]).exists() and time.monotonic()<until: time.sleep(.02)
 '''
     root_source = '''import json,os,subprocess,sys,time
 from pathlib import Path
+sys.path.insert(0,sys.argv[6])
+if sys.argv[5] in {'billing','auth','rate_limit'}:
+    # A real descendant inheriting the task/run/claim cannot impersonate its worker.
+    bad="import sys;sys.path.insert(0,sys.argv[1]);from hermes_cli.kanban_worker_failure import report_provider_failure;report_provider_failure({'failure_reason':'model_not_found'})"
+    subprocess.run([sys.executable,'-c',bad,sys.argv[6]],check=True,timeout=10)
 child=subprocess.Popen([sys.executable,'-c',sys.argv[1],sys.argv[4]],start_new_session=sys.argv[5]=='detached')
 out=Path(sys.argv[2]);stage=out.with_suffix('.pending')
 stage.write_text(json.dumps({'root':os.getpid(),'child':child.pid}));stage.replace(out)
 until=time.monotonic()+25
 while not Path(sys.argv[3]).exists() and time.monotonic()<until: time.sleep(.02)
+if sys.argv[5] in {'billing','auth','rate_limit'}:
+    from hermes_cli.kanban_worker_failure import report_provider_failure
+    report_provider_failure({'failure_reason':sys.argv[5]})
 '''
-    command = [sys.executable,'-c',root_source,child_source,str(publication),str(root_release),str(child_release),case]
+
+    command = [sys.executable,'-c',root_source,child_source,str(publication),str(root_release),str(child_release),case,str(Path(__file__).resolve().parents[2])]
     monkeypatch.setattr(dispatch, '_worker_argv', lambda *args: command)
     launched = []
     real_popen = dispatch.subprocess.Popen
@@ -116,8 +128,13 @@ while not Path(sys.argv[3]).exists() and time.monotonic()<until: time.sleep(.02)
                 assert child_identity
                 # A completed result is not a cleanup proof. Descendants even
                 # discard task env and detach; subreaping keeps kernel ownership.
-                if case not in {'manual_reclaim','stale'}:
+                if not provider_case and case not in {'manual_reclaim','stale'}:
                     assert kb.complete_task(conn, task_id, expected_run_id=task.current_run_id)
+                if provider_case:
+                    scope = scopes.read(conn, task.current_run_id)
+                    assert scope['worker_pid'] == pids['root'] != task.worker_pid
+                    assert scope['supervisor_pid'] == task.worker_pid
+                    assert not [e for e in kb.list_events(conn, task_id) if e.kind == 'provider_failure']
                 assert not ownership.reconcile(conn, task_id)
                 if case == 'supervisor_loss':
                     launched[0].kill()
@@ -150,13 +167,29 @@ while not Path(sys.argv[3]).exists() and time.monotonic()<until: time.sleep(.02)
                     assert ownership.reconcile(conn, task_id)
                     if case in {'manual_reclaim','stale'}:
                         assert kb.reclaim_task(conn, task_id)
-                    assert dispatch.count_running_tasks(conn) == 0
+                    if not provider_case:
+                        assert dispatch.count_running_tasks(conn) == 0
                     if case == 'deadline':
                         assert scopes.read(conn, task.current_run_id)['reason'] == 'deadline'
             assert scopes.read(conn, task.current_run_id)['deadline'] == original['deadline']
-            kb.gc_events(conn, older_than_seconds=-1)
+            if not provider_case:
+                kb.gc_events(conn, older_than_seconds=-1)
         with kbc.connect_closing() as conn:
             assert scopes.settled(conn, task.current_run_id) is (case != 'supervisor_loss')
+            if provider_case:
+                # New connection and no in-memory child returncode: normal restart reclaim.
+                launched[0].wait(timeout=10)
+                from hermes_cli.kanban_worker_failure import provider_verdict
+                verdict = provider_verdict(conn, task_id, task.worker_pid)
+                assert verdict and verdict['reason'] == case and verdict['pid'] == pids['root']
+                assert len([e for e in kb.list_events(conn, task_id) if e.kind == 'provider_failure']) == 1
+                dispatch.detect_crashed_workers(conn)
+                assert kb.get_task(conn, task_id).status == ('ready' if case == 'rate_limit' else 'blocked')
+                assert kb.get_task(conn, task_id).consecutive_failures == 0
+                run = conn.execute('SELECT * FROM task_runs WHERE id=?', (task.current_run_id,)).fetchone()
+                assert json.loads(run['metadata'])['provider_failure'] == verdict
+                assert dispatch.count_running_tasks(conn) == 0
+
     finally:
         # Cooperative test-owned release also works after reparenting; never
         # signal an orphan using guessed ancestry or an unverified PID.

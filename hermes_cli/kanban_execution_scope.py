@@ -86,6 +86,20 @@ def activate(conn, task_id, run_id, claim_lock, scope_id, pid, fingerprint):
         return scope
 
 
+def bind_worker(conn, run_id, scope_id, supervisor_pid, supervisor_fingerprint, worker_pid, worker_fingerprint):
+    """Persist the direct child's identity before its launch gate opens."""
+    from hermes_cli import kanban_db as kb
+    with kb.write_txn(conn):
+        scope = read(conn, run_id)
+        if (not scope or scope['id'] != scope_id or scope['state'] != 'active'
+                or scope['supervisor_pid'] != supervisor_pid
+                or scope['supervisor_fingerprint'] != supervisor_fingerprint
+                or scope.get('worker_pid') is not None or not worker_fingerprint):
+            raise RuntimeError('original execution worker cannot be replaced')
+        scope.update(worker_pid=worker_pid, worker_fingerprint=worker_fingerprint)
+        conn.execute('UPDATE task_runs SET execution_scope=? WHERE id=?', (json.dumps(scope), run_id))
+
+
 def finish(conn, run_id, scope_id, pid, fingerprint, *, reason, returncode):
     """Called by the still-live owning supervisor after kernel ECHILD proof."""
     from hermes_cli import kanban_db as kb

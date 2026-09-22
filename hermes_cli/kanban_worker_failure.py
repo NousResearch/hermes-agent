@@ -52,17 +52,31 @@ def report_provider_failure(result: dict) -> None:
     code = result.get("failure_status_code")
     if type(code) is int and 400 <= code <= 599:
         evidence["http_status"] = code
-    # The parent may not yet have stored Popen.pid. The run + claim still fence
-    # that launch window; the reaper also checks the eventual recorded PID.
+    # Legacy launches retain their launch-window guard. Supervised workers
+    # must already have the distinct child identity persisted before exec.
     with closing(kbc.connect()) as conn, kb.write_txn(conn):
         row = conn.execute(
-            """SELECT 1 FROM tasks t JOIN task_runs r ON r.id=t.current_run_id
+            """SELECT t.worker_pid,r.execution_scope FROM tasks t JOIN task_runs r ON r.id=t.current_run_id
             WHERE t.id=? AND t.status='running' AND t.current_run_id=?
-            AND (t.worker_pid=? OR t.worker_pid IS NULL) AND t.claim_lock=?
+            AND t.claim_lock=?
             AND r.task_id=t.id AND r.ended_at IS NULL""",
-            (task_id, run_id, os.getpid(), claim),
+            (task_id, run_id, claim),
         ).fetchone()
-        if row and not kb._latest_event(conn, task_id, "provider_failure", run_id):
+        if not row:
+            return
+        if row['execution_scope'] is not None:
+            from hermes_cli.kanban_execution_scope import CONTRACT
+            from hermes_cli.kanban_db_dispatch import _process_fingerprint
+            scope = kb._json_dict(row['execution_scope'])
+            fingerprint = _process_fingerprint(os.getpid())
+            if (scope.get('contract') != CONTRACT or scope.get('state') != 'active'
+                    or scope.get('worker_pid') != os.getpid() or not fingerprint
+                    or scope.get('worker_fingerprint') != fingerprint):
+                return
+            evidence.update(scope_id=scope['id'], worker_fingerprint=fingerprint)
+        elif row['worker_pid'] not in (None, os.getpid()):
+            return
+        if not kb._latest_event(conn, task_id, "provider_failure", run_id):
             kb._append_event(conn, task_id, "provider_failure", evidence, run_id=run_id)
 
 
@@ -71,7 +85,8 @@ def provider_verdict(conn, task_id: str, pid: int):
     from hermes_cli import kanban_db as kb
 
     row = conn.execute(
-        """SELECT e.payload FROM tasks t JOIN task_events e
+        """SELECT e.payload,r.execution_scope FROM tasks t JOIN task_runs r ON r.id=t.current_run_id
+        JOIN task_events e
         ON e.task_id=t.id AND e.run_id=t.current_run_id
         WHERE t.id=? AND t.worker_pid=? AND e.kind='provider_failure'
         ORDER BY e.id LIMIT 1""",
@@ -80,9 +95,19 @@ def provider_verdict(conn, task_id: str, pid: int):
     if row is None:
         return None
     evidence = kb._json_dict(row["payload"])
+    expected_pid = pid
+    if row['execution_scope'] is not None:
+        from hermes_cli.kanban_execution_scope import CONTRACT
+        scope = kb._json_dict(row['execution_scope'])
+        if (scope.get('contract') != CONTRACT or scope.get('supervisor_pid') != pid
+                or not scope.get('worker_fingerprint')
+                or evidence.get('scope_id') != scope.get('id')
+                or evidence.get('worker_fingerprint') != scope['worker_fingerprint']):
+            return None
+        expected_pid = scope.get('worker_pid')
     if (
         evidence.get("schema_version") != 1
-        or evidence.get("pid") != pid
+        or evidence.get("pid") != expected_pid
         or evidence.get("reason") not in TRANSIENT_REASONS | STOP_REASONS
     ):
         return None

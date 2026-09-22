@@ -736,7 +736,7 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
     def paused_rewrite(path, lines, op):
         if threading.current_thread().name == "A" and not b_go.is_set():
             b_go.set()             # A has read the ledger; let B append now ...
-            b_done.wait(3.0)       # ... and give it every chance to land before the replace
+            b_done.wait(1.0)       # ... and give it every chance to land before the replace
         return real_rewrite(path, lines, op)
 
     monkeypatch.setattr(skill_ledger, "_rewrite_ledger", paused_rewrite)

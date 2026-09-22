@@ -278,10 +278,7 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
              content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
         # Same transaction, same connection: the cron ledgers prune this way too
         # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
-        try:
-            _prune_unlocked(conn, now)
-        except Exception:  # a prune failure must never cost the recorded obligation
-            logger.debug("delivery ledger prune failed", exc_info=True)
+        _prune_unlocked(conn, now)
 
 
 def mark_attempting(obligation_id: str) -> None:

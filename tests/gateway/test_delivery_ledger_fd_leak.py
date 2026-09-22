@@ -76,7 +76,6 @@ def test_ledger_operations_close_every_connection(monkeypatch, tmp_path):
     dl.mark_attempting(oid)
     dl.mark_delivered(oid)
     dl.sweep_recoverable()
-    dl.debug_rows()
 
     assert opened, "expected at least one connection to be opened"
     assert len(opened) == len(closed)

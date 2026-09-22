@@ -36,8 +36,10 @@ import {
 } from '@/app/chat/composer/inline-refs'
 import { chipTypedPathOnSpace, pathifyRefs } from '@/app/chat/composer/path-refs'
 import {
+  beginComposerComposition,
   composerPlainText,
   insertComposerContentsAtCaret,
+  markEditorEmptiness,
   placeCaretEnd,
   refChipElement,
   renderComposerContents,
@@ -71,10 +73,12 @@ import { sanitizeComposerInput } from '@/lib/composer-input-sanitize'
 import { DATA_IMAGE_URL_RE } from '@/lib/embedded-images'
 import { triggerHaptic } from '@/lib/haptics'
 import { Loader2Icon } from '@/lib/icons'
+import { isMacPlatform } from '@/lib/platform'
 import { cn } from '@/lib/utils'
 import type { ComposerAttachment } from '@/store/composer'
 import { notifyError } from '@/store/notifications'
-import { $connection, $terminalBackend } from '@/store/session'
+import { $terminalBackend } from '@/store/session'
+import { isSessionRemote } from '@/store/session-states'
 import { notifyThreadEditClose } from '@/store/thread-scroll'
 
 interface UserEditComposerProps {
@@ -118,14 +122,43 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
   const slash = useSlashCompletions({ gateway })
   const emoji = useEmojiCompletions()
 
+  // Timers this composer schedules must not outlive it. Every callback below
+  // touches component state, a ref or the composer core, and this is the one
+  // composer that routinely unmounts mid-flight: confirming an edit tears it
+  // down while the 200ms submit latch is still pending, so the latch resumes
+  // against an unmounted tree. Two of the callbacks already carry defensive
+  // try/catch for the racing-teardown case; clearing the timers removes the
+  // race instead of surviving it.
+  const pendingTimeoutsRef = useRef<Set<number>>(new Set())
+
+  const scheduleTimeout = useCallback((run: () => void, delayMs: number): void => {
+    const id = window.setTimeout(() => {
+      pendingTimeoutsRef.current.delete(id)
+      run()
+    }, delayMs)
+
+    pendingTimeoutsRef.current.add(id)
+  }, [])
+
   // This is the one composer that routinely unmounts, so it is where the focus
   // bus leaks: confirming or cancelling an edit tears the composer down while
   // `'edit'` is still the active target. Release it alongside the thread-scroll
   // cleanup so keyboard routing falls back to the visible chat composer.
+  //
+  // It also drains whatever `scheduleTimeout` still has pending, which is a
+  // second concern under the same heading rather than a separate one: both
+  // are "this composer is going away", they unmount together by definition,
+  // and a sibling unmount-only effect would only be a second place to forget.
   useEffect(
     () => () => {
       notifyThreadEditClose()
       releaseActiveComposer('edit')
+
+      for (const id of pendingTimeoutsRef.current) {
+        window.clearTimeout(id)
+      }
+
+      pendingTimeoutsRef.current.clear()
     },
     []
   )
@@ -227,6 +260,9 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const syncDraftFromEditor = useCallback(
     (editor: HTMLDivElement) => {
+      // Native edits bypass renderComposerContents, so refresh the placeholder
+      // marker here as well, just like the main composer.
+      markEditorEmptiness(editor)
       const nextDraft = sanitizeComposerInput(composerPlainText(editor))
 
       if (nextDraft !== draftRef.current) {
@@ -341,7 +377,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         draftRef.current = composerPlainText(editor)
         aui.composer().setText(draftRef.current)
         requestEditFocus()
-        starter ? window.setTimeout(refreshTrigger, 0) : closeTrigger()
+        starter ? scheduleTimeout(refreshTrigger, 0) : closeTrigger()
       }
 
       // In place first, spanning Chromium's split text nodes (see
@@ -360,7 +396,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       finish()
     },
-    [aui, closeTrigger, recordUndoPoint, refreshTrigger, rememberInitialDraft, requestEditFocus, trigger]
+    [
+      aui,
+      closeTrigger,
+      recordUndoPoint,
+      refreshTrigger,
+      rememberInitialDraft,
+      requestEditFocus,
+      scheduleTimeout,
+      trigger
+    ]
   )
 
   const insertRefStrings = useCallback(
@@ -408,7 +453,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         return droppedFileInlineRefs(osDrops, cwd)
       }
 
-      const remote = $connection.get()?.mode === 'remote'
+      const remote = isSessionRemote(sessionId)
 
       const requestGateway = <T,>(method: string, params?: Record<string, unknown>) =>
         gateway.request<T>(method, params)
@@ -484,6 +529,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
   const handleDrop = (event: ReactDragEvent<HTMLElement>) => {
     if (!dragHasAttachments(event.dataTransfer, HERMES_PATHS_MIME)) {
+      // A plain text drag within the editor mutates the DOM without a
+      // React-visible beforeinput (insertFromDrop), so the undo snapshot has
+      // to be banked here — before Chromium applies the move.
+      recordUndoPoint()
+
       return
     }
 
@@ -526,11 +576,11 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
 
       rememberInitialDraft()
       const nextDraft = syncDraftFromEditor(editor)
-      window.setTimeout(refreshTrigger, 0)
+      scheduleTimeout(refreshTrigger, 0)
 
       return nextDraft
     },
-    [refreshTrigger, rememberInitialDraft, syncDraftFromEditor]
+    [refreshTrigger, rememberInitialDraft, scheduleTimeout, syncDraftFromEditor]
   )
 
   const handleInput = (event: FormEvent<HTMLDivElement>) => {
@@ -552,6 +602,15 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
     }
 
     recordUndoPoint({ coalesce: inputType === 'insertText' || inputType === 'deleteContentBackward' })
+  }
+
+  // Cut never reaches the handler above: React's onBeforeInput is a
+  // keypress/textInput polyfill and does not observe the native
+  // `beforeinput` event, so Chromium's deleteByCut input type is invisible to
+  // it. The native `cut` clipboard event still fires before the DOM mutation,
+  // which is where the pre-edit snapshot has to be banked or ⌘Z skips the cut.
+  const handleCut = () => {
+    recordUndoPoint()
   }
 
   const handlePaste = (event: ClipboardEvent<HTMLDivElement>) => {
@@ -602,7 +661,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
       // Clear latch after cooldown to allow re-submission. This prevents rapid
       // double-Enter but doesn't require tracking when onEdit settles (which may
       // be synchronous or async, and whose promise we don't have access to).
-      window.setTimeout(() => {
+      scheduleTimeout(() => {
         setSubmitting(false)
       }, 200)
     } catch {
@@ -618,7 +677,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         return
       }
 
-      window.setTimeout(() => {
+      scheduleTimeout(() => {
         const root = rootRef.current
         const active = document.activeElement
 
@@ -653,7 +712,7 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
         }
       }, 80)
     },
-    [aui, closeTrigger, submitting, syncDraftFromEditor]
+    [aui, closeTrigger, scheduleTimeout, submitting, syncDraftFromEditor]
   )
 
   const handleKeyDown = (event: KeyboardEvent<HTMLDivElement>) => {
@@ -800,7 +859,8 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
             <div
               aria-label={copy.editMessage}
               autoCapitalize="off"
-              autoCorrect="off"
+              // Match the main composer: allow macOS replacements, not spellcheck.
+              autoCorrect={isMacPlatform() ? 'on' : 'off'}
               className={cn(
                 'ui-prompt-input-editor__input max-h-48 w-full resize-none overflow-y-auto bg-transparent p-0 pr-7 text-[length:var(--conversation-text-font-size)] text-foreground/95 outline-none',
                 '**:data-ref-text:cursor-default',
@@ -810,14 +870,16 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               data-placeholder={copy.editMessage}
               data-slot={RICH_INPUT_SLOT}
               onBeforeInput={handleBeforeInput}
-              onBlur={() => window.setTimeout(closeTrigger, 80)}
+              onBlur={() => scheduleTimeout(closeTrigger, 80)}
               onCompositionEnd={event => {
                 composingRef.current = false
                 flushEditorToDraft(event.currentTarget)
               }}
-              onCompositionStart={() => {
+              onCompositionStart={event => {
                 composingRef.current = true
+                beginComposerComposition(event.currentTarget)
               }}
+              onCut={handleCut}
               onDragOver={handleDragOver}
               onDrop={handleDrop}
               onFocus={() => markActiveComposer('edit')}
@@ -876,7 +938,6 @@ export const UserEditComposer: FC<UserEditComposerProps> = ({ cwd, gateway, sess
               // the edit silently never sends. The restore button guards the
               // same way.
               onPointerDown={event => event.preventDefault()}
-              title={copy.sendEdited}
               type="button"
             >
               {submitting ? StopGlyph : <Codicon name="arrow-up" size={USER_ACTION_ICON_SIZE} />}

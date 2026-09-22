@@ -11,6 +11,7 @@ import {
   deleteSession,
   getAllSessionMessages,
   getCronJobs,
+  getCustomEndpoints,
   getGlobalModelInfo,
   getGlobalModelOptions,
   getHermesConfig,
@@ -140,6 +141,70 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith(expect.objectContaining({ connectionId: 'local', path: '/api/profiles' }))
   })
 
+  it('routes the batched sidebar refresh through the active backend scope', async () => {
+    setApiRequestConnection('cubi')
+    setApiRequestProfile('default')
+    api.mockResolvedValue({ recents: { sessions: [] }, cron: { sessions: [] }, messaging: { sessions: [] } })
+
+    await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: ['cron'],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: ['cron', 'desktop']
+    })
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'cubi',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions/sidebar?recents_profile=default')
+      })
+    )
+  })
+
+  it('routes legacy profile-session slices through the active backend scope', async () => {
+    setApiRequestConnection('cubi')
+    setApiRequestProfile('default')
+
+    await listAllProfileSessions(20, 1, 'exclude', 'recent', 'default')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        connectionId: 'cubi',
+        profile: 'default',
+        path: expect.stringContaining('/api/profiles/sessions?')
+      })
+    )
+  })
+
+  it('does not stamp ambient profile onto unscoped helpers', async () => {
+    setApiRequestProfile('iris')
+
+    await getProfiles()
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/profiles'
+      })
+    )
+    expect(api.mock.calls[0][0]).not.toHaveProperty('profile')
+  })
+
+  it('pins the profile list to an explicit (connection, profile) scope', async () => {
+    setApiRequestConnection('remote-a')
+    setApiRequestProfile('iris')
+
+    await getProfiles({ connectionId: 'remote-b', profile: 'scout' })
+    await getProfiles({ connectionId: 'local', profile: 'default' })
+
+    expect(api.mock.calls.map(([request]) => request)).toEqual([
+      expect.objectContaining({ connectionId: 'remote-b', profile: 'scout', path: '/api/profiles' }),
+      expect.objectContaining({ connectionId: 'local', profile: 'default', path: '/api/profiles' })
+    ])
+  })
+
   it('preserves ambient and explicit-local ownership for session and profile requests', async () => {
     setApiRequestConnection('remote-a')
 
@@ -179,6 +244,41 @@ describe('Hermes REST helpers', () => {
     expect(result.recents.sessions).toEqual([])
     expect(result.cron.sessions).toEqual([])
     expect(result.messaging.sessions).toEqual([])
+  })
+
+  it('counts pinned rows toward a full legacy page so older sessions stay reachable', async () => {
+    // #81484: pins inside the window take LIMIT slots. 3 pinned + 17 unpinned
+    // against a cap of 20 IS a full page; discounting the pins read 17 < 20
+    // and the load-more row never mounted.
+    const row = (id: string, pinned: boolean) => ({ id, title: id, profile: 'default', pinned })
+
+    const recents = [
+      ...Array.from({ length: 3 }, (_, i) => row(`pinned-${i}`, true)),
+      ...Array.from({ length: 17 }, (_, i) => row(`recent-${i}`, false))
+    ]
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron') || path.includes('exclude_sources=')) {
+        return Promise.resolve({ ...emptySessionsResponse, sessions: [], total: 0 })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: recents, total: recents.length })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.profiles_truncated).toEqual({ default: true })
   })
 
   it('falls back to the per-slice endpoint when the batched route 404s on an older backend', async () => {
@@ -237,6 +337,41 @@ describe('Hermes REST helpers', () => {
     expect(paths.some(path => path.includes('profile=all'))).toBe(false)
     expect(paths).toContainEqual(expect.stringContaining('source=cron'))
     expect(paths).toContainEqual(expect.stringContaining('exclude_sources=cron%2Ctool'))
+  })
+
+  it('keeps per-slice errors on the legacy fallback so a cron failure does not taint recents', async () => {
+    resetSidebarBatchCapability()
+    const row = (id: string) => ({ id, title: id, profile: 'default' })
+
+    api.mockImplementation(({ path }: { path: string }) => {
+      if (path.startsWith('/api/profiles/sessions/sidebar')) {
+        return Promise.reject(new Error('404: {"detail":"No such API endpoint: /api/profiles/sessions/sidebar"}'))
+      }
+
+      if (path.includes('source=cron')) {
+        return Promise.resolve({
+          ...emptySessionsResponse,
+          sessions: [],
+          errors: [{ profile: 'default', error: 'disk I/O error' }]
+        })
+      }
+
+      return Promise.resolve({ ...emptySessionsResponse, sessions: [row('recent-1')] })
+    })
+
+    const result = await listSidebarSessions({
+      recentsProfile: 'default',
+      recentsLimit: 20,
+      recentsExclude: [],
+      cronLimit: 50,
+      messagingLimit: 100,
+      messagingExclude: []
+    })
+
+    expect(result.recents.sessions.map(s => s.id)).toEqual(['recent-1'])
+    expect(result.recents.errors).toBeUndefined()
+    expect(result.cron.errors).toEqual([{ profile: 'default', error: 'disk I/O error' }])
+    expect(result.errors).toBeUndefined()
   })
 
   it('remembers endpoint-missing and skips re-probing the batched route on later refreshes', async () => {
@@ -410,6 +545,8 @@ describe('Hermes REST helpers', () => {
     expect(call.timeoutMs).toBeUndefined()
   })
 
+  // Explicit profile/connection writes (deleting a profile) carry the foreground
+  // dial tag; session reads stay on the ambient default (#111651).
   it('tags cross-profile message reads for Electron routing and backend lookup', async () => {
     api.mockResolvedValue({ messages: [], session_id: 'session-1' })
 
@@ -453,6 +590,7 @@ describe('Hermes REST helpers', () => {
       connectionId: 'source-a',
       method: 'DELETE',
       path: '/api/profiles/backend-worker',
+      priority: 'foreground',
       profile: 'backend-worker'
     })
   })
@@ -625,6 +763,18 @@ describe('Hermes REST helpers', () => {
     expect(api).toHaveBeenCalledWith(
       expect.objectContaining({
         path: '/api/model/options?refresh=1&include_unconfigured=1'
+      })
+    )
+  })
+
+  it('scopes custom endpoint reads to the requested settings profile', async () => {
+    await getCustomEndpoints('content-studio')
+
+    expect(api).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: '/api/providers/custom-endpoints',
+        profile: 'content-studio',
+        priority: 'foreground'
       })
     )
   })

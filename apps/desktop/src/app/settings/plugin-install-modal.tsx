@@ -15,21 +15,25 @@ import {
   DialogTitle,
   preventCloseButtonAutoFocus
 } from '@/components/ui/dialog'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select'
 import { Switch } from '@/components/ui/switch'
 import { discoverRuntimePlugins } from '@/contrib/runtime-loader'
 import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
-import { notify } from '@/store/notifications'
+import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { notify, notifyError } from '@/store/notifications'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
+  openPluginInstallRequest,
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
-import { $activeGatewayProfile, $profileScope } from '@/store/profile'
-import { $connection } from '@/store/session'
+import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
+import { $activeSessionId, $connection } from '@/store/session'
+import { runGatewayRestart } from '@/store/system-actions'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
@@ -45,25 +49,31 @@ export function PluginInstallModal() {
   const onSettings = location.pathname.startsWith(SETTINGS_ROUTE)
   const connection = useStore($connection)
   const activeProfile = useStore($activeGatewayProfile)
+  const profiles = useStore($profiles)
   const profileScope = useStore($profileScope)
 
+  const [repoInput, setRepoInput] = useState('')
+  const [targetProfile, setTargetProfile] = useState('default')
   const [phase, setPhase] = useState<ProbePhase>('idle')
   const [probe, setProbe] = useState<ProbeResult | null>(null)
   const [installAgent, setInstallAgent] = useState(true)
   const [installDesktop, setInstallDesktop] = useState(true)
   const [enableAgent, setEnableAgent] = useState(true)
   const [forceReinstall, setForceReinstall] = useState(false)
+  const [pinRef, setPinRef] = useState('')
   const [installing, setInstalling] = useState(false)
   const [installError, setInstallError] = useState<string | null>(null)
   const probeToken = useRef(0)
 
   const resetState = useCallback(() => {
+    setRepoInput('')
     setPhase('idle')
     setProbe(null)
     setInstallAgent(true)
     setInstallDesktop(true)
     setEnableAgent(true)
     setForceReinstall(false)
+    setPinRef('')
     setInstalling(false)
     setInstallError(null)
   }, [])
@@ -87,6 +97,8 @@ export function PluginInstallModal() {
       setPhase('probing')
       setProbe(null)
       setInstallError(null)
+      // Reviewed catalog picks streamline the ceremony: enable defaults ON
+      // (installing a reviewed entry to not use it is the rare case).
       setEnableAgent(payload.enable ?? true)
       setForceReinstall(payload.force ?? false)
 
@@ -142,13 +154,30 @@ export function PluginInstallModal() {
       return
     }
 
-    void runProbe(request)
-  }, [request, resetState, runProbe])
+    setTargetProfile(normalizeProfileKey(request.profile || activeProfile || profileScope))
 
-  const profileLabel = activeProfile || profileScope || 'default'
+    if (request.repo) {
+      void runProbe(request)
+    }
+  }, [activeProfile, profileScope, request, resetState, runProbe])
+
+  const targetProfileInfo = profiles.find(profile => normalizeProfileKey(profile.name) === targetProfile)
+  const profileOptions = targetProfileInfo ? profiles : [...profiles, { name: targetProfile }]
+  const targetProfileLabel = profileLabel(targetProfileInfo ?? { name: targetProfile })
 
   const agentTargetHint =
-    connection?.mode === 'remote' ? m.agentTargetRemote(profileLabel) : m.agentTargetLocal(profileLabel)
+    connection?.mode === 'remote'
+      ? m.agentTargetRemote(targetProfileLabel)
+      : m.agentTargetLocal(
+          targetProfileLabel,
+          targetProfile === 'default' ? '~/.hermes/plugins/' : `~/.hermes/profiles/${targetProfile}/plugins/`
+        )
+
+  // A unified package installed into a local backend carries its own desktop
+  // half; the app copies that half out of the package folder. Only a remote
+  // backend (whose plugins/ folder this machine cannot read) or a desktop-only
+  // repo needs a separate desktop clone.
+  const desktopHalfFromPackage = Boolean(probe?.agent && installAgent && connection?.mode !== 'remote')
 
   const sourceLinks = useMemo(() => (request ? resolvePluginSourceLinks(request.repo) : null), [request])
 
@@ -177,22 +206,41 @@ export function PluginInstallModal() {
 
     const errors: string[] = []
     const successes: string[] = []
+    let agentInstalled = false
+    let deferredMcpServers: string[] = []
+    let gatewayReloaded = false
+    let agentPluginName = ''
 
     try {
       if (installAgent && probe.agent) {
         const result = await installAgentPlugin(requestGateway, {
           identifier: request.repo,
           force: forceReinstall,
-          enable: enableAgent
+          enable: enableAgent,
+          catalogName: request.catalogName,
+          ref: pinRefTrimmed || undefined,
+          profile: targetProfile
         })
 
         if (result.ok) {
           successes.push(m.agentSuccess(result.pluginName ?? request.repo))
+          agentInstalled = true
+          deferredMcpServers = result.deferredMcpServers
+          gatewayReloaded = result.gatewayReloaded
+          agentPluginName = result.pluginName ?? request.repo
 
           if (result.missingEnv?.length) {
+            const firstVar = result.missingEnv[0]
+
             notify({
               kind: 'warning',
-              message: m.missingEnv(result.missingEnv.join(', '))
+              message: m.missingEnv(result.pluginName ?? request.repo, result.missingEnv.join(', ')),
+              // Deep-link straight to the credential card instead of leaving
+              // the user to hunt through Settings → Tools & Keys by hand.
+              action: {
+                label: m.missingEnvAction,
+                onClick: () => navigate(`/settings?tab=keys&key=${encodeURIComponent(firstVar)}`)
+              }
             })
           }
 
@@ -205,31 +253,84 @@ export function PluginInstallModal() {
       }
 
       if (installDesktop && probe.desktop) {
-        const installFn = window.hermesDesktop?.installDesktopPlugin
+        if (agentInstalled && desktopHalfFromPackage) {
+          // Unified package into a LOCAL backend: the desktop half ships inside
+          // the package folder Electron just watched land. Materialise it from
+          // there (one source of truth, follows updates/uninstall) instead of
+          // cloning a second, standalone copy under another folder name.
+          const touched = (await window.hermesDesktop?.reconcileDesktopPlugins?.()) ?? []
 
-        if (!installFn) {
-          errors.push(m.desktopUnavailable)
-        } else {
-          const result = await installFn({ identifier: request.repo, force: forceReinstall })
+          successes.push(m.desktopSuccess(probe.agentName ?? request.repo))
 
-          if (result.ok) {
-            successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
+          if (touched.length > 0) {
             await discoverRuntimePlugins()
+          }
+        } else {
+          const installFn = window.hermesDesktop?.installDesktopPlugin
+
+          if (!installFn) {
+            errors.push(m.desktopUnavailable)
           } else {
-            errors.push(result.error || m.desktopFailed)
+            const result = await installFn({ identifier: request.repo, force: forceReinstall })
+
+            if (result.ok) {
+              successes.push(m.desktopSuccess(result.pluginName ?? request.repo))
+              await discoverRuntimePlugins()
+            } else {
+              errors.push(result.error || m.desktopFailed)
+            }
           }
         }
       }
 
-      await loadAgentPlugins(requestGateway)
+      await loadAgentPlugins(requestGateway, targetProfile)
 
       if (errors.length === 0) {
         for (const message of successes) {
           notify({ kind: 'success', message })
         }
 
+        // The right follow-up depends on what the backend says is live now:
+        // deferred MCP servers can be connected in place (reload.mcp), an
+        // already-reloaded gateway needs nothing, and only a plugin the
+        // gateway did not pick up still needs the restart.
+        if (agentInstalled && enableAgent) {
+          if (deferredMcpServers.length > 0) {
+            notify({
+              kind: 'success',
+              message: m.connectServers(agentPluginName, deferredMcpServers.length),
+              meta: m.connectSub,
+              action: {
+                label: m.connectNow,
+                onClick: () => {
+                  void (async () => {
+                    try {
+                      await requestGateway('reload.mcp', {
+                        confirm: true,
+                        session_id: $activeSessionId.get() ?? undefined
+                      })
+                      await loadAgentPlugins(requestGateway, targetProfile)
+                    } catch (err) {
+                      notifyError(err, m.connectFailed)
+                    }
+                  })()
+                }
+              }
+            })
+          } else if (gatewayReloaded) {
+            notify({ kind: 'success', message: m.liveNow(agentPluginName) })
+          } else {
+            notify({
+              kind: 'success',
+              message: m.restartToApply,
+              action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
+            })
+          }
+        }
+
         closePluginInstallRequest()
-        navigate('/settings?tab=plugins')
+        // Catalog picks come from Capabilities → Plugins; land back there.
+        navigate(request.catalogName ? '/capabilities?tab=plugins' : '/settings?tab=plugins')
 
         return
       }
@@ -248,6 +349,8 @@ export function PluginInstallModal() {
 
   const open = request !== null && !onSettings
   const busy = phase === 'probing' || installing
+  const pinRefTrimmed = pinRef.trim().toLowerCase()
+  const pinRefInvalid = pinRefTrimmed !== '' && !COMMIT_SHA_RE.test(pinRefTrimmed)
 
   return (
     <Dialog
@@ -258,13 +361,39 @@ export function PluginInstallModal() {
       }}
       open={open}
     >
-      <DialogContent className="max-w-lg" onOpenAutoFocus={preventCloseButtonAutoFocus}>
+      <DialogContent className="max-w-lg" onOpenAutoFocus={request?.repo ? preventCloseButtonAutoFocus : undefined}>
         <DialogHeader>
           <DialogTitle>{m.title}</DialogTitle>
           <DialogDescription>{m.description}</DialogDescription>
         </DialogHeader>
 
-        {request && (
+        {request && !request.repo && (
+          <form
+            className="space-y-3"
+            id="plugin-repository-form"
+            onSubmit={event => {
+              event.preventDefault()
+              const repo = repoInput.trim()
+
+              if (repo) {
+                openPluginInstallRequest({ ...request, repo })
+              }
+            }}
+          >
+            <label className="block space-y-1">
+              <span>{m.repoLabel}</span>
+              <Input
+                autoFocus
+                onChange={event => setRepoInput(event.target.value)}
+                placeholder={m.repoPlaceholder}
+                spellCheck={false}
+                value={repoInput}
+              />
+            </label>
+          </form>
+        )}
+
+        {request?.repo && (
           <div className="space-y-4">
             <div>
               <div className="mb-1 text-[length:var(--conversation-caption-font-size)] font-medium text-foreground">
@@ -273,12 +402,19 @@ export function PluginInstallModal() {
               <div className="rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2 font-mono text-[length:var(--conversation-caption-font-size)] break-all text-foreground">
                 {request.repo}
               </div>
+              {request.catalogName && (
+                <p className="mt-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                  {m.catalogPinned(request.catalogName, request.sha?.slice(0, 8) ?? '')}
+                </p>
+              )}
             </div>
 
             <div className="space-y-3 rounded-lg border border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-2.5">
               <div className="space-y-2 text-[length:var(--conversation-caption-font-size)]">
-                <div className="font-medium text-foreground">{m.securityHeading}</div>
-                <p className="text-(--ui-text-secondary)">{m.securityIntro}</p>
+                <div className="font-medium text-foreground">
+                  {request.catalogName ? m.reviewedHeading : m.securityHeading}
+                </div>
+                <p className="text-(--ui-text-secondary)">{request.catalogName ? m.reviewedIntro : m.securityIntro}</p>
               </div>
 
               {sourceLinks && (
@@ -322,20 +458,39 @@ export function PluginInstallModal() {
                 </div>
 
                 {probe.agent && (
-                  <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-                    <Checkbox
-                      checked={installAgent}
-                      disabled={busy}
-                      onCheckedChange={value => setInstallAgent(value === true)}
-                    />
-                    <span className="min-w-0">
-                      <span className="block font-medium text-foreground">{m.agentLabel}</span>
-                      <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {agentTargetHint}
-                        {probe.agentName ? ` · ${probe.agentName}` : ''}
+                  <div className="space-y-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+                    <label className="flex items-start gap-3">
+                      <Checkbox
+                        checked={installAgent}
+                        disabled={busy}
+                        onCheckedChange={value => setInstallAgent(value === true)}
+                      />
+                      <span className="min-w-0">
+                        <span className="block font-medium text-foreground">{m.agentLabel}</span>
+                        <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
+                          {agentTargetHint}
+                          {probe.agentName ? ` · ${probe.agentName}` : ''}
+                        </span>
                       </span>
-                    </span>
-                  </label>
+                    </label>
+                    <label className="block space-y-1 pl-7">
+                      <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                        {m.profileLabel}
+                      </span>
+                      <Select disabled={busy || !installAgent} onValueChange={setTargetProfile} value={targetProfile}>
+                        <SelectTrigger aria-label={m.profileLabel} className="w-full">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          {profileOptions.map(profile => (
+                            <SelectItem key={profile.name} value={normalizeProfileKey(profile.name)}>
+                              {profileLabel(profile)}
+                            </SelectItem>
+                          ))}
+                        </SelectContent>
+                      </Select>
+                    </label>
+                  </div>
                 )}
 
                 {probe.desktop && (
@@ -348,8 +503,8 @@ export function PluginInstallModal() {
                     <span className="min-w-0">
                       <span className="block font-medium text-foreground">{m.desktopLabel}</span>
                       <span className="block text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-                        {m.desktopTarget}
-                        {probe.desktopName ? ` · ${probe.desktopName}` : ''}
+                        {desktopHalfFromPackage ? m.desktopTargetFromPackage : m.desktopTarget}
+                        {desktopHalfFromPackage ? '' : probe.desktopName ? ` · ${probe.desktopName}` : ''}
                       </span>
                     </span>
                   </label>
@@ -368,7 +523,9 @@ export function PluginInstallModal() {
                       className="mt-0.5 size-3.5 shrink-0 text-amber-600 dark:text-amber-400"
                     />
                     <span>
-                      {[...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''].filter(Boolean).join(' ')}
+                      {[...new Set([...(probe.warnings ?? []), probe.insecure ? m.insecureWarning : ''])]
+                        .filter(Boolean)
+                        .join(' ')}
                     </span>
                   </div>
                 )}
@@ -382,12 +539,36 @@ export function PluginInstallModal() {
                   </label>
                 )}
 
-                <label className="flex items-center justify-between gap-3">
-                  <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
-                    {m.forceReinstall}
-                  </span>
-                  <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
-                </label>
+                {!request.catalogName && (
+                  <label className="flex items-center justify-between gap-3">
+                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                      {m.forceReinstall}
+                    </span>
+                    <Switch checked={forceReinstall} disabled={busy} onCheckedChange={setForceReinstall} />
+                  </label>
+                )}
+
+                {!request.catalogName && probe.agent && (
+                  <label className="block space-y-1">
+                    <span className="text-[length:var(--conversation-caption-font-size)] text-foreground">
+                      {m.pinToCommit}
+                    </span>
+                    <Input
+                      aria-invalid={pinRefInvalid || undefined}
+                      aria-label={m.pinToCommit}
+                      disabled={busy || !installAgent}
+                      onChange={event => setPinRef(event.target.value)}
+                      placeholder={m.pinToCommitPlaceholder}
+                      spellCheck={false}
+                      value={pinRef}
+                    />
+                    <span
+                      className={`block text-[length:var(--conversation-caption-font-size)] ${pinRefInvalid ? 'text-destructive' : 'text-(--ui-text-tertiary)'}`}
+                    >
+                      {pinRefInvalid ? m.pinToCommitInvalid : m.pinToCommitHint}
+                    </span>
+                  </label>
+                )}
               </div>
             )}
 
@@ -403,9 +584,18 @@ export function PluginInstallModal() {
           <Button disabled={busy} onClick={handleClose} variant="outline">
             {t.common.cancel}
           </Button>
-          <Button disabled={busy || phase !== 'ready' || !probe?.ok} onClick={() => void handleInstall()}>
-            {installing ? m.installing : m.install}
-          </Button>
+          {request && !request.repo ? (
+            <Button disabled={!repoInput.trim()} form="plugin-repository-form" type="submit">
+              {m.reviewRepository}
+            </Button>
+          ) : (
+            <Button
+              disabled={busy || phase !== 'ready' || !probe?.ok || pinRefInvalid}
+              onClick={() => void handleInstall()}
+            >
+              {installing ? m.installing : m.install}
+            </Button>
+          )}
         </DialogFooter>
       </DialogContent>
     </Dialog>

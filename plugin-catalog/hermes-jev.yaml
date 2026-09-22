@@ -1,0 +1,34 @@
+name: hermes-jev
+repo: https://github.com/keeltrace/hermes-jev
+sha: 92bd505f48338ec60bd31eb5fa0175d63afbaee1
+description: Asynchronous Jev decision nervous system with adaptive routing, receipt-backed verification,
+  confidence-gated challenges, typed decisions, and context governance. Disclosure — with the default
+  settings (nervous_enabled / turn_admission on) each turn's user prompt (up to 12k characters) and redacted
+  tool/result previews are sent to OpenRouter Decisions (TypeSafe Jev) using your OPENROUTER_API_KEY or
+  TYPESAFE_API_KEY, spending your credits on every turn.
+maintainer: keeltrace
+tier: community
+category: automation
+requires_hermes: '>=0.21'
+docs_url: https://github.com/keeltrace/hermes-jev#readme
+version: 0.2.1.2
+capabilities:
+  provides_tools:
+  - jev_decide
+  - jev_rank
+  - jev_verify
+  - jev_assess
+  - jev_context_curate
+  - jev_context_rehydrate
+  - jev_stats
+  - jev_nervous_event
+  provides_hooks:
+  - pre_tool_call
+  - post_tool_call
+  - pre_llm_call
+  - transform_tool_result
+  - pre_verify
+  - post_llm_call
+  - on_session_end
+  provides_middleware: []
+  requires_env: []

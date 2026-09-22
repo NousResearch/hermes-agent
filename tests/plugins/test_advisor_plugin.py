@@ -499,6 +499,12 @@ def test_plugin_model_selection_dispatches_callback_without_primary_switch(monke
     cli._close_model_picker = cli_module.HermesCLI._close_model_picker.__get__(
         cli, type(cli)
     )
+    # Upstream routed confirm+apply dispatch through _commit_picker_result; the
+    # real implementation must run so the on_selected capture/close/dispatch seam
+    # is what this test actually exercises.
+    cli._commit_picker_result = cli_module.HermesCLI._commit_picker_result.__get__(
+        cli, type(cli)
+    )
 
     cli_module.HermesCLI._handle_model_picker_selection(cli)
 

@@ -1,11 +1,19 @@
-import { AssistantRuntimeProvider, type ThreadMessage, useExternalStoreRuntime } from '@assistant-ui/react'
+import {
+  AssistantRuntimeProvider,
+  MessagePrimitive,
+  type ThreadMessage,
+  ThreadPrimitive,
+  useExternalStoreRuntime
+} from '@assistant-ui/react'
 import { act, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { useEffect, useState } from 'react'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { $reasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reasoningCollapsedByDefault, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 
 import { stubThreadEnvironment, stubThreadViewportSize, ThreadRuntime } from '../test-utils'
+
+import { MESSAGE_PARTS_COMPONENTS } from './message-parts'
 
 import { Thread } from '.'
 
@@ -30,6 +38,12 @@ class TestResizeObserver {
     resizeObservers.delete(this)
   }
 
+  triggerFor(target: Element, height: number) {
+    if (this.target === target) {
+      this.trigger(height)
+    }
+  }
+
   trigger(height: number) {
     if (!this.target) {
       return
@@ -38,9 +52,10 @@ class TestResizeObserver {
     this.callback(
       [
         {
+          borderBoxSize: [{ blockSize: height, inlineSize: 800 }],
           contentRect: { height } as DOMRectReadOnly,
           target: this.target
-        } as ResizeObserverEntry
+        } as unknown as ResizeObserverEntry
       ],
       this as unknown as ResizeObserver
     )
@@ -396,6 +411,34 @@ function RunningReasoningHarness() {
   )
 }
 
+// A turn that streams reasoning and then settles — the transition the
+// preview latch exists for. `settle()` flips the thread to not-running.
+function renderSettlingReasoning() {
+  let setRunning: ((running: boolean) => void) | undefined
+
+  function SettlingReasoningHarness() {
+    const [running, setRunningState] = useState(true)
+
+    setRunning = setRunningState
+
+    const runtime = useExternalStoreRuntime<ThreadMessage>({
+      messages: [assistantReasoningMessage('The user asked a question.', running)],
+      isRunning: running,
+      onNew: async () => {}
+    })
+
+    return (
+      <AssistantRuntimeProvider runtime={runtime}>
+        <Thread />
+      </AssistantRuntimeProvider>
+    )
+  }
+
+  const { container } = render(<SettlingReasoningHarness />)
+
+  return { container, settle: () => act(() => setRunning?.(false)) }
+}
+
 function GroupedReasoningHarness() {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
     messages: [assistantMultiReasoningMessage([' First thought.', ' Second thought.'])],
@@ -442,6 +485,42 @@ describe('assistant-ui streaming renderer', () => {
   beforeEach(() => {
     resizeObservers.clear()
     $reasoningCollapsedByDefault.set(false)
+    setShowReasoningFromConfig(undefined)
+  })
+
+  it.each([true, false])('honors reasoning visibility %j for grouped and standalone parts', async enabled => {
+    setShowReasoningFromConfig(enabled)
+
+    const UngroupedMessage = () => (
+      <MessagePrimitive.Root>
+        <MessagePrimitive.Parts components={{ Reasoning: MESSAGE_PARTS_COMPONENTS.Reasoning }} />
+      </MessagePrimitive.Root>
+    )
+
+    const { container } = render(
+      <>
+        <RunningReasoningHarness />
+        <ThreadRuntime messages={[assistantReasoningMessage('standalone reasoning', true)]}>
+          <ThreadPrimitive.Root>
+            <ThreadPrimitive.Messages components={{ AssistantMessage: UngroupedMessage, UserMessage: () => null }} />
+          </ThreadPrimitive.Root>
+        </ThreadRuntime>
+      </>
+    )
+
+    await waitFor(() => {
+      expect(container.querySelectorAll('[data-slot="aui_reasoning-text"]')).toHaveLength(enabled ? 2 : 0)
+    })
+    const thinking = within(container).queryByRole('button', { name: /thinking/i })
+    const standalone = within(container).queryByText('standalone reasoning')
+
+    if (enabled) {
+      expect(thinking).not.toBeNull()
+      expect(standalone).not.toBeNull()
+    } else {
+      expect(thinking).toBeNull()
+      expect(standalone).toBeNull()
+    }
   })
 
   it('renders assistant text incrementally before completion', async () => {
@@ -510,6 +589,30 @@ describe('assistant-ui streaming renderer', () => {
     expect(finalRoot?.querySelector('[data-slot="aui_msg-actions"]')).toBeTruthy()
   })
 
+  it('puts the turn duration on the action bar row instead of a line of its own', () => {
+    const settled = {
+      ...assistantMessage('All done.', false),
+      metadata: {
+        unstable_state: null,
+        unstable_annotations: [],
+        unstable_data: [],
+        steps: [],
+        custom: { durationS: 12 }
+      }
+    } as ThreadMessage
+
+    const { container } = render(<TranscriptHarness messages={[userMessage(), settled]} />)
+
+    const duration = container.querySelector('[data-slot="aui_turn-duration"]')
+    const actions = container.querySelector('[data-slot="aui_msg-actions"]')
+
+    // Same row as the (always-mounted) action bar: the footer's height is
+    // already reserved while the turn streams, so landing the duration there
+    // adds no height when the turn settles.
+    expect(duration).toBeTruthy()
+    expect(duration?.parentElement).toBe(actions?.parentElement)
+  })
+
   it('renders assistant provider errors inline', () => {
     render(<MessageHarness message={assistantErrorMessage('OpenRouter rejected the request (403).')} />)
 
@@ -567,6 +670,145 @@ describe('assistant-ui streaming renderer', () => {
       expect(container.querySelector('[data-slot="aui_reasoning-text"]')?.textContent).toContain('const answer = 42')
     })
     expect(container.textContent).not.toContain('```ts')
+  })
+
+  it('keeps the height-capped thinking preview scrollable after the turn settles', async () => {
+    const { container, settle } = renderSettlingReasoning()
+
+    const live = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(live).toContain('max-h-40')
+    expect(live).toMatch(/\boverflow-auto\b/)
+    expect(live).not.toMatch(/\boverflow-hidden\b/)
+
+    settle()
+
+    await waitFor(() => {
+      expect(within(container).getByRole('button', { name: /thought/i })).toBeTruthy()
+    })
+
+    const settled = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(settled).toContain('max-h-40')
+    expect(settled).toMatch(/\boverflow-auto\b/)
+    expect(settled).not.toMatch(/\boverflow-hidden\b/)
+  })
+
+  it('preserves the thinking reading position on growth and resumes following at the bottom', () => {
+    const { container, rerender } = render(
+      <RunningMessageHarness message={assistantReasoningMessage('First thought.', true)} />
+    )
+
+    const body = container.querySelector<HTMLDivElement>('[data-slot="aui_thinking-body"]')!
+    let height = 600
+    let top = 0
+
+    Object.defineProperties(body, {
+      clientHeight: { configurable: true, get: () => 160 },
+      scrollHeight: { configurable: true, get: () => height },
+      scrollTop: {
+        configurable: true,
+        get: () => top,
+        set: (value: number) => {
+          top = Math.max(0, Math.min(value, height - body.clientHeight))
+        }
+      }
+    })
+
+    const deliverGrowth = () =>
+      act(() => {
+        for (const observer of resizeObservers) {
+          observer.triggerFor(body.firstElementChild!, height)
+        }
+      })
+
+    deliverGrowth()
+    expect(body.scrollTop).toBe(height - body.clientHeight)
+    body.scrollTop = 100
+    fireEvent.scroll(body)
+
+    rerender(<RunningMessageHarness message={assistantReasoningMessage('First thought. More reasoning.', true)} />)
+    height = 900
+    deliverGrowth()
+    expect(body.scrollTop).toBe(100)
+
+    body.scrollTop = height - body.clientHeight - 0.5
+    fireEvent.scroll(body)
+    rerender(
+      <RunningMessageHarness
+        message={assistantReasoningMessage('First thought. More reasoning. Latest thought.', true)}
+      />
+    )
+    height = 1200
+    deliverGrowth()
+    expect(body.scrollTop).toBe(height - body.clientHeight)
+  })
+
+  it('allows vertical handoff in both preview and expanded thinking bodies', () => {
+    const { container } = render(<RunningReasoningHarness />)
+    const ui = within(container)
+    const toggle = ui.getByRole('button', { name: /thinking/i })
+
+    const preview = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(preview).toContain('max-h-40')
+    expect(preview).toMatch(/\boverflow-auto\b/)
+    expect(preview).toMatch(/\boverscroll-y-auto\b/)
+
+    // Manual expansion removes the cap but must keep vertical handoff.
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('false')
+
+    fireEvent.click(toggle)
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+
+    const expanded = container.querySelector('[data-slot="aui_thinking-body"]')?.className ?? ''
+
+    expect(expanded).toMatch(/\boverflow-auto\b/)
+    expect(expanded).not.toContain('max-h-40')
+    expect(expanded).toMatch(/\boverscroll-y-auto\b/)
+  })
+
+  it('does not collapse a live thinking preview when the turn settles', async () => {
+    const { container, settle } = renderSettlingReasoning()
+    const toggle = within(container).getByRole('button', { name: /thinking/i })
+
+    expect(toggle.getAttribute('aria-expanded')).toBe('true')
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('true')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeTruthy()
+  })
+
+  it('leaves a settling turn collapsed when the collapsed-by-default preference is enabled', async () => {
+    $reasoningCollapsedByDefault.set(true)
+
+    const { container, settle } = renderSettlingReasoning()
+
+    expect(
+      within(container)
+        .getByRole('button', { name: /thinking/i })
+        .getAttribute('aria-expanded')
+    ).toBe('false')
+
+    settle()
+
+    await waitFor(() => {
+      expect(
+        within(container)
+          .getByRole('button', { name: /thought/i })
+          .getAttribute('aria-expanded')
+      ).toBe('false')
+    })
+    expect(container.querySelector('[data-slot="aui_reasoning-text"]')).toBeNull()
   })
 
   it('keeps streaming reasoning collapsed by default when the preference is enabled', () => {

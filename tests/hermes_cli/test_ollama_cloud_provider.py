@@ -195,6 +195,31 @@ class TestOllamaCloudMergedDiscovery:
 
         assert result == ["glm-5"]
 
+    def test_cache_only_serves_stale_cache_without_rewriting_disk(self, tmp_path, monkeypatch):
+        """cache_only (GUI read path) must not persist a live-less list: that stamps it fresh, drops the
+        live-only ids, and makes the next probing call serve the trimmed list for an hour."""
+        import json
+        import time
+        from hermes_cli.models import fetch_ollama_cloud_models
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
+        cache = tmp_path / "ollama_cloud_models_cache.json"
+        cache.write_text(json.dumps({"models": ["live-only", "shared"], "cached_at": time.time() - 7200}))
+        before = (cache.read_text(), cache.stat().st_mtime_ns)
+
+        mock_mdev = {"ollama-cloud": {"models": {"shared": {"tool_call": True}, "mdev-only": {"tool_call": True}}}}
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
+             patch("hermes_cli.models.fetch_api_models", side_effect=AssertionError("network probe ran")):
+            result = fetch_ollama_cloud_models(cache_only=True)
+
+        assert result == ["live-only", "shared"]
+        assert (cache.read_text(), cache.stat().st_mtime_ns) == before
+
+        with patch("agent.models_dev.fetch_models_dev", return_value=mock_mdev), \
+             patch("hermes_cli.models.fetch_api_models", return_value=["live-only", "shared", "new-live"]) as live:
+            assert fetch_ollama_cloud_models() == ["live-only", "shared", "new-live", "mdev-only"]
+        assert live.called  # the stale cache still triggers a probe on the next non-cache_only call
 
 
 
@@ -250,7 +275,7 @@ class TestOllamaCloudAgentInit:
     def test_ollama_cloud_agent_uses_chat_completions(self, monkeypatch):
         """Ollama Cloud falls through to chat_completions — no special elif needed."""
         monkeypatch.setenv("OLLAMA_API_KEY", "test-key")
-        with patch("run_agent.OpenAI") as mock_openai:
+        with patch("agent.process_bootstrap.OpenAI") as mock_openai:
             mock_openai.return_value = MagicMock()
             from run_agent import AIAgent
             agent = AIAgent(
@@ -340,7 +365,7 @@ class TestOllamaCloudSuffixStripping:
 
     def test_strip_suffix_helper(self):
         """Unit test for the _strip_ollama_cloud_suffix helper."""
-        from hermes_cli.models import _strip_ollama_cloud_suffix
+        from hermes_cli.models_local import _strip_ollama_cloud_suffix
 
         assert _strip_ollama_cloud_suffix("kimi-k2.6:cloud") == "kimi-k2.6"
         assert _strip_ollama_cloud_suffix("glm-5.1:cloud") == "glm-5.1"

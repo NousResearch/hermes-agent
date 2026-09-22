@@ -25,6 +25,11 @@ from hermes_cli.model_switch import _model_sort_key
 from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
 GPT6_TIERS = ("gpt-6-sol", "gpt-6-terra", "gpt-6-luna")
+# Terra is registered in the aggregator (nous/openrouter) catalogs, but the ChatGPT Codex OAuth
+# backend answers the slug exactly like a retired model, so the Codex-side contracts below only
+# cover the tiers that route there — see tests/hermes_cli/test_codex_models.py::
+# test_unreleased_gpt_6_terra_is_not_offered_offline.
+CODEX_GPT6_TIERS = ("gpt-6-sol", "gpt-6-luna")
 
 
 def test_model_gpt_resolves_flagship_across_gpt6_tiers():
@@ -36,7 +41,7 @@ def test_model_gpt_resolves_flagship_across_gpt6_tiers():
 
 def test_gpt6_tiers_share_the_codex_900k_contract_with_56():
     ids = _finalize_codex_models(["gpt-5.5"])  # forward-compat synthesizes the tiers from 5.5
-    for base in GPT6_TIERS:
+    for base in CODEX_GPT6_TIERS:
         assert ids.index(f"{base}-900k") == ids.index(base) + 1, base
         assert f"{base}-pro-900k" not in ids
         assert is_codex_900k_base(f"{base}-2026-09-22"), base  # dated snapshots inherit eligibility

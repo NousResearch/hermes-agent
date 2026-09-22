@@ -227,6 +227,7 @@ def _cmd_keychain_status(args) -> None:
 
 
 def _cmd_keychain_add(args) -> None:
+    from agent.vault_backends.base import UnlockRequired
     from agent.vault_store import VaultError, normalize_origin
 
     c = _console()
@@ -254,18 +255,14 @@ def _cmd_keychain_add(args) -> None:
     while not password:
         password = getpass.getpass("Password (hidden): ")
     try:
-        handle = backend.add_item(server, account, password, label=label)
-    except (VaultError, RuntimeError) as exc:
+        handle = backend.add_item(server, account, password, label=label, origin=normalized)
+    except (VaultError, RuntimeError, UnlockRequired) as exc:
         c.print(f"[red]Error:[/] {exc}")
         return
     finally:
         del password
     c.print(f"[green]Stored in the macOS Keychain.[/] handle=[bold]{handle}[/]")
-    c.print(f"[dim]The agent fills it on {', '.join(_fill_origins(server))} and never sees the password.[/]")
-
-
-def _fill_origins(server: str):
-    return [o for o in (f"https://{server}", f"http://{server}") if "://" in o]
+    c.print(f"[dim]The agent fills it on exactly {normalized} (as saved) and never sees the password.[/]")
 
 
 def _cmd_keychain_rm(args) -> None:

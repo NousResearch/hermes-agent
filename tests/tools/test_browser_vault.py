@@ -703,12 +703,17 @@ class TestSaveLoginPrompt:
 class TestManagerAutoDetection:
     def test_installed_manager_is_a_source_without_config_and_config_can_opt_out(self):
         from agent.vault_backends import base
+        import sys
+
+        expected_all = {"local", "onepassword", "bitwarden"}
+        if sys.platform == "darwin":  # keychain backend registers only on macOS
+            expected_all.add("keychain")
 
         with patch.object(base, "is_installed", return_value=True):
             with patch.object(base, "_cfg", return_value={}):
-                assert {b.name for b in base.enabled_backends()} == {"local", "onepassword", "bitwarden"}
+                assert {b.name for b in base.enabled_backends()} == expected_all
             with patch.object(base, "_cfg", return_value={"bitwarden": {"enabled": False}}):
-                assert {b.name for b in base.enabled_backends()} == {"local", "onepassword"}
+                assert {b.name for b in base.enabled_backends()} == expected_all - {"bitwarden"}
         with patch.object(base, "is_installed", return_value=False), patch.object(base, "_cfg", return_value={}):
             assert [b.name for b in base.enabled_backends()] == ["local"]
 

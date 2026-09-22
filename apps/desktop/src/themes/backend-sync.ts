@@ -54,37 +54,46 @@ export const $pendingSkinApply = atom<string | null>(null)
 // restart / disconnected), an explicit re-affirm must repaint, not no-op.
 let lastSynced: { applied: boolean; name: string } | null = null
 
+/** Name of the skin a gateway last seeded/applied; null until one has spoken. */
+export const $gatewaySkinName = atom<string | null>(null)
+
+const markSynced = (applied: boolean, name: string) => {
+  lastSynced = { applied, name }
+  $gatewaySkinName.set(name)
+}
+
 /** Test-only: reset the module's apply guard + registry between cases. */
 export function __resetBackendSkinSync(): void {
   lastSynced = null
+  $gatewaySkinName.set(null)
   $backendThemes.set({})
   $pendingSkinApply.set(null)
 }
 
 /**
- * Fold a resolved skin into the desktop. `apply: false` (connect-time seed) only
- * records the baseline; `apply: true` (runtime change / poll) repaints on a name
- * change. Built-in names keep the desktop's own palette but can still be applied.
+ * Register a skin's converted palette under its name and return that name, or
+ * null when it has no name or no usable colors. `default` and built-in names
+ * are returned without registering (see `ingestBackendSkin`).
  */
-export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }: { apply: boolean }): void {
+function registerSkin(skin: HermesSkin | undefined | null): null | string {
   const name = (skin && typeof skin === 'object' ? (skin.name ?? '') : '').trim()
 
   if (!name) {
-    return
+    return null
   }
 
   // `default` is "no opinion" on the PALETTE — the desktop keeps its own default
   // (nous), so we never register a converted theme under `default`. It is still a
   // valid apply TARGET though: a runtime switch back to `default` must repaint the
   // desktop to its own default (setTheme normalizes `default` → nous). So we only
-  // skip the registry step here and let it flow through the apply logic below.
+  // skip the registry step here and let it flow through the apply logic.
   // Built-in names (mono/slate/…) already have a hand-tuned desktop palette — we
   // never shadow it, but the name is still a valid apply target.
   if (name !== 'default' && !BUILTIN_THEMES[name]) {
     const theme = skinToDesktopTheme(skin as HermesSkin)
 
     if (!theme) {
-      return
+      return null
     }
 
     const current = $backendThemes.get()
@@ -94,18 +103,46 @@ export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }
     }
   }
 
+  return name
+}
+
+/**
+ * Fold a resolved skin into the desktop. `apply: false` (connect-time seed) only
+ * records the baseline; `apply: true` (runtime change / poll) repaints on a name
+ * change. Built-in names keep the desktop's own palette but can still be applied.
+ */
+export function ingestBackendSkin(skin: HermesSkin | undefined | null, { apply }: { apply: boolean }): void {
+  const name = registerSkin(skin)
+
+  if (!name) {
+    return
+  }
+
   if (!apply) {
     // Connect-time seed: record without painting. A reconnect re-seed keeps an
     // earlier real apply's flag so repeat events can't override a manual switch.
     if (lastSynced?.name !== name || !lastSynced.applied) {
-      lastSynced = { applied: false, name }
+      markSynced(false, name)
     }
 
     return
   }
 
   if (name !== lastSynced?.name || !lastSynced.applied) {
-    lastSynced = { applied: true, name }
+    markSynced(true, name)
     $pendingSkinApply.set(name)
   }
+}
+
+/**
+ * Seed from the skin Electron read off the LOCAL disk (`display.skin` + its
+ * file), for when no gateway has spoken — an unreachable remote primary, or
+ * the window before the local backend is up (#118942). Registers the palette
+ * (refreshing a stale cached one) and returns the name for the ThemeProvider
+ * to paint as an unpersisted fallback. It never applies or touches the sync
+ * baseline, and it yields once any gateway has synced: the connected backend's
+ * own skin is authoritative, and a late disk read must not overwrite it.
+ */
+export function seedLocalSkin(skin: HermesSkin | undefined | null): null | string {
+  return lastSynced ? null : registerSkin(skin)
 }

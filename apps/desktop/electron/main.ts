@@ -280,6 +280,7 @@ import { createLinkTitleWindow, guardLinkTitleSession, readLinkTitleWindowTitle 
 import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnostics } from './linux-crash-diagnostics'
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
+import { readLocalSkin } from './local-skin'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
@@ -17692,6 +17693,10 @@ ipcMain.on('hermes:titlebar-theme', (_event, payload) => {
     applyTitleBarOverlay(win)
   }
 })
+
+// The active skin read off the LOCAL disk, so the renderer can paint
+// `display.skin` before — or without — a live gateway (#118942). See local-skin.ts.
+ipcMain.handle('hermes:local-skin', () => readLocalSkin(HERMES_HOME, readActiveDesktopProfile()))
 
 // Pin the native appearance to the app theme (see NATIVE_THEME_CONFIG_PATH).
 ipcMain.on('hermes:native-theme', (_event, mode) => {

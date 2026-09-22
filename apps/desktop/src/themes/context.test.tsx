@@ -1,5 +1,5 @@
 import { act, cleanup, render } from '@testing-library/react'
-import { afterEach, beforeEach, describe, expect, it } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { __resetBackendSkinSync, ingestBackendSkin } from './backend-sync'
 import { getBaseColors, skinPref, ThemeProvider, useTheme } from './context'
@@ -87,6 +87,78 @@ describe('ThemeProvider ← backend skin sync', () => {
 
     // ...but the pick survives, so the seed alone repaints it.
     act(() => ingestBackendSkin(bloomberg('#ff9f0a'), { apply: false }))
+
+    expect(cssVar('--theme-background-seed')).toBe('#000000')
+    expect(skinPref.resolve('default')).toBe('bloomberg')
+  })
+})
+
+// #118942: with the primary gateway unreachable nothing ever arrives over the
+// wire, so the skin has to come from the local disk (via the main process).
+describe('ThemeProvider ← local skin fallback', () => {
+  const neon = { name: 'neon', colors: { background: '#171720', ui_text: '#e0e0ff', ui_accent: '#ff2d95' } }
+
+  beforeEach(() => {
+    window.localStorage.clear()
+    __resetBackendSkinSync()
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = { getLocalSkin: vi.fn(async () => neon) }
+  })
+
+  afterEach(() => {
+    cleanup()
+    delete (window as { hermesDesktop?: unknown }).hermesDesktop
+  })
+
+  const renderProvider = async () => {
+    render(
+      <ThemeProvider>
+        <div />
+      </ThemeProvider>
+    )
+    await act(async () => {})
+  }
+
+  it('paints display.skin from disk when no gateway has spoken and nothing is persisted', async () => {
+    await renderProvider()
+
+    expect(cssVar('--theme-background-seed')).toBe('#171720')
+    expect(window.localStorage.getItem('hermes-boot-background')).not.toBe(null)
+    // A fallback, not a pick: nothing is persisted.
+    expect(skinPref.stored('default')).toBeNull()
+  })
+
+  it('never overrides a persisted pick', async () => {
+    window.localStorage.setItem('hermes-desktop-theme-v2', 'mono')
+
+    await renderProvider()
+
+    expect(cssVar('--theme-background-seed')).not.toBe('#171720')
+  })
+
+  it('defers to a gateway that already synced', async () => {
+    ingestBackendSkin(bloomberg('#ff9f0a'), { apply: false })
+
+    await renderProvider()
+
+    expect(cssVar('--theme-background-seed')).not.toBe('#171720')
+  })
+
+  it('keeps painting when the gateway seeds the same skin, yields when it seeds another', async () => {
+    await renderProvider()
+
+    act(() => ingestBackendSkin(neon, { apply: false }))
+    expect(cssVar('--theme-background-seed')).toBe('#171720')
+
+    // A remote host with its own display.skin: the local file no longer applies.
+    act(() => ingestBackendSkin(bloomberg('#ff9f0a'), { apply: false }))
+    expect(cssVar('--theme-background-seed')).not.toBe('#171720')
+    expect(skinPref.stored('default')).toBeNull()
+  })
+
+  it("gives way to the gateway's own apply", async () => {
+    await renderProvider()
+
+    act(() => ingestBackendSkin(bloomberg('#ff9f0a'), { apply: true }))
 
     expect(cssVar('--theme-background-seed')).toBe('#000000')
     expect(skinPref.resolve('default')).toBe('bloomberg')

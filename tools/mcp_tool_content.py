@@ -162,13 +162,13 @@ def _render_mcp_dropped_block_notice(block, block_type: str) -> str:
     """Inline notice for an unsupported MCP content block (kimi-code#3227): silently dropping it
     leaves the model unaware content went missing. Carries whatever handles the block exposes —
     mime type, uri, size, name — so the agent can fetch or reason about the missing content."""
-    details = [f"type={block_type}"]
+    details = [f"type={strip_unicode_tags(str(block_type))}"]
     mime = mcp_field(block, "mime_type", "mimeType", None)
     if mime:
-        details.append(f"mimeType={mime}")
+        details.append(f"mimeType={strip_unicode_tags(str(mime))}")
     uri = getattr(block, "uri", None) or getattr(getattr(block, "resource", None), "uri", None)
     if uri:
-        details.append(f"uri={uri}")
+        details.append(f"uri={strip_unicode_tags(str(uri))}")
     for size_attr in ("size", "sizeInBytes"):
         size = getattr(block, size_attr, None)
         if isinstance(size, int):
@@ -176,7 +176,7 @@ def _render_mcp_dropped_block_notice(block, block_type: str) -> str:
             break
     name = getattr(block, "name", None)
     if name and isinstance(name, str):
-        details.append(f"name={name}")
+        details.append(f"name={strip_unicode_tags(name)}")
     return f"[MCP content dropped: unsupported block ({', '.join(details)})]"
 
 
@@ -191,9 +191,9 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
         uri = getattr(block, "uri", None)
         if not uri:
             return ""
-        name = getattr(block, "name", "") or ""
-        mime = mcp_field(block, "mime_type", "mimeType", "") or ""
-        details = f"uri={uri}" + (f", name={name}" if name else "") + (f", mimeType={mime}" if mime else "")
+        name = strip_unicode_tags(str(getattr(block, "name", "") or ""))
+        mime = strip_unicode_tags(str(mcp_field(block, "mime_type", "mimeType", "") or ""))
+        details = f"uri={strip_unicode_tags(str(uri))}" + (f", name={name}" if name else "") + (f", mimeType={mime}" if mime else "")
         reader = mcp_prefixed_tool_name(server_name, "read_resource") if server_name else "the MCP server's read_resource tool"
         return f"[MCP resource link: {details} — fetch it with {reader}]"
     resource = getattr(block, "resource", None)
@@ -205,8 +205,8 @@ def _render_mcp_resource_block(block, server_name: str = "") -> str:
     blob = getattr(resource, "blob", None)
     if blob is None:
         return ""
-    uri = str(getattr(resource, "uri", "") or "")
-    mime = str(mcp_field(resource, "mime_type", "mimeType", "") or "")
+    uri = strip_unicode_tags(str(getattr(resource, "uri", "") or ""))
+    mime = strip_unicode_tags(str(mcp_field(resource, "mime_type", "mimeType", "") or ""))
     raw_bytes, err = _decode_block_b64(
         blob, "embedded resource", mime or uri, cap_what="embedded resource", cap_suffix=f", uri={uri}",
         decode_fail=f"[MCP embedded resource could not be decoded: {mime or uri}]")

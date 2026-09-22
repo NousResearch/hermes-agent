@@ -84,7 +84,8 @@ def _env_ref_name(ref: str) -> str:
 
 def _sanitize_error(text: str) -> str:
     """Replace credential-like patterns with [REDACTED] before text reaches the LLM."""
-    return _CREDENTIAL_PATTERN.sub("[REDACTED]", text)
+    from tools.ansi_strip import strip_unicode_tags
+    return strip_unicode_tags(_CREDENTIAL_PATTERN.sub("[REDACTED]", text))
 
 
 def _exc_str(exc: BaseException) -> str:

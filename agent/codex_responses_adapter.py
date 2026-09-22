@@ -1194,6 +1194,20 @@ def _normalize_codex_response(
             final_text = salvaged
             reasoning_prefix = joined_reasoning[:marker].strip()
             reasoning_parts = [reasoning_prefix] if reasoning_prefix else []
+    # xAI grok-4.x tool-call turns narrate to the user via the reasoning summary and emit no message
+    # item: the narration survives only on the reasoning channel while ``content`` stays empty, so
+    # clients that hide reasoning (desktop ``show_reasoning: false``) drop the only copy of the reply
+    # when the turn settles (#118738). Promote it — on this surface the summary is the user-visible
+    # narration, not a private scratchpad (other issuers keep their reasoning out of content).
+    if issuer_kind == "xai_responses" and not final_text and tool_calls and reasoning_parts:
+        joined_reasoning = "\n\n".join(reasoning_parts).strip()
+        if joined_reasoning:
+            logger.warning(
+                "xAI tool-call turn delivered its user-visible narration only inside the reasoning "
+                "channel; promoting %d chars to assistant content.", len(joined_reasoning),
+            )
+            final_text = joined_reasoning
+            reasoning_parts = []
     assistant_message = SimpleNamespace(
         content=final_text, tool_calls=tool_calls,
         reasoning="\n\n".join(reasoning_parts).strip() if reasoning_parts else None,

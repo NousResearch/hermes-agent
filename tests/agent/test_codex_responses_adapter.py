@@ -985,6 +985,72 @@ def _xai_reasoning_only_response(reasoning_text):
         ],
     )
 
+
+def _xai_tool_call_narration_response(narration, reasoning=None):
+    """xAI grok tool-call turn: narration rides the reasoning summary, no message item (#118738)."""
+    output = [
+        SimpleNamespace(
+            type="reasoning",
+            id="rs_1",
+            encrypted_content=None,
+            summary=[SimpleNamespace(text=narration)],
+        ),
+        SimpleNamespace(type="function_call", id="fc_1", call_id="call_1", name="read_file", arguments="{}"),
+    ]
+    if reasoning is not None:
+        output.insert(0, SimpleNamespace(
+            type="reasoning", id="rs_0", encrypted_content=None, summary=[SimpleNamespace(text=reasoning)],
+        ))
+    return SimpleNamespace(status="completed", output=output)
+
+
+def test_xai_tool_call_turn_promotes_reasoning_narration_to_content():
+    """Regression (#118738): an xAI grok tool-call turn carries its user-visible narration only in
+    the reasoning summary. ``content`` must be filled so clients hiding reasoning (desktop
+    ``show_reasoning: false``) don't drop the only copy of the reply when the turn settles."""
+    msg, finish_reason = _normalize_codex_response(
+        _xai_tool_call_narration_response("Reading the config the user asked about."),
+        issuer_kind="xai_responses",
+    )
+    assert msg.content == "Reading the config the user asked about."
+    assert msg.reasoning is None  # promoted, not duplicated
+    assert finish_reason == "tool_calls"
+    assert [tc.function.name for tc in msg.tool_calls] == ["read_file"]
+
+
+def test_xai_tool_call_turn_promotion_is_move_not_copy():
+    """The promotion must clear the reasoning channel: with ``show_reasoning: true`` the narration
+    would otherwise render twice (once as content, once as reasoning)."""
+    response = _xai_tool_call_narration_response("second", reasoning="first")
+    msg, finish_reason = _normalize_codex_response(response, issuer_kind="xai_responses")
+    assert msg.content == "first\n\nsecond"
+    assert msg.reasoning is None
+    assert finish_reason == "tool_calls"
+
+
+def test_non_xai_tool_call_reasoning_stays_out_of_content():
+    """Guard: other issuers' reasoning channel is a private scratchpad — an empty-content
+    tool-call turn must stay empty rather than leak scratchpad text into the transcript."""
+    response = _xai_tool_call_narration_response("internal planning notes")
+    msg, finish_reason = _normalize_codex_response(response, issuer_kind="codex_backend")
+    assert msg.content == ""
+    assert msg.reasoning == "internal planning notes"
+    assert finish_reason == "tool_calls"
+
+
+def test_xai_tool_call_turn_with_final_text_keeps_content():
+    """When the turn already has a message item, the narration promotion must not touch it."""
+    response = _xai_tool_call_narration_response("scratchpad narration")
+    response.output.append(SimpleNamespace(
+        type="message", role="assistant", status="completed",
+        content=[SimpleNamespace(type="output_text", text="the real answer")],
+    ))
+    msg, finish_reason = _normalize_codex_response(response, issuer_kind="xai_responses")
+    assert msg.content == "the real answer"
+    assert msg.reasoning == "scratchpad narration"
+    assert finish_reason == "tool_calls"
+
+
 def test_codex_preflight_passes_text_verbosity_through():
     """The preflight whitelist must let the Responses ``text`` block reach the wire (#20203).
 

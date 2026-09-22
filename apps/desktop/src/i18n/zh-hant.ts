@@ -348,10 +348,17 @@ export const zhHant = defineLocale({
       billingPlans: '方案'
     },
     plugins: {
+      openFolder: '開啟桌面外掛資料夾',
       installModal: {
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
-        repoPlaceholder: 'https://github.com/owner/repo'
+        repoPlaceholder: 'https://github.com/owner/repo',
+        connectServers: (name, n) =>
+          n === 1 ? `${name} 已安裝。其 MCP 伺服器尚未連線。` : `${name} 已安裝。其 ${n} 個 MCP 伺服器尚未連線。`,
+        connectNow: '立即連線',
+        connectSub: '開啟的聊天會重新傳送其上下文',
+        connectFailed: '無法連線該外掛的 MCP 伺服器。',
+        liveNow: name => `${name} 已安裝並生效。`
       }
     },
     closeSettings: '關閉設定',
@@ -1204,36 +1211,20 @@ export const zhHant = defineLocale({
     },
     mcp: {
       loading: '正在載入 MCP 伺服器...',
-      failedLoad: 'MCP 設定載入失敗',
-      nameRequiredTitle: '需要名稱',
-      nameRequiredMessage: '請為此 MCP 伺服器提供設定鍵。',
-      objectRequired: '伺服器設定必須是 JSON 物件',
       invalidJson: 'MCP JSON 無效',
       saveFailed: '儲存失敗',
       removeFailed: '移除失敗',
-      gatewayUnavailableTitle: '閘道不可用',
-      gatewayUnavailableMessage: '重新載入 MCP 前請先重新連線閘道。',
-      reloadedTitle: 'MCP 工具已重新載入',
-      reloadedMessage: '新的工具 Schema 將套用至後續回合。',
       reloadFailed: 'MCP 重新載入失敗',
       savedTitle: 'MCP 伺服器已儲存',
       savedMessage: name => `${name} 會在 MCP 重新載入後生效。`,
-      newServer: '新伺服器',
-      reload: '重新載入 MCP',
-      reloading: '重新載入中...',
-      emptyTitle: '沒有 MCP 伺服器',
-      emptyDesc: '新增 stdio 或 HTTP 伺服器以公開 MCP 工具。',
       disabled: '已停用',
-      editServer: '編輯伺服器',
       name: '名稱',
       serverJson: '伺服器 JSON',
       remove: '移除',
-      saveServer: '儲存伺服器',
       capabilitySummary: (tools, prompts, resources) =>
         `已啟用 ${[`${tools} 個工具`, ...(prompts ? [`${prompts} 個提示`] : []), ...(resources ? [`${resources} 個資源`] : [])].join('、')}`,
       costTokens: tokens => `每次呼叫約 ${tokens} token`,
       usage30d: uses => `30 天內 ${uses} 次呼叫`,
-      unusedPill: '未使用',
       statusConnecting: '連線中…',
       statusNeedsAuth: '需要驗證',
       statusError: '錯誤',
@@ -1241,11 +1232,7 @@ export const zhHant = defineLocale({
       allServers: '所有伺服器',
       authenticatedTitle: '已驗證',
       authenticatedMessage: (server, count) => `${server}：${count} 個工具`,
-      waitingForBrowser: '等待瀏覽器…',
       authenticate: '驗證',
-      unsavedConnect: '未儲存 — 儲存 mcp.json 以連線。',
-      enableTool: tool => `啟用 ${tool}`,
-      disableTool: tool => `停用 ${tool}`,
       noOutput: '尚無輸出。',
       deepLinkTitle: '新增 MCP 伺服器？',
       deepLinkDescription: '一個連結要求將此 MCP 伺服器加入 Hermes。請檢查下方的完整設定——它來自該連結，而非 Hermes。',
@@ -1258,12 +1245,7 @@ export const zhHant = defineLocale({
       deepLinkErrorConfig: '連結中的設定不是有效的 base64 編碼 JSON。',
       deepLinkErrorShape: '設定必須是包含字串 `url` 或 `command` 欄位的 JSON 物件。',
       deepLinkErrorUrl: '僅允許 http:// 和 https:// 伺服器網址。',
-      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。',
-      importButton: '匯入',
-      importPlaceholder: '貼上 mcp.json 片段、npx/docker 指令、claude mcp add 指令、URL 或 Cursor 連結…',
-      importNoMatch: '貼上的文字中未識別到伺服器設定。',
-      importConfirm: '加入 mcp.json',
-      importConfirmMany: count => `將 ${count} 個伺服器加入 mcp.json`
+      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。'
     },
     model: {
       loading: '正在載入模型設定...',
@@ -1557,7 +1539,6 @@ export const zhHant = defineLocale({
   skills: {
     tabSkills: '技能',
     tabToolsets: '工具集',
-    tabMcp: 'MCP',
     all: '全部',
     searchSkills: '搜尋技能...',
     searchToolsets: '搜尋工具集...',
@@ -3276,6 +3257,20 @@ export const zhHant = defineLocale({
       unreachableDescription: '無法連線至預覽頁面。',
       openTarget: url => `開啟 ${url}`,
       fallbackTitle: '預覽'
+    }
+  },
+
+  interfaceMode: {
+    title: '介面模式',
+    hint: '只改變顯示的內容，不改變 Hermes 的能力。',
+    sessionNote: '由簡潔模式設定。此處的變更僅在本次工作階段內生效；切換到進階模式即可保留為你的設定。',
+    simple: {
+      label: '簡潔',
+      description: '用於與 Hermes 對話。只有側邊欄和聊天；沒有終端機、檔案或差異面板。'
+    },
+    advanced: {
+      label: '進階',
+      description: '面向開發者。終端機、檔案、差異、狀態列和版面配置，按你的設定顯示。'
     }
   },
 

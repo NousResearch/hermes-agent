@@ -555,9 +555,9 @@ class TestSaveConfigAtomicity:
             config_path = tmp_path / "config.yaml"
             assert config_path.exists()
 
-            # Simulate a crash during yaml.dump by making atomic_yaml_write's
-            # yaml.dump raise after the temp file is created but before replace.
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            # Simulate a crash mid-dump: the round-trip writer raises after the temp file is
+            # created but before replace.
+            with patch("utils._roundtrip_dump", side_effect=OSError("disk full")):
                 try:
                     config["model"] = "should-not-persist"
                     save_config(config)
@@ -574,7 +574,7 @@ class TestSaveConfigAtomicity:
             config = load_config()
             save_config(config)
 
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            with patch("ruamel.yaml.YAML.dump", side_effect=OSError("disk full")):
                 try:
                     save_config(config)
                 except OSError:

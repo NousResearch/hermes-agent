@@ -521,14 +521,24 @@ export const ar = defineLocale({
       blurb:
         'امتدادات واجهة تُحمّل داخل هذا التطبيق — إما مضمّنة مع البناء، أو موضوعة في مجلد desktop-plugins (بما فيها التي يكتبها Hermes). تعطيل الإضافة يفرغها مباشرة ويبقى بعد إعادة التشغيل.',
       count: n => `${n} مثبتة`,
-      openFolder: 'فتح مجلد الإضافات',
+      openFolder: 'فتح مجلد إضافات سطح المكتب',
       rescan: 'إعادة الفحص',
       reveal: 'إظهار في مدير الملفات',
       enable: 'تفعيل',
       disable: 'تعطيل',
       failed: 'فشل',
       empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
-      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' }
+      kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
+      installModal: {
+        connectServers: (name, n) =>
+          n === 1
+            ? `تم تثبيت ${name}. خادم MCP الخاص به لم يتصل بعد.`
+            : `تم تثبيت ${name}. خوادم MCP ال${n} الخاصة به لم تتصل بعد.`,
+        connectNow: 'الاتصال الآن',
+        connectSub: 'الدردشات المفتوحة تعيد إرسال سياقها',
+        connectFailed: 'تعذر الاتصال بخوادم MCP الخاصة بالإضافة.',
+        liveNow: name => `تم تثبيت ${name} وهو مفعّل.`
+      }
     },
     notifications: {
       title: 'الإشعارات',
@@ -1038,31 +1048,16 @@ export const ar = defineLocale({
     },
     mcp: {
       loading: 'جار تحميل خوادم MCP...',
-      failedLoad: 'فشل تحميل إعدادات MCP',
-      nameRequiredTitle: 'الاسم مطلوب',
-      nameRequiredMessage: 'أعط هذا الخادم مفتاح إعداد.',
-      objectRequired: 'يجب أن تكون إعدادات الخادم كائن JSON',
       invalidJson: 'JSON الخاص بـ MCP غير صالح',
       saveFailed: 'فشل الحفظ',
       removeFailed: 'فشلت الإزالة',
-      gatewayUnavailableTitle: 'البوابة غير متاحة',
-      gatewayUnavailableMessage: 'أعد الاتصال بالبوابة قبل إعادة تحميل MCP.',
-      reloadedTitle: 'تمت إعادة تحميل أدوات MCP',
-      reloadedMessage: 'مخططات الأدوات الجديدة تطبق على الأدوار الجديدة.',
       reloadFailed: 'فشلت إعادة تحميل MCP',
       savedTitle: 'تم حفظ خادم MCP',
       savedMessage: name => `سيطبق ${name} بعد إعادة تحميل MCP.`,
-      newServer: 'خادم جديد',
-      reload: 'إعادة تحميل MCP',
-      reloading: 'جار إعادة التحميل...',
-      emptyTitle: 'لا توجد خوادم MCP',
-      emptyDesc: 'أضف خادم stdio أو HTTP لإتاحة أدوات MCP.',
       disabled: 'معطل',
-      editServer: 'تحرير الخادم',
       name: 'الاسم',
       serverJson: 'JSON الخادم',
       remove: 'إزالة',
-      saveServer: 'حفظ الخادم',
       deepLinkTitle: 'إضافة خادم MCP؟',
       deepLinkDescription:
         'طلب رابط إضافة خادم MCP هذا إلى Hermes. راجع الإعدادات الكاملة أدناه — فهي قادمة من الرابط وليست من Hermes.',
@@ -2848,6 +2843,19 @@ export const ar = defineLocale({
       unreachableDescription: 'تعذّر الوصول إلى صفحة المعاينة.',
       openTarget: url => `فتح ${url}`,
       fallbackTitle: 'معاينة'
+    }
+  },
+  interfaceMode: {
+    title: 'وضع الواجهة',
+    hint: 'يغيّر ما يظهر، وليس ما يستطيع Hermes فعله.',
+    sessionNote: 'يحدده الوضع البسيط. التغيير هنا يستمر لهذه الجلسة فقط؛ بدّل إلى المتقدم لجعله خيارك.',
+    simple: {
+      label: 'بسيط',
+      description: 'للتحدث مع Hermes. الشريط الجانبي والدردشة؛ بلا طرفية أو لوحات ملفات أو فروقات.'
+    },
+    advanced: {
+      label: 'متقدم',
+      description: 'للمطورين. الطرفية والملفات والفروقات وشريط الحالة والتخطيطات، كما أعددتها.'
     }
   },
   zones: {

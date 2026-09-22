@@ -177,6 +177,12 @@ interface PluginContext {
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
   /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
   onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
+  /** Any other cleanup to run on unload/reload/disable (store subscriptions, injected DOM). */
+  onDispose: (fn: () => void) => void
+  /** Scoped timers and DOM listeners — cleared with the plugin. Each returns a disposer. */
+  setTimeout: (fn: () => void, ms: number) => () => void
+  setInterval: (fn: () => void, ms: number) => () => void
+  addEventListener: (target: EventTarget, type: string, listener: EventListener, options?: AddEventListenerOptions | boolean) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -934,6 +940,17 @@ pipeline as a trust boundary.
   the canvas (width/height attributes, not just CSS) — panes resize constantly.
 - **Don't poll faster than a few seconds** with `host.request`; prefer
   `host.onEvent` / `ctx.socket` and let React Query dedupe.
+- **Bare globals are not tracked.** `window.setInterval`, `window.addEventListener`,
+  a `<style>` you append — the host never sees them, so they survive disable and
+  every hot-reload (ES modules can't be unloaded; a hot-edit loop stacks live
+  copies). Use `ctx.setTimeout` / `ctx.setInterval` / `ctx.addEventListener`, and
+  wire anything else to `ctx.onDispose`. Module-scope state is yours to reset.
+- **Module evaluation has a 10 s deadline.** A top-level `await` that never
+  settles (waiting for a gateway that isn't up) fails the load as `import timed
+  out` instead of stalling the plugin scan; do the waiting inside `register()`.
+- **One id, one file.** Two folders exporting the same `id` (a standalone install
+  beside a unified-package copy) load first-wins in folder-name order; the later
+  one shows `duplicate id` on its own row in Capabilities ▸ Plugins.
 - **`ctx.socket` is a no-op on OAuth remotes.** Always have a polling fallback.
 
 ## Reference

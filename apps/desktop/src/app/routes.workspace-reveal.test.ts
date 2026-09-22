@@ -69,8 +69,8 @@ afterEach(() => {
 describe('routePathname', () => {
   it('keeps a bare path and drops a query or hash', () => {
     expect(routePathname(CAPABILITIES_ROUTE)).toBe('/capabilities')
-    expect(routePathname('/capabilities?tab=mcp')).toBe('/capabilities')
-    expect(routePathname('/capabilities?tab=mcp&server=ctx7')).toBe('/capabilities')
+    expect(routePathname('/capabilities?tab=connectors')).toBe('/capabilities')
+    expect(routePathname('/capabilities?tab=connectors&server=ctx7')).toBe('/capabilities')
     expect(routePathname('/settings#keys')).toBe('/settings')
   })
 
@@ -89,7 +89,7 @@ describe('classification of targets carrying a query', () => {
   it.each([
     [`${CAPABILITIES_ROUTE}?tab=skills`, 'capabilities'],
     [`${CAPABILITIES_ROUTE}?tab=toolsets`, 'capabilities'],
-    [`${CAPABILITIES_ROUTE}?tab=mcp&server=ctx7`, 'capabilities'],
+    [`${CAPABILITIES_ROUTE}?tab=connectors&server=ctx7`, 'capabilities'],
     [`${SETTINGS_ROUTE}?tab=keys`, 'settings']
   ])('%s is not a session route', (to, view) => {
     expect(routeSessionId(to)).toBeNull()
@@ -106,7 +106,7 @@ describe('syncWorkspaceRoute', () => {
   })
 
   it('fronts on a page route reached with a query', () => {
-    syncWorkspaceRoute(`${CAPABILITIES_ROUTE}?tab=mcp`)
+    syncWorkspaceRoute(`${CAPABILITIES_ROUTE}?tab=connectors`)
 
     expect($workspaceIsPage.get()).toBe(true)
     expect(fronted()).toBe(true)
@@ -164,7 +164,7 @@ describe('navigateToWorkspacePage', () => {
   it.each([
     `${CAPABILITIES_ROUTE}?tab=skills`,
     `${CAPABILITIES_ROUTE}?tab=toolsets`,
-    `${CAPABILITIES_ROUTE}?tab=mcp&server=ctx7`
+    `${CAPABILITIES_ROUTE}?tab=connectors&server=ctx7`
   ])('fronts for the palette target %s', to => {
     navigateToWorkspacePage(vi.fn(), to)
 

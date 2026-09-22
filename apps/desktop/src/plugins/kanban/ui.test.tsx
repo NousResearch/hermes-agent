@@ -5,7 +5,7 @@ import {
   childrenIndicator,
   dependencyState,
   fmtSecs,
-  matchesTenant,
+  matchesProfileTab,
   runtimeCapBadge,
   staleBlocked,
   TENANT_HUES,
@@ -162,11 +162,15 @@ describe('tenant colour coding', () => {
     }
   })
 
-  it('lists tabs as all + distinct tenants and scopes cards to one tenant', () => {
+  it('lists tabs as all + distinct names and scopes a tab to tenant or assignee', () => {
     expect(tenantTabList(['gongbu', 'bingbu', 'gongbu'])).toEqual(['', 'gongbu', 'bingbu'])
-    expect(matchesTenant(task({ tenant: 'gongbu' }), '')).toBe(true)
-    expect(matchesTenant(task({ tenant: 'gongbu' }), 'gongbu')).toBe(true)
-    expect(matchesTenant(task({ tenant: 'bingbu' }), 'gongbu')).toBe(false)
-    expect(matchesTenant(task({ tenant: null }), 'gongbu')).toBe(false)
+    expect(matchesProfileTab(task({ tenant: 'gongbu' }), '')).toBe(true)
+    expect(matchesProfileTab(task({ tenant: 'gongbu' }), 'gongbu')).toBe(true)
+    expect(matchesProfileTab(task({ tenant: 'bingbu' }), 'gongbu')).toBe(false)
+    expect(matchesProfileTab(task({ tenant: null }), 'gongbu')).toBe(false)
+    // A tab must agree with the lane grouping: cards assigned to gongbu show
+    // up under the gongbu tab even when their tenant is empty.
+    expect(matchesProfileTab(task({ assignee: 'gongbu', tenant: null }), 'gongbu')).toBe(true)
+    expect(matchesProfileTab(task({ assignee: 'menxia', tenant: null }), 'gongbu')).toBe(false)
   })
 })

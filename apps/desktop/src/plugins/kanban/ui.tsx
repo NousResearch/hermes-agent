@@ -165,14 +165,20 @@ export const tenantColor = (tenant?: null | string): string =>
 /** Tab-bar copy for a tenant: the empty tenant reads as an em dash. */
 export const tenantLabel = (tenant: string): string => tenant || '—'
 
-/** The tab row: "all" plus each distinct tenant, in board order. The backend
- *  already sends distinct tenants; the "1 + distinct" count is the invariant
- *  worth holding here, so it lives somewhere a test can reach it. */
-export const tenantTabList = (tenants: readonly string[]): string[] => ['', ...new Set(tenants)]
+/** The tab row: "all" plus each distinct name, in board order. The "1 +
+ *  distinct" count is the invariant worth holding here, so it lives somewhere a
+ *  test can reach it. */
+export const tenantTabList = (names: readonly string[]): string[] => ['', ...new Set(names)]
 
-/** Tenant scope for the board filter — '' means every tenant. */
-export const matchesTenant = (task: Pick<KanbanTask, 'tenant'>, tenant: string): boolean =>
-  !tenant || task.tenant === tenant
+/**
+ * Profile-tab scope for the board filter — '' means every card. A tab named
+ * after a profile covers both places a card can carry that name: its tenant
+ * (the board it belongs to) and its assignee (whose workload it is). Matching
+ * tenant alone left the lane header saying "gongbu 2" while the gongbu tab
+ * found nothing — the tab has to agree with the card's visible grouping.
+ */
+export const matchesProfileTab = (task: Pick<KanbanTask, 'assignee' | 'tenant'>, name: string): boolean =>
+  !name || task.tenant === name || task.assignee === name
 
 // The electron REST bridge throws `Error("409: {\"detail\":\"…\"}")`; pull out
 // the human-readable detail for a toast.

@@ -107,7 +107,7 @@ import {
   isLockedTarget,
   type KanbanText,
   lockedReason,
-  matchesTenant,
+  matchesProfileTab,
   RunClock,
   runtimeCapBadge,
   shortId,
@@ -1657,6 +1657,21 @@ export function KanbanBoardPage() {
 
   const lookup = (id: string) => byId.get(id)
 
+  // Profile tabs: every name a card in this view actually carries — tenant or
+  // assignee — so no tab can ever point at an empty board. Sorted for a stable
+  // row that doesn't reshuffle when cards move.
+  const tabs = useMemo(() => {
+    const names: string[] = []
+    for (const col of board?.columns ?? []) {
+      for (const card of col.tasks) {
+        if (card.tenant) {names.push(card.tenant)}
+        if (card.assignee) {names.push(card.assignee)}
+      }
+    }
+
+    return tenantTabList(names.sort())
+  }, [board])
+
   // Client-side filters, mirroring the dashboard (search over title/body/id).
   const filtered = useMemo(() => {
     if (!board) {
@@ -1667,7 +1682,7 @@ export function KanbanBoardPage() {
 
     const keep = (task: KanbanTask) =>
       (!q || `${task.title} ${task.body ?? ''} ${task.id}`.toLowerCase().includes(q)) &&
-      matchesTenant(task, tenant) &&
+      matchesProfileTab(task, tenant) &&
       (!assignee || task.assignee === assignee) &&
       matchesFacetFilters(task, facets)
 
@@ -1910,12 +1925,12 @@ export function KanbanBoardPage() {
 
       {/* Tenant (profile) switch: fixed above the lanes so the colour a card
           wears always sits next to the board it belongs to. */}
-      {board && board.tenants.length > 0 && (
+      {board && tabs.length > 1 && (
         <nav
           aria-label={k.tenantTabs}
           className="flex shrink-0 items-center gap-1 overflow-x-auto border-(--ui-stroke-tertiary) border-b px-4 pb-1.5"
         >
-          {tenantTabList(board.tenants).map(name => {
+          {tabs.map(name => {
             const active = tenant === name
             const hue = tenantColor(name)
 

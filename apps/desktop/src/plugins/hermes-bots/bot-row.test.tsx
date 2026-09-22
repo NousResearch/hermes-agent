@@ -229,6 +229,7 @@ describe('the bot row context menu speaks the active language', () => {
 
 describe('a group row', () => {
   const members = [{ name: 'alpha' }, { name: 'beta' }, { name: 'gamma' }] as GroupMember[]
+
   const row = (
     <GroupRow
       active={false}

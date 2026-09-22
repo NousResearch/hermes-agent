@@ -382,6 +382,7 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   } satisfies Record<Exclude<McpVerb, 'none'>, ConnectorRowAction>
 
   const displayServer = prettyName(server)
+
   const rowCue = target.discoveryError
     ? t.connectors.authorizedToolsUnavailable
     : verb === 'open'

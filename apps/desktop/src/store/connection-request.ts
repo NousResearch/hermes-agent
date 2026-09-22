@@ -100,6 +100,7 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
 ]
 
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
+
 const SETTLE_REASONS: readonly ConnectionSettleReason[] = [
   'all_resolved',
   'continue',

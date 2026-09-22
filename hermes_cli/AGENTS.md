@@ -188,9 +188,7 @@ profile. The multiplex gateway and the Desktop/dashboard `serve` backend instead
 profile per activity via a contextvar override while `os.environ["HERMES_HOME"]` keeps the launch
 profile — a module constant or import-time read there freezes to the launch profile (rules in
 root). Profiles are independent
-islands by design — no live config inheritance and no credential inheritance (a named profile reads
-only its own `auth.json`/`.env`; the root store is never a fallback and never a write-through target,
-#111724 — a profile without a provider gets the setup prompt); `--clone` copies at creation, minus messaging
+islands by design — no live config inheritance; `--clone` copies at creation, minus messaging
 channels (`profile_channels.py`: ownership-based inventory evaluated in the SOURCE's plugin scope —
 adapter-declared keys + canonical/alias prefixes + `GATEWAY_ALLOW*`/`GATEWAY_RELAY_*`; prefixes shared
 with tools (`HASS_`/`TWILIO_`/`EMAIL_`) are stripped only when the source runs that adapter; never a hand
@@ -218,7 +216,11 @@ no preflight blocker, migratable host → `True`; else `False` + a logged reason
 through. CLI/dashboard readers use `default_gateway_multiplexes` (live `served_profiles` record, then
 the explicit flag) — never the merged default, which would guess a verdict only the gateway makes.
 Migration from per-profile gateways: `hermes_cli/gateway_migrate.py` (`hermes gateway migrate
---multiplex|--standalone`, table-driven `_PREFLIGHT_CHECKS`, manifest `<default>/gateway_migration.json`);
+--multiplex`, the only mode — `--standalone` is deleted and a per-profile fleet is not a supported
+target; table-driven `_PREFLIGHT_CHECKS`; manifest `<default>/gateway_migration.json` = UNFINISHED,
+a re-run resumes from it; a named profile's `gateway install|start|run` refuse without `--force` via
+`gateway.py::_named_profile_refused_under_multiplexer`, dashboard twin
+`web_server_gateway.py::multiplexed_profile_refusal`);
 `update_cmd_fleet._verify_fleet_after_update` calls `maybe_auto_migrate_after_update` on the success
 path only; `gateway_migrate_guards.py` holds the auto-path-only refusals (table `_AUTO_MIGRATION_GUARDS`:
 other service domain / UNIX user / HERMES_HOME outside `profiles/` — notices for the explicit command,

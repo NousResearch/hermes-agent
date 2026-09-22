@@ -75,6 +75,7 @@ const SUBPAGE_ICONS: Record<string, IconComponent> = {
   gatewayDevices: Network,
   gatewayManagedUpdates: Download,
   keyboardShortcuts: Keyboard,
+  hudGesture: Keyboard,
   screenCapture: FileImage,
   notificationAlerts: Bell,
   notificationSounds: Volume2,
@@ -104,6 +105,10 @@ export function settingsSubpages(view: SettingsView): readonly SettingsSubpage[]
 
 /** Shared by search serialization and saved links that predate subpages. */
 export function settingsSubpageForTarget(view: SettingsView, field?: string, setting?: string): string | undefined {
+  if (view === 'keybinds' && setting === 'hud-modifier') {
+    return 'hud-gesture'
+  }
+
   if (view === 'config:appearance' && setting) {
     return appearanceSubpageForSetting(setting)
   }

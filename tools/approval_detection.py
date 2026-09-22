@@ -163,6 +163,79 @@ def _mask_quoted_prose(command: str) -> str:
     )
 
 
+# ── SQL DELETE guard ────────────────────────────────────────────────────────────────────
+# The DELETE-without-WHERE rule may only be cleared by a WHERE clause SQL would actually
+# execute: a WHERE inside a comment, a quoted literal/identifier, or a later `;` statement
+# is not a predicate on the DELETE.
+_SQL_DELETE_RE = re.compile(r"\bDELETE\s+FROM\b", re.IGNORECASE)
+# One left-to-right pass over SQL-inert spans: line comments, block comments, quoted
+# literals/identifiers (SQL doubles its quote char to escape; MySQL also uses backslash),
+# and Postgres dollar-quoted bodies.
+_SQL_INERT_RE = re.compile(
+    r"--[^\n]*"                                          # -- line comment
+    r"|#[^\n]*"                                          # MySQL # comment
+    r"|/\*(?:.*?\*/|.*)"                                 # /* */ block comment (terminated or to end)
+    r"|'(?:[^'\\]|\\.|'')*'?"                            # 'literal'
+    r"|\"(?:[^\"\\]|\\.|\"\")*\"?"                       # "identifier"/literal
+    r"|`[^`]*`?"                                         # `identifier`
+    r"|\$[A-Za-z_0-9]*\$.*?\$[A-Za-z_0-9]*\$",           # dollar-quoted body
+    re.DOTALL,
+)
+
+
+def _sql_live_text(command: str) -> str:
+    """``command`` with SQL-inert regions blanked (length and newlines preserved).
+
+    A quote or substitution span that itself contains ``DELETE FROM`` is the SQL carrier,
+    not a literal: its interior stays live (masked recursively) so
+    ``-c "DELETE FROM t WHERE x"`` still clears and nested ``bash -c "psql -c 'DELETE'"``
+    still flags. Spans without a DELETE cannot hold its WHERE and are blanked whole.
+    """
+    if not _SQL_DELETE_RE.search(command):
+        return command
+    chars = list(command)
+
+    def blank(i: int, j: int) -> None:
+        for k in range(i, j):
+            if chars[k] != "\n":
+                chars[k] = " "
+
+    def has_delete(i: int, j: int) -> bool:
+        return _SQL_DELETE_RE.search(command, i, j) is not None
+
+    def mask_sql(i: int, j: int) -> None:
+        for m in _SQL_INERT_RE.finditer(command, i, j):
+            s, e = m.span()
+            if has_delete(s, e):
+                mask_sql(s + 1, e)
+            else:
+                blank(s, e)
+
+    spans: list[tuple[int, int]] = []
+    open_i: int | None = None
+    for kind, i, j, quote in _scan_shell(command, subst="uq", comments=True):
+        if kind == "subst" and quote is None:
+            spans.append((i, j))
+        elif kind == "quote":
+            if quote is None:
+                open_i = i
+            elif open_i is not None:
+                spans.append((open_i, j))
+                open_i = None
+    if open_i is not None:
+        spans.append((open_i, len(command)))
+    pos = 0
+    for s, e in spans:
+        mask_sql(pos, s)
+        if has_delete(s + 1, e):
+            mask_sql(s + 1, e)
+        else:
+            blank(s + 1, e)
+        pos = e
+    mask_sql(pos, len(command))
+    return "".join(chars)
+
+
 # ---- Sudo stdin guard: without SUDO_PASSWORD configured, an explicit "sudo -S" is the LLM piping
 # a guessed password via stdin (brute-force vector). Unconditional block.
 _SUDO_STDIN_RE = re.compile(r'(?:^|[;&|`\n]|&&|\|\||\$\()\s*sudo\s+-S\b', re.IGNORECASE)
@@ -275,9 +348,11 @@ DANGEROUS_PATTERNS = [
     (_CMDPOS + r'dd\s+.*if=', "disk copy"),
     (r'>\s*/dev/sd', "write to block device"),
     (r'\bDROP\s+(TABLE|DATABASE)\b', "SQL DROP"),
-    # [^\n]* not .*: under DOTALL a WHERE on the *next* line would satisfy the lookahead and
-    # silently allow DELETE without WHERE.
-    (r'\bDELETE\s+FROM\b(?![^\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
+    # Scanned against the SQL-masked variant (_SQL_MASKED_DANGEROUS_DESCRIPTIONS /
+    # _sql_live_text) so a WHERE inside a comment, quoted literal, or shell text that does
+    # not carry the DELETE cannot satisfy it; `;` bounds the scan at the statement so a
+    # WHERE in a later statement does not count either.
+    (r'\bDELETE\s+FROM\b(?![^;\n]*\bWHERE\b)', "SQL DELETE without WHERE"),
     (r'\bTRUNCATE\s+(TABLE)?\s*\w', "SQL TRUNCATE"),
     (rf'>\s*{_SYSTEM_CONFIG_PATH}', "overwrite system config"),
     (r'\bsystemctl\s+(-[^\s]+\s+)*(stop|restart|disable|mask)\b', "stop/restart system service"),
@@ -456,6 +531,11 @@ DANGEROUS_PATTERNS_COMPILED = [(re.compile(p, _RE_FLAGS), d) for p, d in DANGERO
 _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
     "find dynamic shell word may expand to destructive flag",
     "dynamic shell word may expand to arbitrary program execution flag",
+})
+# The DELETE rule scans the SQL-masked variant (_sql_live_text): a WHERE inside a comment,
+# a quoted literal/identifier, or a later `;` statement is not a clause on the DELETE.
+_SQL_MASKED_DANGEROUS_DESCRIPTIONS = frozenset({
+    "SQL DELETE without WHERE",
 })
 
 # Preserve approvals stored under the removed interpreter regex rules.
@@ -1522,6 +1602,7 @@ def detect_dangerous_command(command: str) -> tuple:
     for command_variant in _command_detection_variants(command):
         command_lower = _lower_preserving_flags(command_variant)
         masked_lower: str | None = None
+        sql_lower: str | None = None
         for pattern_re, description in DANGEROUS_PATTERNS_COMPILED:
             if description in _QUOTE_MASKED_DANGEROUS_DESCRIPTIONS:
                 if masked_lower is None:
@@ -1529,6 +1610,13 @@ def detect_dangerous_command(command: str) -> tuple:
                         _mask_quoted_prose(command_variant)
                     )
                 if pattern_re.search(masked_lower):
+                    return (True, description, description)
+            elif description in _SQL_MASKED_DANGEROUS_DESCRIPTIONS:
+                if sql_lower is None:
+                    sql_lower = _lower_preserving_flags(
+                        _sql_live_text(command_variant)
+                    )
+                if pattern_re.search(sql_lower):
                     return (True, description, description)
             elif pattern_re.search(command_lower):
                 return (True, description, description)

@@ -311,6 +311,62 @@ class TestDetectSqlPatterns:
         assert key is None
         assert desc is None
 
+    def test_delete_where_inside_sql_comment_still_flagged(self):
+        for cmd in (
+            'psql -c "DELETE FROM users -- WHERE"',
+            'mysql -e "DELETE FROM t /* WHERE */"',
+            'mysql -e "DELETE FROM t # WHERE"',
+            'psql -c "DELETE FROM t /* WHERE"',  # unterminated block comment
+        ):
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert "DELETE" in desc
+
+    def test_delete_where_in_later_statement_or_literal_still_flagged(self):
+        for cmd in (
+            "psql -c 'DELETE FROM t; SELECT 1 AS \"WHERE\"'",
+            'psql -c "DELETE FROM t RETURNING \'WHERE\'"',
+            'psql -c "DELETE FROM t RETURNING $$WHERE$$"',
+            'psql -c "DELETE FROM t" ; echo "WHERE"',
+        ):
+            is_dangerous, _, desc = detect_dangerous_command(cmd)
+            assert is_dangerous is True, cmd
+            assert "DELETE" in desc
+
+    def test_delete_where_clause_still_clears(self):
+        for cmd in (
+            'psql -c "DELETE FROM users WHERE id = 1"',
+            "psql -c \"DELETE FROM t WHERE x = 'a;b'\"",  # ; inside a literal is not a boundary
+            'sqlite3 x.db "DELETE FROM t WHERE y = $$z$$"',
+        ):
+            is_dangerous, _, _ = detect_dangerous_command(cmd)
+            assert is_dangerous is False, cmd
+
+    def test_delete_through_nested_shell_carrier_still_flagged(self):
+        is_dangerous, _, desc = detect_dangerous_command(
+            "bash -c \"psql -c 'DELETE FROM t'\"")
+        assert is_dangerous is True
+        assert "DELETE" in desc
+
+    def test_delete_evasion_blocked_end_to_end(self, monkeypatch):
+        """Through check_all_command_guards in a deny context, a WHERE-in-comment
+        bypass must reach the block, not silently approve."""
+        from tools.approval import check_all_command_guards
+        from unittest.mock import patch as mock_patch
+        monkeypatch.setenv("HERMES_CRON_SESSION", "1")
+        monkeypatch.delenv("HERMES_INTERACTIVE", raising=False)
+        monkeypatch.delenv("HERMES_GATEWAY_SESSION", raising=False)
+        monkeypatch.delenv("HERMES_YOLO_MODE", raising=False)
+        with mock_patch("tools.approval_context._get_cron_approval_mode", return_value="deny"):
+            result = check_all_command_guards(
+                'psql -c "DELETE FROM users -- WHERE"', "local")
+            assert result["approved"] is False
+            assert "DELETE" in (result.get("message") or "")
+
+            safe = check_all_command_guards(
+                'psql -c "DELETE FROM users WHERE id = 1"', "local")
+            assert safe["approved"] is True
+
 
 class TestSafeCommand:
     def test_ordinary_commands_are_safe(self):

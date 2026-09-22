@@ -34,7 +34,10 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
   const image = result === undefined ? null : generatedImageFromResult(result)
   const pending = result === undefined
 
-  const media = useMediaImage(image ?? '', hintedRatio(aspectRatio), generatedImageDimensionsFromResult(result))
+  const media = useMediaImage(image ?? '', hintedRatio(aspectRatio), generatedImageDimensionsFromResult(result), {
+    preservePendingFrame: true
+  })
+
   const { src, loaded, failed } = media
   const [canvasGone, setCanvasGone] = useState<string | null>(null)
   const [lightboxOpen, setLightboxOpen] = useState<string | null>(null)

@@ -16,7 +16,12 @@ import { $connection } from '@/store/session'
 /** Keep a frame for one source/owner for its mounted lifetime. Hints are not
  * intrinsic dimensions: a cold image is contained in that frame, not allowed
  * to resize it at decode. The next mount can use the measured dimensions. */
-export function useMediaImage(path: string, fallbackRatio: number, intrinsic?: MediaImageDimensions) {
+export function useMediaImage(
+  path: string,
+  fallbackRatio: number,
+  intrinsic?: MediaImageDimensions,
+  { preservePendingFrame = false }: { preservePendingFrame?: boolean } = {}
+) {
   const connection = useStore($connection)
   const scope = useComposerScope()
   const connectionId = scope.connectionId || connection?.connectionId
@@ -28,6 +33,7 @@ export function useMediaImage(path: string, fallbackRatio: number, intrinsic?: M
   )
 
   const key = mediaImageKey(path, connection, owner)
+  const ownerKey = mediaImageKey('', connection, owner)
 
   const initialState = () => {
     const dimensions = intrinsic ?? getMediaImageDimensions(key)
@@ -35,6 +41,8 @@ export function useMediaImage(path: string, fallbackRatio: number, intrinsic?: M
 
     return {
       key,
+      ownerKey,
+      path,
       frameStyle: {
         aspectRatio: ratio,
         width: `min(calc(var(--image-preview-height) * ${ratio}), var(--image-preview-max-width), 100%${dimensions ? `, ${dimensions.width}px` : ''})`
@@ -50,7 +58,13 @@ export function useMediaImage(path: string, fallbackRatio: number, intrinsic?: M
   // Source changes must not paint the previous image/geometry even for one
   // commit. React retries this component before committing its children.
   if (state.key !== key) {
-    setState(initialState())
+    const next = initialState()
+    // A generated result fills the frame already visible while its tool was
+    // pending. Media state still resets; geometry is never inherited across
+    // owners or between two non-empty sources.
+    const inheritsPendingFrame = preservePendingFrame && state.ownerKey === ownerKey && !state.path && Boolean(path)
+
+    setState(inheritsPendingFrame ? { ...next, frameStyle: state.frameStyle } : next)
   }
 
   useEffect(() => {

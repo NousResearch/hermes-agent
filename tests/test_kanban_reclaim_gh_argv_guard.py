@@ -58,7 +58,11 @@ def _gh_help(argv: list[str]) -> str:
         if token.startswith("-"):
             break
         sub.append(token)
-    assert sub, f"no gh subcommand found in {argv}"
+    assert sub, (
+        f"no gh subcommand found in {argv}: the argv starts with a flag "
+        f"({argv[1]!r}) before any subcommand. gh takes no global flags there "
+        "— this is the git-style `-C` shape that does not exist in gh."
+    )
     res = subprocess.run(
         ["gh", *sub, "--help"], capture_output=True, text=True, timeout=60, check=False
     )

@@ -22,6 +22,7 @@ import re
 import sys
 import threading
 import types
+from collections import OrderedDict
 from contextlib import suppress
 from dataclasses import dataclass, field
 from functools import cached_property
@@ -124,6 +125,7 @@ VALID_HOOKS: Set[str] = {
     # Run-all-then-pick-first (see get_plugin_error_classification). Privacy: error_message/
     # error_body may be unredacted.
     "transform_api_error_classification", "on_session_start", "on_session_end",
+    "on_session_open",
     "on_session_finalize", "on_session_reset",
     # on_skill_lifecycle: successful skill lifecycle facts (local skill name visible to plugins).
     "on_skill_lifecycle", "subagent_start", "subagent_stop",
@@ -1702,6 +1704,12 @@ def _delivery_manager() -> PluginManager:
     return manager
 
 
+# ── on_session_open host-open idempotence (issue #89385) ──────────────
+_SESSION_OPEN_LIMIT = 4096
+_session_open_lock = threading.RLock()
+_session_open_seen: "OrderedDict[Tuple[str, str], None]" = OrderedDict()
+
+
 def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     """Invoke a lifecycle hook (lazy-discovers first); return non-``None`` callback results.
 
@@ -1713,7 +1721,65 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     ``discover_plugins()`` (gateway platform events, TUI slash workers, query mode, cron) still fire
     callbacks registered by user plugins (tracking #64178).
     """
-    return _delivery_manager().invoke_hook(hook_name, **kwargs)
+    try:
+        return _delivery_manager().invoke_hook(hook_name, **kwargs)
+    finally:
+        # Host-open idempotence is scoped to an ACTIVE lifecycle, not the process
+        # lifetime. Finalize/reset callbacks must observe the session before its
+        # key is released so the same durable ID can later resume and re-fire
+        # ``on_session_open`` (see ``notify_session_open``).
+        if hook_name == "on_session_finalize":
+            _release_session_open(kwargs.get("session_id"))
+        elif hook_name == "on_session_reset":
+            _release_session_open(kwargs.get("old_session_id"))
+
+
+def _release_session_open(session_id: object) -> bool:
+    """Release every host-surface ``(platform, session_id)`` key for one closed session."""
+    sid = str(session_id or "").strip()
+    if not sid:
+        return False
+    with _session_open_lock:
+        keys = [key for key in _session_open_seen if key[1] == sid]
+        for key in keys:
+            _session_open_seen.pop(key, None)
+    return bool(keys)
+
+
+def notify_session_open(session_id: object, platform: object) -> bool:
+    """Fire ``on_session_open`` once per active addressable-session lifecycle.
+
+    Returns ``True`` only for the call that emitted the hook. Empty IDs fail
+    closed and repeated active ``(platform, session_id)`` boundaries are
+    no-ops. Finalize/reset releases the old ID so it can later resume.
+
+    This is distinct from ``on_session_start``: ``on_session_start`` fires per
+    agent turn for an already-live session, while ``on_session_open`` fires
+    exactly once when a session becomes live and addressable (CLI interactive
+    start, TUI/desktop ``session.create``, ``session.resume``) — the point
+    where plugins can register peers, prefetch memory or signal external
+    consumers BEFORE the first model turn (issue #89385).
+    """
+    sid = str(session_id or "").strip()
+    surface = str(platform or "unknown").strip() or "unknown"
+    if not sid:
+        logger.warning("Refusing on_session_open for an empty session id")
+        return False
+    key = (surface, sid)
+    with _session_open_lock:
+        if key in _session_open_seen:
+            _session_open_seen.move_to_end(key)
+            return False
+        _session_open_seen[key] = None
+        while len(_session_open_seen) > _SESSION_OPEN_LIMIT:
+            _session_open_seen.popitem(last=False)
+    try:
+        invoke_hook("on_session_open", session_id=sid, platform=surface)
+    except Exception:
+        with _session_open_lock:
+            _session_open_seen.pop(key, None)
+        raise
+    return True
 
 
 async def ainvoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:

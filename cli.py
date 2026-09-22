@@ -1367,6 +1367,18 @@ class HermesCLI(CLIInitMixin, CLITuiRuntimeMixin, CLIProcessNotificationsMixin, 
         if not self._claim_active_session("cli"):
             return
 
+        # Host-open lifecycle: the session is live and addressable; fire
+        # on_session_open so plugins can register a peer / prefetch memory
+        # BEFORE the first model turn. Distinct from on_session_start (#89385).
+        with suppress(Exception):
+            from hermes_cli.plugins import invoke_hook
+
+            invoke_hook(
+                "on_session_open",
+                session_id=str(getattr(self, "session_id", "") or ""),
+                platform="cli",
+            )
+
         self._tui_print_startup()
         self._tui_init_run_state()
         kb = self._tui_build_key_bindings()

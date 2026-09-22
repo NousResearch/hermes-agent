@@ -386,6 +386,15 @@ def _(rid, params: dict) -> dict:
         _seed_branch_row(_sessions[sid], key, parent_session_id, history, source, profile_home)
     elif history:
         _seed_row(_sessions[sid])
+    # Host-open lifecycle (#89385): the session is live and addressable; fire
+    # on_session_open BEFORE the deferred agent build so plugins can register
+    # a peer / prefetch memory before the first model turn. Keyed on the
+    # durable session_key — the same id the agent carries and the id finalize
+    # later releases.
+    with contextlib.suppress(Exception):
+        from hermes_cli.plugins import notify_session_open
+
+        notify_session_open(key, "tui")
     # Return immediately so Ink can paint; the AIAgent builds right after the flush.
     _schedule_agent_build(sid)
     _schedule_session_cap_enforcement()  # trim detached idle sessions over the cap
@@ -886,6 +895,13 @@ def _(rid, params: dict) -> dict:
         if (resp := _resume_guard(ctx)) is not None:
             return resp
         ctx.profile_resume_cwd = _str_param(ctx.found, "cwd") or _profile_configured_cwd(ctx.profile_home)
+        # Host-open lifecycle (#89385): fire on_session_open BEFORE any build /
+        # hydration path (deferred, cold, eager) so plugins observe the session
+        # before its first turn. Idempotent — a re-resumed live session no-ops.
+        with contextlib.suppress(Exception):
+            from hermes_cli.plugins import notify_session_open
+
+            notify_session_open(ctx.target, "tui")
         # Fast path: reuse a session live IN THIS PROFILE (never another profile's runtime).
         with _session_resume_lock:
             live = _find_live_session_by_key(ctx.target, ctx.profile_home)

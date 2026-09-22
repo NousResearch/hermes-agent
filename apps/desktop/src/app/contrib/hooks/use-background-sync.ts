@@ -127,10 +127,12 @@ function transcriptChangedDuringRead(before: ChatMessage[] | undefined, after: C
 }
 
 /** Zero persisted rows read over a populated runtime bound to the SAME stored
- *  session. A runtime rebound to another stored id while the read was in
+ *  session. An empty page is not proof the transcript is empty — it is also
+ *  what a respawning backend (or a state.db read racing the change event)
+ *  returns. A runtime rebound to another stored id while the read was in
  *  flight holds no evidence about the requested transcript. */
 function emptyPageOverPopulatedTranscript(
-  page: unknown[],
+  page: readonly unknown[],
   current: ClientSessionState | undefined,
   storedSessionId: string
 ): boolean {
@@ -227,10 +229,12 @@ export async function reconcileTileTranscripts({
       // backend or hold a pool slot (#103375); no warm backend = retry next tick.
       const latest = await getLatestSessionMessages(storedSessionId, profileScope, { passive: true })
 
+      const current = $sessionStates.get()[runtimeSessionId]
+
       if (
         requestId !== requestSequenceRef.current ||
         tileRuntimeOwnsLiveState(runtimeSessionId) ||
-        transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
+        transcriptChangedDuringRead(messagesAtRequest, current?.messages) ||
         !tileStillPresent()
       ) {
         // Tile closed or superseded mid-read — discard AND prune its
@@ -243,7 +247,7 @@ export async function reconcileTileTranscripts({
 
       // Same rule as the active pane below: a transient zero-row page must not
       // blank a populated tile, and leaves no signature behind.
-      if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+      if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
         continue
       }
 
@@ -382,12 +386,13 @@ export async function reconcileActiveTranscript({
     const profileScope: ProfileScope = profileScopeForTranscriptSession(stored)
 
     const latest = await getLatestSessionMessages(storedSessionId, profileScope)
+    const current = $sessionStates.get()[runtimeSessionId]
 
     if (
       requestId !== requestSequenceRef.current ||
       busyRef.current ||
       tileRuntimeOwnsLiveState(runtimeSessionId) ||
-      transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages) ||
+      transcriptChangedDuringRead(messagesAtRequest, current?.messages) ||
       selectedStoredSessionIdRef.current !== storedSessionId ||
       activeSessionIdRef.current !== runtimeSessionId
     ) {
@@ -404,13 +409,11 @@ export async function reconcileActiveTranscript({
         ])
       : `${stored.profile ?? 'default'}:${storedSessionId}`
 
-    // An empty page is not proof the transcript is empty — it is also what a
-    // respawning backend (or a state.db read racing the change event) returns.
-    // Publishing it over a populated view blanks the thread, trips the routed
-    // loading branch and re-runs the composer lifecycle. Leave the signature
-    // untouched so the next usable page is not deduped away. Same rule as the
-    // warm-activation guard in use-session-actions/index.ts.
-    if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+    // Same rule as the warm-activation guard (use-session-actions/index.ts):
+    // publishing the page would blank the thread and trip the routed loading
+    // branch. Bail before the signature write so the next usable page is not
+    // deduped away.
+    if (emptyPageOverPopulatedTranscript(latest.messages, current, storedSessionId)) {
       return
     }
 

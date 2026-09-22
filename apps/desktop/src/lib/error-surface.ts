@@ -48,6 +48,9 @@ export const ERROR_CODE_KEYS = [
   'invalid_response',
   'empty_response',
   'loop_error',
+  // Agent construction found no usable key or OAuth credential. This is a
+  // setup failure, not a generic runtime retry.
+  'credentials_missing',
   'SESSION_NOT_OWNED',
   'disk_full',
   // The Nous free tier refused or could not serve the turn (agent/error_surface.py
@@ -263,6 +266,7 @@ const SWITCH_PROVIDER_LAYERS: readonly ErrorSurfaceLayer[] = ['auth', 'billing',
 // an unchanged retry is known to reproduce it for the user (too long a
 // conversation, a blocked prompt, a chat another surface owns).
 const CODE_PLANS: Partial<Record<ErrorCodeKey, Partial<ErrorRecoveryPlan>>> = {
+  credentials_missing: { retry: false },
   SESSION_NOT_OWNED: { retry: false, startNewSession: true },
   content_policy_blocked: { editMessage: true, retry: false },
   context_overflow: { compress: true, retry: false, startNewSession: true },

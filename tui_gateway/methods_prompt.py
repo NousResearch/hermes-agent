@@ -501,7 +501,7 @@ def _run_after_agent_ready(
         # the only way resume shows this to a disconnected client.
         _emit_terminal_turn_error(
             sid, session, (err.get("error") or {}).get("message", "agent initialization failed"),
-            error_surface={"layer": "runtime", "code": "agent_init_failed", "retryable": True})
+            error_surface=agent_init_error_surface((err.get("error") or {}).get("message", "agent initialization failed")))
         with session["history_lock"]:
             session["running"] = False
             session["last_active"] = time.time()

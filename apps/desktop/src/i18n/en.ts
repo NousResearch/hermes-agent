@@ -4432,6 +4432,10 @@ export const en: Translations = {
           title: 'Hermes got stuck in a loop',
           body: 'The reply kept repeating the same steps, so Hermes stopped it. Retry, or start a new chat if it happens again.'
         },
+        credentials_missing: {
+          title: 'No model credentials are configured',
+          body: 'Choose a model and add its API key or sign in, then send your message again.'
+        },
         SESSION_NOT_OWNED: {
           title: 'This chat is open somewhere else',
           body: 'This chat is currently open in another Hermes window or terminal. Close it there and send your message again, or start a new chat here.'

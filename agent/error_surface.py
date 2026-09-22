@@ -75,6 +75,16 @@ _API_EXC_MODULE_PREFIXES = (
     "grpc", "requests", "aiohttp", "ssl", "socket", "urllib",
 )
 
+# Agent construction happens before a provider client exists, so this failure
+# cannot use ``classify_api_error``. Keep the match narrow: arbitrary setup
+# errors must continue to render as runtime failures rather than being
+# mislabeled as credential problems.
+_MISSING_CREDENTIAL_INIT_FRAGMENTS = (
+    "no llm provider configured",
+    "no usable credentials found for provider",
+    "no api key was found",
+)
+
 
 def _is_custom_endpoint(provider: Optional[str]) -> bool:
     p = (provider or "").strip().lower()
@@ -217,6 +227,19 @@ def build_error_surface_from_exception(
     except Exception:  # pragma: no cover — never break the error path
         logger.debug("error_surface: exception classification failed", exc_info=True)
         return None
+
+
+def build_agent_init_error_surface(exc: BaseException | str) -> dict:
+    """Describe a failed agent build before a provider client has been created.
+
+    In particular, an empty or exhausted credential pool resolves to the
+    init-time ``No LLM provider configured`` error. It needs a setup action,
+    not the generic retry offered for unrelated runtime failures.
+    """
+    message = str(exc).lower()
+    if any(fragment in message for fragment in _MISSING_CREDENTIAL_INIT_FRAGMENTS):
+        return _surface(LAYER_AUTH, "credentials_missing", False)
+    return {"layer": "runtime", "code": "agent_init_failed", "retryable": True}
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

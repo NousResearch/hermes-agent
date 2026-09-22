@@ -80,6 +80,17 @@ def test_turn_without_agent_is_refused_with_retryable_frame(monkeypatch, tmp_pat
     assert agent.interim_assistant_callback is None
 
 
+def test_turn_without_agent_with_missing_credentials_is_actionable(monkeypatch, tmp_path):
+    """An init failure caused by an empty pool offers model setup, not a generic retry (#119105)."""
+    emitted = _turn_env(monkeypatch, tmp_path)
+    session = _session(None, agent_error="No LLM provider configured. Run `hermes model` to select a provider.")
+
+    assert server._run_prompt_submit("rid", "ui-sid", session, "go") is False
+
+    frame = next(p for (t, _sid, p) in emitted if t == "message.complete")
+    assert frame["error_surface"] == {"layer": "auth", "code": "credentials_missing", "retryable": False}
+
+
 def test_replaced_record_build_records_reason_and_leaves_agent_unset(monkeypatch, tmp_path):
     """A build whose record was swapped mid-flight sets ``agent_ready`` AND records why nothing attached."""
     monkeypatch.setattr(server.threading, "Thread", _InlineThread)

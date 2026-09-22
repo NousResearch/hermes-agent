@@ -80,7 +80,12 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
         try:
             mtimes[f] = mt = f.stat().st_mtime
         except OSError:
-            continue
+            # A dangling symlink has nothing to stat(): age the link itself so the sweep
+            # can still reclaim it instead of skipping the entry forever.
+            try:
+                mtimes[f] = mt = f.lstat().st_mtime
+            except OSError:
+                continue
         if m := _BG_GROUP_RE.match(f.name):
             group_newest[m.group(1)] = max(group_newest.get(m.group(1), 0.0), mt)
 

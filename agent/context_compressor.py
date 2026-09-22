@@ -3489,20 +3489,50 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             res = head[:max(0, head_len - (len(res) - limit))] + marker + tail
         return res
 
+    def _record_summary_input_coverage(self, coverage: Dict[str, int]) -> None:
+        """Expose lean sampling coverage without including transcript content in telemetry."""
+        telemetry = getattr(self, "_active_compression_telemetry", None)
+        if not isinstance(telemetry, dict):
+            return
+        telemetry.update({
+            "summary_input_chars": coverage["input_chars"],
+            "summary_input_sampled_chars": coverage["sampled_chars"],
+            "summary_input_omitted_chars": coverage["omitted_chars"],
+            "summary_input_record_count": coverage["record_count"],
+            "summary_input_sampled_record_count": coverage["sampled_record_count"],
+            "summary_input_elided_record_count": coverage["elided_record_count"],
+        })
+
     @classmethod
-    def _sample_summary_records(cls, records: Sequence[str]) -> str:
-        """Sample complete serialized records while retaining the character bound."""
+    def _sample_summary_records(cls, records: Sequence[str]) -> Tuple[str, Dict[str, int]]:
+        """Sample complete serialized records while retaining the character bound.
+
+        Returns the bounded transcript and record-level coverage counters (chars count record
+        content only, not separators or elision markers) for compression telemetry.
+        """
+        input_chars = sum(len(r) for r in records)
+
+        def _coverage(sampled_chars: int, sampled_record_count: int) -> Dict[str, int]:
+            return {
+                "input_chars": input_chars, "sampled_chars": sampled_chars,
+                "omitted_chars": input_chars - sampled_chars, "record_count": len(records),
+                "sampled_record_count": sampled_record_count,
+                "elided_record_count": len(records) - sampled_record_count,
+            }
+
         if not records:
-            return ""
+            return "", _coverage(0, 0)
 
         separator = "\n\n"
-        total_len = sum(len(r) for r in records) + len(separator) * (len(records) - 1)
+        total_len = input_chars + len(separator) * (len(records) - 1)
         if total_len <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return separator.join(records)
+            return separator.join(records), _coverage(input_chars, len(records))
 
         n = max(1, min(cls._SAMPLED_INPUT_SLICES, len(records)))
-        marker_template = "\n\n...[{elided:,} chars elided — recover via session_search]...\n\n"
-        marker_len = len(marker_template.format(elided=total_len))
+        marker_template = (
+            "\n\n...[records {first:,}-{last:,}: {elided:,} chars elided — recover via session_search]...\n\n"
+        )
+        marker_len = len(marker_template.format(first=len(records), last=len(records), elided=total_len))
         budget = max(cls._SUMMARY_INPUT_MAX_CHARS - marker_len * (n - 1), 1)
         target = max(1, budget // n)
 
@@ -3541,18 +3571,22 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 if s > cursor:
                     sep_count = (s - cursor) if cursor == 0 else (s - cursor + 1)
                     elided = sum(len(records[i]) for i in range(cursor, s)) + len(separator) * sep_count
-                    parts.append(marker_template.format(elided=elided))
+                    parts.append(marker_template.format(first=cursor + 1, last=s, elided=elided))
                 parts.append(separator.join(display_records[s:e]))
                 cursor = e
             if cursor < len(records):
                 sep_count = len(records) - cursor
                 elided = sum(len(records[i]) for i in range(cursor, len(records))) + len(separator) * sep_count
-                parts.append(marker_template.format(elided=elided))
+                parts.append(marker_template.format(first=cursor + 1, last=len(records), elided=elided))
             return "".join(parts)
+
+        def _finish(text: str) -> Tuple[str, Dict[str, int]]:
+            shown = [i for s, e in selected for i in range(s, e)]
+            return text, _coverage(sum(len(display_records[i]) for i in shown), len(shown))
 
         result = _render(selected)
         if len(result) <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return result
+            return _finish(result)
 
         # Overflow trim: protect newest slice, trim or drop preceding slices first.
         while len(result) > cls._SUMMARY_INPUT_MAX_CHARS and selected:
@@ -3570,7 +3604,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 else:
                     break
             result = _render(selected)
-        return result
+        return _finish(result)
 
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None
@@ -3711,7 +3745,8 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # Lean mode even-samples oversized input (one bounded request, never a second).
         if getattr(self, "tail_mode", "lean") == "lean":
             records = self._serialize_records_for_summary(turns_to_summarize)
-            content_to_summarize = self._sample_summary_records(records)
+            content_to_summarize, coverage = self._sample_summary_records(records)
+            self._record_summary_input_coverage(coverage)
         else:
             content_to_summarize = self._bound_summary_input(self._serialize_for_summary(turns_to_summarize))
         has_user_turn = getattr(self, "_summary_has_user_turn", None)

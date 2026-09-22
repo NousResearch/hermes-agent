@@ -3332,6 +3332,7 @@ class TestSummaryPromptBounding:
         resp.choices = [MagicMock()]
         resp.choices[0].message = MagicMock()
         resp.choices[0].message.content = "## Historical Task Snapshot\nDone."
+        telemetry = compressor._begin_compression_telemetry(current_tokens=1_000_000)
         with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
             assert compressor._generate_summary(messages) is not None
         assert mock_call.call_count == 1
@@ -3348,6 +3349,14 @@ class TestSummaryPromptBounding:
         # Newest record anchors the tail and both ends of the history are represented.
         assert whole[-1].startswith("[USER]: record-1199 ")
         assert whole[0].startswith("[USER]: record-0000 ")
+        # Coverage telemetry describes exactly what the prompt shows, in records and record chars.
+        assert telemetry["summary_input_record_count"] == 1200
+        assert telemetry["summary_input_sampled_record_count"] == len(whole)
+        assert telemetry["summary_input_elided_record_count"] == 1200 - len(whole)
+        assert telemetry["summary_input_sampled_chars"] == sum(map(len, whole))
+        assert telemetry["summary_input_chars"] == (
+            telemetry["summary_input_sampled_chars"] + telemetry["summary_input_omitted_chars"]
+        )
 
     def test_lean_sampling_oversized_middle_record_does_not_evict_tail(self):
         """A record larger than one region's share is bounded inside itself, not allowed to consume
@@ -3357,7 +3366,7 @@ class TestSummaryPromptBounding:
         records.append("[TOOL RESULT oversized-mid]: " + ("y" * (cap // 2)))
         records.extend(f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(401, 800))
         records.append("[USER]: newest-tail-record")
-        sampled = ContextCompressor._sample_summary_records(records)
+        sampled, _coverage = ContextCompressor._sample_summary_records(records)
         assert len(sampled) <= cap
         assert sampled.rstrip().endswith("[USER]: newest-tail-record")
         assert "[TOOL RESULT oversized-mid]: yyyy" in sampled

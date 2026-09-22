@@ -21,6 +21,7 @@ import {
   recoverManagedSshScopes,
   refusedManagedSshUpdate,
   runManagedSshUpdate,
+  validateManagedSshUpdateIntent,
   waitForManagedRemoteClearance,
   waitForManagedRemoteUpdate,
   waitForManagedSshBootstrapFence,
@@ -30,6 +31,18 @@ import { createBootstrapCoordinator } from './ssh-bootstrap-coordinator'
 
 const CORRELATION = '12345678-1234-4678-9234-567812345678'
 const exec = promisify(execCallback)
+const PINNED_INTENT = {
+  targetSha: 'abcdef0123456789abcdef0123456789abcdef01',
+  source: {
+    repositoryRoot: '/srv/hermes-agent',
+    originUrl: 'https://github.com/NousResearch/hermes-agent.git',
+    resolvedRef: 'refs/remotes/origin/main',
+    targetSha: 'abcdef0123456789abcdef0123456789abcdef01',
+    assuranceProfile: 'managed-ssh-review-v1',
+    assuranceEvidenceSha256: '0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef',
+    assuranceGeneration: 7
+  }
+} as const
 
 function observation(over: Record<string, unknown> = {}) {
   return JSON.stringify({
@@ -41,6 +54,56 @@ function observation(over: Record<string, unknown> = {}) {
     ...over
   })
 }
+
+test('pinned update launch forwards the exact canonical reviewed-source binding', () => {
+  const target = {
+    ssh: { exec: async () => '' },
+    platform: 'Linux' as const,
+    hermesPath: '~/.local/bin/hermes',
+    hermesHome: '~/.hermes'
+  }
+  const intent = validateManagedSshUpdateIntent(PINNED_INTENT)
+  const token = Buffer.from(
+    JSON.stringify({
+      repositoryRoot: PINNED_INTENT.source.repositoryRoot,
+      originUrl: PINNED_INTENT.source.originUrl,
+      resolvedRef: PINNED_INTENT.source.resolvedRef,
+      targetSha: PINNED_INTENT.source.targetSha,
+      assuranceProfile: PINNED_INTENT.source.assuranceProfile,
+      assuranceEvidenceSha256: PINNED_INTENT.source.assuranceEvidenceSha256,
+      assuranceGeneration: PINNED_INTENT.source.assuranceGeneration
+    })
+  ).toString('base64url')
+
+  const posix = buildPosixManagedUpdateLaunch(target, CORRELATION, intent)
+  const windows = buildWindowsManagedUpdateLaunch({ ...target, platform: 'Windows' }, CORRELATION, intent)
+  const windowsOuter = Buffer.from(windows.match(/EncodedCommand ([A-Za-z0-9+/=]+)/)?.[1] || '', 'base64').toString('utf16le')
+  const windowsWrapper = Buffer.from(
+    windowsOuter.match(/-EncodedCommand '([^']+)'/)?.[1] || '',
+    'base64'
+  ).toString('utf16le')
+
+  assert.match(posix, new RegExp(`--target-sha '${PINNED_INTENT.targetSha}' --reviewed-source '${token}'`))
+  assert.match(windowsWrapper, new RegExp(`--target-sha '${PINNED_INTENT.targetSha}' --reviewed-source '${token}'`))
+  assert.equal(posix.includes(PINNED_INTENT.source.originUrl), false)
+  assert.equal(windowsWrapper.includes(PINNED_INTENT.source.originUrl), false)
+  assert.equal(buildPosixManagedUpdateLaunch(target, CORRELATION), buildPosixManagedUpdateLaunch(target, CORRELATION, undefined))
+  assert.equal(
+    buildWindowsManagedUpdateLaunch({ ...target, platform: 'Windows' }, CORRELATION),
+    buildWindowsManagedUpdateLaunch({ ...target, platform: 'Windows' }, CORRELATION, undefined)
+  )
+})
+
+test('pinned update rejects incomplete or mismatched reviewed source bindings', () => {
+  assert.throws(
+    () => validateManagedSshUpdateIntent({ targetSha: PINNED_INTENT.targetSha, source: { ...PINNED_INTENT.source, targetSha: 'a'.repeat(40) } }),
+    /does not match/
+  )
+  assert.throws(
+    () => validateManagedSshUpdateIntent({ targetSha: PINNED_INTENT.targetSha, source: { ...PINNED_INTENT.source, assuranceGeneration: -1 } }),
+    /assurance generation/
+  )
+})
 
 test('ManagedConnectionUpdateGate blocks new dials but admits the exact restoring transaction', () => {
   const gate = new ManagedConnectionUpdateGate()

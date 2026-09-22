@@ -23,6 +23,9 @@ const DEFAULT_REMOTE_CLEARANCE_TIMEOUT_MS = 5 * 60 * 1000
 const DEFAULT_REMOTE_UPDATE_POLL_MS = 1_000
 const RECEIPT_GRACE_MS = 15_000
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/
+const FULL_SHA_RE = /^[0-9a-f]{40}$/
+const SHA256_RE = /^[0-9a-f]{64}$/
+const REVIEWED_REF_RE = /^refs\/remotes\/origin\/[^\x00\r\n\s]+$/
 
 type ManagedUpdateOutcome = 'updated' | 'update-failed' | 'restore-failed' | 'update-and-restore-failed' | 'refused'
 
@@ -61,6 +64,27 @@ interface ManagedConnectionUpdateResult {
 interface ManagedSshScope {
   key: string
   profile: string
+}
+
+/**
+ * The reviewed repository source is separate from the SSH connection used to
+ * dispatch it. The CLI rechecks this immutable binding before it applies the
+ * pinned target, so a branch advancing after review does not silently replace
+ * the reviewed commit.
+ */
+interface ManagedSshReviewedSource {
+  repositoryRoot: string
+  originUrl: string
+  resolvedRef: string
+  targetSha: string
+  assuranceProfile: string
+  assuranceEvidenceSha256: string
+  assuranceGeneration: number
+}
+
+interface ManagedSshUpdateIntent {
+  targetSha: string
+  source: ManagedSshReviewedSource
 }
 
 interface RemoteUpdateTarget {
@@ -125,6 +149,107 @@ function validateRemoteValue(value: string, label: string): string {
   }
 
   return normalized
+}
+
+function validateReviewedSourceValue(value: unknown, label: string): string {
+  const normalized = String(value || '').trim()
+
+  // eslint-disable-next-line no-control-regex -- these values become a canonical remote CLI token
+  if (!normalized || /[\x00\r\n]/.test(normalized)) {
+    throw new Error(`Managed SSH update reviewed source ${label} is invalid.`)
+  }
+
+  return normalized
+}
+
+function validateManagedSshUpdateIntent(intent: ManagedSshUpdateIntent | null | undefined): ManagedSshUpdateIntent | undefined {
+  if (intent == null) {
+    return undefined
+  }
+
+  const value = intent as Partial<ManagedSshUpdateIntent>
+  const targetSha = String(value.targetSha || '').trim()
+
+  if (!FULL_SHA_RE.test(targetSha)) {
+    throw new Error('Managed SSH update pinned target SHA is invalid.')
+  }
+
+  const source = value.source as Partial<ManagedSshReviewedSource> | null | undefined
+
+  if (!source || typeof source !== 'object') {
+    throw new Error('Managed SSH update pinned target requires a reviewed source binding.')
+  }
+
+  const repositoryRoot = validateReviewedSourceValue(source.repositoryRoot, 'repository root')
+  const originUrl = validateReviewedSourceValue(source.originUrl, 'origin URL')
+  const resolvedRef = validateReviewedSourceValue(source.resolvedRef, 'resolved ref')
+  const sourceTargetSha = String(source.targetSha || '').trim()
+  const assuranceProfile = validateReviewedSourceValue(source.assuranceProfile, 'assurance profile')
+  const assuranceEvidenceSha256 = String(source.assuranceEvidenceSha256 || '').trim()
+  const assuranceGeneration = source.assuranceGeneration
+
+  if (!/^(?:[A-Za-z]:[\\/]|\/)/.test(repositoryRoot)) {
+    throw new Error('Managed SSH update reviewed source repository root must be absolute.')
+  }
+
+  if (/^[A-Za-z][A-Za-z0-9+.-]*:\/\/[^/]*@/.test(originUrl)) {
+    throw new Error('Managed SSH update reviewed source origin URL must not include credentials.')
+  }
+
+  if (!REVIEWED_REF_RE.test(resolvedRef)) {
+    throw new Error('Managed SSH update reviewed source resolved ref is invalid.')
+  }
+
+  if (!FULL_SHA_RE.test(sourceTargetSha)) {
+    throw new Error('Managed SSH update reviewed source target SHA is invalid.')
+  }
+
+  if (sourceTargetSha !== targetSha) {
+    throw new Error('Managed SSH update reviewed source target SHA does not match the pinned target.')
+  }
+
+  if (!SHA256_RE.test(assuranceEvidenceSha256)) {
+    throw new Error('Managed SSH update reviewed source assurance evidence SHA-256 is invalid.')
+  }
+
+  if (!Number.isSafeInteger(assuranceGeneration) || assuranceGeneration < 0) {
+    throw new Error('Managed SSH update reviewed source assurance generation is invalid.')
+  }
+
+  return Object.freeze({
+    targetSha,
+    source: Object.freeze({
+      repositoryRoot,
+      originUrl,
+      resolvedRef,
+      targetSha: sourceTargetSha,
+      assuranceProfile,
+      assuranceEvidenceSha256,
+      assuranceGeneration
+    })
+  })
+}
+
+function managedSshReviewedSourceToken(source: ManagedSshReviewedSource): string {
+  return Buffer.from(
+    JSON.stringify({
+      repositoryRoot: source.repositoryRoot,
+      originUrl: source.originUrl,
+      resolvedRef: source.resolvedRef,
+      targetSha: source.targetSha,
+      assuranceProfile: source.assuranceProfile,
+      assuranceEvidenceSha256: source.assuranceEvidenceSha256,
+      assuranceGeneration: source.assuranceGeneration
+    })
+  ).toString('base64url')
+}
+
+function managedSshUpdateLaunchArguments(intent: ManagedSshUpdateIntent | undefined, quote: (value: string) => string): string {
+  if (!intent) {
+    return ''
+  }
+
+  return ` --target-sha ${quote(intent.targetSha)} --reviewed-source ${quote(managedSshReviewedSourceToken(intent.source))}`
 }
 
 function managedSshTokenPersistencePlan(
@@ -208,8 +333,13 @@ function windowsChildPath(home: string, name: string): string {
  * not published by the wrapper because it means an independently-supervised
  * rollout worker owns the eventual terminal marker.
  */
-function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId: string): string {
+function buildPosixManagedUpdateLaunch(
+  target: RemoteUpdateTarget,
+  correlationId: string,
+  intent?: ManagedSshUpdateIntent | null
+): string {
   const correlation = validateCorrelationId(correlationId)
+  const pinnedIntent = validateManagedSshUpdateIntent(intent)
   const home = validateRemoteValue(target.hermesHome, 'Hermes home')
   const hermesPath = validateRemoteValue(target.hermesPath, 'launcher path')
   const statusPath = posixChildPath(home, `.update_exit_code.${correlation}`)
@@ -227,7 +357,7 @@ function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId
     'HERMES_UPDATE_ORIGIN_PROFILE=default ' +
     `HERMES_UPDATE_ORIGIN_HOME=${homeWord} ` +
     `HERMES_UPDATE_OUTPUT_PATH=${outputWord} ` +
-    `${launcherWord} update --yes`
+    `${launcherWord} update --yes${managedSshUpdateLaunchArguments(pinnedIntent, shq)}`
 
   const inner =
     `set +e; if [ -r "/proc/$$/stat" ]; then ` +
@@ -253,8 +383,13 @@ function buildPosixManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId
 }
 
 /** Windows equivalent of buildPosixManagedUpdateLaunch. */
-function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlationId: string): string {
+function buildWindowsManagedUpdateLaunch(
+  target: RemoteUpdateTarget,
+  correlationId: string,
+  intent?: ManagedSshUpdateIntent | null
+): string {
   const correlation = validateCorrelationId(correlationId)
+  const pinnedIntent = validateManagedSshUpdateIntent(intent)
   const home = validateRemoteValue(target.hermesHome, 'Hermes home')
   const hermesPath = validateRemoteValue(target.hermesPath, 'launcher path')
   const statusPath = windowsChildPath(home, `.update_exit_code.${correlation}`)
@@ -279,7 +414,7 @@ function buildWindowsManagedUpdateLaunch(target: RemoteUpdateTarget, correlation
     `$intentPayload=[ordered]@{correlation=${psLiteral(correlation)};pid=$PID;creation=$intentCreation}|ConvertTo-Json -Compress`,
     '[IO.File]::WriteAllText($intentTmp,$intentPayload,[Text.UTF8Encoding]::new($false))',
     `Move-Item -LiteralPath $intentTmp -Destination ${psLiteral(intentPath)} -Force`,
-    `& ${psLiteral(hermesPath)} update --yes *>> ${psLiteral(outputPath)}`,
+    `& ${psLiteral(hermesPath)} update --yes${managedSshUpdateLaunchArguments(pinnedIntent, psLiteral)} *>> ${psLiteral(outputPath)}`,
     '$rc=$LASTEXITCODE',
     // A non-gateway Windows coordinator parent returns 0 once its copied
     // child owns the marker. That is acceptance, not completion: suppress the
@@ -576,11 +711,16 @@ async function assertManagedUpdatePreflightClear(target: RemoteUpdateTarget, cor
   }
 }
 
-async function launchManagedRemoteUpdate(target: RemoteUpdateTarget, correlationId: string): Promise<void> {
+async function launchManagedRemoteUpdate(
+  target: RemoteUpdateTarget,
+  correlationId: string,
+  intent?: ManagedSshUpdateIntent | null
+): Promise<void> {
+  const pinnedIntent = validateManagedSshUpdateIntent(intent)
   const command =
     target.platform === 'Windows'
-      ? buildWindowsManagedUpdateLaunch(target, correlationId)
-      : buildPosixManagedUpdateLaunch(target, correlationId)
+      ? buildWindowsManagedUpdateLaunch(target, correlationId, pinnedIntent)
+      : buildPosixManagedUpdateLaunch(target, correlationId, pinnedIntent)
 
   const output = await target.ssh.exec(command, { timeoutMs: 30_000 })
 
@@ -697,10 +837,12 @@ async function executeManagedRemoteUpdate(
   target: RemoteUpdateTarget,
   correlationId: string,
   options: Parameters<typeof waitForManagedRemoteUpdate>[2] = {},
-  onLaunchProved: () => Promise<void> = async () => {}
+  onLaunchProved: () => Promise<void> = async () => {},
+  intent?: ManagedSshUpdateIntent | null
 ): Promise<RemoteUpdateProof> {
+  const pinnedIntent = validateManagedSshUpdateIntent(intent)
   await assertManagedUpdatePreflightClear(target, correlationId)
-  await launchManagedRemoteUpdate(target, correlationId)
+  await launchManagedRemoteUpdate(target, correlationId, pinnedIntent)
   await onLaunchProved()
 
   return waitForManagedRemoteUpdate(target, correlationId, options)
@@ -1057,8 +1199,10 @@ export {
   ManagedConnectionUpdateGate,
   type ManagedConnectionUpdateResult,
   type ManagedSshRecoveryScope,
+  type ManagedSshReviewedSource,
   managedSshRecoveryScopes,
   type ManagedSshScope,
+  type ManagedSshUpdateIntent,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
   type ManagedUpdateDeps,
@@ -1077,6 +1221,7 @@ export {
   runManagedSshUpdate,
   UPDATE_EXIT_INDEPENDENT_HANDOFF,
   validateCorrelationId,
+  validateManagedSshUpdateIntent,
   waitForManagedRemoteClearance,
   waitForManagedRemoteUpdate,
   waitForManagedSshBootstrapFence,

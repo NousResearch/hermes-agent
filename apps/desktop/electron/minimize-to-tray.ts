@@ -194,10 +194,12 @@ export function createMinimizeToTray(options: Options) {
 
       win.hide()
       syncDock()
+
       return true
     }
 
     win.on('minimize', hide)
+
     if (closeToTray) {
       win.on('close', event => {
         if (hide()) {

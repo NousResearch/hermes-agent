@@ -78,7 +78,10 @@ test('a missing helper is distinguished from a helper that cannot start', () => 
     const child = new Child()
     const statuses: NativeGestureStatus[] = []
     const monitor = new NativeGestureMonitor({ path: '/helper', parseGesture: () => null, spawn: () => child })
-    monitor.start(() => {}, status => statuses.push(status))
+    monitor.start(
+      () => {},
+      status => statuses.push(status)
+    )
     child.emit('error', Object.assign(new Error('spawn failed'), { code }))
     child.emit('close', -1, null)
     assert.deepEqual(statuses.at(-1), {

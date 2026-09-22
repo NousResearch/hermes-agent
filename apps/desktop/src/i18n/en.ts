@@ -1038,7 +1038,8 @@ export const en: Translations = {
         'Allow Hermes in System Settings → Privacy & Security → Input Monitoring, then retry. This gesture does not record keystrokes or capture your screen.',
       unavailable:
         'The HUD gesture helper could not start or stopped unexpectedly. Retry, or restart Hermes. The existing HUD shortcut still works inside Hermes.',
-      missingHelper: 'This Hermes installation is missing the HUD gesture helper. Update or reinstall Hermes, then retry.',
+      missingHelper:
+        'This Hermes installation is missing the HUD gesture helper. Update or reinstall Hermes, then retry.',
       unsupportedSession:
         'This desktop session does not support global modifier taps. Linux requires X11; Wayland is not supported.'
     },

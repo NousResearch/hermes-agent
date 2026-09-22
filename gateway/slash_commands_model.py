@@ -402,14 +402,18 @@ class GatewayModelCommandsMixin:
             providers = []
         if not providers:
             return False
-        result = await adapter.send_model_picker(
-            chat_id=source.chat_id, providers=providers,
-            current_model=listing_kwargs["current_model"],
-            current_provider=listing_kwargs["current_provider"], session_key=session_key,
-            on_model_selected=on_model_selected,
-            metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
-        )
-        return bool(result.success)
+        try:
+            result = await adapter.send_model_picker(
+                chat_id=source.chat_id, providers=providers,
+                current_model=listing_kwargs["current_model"],
+                current_provider=listing_kwargs["current_provider"], session_key=session_key,
+                on_model_selected=on_model_selected,
+                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+            )
+            return bool(result.success)
+        except Exception:
+            logger.warning("send_model_picker failed; falling back to text list", exc_info=True)
+            return False
 
     async def _model_listing_reply(
         self, event: MessageEvent, ctx: _ModelSwitchContext, profile_home

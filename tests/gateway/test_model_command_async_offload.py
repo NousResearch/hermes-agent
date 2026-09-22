@@ -162,3 +162,33 @@ async def test_picker_path_lists_cache_only_and_probes_only_the_current_custom_e
     flags = {k: seen[0].get(k) for k in ("non_blocking_catalogs", "probe_custom_providers", "probe_current_custom_provider")}
     assert flags == {"non_blocking_catalogs": True, "probe_custom_providers": False,
                      "probe_current_custom_provider": True}, flags
+
+
+class _FailingPickerAdapter:
+    """A delivery failure must yield the text-list fallback, not a blank `/model` command."""
+
+    async def send_model_picker(self, **kwargs):
+        raise RuntimeError("Telegram inline-keyboard send failed")
+
+
+@pytest.mark.asyncio
+async def test_picker_delivery_failure_returns_false_for_text_fallback(monkeypatch):
+    fake_providers = [{"slug": "openrouter", "name": "OpenRouter", "is_current": True,
+                       "models": ["gpt-x"], "total_models": 1}]
+    monkeypatch.setattr(
+        "hermes_cli.model_switch_providers.list_picker_providers",
+        lambda **kwargs: fake_providers,
+    )
+    runner = _make_runner()
+    event = _make_event()
+    monkeypatch.setattr(runner, "_thread_metadata_for_source", lambda *a, **k: None, raising=False)
+    monkeypatch.setattr(runner, "_reply_anchor_for_event", lambda *a, **k: None, raising=False)
+
+    sent = await runner._send_model_picker(
+        event, event.source, _FailingPickerAdapter(), "test-session",
+        {"current_provider": "openrouter", "current_model": "gpt-x", "current_base_url": "",
+         "user_providers": {}, "custom_providers": [], "excluded_providers": []},
+        lambda *_args: None,
+    )
+
+    assert sent is False

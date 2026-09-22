@@ -80,6 +80,26 @@ describe('log window', () => {
     expect(trimmed.watermarks.research).toBe(150 - 104)
     expect(trimmed.watermarks.builder).toBe(0)
   })
+
+  it('orders classic local appends when the clock repeats', async () => {
+    const { chat } = await loadRoom()
+    const now = vi.spyOn(Date, 'now').mockReturnValue(1_700_000_000_000)
+
+    try {
+      chat.$groupChats.set({ Classic: { log: [], watermarks: {} } })
+      chat.appendGroupChatEntry('Classic', { kind: 'user', name: 'You' }, 'one')
+      chat.appendGroupChatEntry('Classic', { kind: 'member', name: 'builder' }, 'two')
+      chat.appendGroupChatEntry('Classic', { kind: 'member', name: 'reviewer' }, 'three')
+
+      expect(chat.$groupChats.get().Classic.log.map(entry => entry.at)).toEqual([
+        1_700_000_000_000,
+        1_700_000_000_001,
+        1_700_000_000_002
+      ])
+    } finally {
+      now.mockRestore()
+    }
+  })
 })
 
 describe('room naming', () => {

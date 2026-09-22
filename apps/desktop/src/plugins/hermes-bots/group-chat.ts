@@ -1824,6 +1824,16 @@ export function appendGroupChatEntry(
   }
 
   updateGroupChat(group, (room: GroupChatRoom) => {
+    // Classic room watermarks advance through the local log by insertion
+    // order. Gateway projection merges sort equal-time rows by stable id, so
+    // make each locally appended classic row monotonic even when the clock
+    // has millisecond collisions. Hosted rooms use the authoritative event
+    // sequence instead.
+    if (!room.roomId || !groupChatHostedGateway(room)) {
+      const latestAt = room.log.reduce((latest, candidate) => Math.max(latest, Number(candidate.at || 0)), 0)
+      entry.at = Math.max(entry.at, latestAt + 1)
+    }
+
     if (from.kind === 'user' && room.roomId && groupChatHostedGateway(room)) {
       entry = outgoingHostedUserEvent(entry, room.roomId, entry.id || '')
       room.log = reconcileHostedUserEvents(room.roomId, room.log, [entry])

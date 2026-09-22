@@ -273,6 +273,7 @@ hermes skills uninstall <skill-name>
 | [**code-wiki**](../user-guide/skills/optional/software-development/software-development-code-wiki.md) | Generate wiki docs + Mermaid diagrams for any codebase. |
 | [**grill-me**](../user-guide/skills/optional/software-development/software-development-grill-me.md) | Adversarial plan interview before implementation. |
 | [**pr-lens**](../user-guide/skills/optional/software-development/software-development-pr-lens.md) | Draw code changes as animated architecture/data-flow SVGs. |
+| [**protean-github-draft**](../user-guide/skills/optional/software-development/software-development-protean-github-draft.md) | Use when a GitHub draft needs review before posting. |
 | [**rest-graphql-debug**](../user-guide/skills/optional/software-development/software-development-rest-graphql-debug.md) | Debug REST/GraphQL APIs: status codes, auth, schemas, repro. |
 | [**subagent-driven-development**](../user-guide/skills/optional/software-development/software-development-subagent-driven-development.md) | Execute plans via delegate_task subagents (2-stage review). |
 

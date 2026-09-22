@@ -628,6 +628,7 @@ const sidebars: SidebarsConfig = {
                     'user-guide/skills/optional/software-development/software-development-code-wiki',
                     'user-guide/skills/optional/software-development/software-development-grill-me',
                     'user-guide/skills/optional/software-development/software-development-pr-lens',
+                    'user-guide/skills/optional/software-development/software-development-protean-github-draft',
                     'user-guide/skills/optional/software-development/software-development-rest-graphql-debug',
                     'user-guide/skills/optional/software-development/software-development-subagent-driven-development',
                   ],

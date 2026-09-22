@@ -10,7 +10,8 @@ Five outcomes, in order:
 * ``ATTACH``       — a live host gateway already serves this profile. Nothing to start; exit 0.
 * ``RESCAN``→ATTACH — it does not serve it yet: ask it to reconcile ``profiles/`` now (control
   socket ``rescan-profiles``) and attach once the answer includes us.
-* ``REPLACE_HOST`` — ``--replace`` names the host process as the target, whichever home launched it.
+* ``REPLACE_HOST`` — ``--replace`` targets the live host owner unless it is positively identified
+  as another profile's standalone gateway.
 * ``REFUSE``       — a live MULTIPLEXING gateway exists and cannot be made to serve this profile.
   Never start a second one silently.
 * ``START``        — no live owner, or the owner answers ``multiplex: False``: it is another
@@ -285,11 +286,9 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         return HostAttachDecision(START, "")
     if gateway is None or gateway.pid == os.getpid():
         return HostAttachDecision(START, "")
-    if replace:
-        # --replace is explicit authority over the host role; the target is the host process,
-        # whichever home launched it.
-        return HostAttachDecision(REPLACE_HOST, "", gateway)
     if gateway.serves(profile):
+        if replace:
+            return HostAttachDecision(REPLACE_HOST, "", gateway)
         return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)
     if not gateway.served_known:
         # Give the owner its bounded window to answer before judging it: during the boot race the
@@ -299,6 +298,8 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
             return HostAttachDecision(START, "")
         gateway = waited
         if gateway.serves(profile):
+            if replace:
+                return HostAttachDecision(REPLACE_HOST, "", gateway)
             return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)
     try:
         attached = request_serve_profile(profile, owner=gateway)
@@ -306,6 +307,8 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         logger.debug("host gateway rescan request failed", exc_info=True)
         attached = None
     if attached is not None and attached.serves(profile):
+        if replace:
+            return HostAttachDecision(REPLACE_HOST, "", attached)
         return HostAttachDecision(ATTACH, attach_message(attached, profile), attached, transient=True)
     if attached is not None and attached.standalone:
         # One-process-per-profile fleet: the owner is another profile's standalone gateway. Refusing
@@ -313,10 +316,15 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
         # every unit but the first to claim the host lock. Start beside it; the host-lock claim logs
         # the topology and the `gateway migrate --multiplex` path stays the way to converge.
         logger.warning(
-            "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it. "
+            "Another profile's standalone gateway owns this host (%s); starting profile '%s' beside it%s. "
             "Fold every profile onto one gateway with: hermes gateway migrate --multiplex",
-            attached.describe(), profile)
+            attached.describe(), profile,
+            " without replacing the other profile" if replace else "")
         return HostAttachDecision(START, "")
+    if replace:
+        # The owner is a multiplexer (or did not answer): explicit takeover still targets the host
+        # role. Only a positively identified cross-profile standalone owner degrades to START.
+        return HostAttachDecision(REPLACE_HOST, "", gateway)
     if not gateway.served_known:
         # The owner never answered, so we know only that it exists. ATTACH here (on the record's
         # word) parked a supervised unit against a served set nobody had committed to yet.

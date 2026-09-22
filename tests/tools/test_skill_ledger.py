@@ -615,8 +615,11 @@ def _append_padded(skill_ledger, action: str, pad: str, n: int = 1) -> None:
 
 def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
     """Crossing skills.ledger_max_bytes rewrites the ledger through the delta
-    dedup: identical before/after manifests shrink to nothing while ids and
-    entry order survive."""
+    dedup: legacy rows that still carry identical before/after manifests (written
+    before append-time ``_delta`` existed) shrink to nothing while ids and entry
+    order survive, and nothing is trimmed when dedup alone reaches the cap."""
+    import json
+
     from tools import skill_ledger
 
     import hermes_cli.config as _cfg
@@ -624,14 +627,23 @@ def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
     monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: {
         "skills": {"ledger_max_bytes": 8192}})
 
-    for i in range(3):  # pre-delta-style entries: identical fat manifests on both sides
-        fat = [{"path": f"my-skill/f{i}j{j}.md", "sha256": "a" * 64} for j in range(40)]
-        skill_ledger.append_entry("patch", "my-skill", before=fat, after=list(fat))
+    first_id = skill_ledger.append_entry("patch", "my-skill", before=[], after=[])
+    template = json.loads(skill_ledger.ledger_path().read_text().splitlines()[0])
+    with skill_ledger.ledger_path().open("a", encoding="utf-8") as fh:
+        for i in range(3):  # legacy pre-delta rows: identical fat manifests on both sides
+            fat = [{"path": f"my-skill/f{i}j{j}.md", "sha256": "a" * 64} for j in range(40)]
+            row = dict(template, id=f"legacy{i}", before=fat, after=list(fat))
+            fh.write(json.dumps(row) + "\n")
+    assert skill_ledger.ledger_path().stat().st_size > 8192
 
-    # the maintenance sweep fired mid-append: the file stays under the cap
+    last_id = skill_ledger.append_entry("patch", "my-skill", before=[], after=[])
+
+    # the maintenance sweep fired on that append: the file is back under the cap
     assert skill_ledger.ledger_path().stat().st_size <= 8192
     rows = skill_ledger.list_entries()
-    assert len(rows) == 3, "dedup alone must reach the cap — nothing trimmed"
+    assert {r["id"] for r in rows} == {first_id, last_id, "legacy0", "legacy1", "legacy2"}, (
+        "dedup alone must reach the cap — nothing trimmed, ids survive"
+    )
     assert all(r["before"] == [] and r["after"] == [] for r in rows), (
         "identical manifests must be dropped by compaction"
     )

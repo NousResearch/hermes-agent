@@ -1957,6 +1957,10 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
             "total_duration_ms": None, "aux_call_duration_ms": None, "queue_wait_ms": None, "prompt_build_ms": None,
             "time_to_first_progress_ms": None, "summary_generation_ms": None, "commit_ms": None,
             "fallback_used": False, "commit_status": "unknown", "split_status": "unknown", "failure_class": None,
+            # Lean-sampling coverage (filled by _record_summary_input_coverage; None on the legacy path).
+            "summary_input_chars": None, "summary_input_sampled_chars": None, "summary_input_omitted_chars": None,
+            "summary_input_record_count": None, "summary_input_sampled_record_count": None,
+            "summary_input_elided_record_count": None,
         }
         self._active_compression_telemetry = self._last_compression_telemetry = telemetry
         return telemetry

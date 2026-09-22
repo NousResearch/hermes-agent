@@ -1,0 +1,162 @@
+[
+  {
+    "id": "ct_01",
+    "fact_a": "The project uses PostgreSQL 14 for the main database",
+    "fact_b": "We migrated the main database to PostgreSQL 16",
+    "query": "What database version does the project use?",
+    "gold_answer": "PostgreSQL 16",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_02",
+    "fact_a": "Deployments go to AWS us-east-1",
+    "fact_b": "We moved all deployments to GCP us-central1",
+    "query": "Where do we deploy?",
+    "gold_answer": "GCP us-central1",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_03",
+    "fact_a": "The API rate limit is 100 requests per minute",
+    "fact_b": "Rate limit increased to 500 requests per minute for authenticated users",
+    "query": "What's the API rate limit?",
+    "gold_answer": "500 requests per minute for authenticated users",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_04",
+    "fact_a": "Alice Chen is the tech lead",
+    "fact_b": "David Park took over as tech lead after Alice moved to Staff Engineer",
+    "query": "Who is the current tech lead?",
+    "gold_answer": "David Park",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_05",
+    "fact_a": "The frontend uses React 17 with JavaScript",
+    "fact_b": "Frontend was rewritten in Next.js 14 with TypeScript",
+    "query": "What's the frontend stack?",
+    "gold_answer": "Next.js 14 with TypeScript",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_06",
+    "fact_a": "CI runs on Jenkins with custom build agents",
+    "fact_b": "CI migrated to GitHub Actions with ubuntu-latest runners",
+    "query": "What CI system do we use?",
+    "gold_answer": "GitHub Actions with ubuntu-latest",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_07",
+    "fact_a": "The monolith handles all API requests",
+    "fact_b": "The payments service was extracted into a separate microservice",
+    "query": "How are payment API requests handled?",
+    "gold_answer": "Separate payments microservice",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_08",
+    "fact_a": "Logging goes to CloudWatch",
+    "fact_b": "We switched logging to the Loki + Grafana stack",
+    "query": "Where do logs go?",
+    "gold_answer": "Loki + Grafana",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_09",
+    "fact_a": "The mobile app minimum is iOS 13",
+    "fact_b": "We dropped iOS 13 support; minimum is now iOS 16",
+    "query": "What's the minimum iOS version?",
+    "gold_answer": "iOS 16",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_10",
+    "fact_a": "Feature flags are in a JSON config file",
+    "fact_b": "Feature flags migrated to LaunchDarkly",
+    "query": "How are feature flags managed?",
+    "gold_answer": "LaunchDarkly",
+    "contradiction_type": "clear_override"
+  },
+  {
+    "id": "ct_11",
+    "fact_a": "All services use Python 3.10",
+    "fact_b": "The ML pipeline was upgraded to Python 3.12 for performance",
+    "query": "What Python version does the ML pipeline use?",
+    "gold_answer": "Python 3.12",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_12",
+    "fact_a": "The database has a single read replica",
+    "fact_b": "We added two more read replicas for a total of three",
+    "query": "How many database read replicas do we have?",
+    "gold_answer": "Three read replicas",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_13",
+    "fact_a": "Backups run daily at 3 AM UTC",
+    "fact_b": "Added an additional backup at 3 PM UTC for the transaction database",
+    "query": "When do transaction database backups run?",
+    "gold_answer": "3 AM and 3 PM UTC",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_14",
+    "fact_a": "The team has 5 backend engineers",
+    "fact_b": "We hired two more backend engineers, bringing the team to 7",
+    "query": "How many backend engineers are on the team?",
+    "gold_answer": "7 backend engineers",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_15",
+    "fact_a": "Tests run in about 8 minutes",
+    "fact_b": "After parallelizing, tests now complete in 3 minutes",
+    "query": "How long does the test suite take?",
+    "gold_answer": "About 3 minutes",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_16",
+    "fact_a": "We use the free tier of Sentry for error tracking",
+    "fact_b": "Upgraded to Sentry Business plan for better retention and alerts",
+    "query": "What Sentry plan are we on?",
+    "gold_answer": "Sentry Business plan",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_17",
+    "fact_a": "The API supports JSON responses only",
+    "fact_b": "Added Protocol Buffers as an alternative response format for mobile clients",
+    "query": "What response formats does the API support?",
+    "gold_answer": "JSON and Protocol Buffers",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_18",
+    "fact_a": "Cache TTL is 1 hour for all endpoints",
+    "fact_b": "Reduced cache TTL to 5 minutes for the pricing endpoint due to frequent updates",
+    "query": "What's the cache TTL for the pricing endpoint?",
+    "gold_answer": "5 minutes",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_19",
+    "fact_a": "Authentication uses session cookies",
+    "fact_b": "API clients now use JWT bearer tokens; the web app still uses session cookies",
+    "query": "How do API clients authenticate?",
+    "gold_answer": "JWT bearer tokens",
+    "contradiction_type": "subtle_update"
+  },
+  {
+    "id": "ct_20",
+    "fact_a": "The staging environment mirrors production exactly",
+    "fact_b": "Staging now uses smaller instance sizes to reduce costs",
+    "query": "Does staging match production configuration?",
+    "gold_answer": "No, staging uses smaller instances to save costs",
+    "contradiction_type": "subtle_update"
+  }
+]

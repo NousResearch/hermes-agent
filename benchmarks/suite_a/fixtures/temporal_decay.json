@@ -1,0 +1,936 @@
+[
+  {
+    "id": "td_e01",
+    "facts": [
+      {
+        "content": "The API endpoint is /v1/users",
+        "stored_days_ago": 1
+      },
+      {
+        "content": "The API endpoint was changed to /v2/users",
+        "stored_days_ago": 0
+      }
+    ],
+    "query": "What is the current users API endpoint?",
+    "gold_answer": "/v2/users",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e02",
+    "facts": [
+      {
+        "content": "Server runs on Ubuntu 20.04",
+        "stored_days_ago": 90
+      },
+      {
+        "content": "Server upgraded to Ubuntu 22.04",
+        "stored_days_ago": 2
+      }
+    ],
+    "query": "What OS is the server running?",
+    "gold_answer": "Ubuntu 22.04",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e03",
+    "facts": [
+      {
+        "content": "Team standup is at 9 AM",
+        "stored_days_ago": 60
+      },
+      {
+        "content": "Standup moved to 10 AM",
+        "stored_days_ago": 3
+      }
+    ],
+    "query": "When is the daily standup?",
+    "gold_answer": "10 AM",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e04",
+    "facts": [
+      {
+        "content": "The deploy target is staging.old.example.com",
+        "stored_days_ago": 120
+      },
+      {
+        "content": "Deploy target changed to staging.example.io",
+        "stored_days_ago": 1
+      }
+    ],
+    "query": "Where do we deploy to staging?",
+    "gold_answer": "staging.example.io",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e05",
+    "facts": [
+      {
+        "content": "Python version is 3.9",
+        "stored_days_ago": 180
+      },
+      {
+        "content": "Python upgraded to 3.11",
+        "stored_days_ago": 5
+      }
+    ],
+    "query": "What Python version do we use?",
+    "gold_answer": "3.11",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e06",
+    "facts": [
+      {
+        "content": "CI timeout is 30 minutes",
+        "stored_days_ago": 45
+      },
+      {
+        "content": "CI timeout reduced to 15 minutes",
+        "stored_days_ago": 2
+      }
+    ],
+    "query": "What's the CI timeout?",
+    "gold_answer": "15 minutes",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e07",
+    "facts": [
+      {
+        "content": "Error budget is 0.1%",
+        "stored_days_ago": 200
+      },
+      {
+        "content": "Error budget tightened to 0.05%",
+        "stored_days_ago": 7
+      }
+    ],
+    "query": "What's our error budget?",
+    "gold_answer": "0.05%",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e08",
+    "facts": [
+      {
+        "content": "Max file upload is 5 MB",
+        "stored_days_ago": 150
+      },
+      {
+        "content": "File upload limit raised to 25 MB",
+        "stored_days_ago": 3
+      }
+    ],
+    "query": "What's the file upload limit?",
+    "gold_answer": "25 MB",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e09",
+    "facts": [
+      {
+        "content": "Release cycle is monthly",
+        "stored_days_ago": 90
+      },
+      {
+        "content": "Moved to weekly releases",
+        "stored_days_ago": 10
+      }
+    ],
+    "query": "How often do we release?",
+    "gold_answer": "Weekly",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e10",
+    "facts": [
+      {
+        "content": "Primary on-call is Bob",
+        "stored_days_ago": 14
+      },
+      {
+        "content": "On-call rotated to Carol",
+        "stored_days_ago": 0
+      }
+    ],
+    "query": "Who is on call right now?",
+    "gold_answer": "Carol",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e11",
+    "facts": [
+      {
+        "content": "Build tool is Make",
+        "stored_days_ago": 365
+      },
+      {
+        "content": "Switched to Just as build tool",
+        "stored_days_ago": 4
+      }
+    ],
+    "query": "What build tool do we use?",
+    "gold_answer": "Just",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e12",
+    "facts": [
+      {
+        "content": "Container registry is Docker Hub",
+        "stored_days_ago": 200
+      },
+      {
+        "content": "Migrated to GitHub Container Registry",
+        "stored_days_ago": 14
+      }
+    ],
+    "query": "Where are containers stored?",
+    "gold_answer": "GitHub Container Registry",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e13",
+    "facts": [
+      {
+        "content": "Default branch is develop",
+        "stored_days_ago": 300
+      },
+      {
+        "content": "Default branch renamed to main",
+        "stored_days_ago": 60
+      }
+    ],
+    "query": "What's the default git branch?",
+    "gold_answer": "main",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e14",
+    "facts": [
+      {
+        "content": "Slack channel for alerts is #ops-alerts",
+        "stored_days_ago": 180
+      },
+      {
+        "content": "Alert channel moved to #incidents",
+        "stored_days_ago": 5
+      }
+    ],
+    "query": "Where do operational alerts go?",
+    "gold_answer": "#incidents",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_e15",
+    "facts": [
+      {
+        "content": "Test database uses SQLite",
+        "stored_days_ago": 120
+      },
+      {
+        "content": "Test database switched to PostgreSQL for parity",
+        "stored_days_ago": 8
+      }
+    ],
+    "query": "What database do tests use?",
+    "gold_answer": "PostgreSQL",
+    "expected_recency_bias": true,
+    "difficulty": "easy"
+  },
+  {
+    "id": "td_m01",
+    "facts": [
+      {
+        "content": "The core algorithm uses Dijkstra's shortest path",
+        "stored_days_ago": 365,
+        "rehearsed_days_ago": [
+          30,
+          7,
+          1
+        ]
+      },
+      {
+        "content": "A* was considered but rejected due to heuristic complexity",
+        "stored_days_ago": 300
+      }
+    ],
+    "query": "What pathfinding algorithm does the core use?",
+    "gold_answer": "Dijkstra's shortest path",
+    "expected_recency_bias": false,
+    "difficulty": "medium",
+    "note": "Old but frequently rehearsed should beat newer unrehearsed"
+  },
+  {
+    "id": "td_m02",
+    "facts": [
+      {
+        "content": "The database password rotation uses Vault with 24-hour leases",
+        "stored_days_ago": 180,
+        "rehearsed_days_ago": [
+          14,
+          3
+        ]
+      },
+      {
+        "content": "Someone mentioned trying CyberArk for secrets",
+        "stored_days_ago": 30
+      }
+    ],
+    "query": "How are database passwords rotated?",
+    "gold_answer": "Vault with 24-hour leases",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m03",
+    "facts": [
+      {
+        "content": "The SLA with enterprise customers is 99.99% uptime",
+        "stored_days_ago": 400,
+        "rehearsed_days_ago": [
+          60,
+          14,
+          2
+        ]
+      },
+      {
+        "content": "Internal SLA target is 99.9%",
+        "stored_days_ago": 50
+      }
+    ],
+    "query": "What uptime SLA do we promise enterprise customers?",
+    "gold_answer": "99.99%",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m04",
+    "facts": [
+      {
+        "content": "The CORS policy allows only *.example.com origins",
+        "stored_days_ago": 200,
+        "rehearsed_days_ago": [
+          45,
+          10
+        ]
+      },
+      {
+        "content": "A developer asked about allowing localhost for dev",
+        "stored_days_ago": 5
+      }
+    ],
+    "query": "What origins does the CORS policy allow in production?",
+    "gold_answer": "*.example.com",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m05",
+    "facts": [
+      {
+        "content": "DNS is managed through Route 53 with 60-second TTL",
+        "stored_days_ago": 250,
+        "rehearsed_days_ago": [
+          30
+        ]
+      },
+      {
+        "content": "CloudFlare was evaluated for DNS but not adopted",
+        "stored_days_ago": 20
+      }
+    ],
+    "query": "Where is DNS managed and what's the TTL?",
+    "gold_answer": "Route 53 with 60-second TTL",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m06",
+    "facts": [
+      {
+        "content": "The data lake is on S3 with Parquet format partitioned by date",
+        "stored_days_ago": 300,
+        "rehearsed_days_ago": [
+          90,
+          30,
+          7
+        ]
+      },
+      {
+        "content": "Delta Lake was discussed at the last architecture review",
+        "stored_days_ago": 14
+      }
+    ],
+    "query": "What format and partitioning does the data lake use?",
+    "gold_answer": "Parquet partitioned by date on S3",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m07",
+    "facts": [
+      {
+        "content": "The compliance audit is annual, conducted by Deloitte in Q4",
+        "stored_days_ago": 350,
+        "rehearsed_days_ago": [
+          180,
+          90
+        ]
+      },
+      {
+        "content": "PwC submitted a proposal for next year's audit",
+        "stored_days_ago": 15
+      }
+    ],
+    "query": "Who conducts our compliance audit and when?",
+    "gold_answer": "Deloitte in Q4 annually",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m08",
+    "facts": [
+      {
+        "content": "The GraphQL schema stitching uses Apollo Federation v2",
+        "stored_days_ago": 200,
+        "rehearsed_days_ago": [
+          60,
+          14,
+          3
+        ]
+      },
+      {
+        "content": "Someone shared an article about Mesh gateway",
+        "stored_days_ago": 7
+      }
+    ],
+    "query": "How is the GraphQL schema composed across services?",
+    "gold_answer": "Apollo Federation v2",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m09",
+    "facts": [
+      {
+        "content": "Incident response playbook requires page within 5 minutes for P1",
+        "stored_days_ago": 400,
+        "rehearsed_days_ago": [
+          30,
+          7,
+          1
+        ]
+      },
+      {
+        "content": "P2 incidents have a 30-minute response time",
+        "stored_days_ago": 100
+      }
+    ],
+    "query": "What's the response time requirement for P1 incidents?",
+    "gold_answer": "Page within 5 minutes",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m10",
+    "facts": [
+      {
+        "content": "The recommendation model uses a 128-dimension embedding space",
+        "stored_days_ago": 150,
+        "rehearsed_days_ago": [
+          45,
+          10
+        ]
+      },
+      {
+        "content": "Research team is experimenting with 256-dim embeddings",
+        "stored_days_ago": 5
+      }
+    ],
+    "query": "What embedding dimension does the production recommendation model use?",
+    "gold_answer": "128 dimensions",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m11",
+    "facts": [
+      {
+        "content": "API versioning follows URI path pattern: /v1/, /v2/",
+        "stored_days_ago": 500,
+        "rehearsed_days_ago": [
+          120,
+          60,
+          14
+        ]
+      },
+      {
+        "content": "Header-based versioning was proposed in RFC-2024-003",
+        "stored_days_ago": 30
+      }
+    ],
+    "query": "What API versioning strategy is used in production?",
+    "gold_answer": "URI path pattern (/v1/, /v2/)",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m12",
+    "facts": [
+      {
+        "content": "The image processing pipeline resizes to 3 variants: thumbnail (150px), medium (600px), large (1200px)",
+        "stored_days_ago": 280,
+        "rehearsed_days_ago": [
+          60,
+          14
+        ]
+      },
+      {
+        "content": "WebP format support was added recently",
+        "stored_days_ago": 10
+      }
+    ],
+    "query": "What image size variants does the pipeline produce?",
+    "gold_answer": "Thumbnail 150px, medium 600px, large 1200px",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m13",
+    "facts": [
+      {
+        "content": "The batch job scheduler runs on Airflow 2.5 with KubernetesExecutor",
+        "stored_days_ago": 200,
+        "rehearsed_days_ago": [
+          30,
+          7
+        ]
+      },
+      {
+        "content": "Prefect was demoed as an alternative",
+        "stored_days_ago": 14
+      }
+    ],
+    "query": "What orchestrates our batch processing jobs?",
+    "gold_answer": "Airflow 2.5 with KubernetesExecutor",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m14",
+    "facts": [
+      {
+        "content": "The connection string format is postgresql://app_user@db-primary:5432/maindb",
+        "stored_days_ago": 180,
+        "rehearsed_days_ago": [
+          45,
+          10,
+          2
+        ]
+      },
+      {
+        "content": "A read replica connection was added at db-replica:5432",
+        "stored_days_ago": 20
+      }
+    ],
+    "query": "What's the primary database connection string?",
+    "gold_answer": "postgresql://app_user@db-primary:5432/maindb",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_m15",
+    "facts": [
+      {
+        "content": "The rate limiter uses token bucket algorithm with 100 tokens refilled at 10/second",
+        "stored_days_ago": 250,
+        "rehearsed_days_ago": [
+          90,
+          30,
+          7
+        ]
+      },
+      {
+        "content": "Sliding window was considered for the new premium tier",
+        "stored_days_ago": 14
+      }
+    ],
+    "query": "What algorithm does the rate limiter use and what are its parameters?",
+    "gold_answer": "Token bucket, 100 tokens, 10/second refill",
+    "expected_recency_bias": false,
+    "difficulty": "medium"
+  },
+  {
+    "id": "td_h01",
+    "facts": [
+      {
+        "content": "The primary database is PostgreSQL 14",
+        "stored_days_ago": 365
+      },
+      {
+        "content": "We're planning to upgrade to PostgreSQL 16 next quarter",
+        "stored_days_ago": 30
+      },
+      {
+        "content": "PostgreSQL 14 handled the Black Friday load well",
+        "stored_days_ago": 60,
+        "rehearsed_days_ago": [
+          14
+        ]
+      }
+    ],
+    "query": "What PostgreSQL version is currently running in production?",
+    "gold_answer": "PostgreSQL 14 (upgrade to 16 is planned but not done)",
+    "expected_recency_bias": false,
+    "difficulty": "hard",
+    "note": "Planning != done; must not confuse intent with state"
+  },
+  {
+    "id": "td_h02",
+    "facts": [
+      {
+        "content": "Kubernetes cluster version is 1.25",
+        "stored_days_ago": 200
+      },
+      {
+        "content": "Upgrade to K8s 1.28 scheduled for March",
+        "stored_days_ago": 45
+      },
+      {
+        "content": "K8s 1.28 upgrade completed successfully",
+        "stored_days_ago": 10
+      }
+    ],
+    "query": "What Kubernetes version are we on?",
+    "gold_answer": "1.28",
+    "expected_recency_bias": true,
+    "difficulty": "hard",
+    "note": "Must follow the full narrative arc"
+  },
+  {
+    "id": "td_h03",
+    "facts": [
+      {
+        "content": "Redis cluster has 3 nodes",
+        "stored_days_ago": 180
+      },
+      {
+        "content": "Redis node 2 failed and was replaced",
+        "stored_days_ago": 14
+      },
+      {
+        "content": "Added 2 more Redis nodes for capacity",
+        "stored_days_ago": 3
+      }
+    ],
+    "query": "How many Redis nodes do we have?",
+    "gold_answer": "5 nodes (original 3 + 2 added)",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h04",
+    "facts": [
+      {
+        "content": "Alice is the DBA responsible for production databases",
+        "stored_days_ago": 300,
+        "rehearsed_days_ago": [
+          60,
+          14
+        ]
+      },
+      {
+        "content": "Alice is on parental leave for 3 months",
+        "stored_days_ago": 30
+      },
+      {
+        "content": "Bob is covering DBA duties while Alice is out",
+        "stored_days_ago": 28
+      }
+    ],
+    "query": "Who should I contact about a production database issue right now?",
+    "gold_answer": "Bob (covering for Alice who is on parental leave)",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h05",
+    "facts": [
+      {
+        "content": "The service mesh uses Istio 1.17",
+        "stored_days_ago": 180
+      },
+      {
+        "content": "Istio caused performance issues, team considering Linkerd",
+        "stored_days_ago": 60
+      },
+      {
+        "content": "Decided to stay with Istio and upgrade to 1.20",
+        "stored_days_ago": 30
+      },
+      {
+        "content": "Istio 1.20 upgrade completed",
+        "stored_days_ago": 7
+      }
+    ],
+    "query": "What service mesh and version do we use?",
+    "gold_answer": "Istio 1.20",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h06",
+    "facts": [
+      {
+        "content": "Monitoring uses Datadog",
+        "stored_days_ago": 400
+      },
+      {
+        "content": "Datadog costs too high, migrating to Prometheus + Grafana",
+        "stored_days_ago": 90
+      },
+      {
+        "content": "Migration to Prometheus completed for infrastructure metrics",
+        "stored_days_ago": 45
+      },
+      {
+        "content": "APM still on Datadog until Tempo is ready",
+        "stored_days_ago": 30
+      }
+    ],
+    "query": "What do we use for application performance monitoring?",
+    "gold_answer": "Datadog (APM still there; infrastructure moved to Prometheus)",
+    "expected_recency_bias": false,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h07",
+    "facts": [
+      {
+        "content": "The search index rebuild takes 4 hours",
+        "stored_days_ago": 200
+      },
+      {
+        "content": "Optimized search indexing, now takes 45 minutes",
+        "stored_days_ago": 90
+      },
+      {
+        "content": "Added new fields to search index, rebuild now takes 1.5 hours",
+        "stored_days_ago": 10
+      }
+    ],
+    "query": "How long does a full search index rebuild take?",
+    "gold_answer": "1.5 hours",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h08",
+    "facts": [
+      {
+        "content": "The API gateway is Kong",
+        "stored_days_ago": 500,
+        "rehearsed_days_ago": [
+          180,
+          90,
+          30,
+          7
+        ]
+      },
+      {
+        "content": "Evaluated Envoy as Kong replacement",
+        "stored_days_ago": 60
+      },
+      {
+        "content": "Kong configuration was simplified in the latest refactor",
+        "stored_days_ago": 14
+      }
+    ],
+    "query": "What API gateway do we use?",
+    "gold_answer": "Kong",
+    "expected_recency_bias": false,
+    "difficulty": "hard",
+    "note": "Old but heavily rehearsed and reconfirmed recently"
+  },
+  {
+    "id": "td_h09",
+    "facts": [
+      {
+        "content": "Max request body size is 1 MB",
+        "stored_days_ago": 300
+      },
+      {
+        "content": "Increased to 10 MB for the file upload endpoint only",
+        "stored_days_ago": 60
+      },
+      {
+        "content": "Global max remains 1 MB except for /upload which is 10 MB",
+        "stored_days_ago": 45
+      }
+    ],
+    "query": "What's the maximum request body size for a normal API call?",
+    "gold_answer": "1 MB (10 MB only for /upload)",
+    "expected_recency_bias": false,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h10",
+    "facts": [
+      {
+        "content": "TLS certificates are from Let's Encrypt with 90-day rotation",
+        "stored_days_ago": 365,
+        "rehearsed_days_ago": [
+          90,
+          30
+        ]
+      },
+      {
+        "content": "Investigated switching to AWS Certificate Manager",
+        "stored_days_ago": 45
+      },
+      {
+        "content": "Staying with Let's Encrypt but adding cert-manager for automation",
+        "stored_days_ago": 14
+      }
+    ],
+    "query": "Who issues our TLS certificates?",
+    "gold_answer": "Let's Encrypt (with cert-manager for automation)",
+    "expected_recency_bias": false,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h11",
+    "facts": [
+      {
+        "content": "The ML feature store uses Feast",
+        "stored_days_ago": 250
+      },
+      {
+        "content": "Feast had reliability issues, evaluating Tecton",
+        "stored_days_ago": 60
+      },
+      {
+        "content": "Tecton was too expensive, patched Feast instead",
+        "stored_days_ago": 20
+      },
+      {
+        "content": "Feast running stable after patches",
+        "stored_days_ago": 5
+      }
+    ],
+    "query": "What feature store does the ML team use?",
+    "gold_answer": "Feast (patched, running stable)",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h12",
+    "facts": [
+      {
+        "content": "OAuth provider is Auth0",
+        "stored_days_ago": 400,
+        "rehearsed_days_ago": [
+          60,
+          14
+        ]
+      },
+      {
+        "content": "Keycloak POC was done for self-hosted auth",
+        "stored_days_ago": 90
+      },
+      {
+        "content": "Auth0 contract renewed for another year",
+        "stored_days_ago": 30
+      }
+    ],
+    "query": "What OAuth provider are we using?",
+    "gold_answer": "Auth0 (renewed)",
+    "expected_recency_bias": false,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h13",
+    "facts": [
+      {
+        "content": "Batch processing window is 2 AM to 5 AM UTC",
+        "stored_days_ago": 365,
+        "rehearsed_days_ago": [
+          90,
+          30,
+          7
+        ]
+      },
+      {
+        "content": "Extended batch window to 1 AM - 6 AM during holiday season",
+        "stored_days_ago": 45
+      },
+      {
+        "content": "Batch window reverted to normal 2 AM - 5 AM after holidays",
+        "stored_days_ago": 14
+      }
+    ],
+    "query": "When does batch processing run?",
+    "gold_answer": "2 AM to 5 AM UTC",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h14",
+    "facts": [
+      {
+        "content": "The CDN cache invalidation takes up to 15 minutes",
+        "stored_days_ago": 300
+      },
+      {
+        "content": "Switched to instant invalidation via API",
+        "stored_days_ago": 120
+      },
+      {
+        "content": "Instant invalidation costs too much, added 5-minute delay",
+        "stored_days_ago": 30
+      }
+    ],
+    "query": "How long does CDN cache invalidation take?",
+    "gold_answer": "5 minutes (delayed from instant to save costs)",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  },
+  {
+    "id": "td_h15",
+    "facts": [
+      {
+        "content": "The codebase has 200K lines of code",
+        "stored_days_ago": 180
+      },
+      {
+        "content": "After the monolith split, main service is 80K lines",
+        "stored_days_ago": 60
+      },
+      {
+        "content": "New features added, main service now at 95K lines",
+        "stored_days_ago": 7
+      }
+    ],
+    "query": "How large is the main service codebase?",
+    "gold_answer": "95K lines",
+    "expected_recency_bias": true,
+    "difficulty": "hard"
+  }
+]

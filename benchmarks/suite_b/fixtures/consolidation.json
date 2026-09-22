@@ -1,0 +1,378 @@
+[
+  {
+    "id": "cb_01",
+    "description": "API endpoint URL accessed repeatedly should stay core",
+    "facts": [
+      "The authentication service runs on port 8080",
+      "Auth service endpoint: POST /api/v2/auth/token",
+      "The auth service is at localhost:8080",
+      "Login endpoint: /api/v2/auth/token with POST method",
+      "Auth tokens expire after 3600 seconds",
+      "The service uses JWT for token encoding"
+    ],
+    "access_sequence": [
+      "authentication service",
+      "auth endpoint",
+      "/api/v2/auth/token",
+      "auth service port"
+    ],
+    "time_gap_days": 30,
+    "query": "What is the authentication service endpoint?",
+    "gold_answer": "POST /api/v2/auth/token",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_02",
+    "description": "Database connection info accessed many times stays core",
+    "facts": [
+      "PostgreSQL database runs on db.internal:5432",
+      "Database name is hermes_prod",
+      "DB host: db.internal, port: 5432",
+      "Production database: postgresql://db.internal:5432/hermes_prod",
+      "Database requires SSL connection",
+      "Connection pool max size: 20",
+      "Read replicas are at db-replica.internal:5432"
+    ],
+    "access_sequence": [
+      "database",
+      "PostgreSQL",
+      "db.internal",
+      "connection string",
+      "database host"
+    ],
+    "time_gap_days": 30,
+    "query": "What is the production database host and port?",
+    "gold_answer": "db.internal:5432",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_03",
+    "description": "Team standup time rehearsed daily stays core after a month",
+    "facts": [
+      "Daily standup is at 9:30 AM PST",
+      "Team standup meeting: every weekday 9:30 AM Pacific Time",
+      "Morning sync at 9:30 each weekday",
+      "Standup is in the main conference room (Zoom link in calendar)",
+      "Skip standup on company holidays"
+    ],
+    "access_sequence": [
+      "standup",
+      "9:30",
+      "standup time",
+      "morning meeting",
+      "standup",
+      "9:30 AM"
+    ],
+    "time_gap_days": 30,
+    "query": "What time is the daily standup?",
+    "gold_answer": "9:30 AM PST",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_04",
+    "description": "Deployment command accessed before every deploy stays core",
+    "facts": [
+      "Deploy to production: ./scripts/deploy.sh --env prod",
+      "Deployment script location: scripts/deploy.sh",
+      "Always run tests before deploying: make test && ./scripts/deploy.sh --env prod",
+      "Staging deploy: ./scripts/deploy.sh --env staging",
+      "Rollback command: ./scripts/rollback.sh --version <tag>",
+      "Deploy requires VPN connection to be active"
+    ],
+    "access_sequence": [
+      "deploy",
+      "deployment command",
+      "deploy production",
+      "deploy script",
+      "deploy prod"
+    ],
+    "time_gap_days": 30,
+    "query": "What is the production deployment command?",
+    "gold_answer": "./scripts/deploy.sh --env prod",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_05",
+    "description": "Critical API key format checked frequently stays core",
+    "facts": [
+      "Stripe API keys start with sk_live_ in production",
+      "Test Stripe keys start with sk_test_",
+      "Stripe webhook secret is stored in STRIPE_WEBHOOK_SECRET env var",
+      "Stripe API version in use: 2023-10-16",
+      "Stripe keys are rotated every 90 days"
+    ],
+    "access_sequence": [
+      "Stripe",
+      "API key",
+      "Stripe key",
+      "sk_live_",
+      "Stripe production key"
+    ],
+    "time_gap_days": 30,
+    "query": "What prefix do Stripe production API keys use?",
+    "gold_answer": "sk_live_",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_06",
+    "description": "On-call rotation info referenced repeatedly stays core",
+    "facts": [
+      "On-call rotation is weekly, starts Monday 9 AM",
+      "Current on-call engineer receives PagerDuty alerts",
+      "On-call schedule rotates among: Alice, Bob, Carol, Dave",
+      "Escalation path: on-call -> team lead -> CTO",
+      "On-call runbook: docs.internal/runbooks/on-call"
+    ],
+    "access_sequence": [
+      "on-call",
+      "on-call rotation",
+      "PagerDuty",
+      "on-call schedule"
+    ],
+    "time_gap_days": 30,
+    "query": "How often does the on-call rotation change?",
+    "gold_answer": "weekly",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_07",
+    "description": "Redis cache TTL looked up constantly stays core",
+    "facts": [
+      "Redis cache default TTL: 300 seconds",
+      "Cache TTL for user sessions: 86400 seconds (24 hours)",
+      "Redis runs on cache.internal:6379",
+      "Cache TTL default is 5 minutes (300s)",
+      "Hot cache entries (accessed >100x) get TTL extended to 3600s",
+      "Cache eviction policy: allkeys-lru"
+    ],
+    "access_sequence": [
+      "Redis TTL",
+      "cache TTL",
+      "default TTL",
+      "Redis default",
+      "300 seconds"
+    ],
+    "time_gap_days": 30,
+    "query": "What is the Redis cache default TTL?",
+    "gold_answer": "300 seconds",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_08",
+    "description": "CI pipeline trigger conditions checked before every PR stays core",
+    "facts": [
+      "CI runs on every pull request to main or develop",
+      "CI pipeline: lint -> unit tests -> integration tests -> deploy staging",
+      "Push to main triggers production deployment after CI passes",
+      "CI uses GitHub Actions defined in .github/workflows/",
+      "CI timeout is 20 minutes total",
+      "Failed CI blocks merge automatically"
+    ],
+    "access_sequence": [
+      "CI pipeline",
+      "CI runs",
+      "GitHub Actions",
+      "CI on pull request",
+      "CI trigger"
+    ],
+    "time_gap_days": 30,
+    "query": "When does the CI pipeline run?",
+    "gold_answer": "on every pull request",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_09",
+    "description": "Sprint length consulted every sprint start stays core",
+    "facts": [
+      "Sprints are two weeks long",
+      "Sprint starts on Monday, ends Friday of the second week",
+      "Two-week sprint cycle starting each odd Monday",
+      "Sprint review on last Friday of the sprint at 3 PM",
+      "Retrospective follows the sprint review on Fridays",
+      "Backlog refinement happens mid-sprint on Wednesdays"
+    ],
+    "access_sequence": [
+      "sprint length",
+      "sprint",
+      "two weeks",
+      "sprint cycle"
+    ],
+    "time_gap_days": 30,
+    "query": "How long are the sprints?",
+    "gold_answer": "two weeks",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_10",
+    "description": "Logging level env var looked up constantly stays core",
+    "facts": [
+      "Set LOG_LEVEL=DEBUG to enable verbose logging",
+      "Default log level is INFO in production",
+      "LOG_LEVEL environment variable controls log verbosity",
+      "Debug logging: LOG_LEVEL=DEBUG",
+      "Warning: DEBUG level logs can expose sensitive data",
+      "Log output goes to stdout and is captured by Datadog"
+    ],
+    "access_sequence": [
+      "LOG_LEVEL",
+      "debug logging",
+      "log level",
+      "LOG_LEVEL=DEBUG",
+      "verbose logging"
+    ],
+    "time_gap_days": 30,
+    "query": "How do you enable debug logging?",
+    "gold_answer": "LOG_LEVEL=DEBUG",
+    "expects_layer": "core"
+  },
+  {
+    "id": "cb_11",
+    "description": "Old deprecated API version never accessed moves to archive",
+    "facts": [
+      "API v1 was deprecated in January 2023",
+      "API v1 endpoints still served but return deprecation warnings",
+      "Migration guide from v1 to v2 at docs.internal/migration-v1-v2",
+      "API v1 will be fully removed in Q3 2024"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "When was API v1 deprecated?",
+    "gold_answer": "January 2023",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_12",
+    "description": "Old office address never referenced moves to archive",
+    "facts": [
+      "Old office was at 100 Market Street, San Francisco",
+      "We moved offices in March 2022",
+      "New office at 200 Spear Street opened April 2022",
+      "Old office parking validated at the Market Street garage"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "Where was the old office?",
+    "gold_answer": "100 Market Street, San Francisco",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_13",
+    "description": "Departed team member contact info never recalled moves to archive",
+    "facts": [
+      "Alex's extension was x4521 before leaving",
+      "Alex was the original backend lead, departed Q4 2022",
+      "Alex's code reviews are in GitHub history",
+      "Contact Alex's replacement Sam at x4521 (reassigned)"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "What was Alex's extension before leaving?",
+    "gold_answer": "x4521",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_14",
+    "description": "Outdated dependency version never checked moves to archive",
+    "facts": [
+      "We used React 16 until the upgrade in 2021",
+      "React 16 end-of-life was October 2022",
+      "Codebase was on React 16.14 before migration",
+      "React 16 hooks support was added in 16.8"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "What React version were we on before the upgrade?",
+    "gold_answer": "React 16",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_15",
+    "description": "One-time conference WiFi password never used again moves to archive",
+    "facts": [
+      "PyCon 2022 WiFi password was PyConSF2022!",
+      "The conference was at Moscone Center",
+      "PyCon 2022 had 3000 attendees",
+      "PyCon 2022 talks are on YouTube"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "What was the PyCon 2022 WiFi password?",
+    "gold_answer": "PyConSF2022!",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_16",
+    "description": "Old Jira board URL never visited moves to archive",
+    "facts": [
+      "Old Jira board: jira.company.com/browse/LEGACY",
+      "Migrated to Linear in November 2022",
+      "Old Jira still readable but not updated",
+      "LEGACY board has 847 closed issues"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "What was the old Jira board URL?",
+    "gold_answer": "jira.company.com/browse/LEGACY",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_17",
+    "description": "Superseded architecture decision never consulted moves to archive",
+    "facts": [
+      "Initial architecture used a monolithic Django app",
+      "Monolith deployed to single EC2 t2.xlarge instance",
+      "Monolith served all API and frontend routes",
+      "Decision to decompose to microservices made in Q1 2023"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "What was the original application architecture?",
+    "gold_answer": "monolithic Django app",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_18",
+    "description": "Old incident postmortem details never revisited move to archive",
+    "facts": [
+      "Incident INC-2021-047: database outage on July 3rd 2021",
+      "Root cause: unindexed query caused full table scan",
+      "Duration: 47 minutes total downtime",
+      "Mitigation: added composite index on users.created_at + status"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "What caused incident INC-2021-047?",
+    "gold_answer": "unindexed query",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_19",
+    "description": "Decommissioned staging environment credentials move to archive",
+    "facts": [
+      "Old staging environment at staging-v1.company.com decommissioned",
+      "staging-v1 shutdown date: February 2022",
+      "Replaced by staging-v2.company.com with SSO",
+      "staging-v1 data archived to S3 bucket hermes-staging-archive"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "When was staging-v1 shut down?",
+    "gold_answer": "February 2022",
+    "expects_layer": "archive"
+  },
+  {
+    "id": "cb_20",
+    "description": "Old vendor contract terms never referenced move to archive",
+    "facts": [
+      "Original AWS contract was $50k/month committed spend",
+      "Contract started January 2020, 3-year term",
+      "Contract expired and renegotiated in January 2023",
+      "New 2023 contract: $75k/month with 20% reserved instance discount"
+    ],
+    "access_sequence": [],
+    "time_gap_days": 60,
+    "query": "What was the original AWS monthly commitment?",
+    "gold_answer": "$50k/month",
+    "expects_layer": "archive"
+  }
+]

@@ -4218,7 +4218,15 @@ function Install-Desktop {
             & $npmExe install --include=optional 2>&1 | ForEach-Object { "$_" } | Tee-Object -Variable npmOut
             $code = $LASTEXITCODE
         }
-        if ($code -eq 0) {
+        # Guard on the script's presence. Only one installer binary is
+        # published and it is always the newest, so it is routinely pointed at
+        # an older checkout -- every install-then-update test matrix does this,
+        # and so does anyone installing a pinned older ref. Checkouts older
+        # than ae9f42accf do not carry this helper, and the binding repair is
+        # an optimisation rather than a precondition, so a missing script must
+        # not fail the desktop stage with MODULE_NOT_FOUND. A script that IS
+        # present and fails still propagates its exit code.
+        if ($code -eq 0 -and (Test-Path "$InstallDir\apps\desktop\scripts\ensure-rolldown-binding.mjs")) {
             & node apps/desktop/scripts/ensure-rolldown-binding.mjs
             $code = $LASTEXITCODE
         }

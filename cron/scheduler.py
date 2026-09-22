@@ -3147,7 +3147,8 @@ def _run_one_job_body(
 
         # get_secret() fails closed outside a scope; the ticker thread has none. Delivery adapters
         # resolve credentials, so the scope must span delivery too (reset in the outer finally).
-        _scope_token = set_secret_scope(build_profile_secret_scope(_get_hermes_home()))
+        _scope_token = set_secret_scope(
+            build_profile_secret_scope(_get_hermes_home()), profile_home=str(_get_hermes_home()))
         # Same for terminal policy (gateway/run.py _profile_runtime_scope): else the ticker reads
         # process-global TERMINAL_* env a concurrent profile pinned. Resolution failure installs a
         # refusal scope — terminal execution raises instead of using the launch process's policy.
@@ -3484,7 +3485,7 @@ def _launch_external_cron_worker(job: dict) -> bool:
 
     profile_home = _get_hermes_home().resolve()
     hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
     try:
         worker_env = strip_launch_profile_env(build_subprocess_env(
             scrub_secrets=multiplex_active,
@@ -3666,7 +3667,7 @@ def _run_external_worker_payload(payload_path: Path, ack_path: Path) -> bool:
     multiplex_active = bool(payload.get("multiplex_active", False))
     set_multiplex_active(multiplex_active)
     hydrate_profile_secret_sources(profile_home)
-    secret_token = set_secret_scope(build_profile_secret_scope(profile_home))
+    secret_token = set_secret_scope(build_profile_secret_scope(profile_home), profile_home=str(profile_home))
     try:
         with use_cron_store(profile_home):
             if adopt_claimed_execution(execution_id) is None:

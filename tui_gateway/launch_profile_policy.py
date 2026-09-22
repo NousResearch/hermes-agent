@@ -167,7 +167,7 @@ def launch_profile_runtime_scope(launch_home: "str | Path") -> Iterator[None]:
 
     home = Path(launch_home)
     home_token = set_hermes_home_override(str(home))
-    secret_token = set_secret_scope(launch_secret_scope(home))
+    secret_token = set_secret_scope(launch_secret_scope(home), profile_home=str(home))
     terminal_token = install_profile_terminal_scope(home, env_overlay=launch_terminal_env())
     try:
         yield

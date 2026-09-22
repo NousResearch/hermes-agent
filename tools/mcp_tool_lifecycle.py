@@ -115,7 +115,7 @@ def _reregister_orphaned_adopters() -> None:
     from tools.mcp_tool_config import _load_mcp_config
     for adopter, names in pending.items():
         home_token = set_hermes_home_override(adopter)
-        secret_token = set_secret_scope(build_profile_secret_scope(Path(adopter)))
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(adopter)), profile_home=adopter)
         try:
             servers = {n: c for n, c in (_load_mcp_config() or {}).items() if n in names}
             if servers:

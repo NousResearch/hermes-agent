@@ -5937,7 +5937,12 @@ class TestMiniAppAdminOnlyMutatingEndpoints:
 
         web_server._ACTION_PROCS.pop("gateway-restart", None)
         web_server._ACTION_COMMANDS.pop("gateway-restart", None)
-        monkeypatch.setattr(web_server, "_spawn_hermes_action", lambda *_a, **_kw: _Proc())
+        # restart_gateway (hermes_cli/web_routers/*) resolves this via a late-binding proxy to its
+        # OWN module, not hermes_cli.web_server -- patching the web_server compat-shim name is a
+        # no-op for the router's actual lookup. See hermes_cli/web_deps.py's late()/_server(), and
+        # test_admin_token_can_update_hermes below for the same fix on a sibling action endpoint.
+        monkeypatch.setattr(
+            "hermes_cli.web_server_gateway._spawn_hermes_action", lambda *_a, **_kw: _Proc())
 
         resp = self.client.post("/api/gateway/restart", headers=self.admin)
         assert resp.status_code == 200

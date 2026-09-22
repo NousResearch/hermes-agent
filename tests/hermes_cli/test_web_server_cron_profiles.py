@@ -5,7 +5,7 @@ import json
 import threading
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 import hermes_cli.web_models as _web_models
 import hermes_cli.web_routers.cron as _rt_cron
 import hermes_cli.web_server_cron as _web_server_cron
@@ -1163,13 +1163,18 @@ async def test_cron_job_mutations_resolve_the_owner_when_the_hint_is_another_pro
     got = await _rt_cron.get_cron_job(job_id, profile="default")
     assert got["id"] == job_id and got["name"] == "worker-mutations"
 
-    paused = await _rt_cron.pause_cron_job(job_id, profile="default")
+    # pause_cron_job/delete_cron_job are admin-gated (_require_dashboard_admin) since the Mini App
+    # tiered access control landed; a bare Request with no request.state.token_principal set
+    # resolves to the cookie/session caller's unrestricted scope, same as this direct call always
+    # got before that gate existed.
+    request = Request(scope={"type": "http", "headers": []})
+    paused = await _rt_cron.pause_cron_job(request, job_id, profile="default")
     assert paused["id"] == job_id and paused.get("enabled") is False
     owner_view = _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job_id)
     assert owner_view["enabled"] is False  # mutation landed in the owner's jobs.json
     assert _web_server_cron._call_cron_for_profile("default", "list_jobs", True) == []  # not copied into the hint profile
 
-    await _rt_cron.delete_cron_job(job_id, profile="default")
+    await _rt_cron.delete_cron_job(request, job_id, profile="default")
     assert _web_server_cron._call_cron_for_profile("worker_alpha", "get_job", job_id) is None
     with pytest.raises(HTTPException) as exc:
         await _rt_cron.get_cron_job(job_id, profile="default")

@@ -169,8 +169,12 @@ def test_desktop_session_search_stamps_the_requested_profile(monkeypatch):
         lambda profile, *, read_only: _FakeSessionDB(read_only=read_only),
     )
 
+    # token_principal=None is the desktop dashboard's own request shape (no Mini App token seam
+    # involved) -- _require_dashboard_admin treats it as the unrestricted operator, same as every
+    # other admin-gated handler test in tests/hermes_cli/test_web_server.py.
+    fake_request = SimpleNamespace(state=SimpleNamespace(token_principal=None))
     response = asyncio.run(
-        _rt_sessions.search_sessions(q="20260603", limit=2, profile="worker")
+        _rt_sessions.search_sessions(fake_request, q="20260603", limit=2, profile="worker")
     )
 
     assert {

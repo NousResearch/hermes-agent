@@ -10,10 +10,17 @@ import asyncio
 import threading
 
 import pytest
+from fastapi import Request
 
 import hermes_cli.web_models as _web_models
 import hermes_cli.web_routers.sessions as _rt_sessions
 import hermes_cli.web_server_sessions as _web_server_sessions
+
+# search_sessions/get_session_detail/rename_session_endpoint are admin-gated (_require_dashboard_admin)
+# since the Mini App tiered access control landed; a bare Request with no request.state.token_principal
+# set resolves to the cookie/session caller's unrestricted scope, same as these direct calls always got
+# before that gate existed.
+_FAKE_REQUEST = Request(scope={"type": "http", "headers": []})
 
 
 def test_bulk_delete_sessiondb_work_runs_off_event_loop(monkeypatch):
@@ -90,9 +97,9 @@ class _ReadDB:
 @pytest.mark.parametrize(
     "call",
     [
-        pytest.param(lambda: _rt_sessions.search_sessions(q="hello"), id="search"),
+        pytest.param(lambda: _rt_sessions.search_sessions(_FAKE_REQUEST, q="hello"), id="search"),
         pytest.param(lambda: _rt_sessions.get_session_stats(), id="stats"),
-        pytest.param(lambda: _rt_sessions.get_session_detail("sess-1"), id="detail"),
+        pytest.param(lambda: _rt_sessions.get_session_detail(_FAKE_REQUEST, "sess-1"), id="detail"),
     ],
 )
 def test_session_read_handlers_run_sessiondb_work_off_event_loop(monkeypatch, call):
@@ -142,7 +149,7 @@ def test_session_rename_runs_writer_open_and_update_off_event_loop(monkeypatch):
 
     result = asyncio.run(
         _rt_sessions.rename_session_endpoint(
-            "sess-1", _web_models.SessionRename(title="renamed")
+            _FAKE_REQUEST, "sess-1", _web_models.SessionRename(title="renamed")
         )
     )
 

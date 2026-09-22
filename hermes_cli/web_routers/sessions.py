@@ -651,6 +651,9 @@ async def get_session_messages(
     order: Optional[str] = Query(None), include_compacted: bool = Query(False)):
     if order not in (None, "oldest", "latest"):
         raise HTTPException(status_code=400, detail="order must be one of: oldest, latest")
+    # Only a scoped (non-admin Mini App) caller needs the row-ownership check; unrestricted
+    # callers keep the plain read path (no extra row fetch, no new not-found case).
+    scoped = _dashboard_requester_scope(request)[0] not in (None, "admin")
 
     def _read(db):
         sid = _resolve_session_id(db, session_id)
@@ -661,10 +664,11 @@ async def get_session_messages(
         # originally-requested id — resolve_resume_session_id can redirect
         # to a different row and that's the one whose ownership matters.
         sid = db.resolve_resume_session_id(sid)
-        session = db.get_session(sid)
-        if not session:
-            return None
-        _enforce_session_ownership(request, session)
+        if scoped:
+            session = db.get_session(sid)
+            if not session:
+                return None
+            _enforce_session_ownership(request, session)
         # Always page (an omitted limit used to load whole transcripts). Explicit
         # pagination anchors at the start; the default view is the latest page.
         default_page = limit is None

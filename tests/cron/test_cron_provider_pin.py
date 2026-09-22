@@ -35,7 +35,7 @@ def _base_job(**overrides):
 
 
 def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cron_model=None,
-         cron_model_provider=None):
+         cron_model_provider=None, extra_config=""):
     """Drive run_job against a temp config.yaml whose ``model.default`` / ``model.provider`` are
     the CURRENT global defaults. Returns ``(success, error, agent_kwargs, resolve_kwargs)`` where
     the last two are the kwargs AIAgent / resolve_runtime_provider were called with (None when
@@ -54,7 +54,7 @@ def _run(job, tmp_path, *, current_provider="openrouter", current_model=None, cr
         cron_lines.append(f"  model_provider: {cron_model_provider}")
     if cron_lines:
         config_yaml += "cron:\n" + "\n".join(cron_lines) + "\n"
-    (tmp_path / "config.yaml").write_text(config_yaml)
+    (tmp_path / "config.yaml").write_text(config_yaml + extra_config)
 
     resolve_kwargs = {}
 
@@ -185,3 +185,34 @@ class TestRuntimeResolutionTargetModel:
         assert success is True, error
         assert resolve_kwargs["target_model"] == "my-pinned-model"
         assert resolve_kwargs["requested"] == "openrouter"
+
+    def test_direct_aliases_expand_for_primary_and_fallback(self, tmp_path, monkeypatch):
+        """Cron uses configured aliases for both its primary and fallback routes."""
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        aliases = (
+            "model_aliases:\n"
+            "  primary-alias:\n"
+            "    model: provider/primary-real\n"
+            "    provider: openrouter\n"
+            "    base_url: https://router.example/v1\n"
+            "  fallback-alias:\n"
+            "    model: provider/fallback-real\n"
+            "    provider: openrouter\n"
+            "    base_url: https://router.example/v1\n"
+            "fallback_providers:\n"
+            "  - provider: openrouter\n"
+            "    model: fallback-alias\n"
+        )
+        job = _base_job(model="primary-alias", provider="openrouter")
+
+        success, error, agent_kwargs, resolve_kwargs = _run(
+            job, tmp_path, current_provider="openrouter", extra_config=aliases)
+
+        assert success is True, error
+        assert agent_kwargs["model"] == "provider/primary-real"
+        assert agent_kwargs["fallback_model"] == [{
+            "provider": "openrouter", "model": "provider/fallback-real",
+            "base_url": "https://router.example/v1",
+        }]
+        assert resolve_kwargs["target_model"] == "provider/primary-real"
+        assert resolve_kwargs["explicit_base_url"] == "https://router.example/v1"

@@ -413,6 +413,22 @@ def _runtime_provider_credentials(v: dict, explicit_request_overrides) -> dict:
         command=pinned_command, args=list(runtime.get("args") or []),
     )
 
+
+def _resolve_delegation_model_alias(model: str, provider: Optional[str]) -> tuple[str, Optional[str], str, str]:
+    """Expand a direct alias before constructing a delegated child runtime.
+
+    ``AIAgent`` startup resolves direct aliases, but delegation constructs its
+    child runtime itself. Resolve here so a configured alias never reaches a
+    provider transport as though it were a provider-native model ID.
+    """
+    from hermes_cli.model_switch import resolve_startup_model_route
+
+    route = resolve_startup_model_route(model, explicit_provider=str(provider or ""))
+    if route is None:
+        return model, provider, "", ""
+    return route.model, route.provider or provider, route.base_url, route.api_key
+
+
 def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     """Child credential bundle from the ``delegation`` config section. Three branches: ``base_url`` set → direct
     endpoint (``api_key`` None means inherit the parent's key, so providers keyed outside OPENAI_API_KEY work);
@@ -420,6 +436,16 @@ def _resolve_delegation_credentials(cfg: dict, parent_agent) -> dict:
     None values, child inherits everything. ``request_overrides`` is honored on every branch. Raises ValueError
     with a user-facing message."""
     values = {k: str(cfg.get(k) or "").strip() or None for k in ("model", "provider", "base_url", "api_key")}
+    if values["model"]:
+        model, provider, alias_base_url, alias_api_key = _resolve_delegation_model_alias(
+            values["model"], values["provider"]
+        )
+        values["model"] = model
+        values["provider"] = provider
+        # Explicit delegation endpoint/credentials remain authoritative. The
+        # alias fills only omitted route details, matching cron alias handling.
+        values["base_url"] = values["base_url"] or alias_base_url or None
+        values["api_key"] = values["api_key"] or alias_api_key or None
     values["api_mode"] = str(cfg.get("api_mode") or "").strip().lower() or None
     explicit_request_overrides = cfg.get("request_overrides") if isinstance(cfg.get("request_overrides"), dict) else None
     is_native_sdk_provider = (values["provider"] or "").strip().lower() in _NATIVE_SDK_PROVIDERS

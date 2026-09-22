@@ -3619,7 +3619,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     continue
                 selected[idx] = grown
                 new_len = len(_render(_merged(selected)))
-                if new_len > cap:  # marker widths shrink as records leave a gap; recheck exactly
+                # The pre-check above bounds the added record; the exact re-render catches the
+                # one thing it cannot see — a gap's first index gaining a digit or comma in the
+                # marker (e.g. 999 -> 1,000) when the render is already at cap.
+                if new_len > cap:
                     selected[idx] = (s, e)
                     continue
                 rendered_len = new_len

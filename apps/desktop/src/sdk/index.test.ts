@@ -16,6 +16,8 @@ const warmMocks = vi.hoisted(() => ({
   openSecondaryCount: vi.fn(() => 0)
 }))
 
+const paneMocks = vi.hoisted(() => ({ revealDesktopPane: vi.fn<(pane: string) => boolean>() }))
+
 vi.mock('@/store/gateway', async importOriginal => ({
   ...((await importOriginal()) as Record<string, unknown>),
   openGatewayForAgent: warmMocks.openGatewayForAgent,
@@ -27,6 +29,17 @@ vi.mock('@/store/pool-limits', async () => {
   const { atom } = await import('nanostores')
 
   return { $poolLimits: atom({ idleMs: 600_000, maxBackends: 3 }) }
+})
+vi.mock('@/store/pane-focus', () => ({ revealDesktopPane: paneMocks.revealDesktopPane }))
+
+describe('host.revealDesktopPane', () => {
+  it('forwards the pane and boolean result through the public SDK', () => {
+    paneMocks.revealDesktopPane.mockImplementation(pane => pane === 'terminal')
+
+    expect(host.revealDesktopPane('terminal')).toBe(true)
+    expect(host.revealDesktopPane('unknown')).toBe(false)
+    expect(paneMocks.revealDesktopPane.mock.calls).toEqual([['terminal'], ['unknown']])
+  })
 })
 
 describe('host.warmProfile pool-saturation contract', () => {

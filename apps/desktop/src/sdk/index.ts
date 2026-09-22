@@ -61,6 +61,7 @@ import {
   type SpawnPriority
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
+import { revealDesktopPane as revealCoreDesktopPane } from '@/store/pane-focus'
 import {
   $activeGatewayProfile,
   $gatewaySwapTarget,
@@ -1375,6 +1376,9 @@ export const host = {
 
     revealTreePane(id)
   },
+
+  /** Reveal one of the core Desktop panes from an explicit user action. */
+  revealDesktopPane: (pane: string) => revealCoreDesktopPane(pane),
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.

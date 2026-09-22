@@ -526,6 +526,8 @@ host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
+host.revealPane(paneId)                    // reveal a contributed pane by its scoped id
+host.revealDesktopPane(pane)               // reveal chat/files/review/sessions/terminal; boolean
 host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
                                            //   Calls made during register() are retired with the
                                            //   plugin; elsewhere prefer ctx.onEvent (always tracked)
@@ -567,6 +569,13 @@ registers while the Bots pane holds the sidebar tab and unregisters when the
 user tabs back to Sessions. Feature-detect on older desktops
 (`typeof host.paneVisibility === 'function'`) and fall back to
 always-registered behavior.
+
+`host.revealDesktopPane(pane)` reveals one of the five core Desktop panes:
+`'chat'`, `'files'`, `'review'`, `'sessions'`, or `'terminal'`. It returns
+`true` for a recognized name and `false` otherwise. This is distinct from
+`host.revealPane('<pluginId>:<paneId>')`, which reveals a contributed pane by
+its scoped id. Call either only from an explicit user action. Feature-detect
+`host.revealDesktopPane` on older Desktop builds before calling it.
 
 `host.profileRoutes()` inventories every registered source in the current connection
 registry. Connect-on-demand SSH sources expose a credential-free `default` seed
@@ -935,7 +944,7 @@ not treat this pipeline as a trust boundary.
 
 | Category | Exports |
 |----------|---------|
-| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
+| Host | `host` (`.state.*`, `.notify`, `.notifyError`, `.navigate`, `.revealPane`, `.revealDesktopPane`, `.onEvent`, `.logs`, `.status`, `.restartGateway`, `.request`) |
 | Plugin contract | `HermesPlugin`, `PluginContext`, `PluginContribution`, `PluginStorage`, `PluginOs`, `PluginRestOptions`, `PluginNativeNotificationInput`, `PluginNotificationAction`, `HermesOpenTarget`, `Contribution` |
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `WORKSPACE_PAGE_HEADER_AREA`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |

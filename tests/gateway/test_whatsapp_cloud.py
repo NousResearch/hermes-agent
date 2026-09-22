@@ -1507,3 +1507,58 @@ class TestReplyContextResolution:
         assert event.media_urls == [str(image)]
         assert event.media_types == ["image/png"]
 
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("outcome", ["success", "second_failure", "missing_ids"])
+async def test_chunk_quotes_resolve_delivered_text(tmp_path, monkeypatch, outcome):
+    """Every returned wamid resolves its own delivered chunk, even after partial failure."""
+    from gateway import rich_sent_store
+    from gateway.config import PlatformConfig
+    from gateway.platforms.whatsapp_cloud import WhatsAppCloudAdapter
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    chat_id = "15551234567"
+    adapter = WhatsAppCloudAdapter(PlatformConfig(extra={
+        "phone_number_id": "synthetic-phone", "access_token": "synthetic-token",
+        "reply_prefix": "", "dm_policy": "allowlist", "allow_from": [chat_id],
+    }))
+    delivered = []
+    payloads = []
+
+    async def post(url, *, headers, json):
+        payloads.append(json)
+        index = len(payloads)
+        response = MagicMock()
+        if outcome == "second_failure" and index == 2:
+            response.status_code = 503
+            response.json.return_value = {"error": {"message": "synthetic failure"}}
+        else:
+            response.status_code = 200
+            if outcome == "missing_ids" and index > 1:
+                response.json.return_value = {"messages": []}
+            else:
+                message_id = f"wamid.chunk.{index}"
+                delivered.append((message_id, json["text"]["body"]))
+                response.json.return_value = {"messages": [{"id": message_id}]}
+        return response
+
+    adapter._http_client = MagicMock(post=AsyncMock(side_effect=post))
+    content = "\n".join(f"LINE-{i:04d}: distinct line of response content." for i in range(220))
+    result = await adapter.send(chat_id, content)
+    assert len(payloads) >= 2
+    assert result.success == (outcome != "second_failure")
+    if result.success:
+        assert result.message_id == delivered[-1][0]
+    assert len(delivered) == (len(payloads) if outcome == "success" else 1)
+    for index, (message_id, chunk) in enumerate(delivered):
+        expected = chunk[:rich_sent_store._MAX_TEXT_CHARS]
+        assert rich_sent_store.lookup(chat_id, message_id) == expected
+        event = await adapter._build_message_event_from_cloud(
+            {"from": chat_id, "id": f"wamid.reply.{index}", "type": "text",
+             "text": {"body": "Explain this quoted chunk"},
+             "context": {"id": message_id, "from": "15550000000"}},
+            {chat_id: "Synthetic sender"}, {"display_phone_number": "15550000000"},
+        )
+        assert event is not None
+        assert event.reply_to_is_own_message is True
+        assert event.reply_to_text == expected

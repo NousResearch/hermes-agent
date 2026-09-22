@@ -368,11 +368,12 @@ class WhatsAppCloudAdapter(WhatsAppBehaviorMixin, BasePlatformAdapter):
             )
             if err is not None:
                 return SendResult(success=False, error=err)
-            last_message_id = ids[0].get("id") if ids else last_message_id
-        # Index (chat_id, wamid) → text: Meta's inbound ``context`` carries only the
-        # quoted message's id, so this is how replies to our messages resolve text.
-        if last_message_id:
-            rich_sent_store.record(chat_id, last_message_id, formatted)
+            if ids:
+                last_message_id = ids[0].get("id")
+                # A quote identifies one delivered chunk. Record it immediately
+                # so a later chunk's failure cannot discard its reply context.
+                if last_message_id:
+                    rich_sent_store.record(chat_id, last_message_id, chunk)
         return SendResult(success=True, message_id=last_message_id)
 
     # ------------------------------------------------------------------ typing indicator + read receipts

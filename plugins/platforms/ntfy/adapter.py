@@ -100,8 +100,12 @@ def _server_url(extra: Dict[str, Any]) -> str:
 
 
 def check_requirements() -> bool:
-    """Installable and minimally configured (reads NTFY_TOPIC directly — no full config load)."""
-    return HTTPX_AVAILABLE and bool(_get_scoped_secret("NTFY_TOPIC", "").strip())
+    """Return whether ntfy's HTTP dependency is available.
+
+    Topic configuration is checked separately by ``validate_config`` and
+    ``is_connected`` so a topic declared in config.yaml can enable the plugin.
+    """
+    return HTTPX_AVAILABLE
 
 
 def validate_config(config) -> bool:
@@ -359,7 +363,7 @@ def register(ctx) -> None:
     ctx.register_platform(
         name="ntfy", label="ntfy", adapter_factory=lambda cfg: NtfyAdapter(cfg),
         check_fn=check_requirements, validate_config=validate_config, is_connected=is_connected,
-        required_env=["NTFY_TOPIC"], install_hint="pip install httpx   # already a Hermes dependency",
+        required_env=["NTFY_TOPIC"],
         env_enablement_fn=_env_enablement,  # env-only setups show in `gateway status`
         cron_deliver_env_var="NTFY_HOME_CHANNEL",
         standalone_sender_fn=_standalone_send,  # out-of-process cron delivery

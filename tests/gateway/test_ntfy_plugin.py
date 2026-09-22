@@ -68,6 +68,16 @@ class TestNtfyRequirements:
         monkeypatch.setattr(_ntfy, "HTTPX_AVAILABLE", False)
         assert check_requirements() is False
 
+    def test_checks_only_httpx_not_topic_configuration(self, monkeypatch):
+        """A topic in config.yaml must not make the dependency probe fail."""
+        monkeypatch.delenv("NTFY_TOPIC", raising=False)
+        monkeypatch.setattr(_ntfy, "HTTPX_AVAILABLE", True)
+
+        config = PlatformConfig(enabled=True, extra={"topic": "yaml-topic"})
+        assert check_requirements() is True
+        assert validate_config(config) is True
+        assert is_connected(config) is True
+
 
     def test_is_connected_from_extra(self, monkeypatch):
         monkeypatch.delenv("NTFY_TOPIC", raising=False)
@@ -436,6 +446,15 @@ class TestStandaloneSend:
 # ---------------------------------------------------------------------------
 
 
+def test_register_does_not_offer_dependency_install_for_missing_configuration():
+    """The dependency hint must not be shown when only the topic is absent."""
+    context = MagicMock()
+
+    register(context)
+
+    assert "install_hint" not in context.register_platform.call_args.kwargs
+
+
 # ---------------------------------------------------------------------------
 # 12. Robustness — token hygiene + fatal-state propagation
 # ---------------------------------------------------------------------------
@@ -569,4 +588,3 @@ class TestMultiplexProfileScope:
         # Nor may the registry auto-enable ntfy for this profile off the default's topic.
         assert _env_enablement() is None
         assert is_connected(PlatformConfig(enabled=True, extra={})) is False
-

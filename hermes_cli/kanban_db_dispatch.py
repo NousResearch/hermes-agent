@@ -735,9 +735,6 @@ def detect_stale_running(
     ).fetchall()
 
     for row in rows:
-        from hermes_cli.kanban_spawn_ownership import pending
-        if pending(conn, row["id"]):
-            continue
         if row["active_started_at"] is None:
             continue
         elapsed = now - int(row["active_started_at"])
@@ -747,6 +744,12 @@ def detect_stale_running(
         last_hb = row["last_heartbeat_at"]
         hb_age = (now - int(last_hb)) if last_hb is not None else None
         if hb_age is not None and hb_age < _STALE_HEARTBEAT_GAP_SECONDS:
+            continue
+
+        from hermes_cli.kanban_spawn_ownership import pending
+        if pending(conn, row['id']):
+            from hermes_cli.kanban_execution_scope import request_task_stop
+            request_task_stop(conn, row['id'])
             continue
 
         pid = row["worker_pid"]

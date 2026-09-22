@@ -59,7 +59,8 @@ def test_original_scope_cannot_replay_or_settle_from_root_exit_after_restart(boa
 
 
 @pytest.mark.linux_only
-@pytest.mark.parametrize('case', ['root_exit', 'detached', 'deadline', 'delayed', 'supervisor_loss', 'lost_receipt'])
+@pytest.mark.parametrize('case', ['root_exit', 'detached', 'deadline', 'delayed', 'supervisor_loss',
+                                 'lost_receipt', 'manual_reclaim', 'stale', 'terminal_reaper'])
 def test_native_supervisor_owns_descendants_and_cutoff_through_cleanup(board, tmp_path, monkeypatch, case):
     workspace = tmp_path/'work'
     workspace.mkdir()
@@ -115,7 +116,8 @@ while not Path(sys.argv[3]).exists() and time.monotonic()<until: time.sleep(.02)
                 assert child_identity
                 # A completed result is not a cleanup proof. Descendants even
                 # discard task env and detach; subreaping keeps kernel ownership.
-                assert kb.complete_task(conn, task_id, expected_run_id=task.current_run_id)
+                if case not in {'manual_reclaim','stale'}:
+                    assert kb.complete_task(conn, task_id, expected_run_id=task.current_run_id)
                 assert not ownership.reconcile(conn, task_id)
                 if case == 'supervisor_loss':
                     launched[0].kill()
@@ -130,11 +132,24 @@ while not Path(sys.argv[3]).exists() and time.monotonic()<until: time.sleep(.02)
                         with kb.write_txn(conn):
                             conn.execute('UPDATE task_runs SET worker_pid=NULL,worker_started_at=NULL,spawn_state=\'uncertain\' WHERE id=?', (task.current_run_id,))
                             conn.execute('UPDATE tasks SET worker_pid=NULL,worker_started_at=NULL WHERE id=?', (task_id,))
-                    if case != 'deadline':
+                    if case == 'manual_reclaim':
+                        assert not kb.reclaim_task(conn, task_id)
+                    elif case == 'stale':
+                        with kb.write_txn(conn):
+                            conn.execute('UPDATE task_runs SET started_at=? WHERE id=?', (int(time.time())-7200,task.current_run_id))
+                            conn.execute('UPDATE tasks SET last_heartbeat_at=? WHERE id=?', (int(time.time())-7200,task_id))
+                        assert dispatch.detect_stale_running(conn, stale_timeout_seconds=60) == []
+                    elif case == 'terminal_reaper':
+                        with kb.write_txn(conn):
+                            conn.execute('UPDATE task_runs SET ended_at=? WHERE id=?', (int(time.time())-180,task.current_run_id))
+                        assert dispatch.reap_terminal_workers(conn) == []
+                    elif case != 'deadline':
                         root_release.touch()
                     wait_for(lambda: scopes.settled(conn, task.current_run_id))
                     assert dispatch._worker_identity(child, child_identity) in {'gone','foreign'}
                     assert ownership.reconcile(conn, task_id)
+                    if case in {'manual_reclaim','stale'}:
+                        assert kb.reclaim_task(conn, task_id)
                     assert dispatch.count_running_tasks(conn) == 0
                     if case == 'deadline':
                         assert scopes.read(conn, task.current_run_id)['reason'] == 'deadline'

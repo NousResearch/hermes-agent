@@ -30,11 +30,25 @@ def request_stop(conn, run_id):
     scope = read(conn, run_id)
     if scope and scope.get('state') == 'active':
         pid, fingerprint = scope.get('supervisor_pid'), scope.get('supervisor_fingerprint')
-        if pid and pid != os.getpid() and _worker_identity(pid, fingerprint) == 'owned':
-            try:
-                os.kill(pid, signal.SIGTERM)
-            except ProcessLookupError:
-                pass
+        if not pid or pid == os.getpid() or not hasattr(os, 'pidfd_open'):
+            return
+        try:
+            fd = os.pidfd_open(pid)
+        except ProcessLookupError:
+            return
+        try:
+            if _worker_identity(pid, fingerprint) == 'owned':
+                signal.pidfd_send_signal(fd, signal.SIGTERM)
+        except ProcessLookupError:
+            pass
+        finally:
+            os.close(fd)
+
+
+def request_task_stop(conn, task_id):
+    for row in conn.execute('SELECT id FROM task_runs WHERE task_id=? AND execution_scope IS NOT NULL', (task_id,)):
+        if not settled(conn, row['id']):
+            request_stop(conn, row['id'])
 
 
 def prepare(conn, task, *, deadline=None):

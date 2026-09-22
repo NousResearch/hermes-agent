@@ -1076,3 +1076,153 @@ def test_explicitly_declared_profile_arns_still_work(tmp_path):
     explicit = "arn:aws:bedrock:eu-west-2:369607682697:inference-profile/custom.thing"
     arns = _bedrock_locals(tmp_path, ["amazon.nova-pro"], profile_arns=[explicit])
     assert explicit in arns
+
+
+# ---------------------------------------------------------------------------
+# The bootstrap's lifecycle.
+#
+# user_data runs once, at first boot. cloud-init records a PER_INSTANCE semaphore, so on a
+# host that has already booted the script never runs again — which makes a changed bootstrap
+# something that can only be applied by replacing the instance, and makes replacing the
+# instance on every edit to a shell script the wrong default for a host holding a live
+# runtime. The instance therefore ignores user_data changes and publishes the hash instead.
+# These tests hold that arrangement together: the ignore without the hash is drift nobody
+# can see, and the hash without the ignore is a running deployment destroyed by an edit.
+# ---------------------------------------------------------------------------
+
+
+def _bootstrap_and_bedrock(tmp_path, model_ids, image="acct.dkr.ecr.eu-west-2.amazonaws.com/nova:1"):
+    """Evaluate the module's real bootstrap and Bedrock locals side by side, in Terraform.
+
+    Both blocks are lifted from main.tf as written. The only edit is the one reference the
+    bootstrap makes to a resource, which cannot exist without the AWS provider; the assert
+    below fails if that reference ever stops being the thing being substituted.
+    """
+    main = _main_tf()
+
+    boot = main[main.index("locals {\n  bootstrap = templatefile") : main.index('resource "aws_instance" "runtime"')]
+    assert "aws_cloudwatch_log_group.runtime.name" in boot, (
+        "the bootstrap no longer names the log group resource; this substitution is stale"
+    )
+    boot = boot.replace("aws_cloudwatch_log_group.runtime.name", '"/nova/test"')
+
+    bedrock = main[main.index("  # A Bedrock model id is one of two different") : main.index('  # "111122223333.dkr.ecr')]
+
+    tmp_path.mkdir(parents=True, exist_ok=True)
+    shutil.copy(MODULE / "user_data.sh.tftpl", tmp_path / "user_data.sh.tftpl")
+    (tmp_path / "main.tf").write_text(
+        'variable "image_uri" { type = string }\n'
+        'variable "worker_image_uri" { type = string }\n'
+        'variable "tenant_id" { type = string }\n'
+        'variable "integrations" { type = list(object({ id = string })) }\n'
+        'variable "region" { type = string }\n'
+        'variable "bedrock_model_ids" { type = list(string) }\n'
+        'variable "bedrock_profile_regions" { type = list(string) }\n'
+        'variable "bedrock_inference_profile_arns" { type = list(string) }\n\n'
+        'locals {\n  partition = "aws"\n  account_id = "369607682697"\n'
+        '  external_id = "nova-test-369607682697-eu-west-2"\n' + bedrock + "}\n\n" + boot,
+        encoding="utf-8",
+    )
+    subprocess.run(["terraform", "init", "-backend=false", "-input=false"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    result = subprocess.run(
+        ["terraform", "console",
+         "-var", "region=eu-west-2",
+         "-var", "tenant_id=test",
+         "-var", "integrations=[]",
+         "-var", f"image_uri={image}",
+         "-var", "worker_image_uri=acct.dkr.ecr.eu-west-2.amazonaws.com/hermes:1",
+         "-var", f"bedrock_model_ids={json.dumps(list(model_ids))}",
+         "-var", 'bedrock_profile_regions=["*"]',
+         "-var", "bedrock_inference_profile_arns=[]"],
+        cwd=tmp_path,
+        # One expression, not two: piped to `terraform console` only the last is printed.
+        input='"${sha256(local.bootstrap)} ${join(" ", local.bedrock_resources)}"\n',
+        text=True, capture_output=True, check=True,
+    )
+    digest, _, arns = result.stdout.strip().strip('"').partition(" ")
+    return digest, arns.split()
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+def test_changing_the_bedrock_model_does_not_change_the_bootstrap(tmp_path):
+    """The Phase 6.3 gate: correcting the Bedrock grant must not touch the instance.
+
+    `user_data_replace_on_change` acts on the rendered bootstrap, so the question of whether
+    a Bedrock change can replace a running instance is exactly the question of whether it can
+    reach that string. It cannot — the template takes no Bedrock input — and this asserts it
+    against Terraform's own evaluation rather than against a reading of the file.
+    """
+    foundation, foundation_arns = _bootstrap_and_bedrock(tmp_path / "a", ["anthropic.claude-sonnet-4-6"])
+    profile, profile_arns = _bootstrap_and_bedrock(tmp_path / "b", ["eu.anthropic.claude-sonnet-4-6"])
+
+    assert foundation_arns != profile_arns, (
+        "the two Bedrock configurations produced identical grants, so this proves nothing "
+        "about the bootstrap; the fixture is broken"
+    )
+    assert foundation == profile, (
+        "changing bedrock_model_ids changed the rendered user_data, which means a Bedrock "
+        "grant correction can force replacement of a running instance"
+    )
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+def test_the_bootstrap_still_changes_when_the_image_does(tmp_path):
+    """The counterweight: the hash is a real signal, not a constant that passes everything."""
+    one, _ = _bootstrap_and_bedrock(tmp_path / "a", ["amazon.nova-pro"], image="acct.dkr.ecr.eu-west-2.amazonaws.com/nova:1")
+    two, _ = _bootstrap_and_bedrock(tmp_path / "b", ["amazon.nova-pro"], image="acct.dkr.ecr.eu-west-2.amazonaws.com/nova:2")
+    assert one != two
+
+
+def _instance_block() -> str:
+    main = _main_tf()
+    return main[main.index('resource "aws_instance" "runtime"') :]
+
+
+def test_the_instance_does_not_replace_itself_on_a_bootstrap_edit():
+    """Whatever else changes, editing user_data.sh.tftpl must not destroy a live deployment."""
+    block = _instance_block()
+    lifecycle = block[block.index("lifecycle {") : block.index("lifecycle {") + 200]
+    assert "ignore_changes" in lifecycle and "user_data" in lifecycle, (
+        "aws_instance.runtime no longer ignores user_data changes. With "
+        "user_data_replace_on_change = true that makes every edit to the bootstrap script a "
+        "destroy-and-recreate of the running instance; without it, an in-place update that "
+        "stops and starts the host to write a script cloud-init will never run"
+    )
+
+
+def test_ignoring_the_bootstrap_obliges_the_module_to_publish_its_hash():
+    """Terraform stops reporting the difference, so something else has to.
+
+    These two are one decision. An ignore without the hash leaves no way to tell that a host
+    is running a bootstrap older than the module describes, which is how an instance quietly
+    falls a release behind.
+    """
+    if "ignore_changes" not in _instance_block():
+        pytest.skip("the instance no longer ignores user_data; nothing to compensate for")
+    outputs = (MODULE / "outputs.tf").read_text(encoding="utf-8")
+    assert 'output "bootstrap_sha256"' in outputs, (
+        "user_data changes are ignored but the module publishes no bootstrap hash, so a "
+        "stale instance is undetectable from the plan"
+    )
+    assert "sha256(local.bootstrap)" in outputs, (
+        "the output must hash the rendered bootstrap. Reading the instance attribute would "
+        "return the ignored state value and always agree with itself"
+    )
+    assert "-replace=aws_instance.runtime" in outputs, (
+        "the output does not say how to roll the bootstrap forward"
+    )
+
+
+def test_the_state_volume_is_still_protected_from_replacement():
+    """The instance may be replaced deliberately; the audit log may not go with it."""
+    main = _main_tf()
+    volume = main[main.index('resource "aws_ebs_volume" "state"') : main.index('resource "aws_volume_attachment"')]
+    assert "prevent_destroy = true" in volume, (
+        "the state volume lost prevent_destroy. A replacement of the runtime instance "
+        "detaches this volume; nothing may make it destroy one"
+    )

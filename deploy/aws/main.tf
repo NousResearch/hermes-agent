@@ -288,6 +288,24 @@ resource "aws_vpc_security_group_egress_rule" "https" {
   ip_protocol       = "tcp"
 }
 
+# Rendered once and referenced twice: by the instance below, and by the hash in outputs.tf
+# that is how a change to it is noticed once the instance stops replacing itself.
+locals {
+  bootstrap = templatefile("${path.module}/user_data.sh.tftpl", {
+    image_uri    = var.image_uri
+    tenant_id    = var.tenant_id
+    region       = var.region
+    log_group    = aws_cloudwatch_log_group.runtime.name
+    external_id  = local.external_id
+    state_device = "/dev/xvdf"
+    state_mount  = "/var/lib/nova"
+    integrations = join(",", [for i in var.integrations : i.id])
+    # Empty deploys the control plane alone, which creates durable tasks that nothing
+    # claims. See variables.tf for why executing work needs the other image.
+    worker_image_uri = var.worker_image_uri
+  })
+}
+
 resource "aws_instance" "runtime" {
   ami                    = var.ami_id != "" ? var.ami_id : data.aws_ssm_parameter.al2023[0].value
   instance_type          = var.instance_type
@@ -311,19 +329,47 @@ resource "aws_instance" "runtime" {
   }
 
   user_data_replace_on_change = true
-  user_data = templatefile("${path.module}/user_data.sh.tftpl", {
-    image_uri    = var.image_uri
-    tenant_id    = var.tenant_id
-    region       = var.region
-    log_group    = aws_cloudwatch_log_group.runtime.name
-    external_id  = local.external_id
-    state_device = "/dev/xvdf"
-    state_mount  = "/var/lib/nova"
-    integrations = join(",", [for i in var.integrations : i.id])
-    # Empty deploys the control plane alone, which creates durable tasks that nothing
-    # claims. See variables.tf for why executing work needs the other image.
-    worker_image_uri = var.worker_image_uri
-  })
+  user_data                   = local.bootstrap
+
+  # user_data is a first-boot artifact, and this is the whole reason the block exists.
+  # cloud-init runs the user-data script at PER_INSTANCE frequency and drops a semaphore
+  # under /var/lib/cloud/instance/sem; on a host that has already booted the script does not
+  # run again — not on a reboot, and not on the stop/start the AWS provider performs for an
+  # in-place user_data update. So a changed bootstrap is never drift that can be corrected on
+  # a live instance. Either the instance is replaced or the change does not exist.
+  #
+  # That leaves three postures, and only one of them is honest:
+  #
+  #   replace_on_change = true, unguarded (what this was)
+  #     Every edit to the script destroys a running deployment — including edits that can
+  #     only matter on a blank host, like the mkfs guard, and including an image_uri bump
+  #     meant to be rolled out over SSM. The blast radius is set by which file you touched,
+  #     not by what you intended.
+  #
+  #   replace_on_change = false
+  #     The provider stops the instance, writes the new user_data and starts it. The outage
+  #     is real and the effect is not, because cloud-init will not re-run. State then records
+  #     a bootstrap the host has never executed, which is worse than either alternative: it
+  #     is the only one of the three that makes Terraform report something untrue.
+  #
+  #   ignore_changes (this)
+  #     Terraform does not act on the difference on its own. Replacement stays available and
+  #     stays the correct way to roll the bootstrap forward —
+  #     `terraform apply -replace=aws_instance.runtime` — and becomes a decision someone
+  #     makes rather than a side effect of editing a shell script.
+  #
+  # ignore_changes governs updates only, so a first apply still creates the instance with the
+  # whole bootstrap; a deployment that does not exist yet is untouched by any of this.
+  #
+  # What it costs: a change to image_uri or worker_image_uri no longer reaches a running
+  # instance by itself, because those are interpolated into the units this script writes.
+  # `bootstrap_sha256` in outputs.tf is how that is seen, and the README says what to do
+  # about it. user_data_replace_on_change stays true underneath: nothing reaches it while
+  # the ignore holds, but it is the right value if the ignore is ever lifted, because the
+  # outcome it forecloses is the silent stop/start.
+  lifecycle {
+    ignore_changes = [user_data]
+  }
 
   tags = { Name = "${local.name_prefix}-runtime" }
 }

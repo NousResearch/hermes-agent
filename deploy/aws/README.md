@@ -137,6 +137,46 @@ does not build it. Building and pushing is a separate, deliberate step.
 block to let a `terraform destroy` through is a decision someone should have to make on
 purpose.
 
+## Changing the bootstrap on a deployment that already exists
+
+`user_data.sh.tftpl` runs once, at first boot. cloud-init records a `PER_INSTANCE` semaphore
+under `/var/lib/cloud/instance/sem`, so on a host that has already booted the script does not
+run again — not on a reboot, and not on the stop/start the AWS provider would perform to write
+a new one. **A changed bootstrap reaches a running instance only by replacing that instance.**
+
+So `aws_instance.runtime` ignores `user_data` changes. A plan that corrects an IAM grant,
+adds an integration, or bumps a model id touches the IAM policy and leaves the instance alone:
+
+```
+aws_iam_role_policy.runtime   will be updated in-place
+aws_instance.runtime          no change
+aws_volume_attachment.state   no change
+```
+
+The cost is that `image_uri` and `worker_image_uri` are interpolated into the systemd units
+this script writes, so changing either no longer reaches a running host on its own. Two ways
+to roll one forward, and they are not interchangeable:
+
+| | What it does | When |
+|---|---|---|
+| `terraform apply -replace=aws_instance.runtime` | New host, current bootstrap, every unit rewritten. The state volume is **detached, not destroyed** (`prevent_destroy`, and the replacement only replaces the attachment); `NOVA_APPLY_ON_START` reconciles the bundle on the way up. | The bootstrap itself changed — a new unit, a new mount, a new env var. |
+| `nova bundle unpack --replace` over SSM, then restart the unit | Leaves the host alone. | The tenant bundle changed and the units did not. |
+
+`terraform output bootstrap_sha256` is how the difference is seen, since Terraform no longer
+reports it. Compare it against the host:
+
+```bash
+aws ssm send-command --instance-ids "$(terraform output -raw instance_id)" \
+  --document-name AWS-RunShellScript \
+  --parameters 'commands=["sha256sum /var/lib/cloud/instance/user-data.txt"]'
+```
+
+A mismatch means the running instance predates this module's bootstrap. That is information,
+not an emergency — but it is owed a `-replace` before anything that depends on the new script.
+Note that the first apply after this lifecycle block was introduced **adopts** whatever hash
+the configuration then rendered; an instance older than that will not be flagged by it, so
+establish the baseline with the command above once.
+
 ## What has and has not been verified
 
 Verified, offline, against the real AWS provider:

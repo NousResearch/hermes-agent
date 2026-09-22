@@ -5,6 +5,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 import { $terminalFontFamily, setTerminalFontFamilyFromConfig } from '@/app/right-sidebar/terminal/terminal-font'
 import { getHermesConfig } from '@/hermes'
 import { persistString } from '@/lib/storage'
+import { $showReasoning, setShowReasoningFromConfig } from '@/store/reasoning-disclosure'
 import {
   $currentCwd,
   $currentFastMode,
@@ -18,6 +19,8 @@ import {
   setDefaultReasoningEffort
 } from '@/store/session'
 
+import { deferred } from '../../../test/deferred'
+
 import { useHermesConfig } from './use-hermes-config'
 
 vi.mock('@/hermes', () => ({
@@ -27,22 +30,13 @@ vi.mock('@/hermes', () => ({
 
 const WORKSPACE_CWD_KEY = 'hermes.desktop.workspace-cwd'
 
-function deferred<T>() {
-  let resolve!: (value: T | PromiseLike<T>) => void
-
-  const promise = new Promise<T>(done => {
-    resolve = done
-  })
-
-  return { promise, resolve }
-}
-
 const mockConfig = (config: Record<string, unknown>) =>
   vi.mocked(getHermesConfig).mockResolvedValue(config as Awaited<ReturnType<typeof getHermesConfig>>)
 
 describe('useHermesConfig refreshHermesConfig', () => {
   beforeEach(() => {
     // Reset atoms and localStorage between tests
+    setShowReasoningFromConfig(undefined)
     setCurrentCwd('')
     setCurrentFastMode(false)
     setCurrentModelSource('')
@@ -50,6 +44,25 @@ describe('useHermesConfig refreshHermesConfig', () => {
     setDefaultReasoningEffort('')
     setTerminalFontFamilyFromConfig('')
     persistString(WORKSPACE_CWD_KEY, null)
+  })
+
+  // #49664: the Reasoning Blocks toggle wrote config but the renderer never
+  // read it. A refresh mirrors the key (quoted "false" included) and a
+  // missing key falls back to the DEFAULT_CONFIG default (on).
+  it('mirrors display.show_reasoning and resets a missing key to the default', async () => {
+    mockConfig({ display: { show_reasoning: 'false' } })
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showReasoning.get()).toBe(false)
+
+    mockConfig({})
+    await act(async () => {
+      await result.current.refreshHermesConfig()
+    })
+    expect($showReasoning.get()).toBe(true)
   })
 
   // Regression: the composer keeps a manual model pick sticky, which skips the
@@ -126,6 +139,35 @@ describe('useHermesConfig refreshHermesConfig', () => {
 
     expect($currentReasoningEffort.get()).toBe('high')
     expect($currentFastMode.get()).toBe(false)
+  })
+
+  it('does not publish config after its switch loses ownership', async () => {
+    const staleConfig = deferred<Awaited<ReturnType<typeof getHermesConfig>>>()
+    vi.mocked(getHermesConfig).mockReturnValueOnce(staleConfig.promise)
+    const { result } = renderHook(() => useHermesConfig({ activeSessionIdRef: { current: null } }))
+    let ownsSwitch = true
+
+    let refresh!: Promise<void>
+    act(() => {
+      refresh = result.current.refreshHermesConfig(false, () => ownsSwitch)
+    })
+
+    ownsSwitch = false
+    staleConfig.resolve({
+      display: { show_reasoning: false },
+      agent: { reasoning_effort: 'high', service_tier: 'priority' },
+      terminal: { font_family: 'MesloLGS NF' }
+    } as Awaited<ReturnType<typeof getHermesConfig>>)
+
+    await act(async () => {
+      await refresh
+    })
+
+    expect($defaultReasoningEffort.get()).toBe('')
+    expect($currentReasoningEffort.get()).toBe('')
+    expect($currentFastMode.get()).toBe(false)
+    expect($terminalFontFamily.get()).toBe('')
+    expect($showReasoning.get()).toBe(true)
   })
 
   it('does not let an older profile config overwrite a newer profile', async () => {

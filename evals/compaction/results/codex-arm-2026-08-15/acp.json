@@ -1,0 +1,134 @@
+{
+ "summary": {
+  "policy": "codex_real",
+  "recall_pct": 36.7,
+  "scores": [
+   0,
+   0,
+   2,
+   1,
+   0,
+   0,
+   2,
+   0,
+   0,
+   2,
+   0,
+   0,
+   0,
+   2,
+   2
+  ],
+  "read_seconds": 229,
+  "compaction_events": 1,
+  "peak_context_tokens": 454931,
+  "rollout": "/home/teknium/.codex/sessions/2026/08/15/rollout-2026-08-15T18-35-51-01a00835-fef4-7c31-944d-9d0d8ba933be.jsonl"
+ },
+ "results": [
+  {
+   "q": "What was the specific reason Teknium gave for reverting PR #30179 in July 2026?",
+   "gold": "WTF??? REVERT! DAMMIT",
+   "answer": "UNKNOWN \u2014 best guess: it caused a regression on current `main` and had to be reverted until a safer implementation was available.",
+   "score": 0,
+   "why": "The answer provides a logical guess about a regression, but it fails to capture the specific, idiosyncratic reason/quote provided in the gold answer ('WTF??? REVERT! DAMMIT')."
+  },
+  {
+   "q": "On which specific PR did Teknium say, 'tf are you saying to me. Stop giving me such random verbose details'?",
+   "gold": "PR #6391",
+   "answer": "UNKNOWN \u2014 best guess: PR #37865.",
+   "score": 0,
+   "why": "The answer provides a 'best guess' that is factually incorrect compared to the gold answer (PR #37865 vs PR #6391)."
+  },
+  {
+   "q": "Which file path should be checked for the canonical list of provider models?",
+   "gold": "hermes_cli/models.py",
+   "answer": "UNKNOWN \u2014 best guess: `hermes_cli/models.py`.",
+   "score": 2,
+   "why": "The answer provides the correct file path as its best guess, which matches the gold answer exactly."
+  },
+  {
+   "q": "What was the identified bug in PR #2314 regarding provider names?",
+   "gold": "checking for \"alibaba-coding-plan\"",
+   "answer": "UNKNOWN \u2014 best guess: it used inconsistent/noncanonical provider names, so provider matching and routing failed.",
+   "score": 1,
+   "why": "The answer identifies the core issue (provider name mismatch/inconsistency) which led to the specific bug, but it does not mention the specific string 'alibaba-coding-plan' identified in the gold answer."
+  },
+  {
+   "q": "What is the mandatory line limit for PR reviews requested by Teknium?",
+   "gold": "<= 15 lines",
+   "answer": "Maximum 5 lines.",
+   "score": 0,
+   "why": "The answer states a limit of 5 lines, which contradicts the gold answer of 15 lines."
+  },
+  {
+   "q": "What exact error message did the agent receive when attempting to checkout a worktree while in the live source directory?",
+   "gold": "Blocked: `git checkout` would rewrite Hermes's live source checkout (/home/teknium/.hermes/hermes-agent) and can mix module versions in this running process.",
+   "answer": "UNKNOWN \u2014 best guess: `fatal: '<branch>' is already checked out at '<worktree path>'`.",
+   "score": 0,
+   "why": "The answer provides a standard Git error message as a guess, which does not match the specific custom error message provided in the gold answer."
+  },
+  {
+   "q": "Why was PR #74658 necessary to fix Slack 'broken on main'?",
+   "gold": "SlackResponse isn't a dict subclass, so every gate is always False.",
+   "answer": "Real Slack SDK calls return `SlackResponse` objects, but the main code treated them like dictionaries and called dictionary-style accessors.",
+   "score": 2,
+   "why": "The answer correctly identifies that SlackResponse objects were being treated as dictionaries when they are not, which matches the core issue described in the gold answer that their lack of dictionary subclassing caused attribute/gate checks to fail."
+  },
+  {
+   "q": "What was the final merge commit SHA for the Slack SDK response fix on main?",
+   "gold": "24ba86627515ad5fda69a39ef338c365713448bc",
+   "answer": "UNKNOWN.",
+   "score": 0,
+   "why": "The gold answer provides a specific commit SHA, while the answer states 'UNKNOWN', failing to provide the requested factual information."
+  },
+  {
+   "q": "In the 'Pop-laboratory' style infographic for the Auxiliary Client fix, what were the two specific outcomes shown in cell 2?",
+   "gold": "Messages wrapper keeps /anthropic and OpenAI fallback keeps /v1",
+   "answer": "UNKNOWN.",
+   "score": 0,
+   "why": "The answer 'UNKNOWN' is a refusal to provide the information required by the gold answer."
+  },
+  {
+   "q": "What specific SQL update was added to the migration path in hermes_cli/kanban_db.py to prevent losing active wake on upgrade?",
+   "gold": "UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' WHERE platform != 'tui'",
+   "answer": "`UPDATE kanban_notify_subs SET delivery_mode = 'notify+wake' WHERE platform != 'tui'` \u2014 applied only during first migration/addition of the column so existing choices were not overwritten.",
+   "score": 2,
+   "why": "The answer provides the exact SQL statement specified in the gold answer and correctly contextualizes its purpose."
+  },
+  {
+   "q": "Which test failed in CI slice 5/12 for the kanban delivery modes PR?",
+   "gold": "tests/gateway/test_kanban_notifier_apiserver_wake.py::test_apiserver_sub_wakes_real_session_via_self_post",
+   "answer": "UNKNOWN \u2014 best guess: a relay-metrics concurrency test, unrelated to the delivery-mode change.",
+   "score": 0,
+   "why": "The answer identifies an unrelated test (relay-metrics) rather than the specific kanban notifier test mentioned in the gold answer."
+  },
+  {
+   "q": "According to the transcript, why is squash merging banned as of July 2026?",
+   "gold": "DevOps policy",
+   "answer": "Squash merging destroys the contributor-authored commit history and therefore loses reliable authorship/credit.",
+   "score": 0,
+   "why": "The answer explains a general rationale for why someone might dislike squash merging, but it fails to provide the specific reason cited in the text ('DevOps policy')."
+  },
+  {
+   "q": "Which contributor authored the first fix for issue #73030 in July?",
+   "gold": "@Tranquil-Flow",
+   "answer": "UNKNOWN.",
+   "score": 0,
+   "why": "The answer states 'UNKNOWN' while the gold answer provides a specific contributor name (@Tranquil-Flow)."
+  },
+  {
+   "q": "What was the 'Superman-style' shield error in the first generation of the Kanban infographic?",
+   "gold": "red \"S\" inside the diamond shield",
+   "answer": "The generated shield contained an emblem resembling Superman\u2019s \u201cS,\u201d rather than a neutral Kanban/routing symbol.",
+   "score": 2,
+   "why": "The answer accurately identifies that the shield contained a symbol resembling Superman's 'S', which matches the core fact of the gold answer."
+  },
+  {
+   "q": "What specific file was modified to add the 'scope_id_for_chat' method for Slack?",
+   "gold": "plugins/platforms/slack/adapter.py",
+   "answer": "`plugins/platforms/slack/adapter.py`.",
+   "score": 2,
+   "why": "The answer matches the gold answer exactly, including the full file path."
+  }
+ ]
+}

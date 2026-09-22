@@ -131,8 +131,9 @@ def test_provider_auth_error_marks_result_failed(monkeypatch):
     assert result.get("api_calls", 0) == 0
     assert result.get("messages", []) == []
     assert result.get("tools", []) == []
-    assert "Provider authentication failed" in result.get("final_response", "")
-    assert "Invalid API key provided" in result.get("final_response", "")
+    # Upstream's current wording (the raw provider text stays in the log; the chat gets
+    # the recovery commands), but the failure CONTRACT the PR asserts holds.
+    assert "couldn't connect to the AI model service" in result.get("final_response", "")
 
 
 def test_provider_auth_error_is_not_intentional_silence(monkeypatch):

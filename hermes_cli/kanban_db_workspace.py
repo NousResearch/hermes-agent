@@ -681,10 +681,25 @@ def set_worktree_base(
         or not re.fullmatch(r"[0-9a-f]{40}", sha)
     ):
         raise RuntimeError(f"assigned Kanban worktree base is unavailable for {branch_name}")
+    ref = base_ref.stdout.strip()
     with _kb.write_txn(conn):
+        row = conn.execute(
+            "SELECT workspace_base_ref, workspace_base_sha FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None:
+            raise RuntimeError(f"Kanban task {task_id} does not exist")
+        assigned_ref = (row["workspace_base_ref"] or "").strip()
+        assigned_sha = (row["workspace_base_sha"] or "").strip().lower()
+        if assigned_ref or assigned_sha:
+            if assigned_ref == ref and assigned_sha == sha:
+                return
+            raise RuntimeError(
+                f"assigned Kanban worktree base cannot change for task {task_id}"
+            )
         conn.execute(
             "UPDATE tasks SET workspace_base_ref = ?, workspace_base_sha = ? WHERE id = ?",
-            (base_ref.stdout.strip(), sha, task_id),
+            (ref, sha, task_id),
         )
 
 

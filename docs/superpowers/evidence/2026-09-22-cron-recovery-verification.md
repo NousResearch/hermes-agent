@@ -214,3 +214,42 @@ authentication probe:
 The final cron doctor still reported 9 issues across 9 jobs: these two authentication
 failures plus timing warnings. The newest incidents for both PR jobs are `detected` auth
 incidents. No incident acknowledgement command was run, and no secret was read or changed.
+
+## Final review: YAML protection and immutable assigned base
+
+The line-oriented cleanup config reader had two fail-open cases. It did not understand valid
+inline/nested YAML such as `conversation_worktree: {source_worktree: ...}`, and malformed YAML
+was merely a collection of unmatched lines that produced an empty protected set. Red probes
+confirmed both behaviors before the replacement was installed.
+
+The live cleanup script now uses `yaml.safe_load` and recursively visits mappings and lists.
+It protects every configured `source_worktree`, `local_path`, and `deployment_path`, including
+nested and inline forms. It terminates before worktree enumeration when the config is missing,
+malformed, not a mapping, or contains a protected path field that is not a non-empty absolute
+string. Both cleanup wrappers now execute the exact-source Hermes Python runtime at
+`/Users/mikedemott/.codex/worktrees/e89e/Hermes-agent/.venv/bin/python`, where PyYAML `6.0.3`
+is installed.
+
+Installed runtime receipts:
+
+- cleanup script SHA-256: `d09bcc7d45423a67644085de15ac24b0dd71383e4d42c841ef8ec6c9980f7491`
+- LunaBot wrapper SHA-256: `2407a24f800bef142bae68b1dca1303b44c0e5a7f5962edd4d213016ecd77bc5`
+- Hermes Agent wrapper SHA-256: `130c88c9cf5d1be5fa7ae5a4aa94988939b2efed3f8d327ae854053b1fa704c9`
+- valid nested and inline YAML probe: protected both `/tmp/governed-source` and
+  `/tmp/governed-repository`
+- malformed YAML probe: terminated with the PyYAML parse error
+- wrong-shape path probe: terminated with `source_worktree must be a non-empty path string`
+- live config probe: both restored conversation and deployment checkouts remain protected
+
+The control-plane worktree base assignment is now immutable after its first successful write.
+`set_worktree_base` reads the existing task row while holding the write transaction. An exact
+retry is idempotent; a retry whose worker-writable Git config presents a different ref or SHA
+raises `assigned Kanban worktree base cannot change` without modifying the stored fields.
+The regression test first failed because the old implementation silently overwrote both fields,
+then passed after the guard was added.
+
+Automatic approval review rejected a requested live cleanup rerun because it could irreversibly
+remove unreviewed worktrees. No workaround execution was attempted. Non-destructive probes and
+the two restored worktree receipts were used instead; the conversation checkout remains clean at
+`009b7859622ea867bee802e7fbdb0e75113a809e`, and the deployment checkout remains clean at
+`ebf2aed27d4a4574f73e871be657651199a93dc0`. No incident was acknowledged.

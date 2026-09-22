@@ -23,17 +23,17 @@ CONTINUITY_SHA=68f92bbf8e4b3cc6b9eff5f5dff2c28704958b48
 ROUTE_PARENT_SHA=0c19759cd268170214535da5079c602c82fb1159
 ROUTE_SHA=e2bfdfa8b8133d39f0380cb016397dedbe5b0e79
 LOWER_SHA=8f0cec384e30a3cef5da31c2e64191c9e7ecf8bd
-CANCELLATION_OWNER_SHA=937b08778122ca5e250adc8072e4cb20209d8303
+CANCELLATION_OWNER_SHA=f3c672821059d7ae37643dbe96b520c824091bab
 OWNER_SHA=101128c012a8b16c4bfd003d5ead31aaa9830262
 DIRECT_OWNER_PATCH_SHA=ebac33db6267df28a689cc8b6e37bd2a05a262dd7296978b35656f433adb7a20
 DEPENDENT_OVERLAY_SHA=1e0e24264574c65a8500086c6f92d55a16893d7de4cedd289e1884e375341dfd
-CANCELLATION_OVERLAY_SHA=a25a14f89aa0961b38318ccd5f08d2237d329805eb75f42cafed7bf6900d775f
+CANCELLATION_OVERLAY_SHA=59f066c0141cd3faa0a5ce3b35107d35820a79e5c1976d12bf1a3f2994f4c713
 EXPECTED_LOWER_TREE=e76b349554ed86a02f2470c31d3912fcd9b5b332
-EXPECTED_CORRECTED_LOWER_TREE=74868e3bd713445e192eb19efa298785c63fc616
-EXPECTED_DIRECT_OWNER_TREE=c8b4bc45f1bd439594d399d7cfcdc3b249ad1c76
-EXPECTED_FILES_TREE=a9f73b2ced6d620803adf701dfa6938b8c7db39a
-EXPECTED_FINAL_TREE=a9f73b2ced6d620803adf701dfa6938b8c7db39a
-TESTED_OWNER_TREE=a9f73b2ced6d620803adf701dfa6938b8c7db39a
+EXPECTED_CORRECTED_LOWER_TREE=12f75525101c8b0e533fa204914ec53d1435dd71
+EXPECTED_DIRECT_OWNER_TREE=09be80c2c3db15121253b2d5f829b0e40ce1fb7d
+EXPECTED_FILES_TREE=f86ea20723955476e1d94297fe0a334ab9199dba
+EXPECTED_FINAL_TREE=f86ea20723955476e1d94297fe0a334ab9199dba
+TESTED_OWNER_TREE=f86ea20723955476e1d94297fe0a334ab9199dba
 
 case "$VERIFY" in
   compose|lower|focused|full) ;;
@@ -94,7 +94,7 @@ verify_cancellation() {
     src/plugins/hermes-bots/group-rounds.test.ts \
     src/plugins/hermes-bots/group-chat-view.render.test.tsx \
     --maxWorkers=2 --retry=0 \
-    -t 'keeps recovery queued behind a cancelled predecessor|queues recovered work behind an unrelated active thread|interrupts recovered mailbox work|follows an in-flight mailbox rename|pending mailbox command|active mailbox thread|lease abort|replacement during Stop|delayed mailbox drive|post-turn commit|follows a rename|uses the active queue item|resolves session-scoped|follows queue identity|does not pass the latest display'
+    -t 'preserves independent same-thread owners|keeps recovery queued behind a cancelled predecessor|queues recovered work behind an unrelated active thread|interrupts recovered mailbox work|follows an in-flight mailbox rename|pending mailbox command|active mailbox thread|lease abort|replacement during Stop|delayed mailbox drive|post-turn commit|follows a rename|uses the active queue item|resolves session-scoped|follows queue identity|does not pass the latest display'
 }
 
 test ! -e "$TARGET"

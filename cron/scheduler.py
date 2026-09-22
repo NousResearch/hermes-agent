@@ -2197,8 +2197,14 @@ def _prepare_job_prompt(
             return (True, silent_doc, SILENT_MARKER, None), None
 
     try:
+        # Recognize cron ``/goal <text>`` before the normal preamble is added.
+        # The assembled prompt never starts with ``/``, so gateway slash-command
+        # dispatch cannot perform this recognition later in the path.
+        from cron.scheduler_goal import goal_prompt_from_job
+        _goal_prompt = goal_prompt_from_job(job)
+        _prompt_job = {**job, "prompt": _goal_prompt} if _goal_prompt else job
         prompt = _build_job_prompt(
-            job, prerun_script=prerun_script, extra_prompt=extra_prompt,
+            _prompt_job, prerun_script=prerun_script, extra_prompt=extra_prompt,
             runtime_data_prompt=monitor_context,
         )
     except CronPromptInjectionBlocked as block_exc:
@@ -2494,10 +2500,37 @@ def run_job(
             session_db=_session_db)
         _audit = _FireAudit(job, job_id, model)
 
-        result = _run_agent_with_watchdog(
-            agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
-            worker_state=_worker_state)
-        final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
+        from cron.scheduler_goal import cron_goal_session_id, goal_prompt_from_job, run_goal_turns
+
+        goal_prompt = goal_prompt_from_job(job)
+        if goal_prompt:
+            from hermes_cli.goals import GoalManager
+
+            goals_cfg = _cfg.get("goals") if isinstance(_cfg, dict) else None
+            default_max_turns = int((goals_cfg or {}).get("max_turns", 20) or 20)
+            manager = GoalManager(
+                session_id=cron_goal_session_id(job_id), default_max_turns=default_max_turns,
+            )
+
+            def _run_goal_turn(turn_prompt: str) -> dict:
+                return _run_agent_with_watchdog(
+                    agent, turn_prompt, job, job_id, job_name, scope.task_id, cancel_event,
+                    worker_state=_worker_state,
+                )
+
+            def _goal_response(result: dict) -> str:
+                return _final_response_from_result(result, job_id, job_name, AIAgent)
+
+            result, final_response, goal_status = run_goal_turns(
+                manager, goal_prompt, run_turn=_run_goal_turn, response_from_result=_goal_response,
+            )
+            if goal_status:
+                final_response = f"{final_response}\n\n{goal_status}".strip()
+        else:
+            result = _run_agent_with_watchdog(
+                agent, prompt, job, job_id, job_name, scope.task_id, cancel_event,
+                worker_state=_worker_state)
+            final_response = _final_response_from_result(result, job_id, job_name, AIAgent)
         if (setup.fallback_notice and final_response.strip() and not _is_cron_silence_response(final_response)
                 and _cron_failure_marker_error(final_response) is None):
             # Pre-agent provider switch (#74349) rides with the delivered report; silence and the

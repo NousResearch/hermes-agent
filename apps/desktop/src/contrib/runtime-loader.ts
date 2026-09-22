@@ -2,8 +2,8 @@
  * Runtime plugin loader — plugins as CODE, not registry edits, loaded after
  * build time. The pipeline every non-bundled plugin takes:
  *
- *   source (plain ESM js) -> [integrity check] -> bare-specifier rewrite
- *   (`@hermes/plugin-sdk` / `react*` -> live shim blobs, see sdk/runtime.ts)
+ *   source (plain ESM js) -> import allowlist (`@hermes/plugin-sdk` / `react*`
+ *   only) -> bare-specifier rewrite to live shim blobs (see sdk/runtime.ts)
  *   -> blob `import()` -> validate default HermesPlugin -> register(ctx)
  *
  * Loading the same plugin id again disposes the previous registrations first
@@ -21,11 +21,12 @@
  * The isolation here is *error* isolation only (ContribBoundary, isolated
  * listeners) — a plugin can't crash the app, but it can do anything the app
  * can. That's acceptable for local sources (disk files can already run code),
- * and `integrity` only proves the bytes match a hash — it does NOT sandbox.
- * A remote source (https + allowlist) must NOT reuse this pipeline as-is:
- * it needs a real boundary (iframe/worker + CSP + capability gating) before
- * it can land. The `{ integrity }` option is the transport seam, not the
- * trust seam.
+ * and for catalog installs the trust comes from admission (human review of
+ * an exact pinned SHA + the static lint in hermes_cli/plugin_validate_desktop.py),
+ * not from this loader. The import allowlist below is the one runtime tripwire:
+ * a plugin cannot pull a second stage from a URL. A remote source (https +
+ * allowlist) must NOT reuse this pipeline as-is: it needs a real boundary
+ * (iframe/worker + CSP + capability gating) before it can land.
  */
 
 import { atom } from 'nanostores'
@@ -45,8 +46,6 @@ interface LoadOptions {
   defaultEnabled?: boolean
   /** Absolute plugin.js path (disk plugins) — recorded for reveal/inventory. */
   file?: string
-  /** `sha256-<base64>` — verified against the source before evaluation. */
-  integrity?: string
   /** Inventory bucket; the disk door is the default runtime source. */
   kind?: PluginKind
   /** Agent package whose desktop half this is (unified packages). */
@@ -212,12 +211,16 @@ function rewriteSpecifiers(source: string): string {
   )
 }
 
-/** Bare import specifiers the loader can't resolve (not relative/URL, not in
- *  the SDK map). Surfaced up-front so they don't fail as a cryptic native
- *  "Failed to resolve module specifier" from the blob import. */
+/** Import specifiers outside the SDK map. Everything that is not
+ *  `@hermes/plugin-sdk` / `react*` is refused up-front: a bare package would
+ *  only fail later as a cryptic native "Failed to resolve module specifier",
+ *  a relative path cannot resolve against the blob: base the module is
+ *  evaluated from, and a URL scheme (`import 'https://…'`) is a second stage
+ *  the admission lint must never be able to wave through — the loader is the
+ *  last tripwire for catalog installs. */
 function unsupportedImports(source: string): string[] {
   const map = sdkImportMap()
-  const bare = new Set<string>()
+  const unsupported = new Set<string>()
   const ranges = codeRanges(source)
 
   for (const m of source.matchAll(importSpecifierRe())) {
@@ -228,27 +231,12 @@ function unsupportedImports(source: string): string[] {
       continue
     }
 
-    // Skip relative/absolute (./ ../ /) and any URL scheme (blob: http(s):).
-    if (!/^[./]/.test(spec) && !/^[a-z][a-z0-9+.-]*:/i.test(spec) && !map[spec]) {
-      bare.add(spec)
+    if (!map[spec]) {
+      unsupported.add(spec)
     }
   }
 
-  return [...bare]
-}
-
-async function verifyIntegrity(source: string, integrity: string): Promise<boolean> {
-  const [algo, expected] = integrity.split('-', 2)
-
-  if (algo !== 'sha256' || !expected) {
-    return false
-  }
-
-  const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(source))
-  // Standard SRI base64 (`sha256-<base64>`) — a base64url-encoded hash won't match.
-  const actual = btoa(String.fromCharCode(...new Uint8Array(digest)))
-
-  return actual === expected
+  return [...unsupported]
 }
 
 export function unloadRuntimePlugin(id: string): void {
@@ -265,10 +253,6 @@ export async function loadRuntimePlugin(
   installPluginSdk()
 
   try {
-    if (options.integrity && !(await verifyIntegrity(source, options.integrity))) {
-      throw new Error(`integrity check failed for ${origin}`)
-    }
-
     const unsupported = unsupportedImports(source)
 
     if (unsupported.length > 0) {
@@ -326,16 +310,49 @@ export async function loadRuntimePlugin(
       packageOrigin: options.packageOrigin
     }
 
+    const failRegistration = (disposers: (() => void)[], error: unknown) => {
+      // Roll back everything register() managed before it failed — a
+      // half-registered plugin must not leave live contributions/listeners
+      // nobody can ever dispose — and land the failure on the plugin's OWN
+      // row so Capabilities → Plugins shows it (the toggle stays usable).
+      disposers.forEach(dispose => dispose())
+      loaded.delete(plugin.id)
+      console.error(`[plugins] ${plugin.id} failed to register (${origin})`, error)
+      notifyError(error, `Plugin "${record.name}" failed to register`)
+      publishPlugin({ ...record, status: 'error', error: error instanceof Error ? error.message : String(error) })
+    }
+
     const activate = () => {
       // Reload = dispose the previous incarnation, then register fresh.
       unloadRuntimePlugin(plugin.id)
       const disposers: (() => void)[] = []
-      trackGatewayEventDisposers(
-        dispose => disposers.push(dispose),
-        () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
-      )
+      // Registered BEFORE register() runs so a throw mid-way is disposable.
       loaded.set(plugin.id, disposers)
+
+      let result: unknown
+
+      try {
+        result = trackGatewayEventDisposers(
+          dispose => disposers.push(dispose),
+          () => plugin.register(createPluginContext(plugin.id, dispose => disposers.push(dispose)))
+        )
+      } catch (error) {
+        failRegistration(disposers, error)
+
+        return
+      }
+
       publishPlugin({ ...record, status: 'loaded' })
+
+      // An `async register()` that rejects would otherwise be an unhandled
+      // rejection beside a row that says "loaded".
+      if (result && typeof (result as PromiseLike<unknown>).then === 'function') {
+        void Promise.resolve(result).catch((error: unknown) => {
+          if (loaded.get(plugin.id) === disposers) {
+            failRegistration(disposers, error)
+          }
+        })
+      }
     }
 
     publishPlugin({ ...record, status: 'disabled' }, { activate, deactivate: () => unloadRuntimePlugin(plugin.id) })
@@ -592,7 +609,29 @@ async function resolveDiskPluginEntry(
   return null
 }
 
-async function scanDiskPlugins(): Promise<void> {
+/** Bind (or, on a manual reload, re-bind) the hot-reload watch for one entry.
+ *  An atomic directory replacement leaves the old watch attached to the
+ *  unlinked inode, so a forced reload must drop it and watch the current file. */
+async function watchDiskPluginFile(desktop: NonNullable<Window['hermesDesktop']>, record: DiskPlugin): Promise<void> {
+  if (record.watchId) {
+    void desktop.stopPreviewFileWatch(record.watchId)
+    record.watchId = null
+  }
+
+  try {
+    record.watchId = (await desktop.watchPreviewFile(record.file)).id
+  } catch {
+    // Unwatchable — the poll still reconciles new folders; edits need a
+    // manual "Reload desktop plugins".
+  }
+}
+
+/** Reconcile the disk root with the inventory. `reloadKnown` (the manual
+ *  "Reload desktop plugins" command) also re-reads every already-known entry
+ *  file: an installer that atomically replaces a plugin folder keeps the
+ *  same path, so the fs watch on the old inode never fires and the stale
+ *  module would otherwise stay live until restart (#91503). */
+async function scanDiskPlugins(reloadKnown = false): Promise<void> {
   const desktop = window.hermesDesktop
 
   // Re-entrancy guard: the 5s poll must not overlap a slow in-flight scan
@@ -636,7 +675,13 @@ async function scanDiskPlugins(): Promise<void> {
 
         seen.add(file)
 
-        if (disk.has(file)) {
+        const known = disk.get(file)
+
+        if (known) {
+          if (reloadKnown && (await loadDiskPlugin(known))) {
+            await watchDiskPluginFile(desktop, known)
+          }
+
           continue
         }
 
@@ -661,12 +706,7 @@ async function scanDiskPlugins(): Promise<void> {
           continue
         }
 
-        try {
-          record.watchId = (await desktop.watchPreviewFile(file)).id
-        } catch {
-          // Unwatchable — the poll still reconciles new folders; edits need a
-          // manual "Reload desktop plugins".
-        }
+        await watchDiskPluginFile(desktop, record)
       }
     }
 
@@ -676,18 +716,7 @@ async function scanDiskPlugins(): Promise<void> {
         continue
       }
 
-      if (record.id) {
-        unloadRuntimePlugin(record.id)
-        dropPlugin(record.id)
-      }
-
-      dropOriginRecord(record.origin, record)
-
-      if (record.watchId) {
-        void desktop.stopPreviewFileWatch(record.watchId)
-      }
-
-      disk.delete(file)
+      retireDiskPlugin(file, record)
     }
   } catch {
     // No plugin roots (or no gateway yet) — nothing to reconcile.
@@ -696,8 +725,56 @@ async function scanDiskPlugins(): Promise<void> {
   }
 }
 
-/** Manual rescan (the ⌘K "Reload desktop plugins" fallback). */
-export const discoverRuntimePlugins = scanDiskPlugins
+/** Forget a disk entry whose folder is gone: unload its registration, drop
+ *  its inventory rows, stop its file watch. */
+function retireDiskPlugin(file: string, record: DiskPlugin): void {
+  if (record.id) {
+    unloadRuntimePlugin(record.id)
+    dropPlugin(record.id)
+  }
+
+  dropOriginRecord(record.origin, record)
+
+  if (record.watchId) {
+    void window.hermesDesktop?.stopPreviewFileWatch(record.watchId)
+  }
+
+  disk.delete(file)
+}
+
+/** Uninstall a STANDALONE disk plugin (Capabilities → Plugins trash button):
+ *  Electron deletes `<root>/<folder>` (containment enforced there), then the
+ *  entry is retired here so the pane/commands vanish without waiting for the
+ *  next scan. Unified-package halves are not addressable this way — the agent
+ *  uninstall prunes them. Resolves with the failure reason instead of throwing. */
+export async function uninstallDiskPlugin(pluginId: string): Promise<{ ok: boolean; error?: string }> {
+  const found = [...disk.entries()].find(([, record]) => record.id === pluginId || record.origin === pluginId)
+
+  if (!found) {
+    return { ok: false, error: 'not an installed desktop plugin' }
+  }
+
+  const [file, record] = found
+  const remove = window.hermesDesktop?.removeDesktopPlugin
+
+  if (!remove) {
+    return { ok: false, error: 'this Hermes Desktop build cannot remove desktop plugins — delete the folder by hand' }
+  }
+
+  const result = await remove({ name: record.origin })
+
+  if (!result?.ok) {
+    return { ok: false, error: result?.error ?? 'unknown error' }
+  }
+
+  retireDiskPlugin(file, record)
+
+  return { ok: true }
+}
+
+/** Manual rescan (the ⌘K "Reload desktop plugins" fallback) — re-reads
+ *  known entries too, unlike the fs-watch/poll reconcile. */
+export const discoverRuntimePlugins = (): Promise<void> => scanDiskPlugins(true)
 
 /** True while the disk door's FIRST scan is in flight. Boot code that must
  *  not mistake a not-yet-registered plugin route for a stale one

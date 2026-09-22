@@ -27,7 +27,8 @@ function relabelMemberControlFrames(text: string) {
  *  profile name (legacy call sites and single-connection jobs). */
 export type GroupChatLineViewer =
   | string
-  | (Pick<GroupMember, 'name'> & Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
+  | (Pick<GroupMember, 'name'> &
+      Partial<Pick<GroupMember, 'connectionId' | 'connectionLabel' | 'installId' | 'remoteSource'>>)
 
 /** Room-log line as a member sees it: `Name (user): …` / `Name: …` /
  *  `Name (you): …`. */
@@ -71,6 +72,7 @@ export function formatGroupDeltaLines(delta: GroupMessage[], viewer: GroupChatLi
 
   for (let i = delta.length - 1; i >= 0 && lines.length < GROUP_CHAT_HISTORY_LIMIT; i--) {
     const entry = delta[i]
+
     const line = formatGroupChatLine(
       { ...entry, text: compactGroupChatSyncText(entry.text, GROUP_CHAT_HISTORY_LINE_CHARS).text },
       viewer,

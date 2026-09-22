@@ -109,11 +109,13 @@ afterEach(() => {
 describe('the MCP setup card', () => {
   it('opens required details from the row action and sends the approved environment', async () => {
     const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: false })
+
     const target = {
       ...LINEAR,
       instructions: 'Create a Linear API key.',
       requiredEnv: [{ default: 'workspace', name: 'LINEAR_TEAM', prompt: 'Team', required: true, secret: false }]
     }
+
     // SAFETY: the card calls only `request`; no other gateway client surface is exercised here.
     // respondToConnectionRequest reads $gateway, which only applyActive publishes; set it directly.
     $gateway.set({ request: rpc } as never)

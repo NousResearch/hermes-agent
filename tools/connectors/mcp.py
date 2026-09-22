@@ -136,12 +136,18 @@ class _CatalogBackend:
         after the server answered. A failure writes nothing, so a failed reinstall keeps the
         previous configuration."""
         from agent.secret_scope import current_secret_scope, reset_secret_scope, set_secret_scope
-        from hermes_cli.mcp_catalog import card_install_config
+        from hermes_cli.mcp_catalog import _inline_non_secret_value, card_install_config
         from hermes_cli.mcp_config import _probe_single_server, _save_mcp_server
 
         entry = _catalog_entry(name)
         _check_declared(name, entry, env)
         cfg = card_install_config(entry)
+        # `.env` is secrets-only: non-secret values (hostnames, client ids, workspace names) are
+        # inlined into the server block, the same split `install_entry` makes for the terminal path.
+        secret_names = {spec.name for spec in (entry.auth.env or []) if spec.secret}
+        for key, value in env.items():
+            if key not in secret_names and value:
+                cfg = _inline_non_secret_value(cfg, key, value)
         token = set_secret_scope({**dict(current_secret_scope() or {}), **env})
         try:
             tools = [str(tool[0]) for tool in (_probe_single_server(name, cfg) or [])]
@@ -149,7 +155,7 @@ class _CatalogBackend:
             reset_secret_scope(token)
         if not _save_mcp_server(name, cfg):
             raise RuntimeError(f"'{name}' was rejected: suspicious command/args configuration")
-        _save_env(env)
+        _save_env({k: v for k, v in env.items() if k in secret_names})
         return tools
 
     def enable(self, name: str) -> None:

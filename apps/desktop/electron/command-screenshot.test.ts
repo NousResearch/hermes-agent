@@ -6,8 +6,21 @@ import path from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const native = vi.hoisted(() => ({ start: vi.fn(), stop: vi.fn() }))
-const electron = vi.hoisted(() => ({ handlers: new Map(), windows: [] as any[], focused: null as any, screenPermission: 'granted', directory: '' }))
-vi.mock('./command-screenshot-monitor', () => ({ CommandScreenshotMonitor: class { start = native.start; stop = native.stop } }))
+
+const electron = vi.hoisted(() => ({
+  handlers: new Map(),
+  windows: [] as any[],
+  focused: null as any,
+  screenPermission: 'granted',
+  directory: ''
+}))
+
+vi.mock('./command-screenshot-monitor', () => ({
+  CommandScreenshotMonitor: class {
+    start = native.start
+    stop = native.stop
+  }
+}))
 vi.mock('electron', async () => {
   const { EventEmitter } = await import('node:events')
   const ipcMain = new EventEmitter() as any
@@ -22,7 +35,11 @@ vi.mock('electron', async () => {
       getFocusedWindow: () => electron.focused,
       getAllWindows: () => electron.windows
     },
-    desktopCapturer: { getSources: vi.fn(async () => [{ id: 'window:42:0', thumbnail: { isEmpty: () => false, toPNG: () => new Uint8Array([1]) } }]) },
+    desktopCapturer: {
+      getSources: vi.fn(async () => [
+        { id: 'window:42:0', thumbnail: { isEmpty: () => false, toPNG: () => new Uint8Array([1]) } }
+      ])
+    },
     systemPreferences: { getMediaAccessStatus: () => electron.screenPermission },
     shell: { openExternal: vi.fn() }
   }
@@ -44,7 +61,15 @@ afterEach(async () => {
 
 function window(id: number, url = 'http://127.0.0.1:5174/') {
   const frame = { url }
-  const wc = Object.assign(new EventEmitter(), { id, mainFrame: frame, getURL: () => url, isDestroyed: () => false, send: vi.fn() })
+
+  const wc = Object.assign(new EventEmitter(), {
+    id,
+    mainFrame: frame,
+    getURL: () => url,
+    isDestroyed: () => false,
+    send: vi.fn()
+  })
+
   const win = { webContents: wc, isDestroyed: () => false }
   electron.windows.push(win)
 
@@ -56,7 +81,8 @@ async function setup() {
   cleanups.push(installCommandScreenshot({ rendererUrl: 'http://127.0.0.1:5174/' }))
 }
 
-const call = (channel: string, event: unknown, ...args: unknown[]) => electron.handlers.get(`hermes:screenshot:${channel}`)(event, ...args)
+const call = (channel: string, event: unknown, ...args: unknown[]) =>
+  electron.handlers.get(`hermes:screenshot:${channel}`)(event, ...args)
 
 describe.skipIf(process.platform !== 'darwin')('Command screenshot native bridge', () => {
   it('persists opt-in, routes to the last focused subscribed window while backgrounded, and revokes on disable', async () => {
@@ -71,7 +97,9 @@ describe.skipIf(process.platform !== 'darwin')('Command screenshot native bridge
     app.emit('browser-window-focus', {}, second.win)
     electron.focused = null
     await call('settings:set', first.event, true)
-    expect(JSON.parse(await readFile(path.join(electron.directory, 'screenshot.json'), 'utf8'))).toEqual({ enabled: true })
+    expect(JSON.parse(await readFile(path.join(electron.directory, 'screenshot.json'), 'utf8'))).toEqual({
+      enabled: true
+    })
     const [capture, status] = native.start.mock.calls.at(-1)!
     status({ type: 'ready' })
     capture({ type: 'capture', windowId: 42, width: 600, height: 400 })
@@ -82,10 +110,12 @@ describe.skipIf(process.platform !== 'darwin')('Command screenshot native bridge
     await call('settings:set', second.event, false)
     expect(await call('capture', second.event, requests[0]![1])).toEqual({ ok: false, reason: 'expired' })
     expect(native.stop).toHaveBeenCalled()
+
     for (let i = 0; i < 3; i += 1) {
       ipcMain.emit('hermes:screenshot:subscribe', second.event, false)
       ipcMain.emit('hermes:screenshot:subscribe', second.event, true)
     }
+
     expect(second.wc.listenerCount('destroyed')).toBe(1)
     ipcMain.emit('hermes:screenshot:subscribe', second.event, false)
     expect(second.wc.listenerCount('destroyed')).toBe(0)
@@ -96,13 +126,17 @@ describe.skipIf(process.platform !== 'darwin')('Command screenshot native bridge
     const trusted = window(3)
     const foreign = window(4, 'https://example.org/')
     await expect(call('settings:set', foreign.event, true)).rejects.toThrow()
-    await expect(call('settings:set', { ...trusted.event, senderFrame: { url: 'https://example.org/' } }, true)).rejects.toThrow()
+    await expect(
+      call('settings:set', { ...trusted.event, senderFrame: { url: 'https://example.org/' } }, true)
+    ).rejects.toThrow()
     expect(native.start).not.toHaveBeenCalled()
     electron.screenPermission = 'denied'
     await call('settings:set', trusted.event, true)
     native.start.mock.calls.at(-1)![1]({ type: 'ready' })
     expect(desktopCapturer.getSources).toHaveBeenCalledWith({
-      types: ['window'], thumbnailSize: { width: 1, height: 1 }, fetchWindowIcons: false
+      types: ['window'],
+      thumbnailSize: { width: 1, height: 1 },
+      fetchWindowIcons: false
     })
     expect(await call('settings:get', trusted.event)).toEqual({ enabled: true, state: 'screen-permission' })
   })

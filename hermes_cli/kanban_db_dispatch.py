@@ -1266,9 +1266,18 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 # Below budget: already back at ``ready`` with the error stamped.
                 # No ``_record_task_failure`` — must not consume the unified budget.
                 continue
-            # ``force_trip``: the decision (incl. per-task ``max_retries``) was
-            # already made against the violation streak above.
-            tripped = _record_task_failure(
+            # A worker protocol failure is a routing failure, not work being
+            # blocked.  Hand it back through deterministic intake so the
+            # source task can be repaired or reassigned; never trip the
+            # circuit breaker into the forbidden ``blocked`` lane.
+            routed, _, _ = _kb.route_worker_block_to_orchestrator(
+                conn, tid,
+                reason=(
+                    f"worker protocol violation after {streak} attempts: "
+                    f"{error_text}"
+                ),
+            )
+            tripped = False if routed else _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
@@ -1284,11 +1293,13 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 },
             )
         elif dead.terminal_provider:
-            # A retry cannot heal a revoked credential or a missing model, so
-            # the whole ``failure_limit`` budget would be spent on identical
-            # failures. ``force_trip`` blocks now, sticky: ``recompute_ready``
-            # must not auto-resume it before the operator fixes the provider.
-            tripped = _record_task_failure(
+            # Provider failures belong to intake/provider repair.  Do not
+            # strand the task in ``blocked`` where no worker can recover it.
+            routed, _, _ = _kb.route_worker_block_to_orchestrator(
+                conn, tid,
+                reason=f"terminal provider failure: {error_text}",
+            )
+            tripped = False if routed else _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",

@@ -503,6 +503,13 @@ class KanbanSubprocessClient:
             raise RuntimeError("Kanban task lookup failed")
         return status.strip()
 
+    def archive_task(self, board: str, task_id: str) -> None:
+        result = self._runner.run(
+            ["hermes", "kanban", "--board", board, "archive", task_id]
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Kanban task archival failed")
+
     def reconcile_dispatch_task(self, task_id: str, task: KanbanTask) -> None:
         result = self._runner.run(_kanban_reconcile_argv(task_id, task))
         if result.returncode != 0:

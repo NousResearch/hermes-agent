@@ -8,15 +8,19 @@ from typing import Optional
 # Ordered from narrowest scope to broadest so a PR audit is not swallowed by
 # the generic cron or maintenance rules.
 _REPAIR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
-    (("usage limits", "not a hermes command", "untrusted receipt", "missing hermes_cli", "audit-pr unavailable", "inspect-pr unavailable", "audit_deferred"), "hermes-maintenance-steward"),
+    # Match the actual work type before incidental evidence quoted in a card's
+    # instructions.  PR feedback cards often contain phrases such as
+    # "not a hermes command" as fail-closed guidance; those phrases must not
+    # divert them to maintenance instead of the fixed PR-feedback worker.
+    (("local pr ci", "audit pr", "audit this pull request"), "pr-local-ci-auditor"),
+    (("github pr feedback", "complete-feedback", "inspect-pr"), "pr-repair-steward"),
+    (("usage limits", "untrusted receipt", "missing hermes_cli", "audit-pr unavailable", "inspect-pr unavailable", "audit_deferred"), "hermes-maintenance-steward"),
     (("federated runner", "federation", "federated"), "federation-steward"),
     (("pytest suite", "test suite", "test coverage"), "test-contract-steward"),
     (("content discovery", "useful content", "community discovery"), "nerdy-content-scout"),
     (("synthesize gaps", "route bounded children", "synthesis"), "synthesizer"),
     (("market data", "authority freshness", "stale market"), "market-data-authority-auditor"),
     (("upstream pr", "upstream issue", "nousresearch", "upstream/main"), "hermes-upstream-auditor"),
-    (("local pr ci", "audit pr", "audit this pull request"), "pr-local-ci-auditor"),
-    (("github pr feedback", "complete-feedback", "inspect-pr"), "pr-repair-steward"),
     (("live-trading", "paper-safety", "paper-safety", "broker safety"), "paper-safety-guardian"),
     (("alpaca", "broker credential", "broker validation"), "coding-expert"),
     (("dashboard.secret", "state.db", "retired-wal", "gateway restart"), "hermes-maintenance-steward"),

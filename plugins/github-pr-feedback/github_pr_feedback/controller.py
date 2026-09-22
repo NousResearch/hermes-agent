@@ -11,7 +11,7 @@ import subprocess
 import os
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -182,6 +182,8 @@ class KanbanClient(Protocol):
     def task_status(self, board: str, task_id: str) -> str | None: ...
 
     def task_details(self, board: str, task_id: str) -> Mapping[str, object] | None: ...
+
+    def archive_task(self, board: str, task_id: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1203,6 +1205,37 @@ class ScanController:
         self._claim_lease = claim_lease
         self._label_batches: list[tuple[str, RepositoryTarget, tuple[PullRequest, ...]]] = []
 
+    def _reconcile_closed_pr_tasks(
+        self, repository: str, open_pull_requests: Sequence[PullRequest]
+    ) -> None:
+        """Retire dispatch cards whose PR is no longer open.
+
+        GitHub feedback scans only create work for open PRs, but a card may
+        remain running after its PR is merged or closed. Reconcile those
+        bindings before admitting new work so stale workers cannot consume
+        capacity or be retried forever.
+        """
+        archive_task = getattr(self._kanban, "archive_task", None)
+        pending_prs = getattr(self._ledger, "pending_prs", None)
+        if not callable(archive_task) or not callable(pending_prs):
+            return
+        open_numbers = {pr.number for pr in open_pull_requests}
+        for pr_number in pending_prs(repository):
+            if pr_number in open_numbers:
+                continue
+            for binding in self._ledger.pending_task_bindings_for_pr(
+                repository, pr_number
+            ):
+                try:
+                    archive_task(self._policy.board or "", binding.task_id)
+                except RuntimeError:
+                    continue
+                self._ledger.supersede_stale_dispatch(
+                    binding.receipt,
+                    task_id=binding.task_id,
+                    reason="PR is merged or closed; stale dispatch archived",
+                )
+
     def scan(self, *, apply_labels: bool = True) -> ScanResult:
         skipped: Counter[str] = Counter()
         created = 0
@@ -1242,6 +1275,7 @@ class ScanController:
             except Exception:  # noqa: BLE001 - an adapter failure must not admit work.
                 skipped["github_error"] += 1
                 continue
+            self._reconcile_closed_pr_tasks(repository, pull_requests)
             from .pr_ordering import order_pull_requests
 
             pull_requests = order_pull_requests(pull_requests)

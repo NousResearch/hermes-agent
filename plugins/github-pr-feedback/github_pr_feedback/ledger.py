@@ -1025,7 +1025,6 @@ class FeedbackLedger:
         rows = self._connection.execute(
             "SELECT feedback_kind, feedback_id, head_sha, task_id "
             "FROM feedback_receipts WHERE repository = ? AND pr_number = ? "
-            "AND feedback_kind != 'pr_local_ci' "
             "AND NOT (feedback_kind = 'pr_repair' AND feedback_id LIKE 'report:%') "
             "AND status = 'completed' AND action_status = 'pending' "
             "AND task_id IS NOT NULL ORDER BY claimed_at, head_sha, feedback_kind, feedback_id",
@@ -1039,6 +1038,17 @@ class FeedbackLedger:
             for kind, feedback_id, head_sha, task_id in rows
             if isinstance(task_id, str) and task_id.strip()
         )
+
+    def pending_prs(self, repository: str) -> tuple[int, ...]:
+        """Return PRs with mutable dispatches that still own Kanban cards."""
+        rows = self._connection.execute(
+            "SELECT DISTINCT pr_number FROM feedback_receipts "
+            "WHERE repository = ? AND status = 'completed' "
+            "AND action_status = 'pending' AND task_id IS NOT NULL "
+            "ORDER BY pr_number",
+            (repository,),
+        )
+        return tuple(int(row[0]) for row in rows)
 
     def supersede_stale_dispatch(
         self,

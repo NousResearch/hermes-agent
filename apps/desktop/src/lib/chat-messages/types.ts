@@ -204,6 +204,12 @@ export type GatewayEventPayload = {
   response_previewed?: boolean
   // message.complete — history-commit note the gateway surfaced instead of dropping.
   warning?: string
+  // message.complete — readable reasoning summary (the sanitized summary the
+  // streamed reasoning path also uses). Providers that deliver the summary only
+  // at response completion (Codex subscription) carry it here; the live handler
+  // falls back to it when no reasoning part streamed. Absent on gateways that
+  // stream reasoning.delta frames.
+  reasoning?: string
   // message.complete with status "error" — `text` is streamed partial output
   // (keep it visible), not the error string.
   partial?: boolean

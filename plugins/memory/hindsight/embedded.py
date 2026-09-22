@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import contextlib
 import importlib
+import json
 import logging
 import os
 import re
@@ -171,9 +172,11 @@ _HERMES_MANAGED_KEYS = {
     "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT",
     "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU",
     "HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU",
-    "HF_HUB_OFFLINE",
-    "HF_ENDPOINT",
 }
+
+_OFFLINE_ENV_KEYS = {"HF_HUB_OFFLINE", "HF_ENDPOINT"}
+# The baseline belongs to the process, not the most recently exported profile.
+_DAEMON_OFFLINE_ENV_ORIGINALS: dict[str, str | None] = {}
 
 _ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
 
@@ -194,11 +197,38 @@ def _sanitize_env_pair(key: str, value: Any) -> tuple[str, str] | None:
 
 def _export_daemon_offline_env(config: dict[str, Any]) -> None:
     """Export offline and mirror environment variables into os.environ before daemon spawn.
-    Bypasses upstream daemon_embed_manager's filter which only forwards HINDSIGHT_* from .env."""
-    if "hf_hub_offline" in config:
-        os.environ["HF_HUB_OFFLINE"] = "true" if _parse_bool_setting(config["hf_hub_offline"]) else "false"
-    if endpoint := (config.get("hf_endpoint") or os.environ.get("HF_ENDPOINT")):
-        os.environ["HF_ENDPOINT"] = str(endpoint).strip()
+    Bypasses upstream daemon_embed_manager's filter which only forwards HINDSIGHT_* from .env.
+    Removing a setting (or switching profiles) restores the pre-plugin process value."""
+    configured = _configured_optional_env(config)
+    for key in _OFFLINE_ENV_KEYS:
+        if key in configured:
+            if key not in _DAEMON_OFFLINE_ENV_ORIGINALS:
+                _DAEMON_OFFLINE_ENV_ORIGINALS[key] = os.environ.get(key)
+            os.environ[key] = configured[key]
+        elif key in _DAEMON_OFFLINE_ENV_ORIGINALS:
+            original = _DAEMON_OFFLINE_ENV_ORIGINALS.pop(key)
+            if original is None:
+                os.environ.pop(key, None)
+            else:
+                os.environ[key] = original
+
+
+def _configured_optional_env(config: dict[str, Any]) -> dict[str, str]:
+    """Dynamic keys become ours only when written; ambient HF values are never config."""
+    env_values = {}
+    if (hf_offline := config.get("hf_hub_offline")) is not None:
+        env_values["HF_HUB_OFFLINE"] = "true" if _parse_bool_setting(hf_offline) else "false"
+    if hf_endpoint := config.get("hf_endpoint"):
+        pair = _sanitize_env_pair("HF_ENDPOINT", hf_endpoint)
+        if pair:
+            env_values[pair[0]] = pair[1]
+    extra_env = config.get("extra_env") or config.get("env_extra")
+    if isinstance(extra_env, dict):
+        for raw_k, raw_v in extra_env.items():
+            pair = _sanitize_env_pair(raw_k, raw_v)
+            if pair and pair[0] not in _HERMES_MANAGED_KEYS | _OFFLINE_ENV_KEYS:
+                env_values[pair[0]] = pair[1]
+    return env_values
 
 
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
@@ -231,33 +261,31 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
     if "reranker_local_force_cpu" in config:
         env_values["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] = "true" if _parse_bool_setting(config["reranker_local_force_cpu"]) else "false"
 
-    hf_offline = config.get("hf_hub_offline")
-    if hf_offline is None and "HF_HUB_OFFLINE" in os.environ:
-        hf_offline = os.environ["HF_HUB_OFFLINE"]
-    if hf_offline is not None:
-        env_values["HF_HUB_OFFLINE"] = "true" if _parse_bool_setting(hf_offline) else "false"
-
-    hf_endpoint = config.get("hf_endpoint") or os.environ.get("HF_ENDPOINT")
-    if hf_endpoint:
-        sanitized = _sanitize_env_pair("HF_ENDPOINT", hf_endpoint)
-        if sanitized:
-            env_values[sanitized[0]] = sanitized[1]
-
-    extra_env = config.get("extra_env") or config.get("env_extra")
-    if isinstance(extra_env, dict):
-        for raw_k, raw_v in extra_env.items():
-            pair = _sanitize_env_pair(raw_k, raw_v)
-            if pair and pair[0] not in _HERMES_MANAGED_KEYS:
-                env_values[pair[0]] = pair[1]
-
+    env_values.update(_configured_optional_env(config))
     return env_values
+
+
+def _profile_env_ownership_path(profile_env: Path) -> Path:
+    return profile_env.with_name(f"{profile_env.name}.hermes-managed.json")
+
+
+def _load_profile_env_ownership(profile_env: Path) -> set[str]:
+    """Unknown ownership must preserve user/upstream keys, including pre-upgrade HF values."""
+    try:
+        keys = json.loads(_profile_env_ownership_path(profile_env).read_text(encoding="utf-8"))
+    except (OSError, ValueError):
+        return set()
+    if not isinstance(keys, list) or not all(isinstance(k, str) and _ENV_KEY_RE.fullmatch(k) for k in keys):
+        return set()
+    return set(keys)
 
 
 def _compute_target_env(profile_env: Path, config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Target configuration combining clean managed keys and unmanaged external keys."""
     existing_env = _load_simple_env(profile_env)
     managed_env = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    preserved_unmanaged = {k: v for k, v in existing_env.items() if k not in _HERMES_MANAGED_KEYS and k not in managed_env}
+    owned_keys = _HERMES_MANAGED_KEYS | _load_profile_env_ownership(profile_env)
+    preserved_unmanaged = {k: v for k, v in existing_env.items() if k not in owned_keys and k not in managed_env}
     return {**preserved_unmanaged, **managed_env}
 
 
@@ -271,16 +299,19 @@ def _secure_write_profile_env(profile_env: Path, content: str) -> None:
     tmp_path = Path(tmp_path_str)
     try:
         os.chmod(tmp_path, 0o600)
-        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+        fh = os.fdopen(fd, "w", encoding="utf-8")
+        fd = None  # fdopen now owns the descriptor, including failed writes.
+        with fh:
             fh.write(content)
             fh.flush()
             os.fsync(fh.fileno())
         os.replace(tmp_path, profile_env)
-    except BaseException:
-        if tmp_path.exists():
+    finally:
+        if fd is not None:
             with contextlib.suppress(OSError):
-                tmp_path.unlink()
-        raise
+                os.close(fd)
+        with contextlib.suppress(OSError):
+            tmp_path.unlink()
 
 
 def _validate_profile_env_permissions(profile_env: Path) -> None:
@@ -305,11 +336,20 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     profile_env.parent.mkdir(parents=True, exist_ok=True)
     target_env = _compute_target_env(profile_env, config, llm_api_key=llm_api_key)
     content = "".join(f"{key}={value}\n" for key, value in target_env.items())
+    # Atomic-write failures leave the old file intact. Only a failed validation
+    # of the replacement warrants deleting the destination's plaintext key.
+    _secure_write_profile_env(profile_env, content)
     try:
-        _secure_write_profile_env(profile_env, content)
         _validate_profile_env_permissions(profile_env)
     except BaseException:
         with contextlib.suppress(OSError):
             profile_env.unlink()
         raise
+    # A separate key-only sidecar survives upstream register-step env rewrites.
+    # Write after the env succeeds so a failed replacement never claims user keys.
+    ownership_path = _profile_env_ownership_path(profile_env)
+    try:
+        _secure_write_profile_env(ownership_path, json.dumps(sorted(_configured_optional_env(config))) + "\n")
+    except OSError:
+        logger.warning("Could not persist Hindsight env ownership at %s; preserving unknown keys.", ownership_path)
     return profile_env

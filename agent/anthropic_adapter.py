@@ -340,8 +340,8 @@ def _attribution_headers() -> Dict[str, str]:
 
 
 def _client_timeout(timeout):
-    """httpx.Timeout with the caller's read timeout (default 900s) and a 10s connect."""
-    from httpx import Timeout
+    """httpx2.Timeout with the caller's read timeout (default 900s) and a 10s connect."""
+    from httpx2 import Timeout
     read = timeout if (isinstance(timeout, (int, float)) and timeout > 0) else 900.0
     return Timeout(timeout=float(read), connect=10.0)
 
@@ -366,7 +366,7 @@ def _build_anthropic_client_with_bearer_hook(
 ):
     """Anthropic-on-Foundry Entra ID variant of :func:`build_anthropic_client`. The SDK stores
     ``api_key``/``auth_token`` as static strings, so per-request bearer refresh (Microsoft's
-    documented Foundry pattern) uses a custom ``httpx.Client`` whose request hook mints a fresh JWT
+    documented Foundry pattern) uses a custom ``httpx2.Client`` whose request hook mints a fresh JWT
     and rewrites ``Authorization``; the SDK skips its own auth when ``http_client`` is given. The
     placeholder ``auth_token`` is still required at construction and makes any leak diagnosable."""
     sdk = _require_sdk("Azure Foundry Anthropic-style endpoints with Entra ID auth", verb="Install with")

@@ -77,3 +77,24 @@ def test_third_party_request_on_the_wire_carries_no_foreign_bearer(monkeypatch):
 
     assert captured["headers"].get("x-api-key") == "third-party-provider-key"
     assert "authorization" not in captured["headers"]
+
+
+def test_standard_client_uses_the_anthropic_httpx2_timeout():
+    """Anthropic 1.x rejects timeout objects from Hermes's separate httpx package."""
+    pytest.importorskip("anthropic")
+
+    client = build_anthropic_client("sk-ant-api03-test")
+
+    assert client is not None
+
+
+def test_bearer_client_uses_the_anthropic_httpx2_client():
+    """The per-request Entra hook must use the HTTP client type Anthropic 1.x accepts."""
+    pytest.importorskip("anthropic")
+
+    client = build_anthropic_client(
+        lambda: "entra-test-token",
+        base_url="https://example.openai.azure.com/anthropic",
+    )
+
+    assert type(client._client).__module__.startswith("httpx2")

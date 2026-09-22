@@ -36,7 +36,7 @@ logger = logging.getLogger(__name__)
 LAZY_DEPS: dict[str, tuple[str, ...]] = {
     # ─── Inference providers ───────────────────────────────────────────────
     # Native Anthropic SDK (provider=anthropic; aggregators use the openai SDK).
-    "provider.anthropic": ("anthropic==0.87.0",),  # CVE-2026-34450, CVE-2026-34452
+    "provider.anthropic": ("anthropic==1.7.0",),  # CVE-2026-34450, CVE-2026-34452
     "provider.bedrock": ("boto3==1.42.89",),
     # Vertex OAuth2 token minting; google-auth is NOT in [all] on purpose.
     "provider.vertex": (
@@ -500,7 +500,7 @@ def _warm_installed_bytecode(specs: tuple[str, ...], target: Optional[Path]) -> 
 
     A pip/uv install writes ``.py`` sources and no ``__pycache__`` — and an install of the *same* version
     still deletes the cache the old copy had. Whoever imports the package next pays the whole compile: for
-    ``anthropic==0.87.0`` (541 modules) on cpython-3.12.13 that measured 2.2-2.7s cold against 0.7-1.0s
+    ``anthropic==1.7.0`` (541 modules) on cpython-3.12.13 that measured 2.2-2.7s cold against 0.7-1.0s
     warm, and 10.5s cold under concurrent load. That bill lands wherever the first import happens, and for a
     lazily-installed backend that is the foreground of a user request (#100461) — with nothing printed while
     it runs, so it reads as a hang. Worse, N per-profile daemons cold-starting together each pay it in full

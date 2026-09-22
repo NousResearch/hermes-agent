@@ -53,3 +53,37 @@ export const PROFILE_SWATCHES: readonly string[] = Array.from(
 export function profileColorSoft(color: string, percent = 16): string {
   return `color-mix(in srgb, ${color} ${percent}%, transparent)`
 }
+
+/**
+ * Extracts a concise, grapheme-safe glyph initial for a profile name.
+ * Supports ASCII, CJK, Cyrillic, Greek, Arabic, accented characters, and emojis,
+ * falling back to '?' only when no printable characters are present (#118765).
+ */
+export function profileInitial(name: null | string | undefined): string {
+  const trimmed = (name ?? '').trim()
+
+  if (!trimmed) {
+    return '?'
+  }
+
+  const letterOrDigit = trimmed.match(/[\p{L}\p{N}]/u)?.[0]
+
+  if (letterOrDigit) {
+    return letterOrDigit.toUpperCase()
+  }
+
+  if (typeof Intl !== 'undefined' && 'Segmenter' in Intl) {
+    const segmenter = new Intl.Segmenter(undefined, { granularity: 'grapheme' })
+    const iterator = segmenter.segment(trimmed)[Symbol.iterator]()
+    const firstSegment = iterator.next().value?.segment
+
+    if (firstSegment) {
+      return firstSegment
+    }
+  }
+
+  const fallback = Array.from(trimmed)[0]
+
+  return fallback || '?'
+}
+

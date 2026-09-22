@@ -1,4 +1,4 @@
-import { profileColorSoft } from '@/lib/profile-color'
+import { profileColorSoft, profileInitial } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
 
 import { Codicon } from './codicon'
@@ -26,7 +26,7 @@ export function ProfileGlyph({
     )
   }
 
-  const initial = name.replace(/[^a-z0-9]/gi, '').charAt(0) || '?'
+  const initial = profileInitial(name)
 
   return (
     <span

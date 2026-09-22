@@ -6,6 +6,7 @@ import { Terminal } from '@xterm/xterm'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { CSSProperties } from 'react'
 
+import { selectionQuote } from '@/app/chat/composer/selection-quote'
 import { writeClipboardText } from '@/components/ui/copy-button'
 import { markRightPanePerf } from '@/debug/right-pane-events'
 import { triggerHaptic } from '@/lib/haptics'
@@ -70,6 +71,13 @@ type TerminalStatus = 'closed' | 'open' | 'starting'
 // file's name instead of the shell, so the composer ref reads as a file quote
 // rather than a bogus "zsh:N lines".
 function previewSelectionLabel(): string {
+  const selection = window.getSelection()
+  const anchor = selection?.anchorNode instanceof Element ? selection.anchorNode : selection?.anchorNode?.parentElement
+
+  if (anchor?.closest('[data-slot$="-message-root"]')) {
+    return 'Chat transcript'
+  }
+
   const target = $previewTarget.get()
   const source = target?.path || target?.url || ''
 
@@ -449,9 +457,9 @@ export function useTerminalSession({
   const addSelectionToChat = useCallback(() => {
     const termSelection = (termRef.current?.getSelection() || selectionRef.current).trim()
     const selectedText = termSelection || window.getSelection()?.toString() || ''
-    const trimmed = selectedText.trim()
+    const quote = selectionQuote(selectedText, termSelection ? '' : previewSelectionLabel(), false)
 
-    if (!trimmed) {
+    if (!quote) {
       return
     }
 
@@ -460,9 +468,9 @@ export function useTerminalSession({
     const label = termSelection
       ? selectionLabelRef.current ||
         (termRef.current ? terminalSelectionLabel(termRef.current, shellNameRef.current, selectedText) : 'selection')
-      : previewSelectionLabel() || 'selection'
+      : quote.label
 
-    onAddSelectionToChatRef.current(trimmed, label)
+    onAddSelectionToChatRef.current(quote.text, label)
     termRef.current?.clearSelection()
     selectionRef.current = ''
     selectionLabelRef.current = ''

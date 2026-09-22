@@ -3,6 +3,7 @@ import type { ReactNode } from 'react'
 import { useEffect } from 'react'
 import { useNavigate } from 'react-router'
 
+import { sendSelectionQuote } from '@/app/chat/composer/selection-quote'
 import { terminalMenuHandleFor } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { toggleTargetZoneTabStrip } from '@/components/pane-shell/tree/store'
 import { Codicon } from '@/components/ui/codicon'
@@ -367,6 +368,12 @@ function domSections(open: Extract<OpenContextMenu, { kind: 'dom' }>, t: Transla
         key="selection-copy"
         label={t.common.copy}
         onSelect={() => void writeClipboardText(target.selectionText)}
+      />,
+      <Item
+        key="selection-to-composer"
+        label={t.keybinds.actions['view.selectionToComposer']}
+        onSelect={() => sendSelectionQuote(target.selectionText, 'Chat transcript')}
+        shortcut={formatCombo('mod+l')}
       />
     ])
   }
@@ -518,7 +525,13 @@ function guestSections(open: Extract<OpenContextMenu, { kind: 'guest' }>, t: Tra
     ])
   } else if (params.selectionText.trim()) {
     sections.push([
-      <Item icon="copy" key="guest-selection-copy" label={t.common.copy} onSelect={() => guestEdit('copy')} />
+      <Item icon="copy" key="guest-selection-copy" label={t.common.copy} onSelect={() => guestEdit('copy')} />,
+      <Item
+        key="guest-selection-to-composer"
+        label={t.keybinds.actions['view.selectionToComposer']}
+        onSelect={() => sendSelectionQuote(params.selectionText, 'Preview')}
+        shortcut={formatCombo('mod+l')}
+      />
     ])
   }
 

@@ -138,11 +138,17 @@ _GUARDS = (_cost_guard, _data_policy_guard, _context_cache_guard)
 def data_policy_acknowledged_interactively() -> bool:
     """``security.allow_data_training_tiers_interactive`` (default False) — the profile's persisted
     acknowledgement for tiers whose vendor trains on prompts. Read per call, so flipping the setting
-    applies to the next selection; the *unattended* opt-out stays a separate key."""
-    try:
-        from hermes_cli.config import load_config
+    applies to the next selection; the *unattended* opt-out stays a separate key.
 
-        security_cfg = (load_config() or {}).get("security")
+    Uses ``load_config_readonly()``: the router calls this once per selection request, and the
+    read-only accessor serves the stat-signature-keyed cache without the defensive deepcopy
+    (``load_config``'s docstring reserves that for callers that mutate the result). Only the
+    ``security`` flag is read here, never written.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        security_cfg = (load_config_readonly() or {}).get("security")
         return isinstance(security_cfg, dict) and security_cfg.get(
             "allow_data_training_tiers_interactive") is True
     except Exception:

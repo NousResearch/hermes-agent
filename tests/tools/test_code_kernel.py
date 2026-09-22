@@ -573,3 +573,32 @@ class TestStaleStagingDirSweep(unittest.TestCase):
                 self.assertFalse(old.exists())
                 self.assertTrue(young.exists())
                 self.assertTrue(bystander.exists())
+
+
+class TestRunnerLaunchEnvironment(unittest.TestCase):
+    """The generated runner must refuse loudly when the spawn environment is
+    missing the contract variables — a bare KeyError at module level used to
+    surface as an opaque "session kernel died" incident with no diagnosis."""
+
+    def test_missing_sentinel_fails_with_clear_message(self):
+        from tools.code_kernel import KERNEL_RUNNER_SOURCE
+
+        with tempfile.TemporaryDirectory() as tmp:
+            runner = Path(tmp, "hermes_kernel_runner.py")
+            runner.write_text(KERNEL_RUNNER_SOURCE, encoding="utf-8")
+            env = {k: v for k, v in os.environ.items()
+                   if not k.startswith("HERMES_KERNEL_")}
+            proc = subprocess.run(
+                [sys.executable, str(runner)], env=env,
+                capture_output=True, text=True, timeout=30)
+        self.assertNotEqual(proc.returncode, 0)
+        self.assertIn("HERMES_KERNEL_SENTINEL", proc.stderr)
+        self.assertNotIn("KeyError", proc.stderr)
+        self.assertNotIn("Traceback", proc.stderr)
+
+    def test_spawned_kernel_sees_the_sentinel(self):
+        """The spawn contract end-to-end: a live cell proves the child env
+        carried the sentinel (a missing one exits before the first reply)."""
+        with _kernel_config():
+            result = _run("x = 7")
+        self.assertEqual(result["status"], "success", result)

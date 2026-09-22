@@ -588,6 +588,50 @@ class TestRuntimeRepair:
         assert fresh_backup.exists(), "fresh backup may be an in-flight repair"
         assert sentinel.read_text(encoding="utf-8") == "live"
 
+    def test_safe_runtime_keeps_backup_referenced_by_live_site_packages(self, tmp_path):
+        """An aged backup remains while the live venv has a path reference into it (#119366)."""
+        import os
+        import time as _time
+
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, _ = _make_runtime_install(tmp_path)
+        backup = root / f"{live.name}.stale.runtime-1-2-aaaa"
+        package = backup / "lib" / "python3.11" / "site-packages" / "optional_backend"
+        package.mkdir(parents=True)
+        site_packages = live / "lib" / "python3.11" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "optional_backend").symlink_to(package, target_is_directory=True)
+        stale_mtime = _time.time() - 7200
+        os.utime(backup, (stale_mtime, stale_mtime))
+
+        current = _runtime_info(live / "bin" / "python", (3, 53, 1))
+        with patch("hermes_cli.managed_uv.probe_sqlite_runtime", return_value=current):
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "safe"
+        assert backup.exists(), "live site-packages symlink must keep its backup target"
+
+    def test_safe_runtime_sweeps_unreferenced_old_backup(self, tmp_path):
+        """An aged backup without a live site-packages reference is still reclaimed (#119366)."""
+        import os
+        import time as _time
+
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, _ = _make_runtime_install(tmp_path)
+        backup = root / f"{live.name}.stale.runtime-1-2-aaaa"
+        (backup / "lib" / "python3.11" / "site-packages" / "optional_backend").mkdir(parents=True)
+        stale_mtime = _time.time() - 7200
+        os.utime(backup, (stale_mtime, stale_mtime))
+
+        current = _runtime_info(live / "bin" / "python", (3, 53, 1))
+        with patch("hermes_cli.managed_uv.probe_sqlite_runtime", return_value=current):
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "safe"
+        assert not backup.exists()
+
     def test_successful_repair_removes_parked_backup(self, tmp_path):
         """After a successful cutover the parked venv is removed instead of
         leaking ~1 GB at the project root forever (issue #73109)."""
@@ -631,6 +675,41 @@ class TestRuntimeRepair:
         )
         leftovers = list(root.glob(f"{live.name}.stale.runtime-*"))
         assert leftovers == [], f"no stale markers may remain: {leftovers}"
+
+    def test_successful_repair_keeps_parked_backup_referenced_by_new_live_venv(self, tmp_path):
+        """A successful cutover preserves a backup the promoted venv references (#119366)."""
+        from hermes_cli.managed_uv import repair_vulnerable_runtime
+
+        root, live, _ = _make_runtime_install(tmp_path)
+        current = _runtime_info(live / "bin" / "python", (3, 50, 4))
+        generation = root / ".hermes-runtime" / "python" / "generation-test"
+        candidate_python = generation / "bin" / "python"
+        candidate_python.parent.mkdir(parents=True)
+        candidate_python.write_text("candidate interpreter", encoding="utf-8")
+        fixed = _runtime_info(candidate_python, (3, 53, 1))
+        candidate_venv = root / ".hermes-runtime" / "venv-candidate"
+        (candidate_venv / "bin").mkdir(parents=True)
+        (candidate_venv / "bin" / "python").write_text("candidate", encoding="utf-8")
+        backup = root / f"{live.name}.stale.runtime-test-token"
+        package = live / "lib" / "python3.11" / "site-packages" / "optional_backend"
+        package.mkdir(parents=True)
+        parked_package = backup / "lib" / "python3.11" / "site-packages" / "optional_backend"
+        site_packages = candidate_venv / "lib" / "python3.11" / "site-packages"
+        site_packages.mkdir(parents=True)
+        (site_packages / "optional_backend").symlink_to(parked_package, target_is_directory=True)
+
+        with patch("hermes_cli.managed_uv._token", return_value="test-token"), \
+             patch("hermes_cli.managed_uv.probe_sqlite_runtime", side_effect=[current, current]), \
+             patch(
+                 "hermes_cli.managed_uv._install_safe_python_generation",
+                 return_value=(generation, candidate_python, fixed),
+             ), \
+             patch("hermes_cli.managed_uv._stage_candidate_venv", return_value=candidate_venv), \
+             patch("hermes_cli.managed_uv._smoke_candidate_venv", return_value=(True, "", fixed)):
+            result = repair_vulnerable_runtime("uv", project_root=root)
+
+        assert result.status == "repaired"
+        assert backup.exists(), "new live venv link must keep its parked backup target"
 
 
 def _make_candidate_layout(tmp_path):

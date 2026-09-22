@@ -16,10 +16,10 @@ import weakref
 from contextlib import suppress
 from difflib import SequenceMatcher
 from types import SimpleNamespace
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 
 from gateway.config import Platform
-from gateway.platforms.base import build_auto_tts_output_path
+from gateway.platforms.base import BasePlatformAdapter, build_auto_tts_output_path
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.session import SessionSource
 
@@ -28,6 +28,41 @@ logger = logging.getLogger("gateway.run")  # log-record parity with the origin m
 # Adapter-side per-chat auto-TTS override sets (``/voice off`` vs explicit ``/voice on``/``tts``).
 _OFF_SET, _ON_SET = "_auto_tts_disabled_chats", "_auto_tts_enabled_chats"
 _VOICE_MODES = {"off", "voice_only", "all"}
+# Auto-TTS is a DELIVERY PREFERENCE, the text reply is the answer: the awaited synthesis is bounded
+# by ``voice.auto_tts_timeout_s`` so a slow/wedged backend can never hold the text. Without a bound
+# the OpenAI TTS client's own default (timeout=600 s, max_retries=2) put the final text up to 1800 s
+# behind the audio on EVERY platform — that is how every email answer arrived ~30 min late on
+# 2026-09-22 (qwen3-tts restarted on CPU: 800-1000 s per synthesis). 30 s is already far more than a
+# healthy backend needs and far less than the delay users noticed.
+_AUTO_TTS_TIMEOUT_DEFAULT_S = 30.0
+_AUTO_TTS_TIMEOUT_MIN_S = 5.0
+_AUTO_TTS_TIMEOUT_MAX_S = 600.0
+# The hard cap on the await sits a little above the per-request budget so the TTS tool's own
+# request-level timeout (which fails cleanly and logs the provider error) normally wins.
+_AUTO_TTS_TIMEOUT_GRACE_S = 5.0
+
+
+def _auto_tts_timeout_s() -> float:
+    """Seconds to wait for one auto-TTS voice reply before sending the text without audio.
+
+    ``voice.auto_tts_timeout_s`` (default ``_AUTO_TTS_TIMEOUT_DEFAULT_S``), clamped to
+    [``_MIN``, ``_MAX``]. Anything unusable — unset, non-numeric or <= 0 — falls back to the
+    DEFAULT rather than disabling the bound: an unbounded auto-TTS await is exactly the defect this
+    prevents, so "no value" must never mean "wait forever"."""
+    try:
+        from hermes_cli.config import load_config  # lazy: no gateway -> hermes_cli module dep
+        raw: Any = (load_config().get("voice") or {}).get("auto_tts_timeout_s")
+    except Exception:
+        raw = None
+    if isinstance(raw, bool) or not isinstance(raw, (int, float, str)):
+        return _AUTO_TTS_TIMEOUT_DEFAULT_S  # unset / null / wrong type
+    try:
+        timeout = float(raw)
+    except (TypeError, ValueError):
+        return _AUTO_TTS_TIMEOUT_DEFAULT_S
+    if timeout <= 0:
+        return _AUTO_TTS_TIMEOUT_DEFAULT_S
+    return max(_AUTO_TTS_TIMEOUT_MIN_S, min(_AUTO_TTS_TIMEOUT_MAX_S, timeout))
 
 
 class GatewayVoiceMixin:
@@ -288,6 +323,19 @@ class GatewayVoiceMixin:
             channel_prompt=channel_prompt)
         await adapter.handle_message(event)
 
+    @staticmethod
+    def _adapter_can_send_voice(adapter) -> bool:
+        """True when ``adapter`` can actually DELIVER synthesized audio: a native ``send_voice``
+        override, or a voice-channel player. The base adapter ships a warning-only ``send_voice``
+        fallback ("native audio send unavailable"), so inheriting it means the channel cannot carry
+        voice at all — the email adapter is the case that matters.
+        """
+        if callable(getattr(adapter, "play_in_voice_channel", None)):
+            return True
+        if not callable(getattr(adapter, "send_voice", None)):
+            return False
+        return getattr(type(adapter), "send_voice", None) is not BasePlatformAdapter.send_voice
+
     def _should_send_voice_reply(
         self, event: MessageEvent, response: str, agent_messages: list, already_sent: bool = False
     ) -> bool:
@@ -300,6 +348,16 @@ class GatewayVoiceMixin:
         voice_mode = self._voice_mode.get(self._voice_key_for_source(event.source))
         is_voice_input = event.message_type == MessageType.VOICE
         adapter = self._delivery_adapter_for(event.source)
+        # A channel that cannot carry audio gains nothing from auto-TTS, and pays for it: the reply
+        # is synthesized BEFORE the final text is handed to the adapter, so against a slow or wedged
+        # TTS backend the text is held behind the TTS client's whole retry budget. That is how every
+        # email answer ended up arriving ~30 minutes late (email inherits the warning-only
+        # ``send_voice``, so the synthesized audio was discarded anyway).
+        if adapter is not None and not self._adapter_can_send_voice(adapter):
+            logger.debug(
+                "Auto voice reply skipped: %s cannot deliver voice audio (chat=%s platform=%s)",
+                adapter.name, chat_id, event.source.platform.value)
+            return False
         adapter_auto_tts = False
         with suppress(Exception):  # adapters without the probe read as False
             adapter_auto_tts = bool(adapter._should_auto_tts_for_chat(chat_id))
@@ -325,11 +383,26 @@ class GatewayVoiceMixin:
     def _should_echo_stt_transcripts(self) -> bool:
         return bool(getattr(self.config, "stt_echo_transcripts", True))
 
-    async def _send_voice_reply(self, event: MessageEvent, text: str) -> None:
+    def _auto_tts_budget_s(self) -> float:
+        """Per-turn auto-TTS budget in seconds (``voice.auto_tts_timeout_s``; see module helper)."""
+        return _auto_tts_timeout_s()
+
+    def _auto_tts_wait_s(self) -> float:
+        """Hard cap on the AWAITED auto-TTS: the budget plus a small grace, so the TTS tool's own
+        request-level timeout (clean failure + provider error in the log) normally fires first."""
+        return self._auto_tts_budget_s() + _AUTO_TTS_TIMEOUT_GRACE_S
+
+    async def _send_voice_reply(self, event: MessageEvent, text: str,
+                                timeout_s: Optional[float] = None) -> None:
         """Generate TTS audio and send as a voice message before the text reply. The TTS tool
         may return one combined file or several separately valid ones (combination unavailable /
-        over a platform limit); legacy single-file results keep working."""
+        over a platform limit); legacy single-file results keep working.
+
+        ``timeout_s`` bounds the synthesis REQUEST (OpenAI-compatible backends) and is passed by the
+        gateway so a slow backend fails the voice reply instead of delaying the text; callers that
+        must not block on it at all bound the await themselves (see ``_auto_tts_wait_s``)."""
         audio_path, actual_paths = None, []
+        abandoned = False
         try:
             from tools.tts_text_normalize import _strip_markdown_for_tts
             from tools.tts_tool import text_to_speech_tool
@@ -339,8 +412,15 @@ class GatewayVoiceMixin:
             # Platforms whose native voice bubbles require Ogg/Opus (OPUS_VOICE_PLATFORMS) get an
             # explicit .ogg path; the TTS tool's container repair guarantees real Ogg/Opus bytes.
             audio_path = build_auto_tts_output_path(event.source.platform)
-            raw = await asyncio.to_thread(text_to_speech_tool, text=tts_text,
-                                          output_path=audio_path)
+            try:
+                raw = await asyncio.to_thread(text_to_speech_tool, text=tts_text,
+                                              output_path=audio_path,
+                                              request_timeout_s=timeout_s)
+            except asyncio.CancelledError:
+                # The caller's budget elapsed. A worker thread cannot be cancelled, so it is still
+                # writing: don't unlink the file out from under it (the turn's tmp audit sweeps it).
+                abandoned = True
+                raise
             try:
                 result = json.loads(raw)
             except (json.JSONDecodeError, TypeError):
@@ -357,9 +437,10 @@ class GatewayVoiceMixin:
         except Exception as e:
             logger.warning("Auto voice reply failed: %s", e, exc_info=True)
         finally:
-            for p in ({audio_path, *actual_paths} - {None}):
-                with suppress(OSError):
-                    os.unlink(p)
+            if not abandoned:
+                for p in ({audio_path, *actual_paths} - {None}):
+                    with suppress(OSError):
+                        os.unlink(p)
 
     async def _deliver_voice_reply(self, event: MessageEvent, audio_paths: List[str]) -> None:
         """Play the files in the connected voice channel, else send them as voice messages."""

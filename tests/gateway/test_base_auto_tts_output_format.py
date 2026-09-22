@@ -98,7 +98,7 @@ async def _run_auto_tts(adapter: _DummyAdapter, platform: Platform):
     event = _make_voice_event(platform)
     requested = []
 
-    def fake_tts(*, text, output_path=None):
+    def fake_tts(*, text, output_path=None, request_timeout_s=None):
         requested.append(output_path)
         from pathlib import Path
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
@@ -124,7 +124,7 @@ async def test_base_auto_tts_skips_playback_when_tool_reports_failure():
     adapter.set_message_handler(lambda _event: asyncio.sleep(0, result="reply text"))
     event = _make_voice_event(Platform.TELEGRAM)
 
-    def fake_tts(*, text, output_path=None):
+    def fake_tts(*, text, output_path=None, request_timeout_s=None):
         from pathlib import Path
         Path(output_path).parent.mkdir(parents=True, exist_ok=True)
         Path(output_path).write_bytes(b"partial")

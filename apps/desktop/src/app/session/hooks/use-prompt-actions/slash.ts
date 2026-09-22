@@ -1,10 +1,12 @@
 import { skillInvocationText } from '@hermes/shared'
+import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared'
 import { type MutableRefObject, useCallback, useRef } from 'react'
 
+import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { getProfiles } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { type ChatMessage, toChatMessages } from '@/lib/chat-messages'
-import { parseCommandDispatch, parseSlashCommand, sessionTitle } from '@/lib/chat-runtime'
+import { sessionTitle } from '@/lib/chat-runtime'
 import {
   type CommandsCatalogLike,
   type DesktopActionId,
@@ -547,6 +549,7 @@ export function useSlashCommand(deps: SlashCommandDeps) {
       // new branch in a dispatch ladder.
       const actionHandlers: Record<DesktopActionId, (ctx: SlashActionCtx) => Promise<void>> = {
         new: async () => {
+          prepareDefaultNewSession()
           startFreshSessionDraft()
         },
         branch: async () => {

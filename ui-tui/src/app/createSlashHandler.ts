@@ -1,6 +1,7 @@
-import { parseSlashCommand } from '../domain/slash.js'
+import { parseCommandDispatch, parseSlashCommand } from '@hermes/shared/slash'
+
 import type { SlashExecResponse } from '../gatewayTypes.js'
-import { asCommandDispatch, rpcErrorMessage } from '../lib/rpc.js'
+import { rpcErrorMessage } from '../lib/rpc.js'
 import { launchWidget } from '../sdk/host.js'
 import { getWidgetApp } from '../sdk/registry.js'
 
@@ -10,6 +11,7 @@ import { findSlashCommand } from './slash/registry.js'
 import type { SlashRunCtx } from './slash/types.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { getUiState } from './uiStore.js'
+import { describeSlashExecError, shouldFallbackToDispatch } from './userMessages.js'
 
 export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
   const { gw } = ctx.gateway
@@ -99,7 +101,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
     }
 
     const handleDispatch = (raw: unknown): void => {
-      const d = asCommandDispatch(raw)
+      const d = parseCommandDispatch(raw)
 
       if (!d) {
         return sys('error: invalid response: command.dispatch')
@@ -163,7 +165,7 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
           return
         }
 
-        if (asCommandDispatch(r)) {
+        if (parseCommandDispatch(r)) {
           return handleDispatch(r)
         }
 
@@ -173,8 +175,22 @@ export function createSlashHandler(ctx: SlashHandlerContext): SlashHandler {
 
         long ? page(text, parsed.name[0]!.toUpperCase() + parsed.name.slice(1)) : sys(text)
       })
-      .catch(() => {
-        if (stale()) {return}
+      .catch((execErr: unknown) => {
+        if (stale()) {
+          return
+        }
+
+        // Only "slash.exec does not own this command" refusals (4011/4018) may
+        // fall through to command.dispatch. A helper timeout/crash (5030) must
+        // be shown as itself — the fallback's "not a quick/plugin/bundle/skill
+        // command" refusal used to bury the real cause and imply the command
+        // did not exist.
+        if (!shouldFallbackToDispatch(execErr)) {
+          sys(`error: ${describeSlashExecError(parsed.name, execErr)}`)
+
+          return
+        }
+
         gw.request('command.dispatch', { arg: parsed.arg, name: parsed.name, session_id: sid })
           .then((raw: unknown) => {
             if (stale()) {

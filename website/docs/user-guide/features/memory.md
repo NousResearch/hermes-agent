@@ -56,6 +56,14 @@ The format includes:
 
 **Frozen snapshot pattern:** The system prompt injection is captured once at session start and never changes mid-session. This is intentional — it preserves the LLM's prefix cache for performance. When the agent adds/removes memory entries during a session, the changes are persisted to disk immediately but won't appear in the system prompt until the next session starts. Tool responses always show the live state.
 
+## Memory Needs Session Boundaries
+
+The whole memory system is built around the moment a session **ends**: `MEMORY.md` and `USER.md` carry the essentials into the next session, and `session_search` fills the gaps once the old context is gone. Inside a single session none of that machinery has a reason to run — everything important is still in the live context, so the agent rarely consults `session_search` and mostly compacts memory entries instead of curating them.
+
+This matters on messaging platforms (Telegram, Discord, etc.), where a chat is deliberately [one continuous session](/user-guide/sessions#session-continuity) that survives restarts, gateway crashes, and machine reboots. Shutting the machine down overnight does **not** end the session — the next message picks it up exactly where it left off. If you never reset, a chat can run for weeks as a single session: convenient, but it grows expensive (compaction runs repeatedly over an ever-longer history) and the learning loop of *forget → recall from memory → search past sessions* almost never gets to fire. Fresh memory entries also stay invisible to the running session because of the frozen snapshot above.
+
+**Practice:** run `/new` at natural boundaries — a finished task, a change of topic, the start of a day. Each boundary is when memory pays off: the agent re-reads the updated `MEMORY.md`/`USER.md` snapshot, starts from a cheap short context, and reaches for `session_search` when it actually needs history. On the CLI this mostly takes care of itself (every invocation is a new session); on gateways the boundary is yours to create.
+
 ## Memory Tool Actions
 
 The agent uses the `memory` tool with these actions:
@@ -218,6 +226,8 @@ The learning journey is a timeline view of everything Hermes has learned — sav
 - **TUI** — `/journey` (aliases: `/learning`, `/memory-graph`) opens the timeline as an overlay.
 - **Desktop app** — `/journey` opens the Star Map / memory-graph panel, an interactive visual of the same nodes.
 
+A skill appears on the timeline as soon as it has a learning signal: it was created in this profile (a `/learn` result or a foreground `skill_manage` create), created by the background review, or used at least once. Bundled skills and hand-written skills that have never been used stay out of the timeline.
+
 Beyond viewing, the journey is also where you **prune and correct** what Hermes has learned:
 
 | Command | What it does |
@@ -343,7 +353,7 @@ A review using the same model as the parent **always inherits the parent's reaso
 
 Reasoning settings, the system prompt, the full conversation snapshot, and tool definitions stay byte-identical to the parent at fork birth so the review can reuse its prompt-cache prefix. Changing only the review's thinking level would break that parity. There is no independent-effort switch for same-model reviews.
 
-To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; its separate task-effort bug is tracked in [#94825](https://github.com/NousResearch/hermes-agent/issues/94825). These frequency and routing controls do not decouple same-model reasoning.
+To reduce review work without changing the main conversation's effort, adjust `memory.nudge_interval` / `skills.creation_nudge_interval`, disable automatic reviews as described below, or route reviews to a different model. A different-model route uses a digest and does not share the parent's warm prefix; on that route `auxiliary.background_review.reasoning_effort` IS honored (unset = the routed provider's default). A one-time warning is printed when the key is set but the review stays on the main model. These frequency and routing controls do not decouple same-model reasoning.
 
 ### Disabling automatic reviews (`enabled`)
 

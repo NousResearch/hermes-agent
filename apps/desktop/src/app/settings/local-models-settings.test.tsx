@@ -3,7 +3,7 @@ import { MemoryRouter, useLocation } from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { I18nProvider } from '@/i18n'
-import { $localRuntimeJobs } from '@/store/local-runtime-jobs'
+import { $localRuntimeInstallStarting, $localRuntimeJobs } from '@/store/local-runtime-jobs'
 import type { LocalCatalogModel, LocalHardware, LocalModelsStatus, LocalRuntimeJob } from '@/types/hermes'
 
 import { LocalModelsSettings } from './local-models-settings'
@@ -134,9 +134,106 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  // A running job arms the store's 700ms re-poll; drain it so the timer cannot
+  // fire into a torn-down test environment.
+  $localRuntimeJobs.set([])
 })
 
 describe('LocalModelsSettings', () => {
+  it.each(['starting', 'running'])(
+    'keeps the runtime update view visible with no staged models while %s',
+    async phase => {
+      mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true, update_available: true })
+
+      const jobs: LocalRuntimeJob[] =
+        phase === 'running'
+          ? [
+              {
+                job_id: 'engine-update',
+                kind: 'runtime-install',
+                target: 'target',
+                model_id: null,
+                status: 'running',
+                phase: 'downloading',
+                detail: 'Downloading engine archive',
+                total_bytes: 100,
+                done_bytes: 40,
+                percent: 40,
+                error: null
+              }
+            ]
+          : []
+
+      mocked.getLocalModelsJobs.mockResolvedValue({ jobs })
+      $localRuntimeJobs.set(jobs)
+      $localRuntimeInstallStarting.set(phase === 'starting')
+      renderPane()
+      await screen.findByText('Qwen3.6 27B')
+      const setup = screen.queryByRole('button', { name: /set up for me/i })
+
+      const detail =
+        phase === 'running'
+          ? screen.queryByText('Downloading engine archive')
+          : screen.queryByRole('button', { name: /update engine/i })
+
+      act(() => $localRuntimeInstallStarting.set(false))
+      expect(setup).toBeNull()
+      expect(detail).toBeTruthy()
+    }
+  )
+  it('keeps a failed explicit update visible with a direct retry and no staged models', async () => {
+    mocked.getLocalModelsStatus.mockResolvedValue({ ...BASE_STATUS, runtime_installed: true, update_available: true })
+    $localRuntimeInstallStarting.set(true)
+    const view = renderPane()
+    await screen.findByRole('button', { name: /update engine/i })
+
+    const failed: LocalRuntimeJob = {
+      job_id: 'failed-update',
+      total_bytes: null,
+      done_bytes: 0,
+      kind: 'runtime-install',
+      target: 'target',
+      model_id: null,
+      status: 'error',
+      phase: 'download',
+      detail: '',
+      error: 'Engine archive unavailable'
+    }
+
+    mocked.getLocalModelsJobs.mockResolvedValue({ jobs: [failed] })
+    act(() => {
+      $localRuntimeJobs.set([failed])
+      $localRuntimeInstallStarting.set(false)
+    })
+    expect(screen.queryByRole('button', { name: /set up for me/i })).toBeNull()
+    expect(screen.getByText('Engine archive unavailable')).toBeTruthy()
+    view.unmount()
+    renderPane()
+    const retry = await screen.findByRole('button', { name: /update engine/i })
+    expect((retry as HTMLButtonElement).disabled).toBe(false)
+    mocked.installLocalRuntime.mockResolvedValue({ backend: 'cpu', job_id: 'retry', tag: 'next' })
+    fireEvent.click(retry)
+    await waitFor(() => expect(mocked.installLocalRuntime).toHaveBeenCalledTimes(1))
+  })
+  it('starts runtime installation only once while the request is pending', async () => {
+    let finish!: (value: { backend: string; job_id: string; tag: string }) => void
+    mocked.installLocalRuntime.mockImplementation(
+      () =>
+        new Promise(resolve => {
+          finish = resolve
+        })
+    )
+    await renderFullPane()
+    const button = screen.getByRole('button', { name: /install runtime/i })
+    fireEvent.click(button)
+    fireEvent.click(button)
+    expect(mocked.installLocalRuntime).toHaveBeenCalledTimes(1)
+    expect((button as HTMLButtonElement).disabled).toBe(true)
+    await act(async () => {
+      finish({ backend: 'cpu', job_id: 'install', tag: 'next' })
+    })
+  })
+
   it('offers the runtime install with a plain-language explanation', async () => {
     await renderFullPane()
 

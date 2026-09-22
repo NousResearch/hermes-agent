@@ -55,12 +55,36 @@ def retire_terminal_receipts(conn, session_ids):
         conn.execute('DELETE FROM session_admissions WHERE target_session_id=?', (sid,))
 
 
+_LIVE_LEDGER_SQL = """SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal'
+    UNION ALL SELECT 1 FROM worker_executions WHERE session_id=? AND status!='terminal' LIMIT 1"""
+
+
+def retire_sessions(conn, session_ids):
+    """The complete deletion fence for ids that are being deleted in this transaction.
+
+    Terminal receipts alone are not enough: without the ``RETIRED_PREFIX`` marker an exact
+    retry of a settled request reports ``not_found`` instead of its terminal receipt, a late
+    accounting/constructor backfill recreates the deleted row, and the same request is then
+    admitted a second time against it. Every delete path (canonical mutate, legacy
+    ``delete_session*``, prunes and sweeps) must publish the whole fence, so it lives here once."""
+    retire_terminal_receipts(conn, session_ids)
+    retire_routes(conn, session_ids)
+
+
+def retire_prunable(conn, session_ids):
+    """Sweep variant of :func:`retire_sessions`: fence the idle sessions and return only those ids.
+    A session with live or unknown work is skipped, so one busy row cannot abort a whole
+    prune/empty-session sweep (explicit deletes still refuse with ``session_busy``)."""
+    quiet = [sid for sid in session_ids if conn.execute(_LIVE_LEDGER_SQL, (sid, sid)).fetchone() is None]
+    retire_sessions(conn, quiet)
+    return quiet
+
+
 def delete_in_transaction(db, conn, session_id, payload):
     from hermes_state_mutation_guards import require_idle, delete_targets
     targets = delete_targets(conn, session_id)
     require_idle(db, conn, targets)
-    retire_terminal_receipts(conn, targets)
-    retire_routes(conn, targets)
+    retire_sessions(conn, targets)
     for sid in targets:
         db._bump_conversation_generation(conn, sid, 'session_reset')
         conn.execute('UPDATE sessions SET parent_session_id=NULL, runtime_revision=runtime_revision+1 WHERE parent_session_id=?', (sid,))
@@ -71,8 +95,10 @@ def delete_in_transaction(db, conn, session_id, payload):
 
 
 def retire_routes(conn, session_ids):
+    # OR IGNORE: the marker is a fact, not a receipt; re-retiring an id that was recreated
+    # beside its tombstone must not abort the delete that removes it again.
     for sid in session_ids:
-        conn.execute('INSERT INTO state_meta(key,value) VALUES(?,?)',
+        conn.execute('INSERT OR IGNORE INTO state_meta(key,value) VALUES(?,?)',
                      (RETIRED_PREFIX + sid, '{}'))
     targets = set(session_ids)
     for row in conn.execute('SELECT scope,session_key,entry_json FROM gateway_routing').fetchall():

@@ -143,6 +143,7 @@ def test_spawn_resolves_claimed_task_policy(
 
     profile = kanban_home / "profiles" / "elias"
     profile.mkdir(parents=True)
+    (profile / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is not a live profile
     workspace = tmp_path / "ws"
     workspace.mkdir()
     tid = kb.create_task(conn, title="t", assignee="elias",

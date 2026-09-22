@@ -15,6 +15,7 @@ from hermes_cli.web_routers._common import http_failure, scoped_to_thread
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_config import (
     _apply_main_model_assignment, _denormalize_config_from_web, _normalize_config_for_web, _schema_with_dynamic_provider_options,
+    _validated_main_model_selection,
 )
 from hermes_cli.web_server_profiles import (
     _approval_mode_of, _broadcast_gateway_session_info, _is_other_profile, _parse_model_ids,
@@ -516,9 +517,8 @@ def _write_custom_endpoint(cfg: Dict[str, Any], body: CustomEndpointUpdate) -> T
     cfg["providers"] = providers
 
     if body.make_default:
-        cfg["model"] = _apply_main_model_assignment(
-            cfg.get("model", {}), endpoint_id, model, base_url
-        )
+        result = _validated_main_model_selection(cfg, endpoint_id, model, base_url)
+        cfg["model"] = _apply_main_model_assignment(cfg.get("model", {}), result)
         if entry.get("key_env") and isinstance(cfg["model"], dict):
             cfg["model"]["key_env"] = entry["key_env"]
             cfg["model"].pop("api_key", None)
@@ -543,7 +543,10 @@ def list_custom_endpoints(profile: Optional[str] = None):
 def upsert_custom_endpoint(body: CustomEndpointUpdate, profile: Optional[str] = None):
     """Create or update a v12+ ``providers`` custom endpoint entry."""
     with http_failure("POST /api/providers/custom-endpoints failed", 500, detail="Failed to save custom endpoint"):
-        with _config_profile_scope(profile):
+        # Sync-def endpoints run on worker threads: the load→mutate→save span
+        # holds _CONFIG_MUTATION_LOCK so a concurrent config autosave cannot
+        # drop this write (or vice versa).
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:
             cfg = load_config()
             endpoint_id, _entry = _write_custom_endpoint(cfg, body)
             save_config(cfg)
@@ -560,7 +563,7 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"POST /api/providers/custom-endpoints/{endpoint_id}/activate failed", 500,
         detail="Failed to activate custom endpoint",
     ):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             _stored, entry = find_provider_entry(cfg.get("providers"), provider_key)
@@ -573,7 +576,8 @@ def activate_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
             if not model or not base_url:
                 raise HTTPException(status_code=400, detail="custom endpoint is incomplete")
 
-            model_cfg = _apply_main_model_assignment(cfg.get("model", {}), provider_key, model, base_url)
+            model_cfg = _apply_main_model_assignment(
+                cfg.get("model", {}), _validated_main_model_selection(cfg, provider_key, model, base_url))
             if entry.get("key_env"):
                 model_cfg["key_env"] = entry["key_env"]
                 model_cfg.pop("api_key", None)
@@ -600,7 +604,7 @@ def delete_custom_endpoint(endpoint_id: str, profile: Optional[str] = None):
         f"DELETE /api/providers/custom-endpoints/{endpoint_id} failed", 500,
         detail="Failed to delete custom endpoint",
     ):
-        with _config_profile_scope(profile):
+        with _config_profile_scope(profile), _CONFIG_MUTATION_LOCK:  # RMW span
             cfg = load_config()
             provider_key = _custom_endpoint_id(endpoint_id)
             providers = cfg.get("providers")

@@ -6,12 +6,39 @@ issuer. A browser Origin (including an empty one) always disqualifies this path.
 """
 from __future__ import annotations
 
+from contextlib import contextmanager
 from pathlib import Path
 
 from fastapi import HTTPException
 from starlette.responses import JSONResponse
 
 HEADER = 'x-hermes-gateway-ticket'
+
+
+@contextmanager
+def native_profile_scope(request):
+    """Resolve the request's implicit selectors (omitted / '' / 'current') in the TICKET's home.
+
+    ``_own_profile`` lets those selectors through unbound; the routes then resolve
+    ``get_hermes_home()`` / ``_default_db_path()``, which is the launch home unless the
+    task-local override says otherwise. A secondary-profile ticket must read and write its
+    own profile, never the launch profile's dashboard state. The launch profile's own ticket
+    already resolves there, so it keeps the ambient (single-profile) behaviour byte-for-byte.
+    """
+    grant = getattr(request.state, 'native_http_principal', None)
+    if grant is None:
+        yield
+        return
+    from hermes_constants import get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override
+    home = Path(grant['profile_id'])
+    if home.resolve() == get_process_hermes_home().resolve():
+        yield
+        return
+    token = set_hermes_home_override(str(home))
+    try:
+        yield
+    finally:
+        reset_hermes_home_override(token)
 
 
 def _own_profile(value, profile_id, *, current=True):

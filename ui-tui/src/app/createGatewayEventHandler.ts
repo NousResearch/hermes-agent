@@ -1,43 +1,60 @@
 import { execFile } from 'child_process'
 
 import { forceRedraw, onTerminalBackground, onTerminalForeground } from '@hermes/ink'
+import { stripAnsi } from '@hermes/shared/ansi'
+import { relativeLuminance } from '@hermes/shared/color'
+import type { StreamDeltaPayload, SubagentStatus, Usage } from '@hermes/shared/gateway-events'
 
 import { STARTUP_IMAGE, STARTUP_QUERY } from '../config/env.js'
 import { STREAM_BATCH_MS } from '../config/timing.js'
 import { buildSetupRequiredSections, SETUP_REQUIRED_TITLE } from '../content/setup.js'
 import type {
+  AnyGatewayEvent,
   CommandsCatalogResponse,
   ConfigFullResponse,
   DelegationStatusResponse,
-  GatewayEvent,
   GatewaySkin,
   SessionMostRecentResponse
 } from '../gatewayTypes.js'
 import { billingDialogCopy } from '../lib/billingDialog.js'
-import { relativeLuminance } from '../lib/color.js'
 import { type ImageAttachment, stageImagePath } from '../lib/imageAttachments.js'
 import { isTodoDone } from '../lib/liveProgress.js'
 import { openExternalUrl } from '../lib/openExternalUrl.js'
 import { rpcErrorMessage } from '../lib/rpc.js'
 import { topLevelSubagents } from '../lib/subagentTree.js'
 import { isPaintableHex, setTerminalBackground, setTerminalForeground } from '../lib/terminalModes.js'
-import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall, stripAnsi } from '../lib/text.js'
+import { formatAbandonedClarify, formatAbandonedClarifyBatch, formatToolCall } from '../lib/text.js'
 import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/themeBoot.js'
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
-import type { Msg, SubagentProgress, SubagentStatus, Usage } from '../types.js'
+import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
-import type { GatewayEventHandlerContext } from './interfaces.js'
+import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
 import { markBubbleShown, newlyStartedRows } from './pendingBubbles.js'
 import { flashGoodVibes, flashPet } from './petFlashStore.js'
+import { forgetServerRequest } from './serverRequestStore.js'
 import { captureDestination, isCurrentDestination } from './submissionDestination.js'
 import { turnController } from './turnController.js'
 import { getTurnState } from './turnStore.js'
 import { getUiState, patchUiState } from './uiStore.js'
+import {
+  BACKEND_SLOW_START,
+  BACKEND_SLOW_START_STATUS,
+  backendReconnecting,
+  describeRpcError,
+  describeTurnFailure,
+  isBareErrorText,
+  promptTimeoutNotice,
+  stderrLooksLikeProblem,
+  stderrProblemActivity
+} from './userMessages.js'
 import { isWakeUserDisabled } from './wakeState.js'
 
 const NO_PROVIDER_RE = /\bNo (?:LLM|inference) provider configured\b/i
+
+const NOTICE_LEVELS: readonly NoticeLevel[] = ['error', 'info', 'success', 'warn']
+const isNoticeLevel = (value: unknown): value is NoticeLevel => NOTICE_LEVELS.includes(value as NoticeLevel)
 
 type VoiceSubmitMode = 'direct' | 'draft'
 
@@ -418,7 +435,7 @@ const normalizeSubagentStatus = (status: unknown, fallback: SubagentStatus): Sub
   return KNOWN_SUBAGENT_STATUSES.has(normalized) ? normalized : fallback
 }
 
-export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: GatewayEvent) => void {
+export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev: AnyGatewayEvent) => void {
   syncThemeToTerminalBackground()
 
   const { gw, rpc } = ctx.gateway
@@ -447,8 +464,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
   // paths can't both persist the same prompt twice.
   const persistedAbandonedClarify = new Set<string>()
 
-  // When a clarify prompt is dismissed without an answer (the backend _block
-  // timed out and returned an empty string), the live ClarifyPrompt overlay is
+  // When a clarify prompt is dismissed without an answer (the backend request
+  // timed out and returned no answer), the live ClarifyPrompt overlay is
   // left set until the next turn's idle() silently nulls it — so the question
   // and options vanish from the screen while the agent's follow-up still refers
   // to them.  The reliable signal is the clarify tool's own tool.complete (and,
@@ -710,15 +727,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    // Crash recovery: a respawn triggered by an unexpected gateway death
-    // resumes the session that was live, not a brand-new one. One-shot — the
-    // ref is cleared so an ordinary later restart still forges/resumes per
-    // config. No startup prompt here (this is mid-session, not a cold boot).
+    // Keep the recovery target until resume succeeds, including across a second
+    // disconnect during setup or history loading. Recovery never resends the prompt.
     const recoverSid = recoverSidRef?.current
 
     if (recoverSidRef && recoverSid) {
-      recoverSidRef.current = null
-      resumeById(recoverSid)
+      void resumeById(recoverSid).then(() => {
+        if (getUiState().sid && recoverSidRef.current === recoverSid) {
+          recoverSidRef.current = null
+        }
+      })
       // After resumeById: it synchronously sets status to 'resuming…' on entry,
       // so override it here to keep the distinct "recovering" label visible for
       // the duration of the resume RPC (which later flips status to 'ready').
@@ -774,7 +792,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
   }
 
-  return (ev: GatewayEvent) => {
+  return (ev: AnyGatewayEvent) => {
     const sid = getUiState().sid
 
     if (ev.session_id && sid && ev.session_id !== sid && !ev.type.startsWith('gateway.')) {
@@ -808,11 +826,11 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
     }
 
-    const settled = ev as unknown as { type: string; payload?: { prompt_id?: string } }
+    if (ev.type === 'approval.settled' || ev.type === 'clarify.settled') {
+      const kind = ev.type === 'approval.settled' ? 'approval' : 'clarify'
+      const promptId = ev.payload?.prompt_id
 
-    if (settled.type === 'approval.settled' || settled.type === 'clarify.settled') {
-      const kind = settled.type === 'approval.settled' ? 'approval' : 'clarify'
-      patchOverlayState(previous => previous[kind]?.sharedControl?.prompt_id === settled.payload?.prompt_id
+      patchOverlayState(previous => previous[kind]?.sharedControl?.prompt_id === promptId
         ? { ...previous, [kind]: null } : previous)
 
       return
@@ -832,13 +850,17 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       case 'session.info': {
         const current = getUiState().info
-        const incoming = ev.payload
+        const incoming = ev.payload as SessionInfo | undefined
+
+        if (!incoming) {
+          return
+        }
 
         if (incoming.profile_name && current?.profile_name && incoming.profile_name !== current.profile_name) {
           return
         }
 
-        const info = { ...current, ...incoming }
+        let info: SessionInfo = { ...current, ...incoming }
 
         // A busy-time admission painted no bubble at submit; paint it when the
         // authority starts it, so it lands after the previous assistant reply.
@@ -859,10 +881,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setStatus('ready')
         }
 
+        // Agent-less producers (lazy cwd switches, `_fallback_session_info`) send
+        // payloads without a durable id — keep the one we already track so a
+        // later reconnect still resumes this session.
+        const storedSid = info.stored_session_id || getUiState().storedSid
+
+        if (storedSid) {
+          info = { ...info, stored_session_id: storedSid }
+        }
+
         patchUiState(state => ({
           ...state,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
+          storedSid,
           usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
 
@@ -871,6 +903,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'session.replay_gap':
+        // The authority retired this subscription (fanout overflow) while the
+        // socket stayed healthy, so no reconnect will ever re-attach it and the
+        // turn's completion can no longer arrive. Only the focused session
+        // reaches here (the sid filter above dropped the rest; activating one
+        // of those later gets a fresh subscription anyway). Re-attach through
+        // the resume path — same as desktop's replay-gap consumer — for an
+        // authoritative snapshot + fresh subscription; the draft and pending
+        // inputs stay fenced to their captured destination.
+        if (sid) {
+          resumeById(sid)
+        }
+
+        return
       case 'session.usage': {
         // Live usage tick while a turn runs (see tui_gateway
         // _start_usage_ticker) — keeps the status-bar context window current
@@ -977,10 +1023,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         }
 
         turnController.showNotice({
-          id: p.id,
-          key: p.key,
-          kind: p.kind ?? 'sticky',
-          level: p.level ?? 'info',
+          id: p.id ?? undefined,
+          key: p.key ?? undefined,
+          kind: p.kind === 'ttl' ? 'ttl' : 'sticky',
+          level: isNoticeLevel(p.level) ? p.level : 'info',
           text: p.text,
           ttl_ms: p.ttl_ms ?? null
         })
@@ -1001,6 +1047,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // open it via the TUI process's own opener. This event arrives while the
         // billing.step_up RPC is still polling (and may even outlive the RPC's
         // 120s timeout), so the link — not the RPC result — is the source of truth.
+        if (!ev.payload) {
+          return
+        }
+
         const url = ev.payload.verification_url
         const code = ev.payload.user_code
 
@@ -1021,9 +1071,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.stderr': {
-        const line = String(ev.payload.line).slice(0, 120)
+        // Every raw line is already in the /logs buffer (gatewayClient.pushLog).
+        // Only failure-looking lines earn an activity row, and a traceback's
+        // many lines collapse into one (pushActivity dedupes a repeated tail).
+        if (!ev.payload) {
+          return
+        }
 
-        turnController.pushActivity(line, 'info')
+        const line = String(ev.payload.line)
+
+        if (stderrLooksLikeProblem(line)) {
+          turnController.pushActivity(stderrProblemActivity(line), 'warn')
+        }
+
+        return
+      }
+
+      case 'gateway.reconnecting': {
+        const { attempt, delay_ms: delayMs } = ev.payload ?? {}
+
+        setStatus(backendReconnecting(attempt, delayMs))
 
         return
       }
@@ -1162,25 +1229,22 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'gateway.start_timeout': {
-        const { cwd, python, stderr_tail: stderrTail } = ev.payload ?? {}
-        const trace = python || cwd ? ` · ${String(python || '')} ${String(cwd || '')}`.trim() : ''
+        // Still waiting (the ready timer does not give up) — say so, and point
+        // at /logs for the interpreter/cwd/stderr detail instead of printing
+        // paths here. Only failure-looking stderr lines are echoed inline so
+        // "wrong python" / "missing dep" stay diagnosable at a glance.
+        const { stderr_tail: stderrTail } = ev.payload ?? {}
 
-        setStatus('gateway startup timeout')
-        turnController.pushActivity(`gateway startup timed out${trace} · /logs to inspect`, 'error')
+        setStatus(BACKEND_SLOW_START_STATUS)
+        turnController.pushActivity(BACKEND_SLOW_START, 'warn')
 
-        // Surface the most useful stderr lines inline so users can tell
-        // "wrong python", "missing dep", and "config parse failure"
-        // apart without leaving the TUI.  Filter blank rows BEFORE
-        // taking the last N so trailing empty lines in the buffer
-        // don't crowd out actual content; truncate to match the
-        // 120-char clip used for `gateway.stderr` activity entries.
         const STDERR_LINE_CAP = 120
-        const STDERR_LINES_MAX = 8
+        const STDERR_LINES_MAX = 4
 
         const tailLines = (stderrTail ?? '')
           .split('\n')
           .map(l => l.trim())
-          .filter(Boolean)
+          .filter(l => l && stderrLooksLikeProblem(l))
           .slice(-STDERR_LINES_MAX)
 
         for (const line of tailLines) {
@@ -1251,13 +1315,6 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
 
-      case 'tool.progress':
-        if (ev.payload?.preview && ev.payload.name) {
-          turnController.recordToolProgress(ev.payload.name, ev.payload.preview)
-        }
-
-        return
-
       case 'tool.generating':
         if (ev.payload?.name) {
           turnController.pushTrail(`drafting ${ev.payload.name}…`)
@@ -1274,7 +1331,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'tool.start':
-        turnController.recordTodos(ev.payload.todos)
+        if (!ev.payload) {
+          return
+        }
+
         turnController.recordToolStart(
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
@@ -1288,6 +1348,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         // abandoned (backend _block timed out, empty answer). A real answer
         // clears the overlay in answerClarify() before this fires, so this
         // no-ops there. Persist the question + options so they don't vanish.
+        if (!ev.payload) {
+          return
+        }
+
         if (ev.payload.name === 'clarify') {
           flushAbandonedClarify()
         }
@@ -1302,18 +1366,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             inlineDiffText,
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.error,
-            ev.payload.duration_s,
+            ev.payload.duration_s ?? undefined,
             resultText
           )
         } else {
           turnController.recordToolComplete(
             ev.payload.tool_id,
             ev.payload.name,
-            ev.payload.error,
-            ev.payload.summary,
-            ev.payload.duration_s,
-            ev.payload.todos,
+            ev.payload.summary ?? undefined,
+            ev.payload.duration_s ?? undefined,
+            ev.payload.todos ?? undefined,
             resultText
           )
         }
@@ -1321,13 +1383,58 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
+      case 'request.cancel': {
+        // The backend withdrew a server→client request (timeout / interrupt /
+        // session close): tear down whichever card carries that id. A clarify
+        // that timed out is persisted as an abandoned prompt by tool.complete.
+        const id = ev.payload?.id
+
+        if (!id) {
+          return
+        }
+
+        // A password/secret/vault card that timed out vanished silently; say
+        // what happened and how to get it back. Clarify already records its
+        // own "(timed out)" line via tool.complete.
+        const timeoutNotice = promptTimeoutNotice(ev.payload?.method, ev.payload?.reason)
+
+        if (timeoutNotice) {
+          sys(timeoutNotice)
+        }
+
+        forgetServerRequest(id)
+        patchOverlayState(prev => {
+          const next = { ...prev }
+          let changed = false
+
+          for (const key of ['approval', 'clarify', 'secret', 'sudo', 'vaultUnlock'] as const) {
+            if (prev[key]?.requestId === id) {
+              next[key] = null
+              changed = true
+            }
+          }
+
+          return changed ? next : prev
+        })
+
+        return
+      }
+
+      // Canonical gateways (`gateway/session_pending_controls.py`) publish
+      // generation-bound shared controls as events carrying `prompt_id`; they
+      // are answered through approval.respond / clarify.respond, never through
+      // a server→client request frame (that is the legacy tui_gateway path in
+      // createServerRequestHandler).
       case 'clarify.request': {
-        const shared = ev.payload as typeof ev.payload & { prompt_id?: string; execution_generation?: number }
+        const shared = ev.payload
 
-        const sharedControl = shared.prompt_id && ev.session_id && typeof shared.execution_generation === 'number'
-          ? { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id } : undefined
+        if (!shared?.prompt_id || !ev.session_id || typeof shared.execution_generation !== 'number') {
+          return
+        }
 
-        const batch = (ev.payload.questions ?? [])
+        const sharedControl = { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id }
+
+        const batch = (shared.questions ?? [])
           .filter(q => typeof q?.qid === 'string' && q.qid && typeof q?.question === 'string' && q.question.trim())
           .map(q => ({
             choices: q.choices && q.choices.length > 0 ? q.choices : null,
@@ -1338,18 +1445,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         patchOverlayState({
           clarify: batch.length
-            ? {
-                answers: ev.payload.answers ?? {},
-                choices: null,
-                question: '',
-                questions: batch,
-                requestId: shared.prompt_id ?? ev.payload.request_id, sharedControl
-              }
-            : {
-                choices: ev.payload.choices ?? null,
-                question: ev.payload.question ?? '',
-                requestId: shared.prompt_id ?? ev.payload.request_id, sharedControl
-              }
+            ? { answers: shared.answers ?? {}, choices: null, question: '', questions: batch, requestId: shared.prompt_id, sharedControl }
+            : { choices: shared.choices ?? null, question: shared.question ?? '', requestId: shared.prompt_id, sharedControl }
         })
         setStatus('waiting for input…')
         ringPromptBell()
@@ -1358,23 +1455,24 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'approval.request': {
-        const shared = ev.payload as typeof ev.payload & { prompt_id?: string; execution_generation?: number }
+        const shared = ev.payload
 
-        const sharedControl = shared.prompt_id && ev.session_id && typeof shared.execution_generation === 'number'
-          ? { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id } : undefined
+        if (!shared?.prompt_id || !ev.session_id || typeof shared.execution_generation !== 'number') {
+          return
+        }
 
-        const description = String(ev.payload.description ?? 'dangerous command')
-        // Only an explicit false (tirith warning) drops the permanent-allow option.
-        const allowPermanent = ev.payload.allow_permanent !== false
+        const sharedControl = { session_id: ev.session_id, execution_generation: shared.execution_generation, prompt_id: shared.prompt_id }
 
         patchOverlayState({
           approval: {
-            allowPermanent,
+            // Only an explicit false (tirith warning) drops the permanent-allow option.
+            allowPermanent: shared.allow_permanent !== false,
+            choices: shared.choices,
+            command: String(shared.command ?? ''),
+            description: String(shared.description ?? 'dangerous command'),
+            requestId: shared.prompt_id,
             sharedControl,
-            choices: ev.payload.choices,
-            command: String(ev.payload.command ?? ''),
-            description,
-            smartDenied: ev.payload.smart_denied === true
+            smartDenied: shared.smart_denied === true
           }
         })
         setStatus('approval needed')
@@ -1383,59 +1481,21 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'sudo.request':
-        patchOverlayState({ sudo: { requestId: ev.payload.request_id } })
-        setStatus('sudo password needed')
-        ringPromptBell()
-
-        return
-
-      case 'secret.request':
-        patchOverlayState({
-          secret: { envVar: ev.payload.env_var, prompt: ev.payload.prompt, requestId: ev.payload.request_id }
-        })
-        setStatus('secret input needed')
-        ringPromptBell()
-
-        return
-
-      case 'sudo.expire':
-        patchOverlayState(prev => (prev.sudo?.requestId === ev.payload.request_id ? { ...prev, sudo: null } : prev))
-
-        return
-
-      case 'secret.expire':
-        patchOverlayState(prev => (prev.secret?.requestId === ev.payload.request_id ? { ...prev, secret: null } : prev))
-
-        return
-
-      case 'vault.unlock.request':
-        patchOverlayState({
-          vaultUnlock: {
-            backend: ev.payload.backend,
-            displayName: ev.payload.display_name,
-            requestId: ev.payload.request_id
-          }
-        })
-        setStatus(`unlock ${ev.payload.display_name}`)
-        ringPromptBell()
-
-        return
-
-      case 'vault.unlock.expire':
-        patchOverlayState(prev =>
-          prev.vaultUnlock?.requestId === ev.payload.request_id ? { ...prev, vaultUnlock: null } : prev
-        )
-
-        return
-
       case 'background.complete':
+        if (!ev.payload) {
+          return
+        }
+
         dropBgTask(ev.payload.task_id)
         sys(`[bg ${ev.payload.task_id}] ${ev.payload.text}`)
 
         return
 
       case 'btw.complete':
+        if (!ev.payload) {
+          return
+        }
+
         sys(`[btw${ev.payload.question ? ` "${ev.payload.question}"` : ''}] ${ev.payload.text}`)
 
         return
@@ -1457,6 +1517,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       case 'subagent.spawn_requested':
         // Child built but not yet running (waiting on ThreadPoolExecutor slot).
         // Preserve completed state if a later event races in before this one.
+        if (!ev.payload) {
+          return
+        }
+
         turnController.upsertSubagent(ev.payload, c => (isTerminalStatus(c.status) ? {} : { status: 'queued' }))
 
         // First sign of delegation this turn → nudge toward /agents.
@@ -1473,6 +1537,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
 
       case 'subagent.start':
+        if (!ev.payload) {
+          return
+        }
+
         turnController.upsertSubagent(ev.payload, c => (isTerminalStatus(c.status) ? {} : { status: 'running' }))
 
         // `subagent.start` is the first delegation event the TUI reliably
@@ -1483,6 +1551,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'subagent.thinking': {
+        if (!ev.payload) {
+          return
+        }
+
         const text = String(ev.payload.text ?? '').trim()
 
         if (!text) {
@@ -1504,6 +1576,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'subagent.tool': {
+        if (!ev.payload) {
+          return
+        }
+
         const line = formatToolCall(
           ev.payload.tool_name ?? 'delegate_task',
           ev.payload.tool_preview ?? ev.payload.text ?? ''
@@ -1522,6 +1598,10 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       }
 
       case 'subagent.progress': {
+        if (!ev.payload) {
+          return
+        }
+
         const text = String(ev.payload.text ?? '').trim()
 
         if (!text) {
@@ -1540,21 +1620,28 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         return
       }
 
-      case 'subagent.complete':
+      case 'subagent.complete': {
+        const done = ev.payload
+
+        if (!done) {
+          return
+        }
+
         turnController.upsertSubagent(
-          ev.payload,
+          done,
           c => ({
-            durationSeconds: ev.payload.duration_seconds ?? c.durationSeconds,
-            status: normalizeSubagentStatus(ev.payload.status, 'completed'),
-            summary: ev.payload.summary || ev.payload.text || c.summary
+            durationSeconds: done.duration_seconds ?? c.durationSeconds,
+            status: normalizeSubagentStatus(done.status, 'completed'),
+            summary: done.summary || done.text || c.summary
           }),
           { createIfMissing: false }
         )
 
         return
+      }
 
       case 'message.delta':
-        turnController.recordMessageDelta(ev.payload ?? {})
+        turnController.recordMessageDelta(ev.payload ?? ({} as StreamDeltaPayload))
 
         return
       case 'message.interim': {
@@ -1571,7 +1658,26 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
         const { finalMessages, finalText, wasInterrupted } = turnController.recordMessageComplete(ev.payload ?? {})
 
         if (!wasInterrupted) {
-          const msgs: Msg[] = finalMessages.length ? finalMessages : [{ role: 'assistant', text: finalText }]
+          const payload = ev.payload ?? {}
+          // A failed turn with no reply: the backend's assistant-slot text is
+          // "Error: <raw provider body>". Render the structured error_surface
+          // (layer/code/retryable) as a plain title + Details + next step
+          // instead; a partial reply keeps its streamed text.
+          const failed = payload.status === 'error' && !payload.partial && isBareErrorText(finalText, payload.error)
+
+          // Only the trailing bare-error slot is replaced; interim segments the
+          // model streamed before the failure stay in the transcript.
+          const msgs: Msg[] = failed
+            ? [
+                ...finalMessages.filter(
+                  (m, i) => !(i === finalMessages.length - 1 && m.role === 'assistant' && isBareErrorText(m.text, payload.error))
+                ),
+                { role: 'assistant', text: describeTurnFailure(payload) }
+              ]
+            : finalMessages.length
+              ? finalMessages
+              : [{ role: 'assistant', text: finalText }]
+
           msgs.forEach(appendMessage)
 
           // Pet beat: celebrate a finished plan, otherwise a clean-finish wave.
@@ -1584,8 +1690,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         setStatus('ready')
 
+        if (ev.payload?.warning) {
+          turnController.pushActivity(ev.payload.warning, 'warn')
+        }
+
         if (ev.payload?.usage) {
-          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage) }))
+          patchUiState(state => ({ ...state, usage: mergeUsageStable(state.usage, ev.payload!.usage ?? undefined) }))
         }
 
         // Billing wall (out of credits / payment required): open a proper
@@ -1643,7 +1753,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             return
           }
 
-          sys(`error: ${message}`)
+          sys(`error: ${describeRpcError(new Error(message))}`)
           setStatus('ready')
         }
     }

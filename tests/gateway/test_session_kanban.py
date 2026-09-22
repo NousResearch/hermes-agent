@@ -91,3 +91,52 @@ def test_late_launcher_cannot_stamp_replacement_claim(tmp_path, monkeypatch):
         dispatch._set_worker_pid(conn, tid, 424242, run_id=old.current_run_id, claim_lock=old.claim_lock)
         assert kb.get_task(conn, tid).worker_pid is None
         assert conn.execute('SELECT worker_pid FROM task_runs WHERE id=?', (new.current_run_id,)).fetchone()[0] is None
+
+
+def test_claim_reclaimed_before_admission_marker_is_refused(tmp_path, monkeypatch):
+    """A claim that stops being current between policy/session creation and the marker
+    transaction is refused: no owner_admitted row, no resume, no submit."""
+    import asyncio
+    from contextlib import closing
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+    from gateway.session_contract import Principal
+    from hermes_state_runtime import RuntimeStoreError
+    monkeypatch.setenv('HERMES_KANBAN_HOME', str(tmp_path))
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setenv('HOME', str(tmp_path / 'home'))
+    monkeypatch.delenv('HERMES_KANBAN_DB', raising=False)
+    monkeypatch.delenv('HERMES_DELEGATED_CHILD', raising=False)
+    monkeypatch.setattr('hermes_cli.profiles.resolve_profile_env', lambda name: str(tmp_path) if name == 'default' else str(tmp_path / name))
+    workspace = tmp_path / 'workspace'
+    workspace.mkdir()
+    with closing(connect(board='owned')) as conn:
+        task_id = kb.create_task(conn, title='Owned race', assignee='default', workspace_kind='dir', workspace_path=str(workspace))
+        kb.recompute_ready(conn)
+        old = kb.claim_task(conn, task_id)
+    config = {'model': {'default': 'loop-model', 'provider': 'custom'}, 'platform_toolsets': {'cli': ['terminal']}}
+    monkeypatch.setattr('gateway.run._load_gateway_config', lambda: config)
+    calls = []
+    def create_local_session(authority, actor, params, *, trusted_policy=None, trusted_secrets=None):
+        # Another process reclaims the task while the owner session is being created.
+        with closing(connect(board='owned')) as conn:
+            kb.block_task(conn, task_id, reason='replace claim', expected_run_id=old.current_run_id)
+            kb.unblock_task(conn, task_id)
+            kb.claim_task(conn, task_id)
+        return SimpleNamespace(session_id='owner-session', profile_id=str(tmp_path))
+    monkeypatch.setattr('gateway.session_local.create_local_session', create_local_session)
+    async def submit(actor, submission):
+        calls.append(('submit', submission))
+    async def resume(ref, params):
+        calls.append(('resume', ref))
+    db = SimpleNamespace(get_session=lambda sid: None, db_path=str(tmp_path / 'state.db'))
+    authority = SimpleNamespace(profile_id=str(tmp_path), db=db, submit=submit)
+    actor = Principal('owner', str(tmp_path), frozenset({'session:create'}), 'transport')
+    connection = SimpleNamespace(authority=authority, actor=actor, native_owner=True, resume=resume)
+    params = dict(board='owned', task_id=task_id, run_id=old.current_run_id, claim_lock=old.claim_lock)
+    from gateway.session_kanban import run_task
+    with pytest.raises(RuntimeStoreError, match='stale_kanban_claim'):
+        asyncio.run(run_task(connection, params))
+    assert calls == []
+    with closing(connect(board='owned')) as conn:
+        assert conn.execute("SELECT count(*) FROM task_events WHERE task_id=? AND kind='owner_admitted'", (task_id,)).fetchone()[0] == 0

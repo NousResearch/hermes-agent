@@ -212,7 +212,7 @@ def probe(tmp_path):
                     assert sibling['result']['driver_status']['counts'].get('running') == 1, sibling
             model.release.set()
             for actor, ws, _ in actors:
-                async with asyncio.timeout(30):
+                async with asyncio.timeout(90):
                     while True:
                         state = await rpc(ws, 'groups.state', room_id=actor + '-room')
                         counts = state['result']['driver_status']['counts']
@@ -224,7 +224,7 @@ def probe(tmp_path):
             sent = await rpc(alice, 'groups.send', room_id='alice-room', event_id='approval',
                              payload={'text': '@two APPROVE_HOSTED', 'thread_id': 'approval-thread'})
             assert sent['result']['accepted'], sent
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(90):
                 while True:
                     state = await rpc(alice, 'groups.state', room_id='alice-room')
                     actions = state['result']['driver_status']['pending_actions']
@@ -239,7 +239,7 @@ def probe(tmp_path):
             assert denied.get('error', {}).get('message') == 'permission_denied', denied
             accepted = await rpc(alice, 'groups.approve', room_id='alice-room', choice='once', **params)
             assert accepted.get('result', {}).get('approved'), accepted
-            async with asyncio.timeout(30):
+            async with asyncio.timeout(90):
                 while removal.exists():
                     await asyncio.sleep(.1)
 

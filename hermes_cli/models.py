@@ -103,8 +103,9 @@ def _write_json_cache(path: Path, data: Any, **dump_kwargs: Any) -> None:
     """Atomically persist a cache file (creating parents). Raises on failure — callers decide
     whether a failed cache write is worth logging."""
     from utils import atomic_json_write
+    from hermes_constants import mkdir_under_hermes_home
 
-    path.parent.mkdir(parents=True, exist_ok=True)
+    mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, **dump_kwargs)
 
 
@@ -637,7 +638,7 @@ def fetch_ai_gateway_models(
     from hermes_constants import AI_GATEWAY_BASE_URL
 
     fallback = list(VERCEL_AI_GATEWAY_MODELS)
-    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, urllib.request.urlopen)
+    live = _fetch_live_catalog_index(f"{AI_GATEWAY_BASE_URL.rstrip('/')}/models", timeout, _urlopen_model_catalog_request)
     if live is None:
         return list(_ai_gateway_catalog_cache or fallback)
     _, live_by_id = live
@@ -705,7 +706,8 @@ def _provider_has_credentials(pid: str) -> bool:
         if pid == "custom":
             return bool((_get_custom_base_url() or "").strip())
         if pid == "openrouter":
-            return has_usable_secret(os.getenv("OPENROUTER_API_KEY", ""))
+            from hermes_cli.model_switch import _scoped_key_env
+            return has_usable_secret(_scoped_key_env("OPENROUTER_API_KEY"))
         status = get_auth_status(pid)
         return bool(status.get("logged_in") or status.get("configured"))
     except Exception:
@@ -795,9 +797,31 @@ def _base_url_looks_like_anthropic_messages(base_url: str) -> bool:
     return urllib.parse.urlparse(normalized).path.rstrip("/").endswith(("/anthropic", "/anthropic/v1"))
 
 
-def _anthropic_models_url(base_url: Optional[str] = None) -> str:
+def _anthropic_models_url(base_url: Optional[str] = None, *, after_id: Optional[str] = None) -> str:
+    """Anthropic ``/v1/models`` page URL. The endpoint is cursor-paginated with a default page of
+    20 (smaller than the live catalog), so every request asks for the maximum page size and
+    ``after_id`` continues from a previous page's ``last_id``."""
     endpoint = str(base_url or "https://api.anthropic.com").strip().rstrip("/")
-    return endpoint + ("/models" if endpoint.endswith("/v1") else "/v1/models")
+    url = endpoint + ("/models" if endpoint.endswith("/v1") else "/v1/models")
+    params = {"limit": "1000"}
+    if after_id:
+        params["after_id"] = after_id
+    return url + ("&" if "?" in url else "?") + urllib.parse.urlencode(params)
+
+
+_ANTHROPIC_MODELS_MAX_PAGES = 20
+
+
+def _anthropic_next_cursor(page: Any, seen_cursors: set[str]) -> Optional[str]:
+    """``last_id`` to continue from, or None when the page is final or the server repeats a
+    cursor (which would otherwise loop forever)."""
+    if not isinstance(page, dict) or page.get("has_more") is not True:
+        return None
+    last_id = page.get("last_id")
+    if not isinstance(last_id, str) or not last_id or last_id in seen_cursors:
+        return None
+    seen_cursors.add(last_id)
+    return last_id
 
 
 def curated_models_for_provider(
@@ -1235,7 +1259,37 @@ def _codex_catalog(normalized: str, force_refresh: bool) -> list[str]:
     return get_codex_model_ids(access_token=access_token)
 
 
+_COPILOT_ACP_SESSION_MEMO_TTL = 300.0  # 5 min; SWR disk cache handles the rest
+_COPILOT_ACP_SESSION_FAIL_TTL = 30.0  # failed probes re-probe quickly so a fresh CLI login is picked up
+_copilot_acp_session_memo: Optional[tuple[float, float, Optional[list[str]]]] = None  # (at, ttl, models)
+
+
+def _copilot_acp_session_models(force_refresh: bool) -> Optional[list[str]]:
+    """Enabled models from a signed-in ``copilot --acp`` session, memoized for a few minutes —
+    successes AND failures. Model-switch validation (``models_validate._static_catalog``) reads
+    this uncached on every ``/model`` switch, and each miss is a CLI spawn + handshake (up to the
+    probe timeout), so without the memo every switch paid a subprocess. A failed probe is
+    memoized much more briefly so a user who signs in to the CLI right after a miss is picked up
+    on the next switch (or immediately via ``/model --refresh``, which clears this memo)."""
+    global _copilot_acp_session_memo
+    now = time.monotonic()
+    memo = _copilot_acp_session_memo
+    if not force_refresh and memo is not None and now - memo[0] < memo[1]:
+        return memo[2]
+    from providers import get_provider_profile
+
+    try:
+        live = get_provider_profile("copilot-acp").fetch_models() or None
+    except Exception:
+        logger.debug("copilot-acp session model discovery failed", exc_info=True)
+        live = None
+    _copilot_acp_session_memo = (now, _COPILOT_ACP_SESSION_MEMO_TTL if live else _COPILOT_ACP_SESSION_FAIL_TTL, live)
+    return live
+
+
 def _copilot_catalog(normalized: str, force_refresh: bool) -> Optional[list[str]]:
+    if normalized == "copilot-acp" and (live := _copilot_acp_session_models(force_refresh)):
+        return live
     try:
         live = _fetch_github_models(_resolve_copilot_catalog_api_key())
         if live:
@@ -1403,6 +1457,10 @@ def _profile_live_catalog(normalized: str) -> Optional[list[str]]:
         return None
     api_key, base_url = _api_key_credentials(normalized)
     live = profile.fetch_models(api_key=api_key, base_url=base_url or profile.base_url or None) if api_key else None
+    if live and normalized in _LIVE_FIRST_PICKER_PROVIDERS:
+        # The relay still LISTS delisted ids it no longer serves; the keyed Zen/Go picker is
+        # live-first, so it takes the same exclusion as the keyless catalog (#111749).
+        live = [m for m in live if str(m).lower() not in _OPENCODE_FREE_EXCLUDED_MODELS]
     if not live:
         return list(profile.fallback_models) if profile.fallback_models else None
     curated = list(_PROVIDER_MODELS.get(normalized, [])) or list(profile.fallback_models or ())
@@ -1711,6 +1769,11 @@ def clear_provider_models_cache(provider: Optional[str] = None) -> None:
         _OLLAMA_LOCAL_MODELS_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_FAILURE_CACHE.clear()
         _OLLAMA_LOCAL_PROBE_REACHABLE.clear()
+        # A fresh copilot-acp CLI login must be visible to the next /model switch (this helper is
+        # what ``--refresh`` runs): don't let the 5-min session memo (or its failure memo) serve
+        # a stale signed-out probe past an explicit refresh.
+        global _copilot_acp_session_memo
+        _copilot_acp_session_memo = None
         if provider is None:
             path = _provider_models_cache_path()
             if path.exists():
@@ -1792,6 +1855,14 @@ def _fetch_anthropic_models(
             )
             data = _get_json(url, timeout=timeout, headers=headers)
         models = [m["id"] for m in data.get("data", []) if m.get("id")]
+        seen_cursors: set[str] = set()
+        for _page in range(_ANTHROPIC_MODELS_MAX_PAGES):
+            cursor = _anthropic_next_cursor(data, seen_cursors)
+            if cursor is None:
+                break
+            data = _get_json(_anthropic_models_url(resolved_base_url, after_id=cursor), timeout=timeout, headers=headers)
+            models.extend(m["id"] for m in data.get("data", []) if m.get("id"))
+        models = list(dict.fromkeys(models))
         # opus, then sonnet, then haiku; alphabetical within tier.
         return sorted(models, key=lambda m: ("opus" not in m, "sonnet" not in m, "haiku" not in m, m))
     except Exception as e:
@@ -1985,7 +2056,12 @@ def normalize_copilot_model_id(
             return candidate
 
     if "/" in raw:
-        return raw.split("/", 1)[1].strip()
+        stripped = raw.split("/", 1)[1].strip()
+        # Enterprise BYOK custom models expose ``owner/sub/model`` ids (two
+        # slashes). A strip guess that still contains "/" cannot be a Copilot
+        # id, so pass the input through untouched instead of corrupting it.
+        if stripped and "/" not in stripped:
+            return stripped
     return raw
 
 
@@ -2067,12 +2143,15 @@ def normalize_opencode_model_id(provider_id: Optional[str], model_id: Optional[s
 OPENCODE_ZEN_FREE_KEYLESS_PLACEHOLDER = "opencode-zen-free-keyless"
 _OPENCODE_ZEN_FREE_BASE_URL = "https://opencode.ai/zen/v1"
 
-# ``-free``-suffixed slugs that are KEYED (Go-subscription) models, NOT anonymous-servable —
-# excluded from the keyless catalog despite the suffix (ox-alpha-free is Ox Alpha's Go twin).
-# The Go relay delisted ox-alpha-free (2026-09-09; GET /zen/go/v1/models omits it, POST → 401),
-# so it is gone from the opencode-go curated floor too — the exclusion stays so a stale live
-# list can never route it into the keyless catalog.
-_OPENCODE_FREE_KEYED_SUFFIX_MODELS = frozenset({"ox-alpha-free"})
+# ``-free``-suffixed slugs the live list may carry that the keyless catalog must NOT offer:
+# - KEYED (Go-subscription) twins, not anonymous-servable despite the suffix (ox-alpha-free is
+#   Ox Alpha's Go twin; the Go relay delisted it 2026-09-09 — the exclusion stays so a stale live
+#   list can never route it into the keyless catalog).
+# - Delisted ids the relay still LISTS but no longer serves: deepseek-v4-flash-free (promo ended;
+#   gone from opencode.ai/docs/zen by 2026-09-15 yet still in GET /zen/v1/models, and every POST
+#   400s "Model is unavailable"). Offering it lets a first-turn 400 drive a fallback switch that
+#   strands the whole session (#111749).
+_OPENCODE_FREE_EXCLUDED_MODELS = frozenset({"ox-alpha-free", "deepseek-v4-flash-free"})
 
 # In-process memo for _fetch_opencode_free_models(): (fetched_at, ids-or-None). Validation and
 # healing call provider_model_ids("opencode-free") several times per resolution; failures are
@@ -2099,8 +2178,8 @@ def opencode_zen_free_headers() -> dict:
 def _fetch_opencode_free_models(
     timeout: float = 8.0, *, force_refresh: bool = False) -> Optional[list[str]]:
     """Live keyless OpenCode Free catalog from the Zen relay, filtered to the anonymous-servable
-    ``*-free`` tier minus known keyed twins (Go ``ox-alpha-free`` is KEYED despite the suffix) — the
-    same membership criterion ``opencode_zen_free_runtime`` routes on."""
+    ``*-free`` tier minus ``_OPENCODE_FREE_EXCLUDED_MODELS`` (keyed twins and listed-but-dead ids) —
+    the same membership criterion ``opencode_zen_free_runtime`` routes on."""
     from hermes_cli.urllib_security import open_credentialed_url
 
     now = time.time()
@@ -2123,7 +2202,7 @@ def _fetch_opencode_free_models(
     live_free = [
         m["id"] for m in items
         if isinstance(m, dict) and isinstance(m.get("id"), str)
-        and m["id"].lower().endswith("-free") and m["id"].lower() not in _OPENCODE_FREE_KEYED_SUFFIX_MODELS
+        and m["id"].lower().endswith("-free") and m["id"].lower() not in _OPENCODE_FREE_EXCLUDED_MODELS
     ]
     result = live_free or None
     _set_opencode_free_live_memo(result)
@@ -2176,14 +2255,14 @@ def opencode_zen_free_runtime(provider_id: Optional[str], model_id: Optional[str
 
 # Per-family (model-id prefix → api_mode) routing from OpenCode's published Zen/Go endpoint
 # tables, checked in order. GPT/Codex/Grok and Muse Spark use /v1/responses (Muse Spark 503s on
-# chat/completions); Claude (Zen) and MiniMax (Go) use /v1/messages, as do Qwen models on both
-# relays; everything else falls through to /v1/chat/completions.
+# chat/completions); Claude (Zen), MiniMax (Go), Union Alpha, and Qwen use /v1/messages;
+# everything else falls through to /v1/chat/completions.
 _OPENCODE_API_MODE_PREFIXES: dict[str, tuple[tuple[tuple[str, ...], str], ...]] = {
     "opencode-go": (
         (("gpt-", "grok-", "muse-spark"), "codex_responses"),
-        (("minimax-", "qwen"), "anthropic_messages")),
+        (("minimax-", "qwen", "union-alpha"), "anthropic_messages")),
     "opencode-zen": (
-        (("claude-",), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
+        (("claude-", "union-alpha"), "anthropic_messages"), (("gpt-", "grok-", "muse-spark"), "codex_responses"),
         (("qwen",), "anthropic_messages"))}
 
 
@@ -2200,24 +2279,34 @@ def opencode_model_api_mode(provider_id: Optional[str], model_id: Optional[str])
     return "chat_completions"
 
 
+# Relay path per OpenCode family on opencode.ai hosts. The free tier is served by the Zen relay.
+_OPENCODE_FAMILY_PATHS = {"opencode-zen": "/zen", "opencode-free": "/zen", "opencode-go": "/zen/go"}
+
+
 def normalize_opencode_base_url(
     provider_id: Optional[str], api_mode: Optional[str], base_url: Optional[str]) -> str:
     """Normalize an OpenCode Zen / Go base URL for the API mode. Must be SYMMETRIC: the anthropic-
     stripped URL gets persisted to ``model.base_url`` after switching into an anthropic-routed model,
     and chat/codex modes heal it by re-adding ``/v1`` — but only on opencode.ai hosts, so custom
-    ``OPENCODE_*_BASE_URL`` proxies are left alone."""
+    ``OPENCODE_*_BASE_URL`` proxies are left alone. On those hosts the relay path segment follows
+    the resolved family too (``/zen`` vs ``/zen/go``): the two relays serve different model sets,
+    so a ``model.base_url`` carried over from the other family 401s ("Model ... is not supported")."""
     url = str(base_url or "").strip().rstrip("/")
-    if not url or opencode_provider_family(provider_id) is None:
+    family = opencode_provider_family(provider_id)
+    if not url or family is None:
         return url
+    try:
+        parsed = urllib.parse.urlparse(url)
+    except Exception:
+        parsed = None
+    official = parsed is not None and (parsed.netloc.lower() == "opencode.ai" or parsed.netloc.lower().endswith(".opencode.ai"))
+    if official and re.fullmatch(r"/zen(/go)?(/v1)?", parsed.path):
+        url = f"{parsed.scheme}://{parsed.netloc}{_OPENCODE_FAMILY_PATHS[family]}{'/v1' if parsed.path.endswith('/v1') else ''}"
     if api_mode == "anthropic_messages":
         return re.sub(r"/v1$", "", url)
     if url.endswith("/v1"):
         return url
-    try:
-        host = urllib.parse.urlparse(url).netloc.lower()
-    except Exception:
-        host = ""
-    return url + "/v1" if host == "opencode.ai" or host.endswith(".opencode.ai") else url
+    return url + "/v1" if official else url
 
 
 def github_model_reasoning_efforts(
@@ -2481,7 +2570,7 @@ def _fetch_ai_gateway_models(timeout: float = 5.0) -> Optional[list[str]]:
     headers = {"Authorization": f"Bearer {api_key}", "User-Agent": _HERMES_USER_AGENT}
     try:
         url = base_url.rstrip("/") + "/models"
-        data = _get_json(url, timeout=timeout, headers=headers, opener=urllib.request.urlopen)
+        data = _get_json(url, timeout=timeout, headers=headers)
         return [
             m["id"] for m in data.get("data", [])
             if m.get("id") and m.get("type") == "language" and "tool-use" in (m.get("tags") or [])]
@@ -2562,13 +2651,17 @@ def cached_fetch_api_models(
     cache = _load_provider_models_cache()
     entry = cache.get(cache_key)
     now = time.time()
-    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True)
+    native_row = isinstance(entry, dict) and entry.get("native_catalog") is True
+    valid = not force_refresh and _cache_entry_valid(entry, fp, allow_empty=native_row)
 
     if valid:
         age = now - entry["at"]
         if age < ttl_seconds:
             return _catalog(entry)
-        if age < _PROVIDER_MODELS_STALE_SERVE_MAX:
+        # An empty native catalog is authoritative only inside the TTL (as in
+        # cached_provider_model_ids): never stale-serve it, or an Ollama that was model-less at
+        # first open keeps an empty row for the whole stale window after models are pulled.
+        if entry["models"] and age < _PROVIDER_MODELS_STALE_SERVE_MAX:
             # Stale-while-revalidate: serve now, refresh off-thread for the next open. cache_only
             # opens (GUI pickers that must not block on a stopped local server) take the same
             # non-blocking refresh: without it a locally loaded model stayed invisible for the
@@ -2588,8 +2681,9 @@ def cached_fetch_api_models(
         stored = _entry(live, now)
         _store_cache_entry(cache_key, stored, cache)
         return _catalog(stored)
-    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it.
-    if _cache_entry_valid(entry, fp, allow_empty=isinstance(entry, dict) and entry.get("native_catalog") is True):
+    # Live returned nothing (offline, timeout, auth hiccup): a stale same-fingerprint entry beats it
+    # (non-empty only: an empty native row is not worth resurrecting over the generic fallback).
+    if _cache_entry_valid(entry, fp):
         return _catalog(entry)
     return live
 

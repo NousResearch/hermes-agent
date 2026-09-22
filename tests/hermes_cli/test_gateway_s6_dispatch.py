@@ -152,5 +152,84 @@ def test_redirect_falls_back_when_sleep_missing(
     assert "`sleep` is unavailable" in err
 
 
+# ---------------------------------------------------------------------------
+# On-demand slot registration — a profile dir that exists but was never registered (#111720)
+# ---------------------------------------------------------------------------
 
 
+class _UnregisteredRecorder(_CallRecorder):
+    """Recorder whose slot is missing until ``register_profile_gateway`` runs."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.registered: list[tuple[str, bool]] = []
+        self._slots: set[str] = set()
+
+    def _svc(self, action: str, name: str) -> None:
+        from hermes_cli.service_manager import GatewayNotRegisteredError
+        if name not in self._slots:
+            raise GatewayNotRegisteredError(name.removeprefix("gateway-"))
+        self.calls.append((action, name))
+
+    def start(self, name: str) -> None:
+        self._svc("start", name)
+
+    def stop(self, name: str) -> None:
+        self._svc("stop", name)
+
+    def register_profile_gateway(self, profile: str, *, start_now: bool = True) -> None:
+        self.registered.append((profile, start_now))
+        self._slots.add(f"gateway-{profile}")
+
+
+def _arrange(monkeypatch, tmp_path, mgr, *, profile: str, seed_soul: bool):
+    """Force the s6 branch and make ``tmp_path`` the shared HERMES_HOME the slot maps back to."""
+    from hermes_cli import gateway as gw
+    from hermes_cli import service_manager as sm
+
+    monkeypatch.setattr(sm, "detect_service_manager", lambda: "s6")
+    monkeypatch.setattr(sm, "get_service_manager", lambda: mgr)
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    profile_dir = tmp_path / "profiles" / profile
+    profile_dir.mkdir(parents=True)
+    if seed_soul:
+        (profile_dir / "SOUL.md").write_text("# soul\n", encoding="utf-8")
+    return gw
+
+
+def test_start_registers_a_missing_slot_for_a_real_profile(monkeypatch, tmp_path, capsys):
+    """A profile created from the host against a bind-mounted home has a directory (SOUL.md) but
+    no s6 slot. ``gateway start`` must register it and come up instead of demanding a container
+    restart; the registration is ``down`` so the ordinary ``start`` owns the desired-state write."""
+    mgr = _UnregisteredRecorder()
+    gw = _arrange(monkeypatch, tmp_path, mgr, profile="coder", seed_soul=True)
+
+    assert gw._dispatch_via_service_manager_if_s6("start", "coder") is True
+
+    assert mgr.registered == [("coder", False)]
+    assert mgr.calls == [("start", "gateway-coder")]
+    assert "registered the s6 gateway slot" in capsys.readouterr().out
+
+
+@pytest.mark.parametrize(
+    ("action", "seed_soul"),
+    [
+        pytest.param("stop", True, id="stop-never-registers"),
+        pytest.param("start", False, id="no-soul-marker-mints-nothing"),
+    ],
+)
+def test_missing_slot_stays_an_error_outside_the_repair_case(
+    monkeypatch, tmp_path, capsys, action, seed_soul
+):
+    """Only ``start`` on a real profile self-heals: stopping an unregistered profile and starting a
+    mistyped/stray directory (no SOUL.md) keep the original ✗ + exit 1 and mint no slot."""
+    mgr = _UnregisteredRecorder()
+    gw = _arrange(monkeypatch, tmp_path, mgr, profile="coder", seed_soul=seed_soul)
+
+    with pytest.raises(SystemExit) as excinfo:
+        gw._dispatch_via_service_manager_if_s6(action, "coder")
+
+    assert excinfo.value.code == 1
+    assert mgr.registered == []
+    assert mgr.calls == []
+    assert "no such gateway 'coder'" in capsys.readouterr().out

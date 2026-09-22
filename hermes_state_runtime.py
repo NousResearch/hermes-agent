@@ -389,6 +389,19 @@ def _worker_assignment(conn, execution_id, session_id, generation):
     return row
 
 
+def _linked_worker_admission(conn, session_id, generation, owner_epoch, statuses):
+    placeholders = ','.join('?' for _ in statuses)
+    rows = conn.execute(f"""SELECT * FROM session_admissions
+        WHERE generation=? AND owner_epoch=? AND status IN ({placeholders})
+          AND (target_session_id=? OR EXISTS (
+              SELECT 1 FROM json_each(session_admissions.lineage_json) WHERE value=?
+          )) ORDER BY seq""",
+        (generation, owner_epoch, *statuses, session_id, session_id)).fetchall()
+    if len(rows) > 1:
+        raise RuntimeStoreError('admission_conflict')
+    return rows[0] if rows else None
+
+
 def _secret_digest(secret):
     import hashlib
     _text(secret)
@@ -436,10 +449,20 @@ def adopt_worker_execution(db, *, epoch: int, execution_id: str, session_id: str
             raise RuntimeStoreError('stale_generation')
         if not hmac.compare_digest(row['adoption_digest'], digest):
             raise RuntimeStoreError('permission_denied')
-        conn.execute("""UPDATE session_admissions SET owner_epoch=?,status='started'
-            WHERE target_session_id=? AND generation=? AND owner_epoch=?
-            AND status IN ('started','unknown')""", (epoch, session_id, generation, row['owner_epoch']))
-        conn.execute("UPDATE worker_executions SET owner_epoch=?,status='running' WHERE execution_id=?", (epoch, execution_id))
+        linked = _linked_worker_admission(
+            conn, session_id, generation, row['owner_epoch'], ('started', 'unknown'))
+        if linked is not None:
+            changed = conn.execute("""UPDATE session_admissions SET owner_epoch=?,status='started'
+                WHERE admission_id=? AND generation=? AND owner_epoch=?
+                AND status IN ('started','unknown')""",
+                (epoch, linked['admission_id'], generation, row['owner_epoch']))
+            if changed.rowcount != 1:
+                raise RuntimeStoreError('stale_generation')
+        changed = conn.execute(
+            "UPDATE worker_executions SET owner_epoch=?,status='running' WHERE execution_id=?",
+            (epoch, execution_id))
+        if changed.rowcount != 1:
+            raise RuntimeStoreError('stale_generation')
         return _worker_public(_worker_assignment(conn, execution_id, session_id, generation))
     return db._execute_write(write)
 
@@ -542,6 +565,10 @@ def _worker_turn(db, conn, session_id, payload, operation):
 
 def _worker_usage(db, conn, session_id, payload, *, auxiliary=False):
     from hermes_state_usage import _MODEL_USAGE_FIELDS, _TOKEN_COUNTERS
+    if not auxiliary:
+        # ``source`` feeds the legacy path's row-existence guard (#111999); an authority-owned
+        # session row was minted with its real surface at admission, so nothing to repair here.
+        payload = {k: v for k, v in payload.items() if k != 'source'}
     allowed = (_MODEL_USAGE_FIELDS - {'billing_mode', 'actual_cost_usd', 'cost_status', 'cost_source'} | {'task'}) if auxiliary else (_MODEL_USAGE_FIELDS | {'pricing_version', 'absolute'})
     if set(payload) - allowed:
         raise RuntimeStoreError('invalid_params')
@@ -633,7 +660,21 @@ def finish_worker_execution(db, *, epoch: int, execution_id: str, session_id: st
             raise RuntimeStoreError('stale_epoch')
         if row['status'] == 'terminal':
             return _worker_public(row)
-        conn.execute("UPDATE worker_executions SET status='terminal' WHERE execution_id=?", (execution_id,))
+        linked = _linked_worker_admission(conn, session_id, generation, epoch, ('started',))
+        changed = conn.execute(
+            "UPDATE worker_executions SET status='terminal' WHERE execution_id=? AND status!='terminal'",
+            (execution_id,))
+        if changed.rowcount != 1:
+            raise RuntimeStoreError('stale_generation')
+        if linked is not None:
+            changed = conn.execute("""UPDATE session_admissions
+                SET status='terminal',outcome='completed'
+                WHERE admission_id=? AND status='started' AND owner_epoch=? AND generation=?""",
+                (linked['admission_id'], epoch, generation))
+            if changed.rowcount != 1:
+                raise RuntimeStoreError('stale_generation')
+            conn.execute('UPDATE sessions SET runtime_revision=runtime_revision+1 WHERE id=?',
+                         (linked['target_session_id'],))
         result = _worker_public(row)
         result['status'] = 'terminal'
         return result

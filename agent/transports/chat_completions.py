@@ -11,8 +11,9 @@ from urllib.parse import urlparse
 from agent.lmstudio_reasoning import resolve_lmstudio_effort
 from agent.reasoning_effort import (
     KIMI_K3_EFFORTS, KIMI_K3_OVERRIDES, OPENAI_COMPAT_WIRE_EFFORTS, TOKENHUB_EFFORTS, clamp_effort,
-    kimi_supported_efforts, requested_effort,
+    clamp_reasoning_config, kimi_supported_efforts, requested_effort,
 )
+from agent.message_sanitization import normalize_finish_reason as _normalize_finish_reason
 from agent.moonshot_schema import is_moonshot_model, sanitize_moonshot_tools
 from agent.prompt_builder import DEVELOPER_ROLE_MODELS
 from agent.transports.base import ProviderTransport
@@ -118,11 +119,7 @@ def _reasoning_config_for_model(model: str, reasoning_config: dict | None) -> di
     the declared wire vocabulary via the shared policy in ``agent.reasoning_effort``; provider profiles with
     narrower sets clamp again downstream.
     """
-    if not isinstance(reasoning_config, dict):
-        return reasoning_config
-    effort = str(reasoning_config.get("effort") or "").strip().lower()
-    clamped = clamp_effort(effort, OPENAI_COMPAT_WIRE_EFFORTS) if effort else effort
-    return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
+    return clamp_reasoning_config(reasoning_config, OPENAI_COMPAT_WIRE_EFFORTS)
 
 
 def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> dict | None:
@@ -139,7 +136,17 @@ def _build_gemini_thinking_config(model: str, reasoning_config: dict | None) -> 
         return None
     effort = str(reasoning_config.get("effort", "medium") or "medium").strip().lower()
     if reasoning_config.get("enabled") is False or effort == "none":
-        return {"includeThoughts": False}
+        # ``includeThoughts: False`` only omits thought parts from the returned
+        # response; the model may still reason internally and bill thought
+        # tokens against maxOutputTokens, starving small budgets (title
+        # generation's 64 tokens). Set thinkingBudget to 0 to actually disable
+        # thinking on families that document it: Gemini 2.5 and 3+ (plus the
+        # ``gemini-flash-latest`` alias); future majors are added only when the
+        # API documents thinkingBudget for them. (#91927)
+        config: dict[str, Any] = {"includeThoughts": False}
+        if normalized_model == "gemini-flash-latest" or normalized_model.startswith(("gemini-2.5-", "gemini-3")):
+            config["thinkingBudget"] = 0
+        return config
     thinking_config: dict[str, Any] = {"includeThoughts": True}
     # Gemini 2.5 takes thinkingBudget; don't guess one from coarse effort levels.
     if normalized_model.startswith("gemini-2.5-"):
@@ -207,6 +214,23 @@ def _model_consumes_thought_signature(model: Any) -> bool:
     """
     m = str(model or "").lower()
     return "gemini" in m or "gemma" in m
+
+
+def _has_replayable_thought_signature(extra_content: Any) -> bool:
+    """Whether OpenRouter's Gemini sidecar contains a usable thought signature.
+
+    Gemini accepts the signature either directly or under its ``google``
+    namespace.  Replaying an empty or non-string value makes a multimodal
+    request fail with ``Corrupted thought signature``; omit that sidecar while
+    leaving the stored history untouched.
+    """
+    if not isinstance(extra_content, dict):
+        return False
+    candidate = extra_content.get("thought_signature")
+    google = extra_content.get("google")
+    if candidate is None and isinstance(google, dict):
+        candidate = google.get("thought_signature")
+    return isinstance(candidate, str) and bool(candidate.strip())
 
 
 def _attr_or_model_extra(obj: Any, name: str) -> Any:
@@ -321,7 +345,9 @@ def _sanitize_message(msg: Any, strip_extra_content: bool) -> dict | None:
             if not isinstance(tc, dict):
                 continue
             keys = [k for k in _STRIP_TC_KEYS if k in tc]
-            if strip_extra_content and "extra_content" in tc:
+            if "extra_content" in tc and (
+                strip_extra_content or not _has_replayable_thought_signature(tc["extra_content"])
+            ):
                 keys.append("extra_content")
             if keys:
                 if copied_tool_calls is None:
@@ -502,7 +528,9 @@ class ChatCompletionsTransport(ProviderTransport):
         choice = response.choices[0]
         msg = getattr(choice, "message", None)
         _fr = getattr(choice, "finish_reason", None)
-        finish_reason = (str(_fr) if isinstance(_fr, int) else _fr) or "stop"  # Poolside returns int finish_reason
+        # Poolside returns int finish_reason; Gemini-fronting gateways return
+        # uppercase STOP / MAX_TOKENS — fold to the OpenAI contract here.
+        finish_reason = _normalize_finish_reason(str(_fr) if isinstance(_fr, int) else _fr) or "stop"
 
         tool_calls = None
         if getattr(msg, "tool_calls", None):

@@ -109,11 +109,13 @@ def restore_local_session(authority, sid):
 
 
 def local_history(authority, ref):
+    """Display history from the current physical transcript; *ref* stays the logical root."""
     live = authority.sessions[ref.session_id]
-    target = ref.session_id
     if live.source is not None and live.source.platform == Platform.LOCAL:
         restore_local_session(authority, ref.session_id)
         target = local_receipt(authority.db, ref.session_id)['entry']['session_id']
+    else:
+        target = authority.physical_target(ref)
     return authority.db.get_messages_as_conversation(target)
 
 

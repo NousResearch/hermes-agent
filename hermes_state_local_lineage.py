@@ -93,16 +93,24 @@ def reset_local_target(db, *, epoch, parent_session_id, entry):
         parent = conn.execute('SELECT * FROM sessions WHERE id=?', (parent_session_id,)).fetchone()
         if parent is None or parent['end_reason'] == 'compression':
             raise RuntimeStoreError('admission_conflict')
-        receipt = conn.execute('SELECT value FROM state_meta WHERE key=?',
-                               (POLICY_PREFIX + parent['chat_id'],)).fetchone()
-        if receipt is None:
+        saved = conn.execute('SELECT value FROM state_meta WHERE key=?',
+                             (POLICY_PREFIX + parent['chat_id'],)).fetchone()
+        if saved is None:
             raise RuntimeStoreError('storage_unavailable')
-        policy = json.loads(receipt[0])['policy']
+        receipt = json.loads(saved[0])
+        logical_id = receipt['session_id']
+        if validate_local_lineage(conn, receipt) != parent_session_id:
+            raise RuntimeStoreError('admission_conflict')
+        from hermes_state_mutation_guards import require_not_executing
+        require_not_executing(conn, list({logical_id, parent_session_id}))
+        policy = receipt['policy']
         db._publish_child_session_row(conn, parent, parent_session_id=parent_session_id,
             child_session_id=entry['session_id'], source=policy['source'], model=policy['model'],
             model_config={'_reset_from': parent_session_id}, system_prompt=None,
             cwd=policy['cwd'], profile_name=parent['profile_name'])
         conn.execute("UPDATE sessions SET ended_at=strftime('%s','now'),end_reason='session_reset' WHERE id=?",
                      (parent_session_id,))
+        db._bump_conversation_generation(conn, parent_session_id, 'session_reset')
         advance_local_target(conn, parent_session_id, entry['session_id'], entry=entry)
+        conn.execute('UPDATE sessions SET runtime_generation=runtime_generation+1 WHERE id=?', (logical_id,))
     db._execute_write(write)

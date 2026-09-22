@@ -264,9 +264,20 @@ def _inflight_text(value: Any) -> str:
     return _content_display_text(value).strip()
 
 
-def _start_inflight_turn(session: dict, text: Any) -> None:
+def _start_inflight_turn(
+    session: dict, text: Any, *, display_kind: str | None = None,
+    display_metadata: dict | None = None,
+) -> None:
     now = time.time()
-    session["inflight_turn"] = {"assistant": "", "started_at": now, "streaming": True, "updated_at": now, "user": _inflight_text(text)}
+    turn = {
+        "assistant": "", "started_at": now, "streaming": True, "updated_at": now,
+        "user": _inflight_text(text),
+    }
+    if display_kind:
+        turn["display_kind"] = display_kind
+    if isinstance(display_metadata, dict):
+        turn["display_metadata"] = dict(display_metadata)
+    session["inflight_turn"] = turn
 
 
 def _append_inflight_delta(session: dict, delta: Any) -> None:

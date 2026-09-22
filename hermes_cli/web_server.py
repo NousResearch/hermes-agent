@@ -101,8 +101,13 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
                 _check_gateway_running, _served_by_running_multiplexer, profiles_to_serve)
 
             # Same served set as the multiplexer: default + every live profile under profiles/.
-            profile_homes = list(profiles_to_serve(multiplex=True))
-            if profile_homes:
+            # The ticker re-enumerates this callable every cycle. Passing a
+            # startup snapshot leaves deleted profiles in the scheduler until
+            # restart, which both writes their removed stores and keeps stale
+            # profiles alive in Desktop's background work.
+            profile_homes = lambda: list(profiles_to_serve(multiplex=True))
+            initial_profile_homes = profile_homes()
+            if initial_profile_homes:
                 # Even one profile needs the per-tick gateway gate; otherwise
                 # Desktop races its dedicated gateway for the same cron store.
                 start_kwargs["profile_homes"] = profile_homes
@@ -115,11 +120,11 @@ def _start_desktop_cron_ticker(stop_event: "threading.Event", interval: int = 60
                     or (name != "default" and _served_by_running_multiplexer(name)))
                 from hermes_logging import enable_profile_log_routing
 
-                enable_profile_log_routing(profile_homes)
+                enable_profile_log_routing(initial_profile_homes)
                 _log.info(
                     "Desktop cron scheduler will tick %d profile(s): %s",
-                    len(profile_homes),
-                    [name for name, _home in profile_homes],
+                    len(initial_profile_homes),
+                    [name for name, _home in initial_profile_homes],
                 )
         except Exception:
             # Fail open to the single-store ticker so the active profile keeps firing.
@@ -535,12 +540,13 @@ async def _token_auth_seam(request: Request, call_next):
     + ``token_authenticated`` so downstream gates skip enforcement. Non-token
     routes pass through untouched.
     """
-    from hermes_cli.dashboard_auth.native_http import authenticate_native_http
+    from hermes_cli.dashboard_auth.native_http import authenticate_native_http, native_profile_scope
     from hermes_cli.dashboard_auth.token_auth import token_auth_middleware
     rejection = await authenticate_native_http(request)
     if rejection is not None:
         return rejection
-    return await token_auth_middleware(request, call_next)
+    with native_profile_scope(request):
+        return await token_auth_middleware(request, call_next)
 
 
 _DASHBOARD_HEALTH_WINDOW_SECONDS = 300.0

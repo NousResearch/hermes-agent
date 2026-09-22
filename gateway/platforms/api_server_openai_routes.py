@@ -158,6 +158,7 @@ class _ResponsesStream:
         self.agent_error: Optional[str] = None
         self.usage: Dict[str, int] = {"input_tokens": 0, "output_tokens": 0, "total_tokens": 0}
         self.terminal_snapshot_persisted = False
+        self.recorded_events: List[tuple] = []  # (event_type, data) as written, for idempotent replay
         self.result: Any = None
         self._batch_buf: List[str] = []
         self._batch_timer: Optional[asyncio.Task] = None
@@ -167,6 +168,7 @@ class _ResponsesStream:
         if "sequence_number" not in data:
             data["sequence_number"] = self.sequence_number
         self.sequence_number += 1
+        self.recorded_events.append((event_type, data))
         await self.response.write(self._api._sse_frame(data, event=event_type))
 
     def envelope(self, status: str) -> Dict[str, Any]:
@@ -368,7 +370,7 @@ class _ResponsesStream:
         self.terminal_snapshot_persisted = True
         await self.write_event("response.failed", {"type": "response.failed", "response": env})
 
-    async def emit_completed(self) -> None:
+    async def emit_completed(self) -> Dict[str, Any]:
         result = self.result
         status = _response_status(result)
         env = self.terminal_envelope(status, self._final_items(),
@@ -384,6 +386,7 @@ class _ResponsesStream:
         self.terminal_snapshot_persisted = True
         await self.write_event(
             'response.' + status, {'type': 'response.' + status, 'response': env})
+        return env
 
     async def emit_crash(self, exc: BaseException) -> None:
         error = self._api._redact_api_error_text(exc, limit=500)
@@ -530,8 +533,11 @@ class OpenAICompatRoutesMixin:
             session_history_delivery=("1" if provided_session_id else ""))
         if getattr(self.gateway_runner, 'session_authority', None) is not None:
             key = request.headers.get('Idempotency-Key')
-            run_kwargs.update(request_id=('chat:' + key) if key else None,
-                              history_from_session=bool(provided_session_id))
+            # The durable admission identity carries the authenticated namespace: a rotated
+            # API key (or another profile) reusing a client key is a new principal, not a retry.
+            run_kwargs.update(
+                request_id=f'chat:{self._run_idempotency_scope(request)}:{key}' if key else None,
+                history_from_session=bool(provided_session_id))
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
             # tool_call_ids with an emitted "running": a "completed" without one (internal/
@@ -736,13 +742,15 @@ class OpenAICompatRoutesMixin:
         self, request: "web.Request", response_id: str, model: str, created_at: int, stream_q,
         agent_task, agent_ref, conversation_history: List[Dict[str, str]], user_message: str,
         instructions: Optional[str], conversation: Optional[str], store: bool, session_id: str,
-        gateway_session_key: Optional[str] = None) -> "web.StreamResponse":
+        gateway_session_key: Optional[str] = None, durable_key=None) -> "web.StreamResponse":
         """Write the SSE stream for POST /v1/responses.
 
         Events: ``response.created`` -> ``output_text.delta/done`` + ``output_item.added/done``
         (function_call / function_call_output) -> ``response.completed`` (non-streaming envelope)
         or ``response.failed``. On disconnect the agent is interrupted and, with ``store=True``,
         an ``incomplete`` snapshot replaces ``in_progress`` so GET / chaining still work.
+        ``durable_key`` (canonical Idempotency-Key record) is written only once the admitted turn
+        settled, so an exact retry replays this stream instead of admitting different history.
         """
         from gateway.platforms.api_server import _abandon_agent_task, _redact_api_error_text
         response = await self._prepare_sse_response(request, session_id, gateway_session_key)
@@ -764,7 +772,12 @@ class OpenAICompatRoutesMixin:
             if st.agent_error:
                 await st.emit_failed()
             else:
-                await st.emit_completed()
+                env = await st.emit_completed()
+                if durable_key is not None:
+                    headers = {k: v for k, v in response.headers.items() if k.startswith('X-Hermes-')}
+                    self._response_store.put(durable_key[0], {
+                        'fingerprint': durable_key[1], 'response': env, 'headers': headers,
+                        'events': st.recorded_events})
         except (ConnectionResetError, ConnectionAbortedError, BrokenPipeError, OSError):
             st.persist_incomplete_if_needed()
             await _abandon_agent_task(agent_ref, agent_task, "SSE client disconnected")
@@ -786,6 +799,25 @@ class OpenAICompatRoutesMixin:
             with suppress(Exception):
                 await st.emit_crash(exc)
             logger.error("Agent crashed mid-stream for %s: %s", response_id, str(st.agent_error)[:300])
+        return response
+
+    async def _replay_sse_responses(self, request: "web.Request", replay: Dict[str, Any]) -> "web.StreamResponse":
+        """Re-emit a settled idempotent record as SSE. A record made by the streaming path replays
+        its exact frames; one made by the nonstreaming path gets ``created`` + its terminal event."""
+        from gateway.platforms.api_server import _sse_frame
+        headers = replay.get('headers') or {}
+        response = await self._prepare_sse_response(
+            request, headers.get('X-Hermes-Session-Id'), headers.get('X-Hermes-Session-Key'))
+        events = replay.get('events')
+        if not events:
+            env = replay['response']
+            created = {k: env[k] for k in ('id', 'object', 'created_at', 'model')}
+            created.update(status='in_progress', output=[])
+            events = [['response.created', {'type': 'response.created', 'response': created, 'sequence_number': 0}],
+                      ['response.' + env['status'], {'type': 'response.' + env['status'], 'response': env,
+                                                     'sequence_number': 1}]]
+        for event_type, data in events:
+            await response.write(_sse_frame(data, event=event_type))
         return response
 
     async def _handle_responses(self, request: "web.Request") -> "web.Response":
@@ -817,19 +849,26 @@ class OpenAICompatRoutesMixin:
         store = _coerce_request_bool(body.get("store"), default=True)
         if conversation and previous_response_id:
             return _error_response("Cannot use both 'conversation' and 'previous_response_id'", 400)
+        stream = _coerce_request_bool(body.get("stream"), default=False)
         durable_key = None
-        if getattr(self.gateway_runner, 'session_authority', None) is not None and request.headers.get('Idempotency-Key'):
+        idempotency_key = request.headers.get('Idempotency-Key')
+        canonical = getattr(self.gateway_runner, 'session_authority', None) is not None
+        if canonical and idempotency_key:
             # An exact retry replays the committed response BEFORE the conversation name is
             # expanded: the first success already advanced the conversation, so re-expanding
             # would build a different admission payload and refuse the retry as a conflict.
+            # Streaming and nonstreaming share the record: transport mode is not identity.
             from gateway.platforms.api_server import _make_request_fingerprint
-            durable_key = ('idem:' + self._run_idempotency_scope(request) + ':' + request.headers['Idempotency-Key'],
+            idempotency_scope = self._run_idempotency_scope(request)
+            durable_key = (f'idem:{idempotency_scope}:{idempotency_key}',
                            _make_request_fingerprint(body, keys=_RESPONSES_FINGERPRINT_KEYS))
             replay = self._response_store.get(durable_key[0])
             if replay is not None:
                 if replay.get('fingerprint') != durable_key[1]:
                     from gateway.platforms.api_server import _openai_error
                     return web.json_response(_openai_error('admission_conflict', code='admission_conflict'), status=409)
+                if stream:
+                    return await self._replay_sse_responses(request, replay)
                 return web.json_response(replay['response'], headers=replay.get('headers') or {})
         if conversation:
             # A conversation name resolves to its latest response_id (unknown = new conversation).
@@ -892,7 +931,6 @@ class OpenAICompatRoutesMixin:
             stored_session_id
             or self._declared_conversation_session(gateway_session_key)
             or str(uuid.uuid4()))
-        stream = _coerce_request_bool(body.get("stream"), default=False)
         route, agent_overrides, selection_error = self._select_request_route(
             body, session_id=session_id, gateway_session_key=gateway_session_key,
             model_alias=body.get("model"))
@@ -903,15 +941,16 @@ class OpenAICompatRoutesMixin:
             ephemeral_system_prompt=instructions, session_id=session_id,
             gateway_session_key=gateway_session_key, bind_declared_conversation=_declared_selected,
             **agent_overrides, route=route, relay_metadata=relay_metadata)
-        if getattr(self.gateway_runner, 'session_authority', None) is not None:
-            key = request.headers.get('Idempotency-Key')
-            if key:
-                import hashlib
-                # A fresh responses request must recover its target before admission.
-                if not stored_session_id and not gateway_session_key:
-                    session_id = 'response-' + hashlib.sha256(key.encode()).hexdigest()
-                    run_kwargs['session_id'] = session_id
-                run_kwargs['request_id'] = 'responses:' + key
+        if durable_key is not None:
+            import hashlib
+            # A fresh responses request must recover its target before admission; the target and
+            # the request identity carry the authenticated namespace so a rotated API key never
+            # lands on (or replays) another principal's admission.
+            if not stored_session_id and not gateway_session_key:
+                session_id = 'response-' + hashlib.sha256(
+                    f'{idempotency_scope}\0{idempotency_key}'.encode()).hexdigest()
+                run_kwargs['session_id'] = session_id
+            run_kwargs['request_id'] = f'responses:{idempotency_scope}:{idempotency_key}'
         if stream:
             _stream_q = ThreadSafeAsyncQueue()
 
@@ -937,7 +976,8 @@ class OpenAICompatRoutesMixin:
                 stream_q=_stream_q, agent_task=agent_task, agent_ref=agent_ref,
                 conversation_history=conversation_history, user_message=user_message,
                 instructions=instructions, conversation=conversation, store=store,
-                session_id=session_id, gateway_session_key=gateway_session_key)
+                session_id=session_id, gateway_session_key=gateway_session_key,
+                durable_key=durable_key)
 
         async def _compute_response():
             return await self._run_agent(**run_kwargs)

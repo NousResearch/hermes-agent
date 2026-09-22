@@ -84,7 +84,8 @@ export interface GatewayOptions {
   busyResumes?: Record<string, number>
   /** Per profile: carry `pending_approval` on its first `until` resumes. */
   approvalUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
-  /** Per profile: carry `pending_clarify` on its first `until` resumes. */
+  /** Per profile: carry open server requests on its first `until` resumes. */
+  /** `payload` is an open-request frame `{ id, method: 'clarify', params }`. */
   clarifyUntil?: Record<string, { payload: Record<string, unknown>; until: number }>
   /** Land a competing writer's `ui_meta` under `key` during the FIRST
    *  `profiles.configure`, then reject it as a CAS conflict — the race the
@@ -166,6 +167,11 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
   }
 
   const handle = async (method: string, params: Record<string, unknown>): Promise<unknown> => {
+    // A legacy Desktop room: no hosted-room driver, nonpersistent owner.
+    if (method === 'groups.capabilities') {
+      return { driver: false, persistent_process: false }
+    }
+
     if (method === 'profiles.list') {
       return {
         profiles: [{ name: 'default', ui_meta: { ...uiMeta }, ui_meta_revisions: { ...uiMetaRevisions } }]
@@ -275,7 +281,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
         running: false,
         session_id: session.runtime,
         session_key: session.stored,
-        ...(clarify && seen <= clarify.until ? { pending_clarify: clarify.payload } : {}),
+        ...(clarify && seen <= clarify.until ? { open_requests: [clarify.payload] } : {}),
         ...(approval && seen <= approval.until ? { pending_approval: approval.payload } : {})
       }
     }
@@ -431,8 +437,10 @@ export async function pluginSdkMock(host: Record<string, unknown>) {
     blobatarSvg: undefined,
     computed: nanostores.computed,
     createBudgetedLoop: undefined,
+    gatewayActivationEpoch: () => 0,
     host,
     SkillsView: undefined,
+    MessageTextContent: undefined,
     Streamdown: undefined,
     queryClient: { invalidateQueries: () => undefined },
     useQuery: () => ({ data: [], isLoading: false }),

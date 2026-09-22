@@ -9,7 +9,7 @@ import acp
 from acp.schema import (
     AgentCapabilities, Implementation, InitializeResponse, LoadSessionResponse,
     NewSessionResponse, PromptCapabilities, PromptResponse, ResumeSessionResponse,
-    SessionCapabilities, SessionResumeCapabilities,
+    SessionCapabilities, SessionForkCapabilities, SessionListCapabilities, SessionResumeCapabilities,
 )
 
 from hermes_cli.gateway_client import GatewayClientError, connect_gateway
@@ -76,7 +76,8 @@ class GatewayACPAgent(acp.Agent):
             agent_info=Implementation(name="hermes-agent", version=__version__),
             agent_capabilities=AgentCapabilities(load_session=True,
                 prompt_capabilities=PromptCapabilities(image=True),
-                session_capabilities=SessionCapabilities(resume=SessionResumeCapabilities())),
+                session_capabilities=SessionCapabilities(fork=SessionForkCapabilities(), list=SessionListCapabilities(),
+                                                         resume=SessionResumeCapabilities())),
             auth_methods=build_auth_methods())
 
     async def authenticate(self, method_id, **kwargs):
@@ -216,8 +217,13 @@ class GatewayACPAgent(acp.Agent):
             if operation == 'branch':
                 raise GatewayClientError('use_acp_fork_session')
             client = await self._client()
-            await self._mutations.apply(client, session_id, operation, payload)
-            self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
+            result = await self._mutations.apply(client, session_id, operation, payload)
+            if result.get('status') == 'preview':
+                # Read-only report: nothing changed, so the editor's snapshot is still current.
+                await self._conn.session_update(session_id=session_id,
+                    update=acp.update_agent_message_text('\n'.join(result['lines']) + '\n'))
+            else:
+                self._snapshots[session_id] = await client.rpc('session.resume', session_id=session_id)
             self._mutations.acknowledge(session_id, operation, payload)
             return PromptResponse(stop_reason='end_turn')
         client = await self._client()

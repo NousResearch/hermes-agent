@@ -229,3 +229,30 @@ def test_discard_requires_exact_owned_unknown_tuple_without_replay(owner, monkey
     assert scheduled == [rpc.ref]
     assert rpc.info(**coords)['task_id'] == 'next'
     assert rpc.history(**coords)[-1]['status'] == 'cancelled'
+
+
+def test_queued_cancellation_is_a_cancelled_receipt_not_storage_unavailable(owner):
+    """A queued task that is stopped never ran, so it has no execution result; history/info
+    must project it as cancelled instead of failing the whole room read. A completed row with
+    a missing result is still storage corruption."""
+    from gateway.session_hosted_rpc import HostedRoomAuthorityRPC
+    from gateway.hosted_room_driver import TaskIdentity
+    from hermes_state_runtime import RuntimeStoreError, claim_session_input, settle_session_input
+    authority, loop, principal, _ = owner
+    rpc = HostedRoomAuthorityRPC(authority, loop, room_id='room', member_id='member', profile='default', principal=principal, authorize=lambda *args: True)
+    coords = dict(profile='default', source='bot_room')
+    sid = rpc.create(**coords, title='Group: room')['session_id']
+    receipts = []
+    rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task', 'thread', 'turn'), execution_generation=1, on_terminal=receipts.append)
+    assert rpc.interrupt(**coords, session_id=sid, expected_task_id='task')['interrupted']
+    history = rpc.history(**coords, session_id=sid)
+    assert history[-1]['status'] == 'cancelled'
+    assert history[-1]['task_id'] == 'task'
+    assert rpc.info(**coords, session_id=sid)['status'] == 'idle'
+    assert receipts and receipts[0]['status'] == 'cancelled'
+    # Negative control: a completed admission whose result row vanished is still unreadable.
+    rpc.submit(**coords, session_id=sid, prompt='input', task=TaskIdentity('room', 'task2', 'thread', 'turn2'), execution_generation=2, on_terminal=receipts.append)
+    row = claim_session_input(authority.db, epoch=authority.epoch, session_id=sid)
+    settle_session_input(authority.db, epoch=authority.epoch, admission_id=row['admission_id'], generation=row['generation'], outcome='completed', result=None)
+    with pytest.raises(RuntimeStoreError, match='storage_unavailable'):
+        rpc.history(**coords, session_id=sid)

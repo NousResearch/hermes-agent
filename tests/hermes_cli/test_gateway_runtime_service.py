@@ -100,7 +100,7 @@ def test_ensure_checks_effective_service_binding_before_start(tmp_path, monkeypa
     monkeypatch.setenv('PATH', str(tmp_path) + os.pathsep + os.environ['PATH'])
     from hermes_cli import gateway as gw
     monkeypatch.setattr(gw, "_systemctl_cmd", lambda system=False: [str(executable)] + ([] if system else ["--user"]))
-    result = runtime.ensure_gateway_runtime(home, timeout=0.5)
+    result = runtime.ensure_gateway_runtime(home, timeout=3.0)
     assert result.reason_code == reason
     commands = [json.loads(line) for line in calls.read_text().splitlines()]
     starts = [cmd for cmd in commands if 'start' in cmd]

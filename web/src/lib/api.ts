@@ -1,4 +1,8 @@
-import { buildHermesWebSocketUrl } from "@hermes/shared";
+import {
+  buildHermesWebSocketUrl,
+  type ModelOptionProvider,
+  type ModelOptionsResult,
+} from "@hermes/shared";
 import { createDashboardSessionMutations } from "./session-mutations";
 
 const mutateSessionHttp = createDashboardSessionMutations(fetchJSON);
@@ -27,6 +31,7 @@ import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
+import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -118,15 +123,26 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...init,
+      headers,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+    });
+  } catch (cause) {
+    // fetch() only rejects when the request never got a response: the
+    // backend is down, the port is closed, or the network dropped. Tell the
+    // user that in words instead of `TypeError: Failed to fetch`.
+    const err = apiErrorFromNetworkFailure(cause, url);
+    // The toast shows only the sentence; keep status/path/body in the console for bug reports.
+    console.warn("[api]", err.details);
+    throw err;
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -184,7 +200,9 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    const err = apiErrorFromResponse(res.status, text, url);
+    console.warn("[api]", err.details);
+    throw err;
   }
   return res.json();
 }
@@ -212,7 +230,7 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
+    throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), "/api/auth/ws-ticket");
   }
   return res.json();
 }
@@ -533,7 +551,7 @@ export const api = {
     // desktop chat pickers (#56974), so opt in explicitly here.
     qs.set("include_unconfigured", "1");
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
+    return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
     fetchJSON<AuxiliaryModelsResponse>(
@@ -2427,23 +2445,7 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  is_user_defined?: boolean;
-  source?: string;
-  warning?: string;
-  authenticated?: boolean;
-}
-
-export interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
+export type { ModelOptionProvider, ModelOptionsResult };
 
 export interface AuxiliaryTaskAssignment {
   task: string;

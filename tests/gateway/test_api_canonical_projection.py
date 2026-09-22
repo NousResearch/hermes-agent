@@ -166,3 +166,99 @@ async def test_exact_responses_retry_replays_before_conversation_expansion(api, 
             statuses.append((resp.status, (await resp.json()).get('status')))
     assert statuses == [(200, 'completed'), (200, 'completed')]
     assert calls == ['hello']
+
+
+@pytest.mark.asyncio
+async def test_cancelled_observer_is_unregistered_and_never_breaks_the_survivor(api, owner):
+    """Two request tasks observe one admission. Cancelling one (client disconnect) must drop
+    exactly its observer entry; the other keeps streaming, and a raising callback on the
+    owner path is isolated from canonical execution."""
+    from gateway.session_api_turn import observe_api_turn
+    admitted = admit_api_turn(api, session_id='observers', user_message='hello', conversation_history=[])
+    _, ref, row = admitted
+    started, release = asyncio.Event(), asyncio.Event()
+    survivor, cancelled_saw = [], []
+
+    def broken(*args):
+        raise RuntimeError('client sink is gone')
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        started.set()
+        await release.wait()
+        turn = _turn_runner(owner, ref)
+        turn.combined_tool_complete_callback('call-1', 'read_file', {'path': 'a.txt'}, 'body')
+        execution_result.get()['result'] = {'final_response': 'ok'}
+        return 'ok'
+    owner.runner._handle_message = handle
+    first = asyncio.ensure_future(observe_api_turn(admitted, tool_complete_callback=lambda *a: cancelled_saw.append(a)))
+    second = asyncio.ensure_future(observe_api_turn(admitted, tool_complete_callback=lambda *a: survivor.append(a)))
+    await asyncio.wait_for(started.wait(), timeout=5)
+    first.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await first
+    assert len(owner.api_observers[row['admission_id']]) == 1
+    # A sink that raises on the owner path must not abort the turn or starve the survivor.
+    third = asyncio.ensure_future(observe_api_turn(admitted, tool_complete_callback=broken))
+    await asyncio.sleep(0)
+    release.set()
+    (result, _), (third_result, _) = await asyncio.wait_for(asyncio.gather(second, third), timeout=5)
+    assert result['final_response'] == third_result['final_response'] == 'ok'
+    assert survivor == [('call-1', 'read_file', {'path': 'a.txt'}, 'body')]
+    assert cancelled_saw == []
+    assert row['admission_id'] not in owner.api_observers
+
+
+@pytest.mark.asyncio
+async def test_room_grant_answers_the_clarify_prompt_its_run_raised(api, owner, tmp_path):
+    """A room-scoped run's clarify prompt is answerable by the same room grant that dispatched
+    it (no gateway API key), and a revoked grant can no longer answer."""
+    import time
+    from gateway import hosted_rooms
+    from gateway.hosted_room_peer import decode_room_grant, issue_room_grant
+    from gateway.platforms.api_server_authority_runs import run_projection
+    from tools import clarify_gateway
+    api._api_key = 'sk-secret'
+    now = time.time()
+    grant = issue_room_grant(
+        api._room_grant_secret(), grant_id='grant-clarify', room_id='room-1', home_install_id='install-home',
+        authority_gateway_id='install-home', authority_epoch=1, member_id='member-peer',
+        target_install_id=hosted_rooms.local_authority_gateway_id(), target_profile='default',
+        issued_at=now, ttl_seconds=300, status_expires_at=now + 1000)
+    claims = decode_room_grant(api._room_grant_secret(), grant, permission='status')
+    hosted_rooms.reserve_peer_room(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+    headers = {'Authorization': f'HermesRoom {grant}'}
+    admitted = admit_api_turn(api, session_id='room-clarify', request_id='run_room', user_message='hello',
+                              conversation_history=[])
+    _, ref, row = admitted
+    launch, queue = _launch(api, admitted, run_id='run_room')
+    scope_request = SimpleNamespace(headers=headers, path='/v1/runs/run_room/clarify', method='POST')
+    api._run_owners['run_room'] = api._run_idempotency_scope(scope_request)
+
+    async def handle(event):
+        from gateway.session_results import execution_result
+        turn = _turn_runner(owner, ref)
+        entry = clarify_gateway.register('clarify-room', 'api', 'Which one?', ['a', 'b'])
+        owner.register_clarify(ref.session_id, turn._approval_owner[2], entry)
+        await asyncio.to_thread(entry.event.wait, 10)
+        execution_result.get()['result'] = {'final_response': entry.response or 'unanswered'}
+        return entry.response
+    owner.runner._handle_message = handle
+    run = asyncio.ensure_future(_execute_run(api, launch, _api_server=_api_server))
+    async with asyncio.timeout(10):
+        while not (run_projection(api, 'run_room') or {}).get('pending_controls'):
+            await asyncio.sleep(0.02)
+    prompt = run_projection(api, 'run_room')['pending_controls'][0]
+    body = {'request_id': prompt['prompt_id'], 'execution_generation': prompt['execution_generation'], 'answer': 'b'}
+    app = web.Application()
+    app.router.add_post('/v1/runs/{run_id}/clarify', api._handle_run_clarify)
+    async with TestClient(TestServer(app)) as client:
+        answered = await client.post('/v1/runs/run_room/clarify', json=body, headers=headers)
+        assert answered.status == 200, await answered.text()
+        assert (await answered.json())['status'] == 'resolved'
+        await asyncio.wait_for(run, timeout=10)
+        assert api._run_statuses['run_room']['output'] == 'b'
+        hosted_rooms.revoke_room_grant_scope(hosted_rooms.default_db_path(), claims=claims, expires_at=now + 1000)
+        denied = await client.post('/v1/runs/run_room/clarify', json=body, headers=headers)
+        assert denied.status == 403
+        assert (await denied.json())['error']['code'] == 'room_reauthorization_required'

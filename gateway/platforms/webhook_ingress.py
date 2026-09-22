@@ -69,7 +69,9 @@ async def _webhook_retry(authority, event):
     if len(rows) != 1 or row['payload'] != payload:
         raise RuntimeStoreError('admission_conflict')
     event._webhook_duplicate = True
-    return authority._receipt(row)
+    receipt = authority._receipt(row)
+    finalize_webhook(authority, receipt)
+    return receipt
 
 
 def finalize_webhook(authority, receipt):
@@ -87,6 +89,41 @@ def finalize_webhook(authority, receipt):
                 AND target_session_id=? AND status='terminal' AND generation=? AND owner_epoch=?)
               AND NOT EXISTS (SELECT 1 FROM session_admissions WHERE target_session_id=? AND status!='terminal')
             """, (time.time(), 'webhook_complete', sid, receipt.execution_generation,
-                  receipt.authority_epoch, receipt.admission_id, sid, receipt.execution_generation,
+                  authority.epoch, receipt.admission_id, sid, receipt.execution_generation,
                   receipt.authority_epoch, sid), sid, 'webhook_complete')
     return bool(authority.db._execute_write(write))
+
+
+async def recover_webhook_finalizations(authority):
+    """Close settled original webhooks only after current route authorization succeeds."""
+    from gateway.session_envelope import check_native_route
+    from gateway.session_contract import SessionRef
+    from hermes_state_runtime import RuntimeStoreError, get_session_admission
+
+    rows = authority.db._read_all("""
+        SELECT a.admission_id FROM sessions AS s
+        JOIN session_admissions AS a ON a.target_session_id=s.id
+        WHERE s.source='webhook' AND s.ended_at IS NULL
+          AND a.status='terminal' AND a.generation IS NOT NULL
+          AND json_extract(a.payload_json, '$.native_text_v1.source.platform')='webhook'
+          AND json_extract(a.payload_json, '$.native_text_v1.automation') IS NULL
+        """)
+    results = {}
+    for candidate in rows:
+        row = get_session_admission(authority.db, admission_id=candidate['admission_id'])
+        if row is None:
+            continue
+        sid = row['target_session_id']
+        try:
+            envelope = row['payload']['native_text_v1']
+            entry = authority.runner.session_store.lookup_by_session_key(envelope['route'])
+            if entry is None or authority.logical_owner(entry.session_id) != sid:
+                raise RuntimeStoreError('admission_conflict')
+            adapter = authority.runner._adapter_for_source(entry.origin) if entry.origin is not None else None
+            target = authority.physical_target(SessionRef(authority.profile_id, sid))
+            await check_native_route(authority.runner, row['payload'], target, entry.origin, adapter)
+            results[sid] = 'finalized' if finalize_webhook(
+                authority, authority._receipt(row)) else 'unchanged'
+        except (KeyError, RuntimeStoreError):
+            results[sid] = 'unavailable'
+    return results

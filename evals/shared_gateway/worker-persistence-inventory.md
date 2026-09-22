@@ -14,8 +14,8 @@ The preceding `worker-gap-wave14.md` was treated as a lead, not source truth.
 **Correction to the preceding audit:** the two proposed adapter modules are absent, but
 `hermes_state_runtime.py` already contains `register_worker_execution`, `adopt_worker_execution`,
 `persist_worker_message`, and `finish_worker_execution`, with `worker_executions`/`worker_receipts`.
-A repository search finds their callers only in `tests/state/test_runtime_worker.py` and
-`tests/state/test_runtime_adoption.py`, not gateway/cron/child/compute production.
+A repository search finds their callers only in `tests/hermes_state/test_runtime_worker.py` and
+`tests/hermes_state/test_runtime_adoption.py`, not gateway/cron/child/compute production.
 The text-only primitive is NOT a SessionDB adapter: it accepts only user/assistant/system text,
 not tool rows, structured content, reasoning, sidecars, compression, or usage.
 Reuse its epoch/assignment/sequence/receipt checks; do not implement a second worker registry.

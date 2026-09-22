@@ -101,3 +101,30 @@ async def test_local_entry_timestamps_keep_fallback_recovery_sweeping_other_rout
     assert cold.lookup_by_session_key(entry.session_key).resume_pending
     # The canonical local route recovers through its durable FIFO, not the legacy marker.
     assert not cold.lookup_by_session_key(authority.sessions[ref.session_id].route).resume_pending
+
+
+def test_messaging_session_history_follows_the_compression_tip(tmp_path, monkeypatch):
+    """The authority keeps a messaging session's admission identity at the compression root,
+    but attach/resume history must come from the current physical transcript."""
+    from gateway.config import Platform
+    from gateway.session_authority import LiveSession, SessionAuthority
+    from gateway.session_contract import SessionRef
+    from gateway.session_local_recovery import local_history
+    from hermes_state import SessionDB
+    from hermes_state_runtime import begin_runtime_epoch
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    with SessionDB(db_path=tmp_path / 'state.db') as db:
+        db.create_session('root', source='telegram', session_key='agent:telegram:dm:1')
+        db.append_message('root', 'user', 'BEFORE_COMPRESSION')
+        assert db.try_acquire_compression_lock('root', 'holder')
+        db.publish_compression_child(parent_session_id='root', child_session_id='child', source='telegram',
+                                     messages=[{'role': 'user', 'content': 'SUMMARY'}], compression_lock_holder='holder')
+        db.append_message('child', 'user', 'AFTER_COMPRESSION')
+        authority = SessionAuthority(SimpleNamespace(_draining=False, config=SimpleNamespace(multiplex_profiles=False)),
+                                     profile_id='owned', instance_id='current', db=db,
+                                     epoch=begin_runtime_epoch(db, instance_id='current'))
+        source = SimpleNamespace(platform=Platform.TELEGRAM, user_id='human')
+        authority.sessions['root'] = LiveSession(source, 'agent:telegram:dm:1')
+        contents = [m['content'] for m in local_history(authority, SessionRef('owned', 'root'))]
+        assert 'AFTER_COMPRESSION' in contents
+        assert 'BEFORE_COMPRESSION' not in contents

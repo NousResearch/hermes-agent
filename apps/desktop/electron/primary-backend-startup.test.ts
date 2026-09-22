@@ -51,6 +51,30 @@ test('primary remote descriptor preserves a resolved registry connection id', ()
   assert.equal(connection.isFullscreen, false)
 })
 
+test('primary remote descriptor preserves the gateway extra headers for REST calls', () => {
+  // Chat and the Test button carry the headers via the exact-URL WS store, but
+  // fetchJsonForBackend reads descriptor.headers — dropping them here made every
+  // Settings/session-history call hit an access proxy unauthenticated (#112072).
+  const headers = { 'CF-Access-Client-Id': 'client-id', 'CF-Access-Client-Secret': 'client-secret' }
+
+  const connection = createPrimaryRemoteConnection(
+    {
+      authMode: 'token',
+      baseUrl: 'https://gateway.example.com',
+      connectionId: 'gateway',
+      headers,
+      remoteKind: 'url',
+      source: 'settings',
+      token: 'secret',
+      wsUrl: 'wss://gateway.example.com/api/ws?token=secret'
+    },
+    [],
+    {}
+  )
+
+  assert.deepEqual(connection.headers, headers)
+})
+
 test('primary remote descriptor preserves the effective SSH dialing identity', () => {
   const ssh = {
     effectiveConfigFingerprint: 'effective-config',

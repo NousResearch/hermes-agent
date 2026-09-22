@@ -126,6 +126,8 @@ Uploaded files (`file` / `input_file` / `file_id`) and non-image `data:` URLs re
 
 **Streaming** (`"stream": true`): Returns Server-Sent Events (SSE) with token-by-token response chunks. For **Chat Completions**, the stream uses standard `chat.completion.chunk` events plus Hermes' custom `hermes.tool.progress` event for tool-start UX. For **Responses**, the stream uses OpenAI Responses event types such as `response.created`, `response.output_text.delta`, `response.output_item.added`, `response.output_item.done`, and `response.completed`.
 
+All SSE streams (Chat Completions, Responses, `/api/sessions/{id}/chat/stream`, `/v1/runs/{id}/events`) emit a `: keepalive` comment line whenever no event has been sent for 10 seconds, so long tool calls do not trip client idle timeouts. Standard SSE clients ignore comment lines; custom parsers must skip lines that start with `:`.
+
 **Tool progress in streams**:
 - **Chat Completions**: Hermes emits `event: hermes.tool.progress` for tool-start visibility without polluting persisted assistant text.
 - **Responses**: Hermes emits spec-native `function_call` and `function_call_output` output items during the SSE stream, so clients can render structured tool UI in real time.
@@ -503,6 +505,15 @@ Statuses are retained briefly after terminal states (`completed`, `failed`, or `
 
 Server-Sent Events stream of the run's tool-call progress, token deltas, and lifecycle events. Designed for dashboards and thick clients that want to attach/detach without losing state.
 
+Tool lifecycle events carry `tool.started` (`tool`, `preview` of the arguments) and
+`tool.completed` (`tool`, `duration` in seconds, `error`, and a `preview` of the result). The
+`error` flag reflects the tool's own outcome — a non-zero terminal `exit_code`, a structured
+`{"error": ...}` result, a denied approval — whether the result arrives as a JSON string or an
+already-parsed object. The completion `preview` is the result text (structured results are
+JSON-encoded), passed through forced secret redaction and then truncated to 500 characters, so a
+client can tell an approval refusal (`BLOCKED: ...`) from an ordinary failure without receiving
+the unbounded tool payload.
+
 When the agent delegates work to background subagents, the stream also carries
 `subagent.start` and `subagent.complete` lifecycle events, so clients can
 observe delegation outcomes — including timeouts and failures — instead of the
@@ -546,6 +557,48 @@ still executing remains visible to status polling, approval, stop control, and
 concurrency accounting until its executor work actually exits. A connected SSE
 subscriber continues draining normally.
 
+### POST /v1/runs/\{run_id\}/resolve-unknown
+
+After an authority-owner restart, a turn that was already claimed has an
+unknown execution outcome. Hermes pauses later work in that session rather than
+risk replaying the lost head. Read the exact `admission_id` and
+`execution_generation` from `GET /v1/runs/{run_id}`, then acknowledge that the
+lost execution will not finish:
+
+```json
+{
+  "admission_id": "adm_abc123",
+  "execution_generation": 7
+}
+```
+
+The request is authenticated and run-owner scoped like the other run controls;
+hosted-room callers need the existing `stop` grant. A successful response is the
+canonical terminal receipt (`outcome: "interrupted"`) plus `run_id`. It releases
+the FIFO once and schedules the queued follower without replaying the unknown
+head. Repeated resolution, a stale or non-integer generation, and a run that is
+not currently unknown return `409 stale_generation`; an admission ID that does
+not belong to the path run returns `409 not_found`. The body must contain exactly
+those two fields, or the server returns `409 invalid_params`.
+
+This recovery control is advertised as `features.run_unknown_resolution` and as
+the `run_unknown_resolution` endpoint only when the canonical session authority
+is active. Legacy API execution mode does not advertise it. Ordinary
+`POST /v1/runs/{run_id}/stop` deliberately remains separate and returns
+`409 unknown_execution` for an unknown admission.
+
+For admissions created by this version, the opaque run-owner scope is stored
+atomically with the canonical admission and retained for that admission's
+control/status lifetime, including terminal state. It is private server state,
+not a bearer credential, model input, or API response field. Non-keyed requests
+remain non-idempotent, so matching request bodies still create separate runs.
+Older non-keyed admissions have no persisted owner scope and continue to fail
+closed after an adapter restart; they cannot be safely backfilled. Older keyed
+runs continue to use the existing idempotency ledger. Explicit session
+retirement removes the canonical admission payload and its recoverable owner.
+The replay ledger and canonical admission are separate database transactions;
+this recovery control does not promise global exactly-once execution.
+
 ### POST /v1/runs/\{run_id\}/stop
 
 Interrupt a running agent turn. The endpoint returns immediately with `{"status": "stopping"}` while Hermes asks the active agent to stop at the next safe interruption point.
@@ -574,6 +627,7 @@ and hosted-room approval restrictions still apply.
 Answer a canonical clarification with `request_id`, `execution_generation`, and
 `answer` (a string). This authenticated endpoint and WebSocket `clarify.respond`
 resolve the same waiting tool; answering does not submit another inference turn.
+MCP trust-gate consent — a write-capable tool on a server configured `trust: untrusted` — surfaces the same way: the run emits an `approval.request` event and parks in `waiting_for_approval` until this endpoint resolves it (`once` runs the tool, `deny` blocks it).
 
 ## Jobs API (background scheduled work)
 
@@ -625,7 +679,7 @@ External UIs can manage Hermes sessions over REST without standing up the dashbo
 | `GET` | `/api/sessions/{id}/messages` | Message history for a session |
 | `POST` | `/api/sessions/{id}/fork` | Branch the session via `SessionDB` lineage (matches CLI `/branch` semantics) |
 | `POST` | `/api/sessions/{id}/chat` | Run one synchronous agent turn |
-| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, `run.completed` events |
+| `POST` | `/api/sessions/{id}/chat/stream` | SSE wrapper over a single turn — emits `assistant.delta`, `tool.started`, `tool.completed`, then a terminal `run.completed` / `run.failed` / `run.cancelled` event that matches how the turn ended (see [Terminal run status](../../developer-guide/programmatic-integration.md#terminal-run-status)) |
 
 `/v1/capabilities` advertises the full surface via `session_*` feature flags and `endpoints.session_*` entries so external UIs can detect support and fall back safely. Inline images are supported in `chat` and `chat/stream` payloads (multimodal-aware path).
 
@@ -751,7 +805,7 @@ gateway:
 
 ### Concurrent-run cap
 
-The API server limits how many agent runs may execute at once across the OpenAI-compatible and Runs endpoints. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
+The API server limits how many agent runs may execute at once across the endpoints that start one directly: the OpenAI-compatible endpoints, the Runs endpoints, and the session-chat endpoints (`POST /api/sessions/{id}/chat` and its `/stream` variant, which carry cross-machine agent DMs). Cron-triggered runs (`POST /api/jobs/{id}/run`, `POST /api/cron/fire`) go through the cron scheduler and are governed by cron's own limits, not this cap. The cap is read from `gateway.api_server.max_concurrent_runs` (default **10**; `0` disables the limit, negative values clamp to 0). When the cap is reached, new run-starting requests are rejected with **HTTP 429** `Too many concurrent runs (max N)` — clients should back off and retry.
 
 ## Security Headers
 

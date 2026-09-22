@@ -341,7 +341,12 @@ User message → AIAgent._run_agent_loop()
 - **PEP 8** with practical exceptions (we don't enforce strict line length)
 - **Comments**: Only when explaining non-obvious intent, trade-offs, or API quirks. Don't narrate what the code does — `# increment counter` adds nothing
 - **Error handling**: Catch specific exceptions. Log with `logger.warning()`/`logger.error()` — use `exc_info=True` for unexpected errors so stack traces appear in logs
+- **Error messages**: every user-facing error message names the actual cause and the remediation step — never the proximate symptom. A missing API key is "no OpenRouter API key configured — set `OPENROUTER_API_KEY`", never "payment/credit error"; a failed request logs the exception class and message (secret-redacted) rather than an empty reason; a timed-out long job reports the timeout and where the job went, not a fallback-routing noise string. If you know the cause, say it; if you don't, say what you do know plus what to check — never a placeholder that points somewhere else.
 - **Cross-platform**: Never assume Unix. See [Cross-Platform Compatibility](#cross-platform-compatibility)
+
+### Fail loud at integration boundaries
+
+**Fail loud at integration boundaries.** When a configuration value, credential, or user-supplied input is unusable — a placeholder token, an empty required field, an out-of-range number like `TERMINAL_TIMEOUT=0` — reject it where it is read and name the problem: a clear error at startup or at the write path, never a silent no-op that turns the confusion into a debugging session later. Each boundary validates its own values in place; there is intentionally no shared `fail_loud` helper, because one call-site shape does not fit all — the rule is about the behavior the user sees, not the function you call. A silent default is acceptable only where the default is a deliberate product choice documented in the config reference; everything else should tell the user what broke, where, and what to set.
 
 ---
 

@@ -24,6 +24,7 @@ import {
   DialogFooter,
   DialogHeader,
   DialogTitle,
+  gatewayActivationEpoch,
   host,
   Input,
   queryClient,
@@ -38,9 +39,11 @@ import { useEffect, useMemo, useRef, useState } from 'react'
 
 import { avatarColor, botAppearance, BotFace } from './avatar'
 import { isBackfilledFacePng } from './avatar-image'
+import { groupCreationSource, groupExecutionMode } from './canonical-group-capabilities'
+import type { GroupExecutionMode } from './canonical-group-capabilities'
 import { $canonicalGroupBindings, registerCanonicalGroup } from './canonical-group-registry'
 import { CanonicalGroupWorkspace } from './canonical-group-workspace'
-import { canonicalGroupRequest, captureCanonicalGroupRoute, createCanonicalGroup } from './canonical-groups'
+import { canonicalGroupRequest, createCanonicalGroup } from './canonical-groups'
 import {
   $botMeta,
   $lastRoster,
@@ -74,6 +77,7 @@ import {
 import type { GroupChatRoom } from './group-chat'
 import { GroupClarifyCard, GroupImageControls, GroupMentionInput } from './group-chat-parts'
 import type { GroupRoomPrompt } from './group-chat-parts'
+import { GroupMemberPicker } from './group-chat-view-members'
 import { GroupHoldStatus } from './group-hold-status'
 import {
   botGroups,
@@ -98,12 +102,19 @@ import type { GroupComposerDraft, GroupDraftSetter } from './group-panes'
 import { sendToGroupChat, stopGroupThread } from './group-rounds'
 import { clearGroupClarify, renameGroupClarify } from './group-turns'
 import { botsText, useBots } from './i18n'
-import { displayName, slugify } from './labels'
+import { displayName, slugifyProfileName } from './labels'
 import { botRosterMeta, setBotsWorkspaceOwner } from './routing'
 import { bumpBotOpenGeneration, getPluginCtx, ID } from './shared'
 import type { Attachment, BotMeta, GroupChat, GroupMember, GroupMessage, RosterRow } from './types'
 
 const Streamdown = typeof sdk === 'undefined' ? undefined : sdk.Streamdown
+// The 1:1 chat's message renderer: `MEDIA:` lines become inline players and
+// images instead of a raw path (#93728), and a fenced block gets the app's own
+// code card — stock Streamdown lays a code block's header and body out as
+// inline siblings, so the body sat shifted right and its tail was clipped with
+// no scrollbar (#91878). Feature-detected: an older shell without the export
+// keeps the raw Streamdown path.
+const MessageTextContent = typeof sdk === 'undefined' ? undefined : sdk.MessageTextContent
 
 /** Soft-disband a group chat: remove only this group from every local member's
  *  membership list (the metadata syncs cross-machine via ui_meta), drop the
@@ -358,6 +369,7 @@ interface GroupChatSettingsDialogProps {
   group: string
   members?: GroupMember[]
   onClose: () => void
+  onManageMembers?: () => void
   onRenamed?: (group: string) => void
   open: boolean
 }
@@ -365,7 +377,7 @@ interface GroupChatSettingsDialogProps {
 /** Edit an existing group chat's name and picture. Renames re-key the room
  *  and every local member's membership (renameGroupChat); the picture rides
  *  the room record. Both apply on Save so a cancelled dialog changes nothing. */
-function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: GroupChatSettingsDialogProps) {
+function GroupChatSettingsDialog({ group, members, open, onClose, onManageMembers, onRenamed }: GroupChatSettingsDialogProps) {
   const { t } = useI18n()
   const b = useBots()
   const rooms: Record<string, GroupChatRoom> = useValue($groupChats)
@@ -432,6 +444,20 @@ function GroupChatSettingsDialog({ group, members, open, onClose, onRenamed }: G
             value={name}
           />
         </form>
+        {onManageMembers ? (
+          <Button
+            className="w-fit"
+            onClick={() => {
+              onClose()
+              onManageMembers()
+            }}
+            size="sm"
+            variant="secondary"
+          >
+            <Codicon name="organization" />
+            {`Manage members (${(members || []).length})…`}
+          </Button>
+        ) : null}
         <DialogFooter>
           <Button onClick={onClose} variant="secondary">
             {t.common.cancel}
@@ -468,33 +494,62 @@ export function GroupChatWorkspace(props: GroupChatWorkspaceProps) {
 }
 
 function GroupExecutionGate(props: GroupChatWorkspaceProps) {
+  const b = useBots()
   const connectionId = useValue(host.state.connectionId)
   const profile = useValue(host.state.profile)
-  const [driver, setDriver] = useState<boolean | null>(null)
+  const gateway = useValue(host.state.gateway)
+  const activationEpoch = gatewayActivationEpoch()
+  const source = JSON.stringify([connectionId, profile, gateway, activationEpoch])
+  const [capability, setCapability] = useState<{ source: string; mode: GroupExecutionMode } | null>(null)
+  const mode = capability?.source === source ? capability.mode : 'checking'
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   useEffect(() => {
     let cancelled = false
-    setDriver(null)
-    void canonicalGroupRequest<{ driver: boolean }>(captureCanonicalGroupRoute(), 'groups.capabilities')
-      .then(result => { if (!cancelled) {setDriver(result.driver === true)} })
-      .catch(e => { if (!cancelled) {setError(String(e))} })
+    setCapability(null)
+    setError('')
+
+    if (gateway !== 'open') {
+      setCapability({ source, mode: 'unavailable' })
+
+      return
+    }
+
+    void canonicalGroupRequest<unknown>({ connectionId: connectionId ?? '', profile }, 'groups.capabilities')
+      .then(result => { if (!cancelled) {setCapability({ source, mode: groupExecutionMode(result) })} })
+      .catch(e => {
+        if (!cancelled) {
+          setCapability({ source, mode: 'unavailable' })
+          setError(String(e))
+        }
+      })
 
     return () => { cancelled = true }
-  }, [connectionId, profile])
+  }, [connectionId, profile, gateway, source])
 
-  if (driver === false) {return <LegacyGroupChatWorkspace {...props} />}
+  if (mode === 'legacy') {return <LegacyGroupChatWorkspace {...props} />}
 
   return <div className="grid gap-3 p-3">
     <h2>{props.group}</h2>
-    <p>{driver ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : 'Checking group driver…'}</p>
+    <p>{mode === 'canonical' ? 'This is a legacy Desktop room. Start a gateway-owned group with these members; the old history stays here and is not replayed.' : mode === 'unavailable' ? b.canonical.driverUnavailable : 'Checking group driver…'}</p>
     {error && <p role="alert">{error}</p>}
-    <Button disabled={!driver || busy} onClick={() => {
+    <Button disabled={mode !== 'canonical' || busy} onClick={() => {
+      const route = { connectionId: connectionId ?? '', profile }
+
+      const sourceCurrent = groupCreationSource(route, activationEpoch)
+
+      if (mode !== 'canonical' || !sourceCurrent()) {
+        setError(b.canonical.driverUnavailable)
+
+        return
+      }
+
       setBusy(true)
-      const route = captureCanonicalGroupRoute()
       void createCanonicalGroup(route, props.group, props.members)
-        .then(({ room }) => openGroupChat(registerCanonicalGroup(route, room)))
-        .catch(e => setError(String(e))).finally(() => setBusy(false))
+        .then(({ room }) => {
+          if (sourceCurrent()) {openGroupChat(registerCanonicalGroup(route, room))}
+        })
+        .catch(e => { if (sourceCurrent()) {setError(String(e))} }).finally(() => setBusy(false))
     }}>Start gateway group</Button>
   </div>
 }
@@ -556,6 +611,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
 
   const [confirmDisband, setConfirmDisband] = useState(false)
   const [settingsOpen, setSettingsOpen] = useState(false)
+  const [memberPickerOpen, setMemberPickerOpen] = useState(false)
   // Click-to-disambiguate: which log entry is showing its speaker's full
   // @handle (the roster's name-device form when names collide across
   // connections). Naturally every speaker just shows its display name.
@@ -729,6 +785,17 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
           <Codicon name="gear" />
         </Button>
       </Tip>
+      <Tip label="Manage members">
+        <Button
+          aria-label="Manage group members"
+          className="shrink-0 text-(--ui-text-tertiary) hover:text-foreground"
+          onClick={() => setMemberPickerOpen(true)}
+          size="sm"
+          variant="ghost"
+        >
+          <Codicon name="organization" />
+        </Button>
+      </Tip>
       <Tip label={b.group.disbandHint(group)}>
         <Button
           aria-label={b.group.disbandLabel(group)}
@@ -743,17 +810,43 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     </div>
   )
 
-  const memberDescriptors = () =>
-    members.map(b => ({
+  // Seat from the live sources at send time, not from the painted `members`
+  // prop: a roster save that lands between the last paint and Enter was seen
+  // (live) to send with the removed Bot still seated. Same derivation the
+  // main-tab wrapper paints from; the prop is the fallback when the roster
+  // has not been fetched yet.
+  const memberDescriptors = () => {
+    const seated = groupChatMemberBots(group, $lastRoster.get(), $botMeta.get())
+
+    return (seated.length ? seated : members).map(b => ({
       ...b,
       title: (b.remoteSource ? '' : allMeta[b.name]?.title) || b.title || ''
     }))
+  }
 
   // Activity disclosure: quiet, collapsed by default. The collapsed row shows
   // the latest event; expanding lists the current run's events newest-first.
   // Events are epoch-tagged, so a superseded run's history drops out of view.
   const activityEvents: GroupActivityEntry[] = currentGroupActivity(group)
   const latestActivity = activityEvents.length ? activityEvents[activityEvents.length - 1] : null
+  // A later "settled" event must not hide a member that failed to answer.
+  // Successful completion for that member clears its unresolved warning.
+  const unresolvedFailures = new Map<string, GroupActivityEntry>()
+
+  for (const event of activityEvents) {
+    const key = event.member || ''
+
+    if (event.kind === 'failed' || event.kind === 'timed-out') {
+      unresolvedFailures.delete(key)
+      unresolvedFailures.set(key, event)
+    } else if (event.kind === 'replied' || event.kind === 'passed' || event.kind === 'delivered') {
+      unresolvedFailures.delete(key)
+    }
+  }
+
+  const summaryActivity = !room.running && unresolvedFailures.size
+    ? [...unresolvedFailures.values()].at(-1)!
+    : latestActivity
 
   // #94570 shell rewired onto the real primitive (#91868/#94569): the button
   // must stop the ROUND, not just spray per-member interrupts — without the
@@ -779,8 +872,8 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         >
           <Codicon className="shrink-0 text-[0.65rem]" name={activityOpen ? 'chevron-down' : 'chevron-right'} />
           <span className="shrink-0 font-medium">{b.group.activity}</span>
-          {latestActivity ? (
-            <span className="min-w-0 flex-1 truncate">{`${groupActivityLabel(latestActivity)} · ${relativeTime(latestActivity.at)}`}</span>
+          {summaryActivity ? (
+            <span className={cn('min-w-0 flex-1 truncate', groupActivityTone(summaryActivity.kind))}>{`${groupActivityLabel(summaryActivity)} · ${relativeTime(summaryActivity.at)}`}</span>
           ) : null}
         </RowButton>
         {room.running ? (
@@ -974,7 +1067,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         ) || null
 
     const display = isUser
-      ? 'You'
+      ? b.group.you
       : displayName(
           member || {
             name: entry.from.name
@@ -988,7 +1081,7 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
     // Clicked: append the gateway name so same-named agents on
     // two connections are tellable apart on demand.
     const label = isUser
-      ? 'You'
+      ? b.group.you
       : revealed
         ? `${display}${entry.from.source ? `-${entry.from.source}` : ''} (@${botHandle(entry.from.name, member || undefined)})`
         : display
@@ -1044,11 +1137,17 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
             ) : null}
           </div>
           <div
-            className="text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
+            className="min-w-0 text-xs text-(--ui-text-secondary) [&_p]:mb-1 [&_p:last-child]:mb-0 [&_ul]:mb-1 [&_ul]:list-disc [&_ul]:pl-4 [&_ol]:mb-1 [&_ol]:list-decimal [&_ol]:pl-4 [&_pre]:overflow-x-auto" // The app shell sets user-select: none globally; message bodies opt
             // back in so drag-select and ⌘C work in group chat logs.
             data-selectable-text="true"
           >
-            {Streamdown ? <Streamdown>{entry.text}</Streamdown> : entry.text}
+            {MessageTextContent ? (
+              <MessageTextContent media={!member?.remoteSource} text={entry.text} />
+            ) : Streamdown ? (
+              <Streamdown>{entry.text}</Streamdown>
+            ) : (
+              entry.text
+            )}
           </div>
           {/* User attachments: what every responding bot was */
           /* shown — image previews, or a named chip for */
@@ -1180,7 +1279,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
       />
       {activityPanel}
       <div className="min-h-0 flex-1 overflow-y-auto overscroll-contain">
-        <div className="grid gap-1.5 px-2.5 pb-2">
+        {/* minmax(0,1fr): an implicit grid track is min-content sized, so one */}
+        {/* unbreakable code line widened every entry to its own width and the */}
+        {/* log scrolled sideways as a whole instead of the code block (#91878). */}
+        <div className="grid grid-cols-[minmax(0,1fr)] gap-1.5 px-2.5 pb-2">
           {room.log.length
             ? logChildren
             : [
@@ -1189,7 +1291,11 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
                 </div>
               ]}
           {roomClarifies.map(entry => (
-            <GroupClarifyCard entry={entry} key={`clarify:${entry.memberKey}:${entry.requestId}`} members={members} />
+            <GroupClarifyCard
+              entry={entry}
+              key={`clarify:${entry.thread || 'legacy'}:${entry.memberKey}:${entry.requestId}`}
+              members={members}
+            />
           ))}
           {room.running ? (
             <div className="px-2 py-1 text-[0.7rem] italic text-(--ui-text-quaternary)" key={'working'}>
@@ -1236,8 +1342,10 @@ function LegacyGroupChatWorkspace({ group, members, onBack, visible = true }: Gr
         group={group}
         members={members}
         onClose={() => setSettingsOpen(false)}
+        onManageMembers={() => setMemberPickerOpen(true)}
         open={settingsOpen}
       />
+      <GroupMemberPicker group={group} members={members} onClose={() => setMemberPickerOpen(false)} open={memberPickerOpen} />
       <ConfirmDialog
         busyLabel={b.group.disbanding}
         confirmLabel={b.group.disbandAction}
@@ -1287,12 +1395,13 @@ function GroupChatMainView({ group }: GroupChatMainViewProps) {
   const roster = useValue($lastRoster)
   const members = groupChatMemberBots(group, roster, allMeta)
 
+
   // Older SDKs have no paneVisibility: fall back to an always-visible atom so
   // the hook order stays stable and behavior matches the previous build.
   const $visible = useMemo(
     () =>
       typeof host.paneVisibility === 'function'
-        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugify(group)}`)
+        ? host.paneVisibility(`plugin-workspace:${ID}:group:${slugifyProfileName(group)}`)
         : atom(true),
     [group]
   )
@@ -1328,7 +1437,7 @@ export function openGroupChat(group: string): void {
 
   if (typeof host.openWorkspace === 'function') {
     try {
-      const close = host.openWorkspace(`${ID}:group:${slugify(group)}`, {
+      const close = host.openWorkspace(`${ID}:group:${slugifyProfileName(group)}`, {
         title: group,
         minWidth: '24rem',
         render: () => <GroupChatMainView group={group} />,

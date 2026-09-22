@@ -3,7 +3,7 @@ import { Brain, Eye, Gauge, Lightbulb, Wrench } from "lucide-react";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { api } from "@/lib/api";
 import type { ModelInfoResponse } from "@/lib/api";
-import { formatTokenCount } from "@/lib/format";
+import { compactNumber } from "@hermes/shared";
 
 interface ModelInfoCardProps {
   /** Current model string from config state — used to detect changes */
@@ -57,11 +57,11 @@ export function ModelInfoCard({
         </div>
         <div className="flex items-center gap-2">
           <span className="font-mono font-semibold text-foreground">
-            {formatTokenCount(info.effective_context_length)}
+            {compactNumber(info.effective_context_length)}
           </span>
           {info.config_context_length > 0 ? (
             <span className="text-amber-500 text-xs">
-              (override — auto: {formatTokenCount(info.auto_context_length)})
+              (override — auto: {compactNumber(info.auto_context_length)})
             </span>
           ) : (
             <span className="text-text-tertiary text-xs">
@@ -78,7 +78,7 @@ export function ModelInfoCard({
             <span className="font-medium">Max Output</span>
           </div>
           <span className="font-mono font-semibold text-foreground">
-            {formatTokenCount(caps.max_output_tokens)}
+            {compactNumber(caps.max_output_tokens)}
           </span>
         </div>
       )}

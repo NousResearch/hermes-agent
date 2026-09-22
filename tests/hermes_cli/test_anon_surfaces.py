@@ -192,6 +192,7 @@ def test_no_chat_copy_of_any_sign_in_state_leaks_a_terminal_verb_or_a_forbidden_
         "model_changed": True,
         "reason": "unknown",
         "detail": "private detail",
+        "retry_after": 0.0,
     }
     forbidden = re.compile(r"claim|nous portal|anonymous|guest", re.IGNORECASE)
     terminal_or_url = re.compile(r"hermes |https?://", re.IGNORECASE)

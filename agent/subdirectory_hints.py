@@ -220,7 +220,9 @@ class SubdirectoryHintTracker:
                 # Same security scan as startup context loading.
                 content = _scan_context_content(content, filename)
                 rel_path = self._display_path(hint_path)
-                content = _truncate_content(content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path)
+                content = _truncate_content(
+                    content, filename, max_chars=_MAX_HINT_CHARS, read_path=rel_path, queue_warning=False,
+                )
                 logger.debug("Loaded subdirectory hints from %s: %s", directory, [rel_path])
                 return f"[Subdirectory context discovered: {rel_path}]\n{content}"  # first match wins per directory
             except Exception as exc:

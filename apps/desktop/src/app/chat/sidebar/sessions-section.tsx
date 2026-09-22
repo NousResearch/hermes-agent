@@ -134,6 +134,10 @@ interface SidebarSessionsSectionProps {
   projectOverview?: SidebarProjectTree[]
   // Per-project preview rows (from the backend tree), keyed by project id.
   projectOverviewPreviews?: Record<string, SessionInfo[]>
+  // The exclusion the previews were built with (pins, filter misses, removed
+  // ids) plus how many of each project's `sessionCount` it hides — applied
+  // again when a row hydrates its full lanes on "Show all".
+  projectOverviewHidden?: { isHidden: (session: SessionInfo) => boolean; counts: Record<string, number> }
   // True while the backend project tree is loading (overview skeleton).
   projectsLoading?: boolean
   onEnterProject?: (id: string) => void
@@ -207,6 +211,7 @@ export function SidebarSessionsSection({
   groups,
   projectOverview,
   projectOverviewPreviews,
+  projectOverviewHidden,
   projectsLoading = false,
   onEnterProject,
   projectContent,
@@ -378,15 +383,18 @@ export function SidebarSessionsSection({
   // together. Compute boundaries from the whole pool, just like Updated.
   const renderPreviewRows = useCallback(
     (items: SessionInfo[], projectId: string) => {
-      const rows = groupEntriesByRecency(flattenSessionsWithBranches(items), undefined, undefined, 2).map(row =>
-        row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row
-      )
+      const rows = groupEntriesByRecency(
+        flattenSessionsWithBranches(items),
+        undefined,
+        undefined,
+        showAllSessions ? Infinity : 2
+      ).map(row => (row.kind === 'divider' ? { ...row, key: `project:${projectId}:${row.key}` } : row))
 
       const ordered = manualOrderIds?.length ? orderRowsWithinGroups(rows, manualOrderIds) : rows
 
       return hideCollapsedGroupRows(ordered, isListGroupOpen).map(row => renderListRow(row, false))
     },
-    [isListGroupOpen, manualOrderIds, renderListRow]
+    [isListGroupOpen, manualOrderIds, renderListRow, showAllSessions]
   )
 
   // Same as `renderRows`, but with date dividers folded in — used for
@@ -510,6 +518,8 @@ export function SidebarSessionsSection({
     const projectRow = (project: SidebarProjectTree, Component: typeof ProjectOverviewRow) => (
       <Component
         activeProjectId={activeProjectId}
+        hiddenSessionCount={projectOverviewHidden?.counts[project.id]}
+        isSessionHidden={projectOverviewHidden?.isHidden}
         key={project.id}
         onEnter={onEnterProject}
         onNewSession={onNewSessionInWorkspace}

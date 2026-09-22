@@ -8,7 +8,6 @@ from __future__ import annotations
 import asyncio
 import base64
 from dataclasses import asdict
-from types import SimpleNamespace
 import hashlib
 import json
 import os
@@ -26,7 +25,11 @@ from hermes_state_runtime import RuntimeStoreError, _epoch
 _BINDING = 'gateway.hosted.transport.v1:'
 _OPERATIONS = frozenset({'resolve_exact', 'create', 'resume', 'submit', 'history',
                          'info', 'interrupt', 'discard', 'approve'})
-_CHUNK_BYTES = 24576
+# One chunk per private-socket exchange. The response is a single JSON line capped at
+# gateway.control_socket._MAX_RESPONSE_BYTES (512 KiB) on both the POSIX socket and the
+# Windows pipe: 360 KiB raw -> 480 KiB base64, leaving 32 KiB for the envelope (owner
+# subject, target home, digest); the attachment attest result carries no prompt/manifest.
+_CHUNK_BYTES = 360 * 1024
 _CAPS = frozenset({'session:create', 'session:read', 'session:submit',
                    'session:control', 'session:approve'})
 
@@ -98,20 +101,43 @@ def _attest(binding, operation, params):
 
 
 def source_attachment_chunk(service, member, room_id, manifest, params):
-    """Read scoped source bytes only on the source owner's authenticated handler."""
+    """Read scoped source bytes only on the source owner's authenticated handler.
+
+    Serves one slice per call; the row's stored SHA-256 (verified at upload) rides along
+    so the target can verify the reassembled file without the source re-hashing 15 MB
+    per 24 KiB chunk.
+    """
     index, offset = params.get('index'), params.get('offset')
     if (type(index) is not int or not 0 <= index < len(manifest)
             or type(offset) is not int or not 0 <= offset < manifest[index]['size']):
         raise RuntimeStoreError('permission_denied')
     from gateway.hosted_room_attachments import HostedRoomAttachmentStore
     item = manifest[index]
-    saved = HostedRoomAttachmentStore(service.db_path).read(room_id=room_id,
-        attachment_id=item['attachment_id'], event_id=item['event_id'], recipient_member_id=member)
+    saved = HostedRoomAttachmentStore(service.db_path).read_range(room_id=room_id,
+        attachment_id=item['attachment_id'], event_id=item['event_id'], recipient_member_id=member,
+        offset=offset, length=_CHUNK_BYTES)
     if any(saved.attachment[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
         raise RuntimeStoreError('permission_denied')
-    data = saved.data
-    return {'data_base64': base64.b64encode(data[offset:offset + _CHUNK_BYTES]).decode('ascii'),
-            'sha256': hashlib.sha256(data).hexdigest()}
+    return {'data_base64': base64.b64encode(saved.data).decode('ascii'),
+            'sha256': saved.attachment['sha256']}
+
+
+def source_attachment_digests(service, member, room_id, manifest):
+    """Upload-verified SHA-256 of every bound input, read on the source owner's handler.
+
+    Rides on the submit/execute attest result so the target can bind transferred bytes
+    to the attested input and the preflight can verify the durable row without bytes.
+    """
+    from gateway.hosted_room_attachments import HostedRoomAttachmentStore
+    store = HostedRoomAttachmentStore(service.db_path)
+    digests = []
+    for item in manifest:
+        saved = store.describe(room_id=room_id, attachment_id=item['attachment_id'],
+                               event_id=item['event_id'], recipient_member_id=member)
+        if any(saved[key] != item[key] for key in ('kind', 'name', 'mime', 'size')):
+            raise RuntimeStoreError('permission_denied')
+        digests.append(saved['sha256'])
+    return digests
 
 
 def _attachment_data(binding, attested, params):
@@ -121,20 +147,20 @@ def _attachment_data(binding, attested, params):
     if not manifest:
         return []
     manifest = validate_bound_task_manifest(manifest)
+    digests = attested.get('attachment_digests')
+    if not isinstance(digests, list) or len(digests) != len(manifest):
+        raise RuntimeStoreError('permission_denied')
     result = []
-    for index, item in enumerate(manifest):
+    for index, (item, digest) in enumerate(zip(manifest, digests)):
         data = bytearray()
-        digest = None
         while len(data) < item['size']:
             chunk = _attest(binding, 'attachment', {
                 'task': params['task'], 'execution_generation': params['execution_generation'],
                 'prompt': attested['prompt'], 'attachments': manifest, 'index': index, 'offset': len(data)})
             raw = base64.b64decode(chunk['data_base64'], validate=True)
             expected = min(_CHUNK_BYTES, item['size'] - len(data))
-            if (chunk['owner'] != attested['owner'] or len(raw) != expected
-                    or (digest is not None and digest != chunk['sha256'])):
+            if chunk['owner'] != attested['owner'] or len(raw) != expected or chunk['sha256'] != digest:
                 raise RuntimeStoreError('permission_denied')
-            digest = chunk['sha256']
             data.extend(raw)
         if hashlib.sha256(data).hexdigest() != digest:
             raise RuntimeStoreError('permission_denied')
@@ -209,6 +235,10 @@ def install_hosted_transport(server, authority, loop, *, attest):
         attested = _attest(binding, operation, params)
         binding['owner'] = attested['owner']
         principal = _principal(authority, binding)
+        # Authorization already happened: every operation, including each attachment
+        # chunk, is re-attested at the SOURCE owner above before anything runs here, so
+        # the RPC's own authorize hook has nothing left to decide. A new operation must
+        # be added to _OPERATIONS (and therefore attested) before it can reach _call.
         rpc = HostedRoomAuthorityRPC(authority, loop, **selector, principal=principal,
                                     authorize=lambda *args: True)
         key = _BINDING + rpc.ref.session_id
@@ -260,13 +290,17 @@ def _check_remote_hosted_admission(authority, ref, row):
         attested = _attest(binding, 'execute', params)
         if attested['owner'] != binding['owner']:
             raise ValueError('owner changed')
-        from gateway.session_hosted_attachments import committed_submission_payload
-        rpc = SimpleNamespace(authority=authority, **binding['selector'],
-            hosted_attachment_data=_attachment_data(binding, attested, params))
-        if row['payload'] != committed_submission_payload(rpc, attested['prompt'], attested['attachments']):
+        # Bytes are not re-transferred here: the durable row is compared against the
+        # payload the attested prompt, manifest and source-verified digests commit to.
+        from gateway.session_hosted_attachments import attested_submission_payload, verify_attested_documents
+        if row['payload'] != attested_submission_payload(
+                attested['prompt'], attested['attachments'], attested.get('attachment_digests')):
             raise ValueError('input changed')
     except (ValueError, KeyError, TypeError) as exc:
         raise RuntimeStoreError('permission_denied') from exc
+    # Outside the permission_denied fold: a corrupted or missing retained document is a
+    # storage fault of this destination, not a revoked source binding.
+    verify_attested_documents(attested['attachments'], attested.get('attachment_digests'))
     return True
 
 

@@ -18,6 +18,15 @@ an unexpired one-use dial bound to the requesting window. No public dashboard to
 scraped or added to the public connection descriptor. SSH/URL intent retains its existing
 remote resolution and exposure lifecycle; a remote failure must never start a local owner.
 
+The gateway `gateway ensure` attaches to is **one multiplexing owner per home**: `HERMES_DESKTOP=1`
+is not how the app finds it, and no per-profile `hermes serve --port 0` child is spawned. One
+gateway process serves sessions from several homes (`tui_gateway/AGENTS.md` § Profile scope); a
+served secondary answers through the multiplexer's control socket (`GatewayEndpoint.multiplex_home`).
+Remote connections (SSH, URL+token, Cloud) likewise reach a backend that may serve several profiles
+from one process. Every lifecycle/status/settings REST call carries `?profile=` (or the `profile`
+param) and every new-session tile records an owner route; a backend-side scope fix is probed twice —
+with the profile as the gateway's own launch home and as a secondary served by one process.
+
 This migration requires the runtime's canonical GUI creation policy and a private HTTP
 API credential path. Do not bypass missing runtime capabilities by relabeling GUI sessions
 as CLI, dropping launch options, or falling back to an independent local serve owner.
@@ -27,8 +36,14 @@ as CLI, dropping launch options, or falling back to an independent local serve o
 - The backend already provides everything: `commands.catalog` and `complete.slash` include built-ins,
   user `quick_commands`, AND skill-derived commands. No new RPC is needed to see skills.
 - `src/lib/desktop-slash-commands.ts` is the load-bearing file: `DESKTOP_COMMAND_SPECS` (built-ins
-  and their desktop surfaces) + `NO_DESKTOP_SURFACE` block-lists (terminal-only / messaging-only /
-  picker-owned / settings-owned / advanced). `isDesktopSlashCommand(name)` gates **execution** (true
+  and their desktop surfaces) + the block-list. A command's desktop disposition (terminal-only /
+  messaging-only / settings-owned / advanced / hidden) is authored ONCE, as `desktop=` on its
+  `CommandDef` in `hermes_cli/commands.py`; the live `commands.catalog` carries it, and
+  `src/lib/desktop-slash-registry.json` (regenerate with `scripts/dump_desktop_slash_registry.py`;
+  `tests/hermes_cli/test_desktop_slash_registry.py` + the vitest file fail on drift) is the offline
+  fallback. Only names the Python registry has never heard of (`/density`, `/details`, `/logs`,
+  `/mouse` — Ink-local; `/pets`) live in `TS_ONLY_NO_DESKTOP_SURFACE`. `isDesktopSlashCommand(name)`
+  gates **execution** (true
   for built-ins AND any non-built-in so typed skill/quick commands run);
   `isDesktopSlashSuggestion(name)` gates **discovery** — used by BOTH completion paths in
   `app/chat/composer/hooks/use-slash-completions.ts` and by `filterDesktopCommandsCatalog`;

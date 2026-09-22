@@ -13,6 +13,7 @@ import asyncio
 import hashlib
 import hmac
 import json
+import re
 import os
 import socket
 import threading
@@ -176,17 +177,28 @@ class TestInjectionFilter:
 
 
 class TestOutboundRedaction:
-    def test_openai_key_redacted(self):
-        out = security.redact_outbound("my key is sk-abcdefghij1234567890XYZ")
-        assert "sk-abcdefghij" not in out
-        assert "[redacted]" in out
+    def test_every_canonical_credential_class_is_scrubbed(self):
+        """Invariant: redact_outbound masks everything redact_sensitive_text masks. A2A ships text to a
+        REMOTE peer, so a private subset here silently drops every prefix later added to agent/redact.py.
+        Corpus: one synthetic token per registered prefix pattern, built from the pattern's literal prefix."""
+        from agent import redact as R
 
-    def test_github_token_redacted(self):
-        out = security.redact_outbound("token ghp_0123456789abcdefghij0123")
-        assert "ghp_0123456789" not in out
+        bodies = ("Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "QQ7ZP2MX9VLK4NRT", "b-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  ".Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0", "1-Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0",
+                  "Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0.Qq7zP2mX9vLk4nRt8wYb1cDf6gHj3sA0")
+        tokens = []
+        for pattern in R._PREFIX_PATTERNS + R._plugin_patterns():
+            prefix = R._extract_literal_prefix(pattern)
+            token = next((prefix + body for body in bodies if re.fullmatch(pattern, prefix + body)), None)
+            assert token, f"could not synthesize a token for {pattern!r}"
+            tokens.append(token)
+        assert len(tokens) == len(R._PREFIX_PATTERNS) + len(R._plugin_patterns())
+        for token in tokens:
+            assert token not in security.redact_outbound(f"peer, here: {token}"), token
 
-    def test_email_redacted(self):
-        out = security.redact_outbound("contact me at alice@example.com")
+    def test_bearer_and_email_redacted(self):
+        out = security.redact_outbound("Authorization: Bearer opaque0123456789abcdef; contact me at alice@example.com")
+        assert "opaque0123456789abcdef" not in out
         assert "alice@example.com" not in out
         assert "[redacted-email]" in out
 
@@ -1367,6 +1379,106 @@ class TestMultiAgentRouting:
         route = adapter._route_for_request("/dev/", {"tenant": "research"})
         assert "error" in route
 
+    def test_forwarded_retry_of_the_same_message_reuses_its_admission_id(self, monkeypatch):
+        """A peer that resends after a timeout repeats its messageId; the forwarded input id must
+        repeat with it so the owner answers from the accepted work instead of queueing a second turn."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
+        }))
+        agent = adapter._agents["dev"]
+        seen = []
+
+        def fake_forward(agent_arg, peer, context_id, framed_text, *, input_id):
+            seen.append(input_id)
+            return "dev reply", protocol.STATE_COMPLETED
+
+        adapter._forward_to_profile = fake_forward  # type: ignore
+        message = protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-dev")
+        for _ in range(2):
+            adapter._prepare_task({"tenant": "dev", "message": dict(message)}, "peer-x", agent=agent)
+        fresh = protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-dev")
+        adapter._prepare_task({"tenant": "dev", "message": fresh}, "peer-x", agent=agent)
+        other_context = {**dict(message), "contextId": "ctx-other"}
+        adapter._prepare_task({"tenant": "dev", "message": other_context}, "peer-x", agent=agent)
+        assert seen[0] == seen[1]
+        assert len({seen[0], seen[2], seen[3]}) == 3
+        assert all(i.startswith("a2a-msg:") and len(i) < 1024 for i in seen)
+        # A message without an id keeps the per-task id, which is never reused.
+        adapter._prepare_task({"tenant": "dev", "message": {"role": "user", "parts": [{"text": "hi"}], "contextId": "ctx-dev"}},
+                              "peer-x", agent=agent)
+        assert not seen[4].startswith("a2a-msg:")
+
+    def test_forwarded_retry_without_a_context_reopens_the_same_context(self):
+        """A first send is retried with the same messageId and no contextId, because the peer never
+        received one. It must land in the same context and admission as the first attempt."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
+        }))
+        agent = adapter._agents["dev"]
+        seen = []
+
+        def fake_forward(agent_arg, peer, context_id, framed_text, *, input_id):
+            seen.append((context_id, input_id))
+            return "dev reply", protocol.STATE_COMPLETED
+
+        adapter._forward_to_profile = fake_forward  # type: ignore
+        message = protocol.text_message(protocol.ROLE_USER, "hello")
+        assert "contextId" not in message
+        first, _ = adapter._prepare_task({"tenant": "dev", "message": dict(message)}, "peer-x", agent=agent)
+        second, _ = adapter._prepare_task({"tenant": "dev", "message": dict(message)}, "peer-x", agent=agent)
+        assert seen[0] == seen[1]
+        assert first["contextId"] == second["contextId"] == seen[0][0]
+        assert first["contextId"].startswith("ctx-")
+        # A different first message opens its own context; so does another peer repeating the id.
+        adapter._prepare_task({"tenant": "dev", "message": protocol.text_message(protocol.ROLE_USER, "hello")},
+                              "peer-x", agent=agent)
+        adapter._prepare_task({"tenant": "dev", "message": dict(message)}, "peer-y", agent=agent)
+        assert len({context for context, _ in seen}) == 3
+        # Without a messageId there is nothing to retry by; the context stays random.
+        bare = {"role": "user", "parts": [{"text": "hi"}]}
+        one, _ = adapter._prepare_task({"tenant": "dev", "message": dict(bare)}, "peer-x", agent=agent)
+        two, _ = adapter._prepare_task({"tenant": "dev", "message": dict(bare)}, "peer-x", agent=agent)
+        assert one["contextId"] != two["contextId"]
+
+    def test_forwarded_retries_do_not_spend_the_turn_budget(self, monkeypatch):
+        """The owner answers a resend from the accepted admission, so the anti-loop counter and the
+        conversation log see the message once. Distinct messages in the context still count."""
+        from plugins.platforms.a2a.adapter import A2AAdapter
+        from gateway.config import PlatformConfig
+
+        monkeypatch.setenv("A2A_MAX_PINGPONG_TURNS", "2")
+        persisted = []
+        monkeypatch.setattr(protocol, "persist_message", lambda context_id, role, text, task_id="": persisted.append(role))
+        adapter = A2AAdapter(PlatformConfig(enabled=True, extra={
+            "agents": {"dev": {"profile": "dev", "tenant": "dev"}}
+        }))
+        agent = adapter._agents["dev"]
+        seen = []
+
+        def fake_forward(agent_arg, peer, context_id, framed_text, *, input_id):
+            seen.append(input_id)
+            return "dev reply", protocol.STATE_COMPLETED
+
+        adapter._forward_to_profile = fake_forward  # type: ignore
+        message = protocol.text_message(protocol.ROLE_USER, "hello", context_id="ctx-dev")
+        tasks = [adapter._prepare_task({"tenant": "dev", "message": dict(message)}, "peer-x", agent=agent)[0]
+                 for _ in range(5)]
+        assert [task["status"]["state"] for task in tasks] == [protocol.STATE_COMPLETED] * 5
+        assert len(seen) == 5 and len(set(seen)) == 1
+        assert persisted.count("user") == 1
+        assert adapter._turns.track("ctx-dev") == 2
+        # That track call was the second distinct turn; the third trips the guard as before.
+        fresh = protocol.text_message(protocol.ROLE_USER, "again", context_id="ctx-dev")
+        rejected, _ = adapter._prepare_task({"tenant": "dev", "message": fresh}, "peer-x", agent=agent)
+        assert rejected["status"]["state"] == protocol.STATE_REJECTED
+        assert len(seen) == 5
+
     def test_forwarded_profile_task_completes_in_task_store(self, monkeypatch):
         from plugins.platforms.a2a.adapter import A2AAdapter
         from gateway.config import PlatformConfig
@@ -1625,6 +1737,7 @@ _A2A_ENV_VARS = (
     "A2A_AGENT_NAME",
     "A2A_ADVERTISED_TOOLSETS",
     "A2A_AGENT_DESCRIPTION",
+    "A2A_PUBLIC_URL",
 )
 
 
@@ -1664,6 +1777,7 @@ def default_profile_env(monkeypatch):
     monkeypatch.setenv("A2A_AGENT_NAME", "default-profile-agent")
     monkeypatch.setenv("A2A_ADVERTISED_TOOLSETS", "default-only-toolset")
     monkeypatch.setenv("A2A_AGENT_DESCRIPTION", "Default profile's own agent.")
+    monkeypatch.setenv("A2A_PUBLIC_URL", "https://default-profile.example.com/")
 
 
 class TestMultiplexConstructionScope:
@@ -1686,6 +1800,10 @@ class TestMultiplexConstructionScope:
         assert adapter._agents[""]["description"] == (
             "Hermes Agent — a general-purpose agent reachable over A2A."
         )
+        # _public_url was captured at construction time via a bare os.getenv, missed by the
+        # scoped retrofit the sibling fields above already got.
+        assert adapter._public_url != "https://default-profile.example.com/"
+        assert adapter._public_url == ""
 
     def test_default_profile_unscoped_keeps_env_precedence(
         self, monkeypatch, default_profile_env
@@ -1704,3 +1822,4 @@ class TestMultiplexConstructionScope:
         assert adapter.port == 9111
         assert adapter.agent_name == "default-profile-agent"
         assert adapter._agents[""]["description"] == "Default profile's own agent."
+        assert adapter._public_url == "https://default-profile.example.com/"

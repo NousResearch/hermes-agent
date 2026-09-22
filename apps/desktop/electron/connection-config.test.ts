@@ -48,6 +48,7 @@ import {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
   translateSelfProfileQuery,
@@ -98,6 +99,25 @@ test('normalizeRemoteHeaders keeps safe proxy headers and drops transport/auth h
       'CF-Access-Client-Secret': { encoding: 'plain', value: 'secret' }
     }
   )
+})
+
+test('sanitizeRemoteHeaderValue strips CR/LF so a pasted token cannot split a request', () => {
+  // Clipboard pastes of access-proxy service tokens routinely carry a trailing
+  // newline; a bare CR/LF inside the value is a request-splitting vector once
+  // it reaches setHeader / loadURL extraHeaders.
+  assert.equal(sanitizeRemoteHeaderValue('client-secret\r\n'), 'client-secret')
+  assert.equal(sanitizeRemoteHeaderValue('  client-secret\r  '), 'client-secret')
+  assert.equal(sanitizeRemoteHeaderValue('a\r\nX-Injected: evil'), 'aX-Injected: evil')
+  assert.equal(sanitizeRemoteHeaderValue(undefined), '')
+})
+
+test('normalizeRemoteHeaders sanitizes plaintext values at ingest', () => {
+  // A trailing newline was already handled by trim(); the gap this pins is an
+  // EMBEDDED CR/LF, which trim() leaves intact and which would otherwise reach
+  // the request as an injected second header.
+  assert.deepEqual(normalizeRemoteHeaders({ 'CF-Access-Client-Secret': 'secret\r\nX-Injected: evil' }), {
+    'CF-Access-Client-Secret': { encoding: 'plain', value: 'secretX-Injected: evil' }
+  })
 })
 
 test('remoteRequestMatchesBaseUrl treats HTTPS and WSS as the same gateway origin', () => {

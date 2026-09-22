@@ -1,5 +1,16 @@
-/** True when a JSON-RPC call failed because the backend predates the method. */
+import { JSON_RPC_METHOD_NOT_FOUND } from '@hermes/shared'
+
+/** True when a JSON-RPC call failed because the backend predates the method.
+ *  The gateway answers -32601 (`tui_gateway/server.py::dispatch`) and the
+ *  shared client keeps that code on the error; the message match is only for
+ *  errors that lost their frame across the IPC bridge or a wrapped rethrow. */
 export function isMissingRpcMethod(error: unknown): boolean {
+  const code = error && typeof error === 'object' ? (error as { code?: unknown }).code : undefined
+
+  if (typeof code === 'number') {
+    return code === JSON_RPC_METHOD_NOT_FOUND
+  }
+
   const message = error instanceof Error ? error.message : String(error)
 
   return /method not found|-32601|unknown method|no such method/i.test(message)
@@ -21,6 +32,20 @@ export function isMissingRestEndpoint(error: unknown): boolean {
     /endpoint is likely missing/i.test(message) ||
     /(?:^\s*|error:\s*)404\b/i.test(message)
   )
+}
+
+/** True when the backend refused a request because it owns the profile and the
+ *  call is offline-only maintenance (`web_server_sessions.py::_with_session_maintenance`
+ *  → HTTP 409 "Exclusive maintenance refused"). The refusal is the steady state
+ *  for as long as that gateway runs, so callers treat it as terminal, not
+ *  transient. Only the anchored `409: {...}` status marker — bare, or wrapped as
+ *  "Error invoking remote method 'hermes:api': Error: 409: …" by the IPC bridge —
+ *  counts; a `409` token inside a message body ("Query returned 409 rows", "4096")
+ *  never does. */
+export function isOfflineMaintenance(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error)
+
+  return /(?:^\s*|error:\s*)409:/i.test(message)
 }
 
 /** True when a prompt response raced a backend-side timeout / completion. */

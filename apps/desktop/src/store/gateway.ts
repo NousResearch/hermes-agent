@@ -1,9 +1,15 @@
-import { type ConnectionState, type GatewayEvent, registryBackendScopeKey, resolveGatewayWsUrl } from '@hermes/shared'
+import {
+  type ConnectionState,
+  type GatewayEvent,
+  reconnectBackoffDelayMs,
+  registryBackendScopeKey,
+  resolveGatewayWsUrl,
+  type ServerRequest
+} from '@hermes/shared'
 import { atom } from 'nanostores'
 
 import type { HermesConnection } from '@/global'
 import { HermesGateway, setApiRequestConnection } from '@/hermes'
-import { reconnectBackoffDelayMs } from '@/lib/reconnect-backoff'
 import { isTimeoutError, RECONNECT_ATTEMPT_TIMEOUT_MS, withTimeout } from '@/lib/with-timeout'
 import { markNativeNotifyBaseline } from '@/store/notify-baseline'
 import { setConnection, setGatewayState } from '@/store/session'
@@ -21,6 +27,13 @@ import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
 
+// Dial intent callers attach to a user-initiated open. The canonical
+// `hermes gateway ensure` path has no local slot pool, so the hint changes
+// nothing about the dial itself; it survives as the option shape the SDK,
+// Settings scopes and session creation pass so an explicit user gesture stays
+// distinguishable from ambient hydration at the call site.
+export type SpawnPriority = 'foreground' | 'background'
+
 // Read connection state through a call so TS control-flow analysis doesn't
 // narrow the getter to a constant across guards (it genuinely changes).
 const isOpen = (gateway: HermesGateway | null): boolean => gateway?.connectionState === 'open'
@@ -31,6 +44,10 @@ interface RegistryConfig {
    * the connection store. */
   activeConnectionId?: () => null | string
   onEvent: (event: GatewayEvent) => void
+  /** Server→client request (clarify, approval, …) from ANY socket the registry owns; the
+   *  request's `respond` already routes to the socket it came from. `profile` /
+   *  `connectionId` tag the source the same way events are tagged. */
+  onServerRequest?: (request: ScopedServerRequest) => void
   onActiveConnectionInvalidated?: (fallbackProfile: string, activationEpoch: number) => void
   onActiveConnectionChanged?: (connection: HermesConnection) => void
   /**
@@ -75,6 +92,7 @@ interface Secondary {
   activeRequests: number
   connectPromise: Promise<void> | null
   offEvent: () => void
+  offRequest: () => void
   offState: () => void
   reconnectTimer: ReturnType<typeof setTimeout> | null
   reconnectAttempt: number
@@ -242,6 +260,19 @@ export function configureGatewayRegistry(cfg: RegistryConfig): void {
  */
 export function emitLocalGatewayEvent(event: GatewayEvent): void {
   g.config?.onEvent(event)
+}
+
+/** A server→client request tagged with the registry source it arrived from (like `GatewayEvent.profile`). */
+export interface ScopedServerRequest extends ServerRequest {
+  connectionId?: string
+  profile: string
+}
+
+/** Fan a primary-socket server request into the registry handler with the active source tags. */
+export function dispatchPrimaryServerRequest(request: ServerRequest, profile: string): void {
+  const connectionId = g.config?.activeConnectionId?.() ?? null
+
+  g.config?.onServerRequest?.({ ...request, ...(connectionId ? { connectionId } : {}), profile })
 }
 
 export function setPrimaryGateway(gateway: HermesGateway | null, profile = 'default'): void {
@@ -751,6 +782,7 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     activeRequests: 0,
     connectPromise: null,
     offEvent: () => {},
+    offRequest: () => {},
     offState: () => {},
     reconnectTimer: null,
     reconnectAttempt: 0,
@@ -773,6 +805,10 @@ function createSecondary(profile: string, connectionId: null | string = null): S
     g.config?.onEvent(scopedEvent)
     releaseTerminalTurnLease(entry.scope, event)
   })
+  entry.offRequest =
+    gateway.onRequest?.(request => {
+      g.config?.onServerRequest?.({ ...request, ...(connectionId ? { connectionId } : {}), profile })
+    }) ?? (() => {})
   entry.offState = gateway.onState(state => {
     reportGatewayState(scope, state)
 
@@ -914,7 +950,10 @@ export async function requestGatewayForProfile<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  // Dial intent (#111651): accepted so Settings-scoped callers keep one call
+  // shape; the canonical ensure path has no slot to reserve.
+  _options: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
   const route = await gatewayForProfile(profile, true)
 
@@ -941,6 +980,11 @@ export async function requestGatewayForProfile<T>(
  * composite (connectionId, profile) pool key prevents same-named agents on two
  * sources from sharing a socket. Only null/empty ids retain the v1 profile
  * resolver; explicit `local` is a registry source and must use getConnectionFor.
+ *
+ * `spawnPriority` marks a user gesture that reaches this RPC path (first send on
+ * a fresh chat, "New session", an explicit Bot Chat open) as 'foreground'
+ * (#102281 primitive; #105104 symptom). The canonical ensure dial has no slot
+ * to reserve, so the tag is carried, not acted on.
  */
 export async function requestGatewayForAgent<T>(
   connectionId: null | string,
@@ -948,13 +992,14 @@ export async function requestGatewayForAgent<T>(
   method: string,
   params: Record<string, unknown> = {},
   timeoutMs?: number,
-  signal?: AbortSignal
+  signal?: AbortSignal,
+  { spawnPriority = 'background' }: { spawnPriority?: SpawnPriority } = {}
 ): Promise<T> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
   if (scope === key) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
   // A primary remote selected from the connection registry carries its source
@@ -966,7 +1011,7 @@ export async function requestGatewayForAgent<T>(
   // Require both owner identities to agree before collapsing the route; a
   // different source or profile must retain its isolated secondary.
   if (isPrimaryRegistryRoute(connectionId, key)) {
-    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal)
+    return requestGatewayForProfile<T>(key, method, params, timeoutMs, signal, { spawnPriority })
   }
 
   if (await isAttachedSharedRemote(connectionId, key)) {
@@ -1143,8 +1188,15 @@ export function retainGatewayForRelay(connectionId: null | string, profile: stri
  * acquire this lease before the first session-scoped RPC and release it in a
  * `finally`; the refcount keeps the socket (and the session it minted) alive
  * for the whole sequence. Primary/shared-primary routes return a no-op release.
+ *
+ * `spawnPriority` follows requestGatewayForAgent: the retain is the FIRST dial
+ * of a session-create gesture, so a user click passes 'foreground' here.
  */
-export async function retainGatewayForAgent(connectionId: null | string, profile: string): Promise<() => void> {
+export async function retainGatewayForAgent(
+  connectionId: null | string,
+  profile: string,
+  _options: { spawnPriority?: SpawnPriority } = {}
+): Promise<() => void> {
   const key = normKey(profile)
   const scope = registryBackendScopeKey(connectionId, key)
 
@@ -1320,7 +1372,7 @@ function releaseTerminalTurnLease(scope: string, event: GatewayEvent): void {
 
   const key = turnLeaseKey(scope, sessionId)
 
-  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event.payload as Record<string, unknown> | undefined)) {return}
+  if (!acceptExecutionEvent(turnExecutionAuthorities, key, event.type, event)) {return}
 
   if (event.type === 'message.start' || (event.type === 'session.info' && (event.payload as Record<string, unknown>)?.running === true)) {
     // The gateway emits settled session.info before immediately chaining a
@@ -1441,15 +1493,17 @@ export async function ensureGatewayForAgent(
     return !signal?.aborted
   }
 
+  const activationEpoch = beginGatewayActivation()
+
   if (await isAttachedSharedRemote(connectionId, profile)) {
-    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted)
+    // A retained primary can be open while the foreground still points at a
+    // different source. Reusing its socket must also move the active route.
+    return Boolean(isOpen(g.primaryGateway) && !signal?.aborted && applyActive(g.primaryProfile, activationEpoch))
   }
 
   if (!window.hermesDesktop?.getConnectionFor) {
     throw new Error('This Desktop build cannot dial registry connections. Update Hermes Desktop.')
   }
-
-  const activationEpoch = beginGatewayActivation()
 
   let entry = g.secondaries.get(scope)
 
@@ -1690,6 +1744,7 @@ function disposeSecondary(entry: Secondary): void {
   entry.wantOpen = false
   clearTimer(entry)
   entry.offEvent()
+  entry.offRequest()
   entry.offState()
   entry.gateway.close()
 }

@@ -78,10 +78,16 @@ class CanonicalHostedRoomService(HostedControls, HostedRoomService):
             if len(matches) != 1:
                 raise RuntimeStoreError('permission_denied')
             payload = matches[0]['payload']
-            result.update(prompt=payload['prompt'], attachments=payload.get('attachments', []))
             if operation == 'attachment':
+                # Bytes only: the prompt/manifest already attested for the submit would
+                # otherwise compete with the chunk for the bounded response line.
                 from gateway.session_hosted_transport import source_attachment_chunk
-                result.update(source_attachment_chunk(self, member, room_id, result['attachments'], params))
+                result.update(source_attachment_chunk(self, member, room_id, payload.get('attachments', []), params))
+            else:
+                from gateway.session_hosted_transport import source_attachment_digests
+                manifest = payload.get('attachments', [])
+                result.update(prompt=payload['prompt'], attachments=manifest,
+                              attachment_digests=source_attachment_digests(self, member, room_id, manifest))
         return result
 
 

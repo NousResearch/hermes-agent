@@ -75,7 +75,7 @@ async def probe(peer, target):
             pass
         async def get_chat_info(self, chat_id):
             return {'id': chat_id}
-        async def send_exec_approval(self, **kwargs):
+        async def _send_exec_approval_prompt(self, prompt):
             self.card.set()
             return SendResult(success=True, message_id='card')
 

@@ -261,6 +261,32 @@ describe('requestForBot rides the bot’s own source', () => {
     })
   })
 
+  it('passes a foreground spawnPriority through to host.requestProfile and keeps untagged calls at three args', async () => {
+    // #105104: the Bot Chat open is a user click. Its RPC must reach the SDK
+    // with the dial tag; passive roster warming (no options) must keep the
+    // exact call shape older shells expect.
+    hostMock.requestProfile.mockResolvedValue({})
+    const bot = { connectionId: 'local', name: 'ops', sourceScoped: true } as RosterRow
+
+    await requestForBot(bot, 'session.list', {}, { spawnPriority: 'foreground' })
+    await requestForBot(bot, 'profiles.list', {})
+
+    expect(hostMock.requestProfile).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ connectionId: 'local', profile: 'ops' }),
+      'session.list',
+      {},
+      undefined,
+      { spawnPriority: 'foreground' }
+    )
+    expect(hostMock.requestProfile).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ connectionId: 'local', profile: 'ops' }),
+      'profiles.list',
+      {}
+    )
+  })
+
   it('fails closed rather than falling back to the ambient request', async () => {
     // A scoped row whose shell predates requestProfile must NOT silently
     // execute against whichever gateway happens to be active.

@@ -7,7 +7,7 @@ def test_live_message_count_tracks_serialized_projection(monkeypatch):
     monkeypatch.setattr(server, '_session_db', lambda session: nullcontext(None))
     monkeypatch.setattr(server, '_fallback_session_info', lambda session: {})
     monkeypatch.setattr(server, '_pending_approval_request_payload', lambda key: None)
-    monkeypatch.setattr(server, '_pending_clarify_request_payload', lambda sid: None)
+    monkeypatch.setattr(server, '_open_requests', lambda sid: [])
     # A display row may expand or disappear in the serializer. The count is the wire size.
     monkeypatch.setattr(server, '_history_to_messages', lambda rows: [{'text': 'visible'}])
     session = {'history_lock': threading.Lock(), 'history': [{}, {}], 'session_key': 'owned'}

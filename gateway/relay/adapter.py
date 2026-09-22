@@ -22,8 +22,9 @@ from typing import Any, Callable, Dict, Optional, Tuple, Union
 
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import (
-    BasePlatformAdapter, SendResult,
+    BasePlatformAdapter, ExecApprovalPrompt, SendResult,
 )
+from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.descriptor import CapabilityDescriptor
 from gateway.relay.egress import (
@@ -659,6 +660,30 @@ class RelayAdapter(BasePlatformAdapter):
         except Exception as e:
             return SendResult(success=False, error=f"{op} transport error: {e}")
 
+    @staticmethod
+    def _task_card_metadata(
+        reply_to: Optional[str], metadata: Optional[Dict[str, Any]],
+    ) -> Dict[str, Any]:
+        merged_meta = dict(metadata or {})
+        if reply_to and "thread_ts" not in merged_meta:
+            # Slack card streams are thread replies anchored on the trigger.
+            merged_meta["thread_ts"] = str(reply_to)
+        return merged_meta
+
+    def native_task_card_destination_supported(
+        self, chat_id: str, *, reply_to: Optional[str] = None,
+        metadata: Optional[Dict[str, Any]] = None,
+    ) -> bool:
+        """Check the actual card-frame placement, not its per-turn card identity."""
+        if self._chat_platform(chat_id) != _SLACK:
+            return True
+        md = self._task_card_metadata(reply_to, metadata)
+        # Connector threadTs(): thread_id ?? thread_ts, and only strings thread.
+        thread = md.get("thread_id")
+        if thread is None:
+            thread = md.get("thread_ts")
+        return isinstance(thread, str)
+
     async def send_native_task_card_progress(
         self,
         chat_id: str,
@@ -678,10 +703,7 @@ class RelayAdapter(BasePlatformAdapter):
 
         See #85476.
         """
-        merged_meta = dict(metadata or {})
-        if reply_to and "thread_ts" not in merged_meta:
-            # Slack card streams are thread replies anchored on the trigger.
-            merged_meta["thread_ts"] = str(reply_to)
+        merged_meta = self._task_card_metadata(reply_to, metadata)
         result = await self._card_frame(
             chat_id, "task_card", reply_to, merged_meta, chunks=[dict(t) for t in tasks]
         )
@@ -1982,34 +2004,19 @@ class RelayAdapter(BasePlatformAdapter):
 
     _PROMPT_UNAVAILABLE = SendResult(success=False, error="relay prompt op unavailable")
 
-    async def send_exec_approval(
-        self,
-        chat_id: str,
-        command: str,
-        session_key: str,
-        description: str = "dangerous command",
-        metadata: Optional[Dict[str, Any]] = None,
-        allow_permanent: bool = True,
-        allow_session: bool = True,
-        smart_denied: bool = False,
-    ) -> SendResult:
-        """Native-button exec approval over the relay (same choice set as native; the
-        press resolves via tools.approval.resolve_gateway_approval). When the lane is
-        unavailable the send FAILS (success=False) so run.py's button→text fallback runs."""
-        options: list = [{"id": "once", "label": "Allow Once", "style": "primary"}]
-        if not smart_denied and allow_session:
-            options.append({"id": "session", "label": "Allow Session"})
-            if allow_permanent:
-                options.append({"id": "always", "label": "Always Allow"})
-        options.append({"id": "deny", "label": "Deny", "style": "danger"})
+    _EA_HEADER = f"⚠️ **{EA_HEADER_TEXT}**\n\n"
+    _EA_SMART_DENY_LINE = "\n\n**Smart DENY:** owner override applies to this one operation only."
+    _EA_CMD_BUDGET = 1500
 
-        cmd_preview = command if len(command) <= 1500 else command[:1500] + "..."
-        text = f"⚠️ **Command Approval Required**\n\n```\n{cmd_preview}\n```\nReason: {description}"
-        if smart_denied:
-            text += "\n\n**Smart DENY:** owner override applies to this one operation only."
+    async def _send_exec_approval_prompt(self, prompt: ExecApprovalPrompt) -> SendResult:
+        """Native-button exec approval over the relay (the press resolves via
+        tools.approval.resolve_gateway_approval). When the lane is unavailable the send FAILS
+        (success=False) so run.py's button→text fallback runs."""
+        options = [{"id": choice, "label": label, **({"style": style} if style else {})}
+                   for label, choice, style in prompt.actions]
         result = await self._mint_and_send_prompt(
-            "exec_approval", {"session_key": session_key}, chat_id, prompt_kind="approval",
-            text=text, options=options, metadata=metadata,
+            "exec_approval", {"session_key": prompt.session_key}, prompt.chat_id, prompt_kind="approval",
+            text=prompt.text, options=options, metadata=prompt.metadata,
         )
         return result if result is not None else self._PROMPT_UNAVAILABLE
 

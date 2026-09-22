@@ -5,6 +5,7 @@ Stdlib only. ``extract_text`` stays tolerant of v0.3 peers."""
 
 from __future__ import annotations
 
+import hashlib
 import json
 import os
 import threading
@@ -17,6 +18,7 @@ from pathlib import Path
 from typing import Any, Optional
 
 from gateway.platforms._shared import coerce_port as _coerce_int
+from hermes_constants import get_hermes_home
 
 PROTOCOL_VERSION = "1.0"
 
@@ -53,14 +55,6 @@ def max_pingpong_turns() -> int:
 def now_iso() -> str:
     """ISO 8601 UTC timestamp with millisecond precision (A2A v1.0)."""
     return datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%S.%f")[:-3] + "Z"
-
-
-def _hermes_home() -> Path:
-    try:
-        from hermes_constants import get_hermes_home
-        return Path(get_hermes_home())
-    except Exception:
-        return Path(os.path.expanduser("~/.hermes"))
 
 
 def build_agent_card(*, name: str, url: str, description: str, skills: Optional[list[dict]] = None,
@@ -134,6 +128,12 @@ def new_context_id() -> str:
     return "ctx-" + uuid.uuid4().hex[:16]
 
 
+def message_context_id(scope: str, message_id: str) -> str:
+    """The context a first message without a ``contextId`` opens. Named by the message, so a retry
+    of that send after a timeout reopens the same context instead of a fresh one."""
+    return "ctx-" + hashlib.sha256(f"{scope}\0{message_id}".encode()).hexdigest()[:16]
+
+
 def text_part(text: str) -> dict:
     """v1.0 text Part (member-presence discriminated, no ``kind``)."""
     return {"text": text, "mediaType": "text/plain"}
@@ -181,6 +181,12 @@ def extract_text(message_or_params: dict) -> str:
         elif (data := part.get("data")) is not None:
             chunks.append(f"[data ({part.get('mediaType') or 'application/json'})]\n{_json_or_str(data)}")
     return "\n".join(chunks).strip()
+
+
+def extract_message_id(params: dict) -> str:
+    """v1.0 puts messageId inside the Message; a peer retrying a send repeats it."""
+    msg = params.get("message") or {}
+    return str(msg.get("messageId") or "") if isinstance(msg, dict) else ""
 
 
 def extract_context_id(params: dict) -> str:
@@ -414,10 +420,12 @@ class TaskStore:
         next_offset = offset + page_size if offset + page_size < total else 0
         return (page, next_offset, total) if with_total else (page, next_offset)
 
-    def fail_orphans(self, timeout_seconds: int = 300) -> list[str]:
+    def fail_orphans(self, timeout_seconds: float = 300, *, exclude: set[str] | None = None) -> list[str]:
+        excluded = exclude or set()
         with self._lock:
             stale = [tid for tid, rec in self._tasks.items()
-                     if rec["state"] not in TERMINAL_STATES and time.time() - rec["created_at"] > timeout_seconds]
+                     if tid not in excluded and rec["state"] not in TERMINAL_STATES
+                     and time.time() - rec["created_at"] > timeout_seconds]
         return [tid for tid in stale if self.complete(tid, STATE_FAILED, "[task orphaned — no reply produced]")]
 
     def _trim_locked(self) -> None:
@@ -437,7 +445,7 @@ class TaskStore:
 
 def _conv_path(context_id: str) -> Path:
     safe = "".join(c for c in (context_id or "default") if c.isalnum() or c in "-_") or "default"
-    return _hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
+    return get_hermes_home() / "a2a_conversations" / f"{safe}.jsonl"
 
 
 def persist_message(context_id: str, role: str, text: str, task_id: str = "") -> None:
@@ -469,7 +477,7 @@ def load_conversation(context_id: str, limit: int = 50) -> list[dict]:
 
 def list_conversations() -> list[str]:
     """Context-ids that have persisted conversations."""
-    return sorted(p.stem for p in (_hermes_home() / "a2a_conversations").glob("*.jsonl"))
+    return sorted(p.stem for p in (get_hermes_home() / "a2a_conversations").glob("*.jsonl"))
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

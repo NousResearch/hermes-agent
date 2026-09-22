@@ -1,4 +1,5 @@
 import { JsonRpcGatewayError } from '@hermes/shared'
+import type { GatewayEvent, GatewayEventName } from '@hermes/shared'
 import { QueryClient } from '@tanstack/react-query'
 import { act, cleanup, render, waitFor } from '@testing-library/react'
 import type { MutableRefObject } from 'react'
@@ -30,7 +31,6 @@ import {
 } from '@/store/session'
 import { dropSessionState, publishSessionState } from '@/store/session-states'
 import { $wakeWord, resetWakeWordState } from '@/store/wake-word'
-import type { RpcEvent } from '@/types/hermes'
 import type { SessionInfo } from '@/types/hermes'
 
 import { useMessageStream } from '../use-message-stream'
@@ -101,7 +101,7 @@ async function actRender(ui: React.ReactElement) {
 }
 
 interface HarnessHandle {
-  handleEvent: (event: RpcEvent) => void
+  handleEvent: (event: GatewayEvent) => void
   state: () => ClientSessionState
   activeSessionIdRef: MutableRefObject<string | null>
   cancelRun: () => Promise<void>
@@ -491,12 +491,12 @@ describe('terminal receipt settlement', () => {
     let pending!: Promise<boolean>
     act(() => { pending = handle!.submitTextRaw('old retry', { submission_id: 'old-terminal' }) })
     await waitFor(() => expect(finish).toBeTypeOf('function'))
-    handle!.handleEvent({ type: 'message.start', session_id: RUNTIME_SESSION_ID, payload: { execution_epoch: 'owner', execution_generation: 2 } })
+    handle!.handleEvent({ type: 'message.start', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: {} })
     await act(async () => { finish({ admission_id: 'old-terminal', status: 'terminal' } as never); expect(await pending).toBe(true) })
     expect(handle!.state()).toMatchObject({ busy: true, awaitingResponse: true, turnLive: true })
     expect(handle!.state().messages.filter(m => m.id === 'user-old-terminal')).toEqual([])
-    handle!.handleEvent({ type: 'message.delta', session_id: RUNTIME_SESSION_ID, payload: { execution_epoch: 'owner', execution_generation: 2, text: 'new answer' } })
-    handle!.handleEvent({ type: 'message.complete', session_id: RUNTIME_SESSION_ID, payload: { execution_epoch: 'owner', execution_generation: 2, text: 'new answer' } })
+    handle!.handleEvent({ type: 'message.delta', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: { text: 'new answer' } })
+    handle!.handleEvent({ type: 'message.complete', session_id: RUNTIME_SESSION_ID, authority_epoch: 1, execution_generation: 2, payload: { text: 'new answer' } })
     expect(handle!.state().busy).toBe(false)
     expect(handle!.state().messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ text: 'new answer' }))
   })
@@ -505,7 +505,7 @@ describe('terminal receipt settlement', () => {
 describe('Stop and shared-owner execution', () => {
   afterEach(cleanup)
 
-  it.each([['owner-a', 5], ['owner-b', 1]])('retires Stop only for a newer execution: %s/%s', async (epoch, generation) => {
+  it.each([[1, 5], [2, 1]])('retires Stop only for a newer execution: %s/%s', async (epoch, generation) => {
     const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) =>
       (method === 'prompt.submit' ? { admission_id: params?.submission_id, status: 'started' } : {}) as never)
 
@@ -513,26 +513,26 @@ describe('Stop and shared-owner execution', () => {
     await actRender(<Harness onReady={h => (handle = h)} rawAdmissionReceipts refreshSessions={async () => undefined} requestGateway={requestGateway} />)
     await handle!.submitText('first turn')
 
-    const send = (type: string, execution_epoch = 'owner-a', execution_generation = 4, extra = {}) =>
-      handle!.handleEvent({ type, session_id: RUNTIME_SESSION_ID, payload: { execution_epoch, execution_generation, ...extra } })
+    const send = (type: GatewayEventName, authority_epoch = 1, execution_generation = 4, extra = {}) =>
+      handle!.handleEvent({ type, session_id: RUNTIME_SESSION_ID, authority_epoch, execution_generation, payload: extra })
 
     send('message.start')
     expect(handle!.state().busy).toBe(true)
     await handle!.cancelRun()
     expect(requestGateway).toHaveBeenCalledWith('session.interrupt', { session_id: RUNTIME_SESSION_ID })
     send('message.start')
-    send('message.delta', 'owner-a', 4, { text: 'stopped tail' })
+    send('message.delta', 1, 4, { text: 'stopped tail' })
     expect(handle!.state()).toMatchObject({ interrupted: true, busy: false })
     send('message.complete')
-    send('session.info', 'owner-a', 4, { running: false })
+    send('session.info', 1, 4, { running: false })
     send('message.start', epoch, generation)
     send('session.info', epoch, generation, { running: true })
     expect(handle!.state()).toMatchObject({ interrupted: false, busy: true, awaitingResponse: true })
     send('message.delta', epoch, generation, { text: 'external answer' })
-    send('message.delta', 'owner-a', 4, { text: 'obsolete tail' })
+    send('message.delta', 1, 4, { text: 'obsolete tail' })
     send('message.interim', epoch, generation)
     expect(handle!.state().messages.at(-1)?.parts).toContainEqual(expect.objectContaining({ text: 'external answer' }))
-    send('message.complete', 'owner-a', 4, { text: 'obsolete final' })
+    send('message.complete', 1, 4, { text: 'obsolete final' })
     expect(handle!.state().busy).toBe(true)
     send('message.complete', epoch, generation, { text: 'external answer' })
     expect(handle!.state()).toMatchObject({ busy: false, awaitingResponse: false })
@@ -2217,7 +2217,7 @@ describe('usePromptActions desktop slash pickers', () => {
     expect(calls).toContainEqual({
       method: 'handoff.fail',
       params: {
-        error: expect.stringContaining('Timed out'),
+        error: expect.stringContaining("couldn't reach your messaging connection"),
         session_id: RUNTIME_SESSION_ID
       }
     })

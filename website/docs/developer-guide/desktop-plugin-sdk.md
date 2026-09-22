@@ -175,6 +175,8 @@ interface PluginContext {
   rest: <T>(path: string, opts?: PluginRestOptions) => Promise<T>
   /** Live WebSocket to this plugin's own namespace. Returns a disposer. */
   socket: (path: string, onMessage: (data: unknown) => void) => () => void
+  /** Gateway event stream by type (`'*'` = all). Tracked: removed on unload/reload/disable. */
+  onEvent: (type: string, listener: (event: GatewayEvent) => void) => () => void
   /** The curated OS door: native notification, open-external, reveal-in-file-manager, clipboard. */
   os: PluginOs
   /** Plugin-scoped JSON persistence (keys live under `hermes.plugin.<id>.`). */
@@ -486,6 +488,13 @@ host.state.profile          // ReadableAtom<string>
 host.state.viewport         // ReadableAtom<{ width, height, narrow }>
 ```
 
+`gatewayActivationEpoch` is a named SDK export: `import { gatewayActivationEpoch } from '@hermes/plugin-sdk'`.
+It reads the canonical activation counter, which changes on every active route
+selection, including same-profile source swaps. Capture `const epoch = gatewayActivationEpoch()`
+alongside the route before asynchronous work, then check both the captured route
+and `gatewayActivationEpoch() === epoch` before mutation or UI publication. This
+read-only counter is not a credential, permission grant, or durable gateway/session identity.
+
 `host.state.gateway` is the WebSocket connection, not whether a chat turn is
 running. A session can be mid-turn while the socket is `open`; another session
 can be idle at the same time. Disable composer or plugin actions from the
@@ -511,7 +520,9 @@ host.openWorkspace(id, { render, title?, minWidth?, onClose? })
                                            //   workspace zone and reveal it; returns a disposer
 host.paneVisibility(paneId)                // ReadableAtom<boolean> — is a contributed pane
                                            //   actually on screen (its zone's active tab)?
-host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer
+host.onEvent(type, fn)                     // gateway event stream ('*' = all); returns disposer.
+                                           //   Calls made during register() are retired with the
+                                           //   plugin; elsewhere prefer ctx.onEvent (always tracked)
 host.logs(...)                             // tail an app log file
 host.status()                              // one-shot system status snapshot
 host.restartGateway()                      // restart the backend gateway
@@ -724,7 +735,13 @@ carry the package, and it never appears or disappears when the user switches
 the Capabilities profile selector. The renderer never scans `plugins/` itself.
 The marker records the package name and its origin (catalog sidecar or git
 remote), which is what the **Install here** button on the Plugins page uses to
-install the agent half into another profile.
+install the agent half into another profile. The copy is staged beside the
+target and renamed into place, so an interrupted copy (a transient file lock, a
+crash mid-copy) never leaves a half-written folder behind; a leftover
+`desktop-plugins/<id>/` that has no marker and no `plugin.js` is treated as
+such damage and replaced on the next **Rescan**, while a marker-less folder
+that *does* hold a `plugin.js` is a standalone plugin you installed by hand and
+is never overwritten.
 
 Two enable switches still apply, on purpose, and both default to **off**: the
 desktop half ships opt-in — it inventories in **Capabilities → Plugins** but stays
@@ -912,7 +929,7 @@ not treat this pipeline as a trust boundary.
 | Area constants | `PANES_AREA`, `ROUTES_AREA`, `SIDEBAR_NAV_AREA`, `STATUSBAR_AREAS`, `TITLEBAR_AREAS`, `PALETTE_AREA`, `KEYBINDS_AREA`, `THEMES_AREA`, `COMPOSER_AREAS` |
 | Area payloads | `RouteContribution`, `SidebarNavContribution`, `StatusbarItem`, `TitlebarTool`, `PaletteContribution`, `KeybindContribution`, `ComposerMiddleware`, `ComposerAttachmentProvider` |
 | React / state | `useValue`, `atom`, `computed`, `useQuery`, `useMutation`, `useQueryClient`, `queryClient`, `Contribute` |
-| Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `contrastRatio`, `readableOn`, `normalizeHex`) |
+| Theming | `useTheme`, `requestTheme`, `setAccentOverride`, `$accentOverride`, `retintTheme`, `themeHue`, `DesktopTheme`, `DesktopThemeColors`, plus OKLCH math (`hexToOklch`, `oklchToHex`, `oklchToSrgb255`, `mixOklab`, `maxChroma`, `hueDelta`, `normalizeHex`) and sRGB measures (`contrastRatio` — `number | null`, null for unparseable input — `readableOn`) |
 | UI kit | `Button`, `Input`, `Textarea`, `Select*`, `Switch`, `Checkbox`, `SegmentedControl`, `Tabs*`, `Dialog*`, `ConfirmDialog`, `DropdownMenu*`, `ContextMenu*`, `Popover*`, `Tip`/`Tooltip*`, `Badge`, `Kbd`/`KbdGroup`, `SearchField`, `ScrollArea`, `Separator`, `Skeleton`, `GlyphSpinner`, `Loader`, `EmptyState`, `ErrorState`, `CopyButton`, `StatusDot`, `LogView`, `Codicon`, `DecodeText` |
 | Helpers | `cn`, `icons`, `haptic`, `useI18n`, `profileColor`, `profileColorSoft`, `relativeTime`, `fmtDateTime`, `fmtDayTime`, `coarseElapsed`, `evaluateRuntimeReadiness` |
 

@@ -69,9 +69,8 @@ class TestGetDefaultHermesRoot:
         """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
 
         get_default_hermes_root() resolves HERMES_HOME against the native
-        home (~80us of path resolution) and is called at 31+ sites — every
-        _load_global_auth_store() (per provider row in the /model picker),
-        kanban, backup, gateway, update. The memo is keyed on
+        home (~80us of path resolution) and is called at 31+ sites — kanban,
+        backup, gateway, update, profile enumeration. The memo is keyed on
         (native home, HERMES_HOME) compared for free each call.
         """
         # HERMES_HOME set to a Docker-profile path: every call resolves the

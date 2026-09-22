@@ -523,6 +523,24 @@ security:
 
 主机子字符串防护（即使底层 IP 是公共的，也能阻止 Unicode 同形字域名欺骗）无论此设置如何均保持开启。
 
+#### 本地代理的 fake-ip 地址段
+
+以 fake-ip 模式工作的 TUN 代理（Mihomo/Clash `fake-ip`、Surge 增强模式）会对不在其过滤器内的
+每个域名返回自己地址段中的地址——默认是 `198.18.0.0/15`（RFC 2544 基准测试段）。这些地址是代理
+的哨兵地址，而不是内网主机，因此私网 IP 守卫会在这种机器上拦掉全部出网抓取：`web_extract`、平台
+附件下载、浏览器链路都会以 *URL targets a private or internal network address* 失败，而请求根本
+没有发出。声明该地址段即可放行哨兵地址：
+
+```yaml
+security:
+  fake_ip_ranges:
+    - 198.18.0.0/15
+```
+
+默认为空，且比 `allow_private_urls` 更窄：只有被声明的地址段获得豁免，且应当是本地代理自己拥有的
+地址段（连接仍然发往代理，由代理自行解析真实目标），回环、RFC 1918、链路本地、CGNAT 和云元数据
+目标依然被拦截。
+
 ### Tirith 预执行安全扫描
 
 Hermes 集成了 [tirith](https://github.com/sheeki03/tirith) 用于在执行前进行内容级命令扫描。Tirith 能检测单纯模式匹配所遗漏的威胁：

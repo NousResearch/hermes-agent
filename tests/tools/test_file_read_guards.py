@@ -827,9 +827,12 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         # Read with different offsets to populate multiple dedup entries.
         read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off")
         read_file_tool(self._tmpfile, offset=50, limit=100, task_id="off")
+        # The last read was partial; a full read restores the write baseline.
+        read_file_tool(self._tmpfile, offset=1, limit=500, task_id="off")
 
         # Write — should invalidate BOTH dedup entries.
-        write_file_tool(self._tmpfile, "replaced\n", task_id="off")
+        write = json.loads(write_file_tool(self._tmpfile, "replaced\n", task_id="off"))
+        self.assertNotIn("error", write)
 
         # Both reads should return fresh content.
         r1 = json.loads(read_file_tool(self._tmpfile, offset=1, limit=100, task_id="off"))

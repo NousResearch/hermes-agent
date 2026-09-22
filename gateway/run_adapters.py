@@ -784,6 +784,13 @@ class GatewayAdapterLifecycleMixin:
             logger.info("⚠ %s reconnected in degraded mode (receive path not yet confirmed)", platform.value)
         else:
             logger.info("✓ %s reconnected successfully", platform.value)
+        # Notification delivery must not hold up adapter recovery or other platforms' reconnects.
+        from gateway.run import _planned_restart_notification_pending
+        if _planned_restart_notification_pending():
+            task = self._retain_background_task(asyncio.create_task(
+                self._replay_pending_planned_restart_notification(),
+            ))
+            task.add_done_callback(self._late_failure_callback("planned-restart notification replay failed"))
         # Responses rejected while down are owned by this live process (startup recovery cannot claim them).
         with _log_suppressed(
             logging.DEBUG, "failed-obligation redelivery after %s reconnect failed",
@@ -830,7 +837,14 @@ class GatewayAdapterLifecycleMixin:
         Each profile connects under its own HERMES_HOME + secret scope; credential/listener collisions
         are refused here — the only point seeing every profile's credentials together."""
         from gateway.run import MultiplexConfigError, _multiplex_profile_homes
+        from gateway.run_profile_reconcile import profile_serve_signature
         if not self._multiplex_on():
+            # ``write_runtime_status`` re-stamps the previous writer's record in place, so a multiplexer's
+            # ``served_profiles`` would outlive it into this single-profile run and `hermes -p X ...`
+            # would keep refusing (exit 78) / reporting "served" for profiles nobody serves.
+            with _log_suppressed(logging.DEBUG, "could not clear served_profiles", exc_info=True):
+                from gateway.status import write_runtime_status
+                write_runtime_status(served_profiles=[])
             return 0
         try:
             from hermes_cli.profiles import get_active_profile_name
@@ -840,9 +854,12 @@ class GatewayAdapterLifecycleMixin:
         connected = 0
         claimed = self._primary_resource_claims(active)
         profile_homes = _multiplex_profile_homes(self.config)
+        self._served_profile_signatures = {}
         for profile_name, profile_home in profile_homes:
             if profile_name == active:
                 continue  # handled by the primary startup loop
+            # Preserve changes made while the initial connection is awaiting I/O.
+            self._served_profile_signatures[profile_name] = profile_serve_signature(profile_home)
             try:
                 connected += await self._start_one_profile_adapters(profile_name, profile_home, claimed)
             except MultiplexConfigError:
@@ -890,7 +907,7 @@ class GatewayAdapterLifecycleMixin:
         default profile owns the single shared listener and a secondary's port-binders are built in
         shared-listener mode (``/p/<profile>/...``) by ``_start_one_profile_adapters``."""
         from gateway.run import (
-            MultiplexConfigError, _load_gateway_runtime_config,
+            MultiplexConfigError, _load_gateway_config,
             _own_policy_open_startup_violation, _profile_runtime_scope,
         )
         from gateway.config import load_gateway_config
@@ -898,7 +915,7 @@ class GatewayAdapterLifecycleMixin:
         # Hydrate external secret sources off-loop ONCE: sync hydration would stall every heartbeat.
         await asyncio.to_thread(hydrate_profile_secret_sources, profile_home)
         with _profile_runtime_scope(profile_home, hydrate_secrets=False):
-            profile_runtime_cfg = _load_gateway_runtime_config()
+            profile_runtime_cfg = _load_gateway_config()
             from hermes_cli.plugins import discover_plugins
             discover_plugins()
             # This profile's `hooks:` block: start() registered before any profile scope existed.
@@ -948,6 +965,45 @@ class GatewayAdapterLifecycleMixin:
         )
         return True
 
+    def _note_unserved_secondary_platform(self, profile_name: str, platform: Platform) -> None:
+        """A secondary enabled a shared-ingress platform (Relay, WhatsApp) the multiplexer only runs on
+        the default profile. Log the reason + remedy once per (profile, platform) and stamp a
+        ``<profile>:<platform>`` status entry so ``hermes gateway status --profile X`` and the
+        dashboard show *why* the channel is dead instead of nothing at all."""
+        noted = getattr(self, "_unserved_secondary_platforms", None)
+        if noted is None:
+            noted = self._unserved_secondary_platforms = set()
+        if (profile_name, platform) in noted:
+            return
+        noted.add((profile_name, platform))
+        pv = platform.value
+        logger.info(
+            "[MULTIPLEX] Profile '%s': %s is enabled but not served — %s is process-level shared ingress "
+            "owned by the default profile under multiplex. Enable and configure %s on the default profile "
+            "(it serves every profile), or disable it in profile '%s'.",
+            profile_name, pv, pv, pv, profile_name,
+        )
+        self._update_platform_runtime_status(
+            f"{profile_name}:{pv}", platform_state="disabled", error_code="multiplex_shared_ingress",
+            error_message="not served under multiplex (shared ingress owned by default)",
+        )
+
+    def _unserved_shared_ingress_warnings(self) -> list:
+        """Loud ``not being served`` lines for shared-ingress platforms secondaries enabled while
+        NO profile (default included) actually runs them; empty when the default serves the platform."""
+        noted = getattr(self, "_unserved_secondary_platforms", None) or ()
+        lines = []
+        for platform in sorted({p for _n, p in noted}, key=lambda p: p.value):
+            if platform in self.adapters or platform in (getattr(self, "_failed_platforms", None) or {}):
+                continue  # the default owns it: secondaries ARE served through the shared adapter
+            profiles = sorted(n for n, p in noted if p is platform)
+            lines.append(
+                f"{platform.value} is enabled in profile(s) {', '.join(profiles)} but not on the default "
+                f"profile — the platform is not being served. Under multiplex {platform.value} is shared "
+                "ingress: enable and configure it on the default profile, or disable it in those profiles."
+            )
+        return lines
+
     async def _start_one_profile_adapters(
         self, profile_name: str, profile_home: "Path", claimed: Dict[tuple, str]
     ) -> int:
@@ -973,7 +1029,9 @@ class GatewayAdapterLifecycleMixin:
                 )
                 continue
             # Relay/WhatsApp are shared process-level ingress under multiplex; a secondary would retry-loop.
+            # Say so: four profiles with WHATSAPP_ENABLED=true and nothing in the log is a silent dead channel.
             if multiplex and platform in (Platform.RELAY, Platform.WHATSAPP):
+                self._note_unserved_secondary_platform(profile_name, platform)
                 continue
             # api_server / webhook: the default's listener already mirrors them at /p/<profile>/; a second
             # instance here would fight the default for the port (#100397).
@@ -1393,14 +1451,26 @@ class GatewayAdapterLifecycleMixin:
     def _primary_message_handler(self):
         """Return the correctly scoped handler for a primary adapter."""
         shared = getattr(self, 'session_authority', None) is not None
-        return self._make_default_profile_message_handler() if self._multiplex_on() or shared else self._handle_message
+        if self._multiplex_on() or shared:
+            return self._make_default_profile_message_handler()
+        return self._standalone_scoped(self._handle_message)
 
     def _primary_busy_session_handler(self):
         """Return the correctly scoped busy-session handler for a primary adapter."""
-        return (
-            self._make_default_profile_busy_session_handler()
-            if self._multiplex_on() else self._handle_active_session_busy_message
-        )
+        if self._multiplex_on():
+            return self._make_default_profile_busy_session_handler()
+        return self._standalone_scoped(self._handle_active_session_busy_message)
+
+    def _standalone_scoped(self, handler):
+        """Standalone twin of the ``_make_default_profile_*`` wrappers: run ``handler`` under
+        ``_standalone_launch_scope`` so slash commands and turns keep resolving the launch profile's
+        credentials after a hosted room flipped the process-wide guard (#112878). Decided per event:
+        activation happens after the adapters were wired."""
+        async def _handler(*args):
+            with self._standalone_launch_scope():
+                return await handler(*args)
+
+        return _handler
 
     def _multiplex_on(self) -> bool:
         return bool(getattr(self.config, "multiplex_profiles", False))
@@ -1441,7 +1511,7 @@ class GatewayAdapterLifecycleMixin:
     def _primary_platform_event_handler(self):
         if self._multiplex_on():
             return self._make_default_profile_platform_event_handler()
-        return self._handle_gateway_platform_event
+        return self._standalone_scoped(self._handle_gateway_platform_event)
 
     @staticmethod
     def _adapter_credential_claim(platform: Platform, adapter: Any) -> Optional[tuple]:

@@ -158,6 +158,7 @@ it('retains disconnected input durably on its old destination without dispatchin
 
 it('refuses unbound Enter without clearing the draft or claiming a queued input', () => {
   const h = mount()
+
   try {
     patchUiState({ sid: null })
     h.submission.dispatchSubmission('unbound draft')
@@ -263,5 +264,25 @@ it('keeps the edited text as an unconfirmed durable draft when the store refuses
     expect(h.calls.filter(c => c.method === 'prompt.submit')).toEqual([])
     expect(h.queue.queuedDisplay).toEqual(['[unconfirmed · Alt+K retry] EDITED_EFFECT', '[queued] ORIGINAL_EFFECT'])
     expect(loadPendingInputs(captureDestination()).map(item => [item.text, item.failed])).toEqual([['EDITED_EFFECT', true]])
+  } finally { h.cleanup() }
+})
+
+it('re-admits an edited row to the session it was edited in, even when the user has switched to another busy session before retirement', async () => {
+  let release!: (value: unknown) => void
+  const h = mount('queue', () => new Promise(resolve => { release = resolve }))
+
+  try {
+    h.fanout([row('adm-orig', 'in-orig', 'ORIGINAL_A')])
+    await expect.poll(() => h.queue.queuedDisplay).toEqual(['[queued] ORIGINAL_A'])
+    h.queue.setQueueEdit(0)
+    h.submission.dispatchSubmission('EDITED_A')
+    await expect.poll(() => h.calls.filter(c => c.method === 'prompt.cancel').length).toBe(1)
+    // Focus moves to a different busy session while A's retirement is pending.
+    patchUiState({ sid: 'session-B', busy: true,
+      info: { ...$uiState.get().info!, stored_session_id: 'stored-B', execution_generation: 9 } })
+    await new Promise(resolve => setImmediate(resolve))
+    release({ admission_id: 'adm-orig', status: 'terminal', outcome: 'cancelled' })
+    await expect.poll(() => h.calls.filter(c => c.method === 'prompt.submit').length).toBe(1)
+    expect(h.calls.find(c => c.method === 'prompt.submit')!.params).toMatchObject({ session_id: 'owner', text: 'EDITED_A' })
   } finally { h.cleanup() }
 })

@@ -13,6 +13,7 @@ from typing import Any, Callable, Dict, List, Optional, Tuple
 from agent.session_activity import (
     ActivityProvenance, bound_activity_description, normalize_activity_provenance,
 )
+from hermes_startup_watchdog import report_startup_progress
 from hermes_state_common import (
     _LISTABLE_CHILD_SQL, _PREVIEW_ELIGIBLE_SQL, _PREVIEW_RAW_SELECT, _RECOVERABLE_END_REASONS,
     _RECOVERABLE_END_REASONS_SQL, _RESET_END_REASONS, _legacy_reset_child_sql, _shape_preview,
@@ -158,6 +159,8 @@ def _collect_delegate_child_ids(conn, parent_ids: List[str]) -> List[str]:
 
 def _delete_delegate_children(conn, parent_ids: List[str]) -> List[str]:
     ids = _collect_delegate_child_ids(conn, parent_ids)
+    from hermes_state_mutation_retirement import retire_sessions
+    retire_sessions(conn, ids)
     for chunk in _id_chunks(ids):
         ph = _session_ids_placeholders(chunk)
         conn.execute(f"DELETE FROM messages WHERE session_id IN ({ph})", chunk)
@@ -281,7 +284,10 @@ class SessionSessionsMixin:
         git_repo_root: str = None, origin_json: str = None, display_name: str = None,
     ) -> None:
         """Upsert a session row, never overwriting what an earlier writer set (the gateway creates a
-        bare row before create_session carries the real model/prompt). chat_id/thread_id scope gateway
+        bare row before create_session carries the real model/prompt) — the one exception is the
+        token-accounting guard's placeholder ``source='unknown'``, which a later writer's real surface
+        replaces (#111999): once minted, that placeholder otherwise labelled a real session anonymous
+        for life, because this upsert is the only writer that could correct it. chat_id/thread_id scope gateway
         /resume (IDOR). Children backfill from the parent; a missing profile_name is stamped with THIS
         store's own (NULL reads as unowned).
 
@@ -398,14 +404,19 @@ class SessionSessionsMixin:
         return changed
 
     def reopen_session(self, session_id: str) -> None:
-        """Clear ended_at/end_reason so a session can be resumed; first stamp markerless legacy reset
-        children that depend on the parent's mutable end_reason (WHERE shared with the listing predicate
-        so they cannot drift)."""
+        """Clear ended_at/end_reason so a session can be resumed; first freeze markerless legacy reset
+        children, skipping explicit fork/delegate provenance and children that predate the parent itself.
+        The guard compares against the parent's started_at, not its current ended_at: a parent that was
+        reopened and re-ended later still owns reset children from its earlier boundaries."""
         def _do(conn):
             conn.execute(
                 "UPDATE sessions AS child SET model_config = json_set("
                 "COALESCE(child.model_config, '{}'), '$._reset_from', child.parent_session_id) "
                 f"WHERE child.parent_session_id = ? AND {_sql_json_extract('child.model_config', '$._reset_from')} IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._branched_from')} IS NULL "
+                f"AND {_sql_json_extract('child.model_config', '$._delegate_from')} IS NULL "
+                "AND COALESCE(child.source, '') != 'tool' "
+                "AND child.started_at >= (SELECT p.started_at FROM sessions p WHERE p.id = child.parent_session_id) "
                 f"AND {_legacy_reset_child_sql('child', _session_ids_placeholders(_RESET_END_REASONS))}",
                 (session_id, *_RESET_END_REASONS),
             )
@@ -695,9 +706,13 @@ class SessionSessionsMixin:
         )
         return self._session_row_dict(row) if row else None
 
-    def get_dominant_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
-        """Main-loop model route that served most API calls (``session_model_usage`` keeps the coherent
-        per-call tuple; ``sessions`` mixes route changes)."""
+    def get_recent_session_model_route(self, session_id: str) -> Optional[Dict[str, Any]]:
+        """Most recently used main-loop model route as one coherent per-call tuple
+        (``session_model_usage`` keeps model+provider together; ``sessions`` mixes route changes).
+        Recency, not lifetime call count: on a long session a route retired weeks ago can hold the
+        highest ``api_call_count`` forever, and /status and /usage would keep calling it current.
+        ``rowid DESC`` breaks same-timestamp ties toward the route that first appeared later; without
+        it SQLite's temp-sort order is unspecified and the retired route can win."""
         self.flush_token_counts()
         row = self._read_one(
             """SELECT model, billing_provider, billing_base_url, billing_mode,
@@ -707,10 +722,7 @@ class SessionSessionsMixin:
                   AND task = ''
                   AND model <> 'unknown'
                   AND billing_provider <> ''
-                ORDER BY api_call_count DESC,
-                         (input_tokens + output_tokens + cache_read_tokens +
-                          cache_write_tokens + reasoning_tokens) DESC,
-                         last_seen DESC
+                ORDER BY last_seen DESC, rowid DESC
                 LIMIT 1""",
             (session_id,),
         )
@@ -1161,7 +1173,11 @@ class SessionSessionsMixin:
             exclude_sources=exclude_sources, cwd_prefix=cwd_prefix, min_message_count=min_message_count,
             archived_only=archived_only, include_archived=include_archived,
         )
-        if not include_hidden:
+        # The archived-only view is the recovery surface for rows that dropped out of every
+        # default list: a session that is archived AND hidden (Bot Mode marks its sessions
+        # hidden) must still be reachable there, or nothing but direct DB access can bring
+        # it back (#90946).
+        if not include_hidden and not archived_only:
             where_clauses.append("s.hidden = 0")
         where_sql = _where_sql(where_clauses)
         base_where_params = list(params)  # pinned back-fill reuses the WHERE before LIMIT/OFFSET
@@ -1437,6 +1453,8 @@ class SessionSessionsMixin:
                 session_id, *_collect_delegate_child_ids(conn, [session_id])
             }:
                 return False
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, [session_id])
             removed_ids.extend(_delete_delegate_children(conn, [session_id]))
             conn.execute(  # orphan remaining children (branches) so FK is satisfied
                 "UPDATE sessions SET parent_session_id = NULL WHERE parent_session_id = ?", (session_id,),
@@ -1451,13 +1469,31 @@ class SessionSessionsMixin:
             self._remove_session_files(sessions_dir, sid)
         return bool(deleted)
 
+    def discard_unadmitted_session(self, session_id: str) -> bool:
+        """Abort a row this same flow just created and nobody has been admitted against (seed-copy
+        compensation): remove it WITHOUT the retirement fence so the id can be lazily recreated.
+        A row with any admission or worker receipt is a real session and takes the fenced
+        :meth:`delete_session` path instead."""
+        def _do(conn):
+            if conn.execute(
+                "SELECT 1 FROM session_admissions WHERE target_session_id=? UNION ALL "
+                "SELECT 1 FROM worker_executions WHERE session_id=? LIMIT 1", (session_id, session_id)).fetchone():
+                return None
+            conn.execute("DELETE FROM messages WHERE session_id = ?", (session_id,))
+            cur = conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            return cur.rowcount > 0
+        result = self._execute_write(_do)
+        if result is None:
+            return self.delete_session(session_id)
+        return bool(result)
+
     def delete_session_if_empty(self, session_id: str, sessions_dir: Optional[Path] = None) -> bool:
         """Delete *session_id* only if it has no messages, no title and no children; check and delete
         share one transaction so a concurrent flush can't be lost."""
         def _do(conn):
-            cursor = conn.execute(
+            eligible = conn.execute(
                 """
-                DELETE FROM sessions
+                SELECT 1 FROM sessions
                 WHERE id = ?
                   AND title IS NULL
                   AND NOT EXISTS (
@@ -1469,10 +1505,16 @@ class SessionSessionsMixin:
                   )
                 """,
                 (session_id,),
-            )
-            if cursor.rowcount > 0:
-                self._delete_unreferenced_system_prompts(conn)
-            return cursor.rowcount > 0
+            ).fetchone()
+            if eligible is None:
+                return False
+            # Same BEGIN IMMEDIATE transaction as the check above: retire the ledger rows
+            # (ON DELETE RESTRICT) and delete without re-evaluating eligibility.
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, [session_id])
+            conn.execute("DELETE FROM sessions WHERE id = ?", (session_id,))
+            self._delete_unreferenced_system_prompts(conn)
+            return True
         deleted = self._execute_write(_do)
         if deleted:
             self._remove_session_files(sessions_dir, session_id)
@@ -1491,6 +1533,8 @@ class SessionSessionsMixin:
             ).fetchall()]
             if not existing:
                 return 0
+            from hermes_state_mutation_retirement import retire_sessions
+            retire_sessions(conn, existing)
             removed_ids.extend(_delete_delegate_children(conn, existing))
             for chunk in _id_chunks(existing):
                 ph = _session_ids_placeholders(chunk)
@@ -1528,6 +1572,8 @@ class SessionSessionsMixin:
             session_ids = {row["id"] for row in conn.execute(
                 f"SELECT id FROM sessions WHERE {self._EMPTY_SESSION_WHERE}"
             ).fetchall()}
+            from hermes_state_mutation_retirement import retire_prunable
+            session_ids = retire_prunable(conn, sorted(session_ids))
             if not session_ids:
                 return 0
             for chunk in _id_chunks(session_ids):
@@ -1571,6 +1617,10 @@ class SessionSessionsMixin:
             if last and now - last < min_interval_hours * 3600:
                 result["skipped"] = True
                 return result
+            # Startup-watchdog lease: the archive sweep is I/O-bound (near-zero CPU),
+            # which the watchdog's CPU fallback misreads as a parked deadlock.
+            # No-op when the watchdog is not armed; never raises.
+            report_startup_progress(900.0, phase="state_db_auto_archive")
             archived = result["archived"] = self.archive_stale_sessions(idle_days, exclude_pinned=exclude_pinned)
             # Record even a zero-archive run so we don't re-sweep every call.
             self.set_meta("last_auto_archive", str(now))

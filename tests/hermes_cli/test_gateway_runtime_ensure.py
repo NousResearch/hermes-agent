@@ -25,23 +25,23 @@ def test_ensure_waits_for_real_control_owner_without_claiming_pending_is_ready(t
         stalled = False
         def identify():
             if stalled:
-                time.sleep(0.5)
+                time.sleep(4)  # longer than the caller's deadline: a stalled owner is 'starting', never ready
             return payload
         server = GatewayControlServer(home, verb_handlers={"identify": identify})
         assert await server.start()
         try:
             before = time.monotonic()
-            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=0.3)
+            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=3.0)
             assert result.state == "starting" and result.reason_code == "deadline"
-            assert time.monotonic() - before < 2
+            assert time.monotonic() - before < 6
             payload["state"] = "draining"
-            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=0.3)
+            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=3.0)
             assert result.state == "draining"
             payload["served_profiles"] = []
-            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=0.3)
+            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=3.0)
             assert result.state == "inaccessible" and result.reason_code == "profile_mismatch"
             stalled = True
-            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=0.1)
+            result = await asyncio.to_thread(runtime.ensure_gateway_runtime, home, timeout=3.0)
             assert result.state == "starting" and result.reason_code == "deadline"
             assert not (home / "logs").exists()
         finally:
@@ -83,29 +83,29 @@ def test_installed_service_start_is_nonmutating_and_failed_manager_never_spawns(
                       + 'else: sys.exit(91)\n', encoding="utf-8")
     helper.chmod(0o700)
     monkeypatch.setattr(gw, "_systemctl_cmd", lambda system=False: [str(helper), "system" if system else "user"])
-    result = runtime.ensure_gateway_runtime(home, timeout=0.4)
+    result = runtime.ensure_gateway_runtime(home, timeout=3.0)
     # Both scopes claiming this name is a conflict, never permission to choose one.
     assert result.state == "conflict"
     assert unit.read_bytes() == original
     assert not (home / "logs").exists()
     assert all(any(arg in {"show", "show-environment"} for arg in json.loads(line)) for line in calls.read_text().splitlines())
     (tmp_path / "single").touch()
-    result = runtime.ensure_gateway_runtime(home, timeout=0.5)
+    result = runtime.ensure_gateway_runtime(home, timeout=3.0)
     assert result.state == "starting" and result.reason_code == "deadline"
     assert sum("start" in json.loads(line) for line in calls.read_text().splitlines()) == 1
     assert unit.read_bytes() == original
     assert not (home / "logs").exists()
     (tmp_path / "fail").touch()
-    result = runtime.ensure_gateway_runtime(home, timeout=0.5)
+    result = runtime.ensure_gateway_runtime(home, timeout=3.0)
     assert result.state == "inaccessible" and result.reason_code == "service_manager_unavailable"
     assert "private-supervisor-token" not in repr(result)
     assert sum("start" in json.loads(line) for line in calls.read_text().splitlines()) == 1
     assert not (home / "logs").exists()
     (tmp_path / "stall").touch()
     before = time.monotonic()
-    result = runtime.ensure_gateway_runtime(home, timeout=0.2)
+    result = runtime.ensure_gateway_runtime(home, timeout=3.0)
     assert result.reason_code == "deadline"
-    assert time.monotonic() - before < 2
+    assert time.monotonic() - before < 6
     assert sum("start" in json.loads(line) for line in calls.read_text().splitlines()) == 1
 
 

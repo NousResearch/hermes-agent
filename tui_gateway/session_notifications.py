@@ -72,7 +72,23 @@ def _notification_event_belongs_elsewhere(sid: str, session: dict, evt: dict) ->
             return True
     if evt_key in current_keys:
         return False
+    if resolved_key == evt_key and _notif_other_profile_session_owns(sid, session, evt):
+        return True
     return _notif_live_session_matches({evt_key, resolved_key}, exclude=session)
+
+
+def _notif_other_profile_session_owns(sid: str, session: dict, evt: dict) -> bool:
+    """True when a live session on ANOTHER profile store provably owns ``evt`` (its compression lineage
+    resolves there). Every poller drains one process-wide queue, but lineage is looked up in the
+    dequeuer's own store; without this, profile B dequeuing an event keyed on profile A's compressed
+    parent found no owner anywhere and dropped it for good. Snapshot under the lock, resolve outside it."""
+    own_home = str(session.get("profile_home") or "")
+    candidates = _notif_locked_sessions(
+        lambda ss: [(other_sid, other) for other_sid, other in ss.items()
+                    if other is not session and not other.get("_finalized")
+                    and str(other.get("profile_home") or "") != own_home],
+        [])
+    return any(_session_owns_notification_event(other_sid, other, evt) for other_sid, other in candidates)
 
 
 def _session_owns_notification_event(sid: str, session: dict, evt: dict) -> bool:
@@ -183,6 +199,27 @@ def _notif_slash_loop_tick(rid: str, sid: str, session: dict, mgr, wakeup: str) 
         _notif_loop_status(sid, decision["message"])
 
 
+def _notif_gateway_owns_heartbeat(session: dict, session_key: str) -> bool:
+    """Whether the gateway's heartbeat poller owns this session's due tick.
+
+    Desktop/TUI can attach to a messaging conversation, but its session-owner poller has no adapter
+    route for the reply. Ownership is the gateway's LIVE routing index, not the row's immutable
+    ``source``: ``gateway/run_heartbeat_restore.py`` only registers watches for a non-suspended,
+    origin-bearing key whose current ``session_id`` is this one, so a row archived by /reset,
+    auto-reset or compression rotation belongs to nobody there and must keep firing here. The index
+    lives in the gateway's home store (the launch handle for a multiplexed gateway, the profile's
+    own store for a per-profile gateway), so both are consulted; no entry is fail-open.
+    """
+    try:
+        with _session_db(session) as db:
+            for store in {id(d): d for d in (db, _get_db()) if d is not None}.values():
+                if (entry := store.gateway_routing_entry_for_session(session_key)) is not None:
+                    return bool(entry.get("origin")) and not entry.get("suspended")
+        return False
+    except Exception:
+        return False
+
+
 def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     """Fire a due /heartbeat prompt for an idle TUI/Desktop/dashboard session (#102056, #103044).
 
@@ -200,8 +237,10 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = HeartbeatManager(session_id=sid_key)
-    if not mgr.is_active() or not mgr.state.is_due() or not _notif_claim_turn(session):
-        return  # not due, or busy — the tick coalesces to the next idle poll
+    if not mgr.is_active() or not mgr.state.is_due() or _notif_gateway_owns_heartbeat(session, sid_key):
+        return  # not due, or the gateway poller owns the routed conversation — stays due there
+    if not _notif_claim_turn(session):
+        return  # busy — the tick coalesces to the next idle poll
     if not (prompt := mgr.due_prompt()):
         _notif_release_turn(session)
         return
@@ -218,6 +257,14 @@ def _maybe_fire_tui_heartbeat_tick(sid: str, session: dict) -> None:
             mgr.abandon_fire()
 
 
+def _loop_route_is_gateway_chat(state) -> bool:
+    """A /loop set from a messaging chat carries the gateway's ``route`` (platform + chat_id); its wakeup scanner
+    (``gateway/run_goals.py::_loop_wakeup_fire_one``) fires those and skips route-less CLI/TUI loops. Mirror it here
+    so a Desktop viewer of the same session never consumes the tick and strands the reply off the chat."""
+    route = getattr(state, "route", None) or {}
+    return bool(route.get("platform") and route.get("chat_id"))
+
+
 def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     """Fire a due /loop wakeup for an idle TUI/Desktop/dashboard session (per-session poller, coarse cadence). Claims
     the session (running=True) before dispatching so a racing user prompt wins; the post-turn hook completes the tick."""
@@ -228,7 +275,9 @@ def _maybe_fire_tui_loop_tick(sid: str, session: dict) -> None:
     if not (sid_key := session.get("session_key") or ""):
         return
     mgr = LoopManager(session_id=sid_key)
-    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or not _notif_claim_turn(session):
+    if not mgr.is_due() or goal_blocks_loop_tick(sid_key) or _loop_route_is_gateway_chat(mgr.state):
+        return  # not due, or the gateway's wakeup scanner owns the routed chat — stays due there
+    if not _notif_claim_turn(session):
         return  # busy — stays due, next poll retries
     if not (wakeup := mgr.fire_tick()):
         _notif_release_turn(session)
@@ -447,8 +496,9 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
     # while distinct watch_match events from one process must stay visible.
     dedup_key = _notification_event_dedup_key(evt)
     if dedup_key not in emitted:
-        from tools.process_registry_notifications import async_delegation_display_text
-        display_text = async_delegation_display_text(evt) if is_delegation else text
+        from tools.process_registry_notifications import async_delegation_display_text, process_completion_display_text
+        display_text = (async_delegation_display_text(evt) if is_delegation
+                        else process_completion_display_text([evt]) if evt_type == "completion" else text)
         _emit("status.update", sid, {"kind": "process", "text": display_text})
         emitted.add(dedup_key)
     if evt_type == "completion" and completions is not None:
@@ -465,7 +515,7 @@ def _notif_handle_event(sid, session, evt, emitted, registry, fmt, deferred, com
 
 
 def _notif_dispatch_completions(sid, session, notifications, registry, deferred):
-    from tools.process_registry_notifications import ProcessNotificationBatch
+    from tools.process_registry_notifications import PROCESS_COMPLETE_DISPLAY_KIND, ProcessNotificationBatch
     from tools.async_delegation import claim_event_delivery, complete_event_delivery, release_event_delivery
 
     if not notifications:
@@ -478,13 +528,15 @@ def _notif_dispatch_completions(sid, session, notifications, registry, deferred)
         return
     claimed = [(event, text, claim) for event, text in notifications
                if (claim := claim_event_delivery(event, "tui-completion-batch")) is not None]
-    text = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed)).render(registry)
+    batch = ProcessNotificationBatch(tuple((event, text) for event, text, _claim in claimed))
+    text = batch.render(registry)
     if text is None:
         _notif_release_turn(session)
     try:
         if text is not None:
             if not _notif_submit(f"__notif__{int(time.time() * 1000)}", sid, session, text,
-                                 "completion batch dispatch failed"):
+                                 "completion batch dispatch failed", display_kind=PROCESS_COMPLETE_DISPLAY_KIND,
+                                 display_metadata={"display_text": batch.display_text(registry)}):
                 for event, _text, claim in claimed:
                     _notif_defer_event(event, claim,
                         deferred.append if deferred is not None else registry.completion_queue.put)

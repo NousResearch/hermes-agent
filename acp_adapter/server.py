@@ -28,7 +28,8 @@ from acp_adapter.auth import TERMINAL_SETUP_AUTH_METHOD_ID, build_auth_methods, 
 from acp_adapter.commands import HERMES_VERSION, SlashCommandsMixin, _estimate_tokens
 from acp_adapter.content import PromptBlock, _content_blocks_to_openai_user_content, _extract_text
 from acp_adapter.events import (
-    _build_plan_update_from_todo_result, make_message_cb, make_step_cb, make_thinking_cb, make_tool_progress_cb,
+    AssistantMessageIdAllocator, _build_plan_update_from_todo_result, make_message_cb, make_step_cb,
+    make_thinking_cb, make_tool_progress_cb,
 )
 from acp_adapter.model_catalog import build_model_state, encode_model_choice
 from acp_adapter.permissions import make_approval_callback
@@ -311,32 +312,33 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         choice = encode_model_choice(provider, model)
         return SessionModelState(available_models=[ModelInfo(model_id=choice, name=model)], current_model_id=choice)
 
-    @staticmethod
-    def _resolve_model_selection(raw_model: str, current_provider: str) -> tuple[str, str]:
-        """Resolve ``provider:model`` input into the provider and normalized model id."""
-        target_provider, new_model = current_provider, raw_model.strip()
-        try:
-            from hermes_cli.models import detect_provider_for_model, parse_model_input
-
-            raw = new_model
-            target_provider, new_model = parse_model_input(new_model, current_provider)
-            # An explicit ``provider:model`` prefix is a selection; detection is a fallback for bare
-            # names only and must not second-guess it (#59089).
-            if target_provider == current_provider and new_model == raw:
-                detected = detect_provider_for_model(new_model, current_provider)
-                if detected:
-                    target_provider, new_model = detected
-        except Exception:
-            logger.debug("Provider detection failed, using model as-is", exc_info=True)
-        return target_provider, new_model
-
     def _switch_model(
         self, state: SessionState, raw_model: str, *, keep_endpoint: bool = False
     ) -> tuple[str | None, str, str]:
         """Rebuild the session agent on a new model -> (old provider, new provider, model).
-        ``keep_endpoint`` carries base_url/api_mode over when the provider is unchanged."""
+
+        Resolution goes through ``hermes_cli.model_switch.switch_model`` seeded with the live
+        agent route — the same catalog/alias/credential validation as CLI/gateway/TUI ``/model``
+        — so ACP never hands the session a model no provider can serve. ``provider:model`` picker
+        ids become ``--provider``. ACP never persists. ``keep_endpoint`` carries base_url/api_mode
+        over when the provider is unchanged."""
+        from hermes_cli.config import get_compatible_custom_providers, load_config
+        from hermes_cli.model_switch import switch_model
+        from hermes_cli.models import parse_model_input
+
         current_provider = getattr(state.agent, "provider", None)
-        target_provider, new_model = self._resolve_model_selection(raw_model, current_provider or "openrouter")
+        explicit_provider, model_input = parse_model_input(raw_model, "")
+        cfg = load_config()
+        result = switch_model(
+            raw_input=model_input, explicit_provider=explicit_provider,
+            current_provider=current_provider or "openrouter", current_model=str(state.model or ""),
+            current_base_url=str(getattr(state.agent, "base_url", "") or ""),
+            current_api_key=str(getattr(state.agent, "api_key", "") or ""),
+            user_providers=cfg.get("providers") if isinstance(cfg.get("providers"), dict) else {},
+            custom_providers=get_compatible_custom_providers(cfg))
+        if not result.success:
+            raise ValueError(result.error_message or f"Cannot switch to {raw_model}")
+        target_provider, new_model = result.target_provider, result.new_model
         state.model = new_model
         endpoint: dict[str, Any] = {}
         if keep_endpoint and not (current_provider and target_provider != current_provider):
@@ -799,7 +801,9 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
 
         # Slash commands are text-only; a prompt with media goes to the agent even if it starts with "/".
         if text_only_prompt and isinstance(user_content, str) and user_text.startswith("/"):
-            response_text = self._handle_slash_command(user_text, state)
+            # Off the loop: /model validates through switch_model (network I/O) and /compress
+            # calls the LLM; handlers are sync and hold no loop-bound state.
+            response_text = await asyncio.to_thread(self._handle_slash_command, user_text, state)
             if response_text is not None:
                 if self._conn:
                     await self._conn.session_update(session_id, acp.update_agent_message_text(response_text))
@@ -852,9 +856,14 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
             cbs.tool_progress_cb = make_tool_progress_cb(
                 conn, session_id, loop, tool_call_ids, tool_call_meta, edit_approval_policy_getter=policy_getter
             )
-            cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop)
+            # Per-session allocator: a new turn must never reuse a previous turn's
+            # assistant messageId (ACP clients replace the bubble with that id).
+            if state.message_ids is None:
+                state.message_ids = AssistantMessageIdAllocator()
+            state.message_ids.close()  # new turn -> next chunk opens a fresh id
+            cbs.reasoning_cb = make_thinking_cb(conn, session_id, loop, state.message_ids)
             cbs.step_cb = make_step_cb(conn, session_id, loop, tool_call_ids, tool_call_meta)
-            message_cb = make_message_cb(conn, session_id, loop)
+            message_cb = make_message_cb(conn, session_id, loop, state.message_ids)
 
             def stream_delta_cb(text: str) -> None:
                 cbs.streamed = cbs.streamed or bool(text)
@@ -910,7 +919,16 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         suppress = interrupted and final_response.startswith(INTERRUPT_WAITING_FOR_MODEL_PREFIX)
         # Send the final text unless already streamed — or if a plugin hook transformed it after.
         if final_response and conn and not suppress and (not streamed_message or result.get("response_transformed")):
-            await conn.session_update(session_id, acp.update_agent_message_text(final_response))
+            update = acp.update_agent_message_text(final_response)
+            if state.message_ids is not None:
+                # A plugin-rewritten reply replaces the streamed bubble (same id); an
+                # unstreamed final response opens its own.
+                if streamed_message and result.get("response_transformed"):
+                    update.message_id = state.message_ids.last() or state.message_ids.current()
+                else:
+                    update.message_id = state.message_ids.current()
+                state.message_ids.close()
+            await conn.session_update(session_id, update)
 
         # Go idle before draining so recursive prompt() calls can acquire the session.
         with state.runtime_lock:
@@ -941,7 +959,10 @@ class HermesACPAgent(SlashCommandsMixin, acp.Agent):
         """Switch the model for a session (called by ACP protocol)."""
         state = self.session_manager.get_session(session_id)
         if state:
-            _old, requested_provider, resolved_model = self._switch_model(state, model_id, keep_endpoint=True)
+            # switch_model() does synchronous network I/O (models.dev, custom-endpoint probes,
+            # ~10 s cold) — off the loop, like the gateway, so other ACP sessions keep flowing.
+            _old, requested_provider, resolved_model = await asyncio.to_thread(
+                self._switch_model, state, model_id, keep_endpoint=True)
             logger.info(
                 "Session %s: model switched to %s via provider %s", session_id, resolved_model, requested_provider
             )

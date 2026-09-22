@@ -24,6 +24,31 @@ from tools.tool_backend_helpers import (has_direct_modal_credentials, managed_no
 # Log-record parity with the origin module.
 logger = logging.getLogger("tools.terminal_tool")
 
+# Human reason for the most recent failed requirements check (None after a passing one). The CLI
+# startup notice and `hermes doctor` read it through terminal_backend_unavailable_reason() so the user
+# hears WHY the terminal tool is missing instead of discovering it on first use.
+_last_unavailable_reason: Optional[str] = None
+
+
+def _reject(reason: str) -> bool:
+    """Log *reason*, remember it for the user-facing notice, and return False for the checker."""
+    global _last_unavailable_reason
+    _last_unavailable_reason = reason
+    logger.error(reason)
+    return False
+
+
+def _record_unavailable_reason(reason: Optional[str]) -> None:
+    """Store (or clear) the last failure reason without logging; used by check_terminal_requirements."""
+    global _last_unavailable_reason
+    _last_unavailable_reason = reason
+
+
+def terminal_backend_unavailable_reason() -> Optional[str]:
+    """Why the last terminal requirements check failed, in plain words; None when it passed."""
+    return _last_unavailable_reason
+
+
 _VERCEL_SANDBOX_DEFAULT_CWD = "/vercel/sandbox"
 _SUPPORTED_VERCEL_RUNTIMES = ("node24", "node22", "python3.13")
 _BUILTIN_BACKENDS = "local, docker, singularity, modal, daytona, vercel_sandbox, ssh"
@@ -99,7 +124,8 @@ def _modal_unavailable_reason(modal_state: Dict[str, Any]) -> tuple[str, str]:
             f"Modal backend selected but no direct Modal credentials/config {found}.")
 
 
-# --- Environment builders. Signature: (*, env_type, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
+# --- Environment builders. Signature: (*, image, cwd, timeout, cc, task_id, ssh_config, host_cwd)
+# (env_type is only forwarded to the plugin-registry fallback, not to the built-in builders.)
 def _build_local_env(*, cwd, timeout, **_):
     return _LocalEnvironment(cwd=cwd, timeout=timeout)
 
@@ -215,9 +241,12 @@ def _create_environment(env_type: str, image: str, cwd: str, timeout: int,
     for local/ssh/vercel; ``container_config`` carries the container_*/docker_* resource keys; ``host_cwd`` is
     the host dir bound into Docker when cwd mounting is enabled. ``probe_only`` asks ssh for a throwaway
     connection with no remote setup/sync (the prompt-time probe). Unknown types fall through to plugin backends."""
-    builder = _ENV_BUILDERS.get(env_type, _build_plugin_env)
-    return builder(env_type=env_type, image=image, cwd=cwd, timeout=timeout, cc=container_config or {},
-                   task_id=task_id, ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)
+    builder = _ENV_BUILDERS.get(env_type)
+    kwargs = dict(image=image, cwd=cwd, timeout=timeout, cc=container_config or {}, task_id=task_id,
+                  ssh_config=ssh_config, host_cwd=host_cwd, probe_only=probe_only)
+    if builder is not None:
+        return builder(**kwargs)
+    return _build_plugin_env(env_type=env_type, **kwargs)
 
 
 # --- Requirement checkers: one generic path driven by _BACKEND_SPECS; optional fields, checked in order:
@@ -229,16 +258,13 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
     runtime = (config.get("vercel_runtime") or "").strip()
     disk = config.get("container_disk", 51200)
     if not _is_supported_vercel_runtime(runtime):
-        logger.error("Vercel Sandbox runtime %r is not supported. Set TERMINAL_VERCEL_RUNTIME to one of: %s.",
-                     runtime, ", ".join(_SUPPORTED_VERCEL_RUNTIMES))
-        return False
+        return _reject(f"Vercel Sandbox runtime {runtime!r} is not supported. Set TERMINAL_VERCEL_RUNTIME to one of: "
+                       f"{', '.join(_SUPPORTED_VERCEL_RUNTIMES)}.")
     if disk not in {0, 51200}:
-        logger.error("Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK=%s. "
-                     "Use the default shared setting (51200 MB).", disk)
-        return False
+        return _reject(f"Vercel Sandbox does not support custom TERMINAL_CONTAINER_DISK={disk}. "
+                       "Use the default shared setting (51200 MB).")
     if importlib.util.find_spec("vercel") is None:
-        logger.error("vercel is required for the Vercel Sandbox terminal backend: pip install vercel")
-        return False
+        return _reject("vercel is required for the Vercel Sandbox terminal backend: pip install vercel")
     from agent.secret_scope import get_secret
     if get_secret("VERCEL_OIDC_TOKEN"):
         return True
@@ -249,8 +275,7 @@ def _check_vercel(config: Dict[str, Any]) -> bool:
             "set together." if any(present) else
             "selected but no supported auth configuration was found. Set VERCEL_TOKEN, VERCEL_PROJECT_ID, "
             "and VERCEL_TEAM_ID for normal use.")
-    logger.error(f"Vercel Sandbox backend {head} VERCEL_OIDC_TOKEN is supported for one-off local development only.")
-    return False
+    return _reject(f"Vercel Sandbox backend {head} VERCEL_OIDC_TOKEN is supported for one-off local development only.")
 
 
 def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
@@ -258,17 +283,15 @@ def _modal_pre(config: Dict[str, Any]) -> Optional[bool]:
     if modal_state["selected_backend"] == "managed":
         return True
     if modal_state["selected_backend"] != "direct":
-        logger.error(_modal_unavailable_reason(modal_state)[0])
-        return False
+        return _reject(_modal_unavailable_reason(modal_state)[0])
     return None
 
 
 def _ssh_pre(config: Dict[str, Any]) -> bool:
     if config.get("ssh_host") and config.get("ssh_user"):
         return True
-    logger.error("SSH backend selected but TERMINAL_SSH_HOST and TERMINAL_SSH_USER "
-                 "are not both set. Configure both or switch TERMINAL_ENV to 'local'.")
-    return False
+    return _reject("the SSH host and user are not configured (TERMINAL_SSH_HOST / TERMINAL_SSH_USER); "
+                   "run `hermes setup terminal` to enter them or pick the 'local' backend")
 
 
 def _daytona_post(config: Dict[str, Any]) -> bool:
@@ -280,7 +303,7 @@ def _daytona_post(config: Dict[str, Any]) -> bool:
 _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
     "local": {},
     "docker": {"binary": (lambda: importlib.import_module("tools.environments.docker").find_docker(), "version",
-                          "Docker executable not found in PATH or common install locations")},
+                          "Docker is not installed — no docker executable in PATH or the usual install locations")},
     "singularity": {"binary": (lambda: shutil.which("apptainer") or shutil.which("singularity"), "--version", None)},
     "ssh": {"pre": _ssh_pre},
     "modal": {"pre": _modal_pre,
@@ -290,7 +313,14 @@ _BACKEND_SPECS: Dict[str, Dict[str, Any]] = {
 }
 
 
+_PROBE_FAILED_REASONS = {
+    "docker": "Docker is installed but the Docker daemon is not running",
+    "singularity": "Apptainer/Singularity is installed but `--version` failed, so the install looks broken",
+}
+
+
 def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
+    _record_unavailable_reason(None)
     spec = _BACKEND_SPECS[env_type]
     verdict = spec["pre"](config) if "pre" in spec else None
     if verdict is not None:
@@ -299,25 +329,26 @@ def _check_requirements(env_type: str, config: Dict[str, Any]) -> bool:
         finder, arg, missing_msg = spec["binary"]
         executable = finder()
         if not executable:
-            if missing_msg:
-                logger.error(missing_msg)
-            return False
+            return _reject(missing_msg or f"the {env_type!r} backend's executable was not found")
         probe = subprocess.run([executable, arg], capture_output=True, timeout=5, stdin=subprocess.DEVNULL)
-        return probe.returncode == 0
+        if probe.returncode != 0:
+            return _reject(f"{_PROBE_FAILED_REASONS[env_type]} (`{executable} {arg}` exited with code {probe.returncode})")
+        return True
     if "module" in spec and importlib.util.find_spec(spec["module"][0]) is None:
-        logger.error(spec["module"][1])
-        return False
-    return spec["post"](config) if "post" in spec else True
+        return _reject(spec["module"][1])
+    if "post" in spec and not spec["post"](config):
+        return _reject(f"the {env_type!r} backend is missing its API key or SDK")
+    return True
 
 
 def _check_plugin_requirements(config: Dict[str, Any]) -> bool:
+    _record_unavailable_reason(None)
     env_type = config["env_type"]
     provider = _get_plugin_env_provider(env_type)
     if provider is not None:
-        return bool(provider.check_requirements(config))
-    logger.error("Unknown TERMINAL_ENV '%s'. Use one of: %s, or a plugin-registered backend.",
-                 env_type, _BUILTIN_BACKENDS)
-    return False
+        ok = bool(provider.check_requirements(config))
+        return ok or _reject(f"the {env_type!r} plugin backend reported its requirements are not met")
+    return _reject(f"Unknown TERMINAL_ENV '{env_type}'. Use one of: {_BUILTIN_BACKENDS}, or a plugin-registered backend.")
 
 
 # Built-in backend -> requirements checker; unknown backends go to the plugin registry.

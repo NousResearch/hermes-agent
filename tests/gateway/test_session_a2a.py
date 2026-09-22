@@ -106,3 +106,50 @@ async def test_forwarding_does_not_merge_lossy_context_or_peer_identity(tmp_path
     await conn.close()
     await denied.close()
     db.close()
+
+
+@pytest.mark.asyncio
+async def test_forwarded_turns_are_authored_by_the_peer_for_memory_attribution(tmp_path, monkeypatch):
+    """The owner binds the exact peer into the policy; memory providers must see that peer as the
+    bot author of every forwarded turn, not the local principal that hosts the session."""
+    from gateway.config import GatewayConfig
+    from gateway.session import SessionStore
+    from gateway.session_authority import initialize_session_authority
+    from gateway.session_a2a import forward_author
+    from gateway.session_ingress import row_turn_author
+    from agent.turn_author import a2a_key
+    from hermes_state_runtime import list_session_admissions
+    import gateway.run as run
+
+    monkeypatch.setenv('HERMES_HOME', str(tmp_path))
+    monkeypatch.setattr(run, '_load_gateway_config', lambda: {'model': {'default': 'fixture'}, 'platform_toolsets': {'cli': []}})
+    monkeypatch.setattr(run, '_resolve_gateway_model', lambda config: 'fixture')
+    store = SessionStore(tmp_path / 'sessions', GatewayConfig())
+    runner = run.GatewayRunner.__new__(run.GatewayRunner)
+    runner.adapters = {}
+    runner.session_store = store
+    runner._session_db = store._db
+    runner._draining = False
+    authority = await initialize_session_authority(runner, profile_id='target', instance_id='test')
+    authority._schedule = lambda ref: None
+    conn = AuthorityConnection(authority, SimpleNamespace(write=lambda frame: None), {'user_id': 'producer'})
+    params = dict(agent='dev', tenant='team', peer='alice', context_id='ctx/a', input_id='first', text='hello')
+    response = await conn.dispatch({'id': 1, 'method': 'a2a.forward', 'params': params})
+    assert 'result' in response, response
+    sid = response['result']['session_id']
+    policy = runner.adapters[next(iter(runner.adapters))].policies[sid]
+    author = forward_author(policy)
+    assert author == {'id': 'alice', 'name': 'alice', 'is_bot': True}
+    assert a2a_key(author) == 'a2a:alice'
+    row = list_session_admissions(authority.db, session_id=sid)[0]
+    assert row_turn_author(policy, row) == author
+    # A producer's own stamp wins; an ordinary local policy names nobody.
+    stamped = {**row, 'payload': {**row['payload'], 'local_automation_v1': {'turn_author': {'id': 'bot-7', 'is_bot': True}}}}
+    assert row_turn_author(policy, stamped) == {'id': 'bot-7', 'is_bot': True}
+    from gateway.session_policy import build_policy
+    plain = build_policy({'cwd': str(tmp_path), 'model': 'm'}, {'platform_toolsets': {'cli': []}})
+    assert row_turn_author(plain, row) is None
+    # An ordinary API session has no policy at all; it names nobody rather than failing admission.
+    assert row_turn_author(None, row) is None
+    await conn.close()
+    authority.db.close()

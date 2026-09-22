@@ -1,3 +1,5 @@
+import type { ProjectInfo, SessionLiveInfo, SubagentStatus } from '@hermes/shared/gateway-events'
+
 import type { SharedControl } from './canonicalGateway.js'
 
 export interface ActiveTool {
@@ -21,8 +23,6 @@ export interface ActivityItem {
   text: string
   tone: 'error' | 'info' | 'warn'
 }
-
-export type SubagentStatus = 'completed' | 'error' | 'failed' | 'interrupted' | 'queued' | 'running' | 'timeout'
 
 export interface SubagentProgress {
   apiCalls?: number
@@ -103,6 +103,8 @@ export interface ApprovalReq {
   choices?: string[]
   command: string
   description: string
+  /** Server→client request id; the answer is the response frame for it. */
+  requestId: string
   smartDenied?: boolean
 }
 
@@ -178,30 +180,20 @@ export type SectionVisibility = Partial<Record<SectionName, DetailsMode>>
 export interface McpServerStatus {
   connected: boolean
   disabled?: boolean
-  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed'
+  status?: 'configured' | 'connecting' | 'connected' | 'disabled' | 'failed' | 'lazy'
   name: string
   tools: number
   transport: string
 }
 
-export interface ProjectInfo {
-  id: string
-  name: string
-  primary_path?: null | string
-  slug: string
-}
-
-export interface SessionInfo {
-  stored_session_id?: string
-  cwd?: string
-  fast?: boolean
+/** The gateway's `session.info` / resume `info` block — generated from `tui_gateway/contracts`,
+ *  plus the canonical-authority fields the legacy contract does not carry yet
+ *  (`gateway/session_events.py` owner stamps and the durable admission FIFO). */
+export interface SessionInfo extends SessionLiveInfo {
+  execution_epoch?: string
+  execution_generation?: number
+  execution_state?: string
   install_warning?: string
-  lazy?: boolean
-  mcp_servers?: McpServerStatus[]
-  model: string
-  profile_name?: string
-  project?: null | ProjectInfo
-  reasoning_effort?: string
   pending_submissions?: Array<{
     admission_id: string
     input_id?: string
@@ -211,44 +203,8 @@ export interface SessionInfo {
     user: string
     outcome?: string | null
   }>
-  execution_epoch?: string
-  execution_generation?: number
-  execution_state?: string
-  running?: boolean
-  release_date?: string
-  service_tier?: string
-  skills: Record<string, string[]>
-  system_prompt?: string
-  tools: Record<string, string[]>
-  update_behind?: number | null
-  update_command?: string
-  usage?: Usage
-  version?: string
 }
-
-export interface Usage {
-  active_subagents?: number
-  /** Rolling mean API latency over the last 10 calls (seconds). */
-  avg_latency_s?: number
-  /** Rolling output tokens/sec over the last 10 calls. */
-  avg_tps?: number
-  /** Session prompt-cache hit ratio (cache_read / prompt tokens, %). */
-  cache_hit_pct?: number
-  calls: number
-  compressions?: number
-  context_max?: number
-  context_percent?: number
-  context_estimated?: boolean
-  context_source?: string
-  context_used?: number
-  cost_status?: string
-  cost_usd?: number
-  dev_credits_spent_micros?: number
-  input: number
-  output: number
-  reasoning?: number
-  total: number
-}
+export type { ProjectInfo }
 
 export interface SudoReq {
   requestId: string

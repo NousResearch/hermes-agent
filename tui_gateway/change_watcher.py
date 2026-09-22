@@ -135,9 +135,12 @@ def _pairing_sig():
     shared signal (a pairing request moves nothing in gateway_state.json)."""
     home = _watcher_home()
     roots = [home / "pairing", home / "platforms" / "pairing"]
+    from hermes_constants import named_profile_is_live
+
     with contextlib.suppress(OSError):
         for profile_dir in (home / "profiles").iterdir():
-            roots += [profile_dir / "pairing", profile_dir / "platforms" / "pairing"]
+            if named_profile_is_live(profile_dir):
+                roots += [profile_dir / "pairing", profile_dir / "platforms" / "pairing"]
     entries = []
     for root in roots:
         with contextlib.suppress(OSError):

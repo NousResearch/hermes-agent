@@ -27,7 +27,7 @@ from agent.error_classifier import FailoverReason, classify_api_error
 from agent.micro_compaction import MicroCompactionMixin
 from agent.prompt_builder import STEER_DISPLAY_KIND
 from agent.model_metadata import (
-    MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
+    CHARS_PER_TOKEN, MINIMUM_CONTEXT_LENGTH, get_model_context_length, estimate_messages_tokens_rough, estimate_tokens_rough,
     strip_opaque_replay_items,
 )
 from agent.redact import redact_sensitive_text
@@ -955,7 +955,7 @@ def _collect_protected_skill_names(messages: List[Dict[str, Any]], prune_boundar
     }
 
 
-_CHARS_PER_TOKEN = 4
+_CHARS_PER_TOKEN = CHARS_PER_TOKEN
 _SUMMARY_FAILURE_COOLDOWN_SECONDS = 600
 
 # Fallback handoff preserves continuity anchors only, not a transcript copy.
@@ -1490,8 +1490,51 @@ def _sum_clarify(name, args, content, content_len, line_count):
     return "[clarify] asked user a question"
 
 
-def _sum_named(name, args, content, content_len, line_count):
-    return f"[{name}] name={args.get('name', '?')} ({content_len:,} chars)"
+def _sum_skill_manage(name, args, content, content_len, line_count):
+    # The advertised call shape is an operations array; the legacy flat shape
+    # (top-level action/name) is still accepted, so both must summarize to a
+    # skill name instead of `name=?` — there is no top-level `name` arg here.
+    ops = args.get("operations")
+    if isinstance(ops, list) and ops:
+        rendered = []
+        for op in ops:
+            if not isinstance(op, dict):
+                continue
+            action = _str_arg(op, "action", "?")
+            op_name = _str_arg(op, "name", "?")
+            rendered.append(f"{action} {op_name}")
+        summary = f"[skill_manage] {'; '.join(rendered[:3])}"
+        if len(ops) > 3:
+            summary += f" (+{len(ops) - 3} more)"
+    else:
+        action = _str_arg(args, "action", "?")
+        op_name = _str_arg(args, "name", "?")
+        summary = f"[skill_manage] {action} {op_name}"
+    return f"{summary}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+
+
+def _sum_skills_list(name, args, content, content_len, line_count):
+    # `skills_list` takes only `category`, not a top-level `name` — the count
+    # from the payload is what identifies the call after compression.
+    category = _str_arg(args, "category")
+    scope = f" category={category}" if category else ""
+    payload = _json_dict(content)
+    count = payload.get("count")
+    listed = f" {count} skills" if isinstance(count, int) else ""
+    return f"[skills_list]{scope}{listed}{_skill_result_failure_suffix(content)} ({content_len:,} chars)"
+
+
+def _skill_result_failure_suffix(content: str) -> str:
+    """`` FAILED: <error>`` for a skill-tool payload that reports failure, else ``""``.
+    The skill tools return ``{"success": false, "error": ...}``; without the outcome in the stub a
+    failed batch compresses into the same line as a success and the post-compaction agent chases the
+    stub text as the error (#112710). Bounded to one line so the stub stays a stub."""
+    payload = _json_dict(content)
+    error = payload.get("error")
+    if not error and payload.get("success") is not False:
+        return ""
+    preview = " ".join(str(error).split())[:80] if error else ""
+    return f" FAILED: {preview}" if preview else " FAILED"
 
 
 def _sum_template(template: str, **defaults):
@@ -1517,8 +1560,8 @@ _TOOL_RESULT_SUMMARIZERS = {
     "delegate_task": _sum_delegate_task,
     "execute_code": _sum_execute_code,
     "skill_view": _sum_skill_view,
-    "skills_list": _sum_named,
-    "skill_manage": _sum_named,
+    "skills_list": _sum_skills_list,
+    "skill_manage": _sum_skill_manage,
     "vision_analyze": lambda name, args, content, content_len, line_count: (
         f"[vision_analyze] '{_str_arg(args, 'question')[:50]}' ({content_len:,} chars)"
     ),
@@ -2150,7 +2193,15 @@ class ContextCompressor(SummaryDispatchMixin, MicroCompactionMixin, ContextEngin
     def record_timeout_failure(self, error: str, failure_kind: str = "timeout") -> None:
         """Consecutive timeout/stall via the ladder; error persisted as ``backoff:<kind>:strategy=<tail_mode>`` for restarts."""
         stamped = f"backoff:{failure_kind or 'timeout'}:strategy={getattr(self, 'tail_mode', None) or 'unknown'}: {error}"
-        self._record_compression_failure_cooldown(float(_next_timeout_cooldown(self)), stamped)
+        seconds = float(_next_timeout_cooldown(self))
+        # The first rung (60s) is shorter than the default idle stall window (120s): the next oversized turn
+        # re-entered the same silent route ~1 min after burning the full window (#112420). A stall cooldown
+        # can never be shorter than the window that just failed to show progress.
+        with contextlib.suppress(Exception):
+            from agent.conversation_compression import resolve_context_compression_timeouts
+            idle, _ceiling = resolve_context_compression_timeouts()
+            seconds = max(seconds, float(idle))
+        self._record_compression_failure_cooldown(seconds, stamped)
 
     def _clear_compression_failure_cooldown(self) -> None:
         # Fence check BEFORE cooldown-clear: a late cancelled worker must not undo the host's timeout cooldown.

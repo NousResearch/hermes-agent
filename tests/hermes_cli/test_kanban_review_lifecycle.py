@@ -21,7 +21,9 @@ down:
 from __future__ import annotations
 
 import json
+import os
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -29,6 +31,7 @@ from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_notify as kbn
 from hermes_cli import kanban_db_dispatch as kbd
+from hermes_cli import kanban_ops
 
 
 @pytest.fixture
@@ -199,6 +202,8 @@ def test_request_review_refuses_to_clear_live_claim_without_ownership(
         tid = kb.create_task(conn, title="live claim", assignee="worker")
         claimed = kb.claim_task(conn, tid)
         assert claimed is not None
+        # This process stands in for the spawned worker: alive, fingerprinted.
+        kbd._set_worker_pid(conn, tid, os.getpid())
 
         # 1) No run id, no force -> refused with a distinct reason.
         ok, reason = kb.request_review(conn, tid, with_reason=True)
@@ -478,6 +483,71 @@ def test_active_pr_guard_skipped_for_review_lane_but_defers_ready_lane(
         ) == "rate_limit_cooldown"
 
 
+def test_dispatch_json_exposes_suppression_reasons(
+    kanban_home: Path, monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """Operators can distinguish an active PR, quota cooldown, lock, and pressure."""
+    monkeypatch.setattr(
+        kanban_ops.kbd,
+        "dispatch_once",
+        lambda *args, **kwargs: kbd.DispatchResult(
+            respawn_guarded=[("active-pr-task", "active_pr")],
+            rate_limited=["quota-task"],
+            skipped_locked=True,
+            memory_pressure="elevated",
+        ),
+    )
+
+    assert kanban_ops._cmd_dispatch(
+        SimpleNamespace(dry_run=True, max=None, failure_limit=kbd.DEFAULT_FAILURE_LIMIT, json=True)
+    ) == 0
+
+    payload = json.loads(capsys.readouterr().out)
+    assert payload["respawn_guarded"] == [{"task_id": "active-pr-task", "reason": "active_pr"}]
+    assert payload["rate_limited"] == ["quota-task"]
+    assert payload["skipped_locked"] is True
+    assert payload["memory_pressure"] == "elevated"
+
+
+def test_dispatch_text_and_daemon_stuck_warning_name_guard_reason(
+    monkeypatch: pytest.MonkeyPatch, capsys: pytest.CaptureFixture[str]
+) -> None:
+    """The plain `hermes kanban dispatch` output and the standalone daemon's
+    "dispatcher stuck" warning both say WHY a ready card was held (#111910):
+    a guarded card must not look like an idle tick with `Spawned: 0`."""
+    res = kbd.DispatchResult(respawn_guarded=[("t_held", "active_pr")], memory_pressure="elevated")
+    monkeypatch.setattr(kanban_ops.kbd, "dispatch_once", lambda *a, **k: res)
+
+    class _Conn:
+        def __enter__(self):
+            return None
+
+        def __exit__(self, *exc):
+            return False
+
+    monkeypatch.setattr(kanban_ops.kbc, "connect_closing", lambda: _Conn())
+    assert kanban_ops._cmd_dispatch(
+        SimpleNamespace(dry_run=True, max=None, failure_limit=kbd.DEFAULT_FAILURE_LIMIT, json=False)
+    ) == 0
+    out = capsys.readouterr().out
+    assert "Guarded (active_pr): t_held" in out
+    assert "Memory pressure elevated" in out
+
+    def _fake_daemon(*, interval, max_spawn, failure_limit, on_tick):
+        for _ in range(6):  # HEALTH_WINDOW consecutive bad ticks
+            on_tick(res)
+
+    monkeypatch.setattr(kanban_ops.kbd, "run_daemon", _fake_daemon)
+    monkeypatch.setattr(kanban_ops.kbd, "has_spawnable_ready", lambda conn: True)
+    monkeypatch.setattr(kanban_ops.kb, "init_db", lambda *a, **k: None)
+    assert kanban_ops._cmd_daemon(
+        SimpleNamespace(force=True, interval=5, max=None, failure_limit=2, verbose=False, pidfile=None)
+    ) in (0, None)
+    err = capsys.readouterr().err
+    assert "dispatcher stuck" in err
+    assert "Last tick held back: active_pr=1, memory_pressure=elevated." in err
+
+
 def test_review_dispatch_preserves_task_skills_and_adds_reviewer_skill(
     kanban_home: Path, monkeypatch: pytest.MonkeyPatch
 ) -> None:
@@ -711,3 +781,34 @@ def test_reviewer_reassigns_for_autonomous_dispatch(kanban_home: Path) -> None:
         ev = _events(conn, tid, kind="review_requested")[0][1]
         assert ev["reviewer"] == "lead-reviewer"
         assert ev["implementer"] == "worker"
+
+
+def test_review_handoff_without_live_run_attributes_run_to_implementer(kanban_home: Path) -> None:
+    """#111064: ``request_review`` reassigns the card to the reviewer in the same
+    UPDATE that flips the status, so the zero-duration run synthesized for a
+    never-claimed card must be stamped with the implementer captured before
+    the rewrite, not the reviewer read back off the mutated row."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="handoff attribution", assignee="worker")
+        assert kb.request_review(conn, tid, summary="ready", reviewer="lead-reviewer") is True
+        assert kb.get_task(conn, tid).assignee == "lead-reviewer"
+        run = conn.execute(
+            "SELECT profile, outcome, step_key FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1",
+            (tid,),
+        ).fetchone()
+        assert (run["outcome"], run["profile"]) == ("review_requested", "worker")
+        assert run["step_key"] == kb.get_task(conn, tid).current_step_key
+        assert _events(conn, tid, kind="review_requested")[0][1]["implementer"] == "worker"
+
+
+def test_synthesized_run_for_unassigned_card_keeps_null_profile(kanban_home: Path) -> None:
+    """A transition that does not name an actor still reads the card: an
+    unassigned card's synthesized run carries ``profile=NULL`` (the actor
+    sentinel must not turn "unassigned" into a re-read of the row)."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="unassigned handoff")
+        assert kb.block_task(conn, tid, reason="waiting on upstream") is True
+        run = conn.execute(
+            "SELECT profile, outcome FROM task_runs WHERE task_id = ? ORDER BY id DESC LIMIT 1", (tid,),
+        ).fetchone()
+        assert (run["outcome"], run["profile"]) == ("blocked", None)

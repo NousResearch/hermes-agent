@@ -96,7 +96,11 @@ def probe(tmp_path):
             asyncio.run(pair(desc, 'denied'))
             assert policies() == snapshots
         assert len(peer.requests) == 4
+        # backups/config/ holds byte-exact copies of config.yaml itself (last-known-good recovery,
+        # #109463); the invariant here is that the DAEMON never persists credentials elsewhere.
+        backups = home / 'backups' / 'config'
         leaks = [str(p.relative_to(home)) for p in home.rglob('*') if p.is_file() and p != config
+                 and backups not in p.parents
                  and any(k.encode() in p.read_bytes() for k in keys.values())]
         assert not leaks, leaks
         return {'pids': pids, 'requests': 4, 'concurrent_inline_keys': True, 'restart_actual_inference': True,

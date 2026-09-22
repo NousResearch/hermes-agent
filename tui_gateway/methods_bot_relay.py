@@ -19,9 +19,11 @@ method = _registry.method
 
 
 def _relay_root() -> Path:
-    """Install root shared by every profile (relay state is install-wide)."""
-    home = Path(os.getenv("HERMES_HOME") or os.path.expanduser("~/.hermes"))
-    return home.parent.parent if home.parent.name == "profiles" else home
+    """Install root shared by every profile (relay state is install-wide). Same formula as the
+    writers (``tools/bot_relay``, ``tools/bot_mode_dm``): both ends of the mailbox must agree for
+    every HERMES_HOME, including non-``profiles/`` subdirs of ``~/.hermes``."""
+    from tools.bot_mode_probe import _default_home, _hermes_root
+    return _hermes_root(Path(_default_home()))
 
 
 # Historical Desktop deadline mirrors; no subprocess retry is performed here.
@@ -75,7 +77,12 @@ def _(rid, params: dict, _root=_relay_root) -> dict:
         forwarded["author"] = author
     resolved = 'default' if profile.lower() == 'hermes' else profile
     root = _root()
-    home = root if resolved == 'default' else root / 'profiles' / resolved
+    # Same identity predicate as `profile list`: infra dirs and tombstones under profiles/ are
+    # not teammates (#99392), so a DM never targets one.
+    from tools.bot_mode_probe import _roster
+    home = dict(_roster(root)).get(resolved)
+    if home is None:
+        return _err(rid, 4092, f"no profile '{profile}' on this gateway", data={'reason': 'unknown_profile'})
     try:
         return _ok(rid, authority_delivery(home, {**forwarded, 'profile': resolved}))
     except Exception as exc:

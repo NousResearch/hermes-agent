@@ -1,4 +1,6 @@
 """API run controls resolve durable claims, never adapter agent/task ownership."""
+from dataclasses import asdict
+
 from gateway.session_contract import Principal, SessionRef
 from gateway.session_results import admission_result
 from hermes_state_runtime import RuntimeStoreError, _row
@@ -102,3 +104,25 @@ async def stop_run(adapter, run_id):
     elif row['status'] == 'unknown':
         raise RuntimeStoreError('unknown_execution')
     return run_projection(adapter, run_id)
+
+
+async def resolve_unknown_run(adapter, run_id, body):
+    """Resolve only the exact unknown admission durably bound to an owned API run."""
+    owned = run_admission(adapter, run_id)
+    if owned is None:
+        raise RuntimeStoreError('not_found')
+    authority, row = owned
+    if not isinstance(body, dict) or set(body) != {'admission_id', 'execution_generation'}:
+        raise RuntimeStoreError('invalid_params')
+    if body['admission_id'] != row['admission_id']:
+        raise RuntimeStoreError('not_found')
+    generation = body['execution_generation']
+    if row['status'] != 'unknown' or type(generation) is not int or generation != row['generation']:
+        raise RuntimeStoreError('stale_generation')
+    actor = Principal(
+        'api', authority.profile_id, frozenset({'session:submit', 'session:control'}),
+        'api-run:' + run_id)
+    receipt = await authority.resolve_unknown(
+        actor, SessionRef(authority.profile_id, row['target_session_id']),
+        row['admission_id'], generation)
+    return asdict(receipt)

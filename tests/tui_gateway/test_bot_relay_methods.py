@@ -11,6 +11,7 @@ The Desktop's relay door on each connected gateway. Contracts:
 from __future__ import annotations
 
 import json
+from pathlib import Path
 
 import pytest
 
@@ -23,6 +24,7 @@ from tools import bot_relay
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -111,9 +113,15 @@ def test_deliver_unreachable_authority_is_a_typed_refusal(home, monkeypatch):
         raise ValueError("profile authority is not ready")
 
     monkeypatch.setattr(live, "authority_delivery", _down)
-    err = srv._methods["bot_relay.deliver"](1, {"id": "d" * 32, "profile": "ghost", "message": "x"})
+    err = srv._methods["bot_relay.deliver"](1, {"id": "d" * 32, "profile": "ops", "message": "x"})
     assert err["error"]["data"]["reason"] == "runtime_unavailable"
     assert "not ready" in err["error"]["message"]
+    # A name that is not a live profile (#99392: infra dirs and bare shells are not teammates)
+    # is refused before any authority is consulted.
+    (home / "profiles" / "sessions").mkdir()
+    for ghost in ("ghost", "sessions"):
+        err = srv._methods["bot_relay.deliver"](2, {"id": "e" * 32, "profile": ghost, "message": "x"})
+        assert err["error"]["data"]["reason"] == "unknown_profile", ghost
 
 
 @pytest.mark.parametrize("params", [
@@ -187,3 +195,28 @@ def test_relay_sender_attribution_obeys_transport_identity(home, monkeypatch, bo
         assert _result(result)["status"] == "queued"
         assert forwarded[0]["author"] == SENDER_AUTHOR
         assert not any(key in forwarded[0] for key in SENDER)
+
+
+@pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])
+def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, subdir):
+    """Both ends of the relay mailbox derive the install root from HERMES_HOME with ONE formula.
+    The writer side (``message_agent``'s ``_hermes_root``) and the drain side
+    (``methods_bot_relay._relay_root``) must agree for a ``profiles/<name>`` home AND for an
+    arbitrary subdir of the native ``~/.hermes`` — a split here is silent non-delivery."""
+    from tools.bot_mode_probe import _default_home, _hermes_root
+    from tui_gateway import methods_bot_relay
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home = tmp_path / ".hermes" / subdir
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    writer_root = _hermes_root(Path(_default_home()))
+    target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
+              "connection_label": "", "title": "", "description": ""}
+    env = bot_relay.enqueue_envelope(
+        writer_root, target=target, message="m", sender_profile="default", sender_handle="hermes")
+
+    assert methods_bot_relay._relay_root() == writer_root
+    drained = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
+    assert [e["id"] for e in drained["envelopes"]] == [env["id"]]

@@ -18,6 +18,7 @@ import { test, vi } from 'vitest'
 import {
   canImportHermesCli,
   DEFAULT_PROBE_TIMEOUT_MS,
+  execProbe,
   hermesRuntimeImportProbe,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
@@ -32,6 +33,53 @@ import { ensureLocalGateway, runGatewayEnsure } from './local-gateway'
 // non-zero) and as a way to script verifyHermesCli's success path
 // (a tiny script we write to disk that exits 0 on --version).
 const NODE_BIN = process.execPath
+
+test('execProbe keeps the parent event loop available to the child', async () => {
+  let unexpectedSocketError: Error | undefined
+
+  const server = net.createServer((socket) => {
+    socket.on('error', (error) => {
+      // A successful child exits immediately after reading the sentinel. On
+      // Windows that peer close can surface as ECONNRESET on the server side.
+      if ((error as NodeJS.ErrnoException).code !== 'ECONNRESET') {
+        unexpectedSocketError ??= error
+      }
+    })
+    socket.end('pong')
+  })
+
+  await new Promise<void>((resolve, reject) => {
+    server.once('error', reject)
+    server.listen(0, '127.0.0.1', resolve)
+  })
+
+  const address = server.address()
+  assert.ok(address && typeof address === 'object')
+
+  const childScript = `
+    const net = require('node:net')
+    let reply = ''
+    const socket = net.createConnection(${address.port}, '127.0.0.1')
+    socket.setEncoding('utf8')
+    socket.on('data', (chunk) => { reply += chunk })
+    socket.on('end', () => process.exit(reply === 'pong' ? 0 : 1))
+    socket.on('error', () => process.exit(1))
+  `
+
+  try {
+    await execProbe(NODE_BIN, ['-e', childScript], {
+      stdio: 'ignore',
+      timeout: 5_000,
+      windowsHide: true
+    })
+  } finally {
+    await new Promise<void>((resolve, reject) => {
+      server.close((error) => (error ? reject(error) : resolve()))
+    })
+  }
+
+  assert.ifError(unexpectedSocketError)
+})
 
 test('runtime discovery serves a child callback before publishing the gateway descriptor', async () => {
   const home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-runtime-probe-'))

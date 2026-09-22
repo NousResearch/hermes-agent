@@ -390,6 +390,34 @@ class TestClassifyApiError:
         assert result.reason == FailoverReason.billing
         assert result.retryable is False
 
+    @pytest.mark.parametrize(
+        "code",
+        [
+            "credit_balance_exhausted",
+            "organization_spend_limit_exceeded",
+            "project_spend_limit_exceeded",
+            "organization_usage_limit_exceeded",
+        ],
+    )
+    @pytest.mark.parametrize("status_code", [None, 429])
+    def test_openai_spend_usage_limit_codes_are_billing(self, code, status_code):
+        # OpenAI documents these structured codes on HTTP 429 when a credit
+        # balance or org/project spend/usage cap is exhausted. They must
+        # classify as billing (rotate + fallback) on the 429 path AND on the
+        # status-less path (SSE/stream-surfaced errors carry only the body),
+        # never as a retryable rate limit. (clean-room port of
+        # zed-industries/zed#63208)
+        e = MockAPIError(
+            "request rejected",
+            status_code=status_code,
+            body={"error": {"code": code, "message": "request rejected"}},
+        )
+        result = classify_api_error(e, provider="openai", model="gpt-5")
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_rotate_credential is True
+        assert result.should_fallback is True
+
     def test_429_rate_limit_phrase_never_promotes_to_billing(self):
         # The exclusion guard: "Rate limit exceeded" contains the
         # "limit exceeded" usage-limit substring, but an explicit rate-limit
@@ -538,6 +566,30 @@ class TestClassifyApiError:
         result = classify_api_error(e, provider="zai")
         assert result.reason == FailoverReason.rate_limit
         assert result.should_rotate_credential is True
+
+    def test_429_with_structured_terminal_quota_code_is_billing(self):
+        """LiteLLM stamps ``terminal_quota_exhausted`` on a hard-cap 429. The
+        429 handler always returns a verdict, so the structured billing code
+        must be honored inside it — otherwise the exhausted key is retried
+        (upstream this respawned duplicate subagents; ported from
+        code-yeongyu/oh-my-openagent#6677)."""
+        e = MockAPIError(
+            "request failed", status_code=429,
+            body={"error": {"code": "terminal_quota_exhausted", "message": "request failed"}},
+        )
+        result = classify_api_error(e)
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+        assert result.should_fallback is True
+
+    def test_429_hard_billing_limit_text_is_billing(self):
+        """The free-text twin: "hard billing limit" is exhaustion wording, not
+        throttling, even though it contains no reset signal to disambiguate."""
+        result = classify_api_error(
+            MockAPIError("hard billing limit reached for this key", status_code=429)
+        )
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
 
     # ── 5xx that are actually request-validation errors ──
     # Some OpenAI-compatible gateways (e.g. codex.nekos.me) return
@@ -767,6 +819,18 @@ class TestClassifyApiError:
         assert result.retryable is True
         assert result.should_fallback is False
 
+    def test_opencode_zen_wrapped_replay_rejection_reaches_replay_strip(self):
+        """OpenCode Zen wraps the rejected encrypted replay in a generic 400."""
+        e = MockAPIError(
+            "HTTP 400: Error from provider (Console): Upstream request failed: "
+            "[invalid_request_error] reasoning `encrypted_content` was not issued to this caller",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="opencode-zen", model="muse-spark-1.3-contributor-free")
+        assert result.reason == FailoverReason.invalid_encrypted_content
+        assert result.retryable is True
+        assert result.should_fallback is False
+
     # ── Codex masked encrypted-reasoning replay rejection (#92353) ──
 
     _CODEX_MASKED = {"message": "Request blocked.", "type": "invalid_request_error", "param": None, "code": "invalid_prompt"}
@@ -792,17 +856,20 @@ class TestClassifyApiError:
         e = MockAPIError("Error code: 400 - " + body["message"], status_code=400, body=body)
         assert classify_api_error(e, provider=provider, model="gpt-5.5").reason == expected
 
-    def test_azure_conflicting_continuation_identities_is_invalid_encrypted_content(self):
-        """Azure Foundry's wording for a rejected encrypted-reasoning replay (#105369); ``code`` is the
-        generic ``invalid_value``, so the message decides."""
-        message = "Conflicting authenticated continuation identities."
+    @pytest.mark.parametrize(("provider", "model", "message", "code"), [
+        ("azure-foundry", "gpt-6-astra", "Conflicting authenticated continuation identities.", "invalid_value"),
+        # Custom Responses endpoint wraps the replay rejection in a generic bad_request (#95834).
+        ("custom", "gpt-5.6", "The encrypted content could not be decrypted or parsed.", "bad_request"),
+    ], ids=["azure-continuation-identities", "custom-decrypted-or-parsed"])
+    def test_message_only_replay_rejection_is_invalid_encrypted_content(self, provider, model, message, code):
+        """Endpoints whose ``code`` is generic; the message wording alone must decide."""
         e = MockAPIError(
             f"Error code: 400 - {{'error': {{'message': '{message}', 'type': 'invalid_request_error', "
-            "'param': 'input', 'code': 'invalid_value'}}",
+            f"'param': 'input', 'code': '{code}'}}",
             status_code=400,
-            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": "invalid_value"}},
+            body={"error": {"message": message, "type": "invalid_request_error", "param": "input", "code": code}},
         )
-        result = classify_api_error(e, provider="azure-foundry", model="gpt-6-astra")
+        result = classify_api_error(e, provider=provider, model=model)
         assert result.reason == FailoverReason.invalid_encrypted_content
         assert result.retryable is True
         assert result.should_fallback is False

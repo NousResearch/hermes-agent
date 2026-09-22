@@ -12,13 +12,14 @@ from __future__ import annotations
 import logging
 import re
 from dataclasses import dataclass
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Tuple
 
 from agent.error_classifier import FailoverReason
 from agent.message_metadata import append_message
 from agent.message_sanitization import close_interrupted_tool_sequence
 from agent.repetition_guard import is_repetition_dominated
 from agent.turn_api_call import stop_thinking_spinner
+from agent.turn_failure_copy import content_policy_copy, provider_label_for, site_copy, stamp_failure
 from agent.turn_retry_state import TurnRetryState
 from agent.usage_pricing import normalize_usage
 from hermes_constants import PARTIAL_STREAM_STUB_ID
@@ -27,8 +28,8 @@ logger = logging.getLogger("agent.conversation_loop")
 
 _CONTINUABLE_MODES = {"chat_completions", "bedrock_converse", "anthropic_messages"}
 _THINK_TAG_RE = re.compile(r'<(?:think|thinking|reasoning|REASONING_SCRATCHPAD)[^>]*>', re.IGNORECASE)
-_TRUNCATED_FINAL = "Response truncated due to output length limit"
-_FIRST_TRUNCATED_FINAL = "First response truncated due to output length limit"
+_TRUNCATED_FINAL = site_copy("truncated")
+_FIRST_TRUNCATED_FINAL = _TRUNCATED_FINAL
 # #106260: a stream that died on a context-overflow error after partial delivery must not seed a
 # continuation — the transcript already cannot fit, and appending the partial stub grows every
 # later request into the same overflow. End the turn via the recovery contract instead.
@@ -157,20 +158,22 @@ class _Trunc(TruncationVerdict):
         self, final_response: str, error: Optional[str] = None, *,
         result_messages: Optional[List[Dict[str, Any]]] = None, cleanup: bool = True,
         failed: bool = False, compression_exhausted: bool = False,
+        failure: Tuple[str, bool] = ("truncated", True),
     ) -> TruncationVerdict:
         """Persist and end the turn as partial (or ``failed``).
 
         ``compression_exhausted`` forwards the #98722 typed bit so the gateway can
-        move future input off a bloated session (run_turn.py consumes it).
+        move future input off a bloated session (run_turn.py consumes it). ``failure`` is
+        the ``(failure_reason, retryable)`` verdict for the UI descriptor.
         """
         agent = self.agent
         if cleanup:
             agent._cleanup_task_resources(self.effective_task_id)
         agent._persist_session(self.messages, self.conversation_history)
-        return self.done("return", partial_result(
+        return self.done("return", stamp_failure(partial_result(
             self.messages if result_messages is None else result_messages, self.api_call_count,
             final_response, error, failed=failed, compression_exhausted=compression_exhausted,
-        ))
+        ), *failure))
 
     @property
     def is_stub(self) -> bool:
@@ -334,7 +337,7 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             f"{agent.log_prefix}⚠️  Stream kept dropping mid tool-call after 4 retries — the action was not executed.",
             force=True,
         )
-        _final_response = "Stream repeatedly dropped mid tool-call (network); the tool was not executed"
+        _final_response = site_copy("stream_dropped_tool_call", label=provider_label_for(agent.provider))
     else:
         agent._vprint(
             f"{agent.log_prefix}⚠️  Truncated tool call response detected again — refusing to execute incomplete tool arguments.",
@@ -344,7 +347,10 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
     agent._cleanup_task_resources(st.effective_task_id)
     # Prior tool batches can leave a tool-result tail; this path never reaches finalize_turn.
     close_interrupted_tool_sequence(st.messages, _final_response)
-    return st.end_turn(_final_response, cleanup=False)
+    return st.end_turn(
+        _final_response, cleanup=False,
+        failure=(FailoverReason.timeout.value if st.is_stub else "truncated", True),
+    )
 
 
 def recover_from_truncation(
@@ -403,6 +409,7 @@ def recover_from_truncation(
             error=_CONTEXT_OVERFLOW_PARTIAL_FINAL,
             failed=True,
             compression_exhausted=True,
+            failure=("context_overflow", False),
         )
 
     _trunc_msg = normalize_response_for_agent(agent, response)
@@ -443,7 +450,7 @@ _CODEX_REPLAY_KEYS = (
 
 def continue_codex_incomplete(
     agent: Any, assistant_message: Any, finish_reason: str, *, messages: List[Dict[str, Any]],
-    conversation_history: Any, api_call_count: int,
+    conversation_history: Any, api_call_count: int, response: Any = None,
 ) -> Optional[Dict[str, Any]]:
     """Codex Responses ``status=incomplete`` continuation (max 3 per turn).
 
@@ -452,8 +459,14 @@ def continue_codex_incomplete(
     overwritten, because the earlier response holds the only native-compaction
     checkpoint) and, when a bare retry would be byte-identical, a user-role nudge — only
     after an assistant row, to preserve role alternation. Returns ``None`` to continue
-    the turn loop, or the terminal ``partial`` result once retries are exhausted."""
+    the turn loop, or the terminal ``partial`` result once retries are exhausted.
+
+    When ``response`` hit ``max_output_tokens`` with no visible text (reasoning ate the
+    whole budget), the next attempt goes out with reasoning off and a doubled output
+    cap — the same one-shot overrides the chat-completions length path uses — because
+    re-sending the identical budget and effort re-burns the budget identically (#90393)."""
     from agent.conversation_loop import _CODEX_INCOMPLETE_NUDGE
+    from agent.turn_response_check import _codex_finish_reason
 
     agent._codex_incomplete_retries += 1
     n = agent._codex_incomplete_retries
@@ -511,6 +524,14 @@ def continue_codex_incomplete(
                 # Alternation guard: the nudge may only follow an assistant row.
                 if not _already_nudged and _last_msg.get("role") == "assistant":
                     append_message(messages, {"role": "user", "content": _CODEX_INCOMPLETE_NUDGE})
+        if not interim_has_content and _codex_finish_reason(response) == "incomplete":
+            agent._ephemeral_reasoning_off = True
+            # No configured cap means the provider's own ceiling was hit: the observed
+            # output_tokens IS that ceiling, so seed the escalation from it (else 4096).
+            usage = getattr(response, "usage", None)
+            observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
+            base = agent.max_tokens or int(observed or 0) or 4096
+            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(32768, base))
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)")
         # Spinner/heartbeat notice: these retries can take minutes and otherwise look
@@ -557,9 +578,7 @@ def handle_content_policy_refusal(
     """HTTP-200 refusal (``finish_reason`` ``content_filter`` / ``guardrail_intervened``).
     Deterministic for the unchanged prompt — never retried: one configured-fallback try,
     else surface the refusal (explanation may live only in the reasoning channel)."""
-    from agent.conversation_loop import (
-        _CONTENT_POLICY_RECOVERY_HINT, _arm_fallback_restart, _content_policy_blocked_result
-    )
+    from agent.conversation_loop import _arm_fallback_restart, _content_policy_blocked_result
 
     _refusal_result = normalize_response_for_agent(agent, response)
     _refusal_text = (getattr(_refusal_result, "content", None) or "").strip()
@@ -590,13 +609,9 @@ def handle_content_policy_refusal(
         _refusal_log or "(no text)",
     )
     agent._emit_status("⚠️ The model declined to respond to this request (safety refusal).")
-    _refusal_detail = (
-        f"Model's explanation: {_refusal_text}" if _refusal_text else "The model returned no explanation."
-    )
-    _refusal_response = (
-        "⚠️  The model declined to respond to this request (safety refusal — not a Hermes/gateway failure).\n\n"
-        f"{_refusal_detail}\n\n"
-        f"{_CONTENT_POLICY_RECOVERY_HINT}"
+    _refusal_response = "⚠️ " + content_policy_copy(
+        label=provider_label_for(agent.provider),
+        summary=_refusal_text or "the model returned no explanation",
     )
     agent._cleanup_task_resources(effective_task_id)
     agent._persist_session(messages, conversation_history)

@@ -72,8 +72,11 @@ def submission_payload(rpc, prompt, attachments=None):
     if not attachments:
         return {'text': prompt}
     from gateway.hosted_room_driver import validate_bound_task_manifest
-    from gateway.session_ingress_media import capture_native_media, restore_native_media
+    from gateway.session_ingress_media import capture_native_media, restore_native_media, validate_media_batch_size
     manifest = validate_bound_task_manifest(attachments)
+    # Each bound file is captured on its own, so the admission-wide cap is enforced here,
+    # before any member is materialized.
+    validate_media_batch_size(item['size'] for item in manifest)
     store = HostedRoomAttachmentStore(rpc.authority.db.db_path)
     references = []
     transferred = getattr(rpc, 'hosted_attachment_data', None)
@@ -136,3 +139,65 @@ def committed_submission_payload(rpc, prompt, attachments=None):
     from gateway.session_ingress_media import admit_attachments
     payload = submission_payload(rpc, prompt, attachments)
     return {'text': payload['text'], **admit_attachments(payload.get('attachments'))}
+
+
+def _attested_inputs(attachments, digests):
+    """``(manifest item, retained reference)`` per bound input, from source-attested digests.
+
+    Retained inputs are content-addressed under ``native-inputs/<sha256>/<name>`` (images
+    under their digest-named staging copy), so the destination path of every input is a
+    pure function of manifest and digest; nothing is transferred to compute it.
+    """
+    from gateway.hosted_room_driver import validate_bound_task_manifest
+    from gateway.hosted_room_attachments import _SHA256_RE
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES, _media_root
+    manifest = validate_bound_task_manifest(attachments)
+    if (not isinstance(digests, list) or len(digests) != len(manifest)
+            or any(not isinstance(d, str) or _SHA256_RE.fullmatch(d) is None for d in digests)):
+        raise RuntimeStoreError('permission_denied')
+    root = _media_root()
+    inputs = []
+    for item, digest in zip(manifest, digests):
+        name = digest + Path(item['name']).suffix if item['mime'] in _ATTACHMENT_MIMES else item['name']
+        inputs.append((item, {'path': str(root / digest / name), 'sha256': digest, 'size': item['size']}))
+    return inputs
+
+
+def attested_submission_payload(prompt, attachments, digests):
+    """The payload ``committed_submission_payload`` commits for these inputs, derived from
+    source-attested digests alone.
+
+    The durable row is a pure function of prompt, manifest and per-file digest; a source
+    attachment re-pointed at other bytes yields another payload and is refused without
+    transferring anything. Images ride as ``attachments_v1`` references that
+    ``restore_native_media`` re-verifies at execution; documents ride in the prompt text as
+    paths only, so their retained bytes are checked by ``verify_attested_documents``.
+    """
+    if not attachments:
+        return {'text': prompt}
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES
+    documents, media, media_types = [], [], []
+    for item, reference in _attested_inputs(attachments, digests):
+        if item['mime'] in _ATTACHMENT_MIMES:
+            media.append(reference)
+            media_types.append(item['mime'])
+        else:
+            documents.append(reference['path'])
+    text = prompt + ''.join('\n[Shared attachment] file: ' + path + '\n' for path in documents)
+    return {'text': text, **({'attachments_v1': {'media': media, 'media_types': media_types}} if media else {})}
+
+
+def verify_attested_documents(attachments, digests):
+    """Refuse ``storage_unavailable`` unless every retained document at the destination
+    still hashes to its source-attested digest.
+
+    A document is embedded in the prompt as a content-addressed path, not a structured
+    reference, so execution reads whatever bytes sit there; a retained file mutated in
+    place or deleted must pause the row here, as ``committed_submission_payload`` did
+    before the digest-only preflight. Reads destination bytes only, never the source.
+    """
+    if not attachments:
+        return
+    from gateway.session_ingress_media import _ATTACHMENT_MIMES, restore_native_media
+    restore_native_media([reference for item, reference in _attested_inputs(attachments, digests)
+                          if item['mime'] not in _ATTACHMENT_MIMES])

@@ -18,7 +18,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from hermes_cli.web_deps import LateState, late
 from hermes_cli.web_server_oauth import (
-    _external_process_cli_command, _minimax_poller, _nous_plain_poller, _nous_promotion_poller, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token, _xai_device_poller,
+    _external_process_cli_command, _oauth_profile_name, _oauth_sessions, _oauth_sessions_lock, _truncate_token,
 )
 from hermes_cli.web_models import OAuthSubmitBody
 from hermes_cli.web_routers._common import scoped_to_thread
@@ -31,6 +31,14 @@ _profile_scope = late("_profile_scope", "hermes_cli.web_server_profiles")
 _require_token = late("_require_token")
 _resolve_profile_dir = late("_resolve_profile_dir", "hermes_cli.web_server_profiles")
 _OAUTH_PROVIDER_CATALOG = LateState("_OAUTH_PROVIDER_CATALOG", "hermes_cli.web_server_oauth")
+# Pollers are late-bound: they run on a background thread AFTER the route returns, so a
+# test's monkeypatch on web_server_oauth must win at spawn time, not router-import time.
+# A direct import here made those mocks no-ops — the real poller then hit the network
+# from the leaked thread and segfaulted a later test's collection (CI flake, 2026-09-09).
+_nous_plain_poller = late("_nous_plain_poller", "hermes_cli.web_server_oauth")
+_nous_promotion_poller = late("_nous_promotion_poller", "hermes_cli.web_server_oauth")
+_minimax_poller = late("_minimax_poller", "hermes_cli.web_server_oauth")
+_xai_device_poller = late("_xai_device_poller", "hermes_cli.web_server_oauth")
 
 _CODEX_ISSUER = "https://auth.openai.com"
 _JSON_HEADERS = {"Content-Type": "application/json"}
@@ -712,6 +720,8 @@ async def poll_oauth_session(provider_id: str, session_id: str, profile: Optiona
         # Nous over a free-tier identity: why a transfer ended, who signed in, and the default model
         # the completion settled on (None when the config was on the user's own model).
         "reason": sess.get("reason"), "account_email": sess.get("account_email"), "model": sess.get("model"),
+        # Failed sign-ins over a free-tier identity: can a later attempt succeed, and after how long.
+        "retryable": sess.get("retryable"), "retry_after": sess.get("retry_after"),
     }
 
 

@@ -301,7 +301,7 @@ class TestWelcomeRouteCopy:
             "https://welcome-api.nousresearch.com/v1", monkeypatch
         )
 
-        expected = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset="10m")
+        expected = anon_auth.FREE_TIER_RATE_LIMIT_CHAT.format(reset=anon_auth.friendly_wait(600))
         assert verdict.action == "return"
         assert statuses == [f"⏳ {expected}"]
         assert expected in verdict.result["final_response"]
@@ -314,7 +314,7 @@ class TestWelcomeRouteCopy:
             "https://inference-api.nousresearch.com/v1", monkeypatch
         )
 
-        expected = "Nous Portal rate limit active — resets in 10m."
+        expected = "Your Nous account has hit its rate limit; it resets in 10m."
         assert verdict.action == "return"
         assert statuses == [f"⏳ {expected}"]
         assert verdict.result["final_response"].startswith(f"⏳ {expected}\n\n")

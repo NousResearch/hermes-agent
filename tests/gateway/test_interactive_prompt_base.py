@@ -41,14 +41,25 @@ class TestTruncatePreview:
 
 
 class TestFormatExecApproval:
-    def test_default_template(self):
+    def test_default_template(self, monkeypatch):
+        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 300)
         ad = _bare(_DefaultAdapter)
         text = ad._format_exec_approval("rm -rf /", "scary")
         assert text == (
-            "⚠️ Command Approval Required\n\n"
+            "⚠️ Hermes wants to run a command that needs your OK\n\n"
             "```\nrm -rf /\n```\n"
-            "Reason: scary"
+            "Why it was flagged: scary\n\n"
+            "If you don't answer within 5 minutes it will NOT run."
         )
+
+    def test_deadline_line_tracks_configured_timeout(self, monkeypatch):
+        """The card must say how long the user has and that silence means NO — for any timeout."""
+        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 90)
+        text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
+        assert "within 90 seconds it will NOT run" in text
+        monkeypatch.setattr("gateway.platforms.base.approval_timeout_seconds", lambda: 7200)
+        text = _bare(_DefaultAdapter)._format_exec_approval("rm -rf /", "scary")
+        assert "within 2 hours it will NOT run" in text
 
 
     def test_escape_hook_applied_to_command_and_reason(self):

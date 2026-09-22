@@ -229,6 +229,35 @@ class TestCodexBuildKwargs:
         message_item = next(item for item in kw["input"] if item.get("type") == "message")
         assert message_item["id"] == "msg_short_id"
 
+    def test_codex_backend_drops_foreign_message_item_id_end_to_end(self, transport):
+        messages = [
+            {
+                "role": "assistant",
+                "content": "pong",
+                "codex_message_items": [
+                    {
+                        "type": "message",
+                        "role": "assistant",
+                        "status": "completed",
+                        "content": [{"type": "output_text", "text": "pong"}],
+                        "id": "123e4567-e89b-12d3-a456-426614174000",
+                        "phase": "final_answer",
+                    }
+                ],
+            },
+        ]
+
+        kw = transport.build_kwargs(
+            model="gpt-5.5",
+            messages=messages,
+            tools=[],
+            is_codex_backend=True,
+        )
+
+        message_item = next(item for item in kw["input"] if item.get("type") == "message")
+        assert "id" not in message_item
+        assert message_item["phase"] == "final_answer"
+
     @pytest.mark.parametrize("model", [
         "gpt-5.5",
         "gpt-5.5-pro",
@@ -448,6 +477,30 @@ class TestCodexBuildKwargs:
         )
         assert messages[1]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-1"
         assert messages[3]["codex_reasoning_items"][0]["encrypted_content"] == "sealed-2"
+
+    def test_normalize_response_stamps_wire_model_and_replay_drops_it_for_another_model(self, transport):
+        """The wire model from build_kwargs (``-900k`` stripped) is what normalize_response stamps, and a
+        later build_kwargs for another model on the same endpoint replays none of it (sealed blob → 400)."""
+        transport.build_kwargs(model="gpt-5.6-sol-900k", messages=[{"role": "user", "content": "hi"}], tools=[])
+        normalized = transport.normalize_response(SimpleNamespace(
+            status="completed",
+            output=[
+                SimpleNamespace(type="reasoning", id="rs_1", encrypted_content="sealed-sol", summary=[]),
+                SimpleNamespace(type="message", role="assistant", status="completed", id="msg_1",
+                                content=[SimpleNamespace(type="output_text", text="done")]),
+            ],
+        ))
+        captured = normalized.codex_reasoning_items[0]
+        assert captured["_issuer_model"] == "gpt-5.6-sol"
+        history = [
+            {"role": "user", "content": "hi"},
+            {"role": "assistant", "content": "done", "codex_reasoning_items": [captured]},
+            {"role": "user", "content": "next"},
+        ]
+        same = transport.build_kwargs(model="gpt-5.6-sol-900k", messages=history, tools=[], replay_encrypted_reasoning=True)
+        other = transport.build_kwargs(model="gpt-5.7", messages=history, tools=[], replay_encrypted_reasoning=True)
+        assert [i["encrypted_content"] for i in same["input"] if i.get("type") == "reasoning"] == ["sealed-sol"]
+        assert not any(i.get("type") == "reasoning" for i in other["input"])
 
     def test_newest_reasoning_only_keeps_compaction_checkpoints(self):
         from agent.transports.codex import _newest_reasoning_only
@@ -892,7 +945,7 @@ class TestCodexBuildKwargs:
 
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
 
@@ -1074,7 +1127,7 @@ class TestOpencodeReservedToolAliases:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         normalized = transport.normalize_response(response)
         names = [tc.name for tc in normalized.tool_calls]
@@ -1178,7 +1231,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         # Pair the response with a real request so provenance is recorded.
         transport.build_kwargs(
@@ -1208,7 +1261,7 @@ class TestXaiReservedToolSearchAlias:
         response = SimpleNamespace(output=[], status="completed")
         monkeypatch.setattr(
             "agent.codex_responses_adapter._normalize_codex_response",
-            lambda resp, issuer_kind=None: (msg, "tool_calls"),
+            lambda resp, issuer_kind=None, issuer_model=None: (msg, "tool_calls"),
         )
         return transport.normalize_response(response)
 

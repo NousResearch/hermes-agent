@@ -6,6 +6,7 @@ from dataclasses import replace
 
 from gateway.platforms.event import MessageEvent
 from gateway.session_envelope import restore_native
+from hermes_state_runtime import RuntimeStoreError
 
 admission_author = ContextVar('admission_author', default=None)
 executing_admission = ContextVar('executing_admission', default=False)
@@ -18,7 +19,41 @@ async def admit_message(authority, event):
     # Only the delivery waiter is process-local; execution reads the committed snapshot.
     authority.native_waiters.add(receipt.admission_id)
     waiter = authority.waiters.setdefault(receipt.admission_id, asyncio.get_running_loop().create_future())
-    return await asyncio.shield(waiter)
+    try:
+        return await asyncio.shield(waiter)
+    except RuntimeStoreError as exc:
+        return pause_notice(authority, receipt.ref, exc.reason)
+
+
+def pause_notice(authority, ref, reason):
+    """The committed input stays queued behind a paused FIFO (a turn lost across an owner
+    restart, or a head the preflight refused). Tell the platform user once per pause episode
+    through the ordinary reply path; later messages onto the same pause are admitted silently."""
+    live = authority.sessions[ref.session_id]
+    if live.pause_notified:
+        return None
+    live.pause_notified = True
+    if reason == 'runtime_draining':
+        # Transient: the row runs when the restarted owner drains it, so /reset would be wrong advice.
+        return '⏳ Hermes is restarting — your message is saved and will be answered when it is back.'
+    if reason == 'unknown_execution':
+        cause = 'a previous turn did not finish when Hermes restarted, so nothing queued after it will run'
+    else:
+        cause = f'a queued message could not be re-authorized ({reason})'
+    return (f'⏸️ This conversation is paused: {cause}. Your message is saved but will not be answered here. '
+            'Send /reset to start a fresh conversation, or ask the operator to resume this one.')
+
+
+def row_turn_author(policy, row):
+    """Who wrote the admitted input, for memory attribution only: the producer's stamp when it
+    left one, else the forwarded peer bound into the session policy; never grants anything."""
+    payload = row['payload']
+    for key in ('local_automation_v1', 'api_turn_v1'):
+        author = (payload.get(key) or {}).get('turn_author')
+        if author is not None:
+            return author
+    from gateway.session_a2a import forward_author
+    return forward_author(policy)
 
 
 async def execute_admission(authority, ref, row):
@@ -27,6 +62,7 @@ async def execute_admission(authority, ref, row):
     if policy is not None and policy.source == 'cron':
         from gateway.session_cron import execute
         return await execute(authority, ref, row, policy)
+    local_policy = policy
     from gateway.session_managed_worker import managed_policy, execute_managed
     policy = managed_policy(authority, ref)
     if policy is not None:
@@ -60,7 +96,8 @@ async def execute_admission(authority, ref, row):
     from gateway.session_api_turn import api_execution, prepare_api_execution
     from gateway.session_results import execution_result
     is_api = live.source.platform == Platform.API_SERVER
-    author_token = admission_author.set(event.metadata.get('turn_author'))
+    author = event.metadata.get('turn_author')
+    author_token = admission_author.set(author if author is not None else row_turn_author(local_policy, row))
     api_token = api_execution.set(None)
     captured = {}
     result_token = execution_result.set(captured)

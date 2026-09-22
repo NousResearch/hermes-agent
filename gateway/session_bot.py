@@ -29,13 +29,14 @@ def _home(authority, actor, profile):
 def _target(authority, actor):
     row = authority.db.get_session_by_title('Bot Chat')
     if row is None:
-        raise RuntimeStoreError('not_found')
-    tip = authority.db.get_compression_tip(row['id'])
-    target = authority.db.get_session(tip)
-    if target is None:
-        raise RuntimeStoreError('not_found')
-    from gateway.session_local_migration import resolve_local_target
-    ref = resolve_local_target(authority, actor, target['id'])
+        ref = _create_bot_chat(authority, actor)
+    else:
+        tip = authority.db.get_compression_tip(row['id'])
+        target = authority.db.get_session(tip)
+        if target is None:
+            raise RuntimeStoreError('not_found')
+        from gateway.session_local_migration import resolve_local_target
+        ref = resolve_local_target(authority, actor, target['id'])
     authority.authorize(actor, ref, 'session:submit')
     live = authority.sessions[ref.session_id]
     entry = authority.runner.session_store.lookup_by_session_key(live.route)
@@ -44,11 +45,31 @@ def _target(authority, actor):
     return ref, live, entry
 
 
+def _create_bot_chat(authority, actor):
+    """No Bot Chat yet: mint it the way ``hermes chat --in ~ -c "Bot Chat" --create-if-missing``
+    did on the CLI lane this door replaced, so a fresh profile's first delivery has somewhere
+    to land instead of being recorded as failed. Same owner step as ``session.create`` with a
+    title: no await between the lookup and the titled creation. Creation is the actor's own
+    capability; a submit-only principal (owner recovery) still gets ``not_found``."""
+    if 'session:create' not in actor.capabilities:
+        raise RuntimeStoreError('not_found')
+    from gateway.session_local import create_local_session
+    from gateway.session_local_title import title_new_session
+    ref = create_local_session(authority, actor, {
+        'request_id': 'bot-chat:' + authority.profile_id, 'source': 'cli', 'cwd': str(Path.home())})
+    title_new_session(authority, ref, 'Bot Chat')
+    return ref
+
+
 def _result(authority, record):
     row = get_session_admission(authority.db, admission_id=record['admission_id'])
     if row is None:
         raise RuntimeStoreError('storage_unavailable')
-    status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous', 'terminal': 'ambiguous'}[row['status']]
+    # A terminal row without a result blob is still definitive when the outcome says the
+    # input never ran (cancelled) or was refused/failed; ambiguous is reserved for the
+    # durable unknown state and for missing evidence (completed/interrupted without result).
+    status = {'queued': 'queued', 'started': 'claimed', 'unknown': 'ambiguous',
+              'terminal': {'cancelled': 'cancelled', 'rejected': 'failed', 'failed': 'failed'}.get(row['outcome'], 'ambiguous')}[row['status']]
     # Read only this admission's committed result, never transcript recency.
     from gateway.session_results import admission_result
     saved = admission_result(authority.db, record['admission_id'])
@@ -56,6 +77,12 @@ def _result(authority, record):
     if saved is not None:
         reply = saved['result'].get('final_response', '')
         status = 'settled' if row['outcome'] == 'completed' else 'failed'
+        # A successful bare silence marker is a delivery decision (same rule as the gateway and
+        # the live Bot Chat completion): the turn stays in the target's transcript, the sender
+        # never sees the marker as prose.
+        from gateway.response_filters import is_intentional_silence_response
+        if status == 'settled' and is_intentional_silence_response(reply):
+            reply = ''
     elif record.get('status') in {'settled', 'failed'}:
         status = record['status']
     return {k: v for k, v in dict(status=status, delivery_id=record['delivery_id'],

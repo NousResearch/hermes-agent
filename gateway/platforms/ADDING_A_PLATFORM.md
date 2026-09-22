@@ -20,15 +20,23 @@ status display, gateway setup, and more.
   (and an optional `home_channel` dict) from env vars BEFORE the adapter is
   constructed.  Without this, env-only setups don't surface in
   `hermes gateway status` or `get_connected_platforms()` until the SDK
-  instantiates.
+  instantiates.  Build it from a `(ENV_VAR, extra_key, conv)` table with
+  `gateway.platforms._shared.seed_extra_from_env(spec, home_env=...)`; every
+  read goes through `_shared.get_scoped_secret` (multiplex-safe, never
+  `os.getenv`).
 - `apply_yaml_config_fn: (yaml_cfg, platform_cfg) -> Optional[dict]` —
-  translate this platform's `config.yaml` keys into env vars and/or seed
-  `PlatformConfig.extra` directly.  Lets a plugin own its YAML schema
-  instead of growing core `gateway/config.py` boilerplate per platform.
-  Mutating `os.environ` is allowed (use `not os.getenv(...)` guards to
-  preserve env > YAML precedence); the returned dict is merged into
-  `PlatformConfig.extra`.  Called during `load_gateway_config()` after
-  the generic shared-key loop and before `_apply_env_overrides()`.
+  translate this platform's `config.yaml` keys into env vars and seed
+  `PlatformConfig.extra`.  Lets a plugin own its YAML schema instead of
+  growing core `gateway/config.py` boilerplate per platform.  Declare a
+  `(yaml_key, ENV_VAR, kind)` table and return
+  `_shared.apply_yaml_bridge(platform_cfg, TABLE)`: it writes env only when
+  unset (env > YAML), never under a multiplexed secondary profile's scope,
+  and returns the same values for `extra` (read `extra` first in the adapter
+  via `_shared.extra_or_secret`).  Called during `load_gateway_config()`
+  after the generic shared-key loop and before `_apply_env_overrides()`.
+- `is_connected: (config) -> bool` — for env-only platforms use
+  `_shared.env_is_connected("YOUR_TOKEN_VAR", ...)` instead of a hand-rolled
+  `get_env_value` check.
 - `cron_deliver_env_var: str` — name of the `*_HOME_CHANNEL` env var.  When
   set, `deliver=<name>` cron jobs route to this var without editing
   `cron/scheduler.py`'s hardcoded sets.
@@ -117,7 +125,7 @@ If your platform supports interactive button/menu messages, implement these for 
 | Method | Purpose |
 |--------|---------|
 | `send_clarify(chat_id, question, choices, clarify_id, session_key, ...)` | Render the `clarify` tool's multi-choice question as tappable buttons. Pair with inbound dispatch that routes button taps to `tools.clarify_gateway.resolve_gateway_clarify`. |
-| `send_exec_approval(chat_id, command, session_key, description, ...)` | Render dangerous-command approval as Approve/Deny buttons. Inbound dispatch routes to `tools.approval.resolve_gateway_approval`. |
+| `_send_exec_approval_prompt(prompt: ExecApprovalPrompt)` | Render a dangerous-command approval as native buttons. `send_exec_approval` is a base template method: it builds the shared text (`_format_exec_approval`, tune via the `_EA_*` class attrs) and the choice set (`prompt.actions` = `(label, choice, style)` rows, choices `once`/`session`/`always`/`deny`) — you only map those rows to widgets. Inbound dispatch routes to `tools.approval.resolve_gateway_approval`. |
 | `send_slash_confirm(chat_id, title, message, session_key, confirm_id, ...)` | Render slash-command confirmations (e.g. `/reload-mcp`) as Once/Always/Cancel buttons. Inbound dispatch routes to `tools.slash_confirm.resolve`. |
 | `send_model_picker(...)` | Interactive `/model` picker. Used by Telegram, Discord, and Slack (Socket Mode). |
 | `send_choice_picker(...)` | Flat single-level picker for finite-choice commands (`/reasoning`, `/fast`). Implemented by Telegram (inline keyboard), Discord (select menu), and Matrix (reactions). Platforms without it fall back to the text status card automatically. |
@@ -155,17 +163,20 @@ class Platform(Enum):
     YOUR_PLATFORM = "your_platform"
 ```
 
-Add env var loading in `_apply_env_overrides()`:
+Add a row to `_ENV_STEPS` in `gateway/config_env.py` (source order = application order);
+`_Cred` enables the platform when the named env vars resolve and copies them into `extra`:
 
 ```python
-# Your Platform
-your_token = os.getenv("YOUR_PLATFORM_TOKEN")
-if your_token:
-    if Platform.YOUR_PLATFORM not in config.platforms:
-        config.platforms[Platform.YOUR_PLATFORM] = PlatformConfig()
-    config.platforms[Platform.YOUR_PLATFORM].enabled = True
-    config.platforms[Platform.YOUR_PLATFORM].token = your_token
+_Cred(Platform.YOUR_PLATFORM, ("YOUR_PLATFORM_TOKEN",), token="YOUR_PLATFORM_TOKEN"),
+_Home(Platform.YOUR_PLATFORM, "YOUR_PLATFORM_HOME_CHANNEL"),
 ```
+
+Every read goes through `gateway/config.py::_getenv` (the active profile's secret scope when one
+is bound, `os.environ` otherwise). **Never `os.getenv` here and never write `os.environ`**: under
+`gateway.multiplex_profiles` the process env is the DEFAULT profile's, so a raw read enables your
+platform for the wrong profile with the wrong credentials, and a write pins one profile's policy
+process-wide (first profile wins). Adapter-side reads use `gateway.platforms._shared.get_scoped_secret`
+/ `extra_or_secret`.
 
 Update `get_connected_platforms()` if your platform doesn't use token/api_key
 (e.g., WhatsApp uses `enabled` flag, Signal uses `extra` dict).
@@ -192,20 +203,22 @@ before `connect()`.
 
 ---
 
-## 4. Authorization Maps (`gateway/run.py`)
+## 4. Authorization Maps (`gateway/pairing.py`, `gateway/authz_mixin.py`)
 
-Add to BOTH dicts in `_is_user_authorized()`:
+Add the allowlist var to `_PLATFORM_ALLOWLIST_ENV` in `gateway/pairing.py`;
+`authz_mixin.py` derives `_ALLOWED_USERS_ENV` / `_ALLOW_ALL_ENV` from it (the `*_ALLOW_ALL_USERS`
+name is computed, not hand-listed):
 
 ```python
-platform_env_map = {
+_PLATFORM_ALLOWLIST_ENV = {
     ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOWED_USERS",
-}
-platform_allow_all_map = {
-    ...
-    Platform.YOUR_PLATFORM: "YOUR_PLATFORM_ALLOW_ALL_USERS",
+    "your_platform": "YOUR_PLATFORM_ALLOWED_USERS",
 }
 ```
+
+Plugin adapters declare `allowed_users_env` / `allow_all_env` on `ctx.register_platform` instead.
+`_is_user_authorized()` reads every gate through `_shared.platform_gate_env` (`_auth_env`), which
+answers from the routed profile's secret scope under multiplex — never add an `os.getenv` here.
 
 ---
 

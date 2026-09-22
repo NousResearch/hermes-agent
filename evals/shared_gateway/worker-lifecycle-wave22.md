@@ -73,7 +73,7 @@ The ordinary `worker.persist` endpoint already forwards the closed operation.
 
 ## Proof
 
-`tests/state/test_runtime_worker_lifecycle.py` (two invariants) covers constructor
+`tests/hermes_state/test_runtime_worker_lifecycle.py` (two invariants) covers constructor
 backfill, identity refusal, lifecycle status, lost-ACK end replay, first-end wins,
 and late/foreign end refusal. `test_runtime_worker_metadata.py` (two invariants)
 covers title ranks/activity and exact two-route counters/API content. The title

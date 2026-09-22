@@ -132,7 +132,6 @@ def test_run_state_initialization_and_teardown_are_shard_owned():
     assert adapter._run_owners == {}
     assert adapter._run_streams == {}
     assert adapter._run_streams_created == {}
-    assert adapter._run_stream_subscribers == set()
     assert adapter._active_run_agents == {}
     assert adapter._active_run_tasks == {}
     assert adapter._stopping_run_ids == set()
@@ -177,6 +176,7 @@ def test_roomlink_and_run_route_tuples_are_shard_owned():
         ("POST", "/v1/runs/{run_id}/approval"),
         ("POST", "/v1/runs/{run_id}/clarify"),
         ("POST", "/v1/runs/{run_id}/steer"),
+        ("POST", "/v1/runs/{run_id}/resolve-unknown"),
         ("POST", "/v1/runs/{run_id}/stop"),
     ]
     assert all(handler.__self__ is adapter for _, _, handler in room_routes)

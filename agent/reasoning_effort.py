@@ -156,6 +156,56 @@ def requested_effort(reasoning_config: Optional[dict]) -> Optional[str]:
     return str(reasoning_config.get("effort") or "").strip().lower() or None
 
 
+def clamp_reasoning_config(reasoning_config: Optional[dict], supported: Sequence[str] = OPENAI_COMPAT_WIRE_EFFORTS) -> Optional[dict]:
+    """Return ``reasoning_config`` with its ``effort`` clamped onto ``supported`` (non-dicts and
+    configs without an effort pass through untouched).
+
+    The entry clamp for an OpenAI-compatible chat-completions request builder: Hermes-internal
+    ``ultra`` never reaches a wire (#89503 main transport, #112010 aux/MoA), while provider
+    profiles with narrower vocabularies clamp again downstream. Unset stays unset.
+    """
+    if not isinstance(reasoning_config, dict):
+        return reasoning_config
+    effort = str(reasoning_config.get("effort") or "").strip().lower()
+    clamped = clamp_effort(effort, supported) if effort else effort
+    return {**reasoning_config, "effort": clamped} if clamped != effort else reasoning_config
+
+
+def thinking_toggle_extras(
+    reasoning_config: Optional[dict],
+    efforts: Sequence[str],
+    overrides: Optional[dict[str, str]] = None,
+    *,
+    always_emit_toggle: bool = False,
+) -> tuple[dict, dict]:
+    """Translate a reasoning config onto the Moonshot/DeepSeek chat_completions wire:
+    ``extra_body.thinking`` toggle and top-level ``reasoning_effort``.
+
+    Moonshot 400s when both are sent, so by default the effort (when it lands in
+    ``efforts``) replaces the toggle. DeepSeek instead requires the toggle on every
+    request (an omitted toggle defaults thinking on and then demands
+    ``reasoning_content`` echoes), hence ``always_emit_toggle``. A requested effort of
+    ``none`` is not a level on these wires; it falls back to the plain toggle.
+    """
+    if isinstance(reasoning_config, dict) and reasoning_config.get("enabled") is False:
+        return {"thinking": {"type": "disabled"}}, {}
+    effort = requested_effort(reasoning_config)
+    clamped = clamp_effort(None if effort == "none" else effort, efforts, overrides)
+    if clamped in efforts:
+        return ({"thinking": {"type": "enabled"}} if always_emit_toggle else {}), {"reasoning_effort": clamped}
+    return {"thinking": {"type": "enabled"}}, {}
+
+
+def ox_alpha_reasoning_extras(reasoning_config: Optional[dict], model: Optional[str]) -> tuple[dict, dict]:
+    """Ox Alpha (``x-preview-f-free``) ``reasoning_effort`` translation, shared by the
+    opencode-zen and opencode-free profiles (low/high/max only; anything else 400s)."""
+    if (model or "").strip().rsplit("/", 1)[-1].lower() != "x-preview-f-free":
+        return {}, {}
+    effort = requested_effort(reasoning_config)
+    clamped = clamp_effort(None if effort == "none" else effort, OX_ALPHA_EFFORTS, OX_ALPHA_OVERRIDES)
+    return ({}, {"reasoning_effort": clamped}) if clamped in OX_ALPHA_EFFORTS else ({}, {})
+
+
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----
 # Names external plugins imported from this module before the Sep 2026 decomposition.
 # Internal code MUST NOT use these (scripts/check_compat_pointers.py fails CI if it does).

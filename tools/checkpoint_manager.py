@@ -335,11 +335,24 @@ def _rewrite_ref_to(store: Path, working_dir: str, ref: str, commits: List[str])
     return True
 
 
+_GC_PENDING_NAME = ".gc-pending"
+
+
 def _gc_store(store: Path, working_dir: str) -> None:
-    """Reclaim objects unreachable from the (rewritten/deleted) refs."""
+    """Reclaim objects unreachable from the (rewritten/deleted) refs. A full repack — tens of
+    seconds on a GB store — so it belongs to the periodic prune, never to a checkpoint."""
     _run_git(["reflog", "expire", "--expire=now", "--all"], store, working_dir)
     _run_git(["gc", "--prune=now", "--quiet"], store, working_dir, timeout=_GIT_TIMEOUT * 3)
     _repair_bare_repo_dirs(store)
+    _unlink_quiet(store / _GC_PENDING_NAME)
+
+
+def _mark_gc_pending(store: Path) -> None:
+    """Refs were rewritten without a gc; the next ``prune_checkpoints`` reclaims the objects."""
+    try:
+        (store / _GC_PENDING_NAME).touch()
+    except OSError as exc:
+        logger.debug("Could not mark checkpoint store gc-pending: %s", exc)
 
 
 def _drop_oldest_commit(store: Path, working_dir: str, ref: str) -> bool:
@@ -349,18 +362,25 @@ def _drop_oldest_commit(store: Path, working_dir: str, ref: str) -> bool:
     return _rewrite_ref_to(store, working_dir, ref, _ref_commits_oldest_first(store, working_dir, ref)[1:])
 
 
+def _drop_one_snapshot_round(store: Path, working_dir: str) -> bool:
+    """Drop the oldest commit of every project ref that has more than one. True when any did."""
+    return any([_drop_oldest_commit(store, working_dir, ref) for ref in _list_project_refs(store, working_dir)])
+
+
 def _shrink_store_to_cap(store: Path, working_dir: str, cap_bytes: int) -> bool:
-    """Round-robin-drop the oldest commit per project ref until the store fits (bounded to 20
-    rounds against pathological loops).  False when there are no project refs."""
+    """Drop the oldest snapshot per project, gc, re-measure, until the store fits (bounded to 20
+    rounds).  The gc per round is what makes the measurement move: without it the loop used to
+    drop 20 rounds of history against an unchanging pack size, flattening every ref to one
+    snapshot.  True when at least one commit was dropped (the store was gc'd)."""
+    dropped = False
     for _ in range(20):
         if _dir_size_bytes(store) <= cap_bytes:
             break
-        refs = _list_project_refs(store, working_dir)
-        if not refs:
-            return False
-        if not any([_drop_oldest_commit(store, working_dir, ref) for ref in refs]):
+        if not _drop_one_snapshot_round(store, working_dir):
             break
-    return True
+        dropped = True
+        _gc_store(store, working_dir)
+    return dropped
 
 
 def _migrate_legacy_store(base: Path) -> Optional[Path]:
@@ -600,7 +620,7 @@ class CheckpointManager:
             digest = _hash_file(path)
             if digest is None:
                 return
-            store, dir_hash = _store_path(), _project_hash(self.get_working_dir_for_path(str(path)))
+            store, dir_hash = _store_path(), self._ledger_key(str(path))
             _save_ledger(store, dir_hash, {**_load_ledger(store, dir_hash), str(path): {"sha256": digest, "ts": time.time()}})
         except Exception as exc:
             logger.debug("record_agent_write failed for %s: %s", file_path, exc)
@@ -617,7 +637,9 @@ class CheckpointManager:
         if not ok:
             return {"success": False, "error": f"Could not compute changed files: {err}"}
 
-        ledger = _load_ledger(p.store, p.dir_hash)
+        # p.dir_hash is the exact restore dir; the ledger was written under the walked key. Reading
+        # the wrong key looked like "no ledger" and degraded to a full restore over user edits.
+        ledger = _load_ledger(p.store, self._ledger_key(p.abs_dir))
         if not ledger:
             return {"success": True, "restore": [], "skipped": [], "ledger_empty": True}
         out: Dict[str, List[str]] = {"restore": [], "skipped": []}
@@ -799,6 +821,10 @@ class CheckpointManager:
                     targets.failed_deletes.append(rel)
         return targets
 
+    def _ledger_key(self, path: str) -> str:
+        """Agent-write ledger key: hash of the marker-walked project dir, for writer and reader alike."""
+        return _project_hash(self.get_working_dir_for_path(path))
+
     def get_working_dir_for_path(self, file_path: str) -> str:
         """Resolve a file path to its working directory (nearest project-marker ancestor)."""
         path = _normalize_path(file_path)
@@ -883,24 +909,29 @@ class CheckpointManager:
                      store, working_dir, index_file=index_file, allowed_returncodes={128})
 
     def _prune(self, store: Path, working_dir: str, ref: str) -> None:
-        """Rewrite the ref to its last ``max_snapshots`` commits and gc (only limiting the
-        log view, as v1 did, let loose objects accumulate forever)."""
+        """Rewrite the ref to its last ``max_snapshots`` commits; the periodic prune reclaims the
+        objects (a gc here would hold the tool call for the whole repack)."""
         if _ref_commit_count(store, working_dir, ref) <= self.max_snapshots:
             return
         commits = _ref_commits_oldest_first(store, working_dir, ref)
         if _rewrite_ref_to(store, working_dir, ref, commits[-self.max_snapshots:]):
-            _gc_store(store, working_dir)
+            _mark_gc_pending(store)
 
     def _enforce_size_cap(self, store: Path) -> None:
-        """Drop oldest checkpoints across ALL projects until under ``max_total_size_mb``."""
+        """Over ``max_total_size_mb``: drop ONE round of oldest snapshots and leave the reclaim to the
+        periodic prune. One round per checkpoint converges over turns; the full loop ran here once
+        and, measuring an unchanging pack, flattened every project to a single snapshot."""
         cap_bytes = self.max_total_size_mb * _MB
         size = _dir_size_bytes(store) if cap_bytes > 0 else 0
         if size <= cap_bytes:
             return
-        logger.info("Checkpoint store exceeded %d MB (actual %d MB) — pruning oldest",
-                    self.max_total_size_mb, size // _MB)
-        if _shrink_store_to_cap(store, str(store.parent), cap_bytes):
-            _gc_store(store, str(store.parent))
+        if _drop_one_snapshot_round(store, str(store.parent)):
+            _mark_gc_pending(store)
+            logger.info("Checkpoint store exceeded %d MB (actual %d MB) — dropped the oldest snapshot "
+                        "per project; space is reclaimed by the next prune", self.max_total_size_mb, size // _MB)
+        else:
+            logger.debug("Checkpoint store exceeded %d MB (actual %d MB) with every project at one snapshot",
+                         self.max_total_size_mb, size // _MB)
 
 
 def _step_failed(step: str, err: str) -> bool:
@@ -1081,11 +1112,14 @@ def prune_checkpoints(retention_days: int = 7, delete_orphans: bool = True, chec
     _prune_pre_v2_repos(base, cutoff, delete_orphans, orphan_allowlist, result)
     store = _store_path(base)
     if _store_has_head(store):
+        # gc rewrites the whole pack — the entire cost of a prune on a large store — so it runs
+        # only when a ref moved: deleted here, or rewritten by a checkpoint that left it pending.
+        deleted_before = result["deleted_orphan"] + result["deleted_stale"]
         _prune_v2_projects(store, cutoff, delete_orphans, orphan_allowlist, result)
-        _gc_store(store, str(base))
+        if result["deleted_orphan"] + result["deleted_stale"] > deleted_before or (store / _GC_PENDING_NAME).exists():
+            _gc_store(store, str(base))
         if max_total_size_mb > 0:
             _shrink_store_to_cap(store, str(base), max_total_size_mb * _MB)
-            _gc_store(store, str(base))
 
     result["bytes_freed"] = max(result["bytes_freed"], size_before - _dir_size_bytes(base))
     return result
@@ -1110,12 +1144,14 @@ def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: in
                 return out
         except (OSError, ValueError):
             pass  # corrupt marker — treat as no prior run
-        result = out["result"] = prune_checkpoints(retention_days=retention_days, delete_orphans=delete_orphans,
-                                                   checkpoint_base=base, max_total_size_mb=max_total_size_mb)
+        # Claim the interval before pruning: callers run on a periodic tick, and a prune that
+        # dies mid-way must cost one skipped day, not a git gc every tick.
         try:
             marker.write_text(str(now), encoding="utf-8")
         except OSError as exc:
             logger.debug("Could not write checkpoint prune marker: %s", exc)
+        result = out["result"] = prune_checkpoints(retention_days=retention_days, delete_orphans=delete_orphans,
+                                                   checkpoint_base=base, max_total_size_mb=max_total_size_mb)
 
         total = result["deleted_orphan"] + result["deleted_stale"]
         if total > 0:
@@ -1126,6 +1162,52 @@ def maybe_auto_prune_checkpoints(retention_days: int = 7, min_interval_hours: in
         out["error"] = str(exc)
 
     return out
+
+
+def auto_prune_from_config() -> Dict[str, object]:
+    """``maybe_auto_prune_checkpoints`` driven by the ``checkpoints:`` config section — the one
+    startup/housekeeping entry point for the CLI and the gateway. ``delete_orphans`` is never
+    honoured unattended: a missing workdir is ambiguous (deleted vs. unmounted share); orphan
+    cleanup is only via explicit ``hermes checkpoints prune``. Never raises."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("checkpoints") or {}
+        if not cfg.get("auto_prune", False):
+            return {"skipped": True}
+        return maybe_auto_prune_checkpoints(
+            retention_days=int(cfg.get("retention_days", 7)),
+            min_interval_hours=int(cfg.get("min_interval_hours", 24)),
+            delete_orphans=False,
+            max_total_size_mb=int(cfg.get("max_total_size_mb", 500)))
+    except Exception as exc:
+        logger.debug("checkpoint auto-maintenance skipped: %s", exc)
+        return {"skipped": True, "error": str(exc)}
+
+
+def checkpoint_footprint_notice() -> Optional[str]:
+    """One-line notice when ``/rollback`` checkpoints are on and their store sits at or above
+    ``checkpoints.max_total_size_mb``, else None. Checkpoints were on by default for a while
+    (Mar–May 2026) and that ``enabled: true`` persisted into user configs; many users carry a
+    GB-scale store for a feature they never invoke. The cap is a floor of one snapshot per
+    project, so a big store is expected, not broken — the notice names the opt-out. Never raises."""
+    try:
+        from hermes_cli.config import load_config
+        cfg = load_config().get("checkpoints") or {}
+        if not cfg.get("enabled", False):
+            return None
+        cap_mb = int(cfg.get("max_total_size_mb", 500) or 0)
+        status = store_status()
+        size = int(status["total_size_bytes"])
+        if cap_mb <= 0 or size < cap_mb * _MB:
+            return None
+        from hermes_cli.sizefmt import format_bytes
+        return (f"Filesystem checkpoints (/rollback) are on: {format_bytes(size)} across "
+                f"{status['project_count']} project(s), above the {cap_mb} MB cap (one snapshot per project is "
+                f"always kept). Not using /rollback? `hermes config set checkpoints.enabled false` then "
+                f"`hermes checkpoints clear`; or lower `checkpoints.retention_days`.")
+    except Exception as exc:
+        logger.debug("checkpoint footprint notice skipped: %s", exc)
+        return None
 
 
 def store_status(checkpoint_base: Optional[Path] = None) -> Dict:
@@ -1178,9 +1260,9 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
 
 
 def clear_legacy(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
-    """Delete all ``legacy-*`` archive directories.  Returns ``{"bytes_freed": N, "deleted": count}``."""
+    """Delete all ``legacy-*`` archive directories and report any failures."""
     base = checkpoint_base or _resolve_checkpoint_base()
-    out = {"bytes_freed": 0, "deleted": 0}
+    out = {"bytes_freed": 0, "deleted": 0, "errors": 0}
     if not base.exists():
         return out
     for child in _legacy_archives(base):

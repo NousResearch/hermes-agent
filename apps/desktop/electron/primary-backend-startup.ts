@@ -19,6 +19,7 @@ interface ResolvedPrimaryRemote {
   authMode?: 'oauth' | 'token'
   baseUrl: string
   connectionId?: string
+  headers?: Record<string, string>
   remoteHermesVersion?: string
   remoteHost?: string
   remoteKind?: 'cloud' | 'ssh' | 'url'
@@ -56,6 +57,9 @@ export function createPrimaryRemoteConnection<State extends object>(
     remoteHermesVersion: remote.remoteHermesVersion,
     ...(remote.connectionId ? { connectionId: remote.connectionId } : {}),
     ...(remote.ssh ? { ssh: remote.ssh } : {}),
+    // fetchJsonForBackend reads descriptor.headers for every REST call; the
+    // WebSocket header store is keyed by exact URL and cannot stand in for it.
+    headers: remote.headers,
     token: remote.token,
     wsUrl: remote.wsUrl,
     logs,
@@ -89,9 +93,13 @@ export async function runPrimaryBackendStartup<Backend, RuntimeBackend, Remote, 
 }: PrimaryBackendStartupOptions<Backend, RuntimeBackend, Remote, Connection>): Promise<
   PrimaryBackendStartupResult<RuntimeBackend, Connection>
 > {
-  // Fence in this continuation, not another async wrapper, so no await separates
-  // the ownership check from the next startup action.
-  const step = <T>(run: () => T | Promise<T>) => runBackendStartStep(signal, run)
+  // Fence every continuation after cancellation and before the next startup action.
+  const step = async <T>(run: () => T | Promise<T>) => {
+    const result = await runBackendStartStep(signal, run)
+    assertCurrentAttempt()
+
+    return result
+  }
   assertCurrentAttempt()
   const savedRemote = await step(resolveRemote)
   assertCurrentAttempt()

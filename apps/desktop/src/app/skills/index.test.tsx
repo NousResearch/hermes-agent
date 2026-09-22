@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
+
+import { parseCatalog } from './catalog-data'
+import { SkillCatalog } from './skill-catalog'
+import { $catalogCardView } from './store'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
@@ -18,7 +22,6 @@ const selectToolsetProvider = vi.fn()
 const getUsageAnalytics = vi.fn()
 const getProfiles = vi.fn()
 const getSkillContent = vi.fn()
-const getOfficialSkills = vi.fn()
 
 // Partial mock: keep the real module (SkillsView pulls in @/store/profile,
 // whose import-time subscription calls setApiRequestProfile) and stub only the
@@ -35,8 +38,7 @@ vi.mock('@/hermes', async importOriginal => ({
   selectToolsetProvider: (toolset: string, provider: string) => selectToolsetProvider(toolset, provider),
   getUsageAnalytics: (days: number, profile?: null | string) => getUsageAnalytics(days, profile),
   getProfiles: () => getProfiles(),
-  getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile),
-  getOfficialSkills: (profile?: null | string) => getOfficialSkills(profile)
+  getSkillContent: (name: string, profile?: null | string) => getSkillContent(name, profile)
 }))
 
 // Notifications hit nanostores/timers we don't care about here.
@@ -62,6 +64,11 @@ vi.mock('react-router', async importOriginal => ({
   useNavigate: () => navigateSpy
 }))
 
+// Import at module scope (after the hoisted vi.mock calls) so the heavy
+// component-tree transform is paid during collection, not billed against the
+// first test's testTimeout — same flake class as messaging/index.test.tsx.
+const { SkillsView } = await import('./index')
+
 function toolset(overrides: Record<string, unknown> = {}) {
   return {
     name: 'web',
@@ -76,7 +83,6 @@ function toolset(overrides: Record<string, unknown> = {}) {
 }
 
 async function renderSkills() {
-  const { SkillsView } = await import('./index')
   let result: ReturnType<typeof render>
   await act(async () => {
     result = render(
@@ -93,12 +99,13 @@ async function renderSkills() {
 }
 
 beforeEach(() => {
+  // Scope/install cases exercise the retained list layout; cards have dedicated coverage.
+  $catalogCardView.set(false)
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
   getToolsetConfig.mockResolvedValue({ has_category: true, active_provider: null, providers: [] })
   getUsageAnalytics.mockResolvedValue({ tools: [] })
-  getOfficialSkills.mockResolvedValue({ skills: [] })
   getSkillContent.mockResolvedValue({
     name: 'web-research',
     path: '/skills/web-research/SKILL.md',
@@ -112,15 +119,16 @@ beforeEach(() => {
 afterEach(() => {
   cleanup()
   vi.clearAllMocks()
+  vi.unstubAllGlobals()
   // Shared singleton client — drop cached skills/toolsets so each test refetches.
   queryClient.clear()
 })
 
-// SkillsView is a heavy module: the first test pays the whole dynamic-import
-// cost, and the file legitimately runs ~14s on CI runners — right against the
-// global 15s per-test budget, so slow runners cascade-fail all 11 tests
-// (2× in a row on PR #93612, plus a main run the same hour). Give this file
-// headroom; the tests are not slow individually.
+// SkillsView is a heavy module (import cost now paid at module scope above,
+// during collection) but the file still legitimately runs ~14s on CI runners —
+// right against the global 15s per-test budget, so slow runners cascade-fail
+// all 11 tests (2× in a row on PR #93612, plus a main run the same hour).
+// Give this file headroom; the tests are not slow individually.
 describe('SkillsView toolset management', { timeout: 60_000 }, () => {
   it('renders a switch for each toolset and toggles it off', async () => {
     await renderSkills()
@@ -173,7 +181,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       ]
     })
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -219,7 +226,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -263,7 +269,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       }
     ])
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -283,43 +288,163 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
   })
 
-  it('hub picker refuses to reinstall an already-installed skill', async () => {
-    const { notify } = await import('@/store/notifications')
-    const { EmbeddedHubPicker } = await import('./embedded-hub-picker')
+  it.each(['web-research', 'official/research/web-research'])(
+    'disables catalog installation when the installed list contains %s',
+    async installedName => {
+      const { installHubSkill } = await import('@/store/hub-actions')
+      queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [{
+        name: 'web-research',
+        identifier: 'official/research/web-research',
+        source: 'official',
+        category: 'research',
+        description: 'Research the web'
+      }]))
 
-    render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
+      render(
+        <QueryClientProvider client={queryClient}>
+          <SkillCatalog installedNames={new Set([installedName])} profile="researcher" />
+        </QueryClientProvider>
+      )
 
-    // The picker is expanded by default — the hub iframe is live on mount.
-    expect(document.querySelector('iframe')).toBeTruthy()
+      fireEvent.click(screen.getByRole('button', { name: /^web-research/ }))
+      const installed = screen.getByRole('button', { name: 'Installed' })
+      expect((installed as HTMLButtonElement).disabled).toBe(true)
+      fireEvent.click(installed)
+      expect(installHubSkill).not.toHaveBeenCalled()
+    }
+  )
+
+  it.each([
+    {
+      source: 'github',
+      identifier: 'github:example/skills/research/community-research',
+      expectedIdentifier: 'github:example/skills/research/community-research'
+    },
+    {
+      source: 'clawhub',
+      identifier: 'community-research',
+      expectedIdentifier: 'clawhub/community-research'
+    },
+    {
+      source: 'clawhub',
+      identifier: 'clawhub/community-research',
+      expectedIdentifier: 'clawhub/community-research'
+    }
+  ])('installs $identifier with its source-qualified target in the pinned connection and profile', async ({ source, identifier, expectedIdentifier }) => {
+    const { installHubSkill } = await import('@/store/hub-actions')
+    const entry = {
+      name: 'community-research',
+      identifier,
+      source,
+      category: 'research',
+      description: 'Community research workflow'
+    }
+    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
+      { ...entry, name: 'other-skill', source: 'github', identifier: 'github:example/skills/other-skill' },
+      entry
+    ]))
 
     await act(async () => {
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { type: 'hermes-skill-pick', name: 'web-research', identifier: 'web-research' },
-          origin: 'https://hermes-agent.nousresearch.com'
-        })
+      render(
+        <QueryClientProvider client={queryClient}>
+          <MemoryRouter initialEntries={['/skills']}>
+            <SkillsView embedded fixedConnection="homelab" fixedProfile="researcher" />
+          </MemoryRouter>
+        </QueryClientProvider>
       )
     })
 
-    // Refused with an informational toast, no install action spawned.
-    await waitFor(() =>
-      expect(vi.mocked(notify)).toHaveBeenCalledWith(
-        expect.objectContaining({ title: '"web-research" is already installed' })
-      )
-    )
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
+    expect(screen.getByRole('heading', { name: entry.name })).toBeTruthy()
+    await act(async () => {
+      fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    })
+
+    expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(expectedIdentifier, {
+      connectionId: 'homelab', profile: 'researcher'
+    })
   })
 
-  it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
-    // On a non-Skills tab the docs-site iframe must not exist at all — an
-    // eagerly mounted hub is exactly the Capabilities lag bug.
+  it('keeps a pending install tied to its entry and scope when the pinned target changes', async () => {
+    const { installHubSkill } = await import('@/store/hub-actions')
+    const identifier = 'clawhub/community-research'
+    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
+      { name: 'community-research', identifier: 'community-research', source: 'clawhub' },
+      { name: 'other-skill', identifier: 'official/research/other-skill', source: 'optional' }
+    ]))
+    let finishFirst!: () => void
+    let finishSecond!: () => void
+    const firstInstall = new Promise<void>(resolve => { finishFirst = resolve })
+    const secondInstall = new Promise<void>(resolve => { finishSecond = resolve })
+    vi.mocked(installHubSkill)
+      .mockReturnValueOnce(firstInstall)
+      .mockReturnValueOnce(secondInstall)
+
+    const scopedView = (connectionId: string, profile: string) => (
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter initialEntries={['/skills']}>
+          <SkillsView embedded fixedConnection={connectionId} fixedProfile={profile} />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+    const view = render(scopedView('homelab', 'researcher'))
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
+    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
+    const pending = screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' })
+    expect(pending.disabled).toBe(true)
+    expect(pending.querySelector('svg.animate-spin')).not.toBeNull()
+    fireEvent.click(pending)
+    expect(installHubSkill).toHaveBeenCalledExactlyOnceWith(identifier, {
+      connectionId: 'homelab', profile: 'researcher'
+    })
+
+    fireEvent.click(screen.getByRole('button', { name: /^other-skill/ }))
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
+    fireEvent.click(screen.getByRole('button', { name: /^community-research/ }))
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' }).disabled).toBe(true)
+
+    view.rerender(scopedView('other-gateway', 'writer'))
+    fireEvent.click(await screen.findByRole('button', { name: /^community-research/ }))
+    const nextInstall = screen.getByRole<HTMLButtonElement>('button', { name: 'Install' })
+    expect(nextInstall.disabled).toBe(false)
+    fireEvent.click(nextInstall)
+    expect(installHubSkill).toHaveBeenNthCalledWith(2, identifier, {
+      connectionId: 'other-gateway', profile: 'writer'
+    })
+
+    await act(async () => {
+      finishFirst()
+      await firstInstall
+    })
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Installing...' }).disabled).toBe(true)
+    await act(async () => {
+      finishSecond()
+      await secondInstall
+    })
+    expect(screen.getByRole<HTMLButtonElement>('button', { name: 'Install' }).disabled).toBe(false)
+    expect(installHubSkill).toHaveBeenCalledTimes(2)
+  })
+
+  it('loads the public catalog only on Browse and reuses it across skills and tools tab switches', async () => {
+    const fetchCatalog = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{
+        name: 'catalog-research',
+        identifier: 'official/research/catalog-research',
+        source: 'official',
+        category: 'research',
+        description: 'Research from the public snapshot'
+      }]
+    })
+    vi.stubGlobal('fetch', fetchCatalog)
+
     await renderSkills() // ?tab=toolsets
     await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(document.querySelector('iframe')).toBeNull()
+    expect(fetchCatalog).not.toHaveBeenCalled()
     cleanup()
 
-    // Embedded mode drives tabs through local state (the route hooks are
-    // mocked here), starting on Skills: the picker mounts with the tab.
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -330,19 +455,23 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
       )
     })
 
-    const iframe = document.querySelector('iframe')
-    expect(iframe).toBeTruthy()
-    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
+    expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
+    expect(fetchCatalog).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    expect(await screen.findByRole('heading', { name: 'catalog-research' })).toBeTruthy()
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
+    expect(fetchCatalog.mock.calls[0][0]).toMatch(/\/docs\/api\/skills\.json$/)
 
-    // Switch to Tools → the iframe STAYS mounted (no docs-site reload on the
-    // next visit) but its section is fully hidden, so nothing from the hub
-    // can paint over the toolsets UI.
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
-    })
-    const kept = document.querySelector('iframe')
-    expect(kept).toBeTruthy()
-    expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
+    fireEvent.click(screen.getByRole('button', { name: 'Installed' }))
+    expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    expect(await screen.findByRole('heading', { name: 'catalog-research' })).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: /^Tools/ }))
+    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
+    expect(screen.queryByRole('heading', { name: 'catalog-research' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: /^Skills/ }))
+    expect(await screen.findByRole('heading', { name: 'catalog-research' })).toBeTruthy()
+    expect(fetchCatalog).toHaveBeenCalledTimes(1)
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {
@@ -378,7 +507,6 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     // the live surface pointed at ITS backend — the reads must carry the
     // (connection, profile) pin, not a bare profile name that would resolve
     // against the ACTIVE gateway (the wrong-machine bug).
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
@@ -446,13 +574,8 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
     }
   })
 
-  it('lists the built-in optional-skills catalog with Install buttons that route through the hub pipeline', async () => {
-    // The full official catalog renders BELOW the installed list; each row
-    // carries an Install button (no toggle until installed) that routes
-    // through the standard hub action pipeline scoped to the Capabilities
-    // profile. Already-installed catalog entries are filtered out.
+  it('offers optional skills through Browse and guards installed skills using the scoped installed list', async () => {
     const { installHubSkill } = await import('@/store/hub-actions')
-
     getSkills.mockResolvedValue([
       {
         name: 'web-research',
@@ -463,63 +586,54 @@ describe('SkillsView toolset management', { timeout: 60_000 }, () => {
         provenance: 'bundled'
       }
     ])
-    getOfficialSkills.mockResolvedValue({
-      skills: [
-        {
-          name: 'gif-search',
-          description: 'Search GIFs',
-          identifier: 'official/gifs/gif-search',
-          category: 'gifs',
-          installed: false,
-          tags: ['gifs']
-        },
-        {
-          name: 'web-research',
-          description: 'already here under a different source',
-          identifier: 'official/research/web-research',
-          category: 'research',
-          installed: false,
-          tags: []
-        },
-        {
-          name: 'ascii-art',
-          description: 'ASCII art',
-          identifier: 'official/creative/ascii-art',
-          category: 'creative',
-          installed: true,
-          tags: []
-        }
-      ]
-    })
+    queryClient.setQueryData(['public-catalog', 'skills'], parseCatalog('skills', [
+      {
+        name: 'gif-search',
+        description: 'Search GIFs',
+        source: 'optional',
+        installIdentifier: 'official/gifs/gif-search',
+        category: 'gifs',
+        tags: ['gifs']
+      },
+      {
+        name: 'web-research',
+        description: 'Research the web',
+        source: 'optional',
+        identifier: 'official/research/web-research',
+        category: 'research'
+      }
+    ]))
 
-    const { SkillsView } = await import('./index')
     await act(async () => {
       render(
         <QueryClientProvider client={queryClient}>
           <MemoryRouter initialEntries={['/skills?tab=skills']}>
-            <SkillsView />
+            <SkillsView fixedProfile="researcher" />
           </MemoryRouter>
         </QueryClientProvider>
       )
     })
 
-    // Catalog section header + the one genuinely-available row. Rows already
-    // installed (lock flag OR name collision with the installed list) are gone.
-    expect(await screen.findByText('Available to install')).toBeTruthy()
-    expect(await screen.findByText('gif-search')).toBeTruthy()
-    expect(screen.queryByText('ascii-art')).toBeNull()
+    expect(await screen.findByRole('switch', { name: 'web-research' })).toBeTruthy()
+    expect(screen.queryByRole('button', { name: /^gif-search/ })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Install' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    fireEvent.click(await screen.findByRole('button', { name: /^web-research/ }))
 
-    // The installed skill still shows its toggle; the catalog row shows
-    // Install instead of a switch.
-    expect(screen.getByRole('switch', { name: 'web-research' })).toBeTruthy()
-    const install = screen.getByRole('button', { name: 'Install' })
+    // Browse keeps installed entries discoverable, but never reinstallable.
+    const detail = within(screen.getByRole('main'))
+    const installed = detail.getByRole<HTMLButtonElement>('button', { name: 'Installed' })
+    expect(installed.disabled).toBe(true)
+    fireEvent.click(installed)
+    expect(installHubSkill).not.toHaveBeenCalled()
+    fireEvent.click(screen.getByRole('button', { name: /^gif-search/ }))
+    expect(detail.getByRole('heading', { name: 'gif-search' })).toBeTruthy()
+    expect(screen.queryByRole('switch')).toBeNull()
 
     await act(async () => {
-      fireEvent.click(install)
+      fireEvent.click(detail.getByRole('button', { name: 'Install' }))
     })
 
-    await waitFor(() =>
-      expect(vi.mocked(installHubSkill)).toHaveBeenCalledWith('official/gifs/gif-search', expect.anything())
-    )
+    expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', 'researcher')
   })
 })

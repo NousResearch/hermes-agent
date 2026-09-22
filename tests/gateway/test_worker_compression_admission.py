@@ -140,7 +140,9 @@ def test_automatic_worker_rotation_retains_retry_identity_and_fifo(tmp_path, end
                         await asyncio.to_thread(owner.wait, 10)
                         return
                     peer.release.set()
-                    async with asyncio.timeout(45):
+                    # Follower turn = a fresh worker process + one inference; on a loaded runner
+                    # (40 parallel test files) that has taken >45 s.
+                    async with asyncio.timeout(120):
                         while rows("SELECT status FROM session_admissions WHERE request_id='follower'")[0]['status'] != 'terminal':
                             await asyncio.sleep(.03)
                     assert rows("SELECT status FROM session_admissions WHERE status!='terminal'") == []

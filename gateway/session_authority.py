@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import asdict, dataclass, field
+from functools import partial
 import uuid
 
 from gateway.session_contract import (
@@ -30,9 +31,20 @@ class LiveSession:
     subscribers: dict = field(default_factory=dict)
     event_stream: SessionEvents = field(default_factory=SessionEvents)
     controls: PendingControls = field(init=False)
+    # The messaging ingress tells the platform user once per pause episode (unknown head,
+    # preflight refusal), not per message; the drain clears it when the FIFO moves again.
+    pause_notified: bool = False
 
     def __post_init__(self):
         self.controls = PendingControls(self.event_stream)
+
+
+def _log_drain_failure(task):
+    """A dead pump is the one failure this module must never swallow."""
+    if task.cancelled() or task.exception() is None:
+        return
+    import logging
+    logging.getLogger(__name__).error('Session drain task died: %r', task.exception())
 
 
 class SessionAuthority:
@@ -47,8 +59,14 @@ class SessionAuthority:
         self.events = {}
         self.native_waiters = set()
         self.pending_results = {}
+        # Stops accepted for a running generation whose agent does not exist yet
+        # (first-turn construction); consumed by adopt_agent, keyed session -> generation.
+        self.pending_stops = {}
 
     def authorize(self, actor, ref, capability):
+        """Every handler calls this first, so a later ``self.sessions[ref.session_id]`` is
+        safe: a deleted/evicted live entry surfaces here as ``not_found``, not as a KeyError
+        deeper in the handler."""
         if actor.profile_id != self.profile_id or ref.profile_id != self.profile_id:
             raise RuntimeStoreError('profile_mismatch')
         if capability not in actor.capabilities:
@@ -80,8 +98,12 @@ class SessionAuthority:
 
     def logical_owner(self, session_id):
         """The FIFO/admission identity of a route: the root of its compression lineage.
-        Compression advances the physical transcript, never the admission identity."""
-        return self.db.get_compression_lineage(session_id)[0] if session_id else session_id
+        Compression advances the physical transcript, never the admission identity. A session this
+        store does not hold (another served profile's, under multiplex) keeps its own id."""
+        if not session_id:
+            return session_id
+        lineage = self.db.get_compression_lineage(session_id)
+        return lineage[0] if lineage else session_id
 
     def physical_target(self, ref):
         return self.db.get_compression_tip(ref.session_id) or ref.session_id
@@ -122,6 +144,7 @@ class SessionAuthority:
             transport = self.events.get(actor.transport_id)
             if transport is not None:
                 live.event_stream.fanout.attach(transport)
+                live.event_stream.on_overflow = partial(self._retire_overflowed, ref.session_id)
             handle = self._handle(ref)
             active_generation = handle.execution_generation if handle.execution_state == "running" else None
             prompts = live.controls.snapshot(ref.session_id, active_generation)
@@ -130,6 +153,14 @@ class SessionAuthority:
                                         sequence, tuple(local_history(self, ref)),
                                         tuple(self._pending_receipt(r) for r in list_session_admissions(
                                             self.db, session_id=ref.session_id)), prompts)
+
+    def _retire_overflowed(self, session_id, transport):
+        """The fanout dropped this peer's backlog: its subscription is over even though the
+        socket still answers RPCs. A later resume re-attaches it with a fresh snapshot."""
+        live = self.sessions[session_id]
+        for subscription, member in list(live.subscribers.items()):
+            if self.events.get(member.transport_id) is transport:
+                del live.subscribers[subscription]
 
     async def detach(self, actor, subscription_id):
         for live in self.sessions.values():
@@ -178,6 +209,21 @@ class SessionAuthority:
         live = self.sessions[ref.session_id]
         if live.task is None or live.task.done():
             live.task = asyncio.create_task(self._drain(ref))
+            live.task.add_done_callback(_log_drain_failure)
+
+    def _pause(self, ref, reason):
+        """The FIFO stopped without claiming its head. Committed rows stay queued for a later
+        drain; only the process-local messaging delivery waiters on this session are released,
+        with the reason instead of a reply, so an adapter loop is never parked on a turn that
+        will not run. The ingress turns that refusal into one user-facing notice per episode."""
+        for row in list_session_admissions(self.db, session_id=ref.session_id):
+            admission_id = row['admission_id']
+            if admission_id not in self.native_waiters:
+                continue
+            self.native_waiters.discard(admission_id)
+            waiter = self.waiters.pop(admission_id, None)
+            if waiter is not None and not waiter.done():
+                waiter.set_exception(RuntimeStoreError(reason))
 
     async def admit_automation(self, adapter, event, identity):
         from gateway.session_automation import admit_automation
@@ -274,11 +320,35 @@ class SessionAuthority:
         return self._receipt(row)
 
     async def cancel_queued(self, actor, ref, admission_id):
-        await self.receipt(actor, ref, admission_id)
+        before = await self.receipt(actor, ref, admission_id)
         row = cancel_session_input(self.db, epoch=self.epoch, admission_id=admission_id)
         from gateway.session_ingress_media import release_admission_media
         release_admission_media(self.db, admission_id)
-        self._publish_pending(ref)
+        if before.status != 'queued' or row['status'] != 'terminal':
+            self._publish_pending(ref)
+            return self._receipt(row)
+        # The only place a queued row becomes terminal: every observer kind that waits on
+        # the admission (native delivery, API/webhook/hosted waiters, ACP and viewer streams)
+        # settles here, or a cancelled row that never reaches _drain blocks them forever.
+        live = self.sessions[ref.session_id]
+        with live.event_stream.lock:
+            self._publish_pending(ref)
+            running = live.event_stream.execution
+            # A queued row owns no execution generation; stamp its own identity so the
+            # completion is not attributed to the turn currently running ahead of it.
+            live.event_stream.execution = {'authority_epoch': self.epoch, 'admission_id': admission_id}
+            try:
+                live.event_stream.publish(ref.session_id, {
+                    'text': '', 'content': '', 'admission_id': admission_id, 'outcome': 'cancelled'})
+            finally:
+                live.event_stream.execution = running
+        self.native_waiters.discard(admission_id)
+        waiter = self.waiters.pop(admission_id, None)
+        if waiter is not None and not waiter.done():
+            waiter.set_result(None)
+        # A paused drain (preclaim refusal on this head) ended its task; the successors
+        # need a fresh drain that revalidates them on their own merits.
+        self._schedule(ref)
         return self._receipt(row)
 
     async def resolve_unknown(self, actor, ref, admission_id, generation):
@@ -297,10 +367,22 @@ class SessionAuthority:
         handle = self._handle(ref)
         if handle.execution_generation != generation:
             raise RuntimeStoreError('stale_generation')
-        agent = self.agent(ref)
-        if agent is not None and handle.execution_state == 'running':
-            agent.interrupt()
+        if handle.execution_state == 'running':
+            agent = self.agent(ref)
+            if agent is not None:
+                agent.interrupt()
+            else:
+                # Accepted for this exact claim; the turn must not construct its agent
+                # afterwards and run the work as if no Stop had arrived.
+                self.pending_stops[ref.session_id] = generation
         return self._handle(ref)
+
+    def adopt_agent(self, session_id, generation, agent):
+        """The turn installs its agent for the running claim; a Stop latched while there
+        was no agent to deliver it to fires now, never against a later generation."""
+        if self.pending_stops.get(session_id) == generation:
+            del self.pending_stops[session_id]
+            agent.interrupt()
 
     def check_approval_generation(self, session_id, generation):
         handle = self._handle(SessionRef(self.profile_id, session_id))
@@ -355,6 +437,7 @@ class SessionAuthority:
             try:
                 pending = list_session_admissions(self.db, session_id=ref.session_id)
                 if any(row['status'] == 'unknown' for row in pending):
+                    self._pause(ref, 'unknown_execution')
                     return
                 first = next((row for row in pending if row['status'] == 'queued'), None)
                 from gateway.config import Platform
@@ -368,6 +451,11 @@ class SessionAuthority:
                             if service is None:
                                 raise RuntimeStoreError('permission_denied')
                             await asyncio.to_thread(service.check_admission, ref, first)
+                        # Cancellation may advance the FIFO while the source owner is awaited;
+                        # the successor must earn its own reauthorization, not inherit this one.
+                        current = get_session_admission(self.db, admission_id=first['admission_id'])
+                        if current is None or current['status'] != 'queued':
+                            continue
                     if 'local_automation_v1' in first['payload']:
                         from gateway.session_automation import check_local_automation
                         check_local_automation(self, ref, first)
@@ -391,7 +479,10 @@ class SessionAuthority:
             except RuntimeStoreError as exc:
                 import logging
                 logging.getLogger(__name__).warning('Session %s paused: %s', ref.session_id, exc.reason)
+                self._pause(ref, exc.reason)
                 return
+            # The FIFO is moving again (or empty): the next pause is a new episode.
+            live.pause_notified = False
             if row is None:
                 return
             admission_id = row['admission_id']
@@ -409,18 +500,35 @@ class SessionAuthority:
                 logging.getLogger(__name__).exception('Admitted turn %s failed', admission_id)
                 response = 'The admitted turn failed.'
                 outcome = 'failed'
-            with live.event_stream.lock:
-                from gateway.session_results import finish_result
-                settled, response = finish_result(self.db, epoch=self.epoch, row=row,
-                    response=response, outcome=outcome,
-                    result=self.pending_results.pop(admission_id, None))
-                live.controls.snapshot(ref.session_id, None)
-                from gateway.session_ingress_media import release_admission_media
-                release_admission_media(self.db, admission_id)
-                self._publish_pending(ref)
-                live.event_stream.publish(ref.session_id, {
-                    'text': response, 'content': response, 'admission_id': admission_id,
-                    'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+            try:
+                with live.event_stream.lock:
+                    from gateway.session_results import finish_result
+                    settled, response = finish_result(self.db, epoch=self.epoch, row=row,
+                        response=response, outcome=outcome,
+                        result=self.pending_results.pop(admission_id, None))
+                    live.controls.snapshot(ref.session_id, None)
+                    from gateway.session_ingress_media import release_admission_media
+                    release_admission_media(self.db, admission_id)
+                    self._publish_pending(ref)
+                    live.event_stream.publish(ref.session_id, {
+                        'text': response, 'content': response, 'admission_id': admission_id,
+                        'outcome': 'cancelled' if settled['outcome'] == 'interrupted' else settled['outcome']})
+            except Exception:
+                # The settle fence lost (a reset/compression moved runtime_generation under
+                # the turn). The row stays `started` for recovery -> `unknown`; re-settling
+                # it here would forge an outcome the ledger refused. The pump itself must
+                # not die silently: log with the id and fall through to release observers.
+                import logging
+                logging.getLogger(__name__).exception(
+                    'Settlement of admission %s failed; left for recovery', admission_id)
+                response = 'The admitted turn could not be settled.'
+            finally:
+                # The stamp names a claimed, unsettled execution. Left in place, idle
+                # mutations (session.updated) would carry a terminal generation and
+                # a versioned viewer fence would discard them as late frames.
+                with live.event_stream.lock:
+                    live.event_stream.execution = {}
+            self.pending_stops.pop(ref.session_id, None)
             waiter = self.waiters.pop(admission_id, None)
             if waiter is not None and not waiter.done():
                 waiter.set_result(response)

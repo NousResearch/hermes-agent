@@ -162,6 +162,12 @@ function timelineTaskCount(metadata: SessionMessage['display_metadata']): number
   return typeof count === 'number' ? count : undefined
 }
 
+function timelineDisplayText(metadata: SessionMessage['display_metadata']): string | undefined {
+  const text = parseDisplayMetadata(metadata)?.display_text
+
+  return typeof text === 'string' && text.trim() ? text : undefined
+}
+
 function messageReactions(metadata: SessionMessage['display_metadata']): MessageReaction[] {
   const reactions = parseDisplayMetadata(metadata)?.reactions
 
@@ -179,7 +185,13 @@ function messageReactions(metadata: SessionMessage['display_metadata']): Message
 function asyncResultBody(content: string): string | undefined {
   let bodies = [content]
 
-  if (content.startsWith('[ASYNC DELEGATION')) {
+  if (content.startsWith('[IMPORTANT: ')) {
+    // Background-process completion: one `[IMPORTANT: …]` block per process, a batch header first.
+    bodies = content
+      .split(/\n\n(?=\[IMPORTANT: )/)
+      .map(block => block.replace(/^\[IMPORTANT:\s*/, '').replace(/\]$/, ''))
+      .filter(block => !/^\d+ background processes completed\./.test(block))
+  } else if (content.startsWith('[ASYNC DELEGATION')) {
     if (content.startsWith('[ASYNC DELEGATION BATCH COMPLETE')) {
       // Task goals can span lines; stopping at a newline leaks the next goal and transcript footer.
       bodies = content.split(/^--- [✓✗⚠] TASK \d+\/\d+(?:: [\s\S]*?)? {2}\(status=[^\n]*\) ---\r?\n/gm).slice(1)
@@ -218,9 +230,16 @@ function timelineDisplayContent(message: SessionMessage, content: string): strin
   if (message.display_kind === 'async_delegation_complete') {
     const count = timelineTaskCount(message.display_metadata)
 
-    return count === undefined
-      ? 'background agent work finished'
-      : `${count} background agent${count === 1 ? '' : 's'} finished`
+    return (
+      timelineDisplayText(message.display_metadata) ??
+      (count === undefined
+        ? 'background agent work finished'
+        : `${count} background agent${count === 1 ? '' : 's'} finished`)
+    )
+  }
+
+  if (message.display_kind === 'process_complete') {
+    return timelineDisplayText(message.display_metadata) ?? 'background process finished'
   }
 
   return content
@@ -313,6 +332,7 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     const displayRole =
       message.display_kind === 'model_switch' ||
       message.display_kind === 'async_delegation_complete' ||
+      message.display_kind === 'process_complete' ||
       message.display_kind === 'auto_continue' ||
       message.display_kind === 'personality_switch'
         ? 'system'
@@ -424,9 +444,10 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
       id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
-      ...(message.display_kind === 'async_delegation_complete'
+      ...(message.display_kind === 'async_delegation_complete' || message.display_kind === 'process_complete'
         ? { asyncResult: asyncResultBody(displayContentForMessage(message.role, message.content || content)) }
         : {}),
+      ...(message.display_kind === 'process_complete' ? { asyncResultKind: 'process' as const } : {}),
       timestamp: earliestTimestamp(message.timestamp, ...parts.map(part => part.timestamp)),
       ...(rowId !== undefined ? { rowId } : {}),
       ...(reactions.length ? { reactions } : {}),

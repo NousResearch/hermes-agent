@@ -39,6 +39,7 @@ _ENV_ENABLE_CREDENTIALS: dict = {
     Platform.TELEGRAM: ("TELEGRAM_BOT_TOKEN",),
     Platform.DISCORD: ("DISCORD_BOT_TOKEN",),
     Platform.SLACK: ("SLACK_BOT_TOKEN",),
+    Platform.WHATSAPP: ("WHATSAPP_ENABLED",),
     Platform.WHATSAPP_CLOUD: ("WHATSAPP_CLOUD_PHONE_NUMBER_ID", "WHATSAPP_CLOUD_ACCESS_TOKEN"),
     Platform.SIGNAL: ("SIGNAL_HTTP_URL",),
     Platform.MATTERMOST: ("MATTERMOST_TOKEN",),
@@ -264,17 +265,16 @@ def _telegram_fallback_ips(config: GatewayConfig) -> None:
 
 
 def _whatsapp(config: GatewayConfig) -> None:
-    """WhatsApp (Baileys bridge) uses a flag, not credentials; an explicit false overrides YAML."""
+    """WhatsApp (Baileys bridge) uses a flag, not credentials. WHATSAPP_ENABLED=false overrides YAML;
+    WHATSAPP_ENABLED=true follows the credential contract — it never beats an explicit YAML disable
+    (the dashboard's disable action writes only ``platforms.whatsapp.enabled: false`` and leaves the
+    env flag on disk, #73289)."""
     raw = getenv("WHATSAPP_ENABLED")
-    enabled = is_truthy_value(raw)
     wa_cfg = config.platforms.get(Platform.WHATSAPP)
-    if wa_cfg is None:
-        if enabled:
-            config.platforms[Platform.WHATSAPP] = PlatformConfig(enabled=True)
-    elif raw.lower() in {"false", "0", "no"}:
+    if wa_cfg is not None and raw.lower() in {"false", "0", "no"}:
         wa_cfg.enabled = False
-    elif enabled:
-        wa_cfg.enabled = True
+    elif is_truthy_value(raw):
+        _enable_from_env(config, Platform.WHATSAPP)
 
 
 def _slack_home(config: GatewayConfig) -> None:

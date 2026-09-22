@@ -7,7 +7,7 @@ from .method_ctx import bind_module
 def _wait_agent(session: dict, rid: str, timeout: float = 30.0) -> dict | None:
     ready = session.get("agent_ready")
     if ready is not None and not ready.wait(timeout=timeout):
-        return _err(rid, 5032, "agent initialization timed out")
+        return _err(rid, 5032, AGENT_STILL_STARTING)
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
@@ -70,31 +70,27 @@ def _wait_agent_for_prompt(session: dict, rid: str, sid: str) -> dict | None:
     return _err(rid, 5032, err) if (err := session.get("agent_error")) else None
 
 
-def _bind_build_profile_scopes(profile_home: str) -> "_TurnScopes":
-    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. Fail-open per
-    scope (the build must not die on a scope helper); the terminal installer itself fails closed (malformed
-    policy → refusal scope) so _make_agent's terminal probing / cwd hints resolve the routed profile."""
+def _bind_build_profile_scopes(profile_home: "str | None") -> "_TurnScopes | None":
+    """Bind a session profile's HERMES_HOME / secret / terminal scopes for an agent build. ``None`` is the
+    launch profile: its own launch-env secret scope (live env while single-profile, frozen once
+    multiplexing is active — a hosted-room turn for a default member otherwise died at build with
+    ``UnscopedSecretError`` because the launch profile was treated as "no scope"). Fail-open per scope (the build must not die on
+    a scope helper); the terminal installer itself fails closed (malformed policy → refusal scope) so
+    _make_agent's terminal probing / cwd hints resolve the routed profile."""
     scopes = _TurnScopes()
-    scopes.home = set_hermes_home_override(profile_home)
     with contextlib.suppress(Exception):
-        scopes.secret = set_secret_scope(build_profile_secret_scope(Path(profile_home)))
-    scopes.terminal = None
-    with contextlib.suppress(Exception):
-        from tools.terminal_scope import install_profile_terminal_scope
-        scopes.terminal = install_profile_terminal_scope(Path(profile_home))
+        return _profile_runtime_scope_tokens(profile_home)
+    if profile_home:  # secret/terminal helper failed: keep at least the home + terminal refusal scope
+        scopes.home = set_hermes_home_override(profile_home)
+        with contextlib.suppress(Exception):
+            from tools.terminal_scope import install_profile_terminal_scope
+            scopes.terminal = install_profile_terminal_scope(Path(profile_home))
     return scopes
 
 
-def _release_build_profile_scopes(scopes: "_TurnScopes") -> None:
-    if scopes.home is not None:
-        reset_hermes_home_override(scopes.home)
-    if scopes.secret is not None:
-        with contextlib.suppress(Exception):
-            reset_secret_scope(scopes.secret)
-    if scopes.terminal is not None:
-        with contextlib.suppress(Exception):
-            from tools.terminal_scope import reset_terminal_scope
-            reset_terminal_scope(scopes.terminal)
+def _release_build_profile_scopes(scopes: "_TurnScopes | None") -> None:
+    with contextlib.suppress(Exception):
+        _release_profile_runtime_scope_tokens(scopes)
 
 
 def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
@@ -103,7 +99,7 @@ def _deferred_build_agent_kwargs(current: dict, session_db) -> dict:
     runtime identity (like the eager resume's overrides splat) so the build can't drop the provider. No
     stored runtime, or an unroutable provider → this session's picked model/effort/tier, else the default."""
     kw = {"session_db": session_db, "context_cwd_is_launch_artifact": _context_cwd_is_launch_artifact(current),
-          "platform_override": _session_source(current)}
+          "platform_override": _session_source(current), "cwd_override": _session_cwd(current)}
     if resume_sid := current.get("resume_session_id"):
         kw["session_id"] = resume_sid
     resume_overrides = current.get("resume_runtime_overrides")
@@ -162,6 +158,8 @@ def _attach_built_agent(current: dict, agent) -> None:
     if _title_hint := str(current.get("pending_title") or "").strip():
         agent._session_title_hint = _title_hint
     current["agent"] = agent
+    # A workspace move can land while construction is still in flight.
+    _register_session_cwd(current)
     _session_todo_state(current)
     # Baseline for the per-turn config sync (profile home override still active).
     current["config_model_seen"] = _config_model_target()
@@ -223,19 +221,25 @@ def _start_agent_build(sid: str, session: dict) -> None:
         with _sessions_lock:
             current = _sessions.get(sid)
         if current is None:
+            # Closed/reaped before the build started: nothing will ever attach an agent to this
+            # record, yet ``agent_ready`` must be set so a prompt waiting on it fails instead of hanging.
+            session["agent_error"] = AGENT_BUILD_ABANDONED
             ready.set()
             return
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
         try:
             if not _await_resume_history(sid, current):
+                # Replaced mid-build: the finally still sets ``agent_ready`` with ``agent`` None, so record
+                # why — a turn admitted against this record refuses with the real reason (#111531).
+                current["agent_error"] = AGENT_BUILD_ABANDONED
                 return
-            tokens = _set_session_context(key)
+            tokens = _set_session_context(key, cwd=_session_cwd(current))
             # Global-remote: bind the session profile's HERMES_HOME and hand the agent that profile's db —
             # DEDICATED and ours until _transfer_db_to_agent in the finally; FAIL CLOSED rather than
             # binding the launch DB and bleeding rows into the wrong state.db.
+            scopes = _bind_build_profile_scopes(profile_home)
             if profile_home:
-                scopes = _bind_build_profile_scopes(profile_home)
                 session_db = _open_profile_session_db(profile_home)
             try:
                 from tui_gateway.entry import ensure_mcp_discovery_started
@@ -253,7 +257,7 @@ def _start_agent_build(sid: str, session: dict) -> None:
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": f"agent init failed: {e}"})
+            _emit("error", sid, {"message": agent_init_failed_message(e)})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)
@@ -317,6 +321,7 @@ def _init_session(
             "model_override": None,
             # Async events go to the transport that created the session (stdio for Ink, WS for the dashboard).
             "transport": current_transport() or _stdio_transport,
+            "auth_user_id": _transport_auth_user_id(current_transport()),
         }
         _session_todo_state(_sessions[sid])
     _hydrate_session_cwd(sid, key, session_db, profile_home)
@@ -328,7 +333,7 @@ def _init_session(
 
 
 def _new_session_key() -> str:
-    return f"{datetime.now().strftime('%Y%m%d_%H%M%S')}_{uuid.uuid4().hex[:6]}"
+    return new_session_id()
 
 
 def _with_checkpoints(session, fn):
@@ -381,6 +386,7 @@ def _deferred_session_record(
         "slash_worker": None, "source": source, "tool_progress_mode": _load_tool_progress_mode(),
         "tool_started_at": {}, "todo_state": todo_state,
         "transport": current_transport() or _stdio_transport,
+        "auth_user_id": _transport_auth_user_id(current_transport()),
     }
 
 
@@ -458,10 +464,14 @@ def _schedule_agent_build(sid: str, delay: float = 0.05) -> None:
     timer.start()
 
 
-def _load_resume_transcript(db, stored_id: str) -> tuple[list, list, list]:
+def _load_resume_transcript(db, stored_id: str, *, model_history_only: bool = False) -> tuple[list, list, list]:
     """(raw_history, display_history, ancestor_prefix) for a cold resume. The full lineage is materialized
     only while it fits sessions.max_resume_messages (the transcript is REST-paginated), else the tip alone."""
     from hermes_state import SessionResumeTooLargeError
+    if model_history_only:
+        raw_history = db.get_messages_as_conversation(
+            stored_id, repair_alternation=True, include_row_ids=True)
+        return raw_history, [], []
     prefix_fits = True
     guard = getattr(db, "assert_resume_safe", None)
     if callable(guard):
@@ -480,7 +490,8 @@ def _load_resume_transcript(db, stored_id: str) -> tuple[list, list, list]:
     return raw_history, raw_history, []
 
 
-def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False) -> None:
+def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool = False,
+                               model_history_only: bool = False) -> None:
     """Load a cold resume's transcript off the JSON-RPC response path."""
 
     def _run() -> None:
@@ -490,29 +501,30 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
                 return
             _emit("session.resume_progress", sid, {"phase": "history", "status": "loading"})
             db.reopen_session(stored_id)
-            raw_history, display_history, prefix = _load_resume_transcript(db, stored_id)
-            # Display keeps the full transcript; the model-fed history drops a dangling/interrupted
-            # tool-call tail so a session killed mid-loop does not replay the unanswered call forever
-            # (#29086).
-            history = sanitize_replay_history(raw_history)
+            raw_history, display_history, prefix = _load_resume_transcript(
+                db, stored_id, model_history_only=model_history_only)
+            # Display keeps the full transcript; the model-fed history uses the
+            # same canonicalization as gateway resume and the send path.
+            history = canonicalize_replay_history(raw_history)
             if _sessions.get(sid) is not session:
                 return
             with session["history_lock"]:
-                session.update(history=history, display_history_prefix=prefix, resume_hydrating=False,
-                               resume_message_count=len(display_history))
+                session.update(history=history, display_history_prefix=prefix, resume_hydrating=False)
+                if not model_history_only:
+                    session["resume_message_count"] = len(display_history)
             # Deferred resumes answered before the transcript existed; cache the derived todo snapshot now.
             todo_state = _todo_state_from_history(history)
             if todo_state is not None and session.get("todo_state") is None:
                 session["todo_state"] = todo_state
             session["resume_history_ready"].set()
             _emit("session.resume_progress", sid,
-                  {"message_count": len(display_history), "phase": "history", "status": "complete"})
+                  {"message_count": session["resume_message_count"], "phase": "history", "status": "complete"})
             _maybe_schedule_auto_continue(sid, session, stored_id)
             _start_agent_build(sid, session)
         except Exception as exc:
             if _sessions.get(sid) is not session:
                 return
-            message = f"resume failed: {exc}"
+            message = resume_failed_message(exc)
             session.update(resume_hydrating=False, resume_history_error=message, agent_error=message)
             session["resume_history_ready"].set()
             session["agent_ready"].set()
@@ -532,8 +544,9 @@ def _schedule_resume_hydration(sid: str, stored_id: str, db, *, close_db: bool =
 
 
 def _session_pending_kind(sid: str) -> str:
-    return next((str(_pending_prompt_payloads.get(rid, ("input.request", {}))[0]).removesuffix(".request")
-                 for rid, (owner_sid, _ev) in list(_pending.items()) if owner_sid == sid), "")
+    """Method of the server→client request *sid* is blocked on ("" when none)."""
+    from tui_gateway import server_requests
+    return server_requests.pending_kind(sid)
 
 
 def _session_live_status(sid: str, session: dict) -> str:
@@ -670,6 +683,8 @@ def _live_session_payload(
     else:
         with _session_db(session) as db:
             history = _live_visible_history(session, db, in_memory_history)
+    # message_count follows _resume_response: the stored size when messages are omitted, else the wire count
+    # (a hidden seed row is in ``history`` but never on the wire).
     messages = [] if omit_messages else _history_to_messages(history)
     payload = {
         "info": _fallback_session_info(session), "message_count": len(history) if omit_messages else len(messages),
@@ -681,7 +696,8 @@ def _live_session_payload(
     }
     for key, value in (("inflight", inflight), ("queued", queued),
                        ("pending_approval", _pending_approval_request_payload(str(session.get("session_key") or ""))),
-                       ("pending_clarify", _pending_clarify_request_payload(sid))):
+                       ("open_requests", _open_requests(sid)),
+                       ("pending_connection", _pending_connection_request_payload(sid))):
         if value:
             payload[key] = value
     return _attach_todo_state(payload, session)
@@ -692,7 +708,9 @@ def _main_runtime_from_agent(agent) -> dict | None:
     if agent is None:
         return None
     runtime: dict = {}
-    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode"):
+    # ``session_id`` rides along so a session-bound ``llm.oneshot`` (title, approval) on an OpenCode
+    # route sends the conversation's ``x-opencode-session`` like the main turn does (#112717).
+    for field in ("provider", "model", "base_url", "api_key", "api_mode", "auth_mode", "session_id"):
         value = getattr(agent, field, None)
         if isinstance(value, str) and value.strip():
             runtime[field] = value.strip()

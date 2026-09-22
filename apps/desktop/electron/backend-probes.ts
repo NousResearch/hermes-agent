@@ -234,6 +234,7 @@ export {
   DEFAULT_PROBE_TIMEOUT_MS,
   execProbe,
   hermesRuntimeImportProbe,
+  isTimeoutError,
   PROBE_TIMEOUT_MS,
   resolveProbeTimeoutMs,
   shouldTrustHermesOverride,

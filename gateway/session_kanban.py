@@ -96,17 +96,22 @@ async def run_task(connection, params):
     import psutil
     context = json.loads(policy.kanban_json)
     with connect_closing(Path(context['db'])) as conn, kb.write_txn(conn):
-        task = kb.get_task(conn, params['task_id'])
-        if task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']:
-            marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
-                                  (task.id, task.current_run_id)).fetchone()
-            if marker and json.loads(marker[0])['session_id'] != ref.session_id:
+        # Either this exact attempt was already admitted to this session (retry after a
+        # crash between session creation and admission), or the claim is still current
+        # now; a reclaimed/closed task never reaches resume/submit.
+        marker = conn.execute("SELECT payload FROM task_events WHERE task_id=? AND run_id=? AND kind='owner_admitted' ORDER BY id DESC LIMIT 1",
+                              (params['task_id'], params['run_id'])).fetchone()
+        if marker:
+            if json.loads(marker[0])['session_id'] != ref.session_id:
                 raise RuntimeStoreError('stale_kanban_claim')
-            if not marker:
-                kb._append_event(conn, task.id, 'owner_admitted',
-                    {'db': str(Path(authority.db.db_path).resolve()), 'session_id': ref.session_id,
-                     'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
-                    run_id=task.current_run_id)
+        else:
+            task = kb.get_task(conn, params['task_id'])
+            if not (task and task.status == 'running' and task.current_run_id == params['run_id'] and task.claim_lock == params['claim_lock']):
+                raise RuntimeStoreError('stale_kanban_claim')
+            kb._append_event(conn, task.id, 'owner_admitted',
+                {'db': str(Path(authority.db.db_path).resolve()), 'session_id': ref.session_id,
+                 'request_id': request_id, 'pid': os.getpid(), 'birth': psutil.Process().create_time()},
+                run_id=task.current_run_id)
     await connection.resume(ref, {})
     receipt = await authority.submit(connection.actor, Submission(request_id, ref,
         {'text': f'work kanban task {params["task_id"]}'}, 'queue'))
@@ -144,9 +149,16 @@ def bind_worker_context(frame):
             if (task is None or task.status != 'running' or task.current_run_id != context['run_id']
                     or task.claim_lock != context['claim_lock']):
                 raise RuntimeStoreError('stale_kanban_claim')
-            # Reclaim/timeout must track the executing interpreter, not its disposable viewer.
-            conn.execute('UPDATE tasks SET worker_pid=? WHERE id=?', (os.getpid(), task.id))
-            conn.execute('UPDATE task_runs SET worker_pid=? WHERE id=?', (os.getpid(), context['run_id']))
+            # Reclaim/timeout must track the executing interpreter, not its disposable viewer. The
+            # fingerprint moves with the pid: the dispatcher's liveness/kill checks compare the live
+            # process against ``worker_started_at``, so a launcher fingerprint left beside our pid
+            # would read as a recycled PID and reclaim a running worker.
+            from hermes_cli.kanban_db_dispatch import UNVERIFIED_WORKER_FINGERPRINT, _process_fingerprint
+            fingerprint = _process_fingerprint(os.getpid()) or UNVERIFIED_WORKER_FINGERPRINT
+            conn.execute('UPDATE tasks SET worker_pid=?, worker_started_at=? WHERE id=?',
+                         (os.getpid(), fingerprint, task.id))
+            conn.execute('UPDATE task_runs SET worker_pid=?, worker_started_at=? WHERE id=?',
+                         (os.getpid(), fingerprint, context['run_id']))
             kb._append_event(conn, task.id, 'worker_bound', {'pid': os.getpid(), 'claim_lock': context['claim_lock']}, run_id=context['run_id'])
     os.environ.update(env)
     os.chdir(context['workspace'])
@@ -157,7 +169,9 @@ def bind_worker_context(frame):
 def run_worker_turns(agent, frame, history):
     context = json.loads(frame['policy'].get('kanban_json') or 'null')
     if context is None:
-        return agent.run_conversation(frame['text'], conversation_history=history)
+        author = frame.get('turn_author')
+        return agent.run_conversation(frame['text'], conversation_history=history,
+                                      **({'turn_author': author} if author is not None else {}))
     from hermes_cli.kanban_db import KANBAN_RATE_LIMIT_EXIT_CODE
     code = 1
     try:

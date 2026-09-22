@@ -21,6 +21,10 @@ from gateway.config import Platform
 from gateway.platforms.base import EphemeralReply
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run_common import _UNSET
+from gateway.run_inbound_unauthorized import (
+    PAIRING_RATE_LIMITED_REPLY, UnauthorizedOwnerNotifier, pairing_code_reply, pairing_profile_arg,
+    unauthorized_owner_hint,
+)
 from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
 )
@@ -88,26 +92,49 @@ class GatewayInboundMixin:
         code = pairing_store.generate_code(platform_name, source.user_id, source.user_name or "")
         adapter = self._adapter_for_source(source)
         if code:
-            store_profile = getattr(pairing_store, "profile", None)
-            profile_arg = (
-                f"-p {store_profile} "
-                if isinstance(store_profile, str) and store_profile and store_profile != "default"
-                else ""
-            )
-            reply = (
-                f"Hi~ I don't recognize you yet!\n\n"
-                f"Here's your pairing code: `{code}`\n\n"
-                f"Ask the bot owner to run:\n"
-                f"`hermes {profile_arg}pairing approve "
-                f"{platform_name} {code}`"
-            )
+            reply = pairing_code_reply(platform_name, code, pairing_profile_arg(pairing_store))
         else:
-            reply = "Too many pairing requests right now~ Please try again later!"
+            reply = PAIRING_RATE_LIMITED_REPLY
         if adapter:
             await adapter.send(source.chat_id, reply)
         if not code:
             # Record rate limit so subsequent messages are silently ignored
             pairing_store._record_rate_limit(platform_name, source.user_id)
+
+    async def _hm_send_unauthorized_decline(self, source: SessionSource) -> None:
+        """``decline`` behavior: one short refusal per sender per DECLINE_DEDUPE_SECONDS, then silence
+        (#88028). The stamp is written BEFORE the send so a delivery
+        hiccup cannot become a decline storm; without a store there is no dedupe state → stay silent."""
+        from gateway.config import DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE
+        platform_name = source.platform.value if source.platform else "unknown"
+        pairing_store = self._pairing_store_for(source)
+        if pairing_store is None or pairing_store.has_recent_decline(platform_name, source.user_id):
+            return
+        pairing_store.record_decline(platform_name, source.user_id)
+        adapter = self._adapter_for_source(source)
+        if not adapter:
+            return
+        config = getattr(self, "config", None)
+        text = str(getattr(config, "unauthorized_dm_decline_message", "") or "").strip()
+        try:
+            await adapter.send(source.chat_id, text or DEFAULT_UNAUTHORIZED_DM_DECLINE_MESSAGE)
+        except Exception:
+            logger.warning("Failed to deliver unauthorized-DM decline on %s", platform_name, exc_info=True)
+
+    async def _hm_report_ignored_dm(self, source: SessionSource) -> None:
+        """Unauthorized DM under behaviour ``ignore``: nothing goes to the sender. The owner gets the
+        sender's ID and the allowlist fix in the WARNING log and, once per sender, in the home channel."""
+        from hermes_constants import display_hermes_home
+        platform_name = source.platform.value if source.platform else "unknown"
+        hint = unauthorized_owner_hint(
+            platform_name, source.user_id, source.user_name or "", hermes_home=display_hermes_home(),
+        )
+        logger.warning("Unauthorized user (ignored): %s", hint)
+        notifier = getattr(self, "_unauthorized_owner_notifier", None)
+        if notifier is None:
+            notifier = self._unauthorized_owner_notifier = UnauthorizedOwnerNotifier()
+        if notifier.first_time(platform_name, source.user_id) and getattr(self, "config", None) is not None:
+            await notifier.notify(self, source, hint)
 
     async def _hm_admit_event(
         self, event: "MessageEvent"
@@ -194,14 +221,20 @@ class GatewayInboundMixin:
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.
                 logger.debug("Ignoring message with no user_id from %s", source.platform.value)
                 return None
-            logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
-            # DMs get a pairing code, groups are ignored. A bot cannot pair, and answering one mid-cooldown is outbound traffic.
-            if (
-                source.chat_type == "dm"
-                and not getattr(source, "is_bot", False)
-                and self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) == "pair"
-            ):
+            # DMs get a pairing code or a one-time decline, groups are ignored. A bot cannot pair, and
+            # answering one mid-cooldown is outbound traffic.
+            pairable_dm = source.chat_type == "dm" and not getattr(source, "is_bot", False)
+            behavior = self._get_unauthorized_dm_behavior(source.platform, profile=source.profile) if pairable_dm else None
+            if behavior == "pair":
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
                 await self._hm_offer_pairing_code(source)
+            elif behavior == "decline":
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
+                await self._hm_send_unauthorized_decline(source)
+            elif pairable_dm:
+                await self._hm_report_ignored_dm(source)
+            else:
+                logger.warning("Unauthorized user: %s (%s) on %s", source.user_id, source.user_name, source.platform.value)
             return None
         # The busy path charged this event on arrival; a drained follow-up must not pay twice.
         if not getattr(event, "_bot_loop_admitted", False) and not self._admit_bot_message_for_source(source):
@@ -358,6 +391,15 @@ class GatewayInboundMixin:
                     _clarify_adapter.resume_typing_for_chat(source.chat_id)
                 except Exception:
                     logger.debug("Failed to resume typing after clarify response", exc_info=True)
+                # A typed answer to a native card (numeric pick, or text after "Other") never
+                # reaches the click handler, so the card would keep its buttons forever.
+                if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                    try:
+                        await _clarify_adapter.retire_clarify_card(
+                            _pending_clarify.clarify_id,
+                            f"✅ answered: {_pending_clarify.response or _raw_clarify_reply}")
+                    except Exception:
+                        logger.debug("Failed to retire clarify card after typed answer", exc_info=True)
             return ""
         if _text_outcome == _clarify_mod.TEXT_REJECTED_SELECTION:
             # Selection-shaped but invalid (out-of-range number, bad comma-list): keep the clarify
@@ -367,7 +409,20 @@ class GatewayInboundMixin:
             # Native-choice prompts reject unmatched prose so it continues through normal busy
             # routing. Release this clarify first: redirect() degrades to steer() while tools
             # execute, and that steer cannot drain until the clarify tool returns.
-            _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, "")
+            if _clarify_mod.resolve_gateway_clarify(_pending_clarify.clarify_id, ""):
+                # Adapters with a persistent native card (Slack Block Kit) retire it now, before the
+                # prose is routed, so its buttons stop advertising a dead answer path. The pop inside
+                # retire_clarify_card runs before its first await, so the agent thread's own expiry
+                # notice (scheduled once the wait unblocks) finds nothing and stays a no-op.
+                _clarify_adapter = self._adapter_for_source(source)
+                # Class lookup: a MagicMock adapter must not fabricate the method.
+                if callable(getattr(type(_clarify_adapter), "retire_clarify_card", None)):
+                    try:
+                        await _clarify_adapter.retire_clarify_card(
+                            _pending_clarify.clarify_id,
+                            "↩️ Clarification cancelled — your message will be handled as a follow-up.")
+                    except Exception:
+                        logger.debug("Failed to retire clarify card after prose cancellation", exc_info=True)
         return None
 
     # Reply → choice for a pending slash-confirm prompt; the command spelling wins over the
@@ -489,9 +544,10 @@ class GatewayInboundMixin:
             logger.debug("reaped-session staleness check failed", exc_info=True)
 
     def _hm_evict_running_agent(self, _quick_key: str, reason: str) -> None:
-        from gateway.run import _INTERRUPT_REASON_EVICTED
+        from gateway.run import _INTERRUPT_REASON_EVICTED, _INTERRUPT_TOOL_REASON_EVICTED
         _generation_at_interrupt = self._interrupt_running_turn(
-            _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason)
+            _quick_key, interrupt_reason=_INTERRUPT_REASON_EVICTED, invalidation_reason=reason,
+            tool_reason=_INTERRUPT_TOOL_REASON_EVICTED)
         self._drop_turn_slot(_quick_key, run_generation=_generation_at_interrupt)
 
     def _hm_merge_pending_for_source(
@@ -1038,6 +1094,9 @@ class GatewayInboundMixin:
         """Reply for a /command that is not built-in/plugin/skill; None when it is known."""
         from gateway.run import _check_unavailable_skill
         from hermes_cli.commands import GATEWAY_KNOWN_COMMANDS
+        # Known commands never need an unavailable-skill hint (which can require a cold scan).
+        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
+            return None
         # Known-but-disabled or uninstalled skill → actionable guidance.
         _unavail_msg = _check_unavailable_skill(command)
         if _unavail_msg:
@@ -1045,8 +1104,6 @@ class GatewayInboundMixin:
         # Genuinely unrecognized: warn instead of forwarding to the LLM as free text (it invents
         # tool calls). Normalize to hyphenated form first: the quick-command block may have set an
         # alias target, so the resolved def can be stale.
-        if command.replace("_", "-") in GATEWAY_KNOWN_COMMANDS:
-            return None
         logger.warning(
             "Unrecognized slash command /%s from %s — replying with unknown-command notice",
             command, source.platform.value if source.platform else "?",
@@ -1150,7 +1207,12 @@ class GatewayInboundMixin:
         if not _handled:
             _handled, _result, command = await self._hm_dispatch_quick_and_plugin_commands(event, source, command)
         if not _handled:
-            _result = self._hm_skill_slash_rewrite(event, source, _quick_key, command)
+            # Skill-slash resolution is disk-bound (cold skill scan, skill file loads, the
+            # unavailable-skill rglob over every skills dir) and uncached on a first hit; on a
+            # large install it held the loop past the liveness watchdog (#111091). The executor
+            # hop carries the profile contextvars the scan is scoped to.
+            _result = await self._run_in_executor_with_context(
+                self._hm_skill_slash_rewrite, event, source, _quick_key, command)
             _handled = _result is not None
         return _handled, _result
 

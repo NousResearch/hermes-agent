@@ -47,7 +47,7 @@ owner-kill, surviving-worker/outbox, stale epoch rejection, adoption and one-tim
 usage settlement proof. Lost ACK is a controlled discarded RPC result, not a
 kernel packet-drop claim. It is not an AIAgent interrupted mid-inference restart.
 
-`tests/state/test_runtime_worker_context.py` proves assigned-row isolation,
+`tests/hermes_state/test_runtime_worker_context.py` proves assigned-row isolation,
 sidecar identity preservation, prompt lost-ACK replay and real ContextCompressor
 binding of persisted guards. Missing methods previously silently reset guards.
 

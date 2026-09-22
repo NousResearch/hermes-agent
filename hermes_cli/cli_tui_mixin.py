@@ -50,6 +50,7 @@ _APPROVAL_CHOICE_LABELS = {
     "once": "Allow once",
     "session": "Allow for this session",
     "always": "Add to permanent allowlist",
+    "yolo": "Allow and stop asking for this session",
     "deny": "Deny",
     "view": "Show full command"}
 

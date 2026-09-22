@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ 本次允許"
   allowed_session: "      ✓ 本次工作階段內允許"
   allowed_always:  "      ✓ 已加入永久允許清單"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ 已拒絕"
   cancelled:       "      ✗ 已取消"
   blocklist_message: "此指令位於無條件封鎖清單中，無法被批准。"
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ 指令已批准（本次工作階段內允許該模式）（{count} 條指令）。代理正在恢復…"
     always_singular:       "✅ 指令已批准（永久允許該模式）。代理正在恢復…"
     always_plural:         "✅ 指令已批准（永久允許該模式）（{count} 條指令）。代理正在恢復…"
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "用法：/bg <提示>\n範例：/bg 摘要今天 HN 上的熱門故事\n\n在獨立工作階段中執行該提示。你可以繼續聊天 — 完成後結果將顯示於此。"

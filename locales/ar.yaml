@@ -20,6 +20,7 @@ approval:
   allowed_once:    "      ✓ مسموح مرة واحدة"
   allowed_session: "      ✓ مسموح لهذه الجلسة"
   allowed_always:  "      ✓ أُضيف إلى قائمة السماح الدائمة"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ مرفوض"
   cancelled:       "      ✗ أُلغي"
   blocklist_message: "هذا الأمر مدرج في قائمة الحظر غير المشروطة ولا يمكن الموافقة عليه."
@@ -89,6 +90,8 @@ gateway:
     session_plural:        "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه لهذه الجلسة) ({count} أوامر). الوكيل يستأنف..."
     always_singular:       "✅ تمت الموافقة على الأمر (النمط مُوافق عليه دائمًا). الوكيل يستأنف..."
     always_plural:         "✅ تمت الموافقة على الأوامر (النمط مُوافق عليه دائمًا) ({count} أوامر). الوكيل يستأنف..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "الاستخدام: /bg <prompt>\nمثال: /bg لخّص أهم قصص HN اليوم\n\nيشغّل الموجِّه في جلسة منفصلة. يمكنك متابعة المحادثة — ستظهر النتيجة هنا عند الانتهاء."

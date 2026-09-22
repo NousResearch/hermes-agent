@@ -13,10 +13,10 @@
 approval:
   # CLI approval prompt -- shown when a dangerous command needs user review.
   dangerous_header: "⚠️  DANGEROUS COMMAND: {description}"
-  choose_long:     "      [o]nce  |  [s]ession  |  [a]lways  |  [d]eny"
-  choose_short:    "      [o]nce  |  [s]ession  |  [d]eny"
-  prompt_long:     "      Choice [o/s/a/D]: "
-  prompt_short:    "      Choice [o/s/D]: "
+  choose_long:     "      [o]nce  |  [s]ession  |  [a]lways  |  [y]olo  |  [d]eny"
+  choose_short:    "      [o]nce  |  [s]ession  |  [y]olo  |  [d]eny"
+  prompt_long:     "      Choice [o/s/a/y/D]: "
+  prompt_short:    "      Choice [o/s/y/D]: "
   choose_smart_deny: "      [o]nce  |  [d]eny"
   prompt_smart_deny: "      Choice [o/D]: "
   smart_deny_once_inputs: "o,once"
@@ -25,6 +25,7 @@ approval:
   allowed_once:    "      ✓ Allowed once"
   allowed_session: "      ✓ Allowed for this session"
   allowed_always:  "      ✓ Added to permanent allowlist"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Denied"
   cancelled:       "      ✗ Cancelled"
   blocklist_message: "This command is on the unconditional blocklist and cannot be approved."
@@ -81,6 +82,8 @@ gateway:
     session_plural:        "✅ Commands approved (pattern approved for this session) ({count} commands). The agent is resuming..."
     always_singular:       "✅ Command approved (pattern approved permanently). The agent is resuming..."
     always_plural:         "✅ Commands approved (pattern approved permanently) ({count} commands). The agent is resuming..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Usage: /bg <prompt>\nExample: /bg Summarize the top HN stories today\n\nRuns the prompt in a separate session. You can keep chatting — the result will appear here when done."

@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ Bir kez izin verildi"
   allowed_session: "      ✓ Bu oturum için izin verildi"
   allowed_always:  "      ✓ Kalıcı izin listesine eklendi"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Reddedildi"
   cancelled:       "      ✗ İptal edildi"
   blocklist_message: "Bu komut koşulsuz engelleme listesinde ve onaylanamaz."
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ Komutlar onaylandı (desen bu oturum için onaylandı) ({count} komut). Ajan devam ediyor..."
     always_singular:       "✅ Komut onaylandı (desen kalıcı olarak onaylandı). Ajan devam ediyor..."
     always_plural:         "✅ Komutlar onaylandı (desen kalıcı olarak onaylandı) ({count} komut). Ajan devam ediyor..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Kullanım: /bg <prompt>\nÖrnek: /bg Bugünün öne çıkan HN haberlerini özetle\n\nİstemi ayrı bir oturumda çalıştırır. Sohbete devam edebilirsin — sonuç tamamlandığında burada görünecek."

@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ 今回のみ許可"
   allowed_session: "      ✓ このセッション中は許可"
   allowed_always:  "      ✓ 永続的な許可リストに追加"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ 拒否しました"
   cancelled:       "      ✗ キャンセルしました"
   blocklist_message: "このコマンドは無条件ブロックリストに含まれており、承認できません。"
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ コマンドを承認しました (このセッション中はパターンを許可) ({count} 件)。エージェントを再開しています..."
     always_singular:       "✅ コマンドを承認しました (パターンを永続的に許可)。エージェントを再開しています..."
     always_plural:         "✅ コマンドを承認しました (パターンを永続的に許可) ({count} 件)。エージェントを再開しています..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "使い方: /bg <プロンプト>\n例: /bg 今日の HN トップ記事を要約して\n\nプロンプトを別のセッションで実行します。チャットを続けられます — 完了したらここに結果が表示されます。"

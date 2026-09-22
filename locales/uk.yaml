@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ Дозволено один раз"
   allowed_session: "      ✓ Дозволено для цього сеансу"
   allowed_always:  "      ✓ Додано до постійного списку дозволених команд"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Відхилено"
   cancelled:       "      ✗ Скасовано"
   blocklist_message: "Ця команда є в безумовному списку блокування, її не можна схвалити."
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ Команди схвалено (шаблон схвалено для цього сеансу) ({count} команд). Агент відновлює роботу…"
     always_singular:       "✅ Команду схвалено (шаблон схвалено назавжди). Агент відновлює роботу…"
     always_plural:         "✅ Команди схвалено (шаблон схвалено назавжди) ({count} команд). Агент відновлює роботу…"
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Використання: /bg <запит>\nПриклад: /bg Підсумуй найкращі історії з HN сьогодні\n\nЗапускає запит в окремому сеансі. Можна продовжити спілкування — результат з'явиться тут після завершення."

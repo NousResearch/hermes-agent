@@ -15,6 +15,7 @@ approval:
   allowed_once:    "      ✓ Eenmalig toegelaat"
   allowed_session: "      ✓ Vir hierdie sessie toegelaat"
   allowed_always:  "      ✓ By permanente toelaatlys gevoeg"
+  allowed_yolo:  "      ✓ Allowed, approval off for this session (YOLO)"
   denied:          "      ✗ Geweier"
   cancelled:       "      ✗ Gekanselleer"
   blocklist_message: "Hierdie opdrag is op die onvoorwaardelike blokkeerlys en kan nie goedgekeur word nie."
@@ -66,6 +67,8 @@ gateway:
     session_plural:        "✅ Opdragte goedgekeur (patroon goedgekeur vir hierdie sessie) ({count} opdragte). Die agent gaan voort..."
     always_singular:       "✅ Opdrag goedgekeur (patroon permanent goedgekeur). Die agent gaan voort..."
     always_plural:         "✅ Opdragte goedgekeur (patroon permanent goedgekeur) ({count} opdragte). Die agent gaan voort..."
+    yolo_singular:         "✅ Command approved (approval off for this session). The agent is resuming..."
+    yolo_plural:         "✅ Commands approved (approval off for this session) ({count} commands). The agent is resuming..."
 
   background:
     usage:                 "Gebruik: /bg <prompt>\nVoorbeeld: /bg Som vandag se top HN-stories op\n\nVoer die prompt in 'n aparte sessie uit. Jy kan aanhou gesels — die resultaat verskyn hier wanneer dit klaar is."

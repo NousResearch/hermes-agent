@@ -65,7 +65,8 @@ _FOOTER_STATE_BY_ARG = {**dict.fromkeys(("on", "enable", "true", "1"), True),
 
 # /approve modifier tokens -> approval choice (default "once").
 _APPROVE_CHOICE_BY_ARG = {**dict.fromkeys(("always", "permanent", "permanently"), "always"),
-                          **dict.fromkeys(("session", "ses"), "session")}
+                          **dict.fromkeys(("session", "ses"), "session"),
+                          **dict.fromkeys(("yolo",), "yolo")}
 
 _PLATFORM_USAGE = ("Usage: /platform <list|pause|resume> [name]\n"
                    "  /platform list — show platform status\n"
@@ -1184,10 +1185,12 @@ class GatewaySlashCommandsMixin(
                                                               "gateway.approve.no_pending")
         if stale:
             return stale
-        # Args: "all", "all session", "all always", "session", "always" ("always" beats "session").
+        # Args: "all", "all session", "all always", "all yolo", "session", "always", "yolo"
+        # ("yolo" beats "always" beats "session" — the broadest scope wins).
         args = event.get_command_args().strip().lower().split()
         choices = {_APPROVE_CHOICE_BY_ARG[a] for a in args if a in _APPROVE_CHOICE_BY_ARG}
-        choice = "always" if "always" in choices else "session" if "session" in choices else "once"
+        choice = ("yolo" if "yolo" in choices else "always" if "always" in choices
+                  else "session" if "session" in choices else "once")
         count = resolve_gateway_approval(session_key, choice, resolve_all="all" in args)
         if not count:
             return t("gateway.approve.no_pending")

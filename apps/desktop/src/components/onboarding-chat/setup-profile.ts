@@ -292,6 +292,7 @@ export async function ensureSetupProfile(request: GatewayRequest): Promise<void>
       description: 'Where Hermes met you — walks your first run, then checks in as you find your feet.',
       name: SETUP_PROFILE,
       clone_from: 'default',
+      share_auth: true,
       no_alias: true,
       soul: composeSetupSoul()
     })

@@ -700,18 +700,23 @@ def _create_session(home: Path, session_id: str, cwd: Path) -> None:
 
 @contextlib.contextmanager
 def _serving_launch_profile(launch_home: Path):
-    """Run the handlers as a backend launched under ``launch_home``."""
+    """Run the handlers as a backend launched under ``launch_home``.
+
+    Both the ambient override AND ``server._hermes_home`` point at it: once the process
+    multiplexes, a launch-profile RPC binds the server's own launch home (#118538), so an
+    override alone no longer stands in for "this backend was launched here"."""
     from hermes_state import SessionDB
 
     token = set_hermes_home_override(launch_home)
-    prev_db, prev_error = server._db, server._db_error
+    prev_db, prev_error, prev_home = server._db, server._db_error, server._hermes_home
+    server._hermes_home = launch_home
     server._db = SessionDB(db_path=launch_home / "state.db")
     server._db_error = None
     try:
         yield
     finally:
         server._db.close()
-        server._db, server._db_error = prev_db, prev_error
+        server._db, server._db_error, server._hermes_home = prev_db, prev_error, prev_home
         reset_hermes_home_override(token)
 
 

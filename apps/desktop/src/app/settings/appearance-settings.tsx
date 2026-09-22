@@ -68,6 +68,7 @@ import { appearanceSubpageForSetting, type AppearanceSubpageId } from './appeara
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
+import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
@@ -83,6 +84,7 @@ function ResumeLastSessionSetting() {
   const a = t.settings.appearance
   const configQuery = useHermesConfigRecord()
   const config = configQuery.data
+  const writeScope = configQuery.writeScope
   const checked = (config?.display as { resume_last_session?: unknown } | undefined)?.resume_last_session !== false
 
   const update = (on: boolean) => {
@@ -94,7 +96,7 @@ function ResumeLastSessionSetting() {
     setHermesConfigCache(next)
     // Sparse patch: PUT /api/config deep-merges, and echoing the cached
     // snapshot would overwrite keys other surfaces changed since it loaded.
-    void saveHermesConfig(setNested({}, 'display.resume_last_session', on))
+    void saveHermesConfig(setNested({}, 'display.resume_last_session', on), writeScope)
       .then(result => {
         if (!result.ok) {
           throw new Error(t.settings.config.autosaveFailed)
@@ -724,6 +726,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
               title={a.appActionsTitle}
             />
+          )}
+
+          {show('window-layout') && (
+            <div id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.minimizeToTray)}>
+              <MinimizeToTraySetting />
+            </div>
           )}
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),

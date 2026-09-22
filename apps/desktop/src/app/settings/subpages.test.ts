@@ -50,6 +50,8 @@ describe('settings subpage routing', () => {
 
     const cases: [SettingsView, string, string][] = [
       ['config:model', 'aux=vision', 'auxiliary'],
+      ['keybinds', 'setting=hud-modifier', 'hud-gesture'],
+      ['keybinds', 'page=shortcuts&setting=hud-modifier', 'hud-gesture'],
       ['sessions', 'session=archived-id', 'archived'],
       ['vault', 'kind=login', 'credentials'],
       ['vault', 'label=Example', 'credentials'],

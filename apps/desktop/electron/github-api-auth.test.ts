@@ -87,6 +87,7 @@ test('gh is found in the GUI-safe install locations a minimal launch PATH omits'
   assert.equal(macos, brewGh)
 
   const winGh = 'C:\\Program Files\\GitHub CLI\\gh.exe'
+
   const windows = findGhCli(
     { Path: 'C:\\Windows\\System32', ProgramFiles: 'C:\\Program Files' },
     'win32',

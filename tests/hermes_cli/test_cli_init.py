@@ -773,7 +773,7 @@ class TestPluginToolsetStartupValidation:
     """
 
     @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys, mcp_names=()):
         import cli as _cli_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
@@ -784,6 +784,10 @@ class TestPluginToolsetStartupValidation:
         monkeypatch.setattr(
             "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
             lambda: set(plugin_keys),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.tools_config.enabled_mcp_server_names",
+            lambda config: set(mcp_names),
         )
         stub._init_toolsets(list(toolsets))
         return stub, printed
@@ -798,6 +802,18 @@ class TestPluginToolsetStartupValidation:
         assert printed == []
         # The configured list is kept verbatim; only the false warning is silenced.
         assert stub.enabled_toolsets == ["terminal", "voice_stack"]
+
+    def test_portable_plugin_mcp_server_is_not_flagged(self, monkeypatch):
+        portable = "agent-plugin-snyk-8cb0f11d__sn"
+        stub, printed = self._init_toolsets(
+            monkeypatch,
+            ["terminal", portable],
+            registry={"terminal"},
+            plugin_keys=set(),
+            mcp_names={portable},
+        )
+        assert printed == []
+        assert stub.enabled_toolsets == ["terminal", portable]
 
     def test_real_typo_still_warns(self, monkeypatch):
         _, printed = self._init_toolsets(

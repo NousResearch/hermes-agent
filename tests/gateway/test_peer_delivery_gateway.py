@@ -9,6 +9,7 @@ on-disk delivery queue under a tmp HERMES_HOME.
 import asyncio
 import json
 import os
+import threading
 import time
 from types import SimpleNamespace
 
@@ -60,6 +61,14 @@ def adapter(home, monkeypatch):
     a._prepare_session_chat = _prepared
     a._run_idempotency_scope = lambda request: "peer-scope"
     a.calls = []
+    # The stub builds the adapter through __new__, so it owes the __init__ defaults that
+    # upstream's live-Bot-Chat handoff reads on the plain session-chat path (_session_db
+    # is the explicit-override slot; the rest is the per-profile-home SessionDB cache).
+    a._session_db = None
+    a._session_dbs = {}
+    a._session_db_cache_lock = threading.Lock()
+    a._session_db_cache_closed = False
+    a._session_db_lock = None
 
     async def _history(session_id):
         return []
@@ -81,7 +90,7 @@ async def _prepared(request):
     return ({"session_id": "sess-1",
              "user_message": getattr(request, "user_message", "hi"),
              "gateway_session_key": None, "body": {}, "runtime_request": {},
-             "lock_active": False, "run_kwargs": {"session_id": "sess-1"}}, None)
+             "lock_active": False, "run_kwargs": {"session_id": "sess-1", "turn_author": None}}, None)
 
 
 def _headers(key=q.validate_idempotency_key("auto:test:1"), sender="sender",

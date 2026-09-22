@@ -565,3 +565,91 @@ def test_do_install_generic_when_no_index_hit_or_rate_limited(monkeypatch, meta_
     assert "Could not download" in out
     assert "Stale index entry" not in out
     assert ("rate limit" in out) is meta_hit
+
+
+# ---------------------------------------------------------------------------
+# Short-name resolution by identifier + failure exit code
+# ---------------------------------------------------------------------------
+
+
+def _meta(name, identifier, source="clawhub"):
+    from tools.skills_hub_models import SkillMeta
+
+    return SkillMeta(name=name, description="", source=source, identifier=identifier,
+                     trust_level="community")
+
+
+def _sink_console():
+    sink = StringIO()
+    return Console(file=sink, force_terminal=False, color_system=None), sink
+
+
+def _stub_search(monkeypatch, results):
+    """unified_search is late-bound inside _resolve_short_name, so patch its module."""
+    import tools.skills_hub_search as search
+
+    monkeypatch.setattr(search, "unified_search", lambda *args, **kwargs: list(results))
+
+
+def test_resolve_short_name_matches_identifier_slug(monkeypatch):
+    """A catalog row whose title is prettified ("Blender Bpy Enhanced") still resolves when the
+    user installs the slug the Hub lists — before this, `hermes skills install <slug>` answered
+    "No exact match" while printing that very slug as the suggestion."""
+    from hermes_cli.skills_hub import _resolve_short_name
+
+    _stub_search(monkeypatch, [_meta("Blender Bpy Enhanced", "@emergencescience/blender-bpy-enhanced")])
+    console, sink = _sink_console()
+
+    resolved = _resolve_short_name("blender-bpy-enhanced", [], console)
+
+    assert resolved == "@emergencescience/blender-bpy-enhanced"
+    assert "No exact match" not in sink.getvalue()
+
+
+def test_resolve_short_name_keeps_display_name_precedence(monkeypatch):
+    """Display-name matching still decides first: another row merely ending in the same slug must
+    not turn a single exact display-name hit into the ambiguous list."""
+    from hermes_cli.skills_hub import _resolve_short_name
+
+    _stub_search(monkeypatch, [
+        _meta("dream-loop", "official/creative/dream-loop", source="official"),
+        _meta("Something Else", "skills-sh/org/repo/dream-loop"),
+    ])
+    console, sink = _sink_console()
+
+    assert _resolve_short_name("dream-loop", [], console) == "official/creative/dream-loop"
+    assert "Multiple skills" not in sink.getvalue()
+
+
+def test_do_install_reports_unresolved_name_as_failure(monkeypatch):
+    """An unresolved short name is a real failure (False), not the None no-op."""
+    import hermes_cli.skills_hub as cli_hub
+    import tools.skills_hub as hub
+
+    class _Source:
+        def source_id(self):
+            return "clawhub"
+
+    monkeypatch.setattr(hub, "ensure_hub_dirs", lambda: None)
+    monkeypatch.setattr(cli_hub, "_sources", lambda: [_Source()])
+    monkeypatch.setattr(cli_hub, "_full_identifier", lambda identifier, sources, c: "")
+    console, _ = _sink_console()
+
+    assert cli_hub.do_install("no-such-skill", console=console, skip_confirm=True) is False
+
+
+@pytest.mark.parametrize("verdict, expected_exit", [(False, 1), (None, 0)])
+def test_skills_command_exit_code_follows_install_verdict(monkeypatch, verdict, expected_exit):
+    """`hermes skills install` exits non-zero only on a real failure: the Desktop Hub keys its
+    failure toast off the spawned action's exit code, so an exit-0 failure reads as silence."""
+    import hermes_cli.skills_hub as cli_hub
+
+    monkeypatch.setattr(cli_hub, "_CLI_ACTIONS", {"install": lambda args: verdict})
+    args = type("Args", (), {"skills_action": "install"})()
+
+    if expected_exit:
+        with pytest.raises(SystemExit) as excinfo:
+            cli_hub.skills_command(args)
+        assert excinfo.value.code == expected_exit
+    else:
+        cli_hub.skills_command(args)

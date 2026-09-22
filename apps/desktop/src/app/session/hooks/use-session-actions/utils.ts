@@ -600,6 +600,127 @@ function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessag
   })
 }
 
+
+/** User occurrence identity after the renderer has lifted reference lines into chips. */
+function occurrenceUserKey(message: ChatMessage): string {
+  return JSON.stringify([textWithoutReferenceLines(chatMessageText(message)).trim(), message.attachmentRefs ?? []])
+}
+
+/** Zero-based occurrence of this user identity among real user turns. */
+function matchingUserOrdinal(messages: ChatMessage[], owner: ChatMessage): number {
+  const ownerIndex = messages.indexOf(owner)
+
+  if (ownerIndex < 0) {
+    return -1
+  }
+
+  const key = occurrenceUserKey(owner)
+  let ordinal = -1
+
+  for (let index = 0; index <= ownerIndex; index += 1) {
+    const message = messages[index]
+
+    if (message.role === 'user' && !isGatewaySystemMarker(message) && occurrenceUserKey(message) === key) {
+      ordinal += 1
+    }
+  }
+
+  return ordinal
+}
+
+/**
+ * Identity for one user occurrence across optimistic → persisted id changes.
+ * Exact ids are authoritative. Otherwise require the same visible prompt /
+ * attachment identity AND the same occurrence ordinal, so repeated prompts do
+ * not let an older fold swallow a newer reply.
+ */
+function sameUserOccurrence(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  committedOwner: ChatMessage,
+  localOwner: ChatMessage
+): boolean {
+  if (committedOwner.id === localOwner.id) {
+    return true
+  }
+
+  if (occurrenceUserKey(committedOwner) !== occurrenceUserKey(localOwner)) {
+    return false
+  }
+
+  const committedOrdinal = matchingUserOrdinal(nextMessages, committedOwner)
+  const localOrdinal = matchingUserOrdinal(previousMessages, localOwner)
+
+  return committedOrdinal >= 0 && committedOrdinal === localOrdinal
+}
+
+/**
+ * Whether a committed folded tool turn already represents this settled local
+ * stream segment inside the SAME user occurrence.
+ *
+ * Hydration folds pre-tool commentary, tool calls, later commentary and the
+ * final answer into one durable assistant row. The live renderer seals those
+ * pieces as separate assistant-stream rows. Whole-row equality therefore
+ * cannot prove identity. First find a durable tool-bearing assistant that
+ * carries this segment (shared tool id or one of its text parts), then prove
+ * that folded row belongs to the same user occurrence.
+ */
+function foldedOccurrenceCarriesSettledSegment(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  local: ChatMessage
+): boolean {
+  const localIndex = previousMessages.indexOf(local)
+  const localOwner = previousMessages
+    .slice(0, localIndex)
+    .findLast(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  if (!localOwner) {
+    return false
+  }
+
+  const wantedText = textWithoutReferenceLines(chatMessageText(local)).trim()
+  const wantedToolIds = new Set(
+    local.parts.flatMap(part => (part.type === 'tool-call' && part.toolCallId ? [part.toolCallId] : []))
+  )
+
+  return nextMessages.some((message, messageIndex) => {
+    if (
+      message.role !== 'assistant' ||
+      isLiveTailRow(message) ||
+      !message.parts.some(part => part.type === 'tool-call')
+    ) {
+      return false
+    }
+
+    const carriesSegment =
+      (wantedToolIds.size > 0 &&
+        message.parts.some(part => part.type === 'tool-call' && wantedToolIds.has(part.toolCallId))) ||
+      (Boolean(wantedText) &&
+        message.parts.some(part => {
+          if (part.type !== 'text') {
+            return false
+          }
+
+          const committedText = textWithoutReferenceLines(part.text).trim()
+
+          return committedText === wantedText
+        }))
+
+    if (!carriesSegment) {
+      return false
+    }
+
+    const committedOwner = nextMessages
+      .slice(0, messageIndex)
+      .findLast(candidate => candidate.role === 'user' && !isGatewaySystemMarker(candidate))
+
+    return Boolean(
+      committedOwner && sameUserOccurrence(nextMessages, previousMessages, committedOwner, localOwner)
+    )
+  })
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -720,11 +841,12 @@ export function preserveLocalPendingTurnMessages(
     if (
       isPendingAssistant &&
       message.pending !== true &&
-      nextMessages.some(
+      (nextMessages.some(
         candidate =>
           candidate.role === 'assistant' &&
           textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
-      )
+      ) ||
+        foldedOccurrenceCarriesSettledSegment(nextMessages, previousMessages, message))
     ) {
       continue
     }

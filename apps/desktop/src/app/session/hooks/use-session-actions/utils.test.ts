@@ -1215,6 +1215,103 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
   })
 
+  // #119566: one durable tool turn can fold several live assistant segments
+  // (pre-tool commentary, later commentary, final answer) into one assistant
+  // row. Every settled local segment represented by that folded occurrence is
+  // stale after hydration; preserving any of them paints a duplicate response.
+  it('drops every settled live segment represented by one folded tool turn', () => {
+    const folded = {
+      id: '2-assistant-stored',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'Checking the workspace first.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: 'ok' },
+        { type: 'text' as const, text: 'The config is next.' },
+        { type: 'tool-call' as const, toolCallId: 'call-2', toolName: 'read_file', result: 'ok' },
+        { type: 'text' as const, text: 'Everything is configured correctly.' }
+      ]
+    }
+
+    const next = [msg('1-user-stored', 'user', 'inspect the setup'), folded]
+    const previous = [
+      msg('user-local', 'user', 'inspect the setup'),
+      msg('assistant-stream-a', 'assistant', 'Checking the workspace first.', { pending: false, interim: true }),
+      msg('assistant-stream-b', 'assistant', 'The config is next.', { pending: false, interim: true }),
+      msg('assistant-stream-final', 'assistant', 'Everything is configured correctly.', { pending: false })
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).toEqual(['1-user-stored', '2-assistant-stored'])
+    expect(
+      preserved.flatMap(message => message.parts.filter(part => part.type === 'text').map(part => part.text))
+    ).toEqual([
+      'inspect the setup',
+      'Checking the workspace first.',
+      'The config is next.',
+      'Everything is configured correctly.'
+    ])
+  })
+
+  // Competing #119511 maps an optimistic owner to the authoritative transcript
+  // only when that owner is the latest user. Once a newer prompt has persisted,
+  // the older owner id has changed and the folded occurrence is no longer found;
+  // its settled stream segment is appended at the tail again.
+  it('drops an older folded segment when its optimistic owner id changed before a newer prompt persisted', () => {
+    const folded = {
+      id: '2-assistant-stored',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'Checking the workspace first.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: 'ok' },
+        { type: 'text' as const, text: 'Everything is configured correctly.' }
+      ]
+    }
+
+    const next = [
+      msg('1-user-stored', 'user', 'inspect the setup'),
+      folded,
+      msg('3-user-stored', 'user', 'now do the next thing')
+    ]
+    const previous = [
+      msg('user-local-first', 'user', 'inspect the setup'),
+      msg('assistant-stream-a', 'assistant', 'Checking the workspace first.', { pending: false, interim: true }),
+      msg('assistant-stream-final', 'assistant', 'Everything is configured correctly.', { pending: false }),
+      msg('3-user-stored', 'user', 'now do the next thing')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  it('keeps the newer occurrence when repeated prompts and answers are identical', () => {
+    const folded = {
+      id: '2-assistant-stored',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'Checking.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: 'ok' },
+        { type: 'text' as const, text: 'Done.' }
+      ]
+    }
+
+    const next = [
+      msg('1-user-stored', 'user', 'same prompt'),
+      folded,
+      msg('3-user-stored', 'user', 'same prompt')
+    ]
+    const previous = [
+      msg('user-local-first', 'user', 'same prompt'),
+      msg('assistant-stream-first', 'assistant', 'Done.', { pending: false }),
+      msg('user-local-second', 'user', 'same prompt'),
+      msg('assistant-stream-second', 'assistant', 'Done.', { pending: false })
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    expect(preserved.map(message => message.id)).not.toContain('assistant-stream-first')
+    expect(preserved.map(message => message.id)).toContain('assistant-stream-second')
+  })
+
   it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
     const toolRound = {
       id: 'row-1-assistant',

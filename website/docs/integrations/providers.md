@@ -1513,7 +1513,7 @@ The `coreweave` name above is your saved endpoint's name; `custom:coreweave` sel
 Keep the optional `OpenAI-Project` header under this provider's `extra_headers`, so it is scoped to the configured endpoint. See [per-provider request options](/user-guide/configuring-models#per-provider-request-options).
 
 :::note Auxiliary project attribution
-In v2026.9.14, this provider-scoped header reaches the main model and model discovery but is omitted from auxiliary requests such as title generation and compression. Upstream fixes are under review: [#106021](https://github.com/NousResearch/hermes-agent/pull/106021) covers synchronous client construction, while [#112987](https://github.com/NousResearch/hermes-agent/pull/112987) also changes the async path. If you need project attribution on every request, verify both paths in your installed version before relying on this setting for auxiliary work.
+Use [v2026.9.21](https://github.com/NousResearch/hermes-agent/releases/tag/v2026.9.21) or later for auxiliary request headers. It includes [#113969](https://github.com/NousResearch/hermes-agent/pull/113969), which preserves named-provider headers for synchronous and asynchronous auxiliary clients; v2026.9.14 omitted them. Keep auxiliary requests on this provider's configured endpoint. To use a different endpoint, select a separate named provider with its own headers instead of overriding this entry's URL. Sending the project header is separate from verifying the resulting usage in your W&B project.
 :::
 
 #### Groq

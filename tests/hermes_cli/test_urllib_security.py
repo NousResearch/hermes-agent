@@ -580,64 +580,54 @@ def test_rotated_ca_bundle_is_picked_up(monkeypatch, tmp_path):
     assert calls == [str(ca_bundle), str(ca_bundle)]
 
 
-def test_a_failed_bundle_load_is_not_memoised(monkeypatch, tmp_path):
-    """A transient load failure must be retried on the next request, not pinned until the file changes."""
+@pytest.mark.parametrize(
+    ("candidates", "first_load_fails_for", "expected_load_sequence"),
+    [
+        pytest.param(("corporate-ca.pem",), "corporate-ca.pem", ["corporate-ca.pem", "corporate-ca.pem"], id="no-context"),
+        pytest.param(
+            ("corporate-ca.pem", "cacert.pem"),
+            "corporate-ca.pem",
+            ["corporate-ca.pem", "cacert.pem", "corporate-ca.pem"],
+            id="fallback-context",
+        ),
+    ],
+)
+def test_a_failed_preferred_bundle_load_is_not_memoised(
+    monkeypatch, tmp_path, candidates, first_load_fails_for, expected_load_sequence
+):
+    """A transient failure of the preferred bundle must be retried on the next request, not pinned.
+
+    Whether the failure leaves no context at all or a context built from a fallback bundle (certifi
+    on macOS), only a context built from the preferred bundle is memoised.
+    """
     import hermes_cli.urllib_security as urllib_security
 
     _clear_ca_bundle_env(monkeypatch)
-    ca_bundle = tmp_path / "corporate-ca.pem"
-    ca_bundle.write_text("first")
-    monkeypatch.setenv("HERMES_CA_BUNDLE", str(ca_bundle))
-    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: (str(ca_bundle),))
-
-    state = {"failing": True, "loads": 0}
-
-    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
-        state["loads"] += 1
-        if state["failing"]:
-            raise ssl.SSLError("transient read failure")
-
-    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", load_verify_locations)
-
-    assert urllib_security._resolved_https_context() is None
-    assert state["loads"] == 1
-
-    state["failing"] = False
-    recovered = urllib_security._resolved_https_context()
-
-    assert recovered is not None
-    assert state["loads"] == 2
-    assert urllib_security._resolved_https_context() is recovered
-    assert state["loads"] == 2
-
-
-def test_a_fallback_context_is_not_memoised(monkeypatch, tmp_path):
-    """A context built from a fallback bundle (certifi on macOS) must not pin the failed primary."""
-    import hermes_cli.urllib_security as urllib_security
-
-    _clear_ca_bundle_env(monkeypatch)
-    corporate = str(tmp_path / "corporate-ca.pem")
-    fallback = str(tmp_path / "cacert.pem")
-    for path in (corporate, fallback):
+    paths = tuple(str(tmp_path / name) for name in candidates)
+    for path in paths:
         (tmp_path / path).write_text("pem")
-    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: (corporate, fallback))
+    failing_path = str(tmp_path / first_load_fails_for)
+    expected = [str(tmp_path / name) for name in expected_load_sequence]
+    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: paths)
 
     state = {"failing": True, "loads": []}
 
     def load_verify_locations(self, cafile=None, capath=None, cadata=None):
         state["loads"].append(cafile)
-        if state["failing"] and cafile == corporate:
+        if state["failing"] and cafile == failing_path:
             raise ssl.SSLError("transient read failure")
 
     monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", load_verify_locations)
 
-    assert urllib_security._resolved_https_context() is not None
-    assert state["loads"] == [corporate, fallback]
+    first = urllib_security._resolved_https_context()
+    assert (first is None) == (len(candidates) == 1)
+    assert state["loads"] == expected[: len(candidates)]
 
     state["failing"] = False
     recovered = urllib_security._resolved_https_context()
 
     assert recovered is not None
-    assert state["loads"] == [corporate, fallback, corporate]
+    assert recovered is not first
+    assert state["loads"] == expected
     assert urllib_security._resolved_https_context() is recovered
-    assert state["loads"] == [corporate, fallback, corporate]
+    assert state["loads"] == expected

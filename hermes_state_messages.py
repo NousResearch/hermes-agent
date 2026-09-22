@@ -910,6 +910,46 @@ class SessionMessagesMixin:
                 if conn.in_transaction:
                     conn.execute("ROLLBACK")
 
+    def _indexed_display_page(self, session_id: str, *, limit: Optional[int], offset: int,
+                              latest: bool) -> Optional[List[Any]]:
+        """Read an indexed display page only from a fully backfilled snapshot.
+
+        A user-content rewrite deliberately clears both display columns.  A
+        separate NULL probe and indexed read would let that rewrite land
+        between statements, where SQLite groups all NULL identities together.
+        Keep the probe and page in one read transaction; callers fall back to
+        the dynamic identity projection when this snapshot contains a NULL.
+        """
+        direction = "DESC" if latest else "ASC"
+        missing_sql = (
+            "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+            "AND (display_order IS NULL OR display_identity IS NULL) LIMIT 1")
+        sql = f"""WITH page AS (
+                SELECT display_order FROM messages
+                WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                GROUP BY display_order ORDER BY display_order {direction}
+                LIMIT ? OFFSET ?
+            )
+            SELECT chosen.* FROM page
+            JOIN messages AS chosen ON chosen.id = (
+                SELECT candidate.id FROM messages AS candidate
+                WHERE candidate.session_id = ?
+                  AND candidate.display_order IS page.display_order
+                  AND (candidate.active = 1 OR candidate.compacted = 1)
+                ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+            )
+            ORDER BY page.display_order ASC"""
+        with self._read_ctx() as conn:
+            conn.execute("BEGIN")
+            try:
+                if conn.execute(missing_sql, (session_id,)).fetchone() is not None:
+                    return None
+                return conn.execute(
+                    sql, [session_id, -1 if limit is None else limit, offset, session_id]).fetchall()
+            finally:
+                if conn.in_transaction:
+                    conn.execute("ROLLBACK")
+
     def _row_to_message_dict(self, row, *, warn_context: str, summary_flag: bool) -> Dict[str, Any]:
         """``dict(row)`` with content/tool_calls/display_metadata decoded; *summary_flag* keeps
         ``_compressed_summary`` only as ``True``."""
@@ -951,28 +991,10 @@ class SessionMessagesMixin:
             raise ValueError("after_id is incompatible with include_compacted (deduped display reads use offset paging)")
         active_clause = self._active_clause(include_inactive, include_compacted)
         if include_compacted and not include_inactive and self._ensure_display_order(session_id):
-            direction = "DESC" if latest else "ASC"
-            # Always page through the durable identity.  Selecting the indexed
-            # display_order fast path only after a separate NULL probe creates a
-            # TOCTOU window: a writer can introduce legacy NULL orders between
-            # those reads and make GROUP BY display_order collapse identities.
-            sql = f"""WITH page AS (
-                    SELECT display_identity, MIN(COALESCE(display_order, id)) AS display_order
-                    FROM messages
-                    WHERE session_id = ? AND (active = 1 OR compacted = 1)
-                    GROUP BY display_identity ORDER BY display_order {direction}
-                    LIMIT ? OFFSET ?
-                )
-                SELECT chosen.* FROM page
-                JOIN messages AS chosen ON chosen.id = (
-                    SELECT candidate.id FROM messages AS candidate
-                    WHERE candidate.session_id = ?
-                      AND candidate.display_identity IS page.display_identity
-                      AND (candidate.active = 1 OR candidate.compacted = 1)
-                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
-                )
-                ORDER BY page.display_order ASC"""
-            rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
+            rows = self._indexed_display_page(session_id, limit=limit, offset=offset, latest=latest)
+            if rows is None:
+                rows = self._legacy_display_page(
+                    session_id, active_clause=active_clause, limit=limit, offset=offset, latest=latest)
         elif include_compacted:
             # Read-only legacy stores cannot persist display identities; keep only fixed-width
             # identities and representative ids while scanning, then fetch the selected payloads.

@@ -624,38 +624,47 @@ class TestDisplayDedupe:
         assert _row_ids(db, sid, include_compacted=True, limit=2, offset=0) == original_ids[:2]
         assert _row_ids(db, sid, include_compacted=True, latest=True, limit=2, offset=2) == original_ids[:2]
 
-    def test_paging_does_not_lose_identities_when_nulls_arrive_after_probe(self, db, monkeypatch):
-        """A writer can null two orders after the old probe but before paging.
+    def test_user_content_rewrite_nulls_distinct_identities_without_collapsing_pages(self, db, monkeypatch):
+        """The real user-content trigger clears both display columns.
 
-        The `_read_all` seam is the real page-query boundary, so this is a
-        deterministic TOCTOU regression rather than a scheduling/sleep test.
-        The former probe+fast-path implementation grouped the two newly-NULL
-        rows together; durable-identity paging keeps every logical message.
+        Two independent rewritten user messages must not share the SQL NULL
+        group.  A compacted copy of the first message also verifies that the
+        dynamic fallback retains generation dedupe and prefers its active row.
         """
-        sid = "null-order-toctou"
+        sid = "rewritten-null-identities"
         db.create_session(sid, source="cli")
         db.append_messages_batch(sid, [
-            {"role": "user", "content": "q1"},
+            {"role": "user", "content": "raw q1"},
             {"role": "assistant", "content": "a1"},
-            {"role": "user", "content": "q2"},
+            {"role": "user", "content": "raw q2"},
             {"role": "assistant", "content": "a2"},
         ])
-        expected = _row_ids(db, sid)
-        original_read_all = db._read_all
-        mutated = False
+        q1, a1, q2, a2 = _row_ids(db, sid)
+        ensure = db._ensure_display_order
+        rewritten = False
 
-        def mutate_before_page(sql, params):
-            nonlocal mutated
-            if not mutated and "WITH page AS" in sql:
-                mutated = True
-                db._execute_write(lambda conn: conn.execute(
-                    "UPDATE messages SET display_order = NULL "
-                    "WHERE session_id = ? AND content IN (?, ?)", (sid, "q1", "q2")))
-            return original_read_all(sql, params)
+        def rewrite_after_backfill(session_id):
+            nonlocal rewritten
+            if not rewritten:
+                assert ensure(session_id)
+                rewritten = True
+                assert db.set_user_message_content(sid, q1, "rewritten q1") == 1
+                assert db.set_user_message_content(sid, q2, "rewritten q2") == 1
+                self._copy_tail_as_new_generation(db, sid, [q1])
+            return True
 
-        monkeypatch.setattr(db, "_read_all", mutate_before_page)
+        monkeypatch.setattr(db, "_ensure_display_order", rewrite_after_backfill)
+        expected = [q1, a1, q2, a2]
         assert _row_ids(db, sid, include_compacted=True) == expected
-        assert mutated
+        null_rows = db._read_all(
+            "SELECT id, display_identity, display_order FROM messages WHERE id IN (?, ?) ORDER BY id",
+            (q1, q2))
+        assert [(row["display_identity"], row["display_order"]) for row in null_rows] == [(None, None)] * 2
+        display = db.get_messages(sid, include_compacted=True)
+        assert [(row["id"], row["active"]) for row in display] == [
+            (q1, 1), (a1, 1), (q2, 1), (a2, 1)]
+        assert _row_ids(db, sid, include_compacted=True, limit=2, offset=0) == expected[:2]
+        assert _row_ids(db, sid, include_compacted=True, latest=True, limit=2, offset=2) == expected[:2]
 
     def test_distinct_tool_calls_with_same_content_are_not_merged(self, db):
         """Two real tool messages that happen to share role/content/timestamp

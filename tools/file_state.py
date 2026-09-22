@@ -32,6 +32,12 @@ def _disabled() -> bool:
     return os.environ.get("HERMES_DISABLE_FILE_STATE_GUARD", "").strip() == "1"
 
 
+def guard_disabled() -> bool:
+    """True when the user switched the read-before-write guard off; the file
+    tools then warn instead of refusing stale/unread write_file overwrites."""
+    return _disabled()
+
+
 def _mtime_or_none(resolved: str) -> Optional[float]:
     try:
         return os.path.getmtime(resolved)
@@ -160,8 +166,8 @@ class FileStateRegistry:
             if partial:
                 return (
                     f"{resolved} was last read with offset/limit pagination "
-                    "(partial view). Re-read the whole file before "
-                    "overwriting it.")
+                    "(partial view). Read the remaining pages, or use patch, "
+                    "before overwriting it.")
             return None
 
         return (
@@ -191,9 +197,15 @@ class FileStateRegistry:
             return list(self._reads.get(task_id, {}).keys())
 
     def forget_task(self, task_id: str) -> None:
-        """Release read stamps owned by a task after its lifecycle ends."""
+        """Release read stamps and writer claims owned by a task after its lifecycle ends.
+
+        A finished task is not a concurrent sibling: leaving its writer claims behind makes
+        the next run of the same job (a fresh ``cron:<job>:<uuid>`` id) refuse to write the
+        same scratch path as "modified by sibling subagent" hours after the writer exited."""
         with self._state_lock:
             self._reads.pop(task_id, None)
+            for p in [p for p, (writer_tid, _ts) in self._last_writer.items() if writer_tid == task_id]:
+                del self._last_writer[p]
 
     def clear(self) -> None:
         """Reset all state. Intended for tests only."""

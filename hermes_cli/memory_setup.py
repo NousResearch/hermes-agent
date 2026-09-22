@@ -32,15 +32,12 @@ def _provider_pip_dependencies(provider_name: str, declared: list) -> list:
     """
     deps = list(declared or [])
     if provider_name == "hindsight":
-        try:
-            import json
-            cfg_path = get_hermes_home() / "hindsight" / "config.json"
-            cfg = json.loads(cfg_path.read_text(encoding="utf-8")) if cfg_path.exists() else {}
-            # "local" is a legacy alias for "local_embedded"
-            if cfg.get("mode", "") in {"local", "local_embedded"}:
-                deps.append("hindsight-all")
-        except Exception:
-            pass
+        from utils import read_json_or_empty  # BOM-tolerant; {} on missing/corrupt
+
+        cfg = read_json_or_empty(get_hermes_home() / "hindsight" / "config.json")
+        # "local" is a legacy alias for "local_embedded"
+        if cfg.get("mode", "") in {"local", "local_embedded"}:
+            deps.append("hindsight-all")
     return deps
 
 

@@ -1,0 +1,91 @@
+[
+  {
+    "role": "user",
+    "content": "Investigate the installed 'agy' CLI and summarize its version and capabilities in one report."
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "codex_reasoning_items": [
+      {"type": "reasoning", "id": "rs_fixture_01", "summary": [{"type": "summary_text", "text": "Batched three tool calls to inspect the CLI."}], "encrypted_content": "synthetic-encrypted-content-placeholder-0001-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA"},
+      {"type": "reasoning", "id": "rs_fixture_02", "summary": [], "encrypted_content": "synthetic-encrypted-content-placeholder-0002-BBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBBB"}
+    ],
+    "tool_calls": [
+      {
+        "id": "call_fixture_01",
+        "call_id": "call_fixture_01",
+        "type": "function",
+        "function": {"name": "terminal", "arguments": "{\"command\": \"which agy; agy --version\"}"}
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "call_fixture_01",
+    "content": "[tool output elided — 11,269 chars in the original failing run]"
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "codex_reasoning_items": [
+      {"type": "reasoning", "id": "rs_fixture_03", "summary": [], "encrypted_content": "synthetic-encrypted-content-placeholder-0003-CCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCCC"},
+      {"type": "reasoning", "id": "rs_fixture_04", "summary": [], "encrypted_content": "synthetic-encrypted-content-placeholder-0004-DDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDDD"}
+    ],
+    "tool_calls": [
+      {
+        "id": "call_fixture_02",
+        "call_id": "call_fixture_02",
+        "type": "function",
+        "function": {"name": "terminal", "arguments": "{\"command\": \"agy agent --help\"}"}
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "call_fixture_02",
+    "content": "[tool output elided — 3,169 chars in the original failing run]"
+  },
+  {
+    "role": "assistant",
+    "content": "",
+    "codex_reasoning_items": [
+      {"type": "reasoning", "id": "rs_fixture_05", "summary": [], "encrypted_content": "synthetic-encrypted-content-placeholder-0005-EEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEEE"}
+    ],
+    "tool_calls": [
+      {
+        "id": "call_fixture_03",
+        "call_id": "call_fixture_03",
+        "type": "function",
+        "function": {"name": "terminal", "arguments": "{\"command\": \"agy mcp --help\"}"}
+      },
+      {
+        "id": "call_fixture_04",
+        "call_id": "call_fixture_04",
+        "type": "function",
+        "function": {"name": "terminal", "arguments": "{\"command\": \"agy changelog | head -40\"}"}
+      },
+      {
+        "id": "call_fixture_05",
+        "call_id": "call_fixture_05",
+        "type": "function",
+        "function": {"name": "terminal", "arguments": "{\"command\": \"ls ~/.config/agy/ 2>&1 || true\"}"}
+      }
+    ]
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "call_fixture_03",
+    "content": "[tool output elided — 1,494 chars in the original failing run]"
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "call_fixture_04",
+    "content": "[tool output elided — 32,686 chars in the original failing run]"
+  },
+  {
+    "role": "tool",
+    "tool_call_id": "call_fixture_05",
+    "content": "[tool output elided — 598 chars in the original failing run]"
+  }
+]
+

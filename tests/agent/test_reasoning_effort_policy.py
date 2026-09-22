@@ -147,3 +147,27 @@ def test_transport_contract_exposes_only_cache_safe_effort_updates(
     assert bool(levels) is expected
     if expected:
         assert "low" in levels and "max" in levels
+
+
+@pytest.mark.parametrize(
+    ("model", "expected_levels"),
+    [
+        ("gpt-6-astra", ("low", "medium", "high", "xhigh", "max")),
+        ("gpt-6-luna", ("none", "low", "medium", "high", "xhigh", "max")),
+        ("gpt-6-terra", ("none", "low", "medium", "high", "xhigh", "max")),
+        ("gpt-6-sol", ("none", "low", "medium", "high", "xhigh", "max")),
+    ],
+)
+def test_official_gpt6_policy_contract_exposes_exact_effort_vocabulary(model, expected_levels):
+    from agent.transports import get_transport
+
+    transport = get_transport("codex_responses")
+    assert transport is not None
+    context = {
+        "model": model,
+        "provider": "openai",
+        "base_url": "https://api.openai.com/v1",
+        "capabilities": {},
+    }
+    assert transport.supports_reasoning_effort_updates(**context) is True
+    assert transport.reasoning_effort_update_levels(**context) == expected_levels

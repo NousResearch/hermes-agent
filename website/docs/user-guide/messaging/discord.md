@@ -367,6 +367,7 @@ discord:
   reactions: true                 # Add emoji reactions during processing
   ignored_channels: []            # Channel IDs where bot never responds
   no_thread_channels: []          # Channel IDs where bot responds without threading
+  force_thread_channels: []       # Free-response channels where threads are forced
   history_backfill: true          # Prepend recent channel scrollback on mention (default: true)
   history_backfill_limit: 50      # Max messages to scan backwards (default: 50)
   missed_message_backfill:        # Replay messages missed while disconnected (opt-in)
@@ -431,7 +432,7 @@ If a thread's parent channel is in this list, the thread also becomes mention-fr
 
 Free-response channels also **skip auto-threading** by default — the bot replies inline rather than spinning off a new thread per message. This keeps the channel usable as a lightweight chat surface.
 
-To opt in to threading for free-response channels, set `discord.free_response_auto_thread: true` (or `DISCORD_FREE_RESPONSE_AUTO_THREAD=true`). In that mode each new top-level message in a free channel still gets its own thread, but the channel remains @mention-free. Requires `discord.auto_thread: true`.
+To opt in to threading for free-response channels, set `discord.free_response_auto_thread: true` (or `DISCORD_FREE_RESPONSE_AUTO_THREAD=true`). In that mode each new top-level message in a free channel still gets its own thread, but the channel remains @mention-free. Requires `discord.auto_thread: true`. For per-channel control instead, add specific IDs to [`force_thread_channels`](#discordforce_thread_channels).
 
 #### `discord.free_response_auto_thread`
 
@@ -457,7 +458,7 @@ Requires `discord.auto_thread: true` (with it off, nothing threads anywhere). [`
 
 When enabled, every `@mention` in a regular text channel automatically creates a new thread for the conversation. This keeps the main channel clean and gives each conversation its own isolated session history. Once a thread is created, subsequent messages in that thread don't require `@mention` — the bot knows it's already participating. Set [`thread_require_mention`](#discordthread_require_mention) to `true` to disable this in-thread shortcut for multi-bot setups.
 
-Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true`, also bypass auto-threading and get inline replies instead.
+Messages sent in existing threads or DMs are unaffected by this setting. Channels listed in `discord.no_thread_channels`, and channels listed in `discord.free_response_channels` unless [`discord.free_response_auto_thread`](#discordfree_response_auto_thread) is `true` or the channel is in [`force_thread_channels`](#discordforce_thread_channels), also bypass auto-threading and get inline replies instead.
 
 #### `discord.reactions`
 
@@ -503,6 +504,34 @@ discord:
 ```
 
 Useful for channels dedicated to bot interaction where threads would add unnecessary noise.
+
+#### `discord.force_thread_channels`
+
+**Type:** string or list — **Default:** `[]`
+
+Channel IDs where auto-threading is forced, even if the channel is also in `free_response_channels` (which normally skips auto-threading). Accepts either a comma-separated string or a YAML list:
+
+```yaml
+# String format
+discord:
+  force_thread_channels: "1234567890,9876543210"
+
+# List format
+discord:
+  force_thread_channels:
+    - 1234567890
+    - 9876543210
+```
+
+A single wildcard `"*"` forces auto-threading on **all** free-response channels:
+
+```yaml
+discord:
+  free_response_channels: "*"
+  force_thread_channels: "*"   # all free-response channels get threads
+```
+
+This only has an effect when `auto_thread` is `true` (the default). Channels explicitly listed in `no_thread_channels` still skip threading regardless of this setting.
 
 #### `discord.channel_prompts`
 

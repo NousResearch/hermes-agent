@@ -13245,10 +13245,12 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // restarting a 5-10 minute install loop while the user is still reading
   // the failure overlay.
   if (bootstrapFailure) {
+    rememberLog(`[boot] bootstrap failure latched; refusing restart: ${bootstrapFailure.message}`)
     throw bootstrapFailure
   }
 
   if (backendStartFailure) {
+    rememberLog(`[boot] backend start failure latched; refusing restart: ${backendStartFailure.message}`)
     throw backendStartFailure
   }
 
@@ -13256,6 +13258,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // Short-circuiting here keeps the boot-failure overlay latched and its
   // "Sign in" button clickable, instead of re-driving boot on every retry.
   if (remoteReauthFailure) {
+    rememberLog(`[boot] remote reauth failure latched; refusing restart: ${remoteReauthFailure.message}`)
     throw remoteReauthFailure
   }
 

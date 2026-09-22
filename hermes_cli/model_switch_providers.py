@@ -513,7 +513,9 @@ def _cap_models(
         return model_ids[:max_models]
 
     available = set(model_ids)
-    prioritized = [model_id for model_id in priority_ids if model_id in available]
+    prioritized = list(
+        dict.fromkeys(model_id for model_id in priority_ids if model_id in available)
+    )
     prioritized_set = set(prioritized)
     ordered = prioritized + [
         model_id for model_id in model_ids if model_id not in prioritized_set

@@ -76,6 +76,16 @@ def test_cap_models_reserves_slots_for_curated_models(monkeypatch):
     assert build.results[0]["total_models"] == 6
 
 
+def test_cap_models_deduplicates_curated_ids_in_order():
+    """Repeated curated IDs occupy one picker slot without changing priority."""
+    assert model_switch_providers._cap_models(
+        ["model-a", "model-b", "model-c"],
+        3,
+        "provider",
+        ["model-b", "model-b", "model-a"],
+    ) == ["model-b", "model-a", "model-c"]
+
+
 def test_passthrough_kwargs_to_base(monkeypatch):
     """All kwargs must be forwarded to ``list_authenticated_providers`` unchanged.
 

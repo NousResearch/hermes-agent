@@ -6,8 +6,9 @@ export function resolveDesktopGatewayWsUrl(
   desktop: Window['hermesDesktop'],
   connection: HermesConnection
 ): Promise<string> {
-  // An inferred connectionId can still carry a legacy profile alias. Only an
-  // explicitly registry-scoped descriptor is safe to send to the *For bridge.
+  // Only a registry-scoped descriptor may use the *For bridge (see
+  // HermesConnection.registryScoped); an absent bridge fails closed rather
+  // than minting the peer's URL against the local pool.
   const { connectionId, profile, registryScoped } = connection
 
   if (!registryScoped || !connectionId) {

@@ -9,44 +9,74 @@ const oauthConn = { authMode: 'oauth' as const, wsUrl: 'ws://host/api/ws?ticket=
 const tokenConn = { authMode: 'token' as const, wsUrl: 'ws://host/api/ws?token=abc' }
 
 describe('desktop connection scope', () => {
-  it.each(['token', 'oauth'] as const)(
-    'preserves legacy aliases and never falls back to legacy minting for a registered %s route',
-    async authMode => {
-      const connection = {
-        authMode,
-        connectionId: 'remote-device',
-        profile: 'client-alias',
-        wsUrl: 'wss://remote.invalid/api/ws?token=cached'
-      } as HermesConnection
+  const authModes = ['token', 'oauth'] as const
 
-      const desktop = {
-        getGatewayWsUrl: vi.fn(async () => 'wss://legacy.invalid/api/ws?token=fresh'),
-        getGatewayWsUrlFor: vi.fn(async () => 'wss://remote.invalid/api/ws?ticket=fresh')
-      } as unknown as Window['hermesDesktop']
+  function aliasConnection(authMode: (typeof authModes)[number]) {
+    return {
+      authMode,
+      connectionId: 'remote-device',
+      profile: 'client-alias',
+      wsUrl: 'wss://remote.invalid/api/ws?token=cached'
+    } as HermesConnection
+  }
 
-      await expect(resolveDesktopGatewayWsUrl(desktop, connection)).resolves.toContain('legacy.invalid')
-      expect(desktop.getGatewayWsUrl).toHaveBeenCalledWith('client-alias')
-      expect(desktop.getGatewayWsUrlFor).not.toHaveBeenCalled()
-      vi.mocked(desktop.getGatewayWsUrl!).mockClear()
+  function registeredConnection(authMode: (typeof authModes)[number]) {
+    return { ...aliasConnection(authMode), profile: 'remote-profile', registryScoped: true } as HermesConnection
+  }
 
-      const registered = { ...connection, profile: 'remote-profile', registryScoped: true }
-      await expect(resolveDesktopGatewayWsUrl(desktop, registered)).resolves.toContain('remote.invalid')
-      expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({
-        connectionId: 'remote-device',
-        profile: 'remote-profile'
-      })
+  function fakeDesktop(withScopedMint = true) {
+    return {
+      getGatewayWsUrl: vi.fn(async () => 'wss://legacy.invalid/api/ws?token=fresh'),
+      ...(withScopedMint ? { getGatewayWsUrlFor: vi.fn(async () => 'wss://remote.invalid/api/ws?ticket=fresh') } : {})
+    } as unknown as Window['hermesDesktop']
+  }
 
-      delete desktop.getGatewayWsUrlFor
+  it.each(authModes)('an inferred connectionId keeps the legacy profile-alias mint (%s)', async authMode => {
+    const desktop = fakeDesktop()
 
-      if (authMode === 'oauth') {
-        await expect(resolveDesktopGatewayWsUrl(desktop, registered)).rejects.toThrow('cannot refresh OAuth')
-      } else {
-        await expect(resolveDesktopGatewayWsUrl(desktop, registered)).resolves.toBe(registered.wsUrl)
-      }
+    await expect(resolveDesktopGatewayWsUrl(desktop, aliasConnection(authMode))).resolves.toContain('legacy.invalid')
+    expect(desktop.getGatewayWsUrl).toHaveBeenCalledWith('client-alias')
+    expect(desktop.getGatewayWsUrlFor).not.toHaveBeenCalled()
+  })
 
-      expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
-    }
-  )
+  it.each(authModes)('a registry-scoped route mints against its owning connection (%s)', async authMode => {
+    const desktop = fakeDesktop()
+
+    await expect(resolveDesktopGatewayWsUrl(desktop, registeredConnection(authMode))).resolves.toContain(
+      'remote.invalid'
+    )
+    expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({
+      connectionId: 'remote-device',
+      profile: 'remote-profile'
+    })
+    expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+  })
+
+  it('a registry-scoped flag without a connectionId still takes the legacy mint', async () => {
+    const desktop = fakeDesktop()
+    const scopedWithoutId = { ...registeredConnection('token'), connectionId: undefined } as HermesConnection
+
+    await expect(resolveDesktopGatewayWsUrl(desktop, scopedWithoutId)).resolves.toContain('legacy.invalid')
+    expect(desktop.getGatewayWsUrl).toHaveBeenCalledWith('remote-profile')
+    expect(desktop.getGatewayWsUrlFor).not.toHaveBeenCalled()
+  })
+
+  it('a registry-scoped OAuth route without the scoped mint bridge fails instead of dialing the legacy gateway', async () => {
+    const desktop = fakeDesktop(false)
+
+    await expect(resolveDesktopGatewayWsUrl(desktop, registeredConnection('oauth'))).rejects.toThrow(
+      'cannot refresh OAuth'
+    )
+    expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+  })
+
+  it('a registry-scoped token route without the scoped mint bridge reuses its cached URL', async () => {
+    const desktop = fakeDesktop(false)
+    const registered = registeredConnection('token')
+
+    await expect(resolveDesktopGatewayWsUrl(desktop, registered)).resolves.toBe(registered.wsUrl)
+    expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+  })
 })
 
 describe('resolveGatewayWsUrl', () => {

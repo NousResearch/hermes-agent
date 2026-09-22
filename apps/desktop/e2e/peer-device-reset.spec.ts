@@ -44,6 +44,9 @@ function pythonBinary(): string {
 
 // Do not inherit profile selection, provider secrets, a dev-server URL, or
 // native account state. buildAppEnv supplies the suite's desktop launch flags.
+// The temp-dir variables ARE inherited: a sandboxed runner points them at a
+// private writable directory, and Electron plus the spawned gateways fall back
+// to a possibly unwritable system /tmp without them.
 function isolatedEnv(sandbox: Sandbox): Record<string, string> {
   const defaults = buildAppEnv(sandbox)
   const env: Record<string, string> = {}

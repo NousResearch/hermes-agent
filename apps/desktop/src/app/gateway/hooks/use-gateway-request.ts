@@ -71,15 +71,17 @@ export function useGatewayRequest() {
       reauthErrorRef.current = null
 
       try {
-        // This recovery path serves the window primary; secondaries reconnect
-        // through the registry below. Omit the profile so main resolves the
-        // sender's full route, not a remote profile name in the local pool.
-        // Both awaits below are IPC round-trips
-        // into the main process with no timeout of their own (#93454) — a
-        // wedged main-process round-trip otherwise hangs this await forever,
-        // latching reconnectingRef.current so every later requestGateway() call
-        // returns the same never-settling promise. Bound the same way
-        // use-gateway-boot.ts bounds the primary boot/soft-switch equivalents.
+        // This path recovers only the window primary (requestGateway routes
+        // secondaries to ensureActiveGatewayOpen). Call getConnection() with no
+        // profile so main resolves the sender's full route — passing the
+        // profile name would look it up in the LOCAL pool, which fails for a
+        // profile that exists only on a remote gateway (peer windows).
+        // Both awaits below are IPC round-trips into the main process with no
+        // timeout of their own (#93454) — a wedged main-process round-trip
+        // otherwise hangs this await forever, latching reconnectingRef.current
+        // so every later requestGateway() call returns the same never-settling
+        // promise. Bound the same way use-gateway-boot.ts bounds the primary
+        // boot/soft-switch equivalents.
         const conn = await withTimeout(
           desktop.getConnection(),
           RECONNECT_ATTEMPT_TIMEOUT_MS,

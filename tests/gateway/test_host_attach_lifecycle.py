@@ -259,3 +259,23 @@ def test_the_default_profile_arriving_second_starts_beside_a_standalone_named_ow
     assert host_attach.profile_name_for_home(root) == "default"
     assert decision.outcome == host_attach.START
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
+
+
+def test_replace_against_a_standalone_owner_of_different_profile_starts_beside_it(tmp_path, monkeypatch, owner_pid):
+    """When a launchd unit starts with `--replace` (standard in per-profile plist files) and the host owner
+    is another profile's STANDALONE gateway, `--replace` applies to this profile's own home, not the foreign
+    owner. It must start beside it rather than attempt to replace the other profile's gateway (which fails
+    closed in `_replace_target_belongs_to_other_profile`)."""
+    root = tmp_path / "root"
+    owner_home = root / "profiles" / "argus"
+    ours = root / "profiles" / "athena"
+    _publish(owner_pid, owner_home, ("argus",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["argus"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: ours)
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["argus"]})
+
+    decision = host_attach.decide(ours, replace=True)
+    assert decision.outcome == host_attach.START
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=True)) is None
+

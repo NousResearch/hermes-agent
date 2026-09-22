@@ -1095,5 +1095,5 @@ class GatewaySessionCommandsMixin:
         # Discord only answers un-mentioned follow-ups in threads it has participated in.
         threads = getattr(adapter, "_threads", None)
         if threads is not None:
-            threads.mark(str(thread_id))
+            await threads.mark_async(str(thread_id))
         return branch_dest_source(source, parent_id=parent_id, thread_id=str(thread_id), title=title)

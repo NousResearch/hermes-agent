@@ -4,6 +4,7 @@ import type { ReactNode } from 'react'
 import { noteActiveTreeGroup, revealTreePane } from '@/components/pane-shell/tree/store'
 import { registry } from '@/contrib/registry'
 import type { Contribution } from '@/contrib/types'
+import type { InterfaceTier } from '@/store/interface-mode'
 
 type NavigateLike = (to: string, options?: { replace?: boolean }) => void
 
@@ -133,6 +134,8 @@ export interface SidebarNavContribution {
   label: string
   /** Route to navigate to (usually a contributed page's path). */
   path: string
+  /** `'advanced'` keeps the row out of Simple mode; unset shows it everywhere. */
+  tier?: InterfaceTier
 }
 
 // Views that render as a full-screen modal card (OverlayView) over the shell.
@@ -164,9 +167,9 @@ export function hidesFixedTitlebarClusters(view: AppView): boolean {
 }
 
 /** The pathname of a router target. Every classifier below reasons about a
- *  PATH, but callers navigate to full targets (`/capabilities?tab=mcp`), and an
- *  unstripped query reaches the session-id parser — `/capabilities?tab=mcp` reads as
- *  the session `skills?tab=mcp`, so Capabilities classifies as a chat.
+ *  PATH, but callers navigate to full targets (`/capabilities?tab=connectors`), and an
+ *  unstripped query reaches the session-id parser — `/capabilities?tab=connectors` reads
+ *  as the session `skills?tab=connectors`, so Capabilities classifies as a chat.
  *  `sessionRoute` percent-encodes ids, so `?`/`#` can only start a query or a
  *  hash. */
 export function routePathname(to: string): string {

@@ -15,6 +15,21 @@ import { notifyError } from '@/store/notifications'
  * (local spawn, SSH, URL+token) because it rides the session's own transport.
  */
 
+export type AgentPluginServerState =
+  | 'connected'
+  | 'app_not_running'
+  | 'endpoint_unavailable'
+  | 'no_interactive_session'
+  | 'version_too_old'
+  | 'missing_app'
+  | 'unknown'
+
+export interface AgentPluginServer {
+  name: string
+  state: AgentPluginServerState
+  sentence: string
+}
+
 export interface AgentPluginRow {
   name: string
   /** Canonical registry key (e.g. `image_gen/fal`) — absent on legacy backends. */
@@ -42,7 +57,33 @@ export interface AgentPluginRow {
   has_desktop_half?: boolean
   /** Absolute install dir on the backend (informational). */
   install_dir?: string
+  /** Manifest `config_schema` rendered as a settings form (with current values). */
+  settings_schema?: PluginSettingField[]
+  /** Full snapshot of declared application-backed MCP servers. */
+  servers?: AgentPluginServer[]
 }
+
+export type PluginSettingFieldType = 'boolean' | 'enum' | 'json' | 'number' | 'secret' | 'string'
+
+/** One `config_schema` key of a plugin manifest. Secrets never carry a value:
+ *  `env` names the `.env` variable, `has_value` whether it is set. */
+export interface PluginSettingField {
+  key: string
+  type: PluginSettingFieldType
+  label: string
+  description: string
+  required: boolean
+  value?: unknown
+  default?: unknown
+  choices?: string[]
+  env?: string
+  has_value?: boolean
+}
+
+export const normalizeAgentPluginRow = (row: AgentPluginRow): AgentPluginRow => ({
+  ...row,
+  servers: row.servers ?? []
+})
 
 /** A `--ref` pin is a full 40-hex commit SHA; branches and tags are refused server-side. */
 export const COMMIT_SHA_RE = /^[0-9a-f]{40}$/i
@@ -120,7 +161,7 @@ export function loadAgentPlugins(request: GatewayRequest, profile?: string | nul
         return
       }
 
-      $agentPlugins.set(result?.plugins ?? [])
+      $agentPlugins.set((result?.plugins ?? []).map(normalizeAgentPluginRow))
       $agentPluginsStatus.set('ready')
       $agentPluginsError.set(null)
     } catch (e) {
@@ -177,7 +218,9 @@ export async function toggleAgentPlugin(
     const refreshed = result.plugin
 
     if (refreshed) {
-      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...refreshed } : row)))
+      const snapshot = normalizeAgentPluginRow(refreshed)
+
+      $agentPlugins.set($agentPlugins.get().map(row => (row.key === key ? { ...row, ...snapshot } : row)))
     } else {
       await loadAgentPlugins(request, profile)
     }
@@ -198,6 +241,10 @@ export interface AgentPluginInstallResult {
   warnings?: string[]
   missingEnv?: string[]
   error?: string
+  /** Plugin MCP servers not connected yet (`activation.deferred.mcp_servers`). */
+  deferredMcpServers: string[]
+  /** A running gateway already re-wired the plugin's handlers. */
+  gatewayReloaded: boolean
 }
 
 export async function installAgentPlugin(
@@ -221,6 +268,8 @@ export async function installAgentPlugin(
       plugin_name?: string
       warnings?: string[]
       missing_env?: string[]
+      activation?: { activated_now?: Record<string, string[]>; deferred?: Record<string, string[]> } | null
+      gateway_reloaded?: boolean
       error?: string
     }>(
       'plugins.manage',
@@ -238,36 +287,62 @@ export async function installAgentPlugin(
     )
 
     if (!result?.ok) {
-      return { ok: false, error: result?.error || 'Install failed' }
+      return { ok: false, error: result?.error || 'Install failed', deferredMcpServers: [], gatewayReloaded: false }
     }
 
     return {
       ok: true,
       pluginName: result.plugin_name,
       warnings: result.warnings,
-      missingEnv: result.missing_env
+      missingEnv: result.missing_env,
+      deferredMcpServers: result.activation?.deferred?.mcp_servers ?? [],
+      gatewayReloaded: Boolean(result.gateway_reloaded)
     }
   } catch (e) {
-    return { ok: false, error: e instanceof Error ? e.message : String(e) }
+    return {
+      ok: false,
+      error: e instanceof Error ? e.message : String(e),
+      deferredMcpServers: [],
+      gatewayReloaded: false
+    }
   }
 }
 
+/** Outcome of `updateAgentPlugin`: `applied` when the re-pin landed, `unchanged`
+ *  when already at pin, `consent` when the new pin widens the plugin — the
+ *  backend changed nothing and waits for `acceptCapabilities`. */
+export type AgentPluginUpdateOutcome =
+  { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
+
 /** Re-pin a catalog-installed plugin to the current catalog SHA (backend
  *  `plugins.manage update`; catalog installs only). Refreshes the list on
- *  success. Returns whether the update applied. */
+ *  success. A pin that adds tools / hooks / deps / capabilities / a Desktop half
+ *  comes back as `consent` with the delta; the caller confirms and retries with
+ *  `acceptCapabilities`. */
 export async function updateAgentPlugin(
   request: GatewayRequest,
   name: string,
   failMessage: string,
-  profile?: string | null
-): Promise<boolean> {
+  profile?: string | null,
+  acceptCapabilities = false
+): Promise<AgentPluginUpdateOutcome> {
   $agentPluginBusy.set(name)
 
   try {
-    const result = await request<{ ok?: boolean; unchanged?: boolean }>(
+    const result = await request<{
+      ok?: boolean
+      unchanged?: boolean
+      consent_required?: boolean
+      sha?: string
+      delta_lines?: string[]
+    }>(
       'plugins.manage',
-      withProfile({ action: 'update', name }, profile)
+      withProfile({ action: 'update', name, ...(acceptCapabilities ? { accept_capabilities: true } : {}) }, profile)
     )
+
+    if (result?.consent_required) {
+      return { kind: 'consent', sha: (result.sha ?? '').slice(0, 8), deltaLines: result.delta_lines ?? [] }
+    }
 
     if (!result?.ok) {
       throw new Error(failMessage)
@@ -275,11 +350,11 @@ export async function updateAgentPlugin(
 
     await loadAgentPlugins(request, profile)
 
-    return !result.unchanged
+    return { kind: result.unchanged ? 'unchanged' : 'applied' }
   } catch (e) {
     notifyError(e, failMessage)
 
-    return false
+    return { kind: 'failed' }
   } finally {
     $agentPluginBusy.set(null)
   }
@@ -309,6 +384,68 @@ export async function removeAgentPlugin(
     return true
   } catch (e) {
     notifyError(e, failMessage)
+
+    return false
+  } finally {
+    $agentPluginBusy.set(null)
+  }
+}
+
+export interface SaveAgentPluginSettingsOptions {
+  /** Canonical plugin key (`plugins.entries.<key>`). */
+  key: string
+  /** Non-secret `config_schema` values, already coerced to their wire types. */
+  values: Record<string, unknown>
+  /** Secret fields: `.env` variable name → new value (blank = unchanged, never sent). */
+  secrets: Record<string, string>
+  /** Writes ONE secret through the credential route (`PUT /api/env`, profile-scoped
+   *  by the caller) — secrets never ride the config.yaml RPC. */
+  writeSecret: (env: string, value: string) => Promise<unknown>
+  failMessage: string
+  profile?: string | null
+}
+
+/** Persist a plugin's manifest-declared settings: values through
+ *  `plugins.manage settings` (the backend writes `plugins.entries.<key>.settings`
+ *  with the same writer `ctx.set_config` uses), secrets through `writeSecret`.
+ *  Patches the row from the RPC's refreshed copy so the form re-reads what
+ *  landed. Returns whether everything saved. */
+export async function saveAgentPluginSettings(
+  request: GatewayRequest,
+  opts: SaveAgentPluginSettingsOptions
+): Promise<boolean> {
+  $agentPluginBusy.set(opts.key)
+
+  try {
+    for (const [env, value] of Object.entries(opts.secrets)) {
+      if (value) {
+        await opts.writeSecret(env, value)
+      }
+    }
+
+    const result =
+      Object.keys(opts.values).length > 0
+        ? await request<{ ok?: boolean; plugin?: AgentPluginRow | null }>(
+            'plugins.manage',
+            withProfile({ action: 'settings', key: opts.key, values: opts.values }, opts.profile)
+          )
+        : null
+
+    if (result && !result.ok) {
+      throw new Error(opts.failMessage)
+    }
+
+    if (result?.plugin) {
+      const refreshed = result.plugin
+
+      $agentPlugins.set($agentPlugins.get().map(row => (row.key === opts.key ? { ...row, ...refreshed } : row)))
+    } else {
+      await loadAgentPlugins(request, opts.profile)
+    }
+
+    return true
+  } catch (e) {
+    notifyError(e, opts.failMessage)
 
     return false
   } finally {

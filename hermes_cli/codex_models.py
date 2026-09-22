@@ -98,6 +98,31 @@ def _drop_undiscovered_astra(model_ids: List[str]) -> List[str]:
     return [model for model in model_ids if not is_astra_model(model)]
 
 
+def codex_catalog_credential_identity() -> str:
+    """Identity of the credential live discovery would use right now, for the catalog cache key.
+
+    Access/refresh tokens rotate in place while the account-scoped catalog stays authoritative for
+    the same ChatGPT principal, so the key is ``(chatgpt_account_id, sub)``, not the token. An
+    expired token is its own state: ``_codex_catalog`` serves the static fallback for it, and that
+    fallback must not outlive the refresh under the healthy principal's key. Opaque non-JWT tokens
+    fall back to the token itself (the caller hashes every part before anything is persisted).
+    """
+    from hermes_cli.auth import _codex_access_token_is_expiring, resolve_codex_runtime_credentials
+
+    try:
+        token = str(resolve_codex_runtime_credentials(read_only=True).get("api_key") or "")
+    except Exception:  # AuthError (no/exhausted creds) or the pytest seat belt: no live catalog either way
+        token = ""
+    if not token:
+        return "missing"
+    if _codex_access_token_is_expiring(token, 0):
+        return "expired"
+    from agent.credential_pool import _codex_principal_identity
+
+    principal = _codex_principal_identity(token)
+    return "/".join(principal) if principal else token
+
+
 def _ranked_slugs(entries: object) -> List[str]:
     """Visible slugs from a Codex catalog ``models`` list, sorted by (priority, slug), deduped.
 

@@ -166,7 +166,10 @@ async def get_plugins_hub(request: Request):
 
 def _plugin_action(result: dict, fallback_error: str, *, rescan: bool) -> dict:
     """Common tail of agent-plugin mutations: 400 on ``ok=False``, then invalidate caches
-    (rescanning discovery when files changed on disk)."""
+    (rescanning discovery when files changed on disk). A ``consent_required`` answer is not a failure:
+    nothing changed, the client shows the delta and retries with consent."""
+    if result.get("consent_required"):
+        return result
     if not result.get("ok"):
         raise HTTPException(status_code=400, detail=result.get("error") or fallback_error)
     if rescan:
@@ -266,7 +269,16 @@ async def post_agent_plugin_disable(request: Request, name: str):
 @router.post("/api/dashboard/agent-plugins/{name:path}/update")
 async def post_agent_plugin_update(request: Request, name: str):
     from hermes_cli.plugins_cmd import dashboard_update_user_plugin
-    return await _named_plugin_action(request, name, dashboard_update_user_plugin, "Update failed.", rescan=True)
+    # Body is optional: ``{"accept_capabilities": true}`` applies a re-pin the user confirmed after a
+    # ``consent_required`` answer.
+    try:
+        body = await request.json()
+    except Exception:
+        body = {}
+    accept = isinstance(body, dict) and body.get("accept_capabilities") is True
+    return await _named_plugin_action(
+        request, name, lambda n: dashboard_update_user_plugin(n, accept_capabilities=accept), "Update failed.",
+        rescan=True)
 
 
 @router.delete("/api/dashboard/agent-plugins/{name:path}")

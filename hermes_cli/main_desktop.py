@@ -9,6 +9,7 @@ import contextlib
 import argparse
 import hashlib
 import os
+import platform
 import re
 import shlex
 import shutil
@@ -21,6 +22,7 @@ import time as _time_mod
 from pathlib import Path
 from typing import Optional
 from hermes_cli.desktop_console import desktop_console_output, desktop_launch_notice
+from hermes_platform.host import facts
 from hermes_cli.main_tui_launch import _npm_lifecycle_env
 from hermes_cli.main_web_build import (
     _hash_source_tree, _nixos_build_env, _stamp_is_current, _write_build_stamp)
@@ -288,34 +290,6 @@ def _kernel32():
     return ctypes.WinDLL("kernel32", use_last_error=True)
 
 
-def _windows_native_machine_from_iswow64() -> Optional[str]:
-    """IsWow64Process2's OS-native machine, or None. HANDLE types are bound explicitly: ctypes'
-    default ``c_int`` truncates the ``(HANDLE)-1`` pseudo-handle → ``ERROR_INVALID_HANDLE`` on Win64.
-
-    ctypes defaults ``GetCurrentProcess``'s restype to ``c_int``, so the current-process pseudo-handle
-    ``(HANDLE)-1`` is truncated to ``0xFFFFFFFF`` and zero-extended into a 64-bit invalid handle. On Win64
-    that makes ``IsWow64Process2`` fail with ``ERROR_INVALID_HANDLE`` (6), which is exactly the residual
-    Windows-on-ARM failure after #71218: the gate fell through to ``PROCESSOR_ARCHITECTURE=AMD64`` (the
-    emulated process arch) and rejected a correctly-built ARM64 ``Hermes.exe``. Binding
-    ``restype``/``argtypes`` to ``wintypes.HANDLE`` keeps the full ``0xFFFFFFFFFFFFFFFF`` pseudo-handle.
-    """
-    import ctypes
-    from ctypes import wintypes
-    kernel32 = _kernel32()
-    kernel32.GetCurrentProcess.restype = wintypes.HANDLE
-    kernel32.GetCurrentProcess.argtypes = []
-    kernel32.IsWow64Process2.argtypes = [
-        wintypes.HANDLE, ctypes.POINTER(wintypes.USHORT), ctypes.POINTER(wintypes.USHORT)]
-    kernel32.IsWow64Process2.restype = wintypes.BOOL
-
-    process_machine = wintypes.USHORT(0)
-    native_machine = wintypes.USHORT(0)
-    if not kernel32.IsWow64Process2(
-        kernel32.GetCurrentProcess(), ctypes.byref(process_machine), ctypes.byref(native_machine)):
-        return None
-    return _PE_MACHINE_TO_NAME.get(native_machine.value)
-
-
 def _windows_user_runnable_pe_machines() -> Optional[set]:
     """PE machines this host runs in user mode via GetMachineTypeAttributes (the only API reporting
     AMD64-on-ARM64 emulation); None when unavailable (pre-Win11 22000) so callers fall back."""
@@ -337,31 +311,12 @@ def _windows_user_runnable_pe_machines() -> Optional[set]:
 
 
 def _windows_native_machine() -> str:
-    """The Windows host's NATIVE machine, upper-cased: ``IsWow64Process2`` (the only API that tells
-    the truth from an emulated x64 process on ARM64), then ``PROCESSOR_ARCHITEW6432`` /
-    ``PROCESSOR_ARCHITECTURE``, then ``platform.machine()`` (which lies under emulation).
-    ``GetNativeSystemInfo`` is NOT used: it also returns emulated details.
-
-    ``platform.machine()`` reports the PROCESS architecture, which lies under emulation: the desktop update
-    chain runs an x64 hermes-setup.exe (and thus x64 Python) on Windows-on-ARM devices, where
-    ``platform.machine()`` returns ``AMD64`` even though the OS is ARM64. The #71119 integrity gate then
-    rejected the CORRECT ARM64 rebuild as an "architecture mismatch" (#69179 follow-up report). Probe order:
-    1. ``IsWow64Process2`` with a correctly-typed current-process HANDLE (#71218 + HANDLE-truncation fix).
-    2. 3.
-    """
+    """Return the native Windows machine name in upper-case PE vocabulary."""
     if sys.platform == "win32":
-        try:
-            name = _windows_native_machine_from_iswow64()
-        except (OSError, AttributeError, TypeError, ValueError):
-            name = None  # API missing, DLL load failure in tests, mistyped binding
-        if name:
-            return name
-        env_arch = os.environ.get("PROCESSOR_ARCHITEW6432") or os.environ.get("PROCESSOR_ARCHITECTURE")
-        if env_arch:
-            return env_arch.upper()
-    import platform as _platform
-
-    return (_platform.machine() or "").upper()
+        return {"arm64": "ARM64", "amd64": "AMD64", "x86": "X86"}.get(
+            facts.native_arch(), (platform.machine() or "").upper()
+        )
+    return (platform.machine() or "").upper()
 
 
 def _expected_windows_pe_machines() -> set:

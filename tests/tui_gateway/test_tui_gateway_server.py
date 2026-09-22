@@ -11918,6 +11918,30 @@ def test_commands_catalog_includes_plugin_commands(monkeypatch):
     assert "/lcm" in dict(plugin_cat["pairs"])
 
 
+def test_plugin_slash_command_runs_under_the_session_env(monkeypatch):
+    # TUI/Desktop sibling of #108698: command.dispatch and slash.exec ran plugin handlers on the RPC
+    # thread with no HERMES_SESSION_* binding, so a handler reading get_session_env() saw "" (or the
+    # launch process's inherited values) instead of the session it was invoked from.
+    from gateway.session_context import get_session_env
+
+    seen = {}
+
+    def handler(arg):
+        seen["key"] = get_session_env("HERMES_SESSION_KEY")
+        return f"ok:{arg}"
+
+    monkeypatch.setattr("hermes_cli.plugins.get_plugin_command_handler",
+                        lambda name: handler if name == "whoami" else None)
+    monkeypatch.setattr(server, "_sessions", {"sid-p": {"session_key": "agent:tui:key-p", "cwd": ""}})
+
+    res = server._methods["command.dispatch"]("d", {"name": "whoami", "arg": "x", "session_id": "sid-p"})
+
+    assert res["result"] == {"type": "plugin", "output": "ok:x"}
+    assert seen["key"] == "agent:tui:key-p"
+    # Nothing leaks past the RPC.
+    assert get_session_env("HERMES_SESSION_KEY") in ("", None)
+
+
 def test_session_status_reads_live_gateway_agent(monkeypatch):
     agent = types.SimpleNamespace(
         model="live-model",

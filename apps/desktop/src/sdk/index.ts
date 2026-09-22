@@ -1550,7 +1550,7 @@ export const host = {
 
   /** The LIVE gateway instance for the active profile (null before the first
    *  socket opens). Most plugins want `host.request`; this exists for SDK
-   *  components that take a `HermesGateway` prop directly (e.g. `McpTab`),
+   *  components that take a `HermesGateway` prop directly (e.g. `ConnectorsTab`),
    *  which need the instance, not just a JSON-RPC door. Re-read per use — the
    *  active instance changes on a profile swap. */
   getGateway: (): HermesGateway | null => $gateway.get()
@@ -1571,11 +1571,12 @@ export { CapabilitiesView } from '@/app/capabilities'
 
 // -- ui: the design language --------------------------------------------------
 
-/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
- *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
- *  renders anywhere (a plugin dialog); pass a live `gateway` (see
- *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
-export { McpTab } from '@/app/capabilities/mcp/mcp-tab'
+/** THE Connectors tab core Capabilities renders — managed apps, the user's
+ *  own MCP servers, plugin servers and the catalog, with per-server enable,
+ *  sign-in and live probes. Renders anywhere under the app router (a plugin
+ *  dialog); pass a live `gateway` (see `host.getGateway()`) and the `profile`
+ *  to scope it to one bot. */
+export { ConnectorsTab } from '@/app/capabilities/connectors/connectors-tab'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -1767,7 +1768,7 @@ export { Contribute, type ContributeProps } from '@/contrib/react/contribute'
 // -- contracts ----------------------------------------------------------------
 
 export type { Contribution } from '@/contrib/types'
-/** The live gateway instance type — for typing the `gateway` prop `McpTab`
+/** The live gateway instance type — for typing the `gateway` prop `ConnectorsTab`
  *  takes; obtain the instance from `host.getGateway()`. */
 export type { HermesGateway } from '@/hermes'
 /** Grab-to-pan for overflow containers (boards, timelines, wide tables) —

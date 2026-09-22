@@ -57,67 +57,27 @@ class TestComposeUserApiContent:
 
 
 class TestComposeMultimodalContextPart:
-    """#71998: the injection composed as a standalone text part for the
-    multimodal (list) content path, mirroring the string sidecar's sources."""
-
-    def test_none_when_nothing_to_inject(self):
+    def test_is_the_string_sidecar_injection_tail(self):
+        """Both content shapes inject byte-identical context (#71998): the text part a list
+        turn carries is exactly what the string sidecar appends after ``content``."""
         assert compose_multimodal_context_part("", "") is None
-
-    def test_plugin_context_only(self):
-        assert compose_multimodal_context_part("", "CTX") == "CTX"
-
-    def test_memory_block_and_plugin_context(self):
-        out = compose_multimodal_context_part("likes tea", "CTX")
-        fenced = build_memory_context_block("likes tea")
-        assert out == fenced + "\n\n" + "CTX"
-
-    def test_matches_string_sidecar_injection_tail(self):
-        # The multimodal part is exactly the string sidecar minus the leading
-        # content + separator, so both paths inject byte-identical context.
         sidecar = compose_user_api_content("hello", "likes tea", "CTX")
         part = compose_multimodal_context_part("likes tea", "CTX")
         assert sidecar == "hello\n\n" + part
 
 
 class TestMemoryQueryText:
-    """#71998 execution side: the memory query must flatten multimodal (list)
-    content to its text, or prefetch/on_turn_start never run on an image+text
-    turn and the delivery sidecar has nothing to carry."""
-
-    def test_str_passthrough(self):
-        assert _memory_query_text("what is my address") == "what is my address"
-
-    def test_text_plus_image_list_yields_text(self):
-        content = [
-            {"type": "text", "text": "what is in this photo of my house"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-        ]
-        assert _memory_query_text(content) == "what is in this photo of my house"
-
-    def test_image_only_list_yields_empty(self):
-        content = [
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-        ]
-        assert _memory_query_text(content) == ""
-
-    def test_non_text_types_yield_empty(self):
-        assert _memory_query_text(None) == ""
-        assert _memory_query_text(12345) == ""
-
-    def test_drives_trivial_prompt_gate_correctly(self):
+    def test_list_turn_queries_its_text_and_image_only_stays_trivial(self):
+        """#71998 execution side: a text+image turn must drive prefetch off its text (it used to
+        collapse to ``""`` and skip recall silently); an image-only turn has no text to query."""
         from agent.memory_provider import is_trivial_prompt
 
-        text_plus_image = [
-            {"type": "text", "text": "remind me what my dog's name is"},
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-        ]
-        image_only = [
-            {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}},
-        ]
-        # A text+image turn is NOT trivial once flattened, so prefetch runs...
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        text_plus_image = [{"type": "text", "text": "remind me what my dog's name is"}, image]
+        assert _memory_query_text(text_plus_image) == "remind me what my dog's name is"
         assert is_trivial_prompt(_memory_query_text(text_plus_image)) is False
-        # ...while an image-only turn stays trivial (no semantic text to query).
-        assert is_trivial_prompt(_memory_query_text(image_only)) is True
+        assert _memory_query_text([image]) == ""
+        assert is_trivial_prompt(_memory_query_text([image])) is True
 
 
 # ---------------------------------------------------------------------------
@@ -374,20 +334,6 @@ class TestPrologueStamping:
         assert content[0] == {"type": "image_url", "image_url": {"url": "data:img"}}
         assert content[-1] == {"type": "text", "text": "PLUGIN-CTX"}
         # Multimodal turns carry the context durably, not via the string sidecar.
-        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
-
-    def test_no_context_part_for_multimodal_without_injections(self):
-        """A multimodal turn with no ephemeral context is left untouched."""
-        agent = _FakeAgent()
-        blocks = [{"type": "image_url", "image_url": {"url": "data:img"}}]
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
-            ctx = _build(
-                agent,
-                user_message=blocks,
-                summarize_user_message_for_log=lambda _m: "[image]",
-            )
-        content = ctx.messages[ctx.current_turn_user_idx]["content"]
-        assert content == blocks  # no stray text part appended
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
 
@@ -654,6 +600,32 @@ class TestWireInvariant:
         # And the new current-turn message got its own injection + sidecar.
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
+
+    def test_multimodal_turn_sends_persists_and_replays_context_part(self, wire_env):
+        """#71998: on a list-content (image) turn the ``pre_llm_call`` context reaches the
+        wire as a text part, the persisted row carries it, and a resumed turn N+1 replays
+        the same view — same contract as the string sidecar path."""
+        make_agent, handler, db, sid = wire_env
+        from run_agent import AIAgent
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        turn = [{"type": "text", "text": "what is this"}, image]
+
+        agent1 = make_agent()
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):  # keep native parts on the wire
+            agent1.run_conversation(list(turn), conversation_history=[], task_id="t1")
+
+        sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert sent == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
+
+        history = db.get_messages_as_conversation(sid)
+        assert "PLUGIN-CTX" in history[0]["content"]  # persisted with the turn, not dropped
+
+        handler.captured_requests = []
+        agent2 = make_agent()
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            agent2.run_conversation("second question", conversation_history=history, task_id="t2")
+        replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert replayed == history[0]["content"]
 
 
 # ---------------------------------------------------------------------------
@@ -1013,7 +985,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
     before the delayed persist. Drives the real ``compress_context`` path
     against a real, empty SessionDB."""
 
-    def _make_agent(self, db, sid, *, in_place):
+    def _make_agent(self, db, sid, *, in_place, current_user_content="hello"):
         from run_agent import AIAgent
 
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -1044,7 +1016,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         seen = {}
         compacted = [
             {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "user", "content": "hello"},
+            {"role": "user", "content": current_user_content},
         ]
 
         def _compress(_messages, **_kwargs):
@@ -1098,6 +1070,31 @@ class TestSessionRowExistsBeforePreflightCompaction:
             assert "[CONTEXT COMPACTION] summary" in contents
             # And the live context is the compacted set.
             assert ctx.messages[ctx.current_turn_user_idx]["content"] == "hello"
+        finally:
+            db.close()
+
+    def test_in_place_compaction_multimodal_context_part_survives_reload(self, tmp_path):
+        """#71998 persistence: in-place ``archive_and_compact`` writes the current-turn user
+        row BEFORE the prologue appends the ``pre_llm_call`` text part, and the crash persist
+        identity-skips compacted dicts — the part must be pushed into that row, or a
+        resumed session replays a view the model never saw."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-inplace-mm"
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        turn = [{"type": "text", "text": "what is this"}, image]
+        try:
+            agent, _seen = self._make_agent(db, sid, in_place=True, current_user_content=list(turn))
+            with patch("hermes_cli.plugins.invoke_hook", return_value=[{"context": "PLUGIN-CTX"}]):
+                ctx = _build(
+                    agent, user_message=list(turn), conversation_history=self._oversized_history(),
+                    summarize_user_message_for_log=lambda _m: "[image]",
+                )
+            assert agent._last_compaction_in_place is True
+            live = ctx.messages[ctx.current_turn_user_idx]["content"]
+            assert live == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
+            # Reload: the durable row carries the same parts the model saw.
+            reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
+            assert reloaded[-1]["content"] == live
         finally:
             db.close()
 

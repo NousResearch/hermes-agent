@@ -682,7 +682,7 @@ def my_callback(session_id: str, user_message: str, conversation_history: list,
 | Parameter | Type | Description |
 |-----------|------|-------------|
 | `session_id` | `str` | Unique identifier for the current session |
-| `user_message` | `str` | The user's original message for this turn (before any skill injection) |
+| `user_message` | `str \| list` | The user's original message for this turn (before any skill injection). A multimodal turn (image or other attachment) is the list of content parts, exactly as sent |
 | `conversation_history` | `list` | Copy of the full message list (OpenAI format: `[{"role": "user", "content": "..."}]`) |
 | `is_first_turn` | `bool` | `True` if this is the first turn of a new session, `False` on subsequent turns |
 | `model` | `str` | The model identifier (e.g. `"anthropic/claude-sonnet-4.6"`) |
@@ -706,6 +706,8 @@ return None
 **Where context is injected:** Always the **user message**, never the system prompt. This preserves the prompt cache — the system prompt stays identical across turns, so cached tokens are reused. The system prompt is Hermes's territory (model guidance, tool enforcement, personality, skills). Plugins contribute context alongside the user's input.
 
 The clean user-message `content` remains unchanged. For replay and prompt-cache stability, Hermes may persist the exact API-bound message, including plugin-injected context, in the row's `api_content` sidecar.
+
+On a **multimodal turn** (the user message is a list of content parts — an image attachment, or text sent as parts) there is no string sidecar: the joined context is appended to that turn's content as one extra `{"type": "text"}` part, before the first request, and the part is persisted with the turn so a resumed session, compaction and replay all see the same message the model saw. Earlier messages and the system prompt are never touched.
 
 When **multiple plugins** return context, their outputs are joined with double newlines in plugin discovery order (alphabetical by directory name).
 

@@ -58,6 +58,12 @@ type Handler = (ctx: ServerRequestContext) => void
 
 type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
 
+// Give the window that owns the session time to answer first. If none does,
+// turn the otherwise silent fan-out miss into a useful tool result instead of
+// making the bridge spend its 45-second backend deadline.
+const NO_HOST_RESPONSE_DELAY_MS = 1_000
+const NO_HOST_ERROR = 'This chat is not displayed in any window. Bring it to the front and try again.'
+
 /**
  * Bridges answered from THIS window's panes (preview tab, xterm buffer, the
  * native window below, the tour overlay). Every attached window sees the
@@ -447,6 +453,13 @@ export function handleServerRequest(
     const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
 
     if (route === 'ignore') {
+      // Another window may host this session and answer immediately. This
+      // delayed fallback only wins when every attached window has the same
+      // no-host view; `respond` is idempotent once an owner has replied.
+      setTimeout(() => {
+        answerValue(request, { error: NO_HOST_ERROR, success: false })
+      }, NO_HOST_RESPONSE_DELAY_MS)
+
       return true
     }
 

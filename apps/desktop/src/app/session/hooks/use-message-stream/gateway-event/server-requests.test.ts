@@ -112,6 +112,28 @@ describe('preview action request routing', () => {
     }
   })
 
+  it('answers a scoped pane request when no window binds its session', () => {
+    vi.useFakeTimers()
+
+    try {
+      const { handled, respond } = deliver('preview.read', { session_id: 'session-a' }, 'session-b')
+
+      expect(handled).toBe(true)
+      expect(respond).not.toHaveBeenCalled()
+
+      vi.advanceTimersByTime(1_000)
+
+      expect(respond).toHaveBeenCalledWith({
+        value: JSON.stringify({
+          error: 'This chat is not displayed in any window. Bring it to the front and try again.',
+          success: false
+        })
+      })
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {
     // The tile session is not the active one, but this window hosts it: its
     // panes are here, so an 'ignore' would stall the tool until its deadline.

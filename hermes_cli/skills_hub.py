@@ -673,7 +673,8 @@ def _confirm_install(c: Console, bundle, category: str) -> bool:
 def do_install(identifier: str, category: str = "", force: bool = False,
                console: Optional[Console] = None, skip_confirm: bool = False,
                invalidate_cache: bool = True, name_override: str = "",
-               source_id: Optional[str] = None) -> None:
+               source_id: Optional[str] = None, *,
+               dev_lab_integration: Optional[Any] = None) -> None:
     """Fetch, quarantine, scan, confirm, and install a skill. ``source_id`` pins resolution to one
     adapter; callers that know the provenance (``do_update``) must pass it so a bare identifier
     cannot resolve to a same-named skill elsewhere."""
@@ -729,6 +730,58 @@ def do_install(identifier: str, category: str = "", force: bool = False,
         _install_blocked(c, bundle, _scan_block_message(result, identifier), result.verdict,
                          f"{len(result.findings)}_findings", q_path=q_path, lead="\n", label="Not installed:")
         return
+
+    # External admission is default-off.  Any configured non-off result is fail-closed
+    # unless an exact QUARANTINE is handled by an explicitly injected LAB dependency.
+    from tools.external_skill_admission import run_external_admission
+    source_version = str(extra_metadata.get("version") or "")
+    external_admission = run_external_admission(
+        q_path, source_id=bundle.identifier, source_version=source_version,
+    )
+    if external_admission.executed:
+        c.print(
+            f"[dim]External admission ({external_admission.mode}): "
+            f"{external_admission.decision}; evidence: "
+            f"{external_admission.evidence_dir or 'none'}[/]"
+        )
+
+    if external_admission.mode != "off":
+        if (external_admission.mode == "enforce"
+                and external_admission.decision == "QUARANTINE"
+                and dev_lab_integration is not None):
+            lab_result = dev_lab_integration.simulate(
+                external_admission,
+                q_path,
+                source_id=bundle.identifier,
+                source_version=source_version,
+            )
+            if lab_result.allowed:
+                c.print(
+                    "\n[bold green]LAB simulation allowed:[/] "
+                    f"{lab_result.outcome}; candidate remains quarantined and is not installed"
+                )
+            else:
+                c.print(
+                    "\n[bold red]LAB simulation rejected:[/] "
+                    f"{lab_result.reason}; quarantine preserved"
+                )
+            return
+
+        if (external_admission.mode == "enforce"
+                and external_admission.decision == "QUARANTINE"):
+            c.print(
+                "\n[bold red]Not installed:[/] foreground_review_required; "
+                "quarantine preserved"
+            )
+            return
+
+        c.print(
+            "\n[bold red]Not installed:[/] external admission "
+            f"{external_admission.decision.lower()} is not install authorization; "
+            "quarantine preserved"
+        )
+        return
+
     # Advisory second opinion — warn-and-continue by design (PII-class findings are
     # informational); the install confirmation below is where the user decides.
     _print_tier1_advisory(q_path, c)

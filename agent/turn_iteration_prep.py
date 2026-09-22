@@ -502,15 +502,17 @@ def apply_retry_restarts(
         return _verdict("continue")
 
     if _retry.restart_with_length_continuation:
-        # Boost output budget per retry: 2×, 4×, 8×, 16× base, capped at 32 768, via
-        # _ephemeral_max_output_tokens. Keep a larger original provider/model
-        # default as the floor so retries never downshift.
-        _boost = (agent.max_tokens or 4096) * (2 ** length_continue_retries)
+        # Boost output budget per retry: 2×, 4×, 8×, 16× base, seeded from the cap
+        # the request actually carried (user config or the provider's declared
+        # request default), not the raw 4096. The ceiling follows the same ladder
+        # as the tool-call path: requested cap → provider hard limit → context window.
+        from agent.turn_truncation import _truncation_boost_ceiling
+
         _requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+        _boost = (agent.max_tokens or _requested_cap or 4096) * (2 ** length_continue_retries)
         if _requested_cap is not None:
             _boost = max(_boost, _requested_cap)
-        _boost_cap = max(32768, _requested_cap or 0)
-        agent._ephemeral_max_output_tokens = min(_boost, _boost_cap)
+        agent._ephemeral_max_output_tokens = min(_boost, _truncation_boost_ceiling(agent, _requested_cap))
         return _verdict("continue")
 
     # All retries may exhaust with `response` still None; break out cleanly.

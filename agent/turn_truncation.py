@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import logging
 import re
+from contextlib import suppress
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -316,6 +317,35 @@ def _continue_text(st: _Trunc, _retry: TurnRetryState, assistant_message: Any) -
     )
 
 
+def _truncation_boost_ceiling(agent: Any, requested_cap: Any) -> int:
+    """Ceiling for truncation-retry escalation, in priority order:
+
+    1. the cap the failed request already carried (never downshift below it),
+    2. the provider's declared server-side hard output limit (authorizes growth
+       above the requested cap — without it a retry can never exceed the cap that
+       just failed),
+    3. the 32 768 floor (historic default when neither is known),
+    4. the remaining context window (``context_length - last_prompt_tokens``),
+       so escalation can never push a request past the model's context.
+
+    Providers that declare no ``max_output_tokens`` keep the pre-declaration
+    behaviour: the ceiling is exactly the requested cap (or the 32K floor).
+    """
+    ceiling = max(requested_cap or 0, 32768)
+    with suppress(Exception):
+        from providers import get_provider_profile
+
+        profile = get_provider_profile(getattr(agent, "provider", ""))
+        hard = profile.get_max_output_tokens(getattr(agent, "model", None)) if profile else None
+        if hard:
+            ceiling = max(ceiling, hard)
+    ctx = getattr(agent, "_config_context_length", None)
+    used = getattr(getattr(agent, "context_compressor", None), "last_prompt_tokens", 0) or 0
+    if ctx and used:
+        ceiling = min(ceiling, max(32768, ctx - used))
+    return ceiling
+
+
 def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict:
     """Truncated tool call: re-run the same call (up to 4×) with a boosted max_tokens —
     a real output-cap truncation needs it, harmless for a network stall — else refuse to
@@ -328,11 +358,17 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
             agent._buffer_vprint(f"⚠️  Stream interrupted mid tool-call — retrying ({n}/4)...")
         else:
             agent._buffer_vprint(f"⚠️  Truncated tool call detected — retrying API call ({n}/4)...")
-        _tc_boost = (agent.max_tokens if agent.max_tokens else 4096) * (2 ** n)
         _tc_requested_cap = agent._requested_output_cap_from_api_kwargs(api_kwargs)
+        # Base the ladder on the cap the request actually carried (user config, or
+        # the provider's declared request default), not the raw 4096: a retry seeded
+        # from 4096 can only reach 64K in four steps even when the server accepts
+        # 384K. 4096 stays only when the request carried no cap at all.
+        _tc_base = agent.max_tokens or _tc_requested_cap or 4096
+        _tc_boost = _tc_base * (2 ** n)
         if _tc_requested_cap is not None:
             _tc_boost = max(_tc_boost, _tc_requested_cap)
-        agent._ephemeral_max_output_tokens = min(_tc_boost, max(32768, _tc_requested_cap or 0))
+        _tc_ceiling = _truncation_boost_ceiling(agent, _tc_requested_cap)
+        agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_ceiling)
         return st.done("continue")  # don't append the broken response
     agent._flush_status_buffer()
     if st.is_stub:
@@ -570,7 +606,7 @@ def continue_codex_incomplete(
             usage = getattr(response, "usage", None)
             observed = getattr(usage, "output_tokens", None) if not isinstance(usage, dict) else usage.get("output_tokens")
             base = agent.max_tokens or int(observed or 0) or 4096
-            agent._ephemeral_max_output_tokens = min(base * (2 ** n), max(32768, base))
+            agent._ephemeral_max_output_tokens = min(base * (2 ** n), _truncation_boost_ceiling(agent, base))
         if not agent.quiet_mode:
             agent._vprint(f"{agent.log_prefix}↻ Codex response incomplete; continuing turn ({n}/3)", diagnostic=True)
         # Spinner/heartbeat notice: these retries can take minutes and otherwise look

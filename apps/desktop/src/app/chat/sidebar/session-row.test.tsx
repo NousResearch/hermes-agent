@@ -1,3 +1,5 @@
+import { KeyboardSensor, PointerSensor, useSensor, useSensors } from '@dnd-kit/core'
+import { sortableKeyboardCoordinates } from '@dnd-kit/sortable'
 import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import type * as React from 'react'
@@ -13,6 +15,7 @@ import { clearAllSessionStates, publishSessionState } from '@/store/session-stat
 import type * as SessionStatesStore from '@/store/session-states'
 import type * as WindowsStore from '@/store/windows'
 
+import { ReorderableList, useSortableBindings } from './reorderable-list'
 import { SidebarSessionRow } from './session-row'
 
 afterEach(cleanup)
@@ -129,7 +132,7 @@ vi.mock('./session-actions-menu', () => ({
 }))
 
 vi.mock('./use-profile-prewarm', () => ({
-  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), startPrewarm: vi.fn() })
+  useProfilePrewarm: () => ({ cancelPrewarm: vi.fn(), notePointerMove: vi.fn(), startPrewarm: vi.fn() })
 }))
 
 function makeSession(overrides: Partial<SessionInfo> & { title: string }): SessionInfo {
@@ -231,6 +234,10 @@ describe('SidebarSessionRow running arc', () => {
 })
 
 describe('SidebarSessionRow', () => {
+  afterEach(() => {
+    vi.useRealTimers()
+  })
+
   it('keeps an aria-label on the kebab without wrapping it in a Tip', () => {
     render(
       <SidebarSessionRow
@@ -322,6 +329,17 @@ describe('SidebarSessionRow', () => {
   })
 
   it('exposes the exact session time through a focusable Tip trigger', () => {
+    // Pin the clock before deriving the timestamp.  The assertion below is
+    // about the *composition* of the label (relative age + absolute time),
+    // but "5 minutes ago" only falls on today when the run does not straddle
+    // local midnight.  Between 00:00 and 00:05 the row correctly renders
+    // "Yesterday at 11:5x PM" and this test failed for a day boundary it was
+    // never written to exercise.  Only `Date` is faked, so the component's
+    // own timers (the running arc, the tooltip open delay) keep running for
+    // real.
+    vi.useFakeTimers({ toFake: ['Date'] })
+    vi.setSystemTime(new Date(2026, 2, 5, 12, 0, 0))
+
     const startedAt = Math.floor(Date.now() / 1000) - 5 * 60
 
     render(
@@ -422,5 +440,70 @@ describe('Inbox-style session card', () => {
 
     expect(workspace.className).toMatch(/\btruncate\b/)
     expect(screen.getByText('133 messages')).toBeTruthy()
+  })
+})
+
+// Regression for #83617: the row shell once spread the FULL dnd-kit handle, so
+// Space on a focused control inside the row (the ⋯ button that opens Rename)
+// reached the KeyboardSensor's activator — a drag armed, and the sensor then
+// ate the next Space at window level (the rename input dropped the keystroke).
+describe('SidebarSessionRow inside the sortable list', () => {
+  function SortableRow({ session }: { session: SessionInfo }) {
+    const { dragHandleProps, dragging, ref, reorderable, style } = useSortableBindings(session.id)
+
+    return (
+      <SidebarSessionRow
+        dragging={dragging}
+        dragHandleProps={dragHandleProps}
+        isPinned={false}
+        isSelected={false}
+        onArchive={noop}
+        onDelete={noop}
+        onPin={noop}
+        onResume={noop}
+        onToggleUnread={noop}
+        ref={ref}
+        reorderable={reorderable}
+        session={session}
+        style={style}
+        unread={false}
+      />
+    )
+  }
+
+  function Host({ session }: { session: SessionInfo }) {
+    // The sidebar's own sensor set (index.tsx dndSensors).
+    const sensors = useSensors(
+      useSensor(PointerSensor, { activationConstraint: { distance: 6 } }),
+      useSensor(KeyboardSensor, { coordinateGetter: sortableKeyboardCoordinates })
+    )
+
+    return (
+      <ReorderableList ids={[session.id]} onReorder={noop} sensors={sensors}>
+        <SortableRow session={session} />
+      </ReorderableList>
+    )
+  }
+
+  const space = { code: 'Space', key: ' ' }
+
+  it('lets Space through to a focused row control instead of arming a keyboard drag', () => {
+    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const kebab = screen.getByRole('button', { name: 'Session actions' })
+    kebab.focus()
+
+    // Not defaultPrevented (the ⋯ menu is stubbed in this file, so only
+    // dnd-kit could have claimed the key) and no grabber reports a drag.
+    expect(fireEvent.keyDown(kebab, space)).toBe(true)
+    expect(container.querySelector('[aria-pressed="true"]')).toBeNull()
+  })
+
+  it('still starts a keyboard reorder from the grabber', () => {
+    const { container } = render(<Host session={makeSession({ title: 'Renamable' })} />)
+    const grabber = container.querySelector<HTMLElement>('[data-reorder-handle]')!
+
+    grabber.focus()
+    fireEvent.keyDown(grabber, space)
+    expect(grabber.getAttribute('aria-pressed')).toBe('true')
   })
 })

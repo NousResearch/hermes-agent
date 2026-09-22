@@ -12,12 +12,14 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
+import { host } from '@/sdk'
 
 import {
   $workspaceIsPage,
   AGENTS_ROUTE,
   appViewForPath,
   ARTIFACTS_ROUTE,
+  CAPABILITIES_ROUTE,
   CRON_ROUTE,
   MESSAGING_ROUTE,
   navigateToWorkspacePage,
@@ -27,7 +29,6 @@ import {
   routeSessionId,
   sessionRoute,
   SETTINGS_ROUTE,
-  SKILLS_ROUTE,
   syncWorkspaceRoute
 } from './routes'
 
@@ -67,9 +68,9 @@ afterEach(() => {
 
 describe('routePathname', () => {
   it('keeps a bare path and drops a query or hash', () => {
-    expect(routePathname(SKILLS_ROUTE)).toBe('/skills')
-    expect(routePathname('/skills?tab=mcp')).toBe('/skills')
-    expect(routePathname('/skills?tab=mcp&server=ctx7')).toBe('/skills')
+    expect(routePathname(CAPABILITIES_ROUTE)).toBe('/capabilities')
+    expect(routePathname('/capabilities?tab=connectors')).toBe('/capabilities')
+    expect(routePathname('/capabilities?tab=connectors&server=ctx7')).toBe('/capabilities')
     expect(routePathname('/settings#keys')).toBe('/settings')
   })
 
@@ -86,9 +87,9 @@ describe('classification of targets carrying a query', () => {
   // servers), and Settings redirects old /settings?tab=mcp deep links to the
   // last one. Unstripped, they parsed as SESSION ids and read as 'chat'.
   it.each([
-    [`${SKILLS_ROUTE}?tab=skills`, 'skills'],
-    [`${SKILLS_ROUTE}?tab=toolsets`, 'skills'],
-    [`${SKILLS_ROUTE}?tab=mcp&server=ctx7`, 'skills'],
+    [`${CAPABILITIES_ROUTE}?tab=skills`, 'capabilities'],
+    [`${CAPABILITIES_ROUTE}?tab=toolsets`, 'capabilities'],
+    [`${CAPABILITIES_ROUTE}?tab=connectors&server=ctx7`, 'capabilities'],
     [`${SETTINGS_ROUTE}?tab=keys`, 'settings']
   ])('%s is not a session route', (to, view) => {
     expect(routeSessionId(to)).toBeNull()
@@ -98,14 +99,14 @@ describe('classification of targets carrying a query', () => {
 
 describe('syncWorkspaceRoute', () => {
   it('publishes and fronts on a page route', () => {
-    syncWorkspaceRoute(SKILLS_ROUTE)
+    syncWorkspaceRoute(CAPABILITIES_ROUTE)
 
     expect($workspaceIsPage.get()).toBe(true)
     expect(fronted()).toBe(true)
   })
 
   it('fronts on a page route reached with a query', () => {
-    syncWorkspaceRoute(`${SKILLS_ROUTE}?tab=mcp`)
+    syncWorkspaceRoute(`${CAPABILITIES_ROUTE}?tab=connectors`)
 
     expect($workspaceIsPage.get()).toBe(true)
     expect(fronted()).toBe(true)
@@ -154,20 +155,21 @@ describe('navigateToWorkspacePage', () => {
   it('navigates and fronts, so a re-click on the page you are already on still shows it', () => {
     const navigate = vi.fn()
 
-    navigateToWorkspacePage(navigate, SKILLS_ROUTE)
+    navigateToWorkspacePage(navigate, CAPABILITIES_ROUTE)
 
-    expect(navigate).toHaveBeenCalledWith(SKILLS_ROUTE, undefined)
+    expect(navigate).toHaveBeenCalledWith(CAPABILITIES_ROUTE, undefined)
     expect(fronted()).toBe(true)
   })
 
-  it.each([`${SKILLS_ROUTE}?tab=skills`, `${SKILLS_ROUTE}?tab=toolsets`, `${SKILLS_ROUTE}?tab=mcp&server=ctx7`])(
-    'fronts for the palette target %s',
-    to => {
-      navigateToWorkspacePage(vi.fn(), to)
+  it.each([
+    `${CAPABILITIES_ROUTE}?tab=skills`,
+    `${CAPABILITIES_ROUTE}?tab=toolsets`,
+    `${CAPABILITIES_ROUTE}?tab=connectors&server=ctx7`
+  ])('fronts for the palette target %s', to => {
+    navigateToWorkspacePage(vi.fn(), to)
 
-      expect(fronted()).toBe(true)
-    }
-  )
+    expect(fronted()).toBe(true)
+  })
 
   it('passes navigation options through', () => {
     const navigate = vi.fn()
@@ -184,6 +186,37 @@ describe('navigateToWorkspacePage', () => {
     navigateToWorkspacePage(navigate, SETTINGS_ROUTE)
 
     expect(navigate).toHaveBeenCalledTimes(2)
+    expect(revealTreePane).not.toHaveBeenCalled()
+  })
+})
+
+/**
+ * `host.navigate` is the only nav door a plugin has (Kanban's ⌘K row, statusbar
+ * count, ⌘⌥N). It writes the hash, which the router follows on a CHANGE — but
+ * re-issuing the current route fires nothing, so it must reveal imperatively
+ * like the sidebar does.
+ */
+describe('host.navigate', () => {
+  it('fronts the workspace pane even when already on the contributed page', () => {
+    const dispose = contributeRoute()
+
+    try {
+      window.location.hash = `#${CONTRIBUTED_ROUTE}`
+      vi.mocked(revealTreePane).mockClear()
+      vi.mocked(noteActiveTreeGroup).mockClear()
+
+      host.navigate(CONTRIBUTED_ROUTE)
+
+      expect(window.location.hash).toBe(`#${CONTRIBUTED_ROUTE}`)
+      expect(fronted()).toBe(true)
+    } finally {
+      dispose()
+    }
+  })
+
+  it('does not front the pane for a chat route', () => {
+    host.navigate(sessionRoute('sess-a'))
+
     expect(revealTreePane).not.toHaveBeenCalled()
   })
 })

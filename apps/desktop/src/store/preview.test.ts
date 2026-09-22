@@ -11,6 +11,7 @@ import {
   closePreviewMatching,
   closeRightRail,
   closeRightRailTab,
+  commitBrowserTabLocation,
   newBrowserTab,
   openPreview,
   previewTabId,
@@ -82,6 +83,18 @@ describe('preview store', () => {
     expect(urlTabs).toHaveLength(1)
     expect(urlTabs[0].target.url).toBe('https://www.reddit.com')
     expect($rightRailActiveTabId.get()).toBe(urlTabs[0].id)
+  })
+
+  it('commits the live page onto a Browser tab without changing its id', () => {
+    openPreview(urlTarget('https://news.ycombinator.com'), 'tool-result')
+    const id = $previewTabs.get()[0].id
+
+    commitBrowserTabLocation(id, 'https://news.ycombinator.com/item?id=1', 'Item')
+
+    expect($previewTabs.get()).toHaveLength(1)
+    expect($previewTabs.get()[0].id).toBe(id)
+    expect($previewTabs.get()[0].target.url).toBe('https://news.ycombinator.com/item?id=1')
+    expect($previewTabs.get()[0].target.label).toBe('Item')
   })
 
   it('opens more than one Browser on request, each holding its own page', () => {
@@ -215,7 +228,9 @@ describe('preview store', () => {
   it('does not persist remote HTML without its in-memory document', () => {
     openPreview({ ...fileTarget('/remote/report.html'), dataUrl: 'data:text/html;base64,PGgxPnJlbW90ZTwvaDE+' })
 
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+    // Nothing persistable, so the profile's bucket is empty and the key is
+    // removed rather than stored as an empty list (matching the tiles store).
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
   })
 
   it('preserves an explicit HTML source fallback', () => {
@@ -229,6 +244,8 @@ describe('preview store', () => {
 
     openPreview(target, 'tool-result')
 
-    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBe('[]')
+    // Nothing persistable, so the profile's bucket is empty and the key is
+    // removed rather than stored as an empty list (matching the tiles store).
+    expect(window.localStorage.getItem('hermes.desktop.previewTabs.v2')).toBeNull()
   })
 })

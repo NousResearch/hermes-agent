@@ -324,6 +324,8 @@ export const tr: Translations = {
     disableRuntime: "Devre dışı bırak",
     enableAfterInstall: "Yüklemeden sonra etkinleştir",
     enableRuntime: "Etkinleştir",
+    toggleTakesEffectAfterRestart:
+      "Kaydedildi — değişikliği uygulamak için ağ geçidini yeniden başlatın.",
     forceReinstall: "Yeniden yüklemeyi zorla (önce mevcut klasörü sil)",
     headline:
       "Hermes eklentilerini keşfedin, yükleyin, etkinleştirin ve güncelleyin (`hermes plugins` ile eşdeğer).",
@@ -469,6 +471,8 @@ export const tr: Translations = {
     copyCliCommand: "CLI komutunu kopyala (harici / yedek için)",
     connect: "Bağlan",
     sessionExpires: "Oturumun süresi {time} sonra dolacak",
+    sessionExpiredNoError:
+      "Oturum açma, sağlayıcıya ulaşmadan süresi doldu. Bu genellikle oturum açma sayfasının açılan sekmede takıldığı anlamına gelir (sunucu tarafı sorun) — oradan oturum açmayı tamamlayın, ardından Yeniden Dene'ye tıklayın. Sorun devam ederse bunun yerine bir API anahtarı veya CLI kullanın.",
     initiatingLogin: "Giriş akışı başlatılıyor…",
     exchangingCode: "Kod, jetonlarla değiştiriliyor…",
     connectedClosing: "Bağlandı! Kapatılıyor…",

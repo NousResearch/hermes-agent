@@ -5,6 +5,13 @@
  * React/Electron controller module.
  */
 
+import type { SessionOwnerRoute, SessionOwnerScope } from '@/store/session-request-router'
+
+import { SETTINGS_ROUTE } from '../routes'
+
+/** The in-app destination for pool-cap recovery. */
+export const POOL_LIMITS_SETTINGS_ROUTE = `${SETTINGS_ROUTE}?tab=config:advanced`
+
 /**
  * Resolve a runtime session id back to its stored id by reverse-scanning the
  * stored->runtime binding map — the same ladder use-session-tile-delegate's
@@ -47,4 +54,75 @@ export function resolveRoutingSessionId(args: {
   }
 
   return focusedStoredSessionId ?? selectedStoredSessionId
+}
+
+/** The owner shapes the ladder below can return: an exact route (connection +
+ *  profile), a bare profile name, or undefined (unknown — probe, never
+ *  "active"). The type-only import keeps this module runtime-import-free. */
+export type SessionRpcOwnerRoute = SessionOwnerRoute
+
+/** A connection-bearing owner. Checked structurally so this module stays
+ *  runtime-import-free (the type guard lives in store/session-request-router). */
+const isRouteOwner = (owner: unknown): owner is SessionRpcOwnerRoute =>
+  Boolean(owner && typeof owner === 'object' && 'connectionId' in owner)
+
+/**
+ * The SYNC owner a session-scoped RPC routes to, resolved in this order:
+ *
+ *   1. the persisted tile owner route (a bot chat / split tile records the
+ *      exact connectionId + profile it was opened with, survives relaunch);
+ *   2. the exact, UNIQUE session owner hint (recorded the moment a routed
+ *      session.create returns, or at plugin open time; persisted, bounded);
+ *   3. the session row's owner — an EXACT route when the row is
+ *      connection-tagged (optimistic row from a routed create, the unified
+ *      list splice, or a tag carried across a refresh), else its bare
+ *      profile (the cross-profile aggregator tags rows, but a bare profile
+ *      loses the connection and can lag the create);
+ *   4. `eventOwner`, an exact route an inbound runtime event already proved
+ *      for this session (store/session-states sessionOwnerByRuntimeId). It is
+ *      consulted whenever every rung above named nothing better than a bare
+ *      profile name, because a bare profile has NO connection: the profile
+ *      door (requestGatewayForProfile → gatewayForProfile) resolves a bare
+ *      name equal to the primary profile against the PRIMARY socket, so an
+ *      ordinary session that runs on a non-primary connection — two
+ *      connections both exposing `default` is enough — has its RPCs answered
+ *      by another machine ("4001 session not found" from the 2nd prompt on);
+ *   5. undefined → the caller runs the cross-profile probe, and fails closed
+ *      if that misses too.
+ *
+ * An EXACT durable route (1–3 tagged, or 4) always outranks a bare profile
+ * name; only a genuinely unknown owner falls through.
+ *
+ * The hint outranks the row because the row is presentation state that can
+ * be stamped from the AMBIENT profile (an optimistic row minted while
+ * All-profiles / Bot routing left `default` active), and because it carries
+ * no connection: a fresh chat created on `local::omar` whose row read
+ * `default` ran its first turn on omar and then 4001'd "session not found"
+ * on the second, when the row's `default` owner won the route. The
+ * connection-tagged row rung is what keeps two-turn continuity from resting
+ * on the transient hint alone (bounded, evictable, gone after a relaunch).
+ */
+export function resolveSessionRpcOwner(args: {
+  routingSessionId: null | string
+  tileOwnerRoute: (storedSessionId: string) => SessionRpcOwnerRoute | undefined
+  sessionOwnerHint: (storedSessionId: string) => SessionRpcOwnerRoute | undefined
+  sessionRowOwner: (storedSessionId: string) => null | SessionRpcOwnerRoute | string | undefined
+  eventOwner?: (storedSessionId: string) => SessionOwnerScope | undefined
+}): SessionRpcOwnerRoute | string | undefined {
+  const { eventOwner, routingSessionId, sessionOwnerHint, sessionRowOwner, tileOwnerRoute } = args
+
+  if (!routingSessionId) {
+    return undefined
+  }
+
+  const fromRow = sessionRowOwner(routingSessionId)
+  const rowOwner = typeof fromRow === 'string' ? fromRow.trim() || undefined : (fromRow ?? undefined)
+
+  const durable = tileOwnerRoute(routingSessionId) ?? sessionOwnerHint(routingSessionId) ?? rowOwner
+
+  if (isRouteOwner(durable)) {
+    return durable
+  }
+
+  return eventOwner?.(routingSessionId) ?? durable
 }

@@ -15,7 +15,6 @@ import yaml
 
 @pytest.fixture()
 def isolated_home(tmp_path, monkeypatch):
-    monkeypatch.setattr(Path, "home", lambda: tmp_path)
     home = tmp_path / ".hermes"
     home.mkdir(exist_ok=True)
     monkeypatch.setenv("HERMES_HOME", str(home))
@@ -199,6 +198,13 @@ class TestAddCommand:
                 "base_url": "https://openrouter.ai/api/v1",
                 "api_mode": "chat_completions",
             }
+            cfg["custom_providers"] = [
+                {
+                    "name": "Picker-created endpoint",
+                    "base_url": "https://picker.example/v1",
+                    "model": "picker-model",
+                }
+            ]
             save_config(cfg)
 
         with patch("hermes_cli.main.select_provider_and_model", side_effect=fake_picker), \
@@ -215,6 +221,74 @@ class TestAddCommand:
         # Fallback added
         assert len(cfg["fallback_providers"]) == 1
         assert cfg["fallback_providers"][0]["provider"] == "openrouter"
+        assert cfg["custom_providers"] == [
+            {
+                "name": "Picker-created endpoint",
+                "base_url": "https://picker.example/v1",
+                "model": "picker-model",
+            }
+        ]
+
+    def test_restore_preserves_absent_active_provider(self):
+        from contextlib import nullcontext
+
+        from hermes_cli import auth, fallback_cmd
+
+        store = {"version": 1, "providers": {}}
+
+        def save_auth(value):
+            store.clear()
+            store.update(value)
+
+        with patch.object(auth, "_load_auth_store", lambda: dict(store)), patch.object(
+            auth, "_save_auth_store", save_auth
+        ), patch.object(auth, "_auth_store_lock", nullcontext):
+            before = fallback_cmd._snapshot_auth_active_provider()
+            fallback_cmd._restore_auth_active_provider(before)
+
+        assert "active_provider" not in store
+
+    @pytest.mark.parametrize("picker_error", [LookupError("picker failed"), KeyboardInterrupt()],
+                             ids=["exception", "ctrl-c"])
+    def test_picker_failure_restores_persisted_primary_without_masking_error(
+        self, isolated_home, picker_error
+    ):
+        """An ordinary picker exception or a Ctrl+C mid-picker must leave config.yaml's
+        ``model`` exactly as it was before ``fallback add`` started (base only handled SystemExit)."""
+        from hermes_cli import fallback_cmd
+
+        primary_model = {
+            "provider": "anthropic",
+            "default": "claude-sonnet-4-6",
+            "base_url": "https://api.anthropic.com",
+            "api_mode": "anthropic_messages",
+        }
+        _write_config(isolated_home, {"model": primary_model, "theme": "midnight"})
+
+        def failing_picker(args=None):
+            from hermes_cli.config import load_config, save_config
+
+            cfg = load_config()
+            cfg["model"] = {
+                "provider": "openrouter",
+                "default": "anthropic/claude-sonnet-4.6",
+                "base_url": "https://openrouter.ai/api/v1",
+                "api_mode": "chat_completions",
+            }
+            save_config(cfg)
+            raise picker_error
+
+        with patch(
+            "hermes_cli.main.select_provider_and_model",
+            side_effect=failing_picker,
+        ), patch("hermes_cli.main._require_tty"):
+            with pytest.raises(type(picker_error)) as exc_info:
+                fallback_cmd.cmd_fallback_add(types.SimpleNamespace())
+
+        assert exc_info.value is picker_error
+        persisted = _read_config(isolated_home)
+        assert persisted["model"] == primary_model
+        assert persisted["theme"] == "midnight"
 
 
 # ---------------------------------------------------------------------------

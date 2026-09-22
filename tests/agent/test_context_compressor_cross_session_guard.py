@@ -62,7 +62,6 @@ def _make_compressor():
     c._last_aux_model_failure_model = None
     c.last_real_prompt_tokens = 0
     c.last_compression_rough_tokens = 0
-    c.last_rough_tokens_when_real_prompt_fit = 0
     c.awaiting_real_usage_after_compression = False
     return c
 

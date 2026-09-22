@@ -325,6 +325,8 @@ export const fr: Translations = {
     disableRuntime: "Désactiver",
     enableAfterInstall: "Activer après l'installation",
     enableRuntime: "Activer",
+    toggleTakesEffectAfterRestart:
+      "Enregistré — redémarrez la passerelle pour appliquer la modification.",
     forceReinstall: "Forcer la réinstallation (supprimer d'abord le dossier existant)",
     headline:
       "Découvrez, installez, activez et mettez à jour les plugins Hermes (parité avec `hermes plugins`).",
@@ -470,6 +472,8 @@ export const fr: Translations = {
     copyCliCommand: "Copier la commande CLI (pour externe / repli)",
     connect: "Connecter",
     sessionExpires: "La session expire dans {time}",
+    sessionExpiredNoError:
+      "La connexion a expiré sans atteindre le fournisseur. Cela signifie généralement que la page de connexion est restée bloquée dans l'onglet ouvert (problème côté serveur) — terminez la connexion là-bas, puis cliquez sur Réessayer. Si le problème persiste, utilisez une clé API ou la CLI à la place.",
     initiatingLogin: "Lancement du flux de connexion…",
     exchangingCode: "Échange du code contre des jetons…",
     connectedClosing: "Connecté ! Fermeture…",

@@ -60,7 +60,7 @@ def server(hermes_home, monkeypatch):
     # originals on teardown so nothing leaks to later tests either.
     monkeypatch.setattr(mod, "_hermes_home", hermes_home)
     monkeypatch.setattr(mod, "_cfg_cache", None)
-    monkeypatch.setattr(mod, "_cfg_mtime", None)
+    monkeypatch.setattr(mod, "_cfg_sig", None)
     monkeypatch.setattr(mod, "_cfg_path", None)
     yield mod
     # Reset module-level session state without re-importing. importlib.reload
@@ -70,8 +70,7 @@ def server(hermes_home, monkeypatch):
     # _enter_buffered_busy. Clearing the per-session dicts gives the
     # next test a clean slate.
     mod._sessions.clear()
-    mod._pending.clear()
-    mod._answers.clear()
+    __import__("tui_gateway.server_requests", fromlist=["x"]).reset_for_tests()
 
 
 @pytest.fixture()
@@ -170,6 +169,52 @@ def _compression_failure():
     }
 
 
+def _max_iterations_fallback(final_response="fallback summary"):
+    return {
+        "final_response": final_response,
+        "completed": False,
+        "failed": False,
+        "turn_exit_reason": "max_iterations_reached(3/3)",
+    }
+
+
+@pytest.mark.parametrize(
+    ("result", "status", "raw", "expected"),
+    [
+        (_max_iterations_fallback(), "complete", "fallback summary", True),
+        (
+            {
+                "completed": True,
+                "failed": False,
+                "turn_exit_reason": "text_response(finish_reason=stop)",
+            },
+            "complete",
+            "normal response",
+            True,
+        ),
+        (
+            {**_max_iterations_fallback(), "failed": True},
+            "complete",
+            "fallback summary",
+            False,
+        ),
+        (
+            {**_max_iterations_fallback(), "turn_exit_reason": "budget_exhausted"},
+            "complete",
+            "fallback summary",
+            False,
+        ),
+        (_max_iterations_fallback(), "error", "fallback summary", False),
+        (_max_iterations_fallback(), "interrupted", "fallback summary", False),
+        (_max_iterations_fallback(), "complete", "   ", False),
+    ],
+)
+def test_successful_goal_turn_accepts_only_valid_completion_outcomes(
+    server, result, status, raw, expected
+):
+    assert server._is_successful_goal_turn(result, status, raw) is expected
+
+
 # ── command.dispatch /goal ────────────────────────────────────────────
 
 
@@ -251,6 +296,57 @@ def test_pending_input_commands_includes_goal(server):
     """Guard: _PENDING_INPUT_COMMANDS must list 'goal' — removing it would
     silently re-break the TUI."""
     assert "goal" in server._PENDING_INPUT_COMMANDS
+
+
+def test_iteration_limit_fallback_is_judged_and_can_continue(
+    server, turn_env, monkeypatch
+):
+    from hermes_cli.goals import GoalManager
+
+    session_key = "goal-iteration-limit-fallback"
+    mgr = GoalManager(session_key)
+    mgr.set("finish the current task")
+    continuation = mgr.next_continuation_prompt()
+    seen_prompts = []
+    judged = []
+    results = iter([
+        _max_iterations_fallback(),
+        {
+            "final_response": "finished normally",
+            "completed": True,
+            "failed": False,
+            "turn_exit_reason": "text_response(finish_reason=stop)",
+        },
+    ])
+
+    def run_conversation(message, **_kwargs):
+        seen_prompts.append(message)
+        return next(results)
+
+    def evaluate(self, response, **_kwargs):
+        judged.append(response)
+        if len(judged) == 1:
+            return {
+                "message": "",
+                "should_continue": True,
+                "continuation_prompt": continuation,
+            }
+        return {"message": "", "should_continue": False}
+
+    monkeypatch.setattr(GoalManager, "evaluate_after_turn", evaluate)
+    agent = types.SimpleNamespace(
+        session_id=session_key,
+        run_conversation=run_conversation,
+        clear_interrupt=lambda: None,
+    )
+    session = _turn_session(agent, session_key)
+
+    server._run_prompt_submit("rid", "sid", session, "initial work")
+
+    assert seen_prompts == ["initial work", continuation]
+    assert judged == ["fallback summary", "finished normally"]
+    completes = [p for event, _sid, p in turn_env if event == "message.complete"]
+    assert [p["status"] for p in completes] == ["complete", "complete"]
 
 
 # ── active-goal recovery after compression exhaustion ───────────────
@@ -467,3 +563,64 @@ moa:
     # Bare /moa is usage-only now; switching to a preset is via the model picker.
     assert "error" in r
     assert "model_override" not in s
+
+
+@pytest.mark.parametrize("method", ["command.dispatch", "slash.exec"])
+def test_goal_draft_uses_session_profile_without_blocking_rpc_reader(
+    server, session, monkeypatch, tmp_path, method,
+):
+    from hermes_cli import goals
+    from hermes_constants import get_hermes_home
+    import hermes_state
+
+    # Restore call-time profile resolution; conftest pins this constant to one DB.
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    sid, key, record = session
+    secondary = tmp_path / "secondary"
+    secondary.mkdir()
+    (secondary / "config.yaml").write_text("goals:\n  max_turns: 37\n", encoding="utf-8")
+    record["profile_home"] = str(secondary)
+    started, release, returned, replied = (threading.Event() for _ in range(4))
+    observed, frames = [], []
+
+    def draft(objective):
+        observed.append(get_hermes_home())
+        started.set()
+        assert release.wait(10)
+        return goals.GoalContract(verification="tests pass")
+
+    def write(frame):
+        frames.append(frame)
+        if frame.get("id") == "draft":
+            replied.set()
+        return True
+
+    monkeypatch.setattr(goals, "draft_contract", draft)
+    transport = types.SimpleNamespace(write=write)
+    params = {"session_id": sid, "name": "goal", "arg": "draft profile objective"}
+    if method == "slash.exec":
+        params = {"session_id": sid, "command": "/goal draft profile objective"}
+
+    def dispatch():
+        server.dispatch({"id": "draft", "method": method, "params": params}, transport)
+        returned.set()
+
+    caller = threading.Thread(target=dispatch)
+    caller.start()
+    try:
+        assert started.wait(5)
+        assert returned.wait(2), "draft blocked the transport reader"
+        ping = server.dispatch({"id": "ping", "method": "ping", "params": {}}, transport)
+        assert ping["id"] == "ping" and "result" in ping
+    finally:
+        release.set()
+        caller.join(5)
+    assert replied.wait(5)
+    assert observed == [secondary]
+    assert goals.load_goal(key) is None, "goal leaked into the launch profile"
+    with server._session_profile_runtime_scope(record):
+        state = goals.load_goal(key)
+        assert state.goal == "profile objective"
+        assert state.max_turns == 37 and state.contract.verification == "tests pass"
+    result = next(frame["result"] for frame in frames if frame.get("id") == "draft")
+    assert result["type"] == "send" and result["message"] == state.goal

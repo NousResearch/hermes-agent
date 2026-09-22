@@ -8,7 +8,10 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 from typing import Any, cast
 from urllib.parse import parse_qs, urlparse
 
+import pytest
+
 import plugins.memory.openviking as openviking_plugin
+from hermes_cli import __version__ as _HERMES_VERSION
 from plugins.memory.openviking import OpenVikingMemoryProvider
 
 
@@ -634,7 +637,8 @@ class TestOpenVikingRead:
 
 
 class TestOpenVikingAutoRecallPrefetch:
-    def test_prefetch_e2e_sends_limit_and_reads_l2_content(self, monkeypatch):
+    @pytest.mark.parametrize("peer", ["", "hermes"])
+    def test_prefetch_e2e_sends_limit_and_reads_l2_content(self, monkeypatch, peer):
         records = {"searches": [], "reads": [], "listings": [], "headers": []}
 
         class Handler(BaseHTTPRequestHandler):
@@ -654,6 +658,7 @@ class TestOpenVikingAutoRecallPrefetch:
                 if parsed.path == "/health":
                     self._send_json({"status": "ok", "healthy": True, "version": "test"})
                     return
+                records["headers"].append(dict(self.headers))
                 if parsed.path == "/api/v1/system/status":
                     self._send_json({"status": "ok", "result": {"user": "user"}})
                     return
@@ -708,7 +713,7 @@ class TestOpenVikingAutoRecallPrefetch:
                             "result": {
                                 "memories": [
                                     {
-                                        "uri": "viking://user/peers/hermes/memories/e2e-full.md",
+                                        "uri": "viking://user/user/peers/hermes/memories/e2e-full.md",
                                         "score": 0.9,
                                         "level": 2,
                                         "category": "events",
@@ -741,7 +746,7 @@ class TestOpenVikingAutoRecallPrefetch:
         monkeypatch.setenv("OPENVIKING_ENDPOINT", endpoint)
         monkeypatch.setenv("OPENVIKING_ACCOUNT", "acct")
         monkeypatch.setenv("OPENVIKING_USER", "user")
-        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
+        monkeypatch.setenv("OPENVIKING_AGENT", peer)
 
         provider = OpenVikingMemoryProvider()
         try:
@@ -759,7 +764,7 @@ class TestOpenVikingAutoRecallPrefetch:
         assert "people/ada.md — Ada is the project owner." in block
         assert "E2E full L2 memory content." in block
         assert "E2E abstract should not be injected." not in block
-        assert records["reads"] == ["viking://user/peers/hermes/memories/e2e-full.md"]
+        assert records["reads"] == ["viking://user/user/peers/hermes/memories/e2e-full.md"]
         assert [listing["uri"] for listing in records["listings"]] == [
             "viking://user/user/memories/preferences",
             "viking://user/user/memories/entities",
@@ -780,7 +785,11 @@ class TestOpenVikingAutoRecallPrefetch:
             {key.lower(): value for key, value in headers.items()}
             for headers in records["headers"]
         ]
-        assert all(headers.get("x-openviking-actor-peer") == "hermes" for headers in normalized_headers)
+        assert all(headers.get("x-openviking-actor-peer", "") == peer for headers in normalized_headers)
+        assert all(
+            headers.get("user-agent") == f"openviking-memory-hermes/{_HERMES_VERSION}"
+            for headers in normalized_headers
+        )
         assert all(headers.get("x-openviking-account") == "acct" for headers in normalized_headers)
         assert all(headers.get("x-openviking-user") == "user" for headers in normalized_headers)
 
@@ -902,6 +911,7 @@ class TestEnsureClientReloadsEnv:
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "http://srv:31933")
         monkeypatch.setenv("OPENVIKING_API_KEY", "")
         monkeypatch.setenv("OPENVIKING_USER", "alice")
+        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
 
         provider = OpenVikingMemoryProvider()
         provider._env_refresh_enabled = True
@@ -936,11 +946,20 @@ class TestEnsureClientReloadsEnv:
 
             def post(self, path, payload=None, **kwargs):
                 self.posts.append((path, payload or {}))
-                return {"result": {"written_bytes": 11}}
+                if path.endswith("/commit"):
+                    return {
+                        "result": {
+                            "status": "accepted",
+                            "task_id": "task-remember",
+                            "trace_id": "trace-remember",
+                        }
+                    }
+                return {"status": "ok"}
 
         monkeypatch.setattr("plugins.memory.openviking._VikingClient", _StubClient)
         monkeypatch.setenv("OPENVIKING_ENDPOINT", "https://openviking.example")
         monkeypatch.setenv("OPENVIKING_API_KEY", "sk-test")
+        monkeypatch.setenv("OPENVIKING_AGENT", "hermes")
 
         provider = OpenVikingMemoryProvider()
         provider.initialize("session-1")
@@ -952,14 +971,135 @@ class TestEnsureClientReloadsEnv:
             {"content": "stable fact"},
         ))
 
-        assert out["status"] == "stored"
+        assert out["status"] == "submitted"
+        assert out["session_id"].startswith("hermes-remember-")
+        assert out["session_uri"] == f"viking://user/default/sessions/{out['session_id']}"
+        assert out["message_status"] == "accepted"
+        assert out["extraction_status"] == "accepted"
+        assert out["task_id"] == "task-remember"
+        assert out["trace_id"] == "trace-remember"
         assert len(instances) == 2
-        assert instances[1].posts[0][0] == "/api/v1/content/write"
-        assert instances[1].posts[0][1]["content"] == "stable fact"
-        assert instances[1].posts[0][1]["mode"] == "create"
-        assert instances[1].posts[0][1]["uri"].startswith(
-            "viking://user/default/peers/hermes/memories/"
+        session_id = out["session_id"]
+        assert instances[1].posts == [
+            (
+                f"/api/v1/sessions/{session_id}/messages",
+                {
+                    "role": "user",
+                    "parts": [{"type": "text", "text": "stable fact"}],
+                },
+            ),
+            (
+                f"/api/v1/sessions/{session_id}/commit",
+                {"keep_recent_count": 0},
+            ),
+        ]
+
+    def test_remember_accepts_legacy_category_but_submits_raw_user_text(self, monkeypatch):
+        posts = []
+
+        class _StubClient:
+            def post(self, path, payload=None, **kwargs):
+                posts.append((path, payload or {}))
+                if path.endswith("/commit"):
+                    return {"result": {"status": "accepted", "task_id": "task-1"}}
+                return {"status": "ok"}
+
+        provider = OpenVikingMemoryProvider()
+        provider._client = _StubClient()
+        provider._agent = "hermes"
+        monkeypatch.setattr(provider, "_ensure_client", lambda: provider._client)
+
+        out = json.loads(provider._tool_remember({
+            "content": "stable fact",
+            "category": "preference",
+        }))
+
+        session_id = out["session_id"]
+        message_path, message = posts[0]
+        assert message_path == f"/api/v1/sessions/{session_id}/messages"
+        assert message["role"] == "user"
+        assert message["parts"] == [{"type": "text", "text": "stable fact"}]
+        assert "peer_id" not in message
+        assert "category" not in openviking_plugin.REMEMBER_SCHEMA["parameters"]["properties"]
+        assert posts[1] == (
+            f"/api/v1/sessions/{session_id}/commit",
+            {"keep_recent_count": 0},
         )
+
+    def test_remember_uses_a_distinct_one_shot_session_for_each_call(self, monkeypatch):
+        posts = []
+
+        class _StubClient:
+            def post(self, path, payload=None, **kwargs):
+                posts.append((path, payload or {}))
+                if path.endswith("/commit"):
+                    return {"result": {"status": "accepted"}}
+                return {"status": "ok"}
+
+        provider = OpenVikingMemoryProvider()
+        provider._client = _StubClient()
+        monkeypatch.setattr(provider, "_ensure_client", lambda: provider._client)
+
+        first = json.loads(provider._tool_remember({"content": "first"}))
+        second = json.loads(provider._tool_remember({"content": "second"}))
+
+        assert first["session_id"] != second["session_id"]
+        assert first["session_id"].startswith("hermes-remember-")
+        assert second["session_id"].startswith("hermes-remember-")
+        assert all("/api/v1/content/write" not in path for path, _ in posts)
+
+    def test_remember_reports_unknown_message_submission_failure(self, monkeypatch):
+        posts = []
+
+        class _StubClient:
+            def post(self, path, payload=None, **kwargs):
+                posts.append((path, payload or {}))
+                raise TimeoutError("message timeout")
+
+        provider = OpenVikingMemoryProvider()
+        provider._client = _StubClient()
+        monkeypatch.setattr(provider, "_ensure_client", lambda: provider._client)
+
+        out = json.loads(provider._tool_remember({"content": "stable fact"}))
+
+        assert out["error"].startswith("Memory message submission failed for session ")
+        assert out["error"].endswith(": message timeout")
+        assert out["failure_stage"] == "message"
+        assert out["message_status"] == "unknown"
+        assert out["session_uri"].endswith(f"/sessions/{out['session_id']}")
+        assert out["recovery_command"] == f"ov session commit {out['session_id']}"
+        assert "do not resubmit automatically" in out["recovery_note"]
+        assert len(posts) == 1
+        assert posts[0][0].endswith("/messages")
+
+    def test_remember_reports_commit_failure_with_recovery_command(self, monkeypatch):
+        posts = []
+
+        class _StubClient:
+            def post(self, path, payload=None, **kwargs):
+                posts.append((path, payload or {}))
+                if path.endswith("/commit"):
+                    raise RuntimeError("commit rejected")
+                return {"status": "ok"}
+
+        provider = OpenVikingMemoryProvider()
+        provider._client = _StubClient()
+        monkeypatch.setattr(provider, "_ensure_client", lambda: provider._client)
+
+        out = json.loads(provider._tool_remember({"content": "stable fact"}))
+
+        assert out["error"].startswith(
+            "Memory message was accepted, but commit failed for session hermes-remember-"
+        )
+        assert out["error"].endswith(": commit rejected")
+        assert out["failure_stage"] == "commit"
+        assert out["message_status"] == "accepted"
+        assert out["session_uri"].endswith(f"/sessions/{out['session_id']}")
+        assert out["recovery_command"] == f"ov session commit {out['session_id']}"
+        assert "same OpenViking profile and credentials as Hermes" in out["recovery_note"]
+        assert len(posts) == 2
+        assert posts[0][0].endswith("/messages")
+        assert posts[1][0].endswith("/commit")
 
     def test_concurrent_refresh_does_not_return_stale_client(self, monkeypatch):
         refresh_entered = threading.Event()

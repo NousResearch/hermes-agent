@@ -7815,8 +7815,20 @@
       },
       "CompleteSlashParams": {
         "additionalProperties": false,
-        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).",
+        "description": "``session_id`` binds skill completions to that session's profile and workspace (project skills).\n\n``profile`` is the cross-process leg: the Desktop answers a chat's popover on the window's ambient\nsocket, and a cross-profile tile's session is live in ANOTHER backend, so the request names the\nprofile that owns the chat. Same ladder as the dispatcher's ``_profile_scoped`` (explicit profile,\nelse the live session), and the reason this params class inherits ``ProfileParams`` \u2014 a routed\nrequest carries ``profile`` and must not be rejected for it.",
         "properties": {
+          "profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Profile"
+          },
           "text": {
             "anyOf": [
               {

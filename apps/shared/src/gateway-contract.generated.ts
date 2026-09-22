@@ -1569,8 +1569,9 @@ export interface CompletionItem {
   meta?: string
   kind?: string | null
 }
-/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). */
+/** ``session_id`` binds skill completions to that session's profile and workspace (project skills). ``profile`` is the cross-process leg: the Desktop answers a chat's popover on the window's ambient socket, and a cross-profile tile's session is live in ANOTHER backend, so the request names the profile that owns the chat. Same ladder as the dispatcher's ``_profile_scoped`` (explicit profile, else the live session), and the reason this params class inherits ``ProfileParams`` — a routed request carries ``profile`` and must not be rejected for it. */
 export interface CompleteSlashParams {
+  profile?: string | null
   text?: string | null
   session_id?: string | null
 }

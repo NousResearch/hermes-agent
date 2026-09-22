@@ -1904,3 +1904,19 @@ def test_doctor_reports_auxiliary_blocks_that_do_not_resolve(tmp_path, monkeypat
     issues = []
     doctor_config._validate_auxiliary_config(cfg_file, issues)
     assert len(issues) == 1 and "auxiliary.background_review" in issues[0] and "no-such-provider" in issues[0]
+
+
+def test_doctor_ignores_unconsumed_auxiliary_blocks(tmp_path):
+    """An obsolete auxiliary block has no runtime reader, so its provider is not actionable."""
+    import yaml
+    from hermes_cli import doctor_config
+
+    cfg_file = tmp_path / "config.yaml"
+    cfg_file.write_text(yaml.safe_dump({"auxiliary": {
+        "retired_task": {"provider": "no-such-provider", "model": "m"},
+    }}))
+    issues = []
+
+    doctor_config._validate_auxiliary_config(cfg_file, issues)
+
+    assert issues == []

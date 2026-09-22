@@ -267,15 +267,33 @@ def _validate_model_config(config_path, issues: list) -> None:
                                 f"API key in {_DHH}/.env, or switch providers with 'hermes config set model.provider <name>'", issues)
 
 
+def _active_auxiliary_task_keys() -> set[str]:
+    """Return auxiliary task keys that a built-in or discovered plugin can consume."""
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+
+    auxiliary = DEFAULT_CONFIG.get("auxiliary")
+    keys = set(auxiliary) if isinstance(auxiliary, dict) else set()
+    with warn_on_error(""):
+        from hermes_cli.plugins import get_plugin_auxiliary_tasks
+        keys.update(str(task.get("key") or "").strip()
+                    for task in get_plugin_auxiliary_tasks() if isinstance(task, dict))
+    return keys
+
+
 def _validate_auxiliary_config(config_path, issues: list) -> None:
-    """Resolve every routed ``auxiliary.<task>`` block through the real entry point the tasks use and report
-    the ones that fail — an unresolvable block otherwise silently runs the task on the main model (#116055)."""
+    """Validate routed blocks that a built-in or registered plugin task can actually consume.
+
+    Unused ``auxiliary.<task>`` blocks are harmless leftovers: resolving them would create an
+    unfixable finding because no runtime task reads their provider (#118720).
+    """
     from hermes_cli.config import read_user_config_raw
     from hermes_cli.runtime_provider import resolve_runtime_provider
     from utils import base_url_hostname
     aux = read_user_config_raw(config_path).get("auxiliary")
+    active_tasks = _active_auxiliary_task_keys()
     routed = {name: block for name, block in (aux.items() if isinstance(aux, dict) else ())
-              if isinstance(block, dict) and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
+              if name in active_tasks and isinstance(block, dict)
+              and str(block.get("provider") or "").strip().lower() not in ("", "auto")}
     ok = []
     for task, block in sorted(routed.items()):
         provider, model, base_url, api_key = (str(block.get(k) or "").strip() or None for k in ("provider", "model", "base_url", "api_key"))

@@ -17,6 +17,9 @@ logger = logging.getLogger(__name__)
 # choices (#52492). If OpenAI re-enables any, live discovery (_fetch_models_from_api) picks them
 # up automatically.
 DEFAULT_CODEX_MODELS: List[str] = [
+    "gpt-6-sol",
+    "gpt-6-terra",
+    "gpt-6-luna",
     "gpt-5.6-sol",
     "gpt-5.6-terra",
     "gpt-5.6-luna",
@@ -38,6 +41,9 @@ DEFAULT_CODEX_MODELS: List[str] = [
 # unsupported — that was wrong; restored here. Keep it in the curated fallback so Pro users still see Spark
 # in `/model` when live discovery is unavailable (offline first run, transient API failure).
 _FORWARD_COMPAT_TEMPLATE_MODELS: List[tuple[str, tuple[str, ...]]] = [
+    ("gpt-6-sol", ("gpt-5.6-sol", "gpt-5.5")),
+    ("gpt-6-terra", ("gpt-5.6-terra", "gpt-5.5")),
+    ("gpt-6-luna", ("gpt-5.6-luna", "gpt-5.5")),
     ("gpt-5.6-sol", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-terra", ("gpt-5.5", "gpt-5.4")),
     ("gpt-5.6-luna", ("gpt-5.5", "gpt-5.4")),

@@ -343,6 +343,7 @@ DEFAULT_CONTEXT_LENGTHS = {
     # its own branch). 5.4-nano/-mini are 400k, not 1.05M; gpt-5.3-codex-spark is
     # Codex-OAuth-only and listed so "gpt-5" (400k) doesn't win.
     "gpt-6-astra": 1050000,  # also matches -pro (verified live on OpenRouter)
+    "gpt-6-sol": 1050000, "gpt-6-terra": 1050000, "gpt-6-luna": 1050000,  # -pro too (OpenRouter live 2026-09-22)
     "gpt-5.6-luna": 1050000, "gpt-5.6-terra": 1050000, "gpt-5.6-sol": 1050000, "gpt-5.5": 1050000,
     "gpt-5.4-nano": 400000, "gpt-5.4-mini": 400000, "gpt-5.4": 1050000,
     "gpt-5.3-codex-spark": 128000, "gpt-5.1-chat": 128000, "gpt-5": 400000,
@@ -1721,7 +1722,7 @@ def _query_anthropic_context_length(model: str, base_url: str, api_key: Any) -> 
 # Codex OAuth `context_window` values (what Codex enforces — lower than the direct API for the same
 # slugs). Fallback when the live probe fails; longest-key-first. gpt-5.3-codex-spark is listed so "gpt-5.3-codex" doesn't win.
 _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
-    "gpt-6-astra": 272_000,
+    "gpt-6-astra": 272_000, "gpt-6-sol": 272_000, "gpt-6-terra": 272_000, "gpt-6-luna": 272_000,
     "gpt-5.1-codex-max": 272_000, "gpt-5.1-codex-mini": 272_000, "gpt-5.3-codex": 272_000,
     "gpt-5.3-codex-spark": 128_000, "gpt-5.2-codex": 272_000, "gpt-5.4-mini": 272_000,
     "gpt-5.6-sol": 272_000, "gpt-5.6-terra": 272_000, "gpt-5.6-luna": 272_000, "gpt-daybreak-blue-latest": 272_000,
@@ -1730,9 +1731,14 @@ _CODEX_OAUTH_CONTEXT_FALLBACK: Dict[str, int] = {
 # Codex OAuth advertises 272K for these families but ACCEPTS ~900K+ (verified live; gpt-5.5 and
 # gpt-5.4-mini genuinely reject >272K). 900K keeps ≥11K margin. OPT-IN ONLY via explicit ``-900k``
 # picker variants (a 900K default burned subscription usage); the suffix is stripped before the wire.
-# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` is a FAMILY
-# PREFIX (``-pro`` slugs aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K.
-_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {"gpt-5.6": 900_000}  # sol / terra / luna
+# The bump fires ONLY when the resolved value is exactly the stale 272,000. ``gpt-5.6`` and the gpt-6
+# tiers are FAMILY PREFIXES so dated snapshots (``gpt-6-sol-2026-09-22``) inherit the bump (``-pro`` slugs
+# aren't routable on Codex); ``gpt-5.4`` is EXACT because gpt-5.4-mini enforces 272K. The gpt-6 tiers
+# carry the 5.6 verdict forward: they replace Sol/Terra/Luna on the same Codex route, and the live
+# catalog's ``max_context_window`` still caps the bump (#105443) if it publishes a lower ceiling.
+_CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_PREFIXES: Dict[str, int] = {
+    "gpt-5.6": 900_000, "gpt-6-sol": 900_000, "gpt-6-terra": 900_000, "gpt-6-luna": 900_000,
+}
 _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
     "gpt-5.4": 900_000, "gpt-daybreak-blue-latest": 900_000,
     "gpt-6-astra": 900_000,  # advertised 272K; 920,043 input OK, 1,000,043 rejected (live 2026-09-04)
@@ -1740,8 +1746,8 @@ _CODEX_OAUTH_VERIFIED_ABOVE_ADVERTISED_EXACT: Dict[str, int] = {
 _CODEX_OAUTH_STALE_ADVERTISED_CTX = 272_000  # the only advertised value the bump may override
 CODEX_CONTEXT_VARIANT_SUFFIX = "-900k"  # picker-only opt-in suffix; never sent on the wire
 # The ONLY bases eligible for ``-900k``: routable, live-verified. No family prefixing (it would synthesize
-# dead ``-pro`` variants); dated snapshots of the 5.6 bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
-_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna")
+# dead ``-pro`` variants); dated snapshots of the 5.6 / gpt-6 tier bases are allowed. gpt-daybreak-blue-latest is a verified Sol alias.
+_CODEX_900K_SNAPSHOT_BASES = ("gpt-5.6-sol", "gpt-5.6-terra", "gpt-5.6-luna", "gpt-6-sol", "gpt-6-terra", "gpt-6-luna")
 _CODEX_900K_ELIGIBLE_BASES = frozenset({*_CODEX_900K_SNAPSHOT_BASES, "gpt-5.4", "gpt-daybreak-blue-latest", "gpt-6-astra"})
 _CODEX_900K_SNAPSHOT_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
@@ -1760,7 +1766,7 @@ def is_codex_900k_base(model: Optional[str]) -> bool:
     slug = _bare_codex_slug(model)
     if not slug or slug.endswith(CODEX_CONTEXT_VARIANT_SUFFIX):
         return False
-    # Dated snapshots of the routable 5.6 bases (gpt-5.6-sol-2026-07-09) also qualify.
+    # Dated snapshots of the routable tier bases (gpt-5.6-sol-2026-07-09, gpt-6-sol-2026-09-22) also qualify.
     return slug in _CODEX_900K_ELIGIBLE_BASES or any(
         slug.startswith(base + "-") and _CODEX_900K_SNAPSHOT_RE.match(slug[len(base) + 1:]) for base in _CODEX_900K_SNAPSHOT_BASES
     )

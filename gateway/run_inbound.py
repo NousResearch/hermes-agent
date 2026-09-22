@@ -29,7 +29,7 @@ from gateway.session import (
     SessionSource, is_shared_multi_user_session, neutralize_untrusted_inline_text
 )
 from gateway.turn_lease import TurnLeaseTimeoutError
-from typing import Any, Dict, List, Optional, Tuple
+from typing import Any, Dict, List, Optional, Tuple, Union
 
 if TYPE_CHECKING:  # string annotations only; never imported at runtime (cycle)
     from gateway.run import GatewayRunner  # noqa: F401
@@ -65,10 +65,20 @@ class GatewayInboundMixin:
 
     def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
-        """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
-        Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+    ) -> Tuple[Optional["MessageEvent"], Optional[str]]:
+        """Run the ``pre_gateway_dispatch`` plugin hook. Returns ``(event, respond_text)``:
+        ``(None, None)`` = drop; ``(None, text)`` = plugin fully answered, deliver ``text`` and stop
+        dispatch; ``(event, None)`` = normal dispatch with the (maybe rewritten) event.
+        Results: ``{"action": "skip"}`` → drop; ``{"action": "respond", "text"}`` → answer directly;
+        ``{"action": "rewrite", "text"}`` → replace ``event.text``; ``allow``/None → normal dispatch.
+        Runs BEFORE auth so plugins can handle unauthorized senders.
+
+        A hook cannot deliver the reply itself: ``invoke_hook`` is synchronous, so it cannot
+        ``await adapter.send()``, and scheduling a fire-and-forget task would bypass the gateway's
+        normal delivery path (threading metadata, delivery ledger, error handling). Returning the
+        text here instead hands it to ``_handle_message``'s existing return-value delivery path —
+        the same one every other early reply in that method already uses.
+        """
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _hook_results = _invoke_hook(
@@ -90,7 +100,20 @@ class GatewayInboundMixin:
                     _result.get("reason"), source.platform.value if source.platform else "unknown",
                     source.chat_id or "unknown",
                 )
-                return None
+                return None, None
+            if _action == "respond":
+                _resp = _result.get("text")
+                if isinstance(_resp, str) and _resp:
+                    logger.info(
+                        "pre_gateway_dispatch respond: plugin handled platform=%s chat=%s",
+                        source.platform.value if source.platform else "unknown",
+                        source.chat_id or "unknown",
+                    )
+                    return None, _resp
+                logger.warning(
+                    "pre_gateway_dispatch respond: ignoring empty text — continuing normal dispatch"
+                )
+                break
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
@@ -98,7 +121,7 @@ class GatewayInboundMixin:
                 break
             if _action == "allow":
                 break
-        return event
+        return event, None
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
         """DM an unauthorized sender a pairing code (rate-limited; groups never reach here)."""
@@ -159,9 +182,11 @@ class GatewayInboundMixin:
 
     async def _hm_admit_event(
         self, event: "MessageEvent"
-    ) -> Optional[Tuple["MessageEvent", SessionSource, bool]]:
-        """Ingress gates for ``_handle_message``; None when dropped, else ``(event, source, is_internal)``
-        (the ``pre_gateway_dispatch`` hook may have rewritten ``event``)."""
+    ) -> Union[None, str, Tuple["MessageEvent", SessionSource, bool]]:
+        """Ingress gates for ``_handle_message``. None when dropped; a bare ``str`` when a
+        ``pre_gateway_dispatch`` plugin fully answered the message (deliver as-is, like every other
+        early reply in ``_handle_message``); else ``(event, source, is_internal)`` (the hook may have
+        rewritten ``event``)."""
         from gateway.run import _is_slack_ignored_channel
         source = event.source
         # getattr(self, ...) throughout: bare test runners build GatewayRunner via object.__new__.
@@ -222,7 +247,9 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = self._hm_pre_gateway_dispatch_hook(event, source)
+        event, _respond_text = self._hm_pre_gateway_dispatch_hook(event, source)
+        if _respond_text is not None:
+            return _respond_text
         if event is None:
             return None
         source = event.source
@@ -1263,6 +1290,9 @@ class GatewayInboundMixin:
         _admitted = await self._hm_admit_event(event)
         if _admitted is None:
             return None
+        if isinstance(_admitted, str):
+            # A pre_gateway_dispatch plugin fully answered via {"action": "respond"}.
+            return _admitted
         event, source, is_internal = _admitted
         # TERMINAL-DECLINE LATCH TEARDOWN. Deliberately placed AFTER admission,
         # not on the adapter's raw inbound: profile routing, the ignored-channel

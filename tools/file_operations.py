@@ -386,9 +386,12 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         ``mkdir -p`` folded in. Exit 0 = swap happened; non-zero = original intact.
 
         Symlink targets are resolved first (replacing the link would orphan the
-        target) and the temp dir recomputed from the RESOLVED target. Existing
-        target: mode copied via ``stat`` (GNU ``-c%a`` / BSD ``-f%Lp``) + ``chmod``
-        (``chmod --reference`` is GNU-only). New target: ``chmod "=rw"`` AFTER cat
+        target) and the temp dir recomputed from the RESOLVED target. Perms are
+        applied AFTER ``cat`` and BEFORE the rename: chmodding the temp first
+        EACCESes the write whenever the target's own mode is not owner-writable
+        (0500, 0444, 0555). Existing target: mode copied via ``stat`` (GNU
+        ``-c%a`` / BSD ``-f%Lp``) + ``chmod`` (``chmod --reference`` is
+        GNU-only). New target: ``chmod "=rw"``
         gives umask-default perms instead of mktemp's 0600 — not ``$(umask)``
         arithmetic (zsh parses leading-zero constants as decimal), quoted so zsh
         doesn't =word-expand. ``trap ... EXIT`` removes the temp on every failure.
@@ -403,14 +406,8 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             # subprocess spawn vs. a separate mkdir call. - `mktemp` lands the temp in the target's own dir
             # (-p) so `mv` is same-FS atomic; we fall back to a PID-stamped name if the backend lacks mktemp
             # (rare; busybox/macOS/Linux all ship it). - `chmod --reference` is GNU-only, so we read the
-            # octal mode with `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly; silent
-            # best-effort — a perms-copy failure must not abort the write (the file then lands at mktemp's
-            # 0600, same as pre-fix). - brand-new targets get `chmod "=rw"` — the POSIX who-less symbolic
-            # form, which sets rw minus the process umask (e.g. 0644 under umask 022) instead of mktemp's
-            # hardcoded 0600 (#70856). Deliberately NOT shell arithmetic on `$(umask)`: zsh (reachable via
-            # _find_bash's $SHELL fallback) parses leading-zero constants as decimal and silently computes a
-            # garbage mode, while `chmod "=rw"` is spec-identical in bash/dash/ash/zsh and degrades to 0600
-            # (pre-fix behavior) if an exotic chmod rejects it. - `trap ... EXIT` guarantees the temp is
+            # octal mode with `stat` (GNU `-c%a` or BSD `-f%Lp`) and `chmod` it explicitly (see the perms
+            # note below the `cat`). - `trap ... EXIT` guarantees the temp is
             # removed on every error path (cat failure, mv failure, signal) but NOT after a successful mv
             # (the temp no longer exists by then). - we `cat >` the temp, then `mv -f` it over the target.
             f"d={q_parent}; t={q_path}; "
@@ -424,14 +421,21 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             '|| { tmp="$d/.hermes-tmp.$$"; : > "$tmp" && echo "$tmp"; })"; '
             '[ -n "$tmp" ] || { echo "atomic write: could not create temp file" >&2; exit 1; }; '
             "trap 'rm -f \\\"$tmp\\\"' EXIT; "
+            'm=""; '
             'if [ -e "$t" ]; then '
             'm="$(stat -c%a "$t" 2>/dev/null || stat -f%Lp "$t" 2>/dev/null || true)"; '
-            '[ -n "$m" ] && chmod "$m" "$tmp" 2>/dev/null || true; '
             "fi; "
             'cat > "$tmp"; '
-            # new file: umask-default perms instead of mktemp's 0600 (#70856). Runs AFTER cat so a
-            # write-masking umask can't EACCES the stream; quoted "=rw" so zsh doesn't =word-expand it.
-            'if [ ! -e "$t" ]; then chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
+            # Perms land AFTER the content is written and BEFORE the rename. Chmodding the temp FIRST
+            # EACCESes `cat` whenever the target's own mode is not owner-writable (0500, 0444, 0555) —
+            # the write dies and, with the trap miss of #110170, strands a 0-byte temp. Existing target:
+            # copy its octal mode. New target: `chmod "=rw"` — the POSIX who-less symbolic form, rw minus
+            # the umask (0644 under umask 022) instead of mktemp's hardcoded 0600 (#70856); quoted so zsh
+            # doesn't =word-expand it, and deliberately NOT arithmetic on `$(umask)` (zsh reads
+            # leading-zero constants as decimal). Both silent best-effort: a perms failure must not abort
+            # the write (the file then lands at mktemp's 0600, same as pre-fix).
+            'if [ -n "$m" ]; then chmod "$m" "$tmp" 2>/dev/null || true; '
+            'else chmod "=rw" "$tmp" 2>/dev/null || true; fi; '
             'mv -f "$tmp" "$t"; '
             "trap - EXIT")
         return self._exec(script, stdin_data=content)

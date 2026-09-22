@@ -301,6 +301,22 @@ class TestAtomicWrite:
         assert (os.stat(target).st_mode & 0o777) == 0o600
 
 
+    def test_write_to_non_writable_target_succeeds_and_keeps_mode(self, ops, tmp_path: Path):
+        # The target's mode is copied onto the temp AFTER the content is written:
+        # applying it first makes `cat` EACCES on any target that is not
+        # owner-writable (0500 here, also 0444/0555), so the write fails and the
+        # agent cannot edit a read-only-but-owned file at all. The contract: the
+        # content lands, the target keeps its mode, and no temp survives.
+        target = tmp_path / "target.py"
+        target.write_text("old\n", encoding="utf-8")
+        os.chmod(target, 0o500)
+        res = ops.write_file(str(target), "new content\n")
+        assert res.error is None, res.error
+        assert target.read_text(encoding="utf-8") == "new content\n"
+        assert (os.stat(target).st_mode & 0o777) == 0o500
+        assert [p for p in os.listdir(tmp_path) if ".hermes-tmp" in p] == []
+
+
 class TestBomHandling:
     """UTF-8 BOM is stripped on read and preserved across write/patch.
 

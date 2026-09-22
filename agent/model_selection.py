@@ -20,6 +20,10 @@ from .model_selection_types import (
 
 __all__ = ["select", "RoutingBlocked"]
 
+_OPTIONAL_REQUIREMENT_FIELDS = frozenset({
+    "allowed_route_ids", "cohort_excluded_makers", "input_empty", "slot_id", "target_profile",
+})
+
 
 def _quality_floor(task_class: str) -> str:
     """Deterministic quality floor: deep for cross-component/high-consequence.
@@ -41,6 +45,9 @@ def _validate_requirements(requirements: dict) -> None:
     missing = [f for f in REQUIRED_REQUIREMENT_FIELDS if f not in requirements]
     if missing:
         raise RoutingBlocked("schema_invalid", f"requirements missing fields: {missing}")
+    unknown = set(requirements) - set(REQUIRED_REQUIREMENT_FIELDS) - _OPTIONAL_REQUIREMENT_FIELDS
+    if unknown:
+        raise RoutingBlocked("schema_invalid", f"requirements has unknown fields: {sorted(unknown)}")
     if requirements["schema_version"] != 1 or type(requirements["schema_version"]) is not int:
         raise RoutingBlocked("schema_invalid", "unsupported requirements schema_version")
     for field in ("role", "execution_kind", "execution_id", "attempt_id", "task_class", "reasoning"):
@@ -107,8 +114,21 @@ def _validate_policy(policy: dict) -> None:
         if not isinstance(route["route_id"], str) or route["route_id"] in seen:
             raise RoutingBlocked("schema_invalid", "route ids must be unique strings")
         seen.add(route["route_id"])
+        if route["status"] not in ("candidate", "approved", "suspended", "retired"):
+            raise RoutingBlocked("schema_invalid", f"route {route['route_id']} has invalid status")
         for field in ("allowed_roles", "capabilities", "allowed_reasoning"):
             _string_list(route[field], field)
+    ranked_ids = {
+        route_id
+        for role_ranking in policy.get("rankings", {}).values()
+        for ranked in role_ranking.values()
+        for route_id in ranked
+    }
+    unknown_ranked_ids = ranked_ids - seen
+    if unknown_ranked_ids:
+        raise RoutingBlocked(
+            "schema_invalid", f"rankings reference unknown route ids: {sorted(unknown_ranked_ids)}",
+        )
 
 
 def _contributing_makers(requirements: dict) -> set:

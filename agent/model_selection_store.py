@@ -92,11 +92,11 @@ def publish_policy(hermes_home, policy: dict, *, approval_ref: str) -> dict:
     """
     if not approval_ref or not str(approval_ref).strip():
         raise RoutingBlocked("schema_invalid", "approval_ref is required to publish a policy")
-    for field in ("schema_version", "policy_id", "revision", "routes"):
-        if field not in policy:
-            raise RoutingBlocked("schema_invalid", f"policy missing field: {field}")
     content = dict(policy)
     content["approval_ref"] = approval_ref
+    from agent.model_selection import _validate_policy
+
+    _validate_policy(content)
     content_hash = _content_hash(content)
     now = int(time.time())
     with transaction(_connect(hermes_home)) as conn:

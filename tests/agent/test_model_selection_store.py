@@ -5,6 +5,8 @@ rubric: "E2E validation, not just green unit mocks" for file/network I/O).
 """
 from __future__ import annotations
 
+from typing import Any
+
 import pytest
 
 from agent.model_selection_types import RoutingBlocked
@@ -91,3 +93,17 @@ def test_receipt_persistence_is_idempotent_and_rejects_conflicting_reuse(tmp_pat
     other_decision = select(req, other_policy, {}, now=1000)
     with pytest.raises(RoutingBlocked):
         persist_receipt(home, other_decision)
+
+
+def test_publish_rejects_malformed_policy_before_creating_store(tmp_path):
+    from agent.model_selection_store import publish_policy
+
+    home = tmp_path / "home"
+    home.mkdir()
+    malformed = _policy()
+    routes: Any = malformed["routes"]
+    routes[0]["status"] = "enabled"
+
+    with pytest.raises(RoutingBlocked, match="status"):
+        publish_policy(home, malformed, approval_ref="operator:conv-1")
+    assert not (home / "model_routing.db").exists()

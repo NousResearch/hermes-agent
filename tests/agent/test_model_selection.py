@@ -1,5 +1,6 @@
 """Quality and independence contracts for guided routing (not model snapshots)."""
 from importlib.util import find_spec
+from typing import Any
 
 import pytest
 
@@ -109,3 +110,24 @@ def test_selection_validates_every_candidate_not_just_the_winner():
     assert decision["selected"]["route_id"] == "a"
     assert "b" not in decision["alternates"]
     assert decision["rejections"].get("b") == ["not_approved"]
+
+
+def test_selection_rejects_unknown_requirement_fields_and_ranking_ids():
+    """Schema-versioned routing inputs fail closed instead of accepting typos."""
+    from agent.model_selection import RoutingBlocked, select
+
+    req = dict(schema_version=1, role="builder", execution_kind="delegate",
+               execution_id="child", attempt_id="1", task_class="cross-component",
+               required_capabilities=["tool_use"], input_tokens=1000, reserve_tokens=2000,
+               reasoning="high", provenance={"frozen_sha": "a" * 40, "verified_by": "parent",
+               "complete": True, "contributors": []})
+    req["input_toknes"] = 123
+    with pytest.raises(RoutingBlocked, match="unknown fields"):
+        select(req, policy(), {}, now=100)
+
+    req.pop("input_toknes")
+    malformed_policy = policy()
+    rankings: Any = malformed_policy["rankings"]
+    rankings["builder"]["deep"].append("missing-route")
+    with pytest.raises(RoutingBlocked, match="unknown route ids"):
+        select(req, malformed_policy, {}, now=100)

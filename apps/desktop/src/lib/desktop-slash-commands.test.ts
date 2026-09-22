@@ -7,6 +7,7 @@ import {
   type DesktopSlashArgumentMode,
   desktopSlashCommandArgumentMode,
   desktopSlashDescription,
+  desktopSlashInvocationSurface,
   desktopSlashUnavailableMessage,
   filterDesktopCommandsCatalog,
   isDesktopSlashCommand,
@@ -92,6 +93,35 @@ describe('desktop slash command curation', () => {
     expect(isDesktopSlashCommand('/review')).toBe(true)
     expect(resolveDesktopCommand('/review')?.surface).toEqual({ kind: 'exec' })
     expect(resolveDesktopCommand('/review')?.argumentMode).toBe('text')
+  })
+
+  it('hands the /skills write-approval subcommands to the backend, keeping the bare command on the sidebar', () => {
+    // `desktop="settings"` (hermes_cli/commands.py) is a statement about
+    // skill MANAGEMENT: the sidebar owns listing/installing. It was applied to
+    // the whole command, so `/skills pending` answered "… is managed from the
+    // desktop sidebar" and a staged skill write could never be reviewed from
+    // the desktop. The write-approval subcommands are backend-served and have
+    // no desktop surface, so the invocation — not the command — decides.
+    expect(resolveDesktopCommand('/skills')?.surface).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(desktopSlashInvocationSurface('/skills')).toEqual({ kind: 'unavailable', reason: 'settings' })
+    expect(desktopSlashInvocationSurface('/skills', '   ')).toEqual({ kind: 'unavailable', reason: 'settings' })
+
+    for (const sub of ['pending', 'approve 9f2c1a', 'reject 9f2c1a', 'diff 9f2c1a', 'approval on']) {
+      expect(desktopSlashInvocationSurface('/skills', sub)).toEqual({ kind: 'exec' })
+      expect(isDesktopSlashCommand('/skills', sub)).toBe(true)
+    }
+
+    // NOT over-widened: everything else the sidebar owns still stays local, and
+    // a MUTATING `/memory`-style command must never be re-dispatched by accident.
+    for (const sub of ['search hub', 'browse 2', 'inspect gif-search', 'install gif-search', 'audit']) {
+      expect(desktopSlashInvocationSurface('/skills', sub)).toEqual({ kind: 'unavailable', reason: 'settings' })
+      expect(isDesktopSlashCommand('/skills', sub)).toBe(false)
+    }
+
+    // Command-only callers (pills, popover, argument mode) see no change.
+    expect(isDesktopSlashCommand('/skills')).toBe(false)
+    expect(isDesktopSlashSuggestion('/skills')).toBe(false)
+    expect(isDesktopSlashSuggestion('/skills pending')).toBe(false)
   })
 
   it('treats registry and plugin commands as exec when the catalog says so', () => {

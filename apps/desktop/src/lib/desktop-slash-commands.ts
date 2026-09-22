@@ -498,6 +498,61 @@ export function resolveDesktopCommand(command: string): DesktopCommandSpec | nul
   return local ?? specFromCatalog(command)
 }
 
+/**
+ * Commands the desktop resolves to a surface of its own, but whose individual
+ * SUBCOMMANDS are served by the backend and have no desktop UI at all — so the
+ * invocation, not the command name, decides which one answers.
+ *
+ * `/skills` is the live case: `hermes_cli/commands.py` declares it
+ * `cli_only=True` + `desktop="settings"` because the sidebar owns skill
+ * MANAGEMENT (list / install / browse). The registry row was applied to the
+ * whole command, so `/skills pending` answered "… is managed from the desktop
+ * sidebar" — and with no write-approval UI anywhere under `apps/desktop/src`, a
+ * staged skill write could not be reviewed, approved or rejected from the
+ * desktop. The gateway serves those subcommands
+ * (`hermes_cli/write_approval_commands.py` via `command.dispatch`), so they have
+ * to reach it.
+ *
+ * Deliberately an explicit per-command list: everything else keeps resolving on
+ * the command alone, and a MUTATING subcommand re-dispatched by accident (the
+ * reason the exec guard exists) would run twice.
+ */
+const BACKEND_SUBCOMMANDS: Readonly<Record<string, readonly string[]>> = {
+  '/skills': ['pending', 'approve', 'reject', 'diff', 'approval']
+}
+
+/** First word of a typed argument, lowercased — '' when there is none. */
+function subcommandOf(arg: string): string {
+  return arg.trim().split(/\s+/, 1)[0]?.toLowerCase() ?? ''
+}
+
+/** True when this invocation's subcommand is backend-served even though the
+ *  bare command resolves to a desktop surface. */
+export function desktopSlashBackendSubcommand(command: string, arg = ''): boolean {
+  const subcommands = BACKEND_SUBCOMMANDS[canonicalDesktopSlashCommand(command)]
+  const sub = subcommandOf(arg)
+
+  return Boolean(subcommands && sub) && (subcommands as readonly string[]).includes(sub)
+}
+
+/**
+ * Resolve an INVOCATION (command plus its typed arg) to the surface that serves
+ * it — `resolveDesktopCommand` sees only the command name, which is too coarse
+ * for the surface a subcommand needs. Identical to `resolveDesktopCommand(...)
+ * .surface` except for BACKEND_SUBCOMMANDS: those hand their delegated
+ * subcommands to `exec` and keep the command's own surface for everything else
+ * (a bare `/skills`, `/skills search`, …).
+ */
+export function desktopSlashInvocationSurface(command: string, arg = ''): DesktopCommandSurface | undefined {
+  const surface = resolveDesktopCommand(command)?.surface
+
+  if (surface?.kind === 'unavailable' && desktopSlashBackendSubcommand(command, arg)) {
+    return { kind: 'exec' }
+  }
+
+  return surface
+}
+
 function isKnownHermesSlashCommand(command: string): boolean {
   const normalized = normalizeCommand(command)
 
@@ -542,12 +597,14 @@ export function slashCompletionGroup(command: string, kind?: string | null): 'Co
   return isDesktopSlashExtensionCommand(command) ? 'Skills' : 'Commands'
 }
 
-/** Gates execution: true unless the command is a known no-desktop-surface command. */
-export function isDesktopSlashCommand(command: string): boolean {
-  const spec = resolveDesktopCommand(command)
+/** Gates execution: true unless the command is a known no-desktop-surface command.
+ *  Pass the typed `arg` for commands whose subcommands are backend-served
+ *  (`/skills pending`) — the bare command alone still resolves to its surface. */
+export function isDesktopSlashCommand(command: string, arg = ''): boolean {
+  const surface = desktopSlashInvocationSurface(command, arg)
 
-  if (spec) {
-    return spec.surface.kind !== 'unavailable'
+  if (surface) {
+    return surface.kind !== 'unavailable'
   }
 
   return isDesktopSlashExtensionCommand(command)

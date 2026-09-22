@@ -401,15 +401,20 @@ class TestEnsureSubissueContext:
             raise AssertionError(path)
 
         mock_req.side_effect = request
+        handoff = (
+            "HANDOFF — #485\n"
+            "Issue: https://github.com/gabrielcerteiro/certeiroone/issues/485\n"
+            "PR: https://github.com/CerteiroDevTeam/hermes-agent/pull/2"
+        )
         first = json.loads(discord_core(
             action="ensure_subissue_context", guild_id="99", channel_id="11",
             issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
-            handoff="HANDOFF — #485",
+            handoff=handoff,
         ))
         second = json.loads(discord_core(
             action="ensure_subissue_context", guild_id="99", channel_id="11",
             issue_repo="gabrielcerteiro/certeiroone", issue_number="485", name="DevOps pilot",
-            handoff="HANDOFF — #485",
+            handoff=handoff,
         ))
 
         assert first == {
@@ -422,6 +427,8 @@ class TestEnsureSubissueContext:
         }
         assert sum(path == "/channels/11/threads" for _, path, _ in calls) == 1
         assert sum(path == "/channels/800/messages" for _, path, _ in calls) == 1
+        delivered = next(body for _, path, body in calls if path == "/channels/800/messages")
+        assert delivered == {"content": handoff}
 
     def test_recovers_remote_active_thread_when_local_state_is_missing(self, mock_req, monkeypatch, tmp_path):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")

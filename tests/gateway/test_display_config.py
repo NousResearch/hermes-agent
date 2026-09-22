@@ -142,13 +142,31 @@ class TestPlatformDefaults:
     """Built-in defaults reflect platform capability tiers."""
 
     def test_high_tier_platforms(self):
-        """Discord defaults to 'all'; Telegram defaults quiet for mobile."""
+        """Discord is quiet by default; explicit configuration can opt it into progress."""
         from gateway.display_config import resolve_display_setting
 
         # Telegram: tier_high transport, but quiet mobile default.
         assert resolve_display_setting({}, "telegram", "tool_progress") == "off"
-        # Discord: pure tier_high.
-        assert resolve_display_setting({}, "discord", "tool_progress") == "all"
+        # Discord project posts are shared, permanent records, so automatic tool telemetry is quiet.
+        assert resolve_display_setting({}, "discord", "tool_progress") == "off"
+        # Operators retain the existing explicit opt-in for a dedicated operational context.
+        configured = {"display": {"platforms": {"discord": {"tool_progress": "all"}}}}
+        assert resolve_display_setting(configured, "discord", "tool_progress") == "all"
+
+    def test_visibility_pilot_has_quiet_shared_default_and_dedicated_opt_in(self):
+        """The shared post gets no automatic tool progress; a dedicated context
+        receives it only after its operator writes an explicit Discord opt-in.
+        """
+        from gateway.display_config import resolve_tool_progress
+
+        shared = resolve_tool_progress({}, "discord")
+        dedicated = resolve_tool_progress(
+            {"display": {"platforms": {"discord": {"tool_progress": "all"}}}},
+            "discord",
+        )
+
+        assert shared == ("off", False)
+        assert dedicated == ("all", True)
 
 
     def test_low_tier_platforms(self):

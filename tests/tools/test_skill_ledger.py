@@ -707,3 +707,73 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
         fh.write(u_row)
     assert skill_ledger._trim_oldest(len(u_row) + 8) >= 1
     assert skill_ledger.ledger_path().read_bytes() == u_row, "a retained row containing U+2028 survives intact"
+
+
+def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
+    """Two writers appending while the maintenance sweep fires on (almost) every append:
+    every row each writer appended is either still in the ledger or was trimmed
+    oldest-first — never silently lost from the middle of a writer's sequence. The sweep's
+    read → ``os.replace`` must run under the same ``.locks/ledger.lock`` as the O_APPEND
+    write, or an append landing on the replaced inode vanishes (and ``gc_blobs`` would then
+    delete its blobs). The race is forced, not hoped for: writer A's first sweep pauses
+    between reading the ledger and replacing it until writer B has appended (or, when the
+    lock correctly blocks B, until a generous bound expires — green never depends on timing)."""
+    import threading
+
+    from tools import skill_ledger
+
+    import hermes_cli.config as _cfg
+
+    cap = {"skills": {"ledger_max_bytes": 4096}}  # padded rows ~600 B: a trim on nearly every append
+    monkeypatch.setattr(_cfg, "load_config", lambda *a, **k: cap)
+    monkeypatch.setattr(_cfg, "load_config_readonly", lambda *a, **k: cap)
+
+    n, ids = 40, {"A": [], "B": []}
+    b_go, b_done = threading.Event(), threading.Event()
+    real_rewrite = skill_ledger._rewrite_ledger
+
+    def paused_rewrite(path, lines, op):
+        if threading.current_thread().name == "A" and not b_go.is_set():
+            b_go.set()             # A has read the ledger; let B append now ...
+            b_done.wait(3.0)       # ... and give it every chance to land before the replace
+        return real_rewrite(path, lines, op)
+
+    monkeypatch.setattr(skill_ledger, "_rewrite_ledger", paused_rewrite)
+    dropped, real_trim = [], skill_ledger._trim_oldest
+    monkeypatch.setattr(skill_ledger, "_trim_oldest",
+                        lambda max_bytes: dropped.append(real_trim(max_bytes)) or dropped[-1])
+
+    def writer(k: str) -> None:
+        if k == "B":
+            b_go.wait(10.0)
+        for i in range(n):
+            before = [{"path": f"my-skill/{k}-{i}.md", "sha256": "a" * 64}]
+            after = [{"path": f"my-skill/{k}-{i}.md", "sha256": f"{i % 10}" * 64}]
+            ids[k].append(skill_ledger.append_entry(
+                "edit", "my-skill", before=before, after=after, evidence={"pad": "x" * 500}))
+            if k == "B":
+                b_done.set()
+
+    seeds = 8  # seed over the cap so A's very first append sweeps
+    for _ in range(seeds):
+        skill_ledger.append_entry("edit", "my-skill", before=[{"path": "s", "sha256": "0" * 64}],
+                                  after=[{"path": "s", "sha256": "1" * 64}], evidence={"pad": "x" * 500})
+    threads = [threading.Thread(target=writer, args=(k,), name=k) for k in ids]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join()
+
+    assert b_go.is_set(), "writer A's first append must have swept (test precondition)"
+    assert all(ids["A"]) and all(ids["B"]) and len(ids["A"]) == len(ids["B"]) == n, "every append reported success"
+    present = [json.loads(line)["id"] for line in
+               skill_ledger.ledger_path().read_text(encoding="utf-8").splitlines() if line.strip()]
+    assert present, "the newest row always survives a trim"
+    assert len(present) == seeds + 2 * n - sum(dropped), (
+        "every row is either in the ledger or was counted as trimmed — none silently lost"
+    )
+    for k, seq in ids.items():
+        survivors = [i for i in seq if i in set(present)]
+        assert survivors == seq[len(seq) - len(survivors):], (
+            f"writer {k}: rows missing from the middle — a concurrent sweep dropped an append"
+        )

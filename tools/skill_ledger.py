@@ -87,6 +87,16 @@ def blobs_dir() -> Path:
     return get_hermes_home() / ".curator_backups" / "blobs"
 
 
+def _ledger_lock():
+    """Exclusive cross-process lock on the ledger file, held across an append AND the maintenance
+    sweep, and across the CLI compact/GC path. Without it a concurrent appender's O_APPEND write can
+    land on the inode ``compact_ledger``/``_trim_oldest`` are about to ``os.replace`` — the row is
+    silently lost and ``gc_blobs`` then deletes its blobs. Same idiom as ``_skill_mutation_lock``:
+    ``<skills>/.locks/ledger.lock``, thread-re-entrant, no-op where neither fcntl nor msvcrt exists."""
+    from tools.skill_usage import skill_file_lock
+    return skill_file_lock(_skills_dir() / ".locks" / "ledger.lock")
+
+
 def _skills_cfg(key: str, default):
     """``skills.<key>`` from the read-only merged config (no deepcopy), or *default* when the
     read fails. Lazy import keeps this module importable without the CLI."""
@@ -301,9 +311,10 @@ def append_entry(
             "before": before or [], "after": after or []}
         path = ledger_path()
         path.parent.mkdir(parents=True, exist_ok=True)
-        with open(path, "a", encoding="utf-8") as fh:
-            fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        _maintain_size()
+        with _ledger_lock():
+            with open(path, "a", encoding="utf-8") as fh:
+                fh.write(json.dumps(entry, ensure_ascii=False) + "\n")
+            _maintain_size()
         return entry["id"]
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
@@ -370,6 +381,11 @@ def _trim_oldest(max_bytes: int) -> int:
     the newest entry always survives. Lines in the retained tail are never rewritten
     or parsed — malformed lines there survive verbatim; trimming drops the oldest
     lines regardless of shape. Returns the number of lines dropped (0 = untouched)."""
+    with _ledger_lock():
+        return _trim_oldest_locked(max_bytes)
+
+
+def _trim_oldest_locked(max_bytes: int) -> int:
     path = ledger_path()
     raw = _read_ledger("trim skipped")
     if raw is None:
@@ -400,6 +416,11 @@ def compact_ledger() -> Tuple[int, int, int]:
     rollback semantics are preserved. Returns ``(entries, bytes_before, bytes_after)``. Atomic: the
     new file replaces the old only once fully written. Malformed lines are kept verbatim. Follow with
     ``gc_blobs()``: dropped references leave blobs nothing can restore."""
+    with _ledger_lock():
+        return _compact_ledger_locked()
+
+
+def _compact_ledger_locked() -> Tuple[int, int, int]:
     path = ledger_path()
     raw = _read_ledger("compaction skipped")
     if raw is None:
@@ -428,6 +449,11 @@ def gc_blobs() -> Tuple[int, int]:
     write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
     (#107539). Malformed ledger lines, or an unreadable/undecodable ledger, abort the sweep
     (blobs are kept) — an entry we cannot read may still hold references."""
+    with _ledger_lock():
+        return _gc_blobs_locked()
+
+
+def _gc_blobs_locked() -> Tuple[int, int]:
     blobs = blobs_dir()
     if not blobs.is_dir():
         return 0, 0

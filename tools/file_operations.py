@@ -1618,6 +1618,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         raw_content = data.decode("utf-8", "surrogateescape")
         content, _ = _strip_bom(raw_content)
 
+        from tools.escape_drift_autocorrect import maybe_correct_backslash_doubling
+        old_string, new_string = maybe_correct_backslash_doubling(old_string, new_string, content)
+
         from tools.fuzzy_match import fuzzy_find_and_replace
         new_content, match_count, _strategy, error = fuzzy_find_and_replace(
             content, old_string, new_string, replace_all)

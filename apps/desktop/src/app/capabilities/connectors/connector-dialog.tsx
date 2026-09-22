@@ -77,7 +77,7 @@ export function ConnectorDialog({ card, onOpenChange, open, tools, ...rest }: Co
     <Dialog onOpenChange={onOpenChange} open={open}>
       <DialogContent
         bodyClassName="gap-0 overflow-hidden p-0"
-        className="max-h-[85vh] max-w-2xl"
+        className="max-h-[85vh] max-w-lg"
         onOpenAutoFocus={event => {
           event.preventDefault()
           titleRef.current?.focus()

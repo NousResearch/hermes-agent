@@ -386,14 +386,24 @@ def _(rid, params: dict) -> dict:
 @_catch(5035)
 def _(rid, params: dict) -> dict:
     """Remove all credentials (env keys AND OAuth/pool state) for provider ``slug``."""
+    from hermes_cli import managed_scope
     from hermes_cli.auth import PROVIDER_REGISTRY, clear_provider_auth
+    from hermes_cli.config import env_write_refusal, load_env
     from hermes_cli.credential_lifecycle import remove_provider_env_credential
     if not (slug := (params.get("slug") or "").strip()):
         return _err(rid, 4001, "slug is required")
     pconfig = PROVIDER_REGISTRY.get(slug)
     # Remove EVERY env var plus its mirrors or the provider resurrects in the picker after restart.
     env_vars = (pconfig.api_key_env_vars if pconfig else None) or ()
-    cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in env_vars])
+    # Ask the .env lock about every var before removing any: a refusal part-way through left the earlier stores
+    # stripped. A locked var that holds nothing is no refusal (a package-managed install keeps keys in auth.json).
+    removable = []
+    for ev in env_vars:
+        if (refusal := env_write_refusal(ev, "remove")) is None:
+            removable.append(ev)
+        elif managed_scope.is_env_managed(ev) or os.environ.get(ev) or load_env().get(ev):
+            return _err(rid, 5035, refusal)
+    cleared_env = any([remove_provider_env_credential(ev).get("found") for ev in removable])
     cleared_auth = clear_provider_auth(slug)  # full disconnect: OAuth grants go too
     if not cleared_env and not cleared_auth:
         return _err(rid, 4005, f"no credentials found for {slug}")

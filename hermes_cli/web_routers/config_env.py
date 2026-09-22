@@ -58,9 +58,10 @@ _CATEGORY_ORDER = [
 @contextlib.contextmanager
 def _env_write_errors(log_msg: str, *, http_passthrough: bool):
     """``ValueError`` -> 400 with its message (save/remove_env_value reject
-    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, and
-    the SPA needs the reason, not an opaque 500); anything else is logged and
-    becomes 500 "Internal server error"."""
+    invalid names and denylisted keys — LD_PRELOAD, PATH, PYTHONPATH, …, the
+    credential lifecycle rejects keys a managed install or administrator pins,
+    and the SPA needs the reason, not an opaque 500); anything else is logged
+    and becomes 500 "Internal server error"."""
     try:
         yield
     except HTTPException:

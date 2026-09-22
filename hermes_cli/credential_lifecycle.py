@@ -176,8 +176,11 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
     kept 401'ing until the user ran ``hermes auth add <provider> --type api-key`` separately. This makes the
     Desktop save's effect on disk match what ``hermes auth add`` does.
     """
-    from hermes_cli.config import load_env, save_env_value
+    from hermes_cli.config import load_env, require_env_writable, save_env_value
 
+    # A locked key must fail here: save_env_value's refusal returns like a success, and the mirror
+    # scrub below would still move the new value into config.yaml.
+    require_env_writable(env_var, "set")
     old_value = load_env().get(env_var)
     save_env_value(env_var, value)
 
@@ -199,8 +202,10 @@ def save_provider_env_credential(env_var: str, value: str) -> Dict[str, Any]:
 def remove_provider_env_credential(env_var: str) -> Dict[str, Any]:
     """Remove a credential from EVERY store: ``.env`` (and process env), env-seeded
     ``credential_pool`` entries, model-cache rows, config.yaml mirrors of the same value."""
-    from hermes_cli.config import load_env, remove_env_value
+    from hermes_cli.config import load_env, remove_env_value, require_env_writable
 
+    # Before the pool prune and mirror scrub: a refused remove must not strip the other stores.
+    require_env_writable(env_var, "remove")
     old_value = load_env().get(env_var)
     removed_from_env = remove_env_value(env_var)
     refs = purge_env_credential_references(env_var)

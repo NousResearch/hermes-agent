@@ -118,3 +118,21 @@ async def test_400_family_rejection_still_falls_back_to_sse(monkeypatch):
 
     assert await task._run_http(dict(_CONFIG)) == "shutdown"
     assert calls == ["HTTP", "SSE"]
+
+
+class TestTheRefusalStaysAnAuthFailureDownstream:
+    """``_classify_mcp_failure`` promises 'permanent ... auth 401/403': a refusal must park for
+    credentials, not burn the reconnect ladder against a server that cannot recover without them."""
+
+    def test_classified_permanent(self):
+        from tools.mcp_tool_errors import _classify_mcp_failure, _is_auth_error
+
+        exc = McpAuthRequiredError("MCP server 'inspo': the endpoint requires authentication (HTTP 401 ...)")
+        assert _is_auth_error(exc) is True  # also selects the park's 'hermes mcp login' wording
+        assert _classify_mcp_failure(exc) == "permanent"
+        assert _classify_mcp_failure(ExceptionGroup("g", [exc])) == "permanent"
+
+    def test_a_timeout_is_still_transient(self):
+        from tools.mcp_tool_errors import _classify_mcp_failure
+
+        assert _classify_mcp_failure(TimeoutError("timed out after 30s")) == "transient"

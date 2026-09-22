@@ -508,7 +508,14 @@ def _get_auth_error_types() -> tuple:
 
 
 def _is_auth_error(exc: BaseException) -> bool:
-    """True if ``exc`` indicates an MCP OAuth failure; ``HTTPStatusError`` counts only with status 401."""
+    """True if ``exc`` indicates an MCP auth failure; ``HTTPStatusError`` counts only with status 401.
+
+    ``McpAuthRequiredError`` is the connect path's own verdict (a recorded 401/403), so it answers
+    here too: ``_classify_mcp_failure`` then parks the server for credentials instead of retrying a
+    refusal, and the park names re-authentication — the behaviour that docstring already promises.
+    """
+    if isinstance(exc, McpAuthRequiredError):
+        return True
     auth_types, http_types = _get_auth_error_types()
     if not isinstance(exc, auth_types):
         return False

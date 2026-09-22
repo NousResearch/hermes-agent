@@ -77,6 +77,8 @@ def test_append_trims_ledger_to_recent_complete_entries(ledger_home, monkeypatch
 
     monkeypatch.setattr(skill_ledger, "_LEDGER_MAX_BYTES", 1_200)
     monkeypatch.setattr(skill_ledger, "_LEDGER_TRIM_BYTES", 700)
+    path = skill_ledger.ledger_path()
+    path.write_bytes(b'{"legacy": true}\n{broken\n{unterminated')
     ids = [
         skill_ledger.append_entry(
             "patch", f"skill-{i}", evidence={"detail": str(i) * 180}
@@ -84,12 +86,12 @@ def test_append_trims_ledger_to_recent_complete_entries(ledger_home, monkeypatch
         for i in range(12)
     ]
 
-    path = skill_ledger.ledger_path()
     rows = skill_ledger.list_entries()
     assert path.stat().st_size <= skill_ledger._LEDGER_MAX_BYTES
     assert rows[0]["id"] == ids[-1]
     assert ids[0] not in {row["id"] for row in rows}
-    assert all(json.loads(line) for line in path.read_text(encoding="utf-8").splitlines())
+    assert all(isinstance(json.loads(line), dict) for line in path.read_text(encoding="utf-8").splitlines())
+    assert skill_ledger.get_entry(ids[-1])["id"] == ids[-1]
 
 
 def test_gc_blobs_removes_only_unreferenced(ledger_home):

@@ -123,6 +123,14 @@ def _trim_ledger_if_needed(path: Path) -> None:
     kept: List[bytes] = []
     size = 0
     for line in reversed(lines):
+        if not line.endswith(b"\n"):
+            continue
+        try:
+            row = json.loads(line)
+        except (UnicodeDecodeError, json.JSONDecodeError):
+            continue
+        if not isinstance(row, dict):
+            continue
         if kept and size + len(line) > _LEDGER_TRIM_BYTES:
             break
         kept.append(line)
@@ -337,8 +345,13 @@ def append_entry(
         path.parent.mkdir(parents=True, exist_ok=True)
         encoded = (json.dumps(entry, ensure_ascii=False) + "\n").encode("utf-8")
         with _ledger_lock():
-            with open(path, "ab") as fh:
-                fh.write(encoded)
+            with open(path, "a+b") as fh:
+                fh.seek(0, os.SEEK_END)
+                size = fh.tell()
+                if size:
+                    fh.seek(-1, os.SEEK_END)
+                separator = b"\n" if size and fh.read(1) != b"\n" else b""
+                fh.write(separator + encoded)
             _trim_ledger_if_needed(path)
         return entry["id"]
     except Exception as e:

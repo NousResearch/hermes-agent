@@ -3329,11 +3329,11 @@ def test_audit_reruns_when_canonical_base_advances_with_same_head(
     assert _reusable_ci_receipt(Ledger(), current, worktree) is None
 
 
-def _feedback_comment(body: str) -> Feedback:
+def _feedback_comment(body: str, reviewer_login: str = "pr-repair-steward") -> Feedback:
     return Feedback(
         kind="issue_comment",
         feedback_id="1",
-        reviewer=Reviewer("pr-repair-steward"),
+        reviewer=Reviewer(reviewer_login),
         body=body,
         created_at=datetime(2026, 8, 28, 12, 0, tzinfo=UTC),
         is_bot=True,
@@ -3341,12 +3341,13 @@ def _feedback_comment(body: str) -> Feedback:
 
 
 class _FakeGitHubComments:
-    def __init__(self, bodies: list[str]) -> None:
+    def __init__(self, bodies: list[str], reviewer_login: str = "pr-repair-steward") -> None:
         self._bodies = bodies
+        self._reviewer_login = reviewer_login
         self.posted: list[tuple[str, int, str]] = []
 
     def list_feedback(self, repository: str, number: int):
-        return tuple(_feedback_comment(body) for body in self._bodies)
+        return tuple(_feedback_comment(body, self._reviewer_login) for body in self._bodies)
 
     def post_issue_comment(self, repository: str, number: int, body: str) -> None:
         self.posted.append((repository, number, body))
@@ -3464,6 +3465,23 @@ def test_pr_repair_reply_is_satisfied_by_a_marker_and_attribution_on_our_repo() 
     )
 
 
+def test_governed_bot_receipt_is_accepted_alongside_repository_owner() -> None:
+    reply = (
+        f"{pr_repair_attribution_line('pr-repair-steward')}\n"
+        "Fixed by the governed Hermes worker.\n"
+        f"<!-- pr-maintenance-receipt:v1 status=completed kind=review_comment head={'a' * 40} -->"
+    )
+    github = _FakeGitHubComments([reply], reviewer_login="mrkillbobbot")
+
+    assert not _factual_reply_is_missing(
+        github,
+        _feedback_receipt("review_comment"),
+        resolved_head_sha="a" * 40,
+        owner_login="mrkillbob",
+        accepted_logins=frozenset({"mrkillbobbot"}),
+    )
+
+
 def test_pr_repair_reply_on_the_upstream_repo_does_not_require_attribution() -> None:
     """NousResearch/hermes-agent stays brand-neutral -- the marker alone suffices."""
 
@@ -3559,7 +3577,7 @@ class _FakeGitHubCodex(_FakeGitHubComments):
         return self._codex_feedback
 
 
-def test_retrigger_codex_review_mentions_codex_when_its_review_is_stale() -> None:
+def test_retrigger_codex_review_does_not_post_duplicate_requests() -> None:
     head = "a" * 40
     github = _FakeGitHubCodex(
         (_codex_feedback(_codex_summary_body("Completed", ("f" * 40)[:7])),)
@@ -3567,10 +3585,8 @@ def test_retrigger_codex_review_mentions_codex_when_its_review_is_stale() -> Non
 
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
 
-    assert status == "triggered"
-    assert github.posted == [
-        ("mrkillbob/luna-bot", 17, codex_review_trigger_comment(head))
-    ]
+    assert status == "automatic_review_configured"
+    assert github.posted == []
 
 
 def test_retrigger_codex_review_is_a_noop_while_same_head_request_is_pending() -> None:
@@ -3581,7 +3597,7 @@ def test_retrigger_codex_review_is_a_noop_while_same_head_request_is_pending() -
 
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
 
-    assert status == "already_requested"
+    assert status == "automatic_review_configured"
     assert github.posted == []
 
 
@@ -3591,16 +3607,16 @@ def test_retrigger_codex_review_is_a_noop_when_codex_already_reviewed_this_head(
 
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, head)
 
-    assert status == "already_current"
+    assert status == "automatic_review_configured"
     assert github.posted == []
 
 
-def test_retrigger_codex_review_reports_unavailable_without_raising() -> None:
+def test_retrigger_codex_review_does_not_require_github_access() -> None:
     github = _FakeGitHubCommentsUnavailable([])
 
     status = _retrigger_codex_review(github, "mrkillbob/luna-bot", 17, "a" * 40)
 
-    assert status == "unavailable"
+    assert status == "automatic_review_configured"
     assert github.posted == []
 
 
@@ -3616,7 +3632,7 @@ def test_codex_request_reports_connector_auth_failure_without_reposting():
     request = _codex_feedback(codex_review_trigger_comment("a" * 40))
     denied = replace(request, body="To use Codex here, [create a Codex account and connect to github](https://chatgpt.com/codex/cloud/settings/connectors).")
     github = _FakeGitHubCodex((request, denied))
-    assert _retrigger_codex_review(github, "acme/widgets", 17, "a" * 40) == "authorization_required"
+    assert _retrigger_codex_review(github, "acme/widgets", 17, "a" * 40) == "automatic_review_configured"
     assert github.posted == []
 
 
@@ -3629,7 +3645,7 @@ def test_codex_auth_failure_must_be_current_and_from_connector():
         replace(denied, created_at=denied.created_at.replace(year=2025)),
     ):
         github = _FakeGitHubCodex((request, ignored))
-        assert _retrigger_codex_review(github, "acme/widgets", 17, "a" * 40) == "already_requested"
+        assert _retrigger_codex_review(github, "acme/widgets", 17, "a" * 40) == "automatic_review_configured"
         assert github.posted == []
 
 

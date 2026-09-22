@@ -55,8 +55,6 @@ from .policy import (
     FeedbackReceipt,
     PluginPolicy,
     ReleaseMaintenancePolicy,
-    codex_review_trigger_comment,
-    codex_review_trigger_requested,
     hermes_attribution_line,
     load_policy,
 )
@@ -139,6 +137,7 @@ def _factual_reply_is_missing(
     *,
     resolved_head_sha: str,
     owner_login: str | None = None,
+    accepted_logins: frozenset[str] = frozenset(),
 ) -> bool:
     """Whether no comment yet carries this exact completion's required receipt marker.
 
@@ -167,7 +166,11 @@ def _factual_reply_is_missing(
             continue
         if owner_login is not None:
             reviewer_login = getattr(item.reviewer, "login", None) or ""
-            if reviewer_login.casefold() != owner_login.casefold():
+            allowed_logins = {
+                owner_login.casefold(),
+                *(login.casefold() for login in accepted_logins),
+            }
+            if reviewer_login.casefold() not in allowed_logins:
                 continue
         if not pr_repair_attribution_required(receipt.repository):
             return False
@@ -179,37 +182,9 @@ def _factual_reply_is_missing(
 def _retrigger_codex_review(
     github: GitHubClient, repository: str, pr_number: int, resolved_head_sha: str
 ) -> str:
-    """Request an exact-head review once and expose connector authorization failures."""
-
-    try:
-        feedback = github.list_feedback(repository, pr_number)
-    except GitHubClientError:
-        return "unavailable"
-    if _codex_reviewed_head(feedback, resolved_head_sha):
-        return "already_current"
-    requests = [
-        item for item in feedback
-        if codex_review_trigger_requested(item.body, resolved_head_sha)
-    ]
-    if requests:
-        latest_request = max(item.created_at for item in requests)
-        if any(
-            item.reviewer.login.casefold() == "chatgpt-codex-connector[bot]"
-            and item.created_at >= latest_request
-            and "create a codex account and connect to github" in item.body.casefold()
-            for item in feedback
-        ):
-            return "authorization_required"
-        return "already_requested"
-    try:
-        github.post_issue_comment(
-            repository,
-            pr_number,
-            codex_review_trigger_comment(resolved_head_sha),
-        )
-    except GitHubClientError:
-        return "unavailable"
-    return "triggered"
+    """Leave review scheduling to the repository's configured Codex process."""
+    del github, repository, pr_number, resolved_head_sha
+    return "automatic_review_configured"
 
 
 @dataclass(frozen=True, slots=True)
@@ -1677,6 +1652,7 @@ def _complete_feedback(ctx: Any, args: argparse.Namespace) -> int:
         receipt,
         resolved_head_sha=str(args.resolved_head_sha),
         owner_login=admission.target.owner_login if admission.target is not None else None,
+        accepted_logins=policy.reviewer_logins,
     ):
         print(json.dumps({"status": "factual_reply_missing"}, sort_keys=True))
         return 1
@@ -1719,44 +1695,23 @@ def _complete_feedback(ctx: Any, args: argparse.Namespace) -> int:
         local_ci_status = _controller(policy, ledger).dispatch_local_ci_after_feedback(
             current
         )
-        if codex_retrigger_status == "unavailable":
-            # Codex retrigger is temporarily unavailable; treat the completion
-            # as retryable so the caller can attempt the full flow again.
-            print(
-                json.dumps(
-                    {
-                        "status": "codex_retrigger_unavailable",
-                        "repository": receipt.repository,
-                        "pr_number": receipt.pr_number,
-                        "feedback_kind": receipt.feedback_kind,
-                        "feedback_id": receipt.feedback_id,
-                        "resolved_head_sha": str(args.resolved_head_sha).casefold(),
-                        "review_thread_resolved": review_thread_resolved,
-                        "local_ci_status": local_ci_status,
-                        "codex_retrigger_status": codex_retrigger_status,
-                    },
-                    sort_keys=True,
-                )
+        print(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "repository": receipt.repository,
+                    "pr_number": receipt.pr_number,
+                    "feedback_kind": receipt.feedback_kind,
+                    "feedback_id": receipt.feedback_id,
+                    "resolved_head_sha": str(args.resolved_head_sha).casefold(),
+                    "review_thread_resolved": review_thread_resolved,
+                    "local_ci_status": local_ci_status,
+                    "codex_retrigger_status": codex_retrigger_status,
+                },
+                sort_keys=True,
             )
-            return_code = 1
-        else:
-            print(
-                json.dumps(
-                    {
-                        "status": "completed",
-                        "repository": receipt.repository,
-                        "pr_number": receipt.pr_number,
-                        "feedback_kind": receipt.feedback_kind,
-                        "feedback_id": receipt.feedback_id,
-                        "resolved_head_sha": str(args.resolved_head_sha).casefold(),
-                        "review_thread_resolved": review_thread_resolved,
-                        "local_ci_status": local_ci_status,
-                        "codex_retrigger_status": codex_retrigger_status,
-                    },
-                    sort_keys=True,
-                )
-            )
-            return_code = 0
+        )
+        return_code = 0
     finally:
         ledger.close()
     return return_code

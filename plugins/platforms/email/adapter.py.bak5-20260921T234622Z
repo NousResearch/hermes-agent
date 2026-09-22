@@ -33,10 +33,6 @@ from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_p
 
 logger = logging.getLogger(__name__)
 
-# Message-IDs this adapter mints for its OWN outbound mail (see _new_reply): `<hermes-<12 hex>@domain>`.
-# Anything arriving with such an id is our own mail coming back — see the loop guard in _sender_accepted.
-_SELF_MESSAGE_ID_RE = re.compile(r"^<\s*hermes-[0-9a-f]{12}@", re.IGNORECASE)
-
 _SECURITY_ALIASES = {"tls": "tls", "ssl": "tls", "implicit": "tls", "starttls": "starttls", "plain": "plain", "none": "plain"}
 # Automated senders (address substrings / bulk-mail headers) are silently ignored.
 _NOREPLY_PATTERNS = ("noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "mailer-daemon", "postmaster",
@@ -724,15 +720,6 @@ class EmailAdapter(BasePlatformAdapter):
         # That is safe only because the recipients gate below proves the mail was addressed to the
         # Hermes-only mailbox, and Hermes never sends TO that mailbox — so no loop can form. No
         # recipients gate configured => keep the strict guard.
-        # Structural loop guard: mail carrying a Message-ID this adapter mints for its own outbound
-        # replies is OUR OWN mail returning to the mailbox — e.g. a startup/cron notification delivered
-        # to the channel mailbox because the email home address points at it. The recipients gate cannot
-        # catch that case (the operator's mail and ours share one From: identity under plus addressing),
-        # so without this the channel feeds its own notices back in as prompts. Forging the id only gets
-        # the forger's mail dropped, so there is no downside to trusting it.
-        if _SELF_MESSAGE_ID_RE.match(str(msg_data.get("message_id") or "").strip()):
-            logger.debug("[Email] Dropping our own outbound mail returning to the mailbox: %s", msg_data.get("message_id"))
-            return False
         if sender_addr.lower() == self._from_address.lower() and not self._recipients:
             return False
         if self._recipients and not (self._recipients & set(msg_data.get("recipients") or [])):

@@ -696,7 +696,15 @@ _HEADER_BASE = (
     "collected count against what was asked before answering.\n\n"
     "Batch each sub-procedure (navigate, wait, extract, act) into one call — do not spend a call per "
     "action — but for long extractions prefer several medium calls that append to workspace files over "
-    "one giant call, so progress survives timeouts."
+    "one giant call, so progress survives timeouts.\n\n"
+    "NEVER copy a live credential store to inspect it. A browser profile's `Cookies`, `Login Data`, "
+    "`History` or `Web Data` is a live session: v11 cookie values decrypt with the desktop keyring, so a "
+    "`cp` into scratch, /tmp or $TMPDIR mints a credential file that outlives the check and rides host "
+    "backups offsite. Read the store IN PLACE instead — `python3 ~/.hermes/scripts/cookie_store_inspect.py "
+    "<store>` opens it read-only (file:...?mode=ro) and prints host/name counts, never a value; add "
+    "`--scan` to find copies already lying around; over CDP, `Storage.getCookies` gives live names only. "
+    "Prove a session by driving the site, not by copying its store, and never hand a cookie/login DB path "
+    "to another agent."
 )
 
 _HEADER_VISION = (

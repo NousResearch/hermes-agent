@@ -33,10 +33,6 @@ from gateway.platforms._shared import get_scoped_secret as _get_secret, coerce_p
 
 logger = logging.getLogger(__name__)
 
-# Message-IDs this adapter mints for its OWN outbound mail (see _new_reply): `<hermes-<12 hex>@domain>`.
-# Anything arriving with such an id is our own mail coming back — see the loop guard in _sender_accepted.
-_SELF_MESSAGE_ID_RE = re.compile(r"^<\s*hermes-[0-9a-f]{12}@", re.IGNORECASE)
-
 _SECURITY_ALIASES = {"tls": "tls", "ssl": "tls", "implicit": "tls", "starttls": "starttls", "plain": "plain", "none": "plain"}
 # Automated senders (address substrings / bulk-mail headers) are silently ignored.
 _NOREPLY_PATTERNS = ("noreply", "no-reply", "no_reply", "donotreply", "do-not-reply", "mailer-daemon", "postmaster",
@@ -60,12 +56,6 @@ _HTML_SUBS = ((re.compile(r"<br\s*/?>", re.IGNORECASE), "\n"), (re.compile(r"<p[
 # "method=result" tokens (``dmarc=pass``) and property values (``header.from=x``) in Authentication-Results.
 _AUTH_METHOD_RE = re.compile(r"\b(dmarc|dkim|spf)\s*=\s*([a-z]+)", re.IGNORECASE)
 _AUTH_PROP_RE = re.compile(r"\b(header\.from|header\.d|smtp\.mailfrom|smtp\.from|envelope-from)\s*=\s*([^\s;]+)", re.IGNORECASE)
-# Fastmail/MessagingEngine does not run SPF/DKIM/DMARC on mail between accounts on its own
-# infrastructure (a local user writing to a local mailbox): the receiving MX asserts the sender
-# instead, as ``x-me-sender=pass``. Only meaningful INSIDE the trusted, pinned
-# Authentication-Results header -- an injected copy of the header cannot sort above the one the
-# receiving MX prepends, so a forged From: cannot manufacture this verdict.
-_INTERNAL_SENDER_RE = re.compile(r"\bx-me-sender\s*=\s*([a-z]+)", re.IGNORECASE)
 
 
 def _esecret_int(name: str, default: int) -> int:
@@ -269,8 +259,7 @@ def _domains_aligned(a: str, b: str) -> bool:
     return bool(a and b) and (a == b or a.endswith("." + b) or b.endswith("." + a))
 
 
-def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "",
-                                  trust_internal_sender: bool = False) -> Tuple[bool, str]:
+def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str, *, authserv_id: str = "") -> Tuple[bool, str]:
     """Verify the ``From:`` domain is authenticated; returns ``(authenticated, reason)``.
     ``From:`` is attacker-controlled (GHSA-rxqh-5572-8m77); the only trustworthy signal is the
     ``Authentication-Results`` header stamped by the *receiving* server. It prepends, so the FIRST
@@ -299,11 +288,6 @@ def _verify_sender_authentication(msg: email_lib.message.Message, from_addr: str
         dkim_domain = props.get("header.d", "") or _domain_of(props.get("header.from", ""))
         if _domains_aligned(dkim_domain, from_domain):
             return True, "dkim=pass aligned"
-    # Provider-internal mail: no SPF/DKIM/DMARC verdict exists, but the receiving MX attests the
-    # sender itself. Opt-in (platforms.email.trust_internal_sender), off by default so no other
-    # deployment silently accepts a weaker signal than DMARC/SPF/DKIM.
-    if trust_internal_sender and (m := _INTERNAL_SENDER_RE.search(trusted)) and m.group(1).lower() == "pass":
-        return True, "x-me-sender=pass (MessagingEngine-hosted sender; provider-internal mail)"
     return False, f"authentication failed ({trusted[:120]})"
 
 
@@ -342,32 +326,6 @@ def _attach_file(msg: MIMEMultipart, path: Path, filename: str) -> None:
         msg.attach(part)
 
 
-def _recipients_of(msg) -> list:
-    """Every address this message was addressed to (To/Cc/Delivered-To, lowercased, deduped)."""
-    out = []
-    for header in ("To", "Cc", "Delivered-To", "X-Original-To", "Envelope-To"):
-        for raw in (msg.get_all(header) or []):
-            for part in str(raw).split(","):
-                addr = _extract_email_address(part)
-                if addr and addr not in out:
-                    out.append(addr)
-    return out
-
-
-def _thread_key_of(msg) -> str:
-    """Stable id for the mail THREAD: root of References, else In-Reply-To, else this Message-ID.
-
-    Every message in one subject chain resolves to the same key, and the key becomes the gateway
-    session's thread id, so one mail thread = one conversation (a new subject starts a new one).
-    """
-    for header in ("References", "In-Reply-To"):
-        ids = re.findall(r"<[^<>\s]+>", str(msg.get(header, "") or ""))
-        if ids:
-            return ids[0].strip("<>").strip().lower()
-    own = re.findall(r"<[^<>\s]+>", str(msg.get("Message-ID", "") or ""))
-    return own[0].strip("<>").strip().lower() if own else ""
-
-
 class EmailAdapter(BasePlatformAdapter):
     """Email gateway adapter using IMAP (receive) and SMTP (send)."""
 
@@ -386,14 +344,11 @@ class EmailAdapter(BasePlatformAdapter):
         self._address = setting("EMAIL_ADDRESS", "address").strip()
         self._password = _get_secret("EMAIL_PASSWORD", "")
         self._imap_host = setting("EMAIL_IMAP_HOST", "imap_host").strip()
-        # NOTE: config `imap_port`/`smtp_port` used to be ignored here (env-only), while the
-        # security mode WAS read from config — so `smtp_port: 465` + `smtp_security: tls` silently
-        # became implicit TLS on the 587 default and every send failed WRONG_VERSION_NUMBER.
-        self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993) or int(setting("EMAIL_IMAP_PORT", "imap_port") or 993)
+        self._imap_port = _esecret_int("EMAIL_IMAP_PORT", 993)
         self._imap_security = _normalize_security(setting("EMAIL_IMAP_SECURITY", "imap_security"))
         self._imap_tls_verify = tls_verify("EMAIL_IMAP_TLS_VERIFY", "imap_tls_verify")
         self._smtp_host = setting("EMAIL_SMTP_HOST", "smtp_host").strip()
-        self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587) or int(setting("EMAIL_SMTP_PORT", "smtp_port") or 587)
+        self._smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587)
         self._smtp_security = _normalize_security(setting("EMAIL_SMTP_SECURITY", "smtp_security"), default="tls" if self._smtp_port == 465 else "starttls")
         self._smtp_tls_verify = tls_verify("EMAIL_SMTP_TLS_VERIFY", "smtp_tls_verify")
         self._poll_interval = _esecret_int("EMAIL_POLL_INTERVAL", 15)
@@ -406,60 +361,15 @@ class EmailAdapter(BasePlatformAdapter):
             self._require_authenticated_sender = not _esecret_bool("EMAIL_TRUST_FROM_HEADER", False)
         # Optional authserv-id pinning Authentication-Results to the operator's own server (defeats an injected header sorting first).
         self._authserv_id = (extra.get("authserv_id", "") or _get_secret("EMAIL_AUTHSERV_ID", "")).strip().lower()
-        # Accept the provider's own x-me-sender=pass attestation for mail internal to its infra
-        # (Fastmail: local user -> local mailbox carries no SPF/DKIM/DMARC at all). Off unless opted in.
-        if "trust_internal_sender" in extra:
-            self._trust_internal_sender = bool(extra["trust_internal_sender"])
-        else:
-            self._trust_internal_sender = _esecret_bool("EMAIL_TRUST_INTERNAL_SENDER", False)
-        # New-mail detection. "unseen" (upstream default) depends on the \Seen flag still being
-        # clear, which breaks on a mailbox a human client also reads: Fastmail's web UI marks
-        # arriving mail read within seconds, so an UNSEEN search silently misses mail the operator
-        # sent. "uid" keeps a high-water mark instead and never consults \Seen.
-        self._poll_mode = (setting("EMAIL_POLL_MODE", "poll_mode") or "unseen").strip().lower()
-        self._last_uid: int = 0
-        self._uid_state_file = self._uid_state_path()
-        self._load_last_uid()
         self._seen_uids: set = set()
         self._seen_uids_max: int = 2000   # cap to prevent unbounded memory growth
         self._poll_task: Optional[asyncio.Task] = None
         self._last_fetch_failed, self._last_fetch_error = False, ""  # "checked, nothing new" vs "the check itself failed"
-        # Sending identity. EMAIL_ADDRESS is the LOGIN (server username — Fastmail requires the
-        # account address, an alias cannot authenticate), while the visible From: may be a different
-        # address on the same account (custom-domain alias). EMAIL_FROM unset => same as the login.
-        self._from_address = setting("EMAIL_FROM", "from_address").strip() or self._address
-        # Optional recipient gate: when set, only mail addressed to one of these addresses is
-        # dispatched, so mail to the operator's other addresses is never treated as a prompt.
-        self._recipients = {a.strip().lower() for a in (setting("EMAIL_RECIPIENTS", "recipients") or "").split(",") if a.strip()}
         # chat_id (sender email) -> last subject + message-id for threading
+        # Track the last IMAP fetch attempt so the poll loop can distinguish "checked, nothing new" from
+        # "the check itself failed" (#80016).
         self._thread_context: Dict[str, Dict[str, str]] = {}
-        # (sender, thread key) -> {subject, message_id}: the same thread-scoped view, so a reply goes
-        # back into ITS conversation instead of onto whatever that sender sent last.
-        self._thread_threads: Dict[Tuple[str, str], Dict[str, str]] = {}
         logger.info("[Email] Adapter initialized for %s", self._address)
-
-    def _uid_state_path(self) -> Path:
-        """Where the high-water UID lives, so a restart resumes rather than replaying or skipping."""
-        home = Path(os.environ.get("HERMES_HOME", str(Path.home() / ".hermes")))
-        safe = re.sub(r"[^A-Za-z0-9._-]", "_", self._address or "mailbox")
-        return home / "email_state" / f"{safe}.uid"
-
-    def _load_last_uid(self) -> None:
-        try:
-            if self._uid_state_file.exists():
-                self._last_uid = int(self._uid_state_file.read_text().strip() or 0)
-        except Exception as exc:  # a corrupt state file must not stop the mailbox from working
-            logger.debug("[Email] unreadable UID state %s: %s", self._uid_state_file, exc)
-
-    def _save_last_uid(self, uid: int) -> None:
-        """Best effort: a failed write costs one poll of accuracy, never a dispatch."""
-        try:
-            self._uid_state_file.parent.mkdir(parents=True, exist_ok=True)
-            tmp = self._uid_state_file.with_suffix(".uid.tmp")
-            tmp.write_text(f"{int(uid)}\n")
-            tmp.replace(self._uid_state_file)
-        except Exception as exc:
-            logger.debug("[Email] could not persist UID state: %s", exc)
 
     def _trim_seen_uids(self) -> None:
         """Keep only the highest half of UIDs once over the cap (UIDs are monotonic; UNSEEN prevents re-delivery)."""
@@ -618,29 +528,11 @@ class EmailAdapter(BasePlatformAdapter):
         results = []
         try:
             with self._inbox() as imap:
-                if self._poll_mode == "uid":
-                    if not self._last_uid:
-                        # First run: baseline at the newest UID so the operator's existing archive is
-                        # never replayed as prompts — everything from now on is new mail.
-                        status, data = imap.uid("search", None, "ALL")
-                        newest = max((int(u) for u in (data[0].split() if status == "OK" and data and data[0] else [])), default=0)
-                        self._last_uid = newest
-                        self._save_last_uid(newest)
-                        logger.info("[Email] UID poll baseline set to %s (nothing older is dispatched)", newest)
-                        return []
-                    # NB: IMAP's "UID n:*" always returns at least the newest message, so filter.
-                    status, data = imap.uid("search", None, f"UID {self._last_uid + 1}:*")
-                    candidates = [u for u in (data[0].split() if status == "OK" and data and data[0] else [])
-                                  if int(u) > self._last_uid]
-                else:
-                    status, data = imap.uid("search", None, "UNSEEN")
-                    candidates = (data[0].split() if status == "OK" and data and data[0] else [])
-                for uid in candidates:
+                status, data = imap.uid("search", None, "UNSEEN")
+                for uid in (data[0].split() if status == "OK" and data and data[0] else []):
                     if uid in self._seen_uids:
                         continue
-                    # BODY.PEEK[] — NOT plain RFC822: a non-PEEK fetch implicitly sets \\Seen, which
-                    # would mark the operator's unread mail read when the adapter shares their mailbox.
-                    status, msg_data = imap.uid("fetch", uid, "(BODY.PEEK[])")
+                    status, msg_data = imap.uid("fetch", uid, "(RFC822)")
                     if status != "OK":
                         continue  # transient per-UID refusal: leave unseen so the next poll retries
                     # Mark seen once a response arrived (even malformed) so garbage is skipped once, not retried forever —
@@ -649,9 +541,6 @@ class EmailAdapter(BasePlatformAdapter):
                     # list of tuples). See #80032.
                     self._seen_uids.add(uid)
                     self._trim_seen_uids()
-                    if self._poll_mode == "uid":
-                        self._last_uid = max(self._last_uid, int(uid))
-                        self._save_last_uid(self._last_uid)
                     try:
                         raw_email = msg_data[0][1]
                     except (IndexError, TypeError):
@@ -689,12 +578,9 @@ class EmailAdapter(BasePlatformAdapter):
             logger.debug("[Email] Skipping automated sender: %s", sender_addr)
             return None
         # Verify From: while the trusted Authentication-Results header is in scope; the verdict is consumed at dispatch (GHSA-rxqh-5572-8m77).
-        sender_authenticated, auth_reason = _verify_sender_authentication(
-            msg, sender_addr, authserv_id=self._authserv_id,
-            trust_internal_sender=self._trust_internal_sender)
+        sender_authenticated, auth_reason = _verify_sender_authentication(msg, sender_addr, authserv_id=self._authserv_id)
         return {"uid": uid, "sender_addr": sender_addr, "sender_name": sender_name, "subject": subject,
                 "message_id": msg.get("Message-ID", ""), "in_reply_to": msg.get("In-Reply-To", ""),
-                "thread_key": _thread_key_of(msg), "recipients": _recipients_of(msg),
                 "body": _extract_text_body(msg),
                 "attachments": _extract_attachments(msg, skip_attachments=self._skip_attachments),
                 "date": msg.get("Date", ""), "sender_authenticated": sender_authenticated, "auth_reason": auth_reason}
@@ -715,28 +601,7 @@ class EmailAdapter(BasePlatformAdapter):
 
     def _sender_accepted(self, sender_addr: str, msg_data: Dict[str, Any]) -> bool:
         """Pre-dispatch sender gate: self, automated, allowlist, From: authentication."""
-        # Loop guard: drop mail FROM the identity we send as. Deliberately keyed on the From:
-        # identity, not the login address — a second address on the same account (alias) sending
-        # TO Hermes is the operator's own mail and must still be processed. EMAIL_FROM unset keeps
-        # the historic behaviour exactly.
-        # ...but when Hermes *is* the operator's own address (plus addressing: the mailbox is
-        # nca+hermes@... inside nca@...'s account), the sender legitimately equals the From identity.
-        # That is safe only because the recipients gate below proves the mail was addressed to the
-        # Hermes-only mailbox, and Hermes never sends TO that mailbox — so no loop can form. No
-        # recipients gate configured => keep the strict guard.
-        # Structural loop guard: mail carrying a Message-ID this adapter mints for its own outbound
-        # replies is OUR OWN mail returning to the mailbox — e.g. a startup/cron notification delivered
-        # to the channel mailbox because the email home address points at it. The recipients gate cannot
-        # catch that case (the operator's mail and ours share one From: identity under plus addressing),
-        # so without this the channel feeds its own notices back in as prompts. Forging the id only gets
-        # the forger's mail dropped, so there is no downside to trusting it.
-        if _SELF_MESSAGE_ID_RE.match(str(msg_data.get("message_id") or "").strip()):
-            logger.debug("[Email] Dropping our own outbound mail returning to the mailbox: %s", msg_data.get("message_id"))
-            return False
-        if sender_addr.lower() == self._from_address.lower() and not self._recipients:
-            return False
-        if self._recipients and not (self._recipients & set(msg_data.get("recipients") or [])):
-            logger.debug("[Email] Dropping mail not addressed to Hermes: %s", sender_addr)
+        if sender_addr == self._address.lower():
             return False
         if _is_automated_sender(sender_addr, {}):
             logger.debug("[Email] Dropping automated sender at dispatch: %s", sender_addr)
@@ -772,15 +637,13 @@ class EmailAdapter(BasePlatformAdapter):
         # DOCUMENT wins over PHOTO for mixed attachments: run.py keys image handling off the per-path mime type regardless
         # of message_type, but document-context injection gates strictly on MessageType.DOCUMENT — so DOCUMENT surfaces both.
         kinds = {att["type"] for att in attachments}
-        thread_key = msg_data.get("thread_key") or ""
         self._thread_context[sender_addr] = {"subject": subject, "message_id": msg_data["message_id"]}
-        self._thread_threads[(sender_addr, thread_key)] = {"subject": subject, "message_id": msg_data["message_id"]}
         name = msg_data["sender_name"] or sender_addr
         event = MessageEvent(
             text=text or "(empty email)", message_id=msg_data["message_id"],
             message_type=MessageType.DOCUMENT if "document" in kinds else MessageType.PHOTO if "image" in kinds else MessageType.TEXT,
             source=self.build_source(chat_id=sender_addr, chat_name=name, chat_type="dm", user_id=sender_addr, user_name=name,
-                                     message_id=msg_data["message_id"], thread_id=thread_key or None),
+                                     message_id=msg_data["message_id"]),
             media_urls=[att["path"] for att in attachments], media_types=[att["media_type"] for att in attachments],
             reply_to_message_id=msg_data["in_reply_to"] or None)
         logger.info("[Email] New message from %s: %s", sender_addr, subject)
@@ -795,31 +658,24 @@ class EmailAdapter(BasePlatformAdapter):
             return SendResult(success=False, error=str(e))
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        """Send an email reply to the given address (in the same conversation when known)."""
-        thread_id = str((metadata or {}).get("thread_id") or "") or None
-        return await self._run_send(self._send_email, (chat_id, content, reply_to, thread_id),
-                                    "[Email] Send failed to %s: %s", chat_id)
+        """Send an email reply to the given address."""
+        return await self._run_send(self._send_email, (chat_id, content, reply_to), "[Email] Send failed to %s: %s", chat_id)
 
     def _message_id_domain(self) -> str:
         """Domain for generated Message-IDs; ``localhost`` when EMAIL_ADDRESS lacks ``@``."""
         return (self._address.rsplit("@", 1)[-1] if "@" in self._address else "") or "localhost"
 
     def _new_reply(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None, *,
-                   attach_empty_body: bool = False, thread_id: Optional[str] = None) -> Tuple[MIMEMultipart, str, str]:
-        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``.
-
-        *thread_id* is the conversation (mail thread) the reply belongs to; without it we fall back
-        to that sender's most recent thread, which is the pre-threads behaviour.
-        """
-        msg = MIMEMultipart()
-        ctx = (self._thread_threads.get((to_addr, thread_id)) if thread_id else None) or self._thread_context.get(to_addr, {})
+                   attach_empty_body: bool = False) -> Tuple[MIMEMultipart, str, str]:
+        """Build a threaded reply skeleton. Returns ``(msg, msg_id, subject)``."""
+        msg, ctx = MIMEMultipart(), self._thread_context.get(to_addr, {})
         subject = ctx.get("subject", "Hermes Agent")
         if not subject.startswith("Re:"):
             subject = f"Re: {subject}"
         original_msg_id = reply_to_msg_id or ctx.get("message_id")
         threading = (("In-Reply-To", original_msg_id), ("References", original_msg_id)) if original_msg_id else ()
         msg_id = f"<hermes-{uuid.uuid4().hex[:12]}@{self._message_id_domain()}>"
-        for key, value in (("From", self._from_address), ("To", to_addr), ("Subject", subject), *threading,
+        for key, value in (("From", self._address), ("To", to_addr), ("Subject", subject), *threading,
                            ("Date", formatdate(localtime=True)), ("Message-ID", msg_id)):
             msg[key] = value
         if body or attach_empty_body:
@@ -838,11 +694,9 @@ class EmailAdapter(BasePlatformAdapter):
             except Exception:
                 smtp.close()
 
-    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None,
-                    thread_id: Optional[str] = None) -> str:
+    def _send_email(self, to_addr: str, body: str, reply_to_msg_id: Optional[str] = None) -> str:
         """Send an email via SMTP. Runs in executor thread."""
-        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True,
-                                               thread_id=thread_id)
+        msg, msg_id, subject = self._new_reply(to_addr, body, reply_to_msg_id, attach_empty_body=True)
         self._smtp_send(msg)
         logger.info("[Email] Sent reply to %s (subject: %s)", to_addr, subject)
         return msg_id
@@ -920,16 +774,14 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
     """Out-of-process Email delivery via SMTP (one-shot); standalone_sender_fn contract."""
     extra = getattr(pconfig, "extra", {}) or {}
     address, password = extra.get("address") or _get_secret("EMAIL_ADDRESS", ""), _get_secret("EMAIL_PASSWORD", "")
-    from_address = (extra.get("from_address") or _get_secret("EMAIL_FROM", "")).strip() or address
-    smtp_host = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", "")
-    smtp_port = _esecret_int("EMAIL_SMTP_PORT", 587) or int(extra.get("smtp_port") or 587)
+    smtp_host, smtp_port = extra.get("smtp_host") or _get_secret("EMAIL_SMTP_HOST", ""), _esecret_int("EMAIL_SMTP_PORT", 587)
     smtp_security = _normalize_security(_get_secret("EMAIL_SMTP_SECURITY", "") or extra.get("smtp_security"), default="tls" if smtp_port == 465 else "starttls")
     smtp_tls_verify = _esecret_bool("EMAIL_SMTP_TLS_VERIFY", is_truthy_value(extra.get("smtp_tls_verify"), default=True))
     if not all([address, password, smtp_host]):
         return send_error("Email not configured (EMAIL_ADDRESS, EMAIL_PASSWORD, EMAIL_SMTP_HOST required)")
     try:
         msg = MIMEText(message, "plain", "utf-8")
-        for key, value in (("From", from_address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
+        for key, value in (("From", address), ("To", chat_id), ("Subject", "Hermes Agent"), ("Date", formatdate(localtime=True))):
             msg[key] = value
         server = _open_smtp(smtp_host, smtp_port, smtp_security, _tls_context(smtp_tls_verify, smtp_host), smtplib.SMTP, smtplib.SMTP_SSL)
         server.login(address, password)

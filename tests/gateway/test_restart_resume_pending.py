@@ -398,7 +398,7 @@ class TestResumePendingSystemNote:
             session_store = SimpleNamespace(_entries={"session-key": entry})
 
             @staticmethod
-            def _adapter_for_source(source):
+            def _delivery_adapter_for(source):
                 return SimpleNamespace(interactive_resume=True)
 
             @staticmethod

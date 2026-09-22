@@ -100,6 +100,19 @@ export function withoutComments(source) {
   return result
 }
 
+function isTypeScriptColorOccurrence(source, index, color) {
+  const stringLiteral = /(["'`])((?:\\.|[\s\S])*?)\1/g
+  for (const literal of source.matchAll(stringLiteral)) {
+    const start = literal.index
+    const end = start + literal[0].length
+    if (index < start || index >= end) continue
+    const content = literal[2].trim()
+    if (content === color) return true
+    return /(?:^|[;{])\s*(?:color|background(?:-color)?|border(?:-color)?|fill|stroke)\s*:\s*#[0-9a-fA-F]{3,8}\s*(?:;|$)/.test(content)
+  }
+  return true
+}
+
 async function sourceFiles(directory, root = directory) {
   const entries = await readdir(directory, { withFileTypes: true })
   const files = []
@@ -121,6 +134,7 @@ export async function findRawColors(sourceRoot) {
     const source = withoutComments(await readFile(path.join(sourceRoot, relativePath), 'utf8'))
     for (const match of source.matchAll(RAW_COLOR)) {
       if (SANCTIONED_LITERALS.get(relativePath)?.includes(match[0])) continue
+      if (path.extname(relativePath) !== '.css' && !isTypeScriptColorOccurrence(source, match.index, match[0])) continue
       const line = source.slice(0, match.index).split('\n').length
       violations.push(`${relativePath}:${line}: ${match[0]}`)
     }

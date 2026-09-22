@@ -1,4 +1,4 @@
-import { mkdtemp, mkdir, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, writeFile } from 'node:fs/promises'
 import os from 'node:os'
 import path from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -30,6 +30,17 @@ describe('check-design-tokens', () => {
     await expect(findRawColors(root)).resolves.toEqual(['components/example.tsx:2: #aabbcc'])
   })
 
+  it('ignores issue references in prose strings but reports exact color strings', async () => {
+    const root = await fixture({
+      'components/example.tsx': [
+        'const message = "Fixes #12345"',
+        'const color = "#123456"',
+      ].join('\n'),
+    })
+
+    await expect(findRawColors(root)).resolves.toEqual(['components/example.tsx:2: #123456'])
+  })
+
   it('permits documented theme and brand sources', async () => {
     const root = await fixture({
       'themes/preset.ts': 'export const color = "#aabbcc"\n',
@@ -45,5 +56,11 @@ describe('check-design-tokens', () => {
     })
 
     await expect(findRawColors(root)).resolves.toEqual(['components/example.css:1: #123456'])
+  })
+
+  it('runs the token checker from the standard check command', async () => {
+    const packageJson = JSON.parse(await readFile(new URL('../package.json', import.meta.url), 'utf8'))
+
+    expect(packageJson.scripts.check).toContain('npm run check:design-tokens')
   })
 })

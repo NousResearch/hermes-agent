@@ -318,48 +318,7 @@ export default {
       Promise.resolve(ctx.storage?.get?.('group-chats'))
         .then(async value => {
           if (value && typeof value === 'object' && !Array.isArray(value)) {
-            const rooms: Record<string, GroupChat> = {}
-
-            for (const [name, room] of Object.entries(value)) {
-              if (room && Array.isArray(room.log)) {
-                const log = room.log.map(storedHostedUserEvent)
-                rooms[name] = {
-                  ...storedClassicDesktopAuthority(room),
-                  // Pre-thread entries get synthetic thread ids on hydrate so
-                  // every UI/engine path can assume entry.thread exists.
-                  log: assignLegacyThreads(
-                    room.roomId && room.hosted ? reconcileHostedUserEvents(room.roomId, log) : log
-                  ),
-                  watermarks: room.watermarks && typeof room.watermarks === 'object' ? room.watermarks : {},
-                  sessions: room.sessions && typeof room.sessions === 'object' ? room.sessions : {},
-                  sessionOwners: room.sessionOwners && typeof room.sessionOwners === 'object' ? room.sessionOwners : {},
-                  stranded: room.stranded && typeof room.stranded === 'object' ? room.stranded : {},
-                  // #93129: rehydrate sticky stop holds with the same shape
-                  // guard as the other maps — a held bot stays held across
-                  // window restarts until explicitly released.
-                  holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
-                  desktopCommandSettled: boundedDesktopCommandSettled(room.desktopCommandSettled),
-                  members: Array.isArray(room.members) ? room.members : [],
-                  roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
-                  hosted: typeof room.hosted === 'string' && room.hosted ? room.hosted : null,
-                  hostedEpoch: Math.max(0, Number(room.hostedEpoch || 0)) || null,
-                  hostedConnectionId:
-                    typeof room.hostedConnectionId === 'string' && room.hostedConnectionId
-                      ? room.hostedConnectionId
-                      : null,
-                  hostedSeq: Math.max(0, Number(room.hostedSeq || 0)),
-                  hostedMembersVerified: room.hostedMembersVerified === true,
-                  continuityMode: room.hosted ? 'gateway' : room.continuityMode === 'gateway' ? 'gateway' : 'desktop',
-                  image: typeof room.image === 'string' && room.image ? room.image : null,
-                  rosterOrder: Number.isFinite(room.rosterOrder) ? room.rosterOrder : undefined,
-                  pinned: Boolean(room.pinned),
-                  syncRevision: Math.max(0, Number(room.syncRevision || 0)),
-                  epoch: 0,
-                  running: false
-                }
-              }
-            }
-
+            const rooms = hydrateGroupChatRooms(value)
 
             $groupChats.set({
               ...rooms,

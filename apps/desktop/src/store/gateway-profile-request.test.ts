@@ -293,7 +293,8 @@ describe('requestGatewayForAgent', () => {
       }))
     }
     const lease = await acquireGatewayRouteLease('source-a', 'default')
-    const held = deferred<{ ok: boolean }>()
+    let resolveHeld!: (value: { ok: boolean }) => void
+    const held = { promise: new Promise<{ ok: boolean }>(resolve => { resolveHeld = resolve }), resolve: (value: { ok: boolean }) => resolveHeld(value) }
     secondaryGateways[0].request.mockReturnValueOnce(held.promise)
     const response = lease.request('groups.import_history', { private_history: 'bytes' })
     await vi.waitFor(() => expect(secondaryGateways[0].request).toHaveBeenCalledOnce())

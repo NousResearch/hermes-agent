@@ -26,14 +26,6 @@ import { stampSecondaryProfileOwner } from '@/store/session-event-provenance'
 
 const normKey = (profile: string | null | undefined): string => (profile ?? '').trim() || 'default'
 
-export interface GatewayRouteLease {
-  readonly connectionId: string
-  readonly generation: number
-  readonly profile: string
-  assertCurrent: () => void
-  release: () => void
-  request: <T>(method: string, params?: Record<string, unknown>, timeoutMs?: number, signal?: AbortSignal) => Promise<T>
-}
 
 export interface GatewayRouteState {
   connectionId: string
@@ -1147,7 +1139,6 @@ export async function requestGatewayForAgent<T>(
 export async function acquireGatewayRouteLease(
   connectionId: string,
   profile: string
-
 ): Promise<GatewayRouteLease> {
   const id = String(connectionId || '').trim()
   const key = normKey(profile)
@@ -1247,8 +1238,6 @@ export async function acquireGatewayRouteLease(
     if (released) {
       return
     }
-
-
 
     released = true
     entry.activeRequests = Math.max(0, entry.activeRequests - 1)

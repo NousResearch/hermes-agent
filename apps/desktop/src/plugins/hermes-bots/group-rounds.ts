@@ -41,6 +41,7 @@ import {
 } from './hosted-room-runtime'
 import { botsText } from './i18n'
 import { requestForBot } from './routing'
+import { shippedGroupAdoptionOwnsExecution } from './types'
 import type { Attachment, GroupMember, GroupMessage } from './types'
 
 function hostedConnectionName(room: null | Partial<GroupChatRoom> | undefined) {
@@ -847,6 +848,10 @@ export async function sendToGroupChatDurably(
 ) {
   const room = $groupChats.get()[group]
 
+  if (shippedGroupAdoptionOwnsExecution(room)) {
+    return null
+  }
+
   if (!groupChatHostedGateway(room)) {
     return sendToGroupChat(group, members, text, thread, images)
   }
@@ -941,6 +946,10 @@ export function sendToGroupChat(
   const hosted = groupChatHostedGateway(roomBeforeSend)
   const externalId = String(options.entryId || '').trim()
   const fence = options.commandFence
+
+  if (shippedGroupAdoptionOwnsExecution(roomBeforeSend)) {
+    return null
+  }
 
   if (
     !groupCommandFenceLive(fence) ||

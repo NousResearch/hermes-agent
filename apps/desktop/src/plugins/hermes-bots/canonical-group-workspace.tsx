@@ -46,6 +46,8 @@ function canonicalMemberStatus(
     return labels.memberRemovalPending
   }
 
+  if (membership === 'retiring' || reason === 'member_retirement_pending') {return labels.memberRemovalPending}
+
   if (membership === 'former' || availability === 'retired') {
     return labels.memberFormer
   }
@@ -120,7 +122,7 @@ function CanonicalRoomView({
   const [checkingGateway, setCheckingGateway] = useState(false)
   const busyRef = useRef(false)
   const alive = useRef(true)
-  const current = () => alive.current && binding.isCurrent?.() !== false
+  const current = useCallback(() => alive.current && binding.isCurrent?.() !== false, [binding])
   const [discard, setDiscard] = useState<CanonicalPendingAction | null>(null)
   const revision = useRef(0)
 
@@ -323,6 +325,7 @@ function CanonicalRoomView({
       <section aria-label={labels.membersHeading} className="grid gap-1">
       <h3>{labels.membersHeading}</h3>
       {state.room.members.filter(member => member.membership || member.availability).map(member => {
+        const retiring = member.membership?.state === 'retiring' || member.availability?.reason === 'member_retirement_pending'
         const former = member.membership?.state === 'former' || member.availability?.state === 'retired'
         const ready = member.availability?.state === 'ready'
         const label = member.display_name || member.profile || member.handle || member.member_id
@@ -330,7 +333,10 @@ function CanonicalRoomView({
         return <div className="flex flex-wrap items-center gap-2" key={member.member_id}>
           <strong><bdi>{label}</bdi></strong>
           <span>{canonicalMemberStatus(member, labels)}</span>
-          {former
+          {retiring
+            ? <Button disabled={busy} onClick={() => void mutate(() =>
+                resolveCanonicalGroupMember(binding, member.member_id, 'retire'))}>{labels.memberRetryRemoval}</Button>
+            : former
             ? <Button disabled={busy} onClick={() => void mutate(() =>
                 resolveCanonicalGroupMember(binding, member.member_id, 'activate'))}>{labels.memberActivate}</Button>
             : ready

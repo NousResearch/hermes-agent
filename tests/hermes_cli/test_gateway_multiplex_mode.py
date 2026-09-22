@@ -94,6 +94,29 @@ def test_preflight_blocker_and_single_profile_keep_the_unset_default_standalone(
     assert decision == mode.MultiplexDecision(False, "guard", mode.SINGLE_PROFILE_REASON)
 
 
+def test_s6_booted_named_slots_do_not_block_the_unset_root_multiplexer(fleet, monkeypatch):
+    """Container boot owns s6 slot convergence, so its migrate CLI limitation is not a boot guard.
+
+    Named slots are registered down by ``reconcile_profile_gateways`` and the root gateway is the
+    only process that can serve them.  A real non-s6 preflight blocker must still leave the root
+    standalone.
+    """
+    _root, _services, _pids = fleet
+    s6_reason = "s6-supervised container: per-profile gateways are s6 slots registered by boot"
+    monkeypatch.setattr(gm, "_host_supports_migration", lambda: s6_reason)
+    monkeypatch.setattr("hermes_cli.gateway._running_under_s6", lambda: True)
+
+    decision = mode.resolve_multiplex_mode(load_gateway_config())
+
+    assert decision.enabled is True
+    assert decision.source == "default"
+
+    monkeypatch.setattr("hermes_cli.gateway._running_under_s6", lambda: False)
+    decision = mode.resolve_multiplex_mode(load_gateway_config())
+
+    assert decision == mode.MultiplexDecision(False, "guard", s6_reason)
+
+
 def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fleet, monkeypatch):
     root, _services, pids = fleet
     pids["coder"] = 4101

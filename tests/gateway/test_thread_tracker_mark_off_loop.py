@@ -65,7 +65,10 @@ def test_two_concurrent_marks_do_not_lose_an_entry(tracker, monkeypatch):
     oracle is the DURABLE FILE, not the in-memory dict.
     """
 
-    entered = threading.Barrier(2, timeout=10.0)
+    # With the io lock in place the second worker never reaches the barrier
+    # (it waits on the lock), so the first one MUST time out here.  That
+    # timeout is the green path's cost, so keep it small.
+    entered = threading.Barrier(2, timeout=0.5)
     real_write = helpers.atomic_json_write
 
     def _synchronised_write(path, payload, *a, **kw):
@@ -122,17 +125,21 @@ def test_a_mark_is_visible_in_memory_before_the_persist_completes(tracker, monke
     implementation, because a deferred insert still happens before the write;
     this one cannot.
     """
-    never_ran = asyncio.Event()
+    handed_off: list[object] = []
 
     async def _never(fn, *a, **kw):
-        never_ran.set()
+        handed_off.append(fn)
         await asyncio.Event().wait()  # park forever; fn is never called
 
-    monkeypatch.setattr(asyncio, "to_thread", _never, raising=True)
+    # Patch through the module seam the tracker actually calls.
+    monkeypatch.setattr(helpers.asyncio, "to_thread", _never, raising=True)
 
     async def scenario():
         mark = asyncio.create_task(tracker.mark_async("!first:example.org"))
-        await asyncio.wait_for(never_ran.wait(), timeout=5.0)
+        # One loop iteration runs the task up to its first suspension point,
+        # which is inside ``_never`` -- no Event handoff, no wall-clock wait.
+        await asyncio.sleep(0)
+        assert handed_off, "mark_async never reached the to_thread handoff"
         try:
             assert "!first:example.org" in tracker, (
                 "the mark is not in memory once the persist has been handed "

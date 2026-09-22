@@ -63,10 +63,10 @@ def test_concurrent_writes_do_not_lose_an_entry(cache_file, monkeypatch):
 
     Asserts on the DURABLE FILE, not on the API.
     """
-    # 2.0s: with the lock in place the second caller cannot reach the barrier,
-    # so the first one MUST time out here. That timeout is the green path's
+    # With the lock in place the second caller cannot reach the barrier, so
+    # the first one MUST time out here. That timeout is the green path's
     # cost, so keep it small.
-    entered = threading.Barrier(2, timeout=2.0)
+    entered = threading.Barrier(2, timeout=0.5)
     real_load = sticker_cache._load_cache
     done = threading.Event()
 

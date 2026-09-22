@@ -423,6 +423,47 @@ def test_mcp_server_platform_denylist_excludes_only_listed_platforms():
     assert "not-api" not in _get_platform_tools(config, "api_server")
 
 
+def test_mcp_server_scalar_platform_scopes_are_honored():
+    config = {
+        "mcp_servers": {
+            "discord-only": {"url": "https://example.com/mcp", "platforms": "discord"},
+            "not-api": {"url": "https://example.com/mcp", "exclude_platforms": "api_server"},
+        }
+    }
+
+    assert "discord-only" in _get_platform_tools(config, "discord")
+    assert "discord-only" not in _get_platform_tools(config, "cli")
+    assert "not-api" not in _get_platform_tools(config, "api_server")
+    assert "not-api" in _get_platform_tools(config, "cli")
+
+
+def test_malformed_mcp_server_scope_fails_closed_even_when_explicitly_selected():
+    config = {
+        "platform_toolsets": {"cli": ["restricted"]},
+        "mcp_servers": {
+            "restricted": {"url": "https://example.com/mcp", "platforms": {"discord": True}},
+        },
+    }
+
+    assert "restricted" not in _get_platform_tools(config, "cli")
+
+
+def test_mcp_server_allowlist_and_denylist_both_apply():
+    config = {
+        "mcp_servers": {
+            "restricted": {
+                "url": "https://example.com/mcp",
+                "platforms": ["cli", "discord"],
+                "exclude_platforms": ["discord"],
+            },
+        }
+    }
+
+    assert "restricted" in _get_platform_tools(config, "cli")
+    assert "restricted" not in _get_platform_tools(config, "discord")
+    assert "restricted" not in _get_platform_tools(config, "api_server")
+
+
 def test_explicit_mcp_server_selection_respects_platform_scope():
     """Naming a server in platform_toolsets cannot bypass its server scope."""
     config = {

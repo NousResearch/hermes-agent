@@ -315,28 +315,38 @@ def _filter_and_summarize(
 # which silently misses every entity whose name doesn't repeat its room.
 _REGISTRY_CACHE: Dict[str, Any] = {"ts": 0.0, "entity_area": {}, "entity_device": {}}
 _REGISTRY_TTL = 300.0
+_REGISTRY_TIMEOUT_S = 20.0
 
 
 async def _registry_area_map():
     """Return ({entity_id: area_name}, {entity_id: device_name}), cached."""
     import time as _time
 
-    if _time.time() - _REGISTRY_CACHE["ts"] < _REGISTRY_TTL and _REGISTRY_CACHE["entity_area"]:
+    # ``ts`` is 0.0 until the first successful fetch. A successful fetch is cached
+    # even when it maps nothing (an install with no areas assigned) — otherwise
+    # every list call would re-download the full registry.
+    if _REGISTRY_CACHE["ts"] and _time.time() - _REGISTRY_CACHE["ts"] < _REGISTRY_TTL:
         return _REGISTRY_CACHE["entity_area"], _REGISTRY_CACHE["entity_device"]
 
     import aiohttp
 
     hass_url, hass_token = _get_config()
     ws_url = hass_url.replace("https://", "wss://").replace("http://", "ws://") + "/api/websocket"
-    ent_area: Dict[str, str] = {}
-    ent_dev: Dict[str, str] = {}
-    try:
+
+    async def pull() -> Optional[tuple]:
+        """Auth + the three registry lists. None = auth refused (logged, not cached)."""
+        ent_area: Dict[str, str] = {}
+        ent_dev: Dict[str, str] = {}
         async with aiohttp.ClientSession() as session:
-            async with session.ws_connect(ws_url, timeout=aiohttp.ClientTimeout(total=20)) as ws:
+            async with session.ws_connect(ws_url) as ws:
                 await ws.receive_json()                      # auth_required
                 await ws.send_json({"type": "auth", "access_token": hass_token})
-                if (await ws.receive_json()).get("type") != "auth_ok":
-                    return {}, {}
+                auth_reply = await ws.receive_json()
+                if auth_reply.get("type") != "auth_ok":
+                    logger.warning(
+                        "HA registry websocket auth failed (%s); area filter degraded",
+                        auth_reply.get("message") or auth_reply.get("type"))
+                    return None
 
                 async def fetch(mid, mtype):
                     await ws.send_json({"id": mid, "type": mtype})
@@ -355,10 +365,23 @@ async def _registry_area_map():
                     dname = dev.get("name_by_user") or dev.get("name")
                     if dname:
                         ent_dev[e["entity_id"]] = dname
-    except Exception as exc:                                  # noqa: BLE001
-        logger.warning("HA registry lookup failed (%s); area filter degraded", exc)
-        return {}, {}
+        return ent_area, ent_dev
 
+    try:
+        # One deadline for the whole pull (connect, auth, three lists): a stalled
+        # HA must not hold ha_list_entities hostage.
+        pulled = await asyncio.wait_for(pull(), timeout=_REGISTRY_TIMEOUT_S)
+    except asyncio.TimeoutError:
+        logger.warning(
+            "HA registry lookup timed out after %ss; area filter degraded", _REGISTRY_TIMEOUT_S)
+        return {}, {}
+    except Exception as exc:                                  # noqa: BLE001
+        logger.warning("HA registry lookup failed (%s: %s); area filter degraded", type(exc).__name__, exc)
+        return {}, {}
+    if pulled is None:
+        return {}, {}                                         # auth refused: retried next call
+
+    ent_area, ent_dev = pulled
     _REGISTRY_CACHE.update({"ts": _time.time(), "entity_area": ent_area, "entity_device": ent_dev})
     return ent_area, ent_dev
 
@@ -515,7 +538,7 @@ def _check_ha_available() -> bool:
 
 
 # ── tool schemas ─────────────────────────────────────────────────────────────
-HA_LIST_ENTITIES_SCHEMA = {
+HA_LIST_ENTITIES_SCHEMA: Dict[str, Any] = {
     "name": "ha_list_entities",
     "description": (
         "List Home Assistant entities. On a large install a bare call can return "
@@ -579,7 +602,7 @@ HA_LIST_ENTITIES_SCHEMA = {
     },
 }
 
-HA_GET_STATE_SCHEMA = {
+HA_GET_STATE_SCHEMA: Dict[str, Any] = {
     "name": "ha_get_state",
     "description": (
         "Get the detailed state of a single Home Assistant entity, including all "
@@ -600,7 +623,7 @@ HA_GET_STATE_SCHEMA = {
     },
 }
 
-HA_LIST_SERVICES_SCHEMA = {
+HA_LIST_SERVICES_SCHEMA: Dict[str, Any] = {
     "name": "ha_list_services",
     "description": (
         "List available Home Assistant services (actions) for device control. "
@@ -623,7 +646,7 @@ HA_LIST_SERVICES_SCHEMA = {
     },
 }
 
-HA_CALL_SERVICE_SCHEMA = {
+HA_CALL_SERVICE_SCHEMA: Dict[str, Any] = {
     "name": "ha_call_service",
     "description": (
         "Call a Home Assistant service to control a device. Use ha_list_services "

@@ -4,7 +4,9 @@ Tests real logic: entity filtering, payload building, response parsing,
 handler validation, and availability gating.
 """
 
+import asyncio
 import json
+import logging
 from unittest.mock import AsyncMock, patch
 
 import pytest
@@ -703,3 +705,190 @@ class TestGetStateOperatorFilters:
         assert _operator_filter_violation("office_thermostat.0_valve_position") == (
             "excluded by HASS_ENTITY_DENYLIST"
         )
+
+
+# ── Registry-backed area/device resolution ───────────────────────────────────
+class _FakeWS:
+    """Scripted HA websocket: hands out the queued frames, records what was sent."""
+
+    def __init__(self, frames):
+        self.frames = list(frames)
+        self.sent = []
+
+    async def receive_json(self):
+        return self.frames.pop(0)
+
+    async def send_json(self, msg):
+        self.sent.append(msg)
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+class _FakeSession:
+    """Stand-in for aiohttp.ClientSession whose ws_connect yields the scripted socket."""
+
+    ws: "_FakeWS" = _FakeWS([])
+    connect_calls = 0
+    last_url = ""
+
+    def __init__(self, *args, **kwargs):
+        pass
+
+    def ws_connect(self, url, **kwargs):
+        _FakeSession.connect_calls += 1
+        _FakeSession.last_url = url
+        return _FakeSession.ws
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *exc):
+        return False
+
+
+def _registry_frames(area_reg, device_reg, entity_reg, auth="auth_ok"):
+    return [
+        {"type": "auth_required"},
+        {"type": auth, "message": "Invalid access token" if auth != "auth_ok" else None},
+        {"type": "event", "event": "noise"},          # unrelated frame: must be skipped
+        {"id": 1, "type": "result", "result": area_reg},
+        {"id": 2, "type": "result", "result": device_reg},
+        {"id": 3, "type": "result", "result": entity_reg},
+    ]
+
+
+def _install_fake_ws(monkeypatch, frames, clock=None):
+    import aiohttp
+
+    _FakeSession.ws = _FakeWS(frames)
+    _FakeSession.connect_calls = 0
+    _FakeSession.last_url = ""
+    monkeypatch.setattr(aiohttp, "ClientSession", _FakeSession)
+    monkeypatch.setattr(ha_tool, "_get_config", lambda: ("http://ha.local:8123", "tok-123"))
+    monkeypatch.setattr(ha_tool, "_REGISTRY_CACHE", {"ts": 0.0, "entity_area": {}, "entity_device": {}})
+    if clock is not None:
+        monkeypatch.setattr("time.time", lambda: clock[0])
+
+
+class TestRegistryAreaMap:
+    AREAS = [{"area_id": "office", "name": "Office"}, {"area_id": "kitchen", "name": "Kitchen"}]
+    DEVICES = [{"id": "dev1", "area_id": "kitchen", "name": "Fridge Hub", "name_by_user": "Fridge"}]
+    ENTITIES = [
+        {"entity_id": "climate.desk", "area_id": "office", "device_id": None},
+        {"entity_id": "sensor.fridge_temp", "area_id": None, "device_id": "dev1"},
+        {"entity_id": "sensor.orphan", "area_id": None, "device_id": None},
+    ]
+
+    def test_maps_entity_area_and_falls_back_to_device_area(self, monkeypatch):
+        _install_fake_ws(monkeypatch, _registry_frames(self.AREAS, self.DEVICES, self.ENTITIES))
+        ent_area, ent_dev = asyncio.run(ha_tool._registry_area_map())
+        assert ent_area == {"climate.desk": "Office", "sensor.fridge_temp": "Kitchen"}
+        assert ent_dev == {"sensor.fridge_temp": "Fridge"}          # name_by_user beats name
+        assert _FakeSession.last_url == "ws://ha.local:8123/api/websocket"
+        assert _FakeSession.ws.sent[0] == {"type": "auth", "access_token": "tok-123"}
+        assert [m["type"] for m in _FakeSession.ws.sent[1:]] == [
+            "config/area_registry/list", "config/device_registry/list", "config/entity_registry/list"]
+
+    def test_successful_fetch_is_cached_within_ttl(self, monkeypatch):
+        clock = [1000.0]
+        _install_fake_ws(monkeypatch, _registry_frames(self.AREAS, self.DEVICES, self.ENTITIES), clock)
+        first = asyncio.run(ha_tool._registry_area_map())
+        clock[0] += ha_tool._REGISTRY_TTL - 1
+        assert asyncio.run(ha_tool._registry_area_map()) == first
+        assert _FakeSession.connect_calls == 1
+
+    def test_cache_expires_after_ttl(self, monkeypatch):
+        clock = [1000.0]
+        _install_fake_ws(monkeypatch, _registry_frames(self.AREAS, self.DEVICES, self.ENTITIES), clock)
+        asyncio.run(ha_tool._registry_area_map())
+        clock[0] += ha_tool._REGISTRY_TTL + 1
+        _FakeSession.ws = _FakeWS(_registry_frames(self.AREAS, [], []))
+        assert asyncio.run(ha_tool._registry_area_map()) == ({}, {})
+        assert _FakeSession.connect_calls == 2
+
+    def test_empty_but_successful_fetch_is_cached_too(self, monkeypatch):
+        # An install with no areas assigned must not re-download the registry on every call.
+        clock = [1000.0]
+        _install_fake_ws(monkeypatch, _registry_frames([], [], self.ENTITIES), clock)
+        assert asyncio.run(ha_tool._registry_area_map()) == ({}, {})
+        clock[0] += 10
+        assert asyncio.run(ha_tool._registry_area_map()) == ({}, {})
+        assert _FakeSession.connect_calls == 1
+
+    def test_auth_failure_degrades_with_warning_and_is_not_cached(self, monkeypatch, caplog):
+        _install_fake_ws(monkeypatch, _registry_frames(self.AREAS, self.DEVICES, self.ENTITIES, auth="auth_invalid"))
+        with caplog.at_level(logging.WARNING, logger="tools.homeassistant_tool"):
+            assert asyncio.run(ha_tool._registry_area_map()) == ({}, {})
+        assert "auth failed" in caplog.text and "Invalid access token" in caplog.text
+        assert ha_tool._REGISTRY_CACHE["ts"] == 0.0                    # next call retries
+
+    def test_stalled_server_hits_the_deadline_and_degrades(self, monkeypatch, caplog):
+        # A HA that accepts the socket but never answers must not hang ha_list_entities.
+        class _StalledWS(_FakeWS):
+            async def receive_json(self):
+                await asyncio.sleep(3600)
+
+        _install_fake_ws(monkeypatch, [])
+        _FakeSession.ws = _StalledWS([])
+        monkeypatch.setattr(ha_tool, "_REGISTRY_TIMEOUT_S", 0.2)
+        with caplog.at_level(logging.WARNING, logger="tools.homeassistant_tool"):
+            assert asyncio.run(ha_tool._registry_area_map()) == ({}, {})
+        assert "registry lookup timed out after 0.2s" in caplog.text
+        assert ha_tool._REGISTRY_CACHE["ts"] == 0.0
+
+    def test_connection_error_degrades_with_warning_and_is_not_cached(self, monkeypatch, caplog):
+        _install_fake_ws(monkeypatch, [])
+
+        def boom(self, url, **kwargs):
+            raise ConnectionRefusedError("no route")
+
+        monkeypatch.setattr(_FakeSession, "ws_connect", boom)
+        with caplog.at_level(logging.WARNING, logger="tools.homeassistant_tool"):
+            assert asyncio.run(ha_tool._registry_area_map()) == ({}, {})
+        assert "registry lookup failed" in caplog.text
+        assert ha_tool._REGISTRY_CACHE["ts"] == 0.0
+
+
+class TestRegistryBackedAreaFilter:
+    STATES = [
+        {"entity_id": "climate.desk", "state": "heat", "attributes": {"friendly_name": "Desk climate"}},
+        {"entity_id": "light.lamp", "state": "on", "attributes": {"friendly_name": "Office lamp"}},
+        {"entity_id": "sensor.fridge_temp", "state": "4", "attributes": {"friendly_name": "Fridge"}},
+    ]
+    REGISTRY = {"climate.desk": "Office", "sensor.fridge_temp": "Kitchen", "light.lamp": "Hallway"}
+
+    def test_registry_is_authoritative_over_friendly_name(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        result = _filter_and_summarize(self.STATES, area="office", entity_area=self.REGISTRY)
+        # Kept: registry says Office although the name never mentions the room.
+        # Dropped: "Office lamp" is registered in the Hallway.
+        assert [e["entity_id"] for e in result["entities"]] == ["climate.desk"]
+        assert result["entities"][0]["area"] == "Office"
+
+    def test_fallback_to_name_match_when_registry_unavailable(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        result = _filter_and_summarize(self.STATES, area="office", entity_area={})
+        assert [e["entity_id"] for e in result["entities"]] == ["light.lamp"]
+        assert "area" not in result["entities"][0]
+
+    def test_area_and_device_fields_added_when_known(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        result = _filter_and_summarize(
+            self.STATES, entity_area=self.REGISTRY, entity_device={"sensor.fridge_temp": "Fridge"})
+        by_id = {e["entity_id"]: e for e in result["entities"]}
+        assert by_id["sensor.fridge_temp"] == {
+            "entity_id": "sensor.fridge_temp", "state": "4", "friendly_name": "Fridge",
+            "area": "Kitchen", "device": "Fridge"}
+        assert "device" not in by_id["climate.desk"]
+
+    def test_list_handler_feeds_registry_into_filter(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setattr(ha_tool, "_api_json", AsyncMock(return_value=self.STATES))
+        monkeypatch.setattr(ha_tool, "_registry_area_map", AsyncMock(return_value=(self.REGISTRY, {})))
+        result = json.loads(ha_tool._handle_list_entities({"area": "kitchen"}))["result"]
+        assert [e["entity_id"] for e in result["entities"]] == ["sensor.fridge_temp"]
+        assert result["entities"][0]["area"] == "Kitchen"

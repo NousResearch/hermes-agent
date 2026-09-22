@@ -639,9 +639,9 @@ class TestProviderDiscovery:
         config_file = tmp_path / "config.yaml"
         config_file.write_text("context:\n  engine: compressor\n", encoding="utf-8")
         from hermes_cli.plugins_cmd import _save_context_engine
-        _save_context_engine("lcm")
+        _save_context_engine("hermes-lossless-context-manager")
         content = yaml.safe_load(config_file.read_text(encoding="utf-8"))
-        assert content["context"]["engine"] == "lcm"
+        assert content["context"]["engine"] == "hermes-lossless-context-manager"
 
 
     def test_discover_context_engines_empty(self):

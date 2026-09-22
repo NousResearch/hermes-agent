@@ -150,6 +150,16 @@ class TestDiscordRequest:
 
 
 class TestReactionActions:
+    @patch("tools.discord_tool.get_secret", side_effect=["profile-token", ""])
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_github_closure_uses_profile_scoped_token(self, mock_urlopen_fn, _get_secret):
+        mock_urlopen_fn.return_value = _mock_urlopen({"state": "closed"})
+        from tools.discord_tool import _github_issue_closed
+
+        assert _github_issue_closed("gabrielcerteiro/certeiroone", "457") is True
+        request = mock_urlopen_fn.call_args[0][0]
+        assert request.get_header("Authorization") == "Bearer profile-token"
+
     @patch("tools.discord_tool.urllib.request.urlopen")
     def test_reaction_actions_use_the_bot_reaction_endpoint(self, mock_urlopen_fn, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")

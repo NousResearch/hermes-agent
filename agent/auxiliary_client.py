@@ -2101,13 +2101,13 @@ def _resolve_xai_oauth_for_aux() -> Optional[Tuple[str, str]]:
     return _creds_pair(creds)
 
 
-def _read_codex_access_token() -> Optional[str]:
-    """Valid, non-expired Codex OAuth access token; an exhausted pool falls back to the profile's auth.json token."""
-    pool_present, entry = _select_pool_entry("openai-codex")
-    if pool_present:
-        token = _pool_runtime_api_key(entry)
-        if token:
-            return token
+_CodexTokenResolution = NamedTuple("_CodexTokenResolution", [
+    ("token", Optional[str]), ("pool_present", bool), ("entry", Optional[Any]),
+])
+
+
+def _read_codex_auth_store_access_token() -> Optional[str]:
+    """Valid, non-expired Codex OAuth token from the legacy singleton auth-store row."""
     try:
         from hermes_cli.auth import _read_codex_tokens
         access_token = _read_codex_tokens().get("tokens", {}).get("access_token")
@@ -2128,6 +2128,22 @@ def _read_codex_access_token() -> Optional[str]:
     except Exception as exc:
         logger.debug("Could not read Codex auth for auxiliary client: %s", exc)
         return None
+
+
+def _read_codex_access_token() -> Optional[str]:
+    """Valid Codex OAuth token from the selectable pool, then the singleton auth-store row."""
+    pool_present, entry = _select_pool_entry("openai-codex")
+    token = _pool_runtime_api_key(entry) if pool_present else ""
+    return token or _read_codex_auth_store_access_token()
+
+
+def _resolve_codex_token_once() -> _CodexTokenResolution:
+    """Resolve one Codex token while retaining whether a configured pool was unselectable."""
+    pool_present, entry = _select_pool_entry("openai-codex")
+    token = _pool_runtime_api_key(entry) if pool_present else ""
+    if not token:
+        token = _read_codex_auth_store_access_token() or ""
+    return _CodexTokenResolution(token or None, pool_present, entry)
 
 
 def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
@@ -2914,7 +2930,9 @@ def _codex_base_url_override() -> str:
     return _scoped_key_env("HERMES_CODEX_BASE_URL").rstrip("/")
 
 
-def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
+def _build_codex_client(
+    model: str, *, credential: Optional[_CodexTokenResolution] = None,
+) -> Tuple[Optional[Any], Optional[str]]:
     """CodexAuxiliaryClient for an explicit model; (None, None) without a Codex OAuth token.
 
     No auto-selected default: the Codex model allow-list is undocumented and drifts.
@@ -2925,16 +2943,16 @@ def _build_codex_client(model: str) -> Tuple[Optional[Any], Optional[str]]:
             "pass model explicitly (auxiliary.<task>.model in config.yaml)."
         )
         return None, None
-    pool_present, entry = _select_pool_entry("openai-codex")
-    codex_token = _pool_runtime_api_key(entry) if pool_present else None
+    resolved = credential or _resolve_codex_token_once()
+    codex_token = resolved.token
+    if not codex_token:
+        return None, None
     codex_override = _codex_base_url_override()
-    if codex_token:
-        base_url = codex_override or _pool_runtime_base_url(entry, _CODEX_AUX_BASE_URL) or _CODEX_AUX_BASE_URL
-    else:
-        codex_token = _read_codex_access_token()
-        if not codex_token:
-            return None, None
-        base_url = codex_override or _CODEX_AUX_BASE_URL
+    base_url = (
+        codex_override
+        or _pool_runtime_base_url(resolved.entry, _CODEX_AUX_BASE_URL)
+        or _CODEX_AUX_BASE_URL
+    )
     logger.debug("Auxiliary client: Codex OAuth (%s via Responses API)", model)
     real_client = _create_openai_client(
         api_key=codex_token, base_url=base_url,
@@ -4965,18 +4983,27 @@ def _resolve_openai_codex_branch(req: _ResolveRequest) -> _ResolveResult:
                        "model; pass model explicitly (e.g. model.model in config.yaml "
                        "or auxiliary.<task>.model for per-task aux routing).")
         return None, None
-    no_token_msg = "resolve_provider_client: openai-codex requested but no Codex OAuth token found (run: hermes model)"
+    credential = _resolve_codex_token_once()
+    no_token_msg = (
+        "resolve_provider_client: openai-codex requested but no currently selectable "
+        "Codex OAuth credential in the configured pool"
+        if credential.pool_present else
+        "resolve_provider_client: openai-codex requested but no Codex OAuth token found "
+        "(run: hermes model)"
+    )
     if req.raw_codex:
         # Raw OpenAI client for callers needing responses.stream() (main agent loop).
-        codex_token = _read_codex_access_token()
+        codex_token = credential.token
         if not codex_token:
             logger.warning(no_token_msg)
             return None, None
-        base_url = _codex_base_url_override() or _CODEX_AUX_BASE_URL
+        base_url = _codex_base_url_override() or _pool_runtime_base_url(
+            credential.entry, _CODEX_AUX_BASE_URL
+        ) or _CODEX_AUX_BASE_URL
         raw_client = _create_openai_client(api_key=codex_token, base_url=base_url,
                                            default_headers=_codex_cloudflare_headers(codex_token, base_url=base_url))
         return raw_client, _normalize_resolved_model(model, req.provider)
-    client, default = _build_codex_client(model)
+    client, default = _build_codex_client(model, credential=credential)
     return _route_or_warn(req, client, default, no_token_msg)
 
 
@@ -7191,9 +7218,12 @@ def _resolve_call_client(
         if client is None and resolved_provider != "auto" and not resolved_base_url:
             logger.warning("Vision provider %s unavailable, falling back to auto vision backends",
                            resolved_provider)
-            effective_provider, client, final_model = resolve_vision_provider_client(
-                provider="auto", model=resolved_model, async_mode=async_mode,
-                main_runtime=main_runtime)
+            # Re-enter the provider-agnostic route directly. Calling the public resolver
+            # would reload auxiliary.vision.model and carry the failed provider's model
+            # into whichever backend auto detection selects.
+            effective_provider, client, final_model = _vision_auto_route(
+                _normalize_main_runtime(main_runtime), None, None, async_mode,
+            )
         if client is not None:
             resolved_provider = effective_provider or resolved_provider
     else:

@@ -95,7 +95,7 @@ def codex_auth_dir(tmp_path, monkeypatch):
         }
     }))
     monkeypatch.setattr(
-        "agent.auxiliary_client._read_codex_access_token",
+        "agent.auxiliary_client._read_codex_auth_store_access_token",
         lambda: "codex-test-token-abc123",
     )
     return codex_dir
@@ -728,7 +728,7 @@ class TestBuildCodexClient:
     def test_pool_without_selected_entry_falls_back_to_auth_store(self):
         with (
             patch("agent.auxiliary_client._select_pool_entry", return_value=(True, None)),
-            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client._read_codex_auth_store_access_token", return_value="codex-auth-token"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             mock_openai.return_value = MagicMock()
@@ -764,7 +764,7 @@ class TestBuildCodexClient:
     def test_profile_codex_base_url_applies_to_raw_codex_client(self, monkeypatch):
         """The main agent's raw Codex client honours the same endpoint override."""
         with (
-            patch("agent.auxiliary_client._read_codex_access_token", return_value="codex-auth-token"),
+            patch("agent.auxiliary_client._read_codex_auth_store_access_token", return_value="codex-auth-token"),
             patch("agent.auxiliary_client.OpenAI") as mock_openai,
         ):
             monkeypatch.setenv("HERMES_CODEX_BASE_URL", "http://127.0.0.1:8787/v1")
@@ -1232,12 +1232,33 @@ class TestGetTextAuxiliaryClient:
         assert isinstance(client, CodexAuxiliaryClient)
         assert model == "gpt-5.4"
 
+    def test_unselectable_codex_pool_has_truthful_warning_and_single_selection(self, caplog):
+        class _Pool:
+            def has_credentials(self):
+                return True
+
+            select = MagicMock(return_value=None)
+
+        pool = _Pool()
+        with (
+            patch("agent.auxiliary_client.load_pool", return_value=pool),
+            patch("hermes_cli.auth._read_codex_tokens", return_value={}),
+            caplog.at_level(logging.WARNING, logger="agent.auxiliary_client"),
+        ):
+            client, model = resolve_provider_client("openai-codex", model="gpt-5.5")
+
+        assert client is None and model is None
+        assert pool.select.call_count == 1
+        warning = "\n".join(record.getMessage() for record in caplog.records)
+        assert "no currently selectable Codex OAuth credential in the configured pool" in warning
+        assert "no Codex OAuth token found" not in warning
+
     def test_returns_none_when_nothing_available(self, monkeypatch):
         monkeypatch.delenv("OPENAI_BASE_URL", raising=False)
         monkeypatch.delenv("OPENAI_API_KEY", raising=False)
         monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
         with patch("agent.auxiliary_client._read_nous_auth", return_value=None), \
-             patch("agent.auxiliary_client._read_codex_access_token", return_value=None), \
+             patch("agent.auxiliary_client._read_codex_auth_store_access_token", return_value=None), \
              patch("agent.auxiliary_client._resolve_api_key_provider", return_value=(None, None)):
             client, model = get_text_auxiliary_client()
         assert client is None
@@ -2009,7 +2030,7 @@ class TestAuxiliaryFallbackLayering:
 
         with patch("agent.auxiliary_client._select_pool_entry",
                    return_value=(True, pool_entry)), \
-             patch("agent.auxiliary_client._read_codex_access_token",
+             patch("agent.auxiliary_client._read_codex_auth_store_access_token",
                    side_effect=AssertionError("should use pool token")), \
              patch("agent.auxiliary_client.OpenAI", return_value=real_client) as mock_openai:
             client, model = _resolve_fallback_entry({

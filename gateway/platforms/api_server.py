@@ -2711,7 +2711,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             from tools.skills_tool import _find_all_skills, _sort_skills
             skills = _sort_skills(
                 _find_all_skills(
-                    skip_disabled=False, include_editorial=True
+                    skip_disabled=False
                 )
             )
         except Exception:

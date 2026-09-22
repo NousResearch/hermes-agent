@@ -385,6 +385,69 @@ def parse_infrastructure(
     return spec
 
 
+#: Region prefixes that mark a Bedrock *inference profile* id rather than a foundation
+#: model. Mirrors the runtime's own list (``agent/anthropic_message_convert.py``) and the
+#: one in ``deploy/aws/main.tf``; all three must agree, because IAM has to name exactly the
+#: id boto3 ends up invoking.
+BEDROCK_PROFILE_PREFIXES = (
+    "global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af.",
+)
+
+
+def _bedrock_counterpart(model_id: str) -> str:
+    """The other spelling of the same model: profile id <-> bare foundation-model id."""
+    for prefix in BEDROCK_PROFILE_PREFIXES:
+        if model_id.startswith(prefix):
+            return model_id[len(prefix):]
+    return ""
+
+
+def bedrock_grant_gaps(
+    invoked: Sequence[str], infrastructure: InfrastructureSpec
+) -> list[str]:
+    """Models the agents will invoke that this deployment's IAM would not allow.
+
+    The failure this exists to catch is silent and expensive: ``deployment.yaml`` declares
+    the model an agent invokes *and* the model ids IAM enumerates, in one file, and nothing
+    checked that they were the same string. They are not interchangeable — a model with no
+    on-demand throughput in the region can only be reached through its ``eu.``-prefixed
+    inference profile, and granting the bare foundation model instead produces an ARN that
+    is never consulted. The deployment applies cleanly and the first inference returns
+    AccessDenied, hours later, in a worker log.
+
+    Silent when ``bedrock_model_ids`` is empty: that is a deployment whose IAM this module
+    does not manage, and inventing a warning for it would train people to ignore the one
+    that matters.
+    """
+    allowed = set(infrastructure.bedrock_model_ids)
+    if not allowed:
+        return []
+
+    gaps: list[str] = []
+    for model_id in sorted({m for m in invoked if m}):
+        if model_id in allowed:
+            continue
+        counterpart = _bedrock_counterpart(model_id)
+        alternates = sorted(
+            candidate for candidate in allowed
+            if candidate == counterpart or _bedrock_counterpart(candidate) == model_id
+        )
+        if alternates:
+            gaps.append(
+                f"agents invoke Bedrock model {model_id!r} but infrastructure."
+                f"bedrock_model_ids grants {', '.join(repr(a) for a in alternates)} — a "
+                "foundation-model id and an inference-profile id are different resources, "
+                "and IAM must name the one the runtime actually invokes"
+            )
+        else:
+            gaps.append(
+                f"agents invoke Bedrock model {model_id!r}, which is not in "
+                "infrastructure.bedrock_model_ids — that model would be refused with "
+                "AccessDenied at the first inference"
+            )
+    return gaps
+
+
 # ---------------------------------------------------------------------------
 # Rendering
 # ---------------------------------------------------------------------------

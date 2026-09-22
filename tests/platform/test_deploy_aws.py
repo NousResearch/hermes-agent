@@ -910,3 +910,169 @@ def test_terraform_deduplicates_and_tolerates_a_blank_worker(
     tmp_path, image, worker, expected,
 ):
     assert _derive_repository_arns(tmp_path, image, worker) == expected
+
+
+# ---------------------------------------------------------------------------
+# Bedrock: a foundation model and an inference profile are different resources
+#
+# Phase 6 of the first field deployment. `anthropic.claude-sonnet-4-6` in eu-west-2
+# returned "ValidationException: Operation not allowed" — no on-demand throughput, it can
+# only be reached through `eu.anthropic.claude-sonnet-4-6`. That id then returned
+# AccessDenied on
+#   arn:aws:bedrock:eu-west-2:<account>:inference-profile/eu.anthropic.claude-sonnet-4-6
+# because the module rendered EVERY declared id as a foundation-model ARN, which for a
+# profile id is an ARN that does not exist.
+# ---------------------------------------------------------------------------
+
+_PROFILE_PREFIXES = ("global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.",
+                     "me.", "af.")
+
+
+def test_the_module_distinguishes_profile_ids_from_foundation_model_ids():
+    main = _main_tf()
+    assert "bedrock_profile_prefixes" in main, (
+        "every declared id is still rendered as a foundation-model ARN, so an inference "
+        "profile id produces an ARN that does not exist"
+    )
+    assert "inference-profile/${id}" in main
+
+
+def test_the_profile_prefix_list_matches_the_runtime():
+    """IAM has to name the id boto3 invokes, so the two lists cannot drift."""
+    from agent.anthropic_message_convert import _BEDROCK_REGION_PREFIXES
+
+    main = _main_tf()
+    listed = main[main.index("bedrock_profile_prefixes = ["):]
+    listed = listed[: listed.index("]")]
+    for prefix in _BEDROCK_REGION_PREFIXES:
+        assert f'"{prefix}"' in listed, (
+            f"the runtime treats {prefix!r} as an inference-profile prefix and the IAM "
+            "module does not; a model behind it would be granted the wrong ARN"
+        )
+
+
+def test_bedrock_grants_are_never_wildcarded_over_models():
+    """A region wildcard on a NAMED model is the documented cross-region pattern. A
+    wildcard over models would make 'which models can this call' unanswerable."""
+    main = _main_tf()
+    block = main[main.index("bedrock_resources = distinct("):]
+    block = block[: block.index("\n  #")]
+    assert "foundation-model/*" not in block
+    assert 'resources = ["*"]' not in block
+
+
+def test_the_declared_model_and_the_granted_model_must_be_the_same_string():
+    """The NOVA-side half: the mismatch that caused this, caught at apply."""
+    from nova.deploy.aws import InfrastructureSpec, bedrock_grant_gaps
+
+    infra = InfrastructureSpec(bedrock_model_ids=("anthropic.claude-sonnet-4-6",))
+    gaps = bedrock_grant_gaps(["eu.anthropic.claude-sonnet-4-6"], infra)
+    assert len(gaps) == 1
+    assert "eu.anthropic.claude-sonnet-4-6" in gaps[0]
+    assert "different resources" in gaps[0]
+
+
+def test_a_matching_declaration_produces_no_bedrock_warning():
+    from nova.deploy.aws import InfrastructureSpec, bedrock_grant_gaps
+
+    infra = InfrastructureSpec(bedrock_model_ids=("eu.anthropic.claude-sonnet-4-6",))
+    assert bedrock_grant_gaps(["eu.anthropic.claude-sonnet-4-6"], infra) == []
+
+
+def test_a_deployment_that_does_not_manage_bedrock_iam_is_not_warned_at():
+    """Empty bedrock_model_ids means this module is not the thing granting Bedrock. A
+    warning there would train people to ignore the one that matters."""
+    from nova.deploy.aws import InfrastructureSpec, bedrock_grant_gaps
+
+    assert bedrock_grant_gaps(["eu.anthropic.claude-sonnet-4-6"], InfrastructureSpec()) == []
+
+
+def test_an_entirely_unlisted_model_is_reported_too():
+    from nova.deploy.aws import InfrastructureSpec, bedrock_grant_gaps
+
+    infra = InfrastructureSpec(bedrock_model_ids=("amazon.nova-pro",))
+    gaps = bedrock_grant_gaps(["eu.anthropic.claude-sonnet-4-6"], infra)
+    assert len(gaps) == 1 and "AccessDenied" in gaps[0]
+
+
+def _bedrock_locals(tmp_path, model_ids, regions=("*",), profile_arns=()):
+    """Evaluate the module's real Bedrock locals with Terraform itself."""
+    import json
+    import subprocess
+
+    main = _main_tf()
+    block = main[main.index("  # A Bedrock model id is one of two different") :
+                 main.index('  # "111122223333.dkr.ecr')]
+    (tmp_path / "main.tf").write_text(
+        'variable "bedrock_model_ids" { type = list(string) }\n'
+        'variable "bedrock_profile_regions" { type = list(string) }\n'
+        'variable "bedrock_inference_profile_arns" { type = list(string) }\n'
+        'variable "region" { type = string }\n\n'
+        'locals {\n  partition = "aws"\n  account_id = "369607682697"\n' + block + "}\n",
+        encoding="utf-8",
+    )
+    subprocess.run(["terraform", "init", "-backend=false", "-input=false"],
+                   cwd=tmp_path, check=True, capture_output=True)
+    result = subprocess.run(
+        ["terraform", "console",
+         "-var", "region=eu-west-2",
+         "-var", f"bedrock_model_ids={json.dumps(list(model_ids))}",
+         "-var", f"bedrock_profile_regions={json.dumps(list(regions))}",
+         "-var", f"bedrock_inference_profile_arns={json.dumps(list(profile_arns))}"],
+        cwd=tmp_path, input="local.bedrock_resources\n",
+        text=True, capture_output=True, check=True,
+    )
+    return re.findall(r'"(arn:[^"]+)"', result.stdout)
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+def test_terraform_grants_the_inference_profile_arn_that_was_denied(tmp_path):
+    """The exact ARN from the live AccessDenied message must now be granted."""
+    arns = _bedrock_locals(tmp_path, ["eu.anthropic.claude-sonnet-4-6"])
+    assert (
+        "arn:aws:bedrock:eu-west-2:369607682697:inference-profile/"
+        "eu.anthropic.claude-sonnet-4-6"
+    ) in arns
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+def test_terraform_also_grants_the_model_behind_the_profile(tmp_path):
+    """AWS checks InvokeModel on the profile AND on the foundation model it routes to."""
+    arns = _bedrock_locals(tmp_path, ["eu.anthropic.claude-sonnet-4-6"])
+    assert "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6" in arns
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+def test_terraform_keeps_plain_foundation_models_region_scoped(tmp_path):
+    """A non-profile id must not gain a cross-region grant it never needed."""
+    arns = _bedrock_locals(tmp_path, ["amazon.nova-pro"])
+    assert arns == ["arn:aws:bedrock:eu-west-2::foundation-model/amazon.nova-pro"]
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+def test_terraform_can_pin_the_destination_regions(tmp_path):
+    """A residency-constrained deployment can enumerate instead of wildcarding."""
+    arns = _bedrock_locals(
+        tmp_path, ["eu.anthropic.claude-sonnet-4-6"], regions=["eu-west-1", "eu-west-2"]
+    )
+    assert "arn:aws:bedrock:*::foundation-model/anthropic.claude-sonnet-4-6" not in arns
+    assert "arn:aws:bedrock:eu-west-1::foundation-model/anthropic.claude-sonnet-4-6" in arns
+    assert "arn:aws:bedrock:eu-west-2::foundation-model/anthropic.claude-sonnet-4-6" in arns
+
+
+@pytest.mark.skipif(
+    shutil.which("terraform") is None, reason="terraform is not installed here"
+)
+def test_explicitly_declared_profile_arns_still_work(tmp_path):
+    """Backward compatible: a deployment already stating its ARNs keeps them."""
+    explicit = "arn:aws:bedrock:eu-west-2:369607682697:inference-profile/custom.thing"
+    arns = _bedrock_locals(tmp_path, ["amazon.nova-pro"], profile_arns=[explicit])
+    assert explicit in arns

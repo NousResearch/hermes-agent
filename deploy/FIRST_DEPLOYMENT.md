@@ -538,6 +538,44 @@ Warnings that each agent "cannot run yet" are correct, not errors. Step 25 fixes
 
 ---
 
+## Step 24b — Bedrock: profile id or foundation-model id?
+
+Before the first inference, settle which id your region actually serves. Many Claude models
+have **no on-demand throughput** in a given region and are reachable only through a
+cross-region *inference profile*, whose id carries a geography prefix (`eu.`, `us.`,
+`apac.`, …). The two are different IAM resources, and the wrong one fails only at the first
+inference:
+
+```bash
+# on the host — probes the exact id the agent profile is configured with
+sudo docker exec nova-worker python3 - <<'PROBE'
+import boto3, yaml, botocore
+cfg = yaml.safe_load(open("/var/lib/nova/home/profiles/operations/config.yaml"))
+m = (cfg.get("model") or {}).get("model"); r = (cfg.get("model") or {}).get("region") or "eu-west-2"
+try:
+    resp = boto3.client("bedrock-runtime", region_name=r).converse(
+        modelId=m, messages=[{"role":"user","content":[{"text":"Reply with one word: READY"}]}],
+        inferenceConfig={"maxTokens":16})
+    print("BEDROCK_OK:", resp["output"]["message"]["content"][0]["text"].strip())
+except botocore.exceptions.ClientError as e:
+    print("BEDROCK_ERROR:", e.response["Error"]["Code"], "-", e.response["Error"]["Message"])
+PROBE
+```
+
+| Result | Meaning | Fix |
+|---|---|---|
+| `BEDROCK_OK` | id, region, IAM all agree | proceed |
+| `ValidationException: Operation not allowed` | no on-demand throughput for the bare id here | use the profile id (`eu.…`) in **both** `deployment.yaml` `provider.model` and `infrastructure.bedrock_model_ids` |
+| `AccessDeniedException` on an `inference-profile/…` ARN | right id, IAM grants the wrong resource | put the same profile id in `bedrock_model_ids` and re-apply Terraform |
+| `ResourceNotFoundException` | model access not enabled | enable it in the Bedrock console |
+
+**The id in the agent's config and the id in `bedrock_model_ids` must be the same string.**
+The module derives the right ARN from whichever form you use — a profile id gets the
+account-scoped `inference-profile/…` ARN *and* the foundation model behind it, because AWS
+checks both — and `nova apply` warns if the two drift apart.
+
+---
+
 ## Step 25 — The model credential
 
 Bedrock on the instance role needs no key — the role already carries

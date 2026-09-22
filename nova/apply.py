@@ -256,6 +256,25 @@ def _apply_bundle(
     for result in results:
         warnings.extend(f"{result.agent_id}: {note}" for note in result.warnings)
 
+    # The model an agent invokes and the model its IAM allows are declared in one file and
+    # were never checked against each other. Getting them out of step applies cleanly and
+    # fails at the first inference with AccessDenied — so it is asked here, while the
+    # operator is still watching.
+    from nova.deploy.aws import bedrock_grant_gaps
+
+    # Resolved from each spec directly rather than through ``bundle.provider_for``: the
+    # selected set includes channel-derived specs, which are not declared agents and would
+    # raise on a lookup by id. The merge is the same one ``provider_for`` performs.
+    bedrock_models = [
+        provider.model
+        for provider in (
+            bundle.deployment.provider.merged_with(spec.model.deployment)
+            for spec in selected
+        )
+        if provider.provider == "bedrock"
+    ]
+    warnings.extend(bedrock_grant_gaps(bedrock_models, bundle.deployment.infrastructure))
+
     orphans = _orphans(bundle, runtime)
     pruned: list[str] = []
     kept_orphans: list[tuple[str, str]] = []

@@ -149,8 +149,20 @@ variable "log_retention_days" {
 
 variable "bedrock_model_ids" {
   description = <<-EOT
-    Bedrock model ids the runtime role may invoke, e.g.
-    ["eu.anthropic.claude-sonnet-4-20250514-v1:0"].
+    Bedrock model ids the runtime role may invoke — **exactly the ids the runtime passes to
+    boto3**, which is what IAM has to name.
+
+    Both kinds are accepted and each gets the ARN it actually needs:
+
+      anthropic.claude-sonnet-4-6      foundation model, invoked on-demand in this region
+      eu.anthropic.claude-sonnet-4-6   cross-region inference profile (note the region
+                                       prefix) — this grants the profile ARN AND the
+                                       foundation model behind it, which AWS requires both of
+
+    Put the id your agents are configured with. A model that has no on-demand throughput in
+    your region can only be reached through its profile id, and using the bare id there fails
+    with "ValidationException: Operation not allowed" — so the id in the agent's config and
+    the id here must be the same string.
 
     Enumerated rather than wildcarded on purpose: "which models can this system call" is a
     question a reviewer will ask, and the answer should be a list they can read. An empty
@@ -163,6 +175,30 @@ variable "bedrock_model_ids" {
   validation {
     condition     = alltrue([for id in var.bedrock_model_ids : !strcontains(id, "*")])
     error_message = "Bedrock model ids must be literal. A wildcard here grants every model in the region."
+  }
+}
+
+variable "bedrock_profile_regions" {
+  description = <<-EOT
+    Regions a cross-region inference profile in `bedrock_model_ids` may route to.
+
+    Only used for profile-style ids. AWS checks `bedrock:InvokeModel` against the underlying
+    foundation model in the requesting region **and in every destination region the profile
+    routes to**, so the grant has to cover them. The default is a wildcard in the REGION
+    position of a NAMED model's ARN — `arn:aws:bedrock:*::foundation-model/<that model>` —
+    not a wildcard over models: the answer to "which models can this call" stays the list
+    above, and nothing else in Bedrock becomes reachable.
+
+    Left as `*` because a geography's destination regions are AWS's to change, and a
+    hardcoded list turns their next addition into an outage. A deployment under a residency
+    rule that must pin them can enumerate them here instead.
+  EOT
+  type        = list(string)
+  default     = ["*"]
+
+  validation {
+    condition     = length(var.bedrock_profile_regions) > 0
+    error_message = "bedrock_profile_regions must name at least one region, or ['*']."
   }
 }
 

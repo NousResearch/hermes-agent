@@ -8,13 +8,61 @@ locals {
   partition  = data.aws_partition.current.partition
   account_id = data.aws_caller_identity.current.account_id
 
-  bedrock_resources = concat(
+  # A Bedrock model id is one of two different things wearing the same shape, and the ARN
+  # you need is different for each. Rendering every id as a foundation-model ARN — which
+  # this did — produces an ARN that does not exist for the second kind, and the failure
+  # surfaces as AccessDenied at the first inference, not at apply.
+  #
+  #   anthropic.claude-sonnet-4-6       a FOUNDATION MODEL, invoked on-demand in one region
+  #                                     arn:...:bedrock:<region>::foundation-model/<id>
+  #   eu.anthropic.claude-sonnet-4-6    an INFERENCE PROFILE, account-scoped, routing across
+  #                                     a geography
+  #                                     arn:...:bedrock:<region>:<account>:inference-profile/<id>
+  #
+  # The region prefix is what distinguishes them. This list mirrors the runtime's own
+  # (`agent/anthropic_message_convert.py::_BEDROCK_REGION_PREFIXES`); the two must agree,
+  # because IAM has to name exactly the id boto3 ends up invoking.
+  bedrock_profile_prefixes = ["global.", "us.", "eu.", "apac.", "ap.", "au.", "jp.", "ca.", "sa.", "me.", "af."]
+
+  bedrock_profile_ids = [
+    for id in var.bedrock_model_ids : id
+    if anytrue([for prefix in local.bedrock_profile_prefixes : startswith(id, prefix)])
+  ]
+  bedrock_foundation_ids = [
+    for id in var.bedrock_model_ids : id
+    if !anytrue([for prefix in local.bedrock_profile_prefixes : startswith(id, prefix)])
+  ]
+
+  # "eu.anthropic.claude-sonnet-4-6" -> "anthropic.claude-sonnet-4-6". A profile is a router;
+  # the thing it routes to is the bare foundation model, and AWS checks permission on both.
+  bedrock_profile_model_ids = [
+    for id in local.bedrock_profile_ids :
+    join(".", slice(split(".", id), 1, length(split(".", id))))
+  ]
+
+  bedrock_resources = distinct(concat(
+    # Plain foundation models: on-demand, in this region only.
     [
-      for id in var.bedrock_model_ids :
+      for id in local.bedrock_foundation_ids :
       "arn:${local.partition}:bedrock:${var.region}::foundation-model/${id}"
     ],
+    # The profile itself, account-scoped in the requesting region.
+    [
+      for id in local.bedrock_profile_ids :
+      "arn:${local.partition}:bedrock:${var.region}:${local.account_id}:inference-profile/${id}"
+    ],
+    # And the model behind it, in every region that profile may route to. AWS requires
+    # InvokeModel on the foundation model in the requesting region AND in each destination
+    # region of the profile; permission on the profile alone is not enough.
+    flatten([
+      for id in local.bedrock_profile_model_ids : [
+        for profile_region in var.bedrock_profile_regions :
+        "arn:${local.partition}:bedrock:${profile_region}::foundation-model/${id}"
+      ]
+    ]),
+    # Explicit ARNs, for a deployment that would rather state them itself.
     var.bedrock_inference_profile_arns,
-  )
+  ))
 
   # "111122223333.dkr.ecr.eu-west-2.amazonaws.com/nova:1.4.0" -> the repository it lives in.
   # Scoped to the one repository rather than the whole registry: an instance that can pull

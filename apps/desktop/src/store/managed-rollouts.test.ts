@@ -92,6 +92,21 @@ describe('managed rollout renderer store', () => {
     })
   })
 
+  it('rechecks an unavailable capability on a later poll for reconnect recovery', async () => {
+    const capabilities = vi.fn()
+      .mockResolvedValueOnce({ available: false, reason: 'temporarily-unavailable' })
+      .mockResolvedValueOnce({ available: true })
+    const read = vi.fn().mockResolvedValue({ revision: 1, snapshot: snapshot(1) })
+    _setManagedRolloutsBridgeForTests({ capabilities, read, command: vi.fn() })
+
+    await pollManagedRollouts()
+    await pollManagedRollouts()
+
+    expect(capabilities).toHaveBeenCalledTimes(2)
+    expect(read).toHaveBeenCalledWith(null)
+    expect($managedRollouts.get()).toMatchObject({ status: 'ready', revision: 1 })
+  })
+
   it('ignores a late response after polling is stopped', async () => {
     let resolve!: (value: unknown) => void
     const read = vi.fn().mockReturnValue(new Promise(value => { resolve = value }))

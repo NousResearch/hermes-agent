@@ -93,7 +93,6 @@ function validResponse(value: unknown): value is RolloutResponse {
 
 async function capabilityAvailable(requestBridge: ManagedRolloutsBridge): Promise<boolean> {
   if (capabilityState === 'available') return Boolean(requestBridge.read)
-  if (capabilityState === 'unsupported') return false
   if (requestBridge.capabilities) {
     try {
       const result = await requestBridge.capabilities()

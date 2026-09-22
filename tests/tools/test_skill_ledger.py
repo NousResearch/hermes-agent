@@ -651,9 +651,11 @@ def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
 
 def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     """When compaction alone cannot reach the cap (every entry genuinely
-    differs), the oldest entries are dropped until it fits under the LOW-WATER
-    mark (80% of the cap, so the next append does not immediately re-trigger the
-    sweep) — newest entries survive, malformed lines are kept verbatim."""
+    differs), the oldest lines are dropped — whatever their shape — until the
+    file fits under the LOW-WATER mark (80% of the cap, so the next append does
+    not immediately re-trigger the sweep). The newest entry survives, and lines
+    in the retained tail are never parsed or rewritten: a malformed last line
+    survives verbatim."""
     from tools import skill_ledger
 
     import hermes_cli.config as _cfg

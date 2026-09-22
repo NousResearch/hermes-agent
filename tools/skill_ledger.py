@@ -357,9 +357,10 @@ _TRIM_LOW_WATER = 0.8  # trim target as a fraction of ``skills.ledger_max_bytes`
 
 
 def _trim_oldest(max_bytes: int) -> int:
-    """Rewrite the ledger without its oldest parsed entries until it is at most
-    *max_bytes*; the newest entry always survives, malformed lines are kept verbatim.
-    Returns the number of lines dropped (0 = file untouched)."""
+    """Rewrite the ledger without its oldest lines until it is at most *max_bytes*;
+    the newest entry always survives. Lines in the retained tail are never rewritten
+    or parsed — malformed lines there survive verbatim; trimming drops the oldest
+    lines regardless of shape. Returns the number of lines dropped (0 = untouched)."""
     path = ledger_path()
     raw = _read_ledger("trim skipped")
     if raw is None:

@@ -111,7 +111,7 @@ class TestUpstreamPromptNonInteractive:
         fork_without_upstream.stdin_input.return_value = "y"
         with patch.object(
             update_cmd, "_count_commits_between", return_value=-1
-        ), patch.object(update_cmd.subprocess, "run"):
+        ), patch.object(update_cmd.subprocess, "run", return_value=SimpleNamespace(returncode=0)):
             p_in, p_out = _tty(True, True)
             with p_in, p_out:
                 update_cmd._sync_with_upstream_if_needed(

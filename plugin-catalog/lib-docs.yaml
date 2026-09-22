@@ -1,0 +1,21 @@
+name: lib-docs
+repo: https://github.com/aydnOktay/hermes-lib-docs
+sha: 6674b0e7aa469deb5a89b9640cd3a07f3b481abc
+description: Look up current library docs from public npm and PyPI (no API keys).
+  Resolve a package, fetch README and metadata, keep recent lookups on Desktop.
+  Disclosure — HTTPS to registry.npmjs.org and pypi.org only.
+maintainer: aydnOktay
+tier: community
+category: tools
+requires_hermes: ">=0.21"
+docs_url: https://github.com/aydnOktay/hermes-lib-docs
+version: "0.1.1"
+platforms: []
+capabilities:
+  provides_tools:
+  - lib_docs_resolve
+  - lib_docs_get
+  - lib_docs_recent
+  provides_hooks: []
+  provides_middleware: []
+  requires_env: []

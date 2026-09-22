@@ -56,10 +56,12 @@ def health_check(release: Path) -> None:
         finally:
             import signal
             try:
-                os.killpg(proc.pid, signal.SIGTERM)
+                os.killpg(proc.pid, signal.SIGTERM)  # windows-footgun: ok - Sprites Linux guest only
                 proc.wait(timeout=10)
+            except ProcessLookupError:
+                pass
             except subprocess.TimeoutExpired:
-                os.killpg(proc.pid, signal.SIGKILL)
+                os.killpg(proc.pid, signal.SIGKILL)  # windows-footgun: ok - Sprites Linux guest only
                 proc.wait(timeout=5)
 
 

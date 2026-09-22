@@ -319,9 +319,12 @@ class GatewayShutdownMixin:
             return bool(process_registry.has_any_active() or process_registry.pending_watchers)
 
         for label, probe in (("async-delegation", _delegations_active), ("bg-work", _processes_active)):
-            with _log_suppressed(logging.DEBUG, f"scale-to-zero {label} check failed", exc_info=True):
+            try:
                 if probe():
                     return True
+            except Exception:
+                logger.debug("scale-to-zero %s check failed", label, exc_info=True)
+                return True
         return False
 
     @staticmethod

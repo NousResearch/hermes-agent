@@ -9,7 +9,6 @@ from __future__ import annotations
 import asyncio
 import logging
 from pathlib import Path
-import time
 
 from hermes_cli import sprites_api
 
@@ -58,14 +57,11 @@ class ActivityHold:
         try:
             marker = WAKE_MARKER.stat().st_mtime_ns if WAKE_MARKER.exists() else None
             await self.release()
-            previous = time.time()
             while runner._running:
                 await asyncio.sleep(1)
-                now = time.time()
                 changed = (WAKE_MARKER.stat().st_mtime_ns if WAKE_MARKER.exists() else None) != marker
-                if now - previous > 3 or changed or not runner._scale_to_zero_is_idle():
+                if changed or not runner._scale_to_zero_is_idle():
                     break
-                previous = now
             self.dormant = False
             await self.renew()
         finally:

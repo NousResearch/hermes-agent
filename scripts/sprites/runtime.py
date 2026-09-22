@@ -18,7 +18,7 @@ def private_replace(path: Path, data: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
     fd, name = tempfile.mkstemp(dir=path.parent)
     try:
-        with os.fdopen(fd, 'w') as stream:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
             stream.write(data)
             stream.flush()
             os.fsync(stream.fileno())

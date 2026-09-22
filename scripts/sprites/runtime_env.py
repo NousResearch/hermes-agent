@@ -37,7 +37,7 @@ def write_managed(path: Path, values: dict[str, str], uid: int, gid: int) -> Non
         lines.append(name + "='" + quoted + "'\n")
     fd, temp = tempfile.mkstemp(dir=path.parent)
     try:
-        with os.fdopen(fd, 'w') as stream:
+        with os.fdopen(fd, 'w', encoding='utf-8') as stream:
             stream.write(existing.rstrip('\n') + '\n' + BEGIN + ''.join(lines) + END)
             stream.flush()
             os.fsync(stream.fileno())

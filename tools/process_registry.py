@@ -1142,11 +1142,12 @@ class ProcessRegistry(ProcessCheckpointMixin):
 
     def _track_started(self, session: ProcessSession, reader_target, reader_name: str, extra_args=()) -> None:
         """Register before the reader can publish completion, even for an exited child."""
-        from contextvars import copy_context
+        from agent.memory_provider import spawn_context_thread
+        from hermes_cli.sprites_work import run_tracked
 
         # Reader completion must retain the producer's multiplex profile scope.
-        reader = threading.Thread(target=copy_context().run, args=(reader_target, session, *extra_args),
-                                  daemon=True, name=reader_name)
+        reader = spawn_context_thread(run_tracked, args=(reader_target, session, *extra_args),
+                                      name=reader_name)
         session._reader_thread = reader
         with self._lock:
             self._prune_if_needed()

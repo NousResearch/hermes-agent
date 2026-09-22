@@ -5,6 +5,7 @@ from __future__ import annotations
 import json
 import logging
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+from pathlib import Path
 import ssl
 from threading import Thread
 import urllib.error
@@ -650,7 +651,7 @@ def test_a_failed_preferred_bundle_load_is_not_memoised(
     _clear_ca_bundle_env(monkeypatch)
     paths = tuple(str(tmp_path / name) for name in candidates)
     for path in paths:
-        (tmp_path / path).write_text("pem")
+        Path(path).write_text("pem")
     failing_path = str(tmp_path / first_load_fails_for)
     expected = [str(tmp_path / name) for name in expected_load_sequence]
     monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: paths)

@@ -203,11 +203,13 @@ def warm_agent_browser_npx_cache(timeout: float = 60.0) -> bool:
 
 
 def _chromium_search_roots() -> List[str]:
-    """Chromium / headless-shell scan roots in agent-browser/Playwright probe order: ``PLAYWRIGHT_BROWSERS_PATH``, then the per-OS default cache."""
+    """Chromium / headless-shell scan roots in agent-browser/Playwright probe order:
+    ``PLAYWRIGHT_BROWSERS_PATH``, agent-browser's own store, then the per-OS default cache."""
     env_path = os.environ.get("PLAYWRIGHT_BROWSERS_PATH", "").strip()
     home = os.path.expanduser("~")
     roots: List[str] = [env_path] if env_path and env_path != "0" else []
     roots.append(os.path.join(home, ".cache", "ms-playwright"))
+    roots.append(os.path.join(home, ".agent-browser", "browsers"))
     if sys.platform == "darwin":
         roots.append(os.path.join(home, "Library", "Caches", "ms-playwright"))
     if sys.platform == "win32":
@@ -217,9 +219,9 @@ def _chromium_search_roots() -> List[str]:
 
 
 def _has_chromium_build(root: str) -> bool:
-    """True when ``root`` holds a Playwright ``chromium-*`` / ``chromium_headless_shell-*`` dir (agent-browser accepts either)."""
+    """True when ``root`` holds a Playwright ``chromium-*`` / ``chromium_headless_shell-*`` dir, or agent-browser's ``chrome-*`` dir."""
     try:
-        return any(e.startswith(("chromium-", "chromium_headless_shell-")) for e in os.listdir(root))
+        return any(e.startswith(("chromium-", "chromium_headless_shell-", "chrome-")) for e in os.listdir(root))
     except OSError:
         return False
 

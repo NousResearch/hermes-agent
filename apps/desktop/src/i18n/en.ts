@@ -999,7 +999,7 @@ export const en: Translations = {
     config: {
       minimizeToTrayTitle: 'Minimize to tray',
       minimizeToTrayDesc:
-        'Hide minimized windows in the system tray (menu bar on macOS) while Hermes keeps running. Close, Alt+F4, and Cmd+Q keep their normal behavior. Off by default; applies only to this device.',
+        'Minimize windows or close the main window to hide them in the system tray (menu bar on macOS) and keep Hermes running. Use Quit Hermes from the tray menu or Cmd+Q to exit. Off by default; applies only to this device.',
       minimizeToTrayUnavailable:
         'The system tray is unavailable. Windows will minimize and close normally. Turn this off and on to retry.',
       none: 'None',
@@ -1037,7 +1037,11 @@ export const en: Translations = {
       permission:
         'Allow Hermes in System Settings → Privacy & Security → Input Monitoring, then retry. This gesture does not record keystrokes or capture your screen.',
       unavailable:
-        'This gesture is unavailable here. Linux requires an X11 session; Wayland does not expose global modifier taps. The existing HUD shortcut still works inside Hermes.'
+        'The HUD gesture helper could not start or stopped unexpectedly. Retry, or restart Hermes. The existing HUD shortcut still works inside Hermes.',
+      missingHelper:
+        'This Hermes installation is missing the HUD gesture helper. Update or reinstall Hermes, then retry.',
+      unsupportedSession:
+        'This desktop session does not support global modifier taps. Linux requires X11; Wayland is not supported.'
     },
     screenshot: {
       enabledTitle: 'Screenshot shortcut',

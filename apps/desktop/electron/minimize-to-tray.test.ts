@@ -120,7 +120,7 @@ function setup() {
     log: vi.fn()
   })
 
-  controller.registerWindow(main as unknown as BrowserWindow)
+  controller.registerWindow(main as unknown as BrowserWindow, { closeToTray: true })
   controller.registerWindow(peer as unknown as BrowserWindow)
 
   return {
@@ -133,7 +133,7 @@ function setup() {
   }
 }
 
-test('opt-in minimize preserves windows and restoration, without intercepting Close or Quit', async () => {
+test('opt-in minimize and primary Close preserve windows while explicit Quit still exits', async () => {
   const { controller, main, peer } = setup()
   expect(await controller.start()).toEqual({ enabled: false, available: false })
   main.minimize()
@@ -175,10 +175,16 @@ test('opt-in minimize preserves windows and restoration, without intercepting Cl
   main.minimize()
   expect(main.destroyed).toBe(false)
   expect(main.visible).toBe(false)
-  // Native Close and Alt+F4 are never cancelled, even with the tray enabled.
+  // X/Alt+F4 hides the primary, but an accepted explicit quit closes it.
+  expect(main.close().preventDefault).toHaveBeenCalledOnce()
+  expect(main.destroyed).toBe(false)
+  expect(main.visible).toBe(false)
+  expect(native.trays[0].destroyed).toBe(false)
+  native.trays[0].menu[0].click()
+  expect(main.visible).toBe(true)
+  controller.beginQuit()
   expect(main.close().preventDefault).not.toHaveBeenCalled()
   expect(main.destroyed).toBe(true)
-  controller.beginQuit()
   native.app.on.mock.calls.find(([event]) => event === 'will-quit')![1]()
   expect(native.trays[0].destroyed).toBe(true)
 })

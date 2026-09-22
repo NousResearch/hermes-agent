@@ -216,7 +216,9 @@ def cmd_setup(args: argparse.Namespace) -> int:
         console.print("  [yellow]Fetch succeeded but the project has no secrets.[/yellow]")
     else:
         print_table(console, (("Name", {"style": "cyan"}), "Status"),
-                    ((key, _fetch_status(key, token_env)) for key in sorted(secrets)))
+                    ((key, _fetch_status(key, token_env,
+                                         bool(secrets_cfg.get("override_existing", True))))
+                     for key in sorted(secrets)))
     for w in warnings:
         console.print(f"  [yellow]warning:[/yellow] {w}")
     secrets_cfg.update(enabled=True, project_id=project_id, server_url=server_url)
@@ -237,11 +239,12 @@ def _bw_cfg(cfg: dict) -> dict:
     return section_cfg(cfg, "bitwarden")
 
 
-def _fetch_status(key: str, token_env: str) -> str:
+def _fetch_status(key: str, token_env: str, override: bool) -> str:
     if key == token_env:
         return "[dim]bootstrap token — never overrides itself[/dim]"
     if os.environ.get(key):
-        return "[yellow]already set in env (will be overwritten)[/yellow]"
+        return ("[yellow]already set in env (will be overwritten)[/yellow]" if override
+                else "[yellow]already set in env (will be kept)[/yellow]")
     return "[green]new[/green]"
 
 
@@ -264,7 +267,7 @@ def cmd_status(args: argparse.Namespace) -> int:
         ("Token validation", token_validation),
         ("Project ID", project_id or "[dim](unset)[/dim]"),
         ("Server URL", server_url or "[dim]default (US Cloud, https://vault.bitwarden.com)[/dim]"),
-        ("Override existing", _yn(bool(bw_cfg.get("override_existing", False)))),
+        ("Override existing", _yn(bool(bw_cfg.get("override_existing", True)))),
         ("Cache TTL (s)", str(bw_cfg.get("cache_ttl_seconds", 300))),
         ("Auto-install", _yn(bool(bw_cfg.get("auto_install", True)))),
         ("bws binary", f"{binary} ({_bws_version(binary)})" if binary else "[yellow]not installed[/yellow]"),
@@ -360,7 +363,7 @@ def cmd_sync(args: argparse.Namespace) -> int:
     if not secrets:
         console.print("[yellow]No secrets in project.[/yellow]")
         return 0
-    override = bool(bw_cfg.get("override_existing", False)) or args.apply
+    override = bool(bw_cfg.get("override_existing", True))
     rows = []
     applied = 0
     for key in sorted(secrets):

@@ -111,10 +111,29 @@ def _mcp_rpc(name: str, required=_NAME):
     return _scoped_rpc(f"mcp.servers.{name}", required=required, catch_resolve=False)
 
 
+def _mcp_server_rows():
+    config_servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    return _tools_mod("tui_gateway.mcp_rpc_helpers").server_configs_with_sources(config_servers)
+
+
 def _mcp_named_server(rid, params):
     """(name, servers, None) for a configured server, else (name, servers, 4064 error)."""
-    name, servers = _str_arg(params, "name"), _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    name, servers = _str_arg(params, "name"), _mcp_server_rows()[0]
     return name, servers, None if name in servers else _err(rid, 4064, f"server '{name}' not found")
+
+
+def _mcp_plugin_write_error(rid, name: str, plugins: dict):
+    plugin = plugins.get(name)
+    if plugin is not None:
+        return _err(rid, 4090, f"server '{name}' is provided by plugin '{plugin}' and cannot be modified")
+    return None
+
+
+def _mcp_config_server_or_error(rid, params):
+    name, servers, err = _mcp_named_server(rid, params)
+    if err:
+        return name, servers, err
+    return name, servers, _mcp_plugin_write_error(rid, name, _mcp_server_rows()[1])
 
 
 def _busy_error(rid, session, cmd: str):
@@ -1119,6 +1138,11 @@ def _configure_session_tools(rid, params: dict, sid: str, session) -> dict:
     toolset_targets = [name for name in targets if ":" not in name and name in valid_toolsets]
     if toolset_targets:
         tc._apply_toolset_change(cfg, "cli", toolset_targets, action)
+    plugins = _mcp_server_rows()[1]
+    for target in mcp_targets:
+        server_name = target.split(":", 1)[0]
+        if err := _mcp_plugin_write_error(rid, server_name, plugins):
+            return err
     missing_servers = tc._apply_mcp_change(cfg, mcp_targets, action) if mcp_targets else set()
     hc.save_config(cfg)
     info = _reset_session_agent(sid, session) if session else None
@@ -1262,6 +1286,7 @@ def _(rid, params: dict) -> dict:
         transport = getattr(entry, "transport", None)  # TransportSpec → its kind string
         out.append({
             "name": entry.name, "description": getattr(entry, "description", "") or "",
+            "connector_slug": getattr(entry, "connector_slug", None),
             "installed": bool(mcp_catalog.is_installed(entry.name)),
             "enabled": bool(mcp_catalog.is_enabled(entry.name)), "requires": requires,
             "transport": str(getattr(transport, "kind", "") or transport or "stdio")})
@@ -1272,8 +1297,10 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """``{servers: [{name, transport, url, command, args, env (key names), auth, oauth_tokens_present,
     enabled, tools}]}``"""
-    servers = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
-    return _ok(rid, {"servers": [_mcp_summarize_server(name, cfg) for name, cfg in sorted(servers.items())]})
+    servers, plugins = _mcp_server_rows()
+    return _ok(rid, {"servers": [
+        _mcp_summarize_server(name, cfg, plugins[name]) for name, cfg in sorted(servers.items())
+    ]})
 
 
 @_mcp_rpc("status", required=())
@@ -1283,13 +1310,15 @@ def _(rid, params: dict) -> dict:
     scoped profile's; otherwise it is shown only when ``profile`` is the launch profile."""
     import time
     hc = _tools_mod("hermes_constants")
-    configured = _tools_mod("hermes_cli.mcp_config")._get_mcp_servers()
+    configured, plugins = _mcp_server_rows()
     include_runtime = (_tools_mod("agent.secret_scope").is_multiplex_active()
                        or hc.hermes_home_key() == hc.hermes_home_key(hc.get_process_hermes_home()))
     safe = ("name", "transport", "tools", "connected", "disabled", "status")
     servers = _tools_mod("tools.mcp_tool_discovery").get_mcp_status(configured, include_runtime=include_runtime)
-    return _ok(rid, {"servers": [{k: e[k] for k in safe if k in e} for e in servers],
-                     "checked_at": int(time.time() * 1000)})
+    return _ok(rid, {"servers": [
+        {**{k: e[k] for k in safe if k in e}, "source": "plugin" if plugins[e["name"]] is not None else "config",
+         "plugin": plugins[e["name"]]} for e in servers
+    ], "checked_at": int(time.time() * 1000)})
 
 
 @_mcp_rpc("add")
@@ -1298,7 +1327,10 @@ def _(rid, params: dict) -> dict:
     tools); ``bearer_token`` goes to the profile's .env (only the header template persists). Dup → 4090."""
     mc = _tools_mod("hermes_cli.mcp_config")
     name, preset = _str_arg(params, "name"), _str_arg(params, "preset")
-    if name in mc._get_mcp_servers():
+    servers, plugins = _mcp_server_rows()
+    if err := _mcp_plugin_write_error(rid, name, plugins):
+        return err
+    if name in servers:
         return _err(rid, 4090, f"server '{name}' already exists")
     raw_cfg = params.get("config")
     server_config: dict = dict(raw_cfg) if isinstance(raw_cfg, dict) else {}
@@ -1321,7 +1353,7 @@ def _(rid, params: dict) -> dict:
     """Secret → profile .env under ``env_var`` (default ``MCP_<NAME>_API_KEY``); config.yaml gets only
     a ``${ENV}`` reference (Bearer header for http, ``env`` entry for stdio)."""
     hc, mc = _tools_mod("hermes_cli.config"), _tools_mod("hermes_cli.mcp_config")
-    name, servers, err = _mcp_named_server(rid, params)
+    name, servers, err = _mcp_config_server_or_error(rid, params)
     if err:
         return err
     value = params.get("value")
@@ -1382,6 +1414,8 @@ def _(rid, params: dict) -> dict:
 def _(rid, params: dict) -> dict:
     """Remove a server from the profile's config.yaml → ``{ok: true, removed: true}``."""
     name = _str_arg(params, "name")
+    if err := _mcp_plugin_write_error(rid, name, _mcp_server_rows()[1]):
+        return err
     if not _tools_mod("hermes_cli.mcp_config")._remove_mcp_server(name):
         return _err(rid, 4064, f"server '{name}' not found")
     return _ok(rid, {"ok": True, "removed": True})
@@ -1395,7 +1429,7 @@ def _(rid, params: dict) -> dict:
     on different machines). Runs on the RPC pool (_LONG_HANDLERS)."""
     client_redirect_uri = _str_arg(params, "client_redirect_uri") or None
     try:
-        name, servers, err = _mcp_named_server(rid, params)
+        name, servers, err = _mcp_config_server_or_error(rid, params)
         if err:
             return err
         cfg = dict(servers[name])

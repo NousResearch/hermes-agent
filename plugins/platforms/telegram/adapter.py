@@ -1520,11 +1520,13 @@ class TelegramAdapter(BasePlatformAdapter):
             retryable=(self._looks_like_connect_timeout(exc) or not self._is_timed_out(exc)), retry_after=retry_after)
 
     @staticmethod
-    def _record_rich_sent(chat_id: Any, message_id: Any, content: str) -> None:
-        """Index rich content we sent: Telegram won't echo it back in reply_to_message."""
+    async def _record_rich_sent(chat_id: Any, message_id: Any, content: str) -> None:
+        """Index rich content we sent: Telegram won't echo it back in reply_to_message.
+
+        Awaited so the store's read-modify-write + ``os.replace`` runs off the loop."""
         try:
             from gateway import rich_sent_store
-            rich_sent_store.record(str(chat_id), str(message_id), content)
+            await rich_sent_store.record_async(str(chat_id), str(message_id), content)
         except Exception:
             pass
 
@@ -1567,7 +1569,7 @@ class TelegramAdapter(BasePlatformAdapter):
         else:
             message_id = getattr(msg, "message_id", None)
         if message_id is not None:
-            self._record_rich_sent(chat_id, message_id, content)
+            await self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=str(message_id) if message_id is not None else None)
 
     def _rich_payload_base(self, chat_id: str, content: str) -> Dict[str, Any]:
@@ -1606,7 +1608,7 @@ class TelegramAdapter(BasePlatformAdapter):
                 return None
             return self._rich_transient_result(exc, "rich editMessageText")
         # Mirror the fresh-send index: a streamed final finalized via edit is otherwise never recorded.
-        self._record_rich_sent(chat_id, message_id, content)
+        await self._record_rich_sent(chat_id, message_id, content)
         return SendResult(success=True, message_id=message_id)
 
     def _should_attempt_rich_draft(self, content: str) -> bool:
@@ -6778,7 +6780,7 @@ class TelegramAdapter(BasePlatformAdapter):
     async def _handle_sticker(self, msg: Message, event: "MessageEvent") -> None:
         """Describe a sticker via vision, cached by file_unique_id; animated/video stickers get an emoji placeholder."""
         from gateway.sticker_cache import (
-            get_cached_description, cache_sticker_description, build_sticker_injection,
+            get_cached_description, cache_sticker_description_async, build_sticker_injection,
             build_animated_sticker_injection, STICKER_VISION_PROMPT)
         sticker = msg.sticker
         emoji = sticker.emoji or ""
@@ -6802,7 +6804,7 @@ class TelegramAdapter(BasePlatformAdapter):
             result = json.loads(await vision_analyze_tool(image_url=cached_path, user_prompt=STICKER_VISION_PROMPT))
             if result.get("success"):
                 description = result.get("analysis", "a sticker")
-                cache_sticker_description(sticker.file_unique_id, description, emoji, set_name)
+                await cache_sticker_description_async(sticker.file_unique_id, description, emoji, set_name)
                 event.text = build_sticker_injection(description, emoji, set_name)
             else:
                 event.text = build_sticker_injection(fallback, emoji, set_name)

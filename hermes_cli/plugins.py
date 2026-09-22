@@ -1133,10 +1133,13 @@ del _name, _method
 
 def _resolve_hook_callback_timeout() -> float:
     """Effective hook-callback timeout from ``plugins.hook_callback_timeout`` (default 30s; ``<= 0``
-    disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``)."""
+    disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``).
+
+    ``invoke_hook`` calls this once per hook invocation; ``load_config_readonly()`` serves cache hits
+    without ``_CONFIG_LOCK``, so this is a stat + dict lookup per call and needs no memo of its own.
+    """
     default = _HOOK_CALLBACK_TIMEOUT_SECS
     try:
-        from hermes_cli.config import load_config_readonly
         plugins_cfg = (load_config_readonly() or {}).get("plugins")
         if not isinstance(plugins_cfg, dict) or plugins_cfg.get("hook_callback_timeout") is None:
             return default
@@ -1185,6 +1188,7 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
         self._system_prompt_sections: Dict[str, PluginSystemPromptSection] = {}
         self._plugin_skills: Dict[str, Dict[str, Any]] = {}
         self._portable_mcp_servers: Dict[str, Dict[str, Any]] = {}
+        self._portable_mcp_server_plugins: Dict[str, str] = {}
         self._aux_tasks: Dict[str, Dict[str, Any]] = {}
         self._approval_transports: Dict[str, Any] = {}
         self._slack_action_handlers: List[tuple] = []
@@ -1529,6 +1533,9 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def get_portable_mcp_servers(self) -> Dict[str, Dict[str, Any]]:
         """Return a defensive copy of enabled portable MCP server configs."""
         return {name: dict(config) for name, config in self._portable_mcp_servers.items()}
+
+    def get_portable_mcp_server_plugins(self) -> Dict[str, str]:
+        return dict(self._portable_mcp_server_plugins)
 
     def remove_plugin_skill(self, qualified_name: str) -> None:
         """Remove a stale registry entry (silently ignores missing keys)."""

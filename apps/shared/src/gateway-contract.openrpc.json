@@ -15139,6 +15139,18 @@
             "title": "Description",
             "type": "string"
           },
+          "connector_slug": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Connector Slug"
+          },
           "installed": {
             "title": "Installed",
             "type": "boolean"
@@ -15627,6 +15639,21 @@
           },
           "status": {
             "$ref": "#/components/schemas/McpRuntimeStatus"
+          },
+          "source": {
+            "$ref": "#/components/schemas/McpServerSource"
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plugin"
           }
         },
         "required": [
@@ -15635,10 +15662,19 @@
           "tools",
           "connected",
           "disabled",
-          "status"
+          "status",
+          "source"
         ],
         "title": "McpServerRuntimeRow",
         "type": "object"
+      },
+      "McpServerSource": {
+        "enum": [
+          "config",
+          "plugin"
+        ],
+        "title": "McpServerSource",
+        "type": "string"
       },
       "McpServerStatus": {
         "additionalProperties": true,
@@ -15775,6 +15811,21 @@
             ],
             "default": null,
             "title": "Tools"
+          },
+          "source": {
+            "$ref": "#/components/schemas/McpServerSource"
+          },
+          "plugin": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Plugin"
           }
         },
         "required": [
@@ -15782,7 +15833,8 @@
           "transport",
           "args",
           "env",
-          "enabled"
+          "enabled",
+          "source"
         ],
         "title": "McpServerSummary",
         "type": "object"

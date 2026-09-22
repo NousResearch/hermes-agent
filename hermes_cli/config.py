@@ -1961,7 +1961,31 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
     return node
 
 
+def _raw_config_cache_hit(path_key: str, cache_key: Tuple[Any, ...]) -> Optional[Dict[str, Any]]:
+    """Pure lookup: the cached raw config for ``path_key`` if its signature equals ``cache_key``,
+    else ``None``. Shared by the lock-free fast path and the locked re-check of
+    ``_read_raw_config_impl`` so the predicate cannot drift between them."""
+    cached = _RAW_CONFIG_CACHE.get(path_key)
+    if cached is not None and cached[:len(cache_key)] == cache_key:
+        return cached[len(cache_key)]
+    return None
+
+
 def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    # Lock-free fast path for cache hits — same shape as `_load_config_impl`. `_RAW_CONFIG_CACHE`
+    # publishes each entry as ONE `(*sig, data)` tuple replaced wholesale, so a reader sees either
+    # the complete old entry or the complete new one; `_CONFIG_LOCK` only serializes the re-parse
+    # and the writers (`save_config()` holds it across an atomic YAML write, which used to stall
+    # every cached read for the duration). A lost race just falls through to the locked re-check.
+    try:
+        config_path = get_config_path()
+        cache_key = file_signature(config_path.stat())
+        hit = _raw_config_cache_hit(str(config_path), cache_key)
+        if hit is not None:
+            return copy.deepcopy(hit) if want_deepcopy else hit
+    except Exception:
+        pass
+
     with _CONFIG_LOCK:
         try:
             config_path = get_config_path()
@@ -1971,9 +1995,9 @@ def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
             return {}
 
         path_key = str(config_path)
-        cached = _RAW_CONFIG_CACHE.get(path_key)
-        if cached is not None and cached[:len(cache_key)] == cache_key:
-            return copy.deepcopy(cached[len(cache_key)]) if want_deepcopy else cached[len(cache_key)]
+        hit = _raw_config_cache_hit(path_key, cache_key)
+        if hit is not None:
+            return copy.deepcopy(hit) if want_deepcopy else hit
 
         try:
             with open(config_path, encoding="utf-8") as f:
@@ -2284,7 +2308,39 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
     return _deep_merge(expanded, _expand_env_vars(managed_normalized)), managed_config
 
 
+def _load_config_cache_hit(path_key: str, cache_sig: Any) -> Optional[Dict[str, Any]]:
+    """Pure lookup: the cached expanded config for ``path_key`` if its signature equals
+    ``cache_sig`` AND every ``${VAR}`` it was expanded against still has the same value, else
+    ``None``. Signatures matching is not enough: a load before load_hermes_dotenv() would otherwise
+    pin unexpanded literals (e.g. auxiliary.<task>.api_key) for the process lifetime (#58514).
+    Shared by the lock-free fast path and the locked re-check of ``_load_config_impl``."""
+    cached = _LOAD_CONFIG_CACHE.get(path_key)
+    if cached is None or cache_sig is None or cached[:8] != cache_sig:
+        return None
+    env_snapshot = cached[9] if len(cached) > 9 else {}
+    if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
+        return cached[8]
+    return None
+
+
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
+    # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
+    # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
+    # gateway that stalls every inbound message's hook path. A lost race falls through to the lock.
+    try:
+        config_path = get_config_path()
+        path_key = str(config_path)
+        if path_key in _LOAD_CONFIG_CACHE:
+            _, fast_sig = _load_config_cache_sig(config_path)
+            hit = _load_config_cache_hit(path_key, fast_sig)
+            if hit is not None:
+                return copy.deepcopy(hit) if want_deepcopy else hit
+    except Exception:
+        # Any surprise here falls through to the locked path, which is the
+        # original fully-defensive implementation.
+        pass
+
     with _CONFIG_LOCK:
         ensure_hermes_home()
         config_path = get_config_path()
@@ -2292,16 +2348,9 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
-        cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
-            # Signatures match, but the cached expansion is only valid if every ${VAR} it was
-            # expanded against still has the same value — otherwise a load before
-            # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
-            # Without this, a load_config() that ran before load_hermes_dotenv() pins unexpanded literals
-            # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
-            env_snapshot = cached[9] if len(cached) > 9 else {}
-            if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[8]) if want_deepcopy else cached[8]
+        hit = _load_config_cache_hit(path_key, cache_sig)
+        if hit is not None:
+            return copy.deepcopy(hit) if want_deepcopy else hit
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 

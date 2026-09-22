@@ -341,6 +341,7 @@ method("learning.edit", params=LearningEditParams, result=LearningMutationResult
 class McpCatalogEntry(Result):
     name: str
     description: str
+    connector_slug: str | None = None
     installed: bool
     enabled: bool
     requires: list[str]
@@ -353,6 +354,11 @@ class McpCatalogResult(Result):
 
 method("mcp.catalog", params=ProfileParams, result=McpCatalogResult,
        doc="Curated MCP presets with per-profile installed/enabled state and the env keys each needs.")
+
+
+class McpServerSource(WireEnum):
+    config = "config"
+    plugin = "plugin"
 
 
 class McpServerSummary(Result):
@@ -368,6 +374,8 @@ class McpServerSummary(Result):
     oauth_tokens_present: bool | None = None
     enabled: bool
     tools: JsonValue | None = None
+    source: McpServerSource
+    plugin: str | None = None
 
 
 class McpServersListResult(Result):
@@ -396,6 +404,8 @@ class McpServerRuntimeRow(Result):
     connected: bool
     disabled: bool
     status: McpRuntimeStatus
+    source: McpServerSource
+    plugin: str | None = None
 
 
 class McpServersStatusResult(Result):

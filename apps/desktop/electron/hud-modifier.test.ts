@@ -96,6 +96,12 @@ it('persists opt-in, fences stale native callbacks and re-arms after lock withou
   install()
   expect(native.start.mock.calls.at(-1)![2]).toBe(false)
   const [restartTap, restartStatus] = native.start.mock.calls.at(-1)!
+
+  for (const reason of ['missing-helper', 'unsupported-session']) {
+    restartStatus({ type: 'error', code: 'unavailable', reason })
+    expect(await call('settings:get')).toEqual({ enabled: true, state: 'unavailable', reason })
+  }
+
   restartStatus({ type: 'ready' })
   expect(await call('settings:get')).toEqual({ enabled: true, state: 'ready' })
   app.emit('will-quit')

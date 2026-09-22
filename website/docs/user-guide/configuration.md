@@ -238,9 +238,9 @@ honors an explicit `TMPDIR`/`TMP`/`TEMP` from the environment and otherwise
 uses a managed directory on real storage at `~/.hermes/cache/terminal`
 instead of `/tmp` — on many distros (Arch-based setups in particular) `/tmp` <!-- no-tmp: ok — explains why /tmp is avoided -->
 is a small RAM-backed tmpfs that Hermes session artifacts can fill under
-load. The managed directory is auto-pruned: artifacts older than 72 hours are
-swept hourly by gateway housekeeping and once per process on CLI-only
-installs. Set `temp_dir` to an existing absolute path to redirect session
+load. The managed directory is auto-pruned: artifacts idle for 24 hours (no write
+anywhere inside them) are swept hourly by gateway housekeeping and once per process
+on CLI-only installs. Set `temp_dir` to an existing absolute path to redirect session
 temp anywhere else; user-set paths are never auto-pruned.
 
 Independently of `terminal.temp_dir`, every Hermes process (CLI, TUI, gateway, Desktop
@@ -249,9 +249,14 @@ backend, cron) and every child it launches gets `TMPDIR`, `TMP` and `TEMP` point
 `mktemp`, browser profiles and probe scripts all land on real storage instead of a
 RAM-backed system temp dir. The system prompt names this directory as the scratch
 directory. Hermes only sets these when they are not already set — a `TMPDIR` exported
-by you or by the OS (macOS `/var/folders`, Windows `%TEMP%`) is left alone. Entries
-older than 72 hours are pruned at startup (at most once per hour). `hermes doctor`
-reports the directory and its size.
+by you or by the OS (macOS `/var/folders`, Windows `%TEMP%`) is left alone. Entries are
+pruned at startup (at most once per hour) once they have been **idle for 24 hours**: an entry
+stays as long as anything anywhere inside it was written in the last day, and goes a day after
+the last write. Before an idle entry is deleted, Hermes also stops any process still running
+with its working directory inside that entry (or inside a scratch path that no longer exists,
+such as a headless browser left behind by a test run) and drops any `git worktree`
+registration that pointed into it. `hermes doctor` reports the directory and its size, and
+warns about directories over 1 GB elsewhere under `cache/` that no pruner covers.
 
 `desktop.font_family` sets the font for chat and the rest of the Hermes Desktop interface (the terminal pane has its own key above). Give it one installed family name (for example, `OpenDyslexic` or `Atkinson Hyperlegible`) or a CSS font stack; Hermes keeps the active theme's own stack behind it so CJK and emoji glyphs still resolve, and an empty value uses the theme's font. Edit it in **Settings → Appearance → Chat Font**.
 
@@ -1362,10 +1367,12 @@ The one explicit knob is the cache TTL tier Hermes requests on Anthropic-style b
 
 ```yaml
 prompt_caching:
-  cache_ttl: "5m"   # "5m" or "1h" (Anthropic-supported tiers); other values are ignored
+  cache_ttl: "5m"   # "5m", "1h" (Anthropic-supported tiers) or "auto"; other values are ignored
 ```
 
-`cache_ttl` selects the breakpoint TTL Hermes attaches for Claude via the native Anthropic API, OpenRouter, and Nous Portal. Only the two Anthropic-supported tiers (`"5m"`, `"1h"`) are honored — any other value is ignored. Providers with their own caps (e.g. Qwen Cloud, which maxes at 5 minutes) still clamp to what the upstream allows.
+`cache_ttl` selects the breakpoint TTL Hermes attaches for Claude via the native Anthropic API, OpenRouter, and Nous Portal. The two Anthropic tiers (`"5m"`, `"1h"`) are sent as-is; any other value is ignored. Providers with their own caps (e.g. Qwen Cloud, which maxes at 5 minutes) still clamp to what the upstream allows.
+
+The 1h tier writes at 2x the base input price (5m writes at 1.25x) and only pays off when your turns are more than five minutes apart — otherwise every tool result is written at the dearer rate for retention nobody uses. `"auto"` picks the tier per session from who paces it: `1h` for sessions a person types into (CLI, TUI, Desktop, Telegram/Discord/Slack and the other messaging platforms), `5m` for machine-paced ones (subagents, cron, `hermes -q` one-shots, webhooks, Kanban workers, the API server, tool-invoked and batch runs). On an install where interactive sessions are parked and resumed through the day, `auto` cut the interactive cache-write bill by roughly 40% while leaving fan-out subagent spend untouched. Delegated subagents are always clamped to `5m`, whatever the setting.
 
 ## Auxiliary Models
 

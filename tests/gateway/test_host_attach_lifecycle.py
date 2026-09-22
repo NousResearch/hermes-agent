@@ -241,3 +241,21 @@ def test_a_foreign_record_is_not_a_record(tmp_path, monkeypatch, owner_pid):
 
     assert hr.read_record(hr.ROLE_GATEWAY) is None
     assert host_attach.host_gateway() is None
+
+
+def test_the_default_profile_arriving_second_starts_beside_a_standalone_named_owner(tmp_path, monkeypatch, owner_pid):
+    """The field shape of #118282: after a fleet restart a NAMED standalone unit claimed the host first and
+    the DEFAULT gateway arrived second. Refusing it exited 78 and its system unit crash-looped; the default
+    profile is a peer in a per-profile fleet, not a latecomer to a multiplexer."""
+    root = tmp_path / "root"
+    owner_home = root / "profiles" / "agent-ops"
+    _publish(owner_pid, owner_home, ("agent-ops",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["agent-ops"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: root)
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["agent-ops"]})
+
+    decision = host_attach.decide(root)
+    assert host_attach.profile_name_for_home(root) == "default"
+    assert decision.outcome == host_attach.START
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None

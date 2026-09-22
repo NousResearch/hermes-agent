@@ -161,8 +161,8 @@ def _build_roster(*, excluded: set[str] | None = None, force_keep: set[str] | No
     except Exception as exc:
         logger.warning("decompose: failed to list profiles: %s", exc)
         return [], set()
-    excluded = excluded or set()
-    force_keep = force_keep or set()
+    excluded = set(excluded or ())
+    force_keep = set(force_keep or ())
     roster = []
     for p in all_profiles:
         if getattr(p, "retired", False):
@@ -221,9 +221,16 @@ def _load_routing(*, root_assignee: Optional[str] = None) -> _Routing:
         item.strip() for item in ([str(n) for n in raw_excluded] if isinstance(raw_excluded, (list, tuple)) else str(raw_excluded).split(","))
         if item.strip()
     }
-    force_keep = {name for name in (orchestrator, default_assignee) if name in excluded}
+    force_keep = {orchestrator, default_assignee}
+    try:
+        retired_targets = {
+            p.name for p in profiles_mod.list_profiles() if getattr(p, "retired", False)
+        }
+    except Exception:
+        retired_targets = set()
     for name in sorted(force_keep):
-        logger.warning("decompose: routing target %r is excluded but force-kept", name)
+        if name in excluded or name in retired_targets:
+            logger.warning("decompose: routing target %r is excluded but force-kept", name)
     roster, valid_names = _build_roster(excluded=excluded, force_keep=force_keep)
     return _Routing(
         orchestrator=orchestrator,

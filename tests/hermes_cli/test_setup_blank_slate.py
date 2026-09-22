@@ -86,6 +86,15 @@ class TestBlankSlateMinimizeConfig:
         assert cfg["checkpoints"]["enabled"] is False
         assert cfg["smart_model_routing"]["enabled"] is False
 
+    def test_messaging_platforms_keep_their_tool_progress_default(self):
+        """A global display.tool_progress beats every platform tier (Telegram/Slack off)."""
+        from gateway.display_config import _PLATFORM_DEFAULTS, resolve_tool_progress
+
+        cfg = {}
+        _blank_slate_minimize_config(cfg)
+        for platform in _PLATFORM_DEFAULTS:
+            assert resolve_tool_progress(cfg, platform) == resolve_tool_progress({}, platform), platform
+
 
 class TestBlankSlateFork:
     """The post-baseline fork: finish now vs walk through configurations."""

@@ -1803,9 +1803,15 @@ display:
   #   verbose: Full args, results, and debug logs (same as /verbose)
   #   log:     Silent in chat; append every tool call to ~/.hermes/logs/tool_calls.log (gateway only)
   # Toggle at runtime with /verbose in the CLI
-  tool_progress: all
+  # tool_progress: all
 
-  # Per-platform defaults can be quieter than the global setting. Telegram
+  # tool_progress, interim_assistant_messages, long_running_notifications,
+  # busy_ack_detail and show_reasoning are left unset here on purpose: a value
+  # set under display: applies to EVERY messaging platform and replaces its
+  # built-in default. To change one platform, set it under
+  # display.platforms.<platform> instead.
+  #
+  # Per-platform defaults can be quieter than the CLI. Telegram
   # tunes for mobile: tool_progress and busy_ack_detail default off (no
   # per-tool breadcrumb stream, no "iteration 21/60" debug detail in busy
   # acks or heartbeats), but interim_assistant_messages and
@@ -1836,9 +1842,10 @@ display:
   # assistant narration streamed between tool calls is kept in the transcript
   # instead of the bubble collapsing to only the final message on completion.
   # Independent of tool_progress and gateway streaming.
-  #   true:  Keep/send mid-turn assistant updates (default)
+  #   true:  Keep/send mid-turn assistant updates (default; off on platforms
+  #          that cannot edit messages)
   #   false: Only keep/send the final response
-  interim_assistant_messages: true
+  # interim_assistant_messages: true
 
   # Opt-in: hide automatic warning/diagnostic notifications (compression, retry
   # and fallback notices, credit/subagent failure lines, inactivity and watchdog
@@ -1853,16 +1860,17 @@ display:
   # notifications even if agent.gateway_notify_interval is non-zero. The
   # heartbeat edits a single message in place (where the adapter supports
   # editing) instead of posting a new bubble each interval.
-  # Default: true everywhere, including Telegram (silent agents are worse
-  # than a single edit-in-place heartbeat).
-  long_running_notifications: true
+  # Default: true, including Telegram (silent agents are worse than a single
+  # edit-in-place heartbeat); false on Slack and on platforms that cannot edit.
+  # long_running_notifications: true
 
   # Include detailed iteration/tool/status context in busy acknowledgments
   # and long-running heartbeats. When true, busy acks show "iteration 21/60,
   # terminal, 10 min" and the heartbeat shows "⏳ Working — 12 min,
-  # iteration 21/60, terminal". When false (Telegram default), both stay
-  # terse: "Interrupting current task" and "⏳ Working — 12 min, terminal".
-  busy_ack_detail: true
+  # iteration 21/60, terminal". When false (Telegram, Slack and no-edit
+  # platform default), both stay terse: "Interrupting current task" and
+  # "⏳ Working — 12 min, terminal".
+  # busy_ack_detail: true
 
   # What Enter does when Hermes is already busy (CLI and gateway platforms).
   #   interrupt: Interrupt the current run and redirect Hermes (default)
@@ -1904,9 +1912,9 @@ display:
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.
-  #   true:  Show the reasoning box (default)
-  #   false: Hide reasoning
-  show_reasoning: true
+  #   true:  Show the reasoning box (CLI default)
+  #   false: Hide reasoning (messaging platform default)
+  # show_reasoning: true
 
   # Stream tokens to the terminal as they arrive instead of waiting for the
   # full response. The response box opens on first token and text appears

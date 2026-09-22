@@ -3106,7 +3106,15 @@ def edit_config():
         return
     config_path = get_config_path()
     if not config_path.exists():
-        save_config(DEFAULT_CONFIG, strip_defaults=False)
+        # Seed like the installer and `hermes doctor --fix`: DEFAULT_CONFIG written verbatim pins CLI display values
+        # (show_reasoning, interim_assistant_messages, ...) globally, over every messaging platform's own defaults.
+        template = get_project_root() / "cli-config.yaml.example"
+        if template.exists():
+            config_path.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(template, config_path)
+            _secure_file(config_path)
+        else:
+            save_config(DEFAULT_CONFIG)
         print(f"Created {config_path}")
 
     # Windows lands on notepad even without Git Bash/nano; POSIX prefers nano/vim, which headless

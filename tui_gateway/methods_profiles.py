@@ -427,9 +427,10 @@ def _describe_toolsets(cfg):
     """``(toolsets, pinned_set)`` as the `hermes tools` checklist presents them (the raw registry
     leaks platform composites and reports everything enabled without a pin)."""
     from hermes_cli.tools_config import (
-        _get_effective_configurable_toolsets, _get_platform_tools, _toolset_allowed_for_platform)
+        _coerce_platform_toolsets_value, _get_effective_configurable_toolsets, _get_platform_tools,
+        _toolset_allowed_for_platform)
     from toolsets import resolve_toolset
-    pinned = (cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}).get("enabled_toolsets")
+    pinned = _coerce_platform_toolsets_value((cfg.get("platform_toolsets") or {}).get("cli"), "cli")
     pinned_set = _clean_names(pinned) if isinstance(pinned, list) else None
     platform_enabled = _try(lambda: set(_get_platform_tools(cfg, "cli", include_default_mcp_servers=False)), set())
     default_off = _try(lambda: _lazy("hermes_cli.tools_config", "_DEFAULT_OFF_TOOLSETS"), set())
@@ -556,13 +557,15 @@ def _clean_names(values) -> set:
 
 
 def _save_toolset_pin(cfg, enabled, save_config) -> None:
-    wanted = sorted(_clean_names(enabled))
-    tools_cfg = cfg.get("tools") if isinstance(cfg.get("tools"), dict) else {}
+    """Pin ``platform_toolsets.cli``: the key ``_load_enabled_toolsets`` reads and ``hermes tools`` writes.
+    An empty selection clears the pin so the platform default applies again."""
+    from hermes_cli.tools_config import _save_platform_tools
+
+    wanted = _clean_names(enabled)
     if wanted:
-        tools_cfg["enabled_toolsets"] = wanted
-    else:
-        tools_cfg.pop("enabled_toolsets", None)
-    cfg["tools"] = tools_cfg
+        _save_platform_tools(cfg, "cli", wanted)
+    elif isinstance(cfg.get("platform_toolsets"), dict):
+        cfg["platform_toolsets"].pop("cli", None)
     save_config(cfg)
 
 

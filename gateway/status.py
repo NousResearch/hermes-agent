@@ -765,8 +765,19 @@ def _pid_from_record(record: Optional[dict[str, Any]], key: str = "pid") -> Opti
 
 
 def _start_times_conflict(recorded_start: Any, current_start: Any) -> bool:
-    """PID-reuse guard: True only when BOTH start times are known and differ."""
-    return None not in (recorded_start, current_start) and current_start != recorded_start
+    """PID-reuse guard: True only when both known fingerprints identify different owners.
+
+    The same process can drift by a small bounded amount between the claim-time and
+    liveness readings on macOS. Use the shared reconciliation comparator here too;
+    exact equality made a live launchd gateway disappear from ``cron status`` while
+    its scheduler continued firing jobs.
+    """
+    if None in (recorded_start, current_start):
+        return False
+    try:
+        return not start_time_fingerprints_match(recorded_start, current_start)
+    except (TypeError, ValueError):
+        return True
 
 
 def _live_pid_from_record(record: Optional[dict[str, Any]]) -> Optional[int]:

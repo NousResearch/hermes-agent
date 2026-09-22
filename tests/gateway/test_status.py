@@ -375,6 +375,27 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+    def test_runtime_status_running_pid_accepts_bounded_start_time_drift(self, monkeypatch):
+        """A launchd gateway remains live when two same-process readings differ by the
+        documented macOS drift tolerance. This is the fallback used by named-profile
+        ``cron status`` after multiplex migration."""
+        payload = {
+            "pid": 139,
+            "gateway_state": "running",
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "gateway", "run"],
+            "start_time": 178864182760,
+        }
+        default_home = Path("/opt/data")
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 178864182960)
+        monkeypatch.setattr(status, "_read_process_cmdline", lambda pid: "hermes gateway run")
+
+        assert status.get_runtime_status_running_pid(payload, expected_home=default_home) == 139
+
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 178864182961)
+        assert status.get_runtime_status_running_pid(payload, expected_home=default_home) is None
+
 
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the

@@ -9,14 +9,21 @@ from unittest.mock import AsyncMock, patch
 
 import pytest
 
+import tools.homeassistant_tool as ha_tool
 from tools.homeassistant_tool import (
     _check_ha_available,
     _filter_and_summarize,
     _build_service_payload,
     _parse_service_response,
     _get_headers,
+    _get_entity_filter_config,
+    _parse_entity_filter_patterns,
+    _entity_matches,
+    _apply_operator_filters,
+    _operator_filter_violation,
     _handle_get_state,
     _handle_call_service,
+    _handle_list_entities,
     _BLOCKED_DOMAINS,
     _ENTITY_ID_RE,
     _SERVICE_NAME_RE,
@@ -378,3 +385,321 @@ class TestRegistration:
         invalidate_check_fn_cache()
         defs = registry.get_definitions({"ha_list_entities", "ha_get_state", "ha_call_service"})
         assert len(defs) == 3
+
+
+# ---------------------------------------------------------------------------
+# Tool schema: the description must steer the model toward targeted queries
+# ---------------------------------------------------------------------------
+
+
+class TestListEntitiesSchema:
+    def test_schema_advertises_filters(self):
+        schema = ha_tool.HA_LIST_ENTITIES_SCHEMA
+        props = schema["parameters"]["properties"]
+        for key in ("domain", "area", "name", "entity_ids", "max"):
+            assert key in props, f"schema missing {key!r}"
+
+    def test_description_steers_to_filters_without_asserting_a_fixed_cap(self):
+        """The old 'Omit to list all entities' framing was the footgun; but the
+        cap is operator-configurable, so the description must not present a
+        hardcoded number as a guarantee either."""
+        desc = ha_tool.HA_LIST_ENTITIES_SCHEMA["description"].lower()
+        assert "filter" in desc
+        assert "truncated" in desc
+        assert "omit to list all" not in desc
+        assert "returns only the first 100" not in desc  # 100 is no longer a fact
+        assert "hass_max_entities" in desc  # the cap is mentioned as operator config
+
+    def test_entity_ids_schema_is_a_string_array(self):
+        assert ha_tool.HA_LIST_ENTITIES_SCHEMA["parameters"]["properties"]["entity_ids"]["type"] == "array"
+        assert ha_tool.HA_LIST_ENTITIES_SCHEMA["parameters"]["properties"]["entity_ids"]["items"] == {"type": "string"}
+
+
+# ---------------------------------------------------------------------------
+# Targeted queries: entity-id list, name/area match, cap, operator lists
+# ---------------------------------------------------------------------------
+
+def _reset_filter_mirrors(monkeypatch):
+    """Clear the module-level allow/deny/cap mirrors + env so each test is isolated."""
+    monkeypatch.setattr(ha_tool, "_HASS_ENTITY_ALLOWLIST", "")
+    monkeypatch.setattr(ha_tool, "_HASS_ENTITY_DENYLIST", "")
+    monkeypatch.setattr(ha_tool, "_HASS_MAX_ENTITIES", "")
+    monkeypatch.delenv("HASS_ENTITY_ALLOWLIST", raising=False)
+    monkeypatch.delenv("HASS_ENTITY_DENYLIST", raising=False)
+    monkeypatch.delenv("HASS_MAX_ENTITIES", raising=False)
+
+
+# A realistic-ish payload with a zombie aux-entity cluster left behind by a
+# device migration, plus a live duplicate of the same physical room.
+ZOMBY_STATES = [
+    {"entity_id": "climate.office", "state": "heat",
+     "attributes": {"friendly_name": "Office Thermostat", "current_temperature": 28.0, "temperature": 28.0}},
+    {"entity_id": "office_thermostat.0_external_temperature", "state": "0.0",
+     "attributes": {"friendly_name": "Office Thermostat External Temperature"}},
+    {"entity_id": "office_thermostat.0_valve_position", "state": "0",
+     "attributes": {"friendly_name": "Office Thermostat Valve Position"}},
+    {"entity_id": "climate.office_zombie", "state": "off",
+     "attributes": {"friendly_name": "Office Thermostat (duplicate)", "current_temperature": 22.0}},
+    {"entity_id": "sensor.kitchen_temp", "state": "24.0",
+     "attributes": {"friendly_name": "Kitchen Temperature"}},
+]
+
+
+class TestTargetedEntityIdFilter:
+    def test_entity_ids_returns_only_requested(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        result = _filter_and_summarize(ZOMBY_STATES, entity_ids=["climate.office", "sensor.kitchen_temp"])
+        assert result["count"] == 2
+        ids = {e["entity_id"] for e in result["entities"]}
+        assert ids == {"climate.office", "sensor.kitchen_temp"}
+
+    def test_entity_ids_accepts_comma_string(self, monkeypatch):
+        """The XML/LLM tool-calling path may deliver the list as a string."""
+        _reset_filter_mirrors(monkeypatch)
+        result = _filter_and_summarize(ZOMBY_STATES, entity_ids="climate.office, sensor.kitchen_temp")
+        assert result["count"] == 2
+        assert {e["entity_id"] for e in result["entities"]} == {"climate.office", "sensor.kitchen_temp"}
+
+    def test_entity_ids_supersedes_domain(self, monkeypatch):
+        """An explicit id list wins over a broader co-passed domain filter."""
+        _reset_filter_mirrors(monkeypatch)
+        result = _filter_and_summarize(ZOMBY_STATES, domain="light", entity_ids=["sensor.kitchen_temp"])
+        assert [e["entity_id"] for e in result["entities"]] == ["sensor.kitchen_temp"]
+
+    def test_handler_passes_entity_ids_through(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        with patch.object(ha_tool, "_run_async", return_value={"count": 1, "entities": []}) as run:
+            _handle_list_entities({"entity_ids": ["climate.office"]})
+            coro = run.call_args[0][0]
+            try:
+                assert coro.cr_frame.f_locals["entity_ids"] == ["climate.office"]
+            finally:
+                coro.close()
+
+
+class TestNameAreaFilter:
+    def test_name_substring_matches_friendly_name_and_entity_id(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        result = _filter_and_summarize(ZOMBY_STATES, name="kitchen")
+        assert [e["entity_id"] for e in result["entities"]] == ["sensor.kitchen_temp"]
+
+    def test_name_matches_entity_id_when_no_friendly_name(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        states = [{"entity_id": "sensor.office_co2", "state": "600", "attributes": {}}]
+        result = _filter_and_summarize(states, name="office")
+        assert [e["entity_id"] for e in result["entities"]] == ["sensor.office_co2"]
+
+    def test_area_filter_unaffected_by_name_param(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        states = [
+            {"entity_id": "switch.a", "state": "on", "attributes": {"area": "kitchen"}},
+            {"entity_id": "switch.b", "state": "on", "attributes": {"area": "garage"}},
+        ]
+        result = _filter_and_summarize(states, area="kitchen")
+        assert [e["entity_id"] for e in result["entities"]] == ["switch.a"]
+
+
+class TestMaxEntitiesConfig:
+    def test_unset_env_means_no_cap_returns_everything(self, monkeypatch):
+        """Compatibility guarantee: unset = current upstream behaviour."""
+        _reset_filter_mirrors(monkeypatch)
+        big = [
+            {"entity_id": f"sensor.idx_{i}", "state": "0", "attributes": {}}
+            for i in range(2500)
+        ]
+        result = _filter_and_summarize(big)
+        assert result["count"] == 2500
+        assert "truncated" not in result
+
+    def test_env_set_caps_and_marks_truncated(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "100")
+        big = [
+            {"entity_id": f"sensor.idx_{i}", "state": "0", "attributes": {}}
+            for i in range(2500)
+        ]
+        result = _filter_and_summarize(big)
+        assert result["count"] == 100
+        assert result["truncated"] is True
+        assert "2500" in result["truncated_note"]
+
+    def test_env_set_below_count_no_truncation_flag(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "10")
+        result = _filter_and_summarize(ZOMBY_STATES)
+        assert result["count"] == len(ZOMBY_STATES)
+        assert "truncated" not in result
+
+    def test_env_set_still_caps_a_filtered_query(self, monkeypatch):
+        """The cap applies even when domain/name filters are present."""
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "200")
+        big = [
+            {"entity_id": f"sensor.idx_{i}", "state": "0", "attributes": {}}
+            for i in range(250)
+        ]
+        result = _filter_and_summarize(big, domain="sensor")
+        assert result["count"] == 200
+        assert result["truncated"] is True
+        assert "250" in result["truncated_note"]
+
+    def test_explicit_max_overrides_env(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "100")
+        big = [
+            {"entity_id": f"sensor.idx_{i}", "state": "0", "attributes": {}}
+            for i in range(300)
+        ]
+        result = _filter_and_summarize(big, max_entities=50)
+        assert result["count"] == 50
+        assert result["truncated"] is True
+
+    def test_handler_coerces_string_max(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        with patch.object(ha_tool, "_run_async", return_value={"count": 1, "entities": []}) as run:
+            _handle_list_entities({"max": "50"})
+            coro = run.call_args[0][0]
+            try:
+                assert coro.cr_frame.f_locals["max_entities"] == 50
+            finally:
+                coro.close()
+
+    def test_handler_rejects_non_integer_max(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        result = json.loads(_handle_list_entities({"max": "lots"}))
+        assert "error" in result
+        assert "max" in result["error"].lower()
+
+    def test_get_max_entities_config_reads_env(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        assert ha_tool._get_max_entities_config() is None
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "250")
+        assert ha_tool._get_max_entities_config() == 250
+
+    def test_get_max_entities_config_rejects_bad_values(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "not-a-number")
+        assert ha_tool._get_max_entities_config() is None
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "0")
+        assert ha_tool._get_max_entities_config() is None
+        monkeypatch.setenv("HASS_MAX_ENTITIES", "-5")
+        assert ha_tool._get_max_entities_config() is None
+
+
+class TestOperatorAllowDeny:
+    def test_denylist_excludes_zombie_cluster(self, monkeypatch):
+        """Zombie entities left behind by a device migration are hidden by config."""
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_DENYLIST", "office_thermostat_*")
+        result = _filter_and_summarize(ZOMBY_STATES)
+        ids = {e["entity_id"] for e in result["entities"]}
+        assert "office_thermostat.0_external_temperature" not in ids
+        assert "office_thermostat.0_valve_position" not in ids
+        assert "climate.office" in ids  # live entity with different id survives
+
+    def test_denylist_vetoes_even_when_allowlisted(self, monkeypatch):
+        """Denylist is a final veto: an entity in both lists is excluded."""
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_ALLOWLIST", "climate.*")
+        monkeypatch.setenv("HASS_ENTITY_DENYLIST", "climate.office_zombie")
+        result = _filter_and_summarize(ZOMBY_STATES)
+        ids = {e["entity_id"] for e in result["entities"]}
+        assert ids == {"climate.office"}  # zombie in both lists dropped; non-allowlisted dropped
+
+    def test_allowlist_only_keeps_matched(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_ALLOWLIST", "sensor.kitchen_temp")
+        result = _filter_and_summarize(ZOMBY_STATES)
+        assert [e["entity_id"] for e in result["entities"]] == ["sensor.kitchen_temp"]
+
+    def test_patterns_parsed_from_env(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_DENYLIST", "  a.b , c.d  ")
+        allow, deny = _get_entity_filter_config()
+        assert allow == []
+        assert deny == ["a.b", "c.d"]
+
+    def test_apply_operator_filters_noops_when_empty(self):
+        out = _apply_operator_filters(ZOMBY_STATES, [], [])
+        assert out is ZOMBY_STATES
+
+    def test_entity_matches_prefix_exact_and_glob(self):
+        assert _entity_matches("office_thermostat.0_external_temperature", ["office_thermostat_*"])
+        assert _entity_matches("office_thermostat.0", ["office_thermostat.0"])
+        assert _entity_matches("office_thermostat.0", ["office_thermostat."])
+        assert not _entity_matches("sensor.other", ["office_thermostat.*"])
+
+
+# ---------------------------------------------------------------------------
+# Single-entity read path (ha_get_state) honors the operator allow/deny lists
+# ---------------------------------------------------------------------------
+
+
+class TestGetStateOperatorFilters:
+    """A denylisted zombie must not be readable via ha_get_state either."""
+
+    def test_denylisted_entity_is_refused_with_clear_error(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_DENYLIST", "office_thermostat_*")
+        # Refused BEFORE any network call — _run_async must not be reached.
+        with patch.object(ha_tool, "_run_async") as run:
+            result = json.loads(_handle_get_state(
+                {"entity_id": "office_thermostat.0_external_temperature"}
+            ))
+        assert "error" in result
+        assert "operator config" in result["error"]
+        assert "HASS_ENTITY_DENYLIST" in result["error"]
+        run.assert_not_called()
+
+    def test_allowlist_blocks_non_listed_entity(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_ALLOWLIST", "climate.*")
+        with patch.object(ha_tool, "_run_async") as run:
+            result = json.loads(_handle_get_state({"entity_id": "sensor.kitchen_temp"}))
+        assert "error" in result
+        assert "HASS_ENTITY_ALLOWLIST" in result["error"]
+        run.assert_not_called()
+
+    def test_denylist_vetoes_allowlisted_entity_on_read(self, monkeypatch):
+        """Consistent with the list path: deny is a final veto."""
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_ALLOWLIST", "climate.*")
+        monkeypatch.setenv("HASS_ENTITY_DENYLIST", "climate.office_zombie")
+        with patch.object(ha_tool, "_run_async") as run:
+            result = json.loads(_handle_get_state({"entity_id": "climate.office_zombie"}))
+        assert "error" in result
+        assert "HASS_ENTITY_DENYLIST" in result["error"]
+        run.assert_not_called()
+
+    def test_normal_entity_still_reads(self, monkeypatch):
+        """No operator config: a valid entity reaches the fetch layer."""
+        _reset_filter_mirrors(monkeypatch)
+        with patch.object(ha_tool, "_async_get_state", new_callable=AsyncMock) as fetch:
+            fetch.return_value = {"entity_id": "climate.office", "state": "heat"}
+            result = json.loads(_handle_get_state({"entity_id": "climate.office"}))
+        assert result["result"]["entity_id"] == "climate.office"
+        fetch.assert_awaited_once_with("climate.office")
+
+    def test_operator_configured_but_matched_entity_reads(self, monkeypatch):
+        """With a denylist set, an entity that does NOT match it still reads."""
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_DENYLIST", "office_thermostat_*")
+        with patch.object(ha_tool, "_async_get_state", new_callable=AsyncMock) as fetch:
+            fetch.return_value = {"entity_id": "climate.office", "state": "heat",
+                                  "current_temperature": 28.0}
+            result = json.loads(_handle_get_state({"entity_id": "climate.office"}))
+        assert result["result"]["entity_id"] == "climate.office"
+        fetch.assert_awaited_once_with("climate.office")
+
+    def test_violation_helper_returns_none_when_unset(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        assert _operator_filter_violation("sensor.anything") is None
+
+    def test_violation_helper_reports_deny_then_allow(self, monkeypatch):
+        _reset_filter_mirrors(monkeypatch)
+        monkeypatch.setenv("HASS_ENTITY_ALLOWLIST", "climate.*")
+        assert _operator_filter_violation("sensor.x") == "not in HASS_ENTITY_ALLOWLIST"
+        monkeypatch.setenv("HASS_ENTITY_DENYLIST", "office_thermostat_*")
+        assert _operator_filter_violation("office_thermostat.0_valve_position") == (
+            "excluded by HASS_ENTITY_DENYLIST"
+        )

@@ -2794,6 +2794,22 @@ OPTIONAL_ENV_VARS = {
         "Exact Firecrawl tool-gateway origin override for Nous Subscribers only (optional)",
         "Firecrawl gateway URL (leave empty to derive from domain)", None, password=False,
         advanced=True),
+    # Operator entity filters for the Home Assistant toolset (tools/homeassistant_tool.py).
+    "HASS_ENTITY_DENYLIST": _tool(
+        "Comma-separated entity_id prefixes or globs that ha_list_entities always excludes "
+        "(e.g. 'office_thermostat_*' to hide a zombie entity cluster left behind by a migration)",
+        "Home Assistant entity denylist (comma-separated, e.g. office_thermostat_*)", None,
+        password=False, advanced=True),
+    "HASS_ENTITY_ALLOWLIST": _tool(
+        "Comma-separated entity_id prefixes or globs that ha_list_entities is limited to "
+        "(a whitelist; HASS_ENTITY_DENYLIST still acts as a final veto on top of it)",
+        "Home Assistant entity allowlist (comma-separated, e.g. climate.*, sensor.office_*)", None,
+        password=False, advanced=True),
+    "HASS_MAX_ENTITIES": _tool(
+        "Optional cap on how many entities ha_list_entities returns (unset = no cap; a per-call "
+        "'max' parameter overrides it; results beyond the cap are marked truncated)",
+        "Home Assistant max entities per list call (leave empty for no cap)", None,
+        password=False, advanced=True),
     "TOOL_GATEWAY_URL": _tool(
         "Exact shared tool-gateway origin for on-origin vendors and media uploads (optional)",
         "Shared tool-gateway URL (leave empty to derive from domain)", None,

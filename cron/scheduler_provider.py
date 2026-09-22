@@ -126,14 +126,42 @@ _LOCAL_SCHEDULED_MODEL_PROVIDERS = frozenset({
 })
 
 
+def _scheduled_moa_preset_uses_local_route(model: Any, cfg: dict) -> bool:
+    """Whether any enabled route inside a MoA preset resolves to a local endpoint."""
+    from agent.errors import MoAPresetNotFoundError
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    try:
+        preset = resolve_moa_preset(cfg.get("moa") or {}, str(model or "").strip() or None)
+    except MoAPresetNotFoundError:
+        # An unknown preset will fail through normal provider resolution.  The virtual MoA URI
+        # alone is not evidence that the preset runs on this machine.
+        return False
+    routes = [
+        entry for entry in preset.get("reference_models", [])
+        if isinstance(entry, dict) and entry.get("enabled", True)
+    ]
+    aggregator = preset.get("aggregator")
+    if isinstance(aggregator, dict):
+        routes.append(aggregator)
+    return any(
+        _scheduled_model_route_is_local(
+            route.get("provider"), route.get("base_url"), model=route.get("model"), cfg=cfg,
+        )
+        for route in routes
+    )
+
+
 def _scheduled_model_route_is_local(
-    provider: Any, base_url: Any = None, *, cfg: dict | None = None,
+    provider: Any, base_url: Any = None, *, model: Any = None, cfg: dict | None = None,
 ) -> bool:
     """Whether a scheduled model route is explicitly machine/local-network bound."""
     provider_name = str(provider or "").strip().lower()
     if provider_name in _LOCAL_SCHEDULED_MODEL_PROVIDERS:
         return True
     url = str(base_url or "").strip()
+    if provider_name == "moa" and (not url or url.lower() == "moa://local"):
+        return _scheduled_moa_preset_uses_local_route(model, cfg) if cfg is not None else False
     if not url and provider_name and cfg is not None:
         from hermes_cli.config_providers import get_compatible_custom_providers
         from hermes_cli.providers import resolve_provider_full
@@ -162,13 +190,13 @@ def scheduled_model_fallback_chain(job: dict, cfg: dict) -> list[dict]:
 
     chain = [entry for entry in get_fallback_chain(cfg) if isinstance(entry, dict)]
     if _scheduled_model_route_is_local(
-        job.get("provider"), job.get("base_url"), cfg=cfg,
+        job.get("provider"), job.get("base_url"), model=job.get("model"), cfg=cfg,
     ):
         return chain
     return [
         entry for entry in chain
         if not _scheduled_model_route_is_local(
-            entry.get("provider"), entry.get("base_url"), cfg=cfg,
+            entry.get("provider"), entry.get("base_url"), model=entry.get("model"), cfg=cfg,
         )
     ]
 

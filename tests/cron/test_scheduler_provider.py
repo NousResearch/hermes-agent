@@ -1041,6 +1041,33 @@ def test_scheduled_cloud_route_skips_named_custom_provider_with_lan_endpoint():
     ) == [cloud]
 
 
+def test_scheduled_cloud_route_keeps_cloud_backed_moa_fallback():
+    """MoA's virtual URI does not make a cloud-backed preset a local model route."""
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+
+    moa = {"provider": "moa", "model": "cloud-review"}
+    cloud = {"provider": "nim", "model": "nvidia/nemotron-test"}
+    cfg = {
+        "moa": {
+            "default_preset": "cloud-review",
+            "presets": {
+                "cloud-review": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                        {"provider": "xai", "model": "grok-4-fast"},
+                    ],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.5"},
+                },
+            },
+        },
+        "fallback_providers": [moa, cloud],
+    }
+
+    assert scheduled_model_fallback_chain(
+        {"id": "cloud-only", "provider": "nous"}, cfg,
+    ) == [moa, cloud]
+
+
 def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     """Hot-serve: with a callable ``profile_homes`` the ticker re-reads the served set every cycle,
     so a profile created after the multiplexer started gets its jobs fired without a restart."""

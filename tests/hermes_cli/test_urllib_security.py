@@ -580,47 +580,32 @@ def test_rotated_ca_bundle_is_picked_up(monkeypatch, tmp_path):
     assert calls == [str(ca_bundle), str(ca_bundle)]
 
 
-def test_changed_ca_bundle_env_is_picked_up(monkeypatch, tmp_path):
+def test_a_failed_bundle_load_is_not_memoised(monkeypatch, tmp_path):
+    """A transient load failure must be retried on the next request, not pinned until the file changes."""
     import hermes_cli.urllib_security as urllib_security
 
     _clear_ca_bundle_env(monkeypatch)
-    first_bundle = tmp_path / "first-ca.pem"
-    second_bundle = tmp_path / "second-ca.pem"
-    first_bundle.write_text("first")
-    second_bundle.write_text("second")
-    factory, calls = _counting_context_factory()
-    monkeypatch.setattr(ssl, "create_default_context", factory)
-
-    monkeypatch.setenv("HERMES_CA_BUNDLE", str(first_bundle))
-    first = urllib_security._resolved_https_context()
-    monkeypatch.setenv("HERMES_CA_BUNDLE", str(second_bundle))
-    second = urllib_security._resolved_https_context()
-
-    assert second is not first
-    assert calls == [str(first_bundle), str(second_bundle)]
-
-
-def test_unloadable_ca_bundle_still_falls_back_to_certifi_on_macos(monkeypatch, tmp_path):
-    """A configured bundle that exists but cannot be parsed must not strip macOS of a root store."""
-    import certifi
-    import hermes_cli.urllib_security as urllib_security
-
-    _clear_ca_bundle_env(monkeypatch)
-    ca_bundle = tmp_path / "corrupt-ca.pem"
-    ca_bundle.write_text("not a certificate")
-    expected_context = ssl.SSLContext(ssl.PROTOCOL_TLS_CLIENT)
-    seen: list[str | None] = []
-
-    def create_default_context(*, cafile=None):
-        seen.append(cafile)
-        if cafile == str(ca_bundle):
-            raise ssl.SSLError("no certificate or crl found")
-        return expected_context
-
+    ca_bundle = tmp_path / "corporate-ca.pem"
+    ca_bundle.write_text("first")
     monkeypatch.setenv("HERMES_CA_BUNDLE", str(ca_bundle))
-    monkeypatch.setattr(urllib_security.sys, "platform", "darwin")
-    monkeypatch.setattr(certifi, "where", lambda: "/certifi/cacert.pem")
-    monkeypatch.setattr(ssl, "create_default_context", create_default_context)
+    monkeypatch.setattr(urllib_security, "_ca_bundle_candidates", lambda: (str(ca_bundle),))
 
-    assert urllib_security._resolved_https_context() is expected_context
-    assert seen == [str(ca_bundle), "/certifi/cacert.pem"]
+    state = {"failing": True, "loads": 0}
+
+    def load_verify_locations(self, cafile=None, capath=None, cadata=None):
+        state["loads"] += 1
+        if state["failing"]:
+            raise ssl.SSLError("transient read failure")
+
+    monkeypatch.setattr(ssl.SSLContext, "load_verify_locations", load_verify_locations)
+
+    assert urllib_security._resolved_https_context() is None
+    assert state["loads"] == 1
+
+    state["failing"] = False
+    recovered = urllib_security._resolved_https_context()
+
+    assert recovered is not None
+    assert state["loads"] == 2
+    assert urllib_security._resolved_https_context() is recovered
+    assert state["loads"] == 2

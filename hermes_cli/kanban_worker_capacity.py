@@ -18,13 +18,14 @@ def _cap(value):
 
 class WorkerCapacity:
     def __init__(self, conn, *, model_cap=None, model_caps=None, profile_caps=None,
-                 other_running_rows=None):
+                 other_running_rows=None, local_model_cap=None):
         from hermes_cli.config import load_config_readonly
 
         config = (load_config_readonly() or {}).get("kanban") or {}
         self.model_cap = _cap(model_cap if model_cap is not None else config.get("max_in_progress_per_model"))
         self.model_caps = model_caps if model_caps is not None else config.get("max_in_progress_by_model", {})
         self.profile_caps = profile_caps if profile_caps is not None else config.get("max_in_progress_by_profile", {})
+        self.local_model_cap = _cap(local_model_cap)
         self.local_first = _kanban_local_first_enabled()
         self.routes = {}
         self.models = Counter()
@@ -64,7 +65,10 @@ class WorkerCapacity:
         if isinstance(self.model_caps, dict):
             limits.append(_cap(self.model_caps.get("/".join(route))))
         if route[0].lower() in _LOCAL_KANBAN_PROVIDERS:
-            limits.append(1)
+            # A protected local runtime can raise this to its configured
+            # local-lane cap (normally 2). Without that runtime signal keep
+            # the historical single-worker safety default.
+            limits.append(self.local_model_cap if self.local_model_cap is not None else 1)
         return min((value for value in limits if value is not None), default=None)
 
     def allows(self, row, assignee, result):

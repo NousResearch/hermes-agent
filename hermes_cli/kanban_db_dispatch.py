@@ -1872,10 +1872,9 @@ def resolve_max_in_progress(
 
     The explicit operator-configured value is the normal performance cap.
     When unset, fall back to the memory-derived default (see
-    :func:`derive_default_max_in_progress`). A configured priority runtime may
-    temporarily lower either value, but never raises it. Callers that parse
-    config (gateway dispatcher, ``hermes kanban dispatch``) should route
-    through this so both paths agree.
+    :func:`derive_default_max_in_progress`). A configured priority runtime
+    lowers this returned cap for compatibility; dispatcher entry points use
+    :func:`resolve_global_max_in_progress` so cloud workers are not throttled.
     """
     from hermes_cli.kanban_runtime_priority import priority_runtime_state, configured_priority_runtime_guard
     if priority_runtime_guard is None:
@@ -1896,10 +1895,7 @@ def resolve_max_in_progress(
             and normal > 0
         ):
             resolved = normal
-    state = priority_runtime_state(
-        priority_runtime_guard,
-        process_scan=process_scan,
-    )
+    state = priority_runtime_state(priority_runtime_guard, process_scan=process_scan)
     if state not in {"active", "unknown"}:
         return resolved
     try:
@@ -1909,6 +1905,38 @@ def resolve_max_in_progress(
     if protected < 1:
         protected = 3
     return protected if resolved is None else min(resolved, protected)
+
+
+def resolve_global_max_in_progress(configured: Optional[int]) -> Optional[int]:
+    """Resolve the host-wide cloud-worker budget without the local-runtime guard."""
+    return resolve_max_in_progress(configured, priority_runtime_guard={})
+
+
+def resolve_priority_runtime_local_cap(
+    priority_runtime_guard: Optional[Mapping[str, Any]] = None,
+    *,
+    process_scan: Optional[ProcessScan] = None,
+) -> Optional[int]:
+    """Return the local-model cap while the protected runtime is active.
+
+    The priority runtime guard protects the host-heavy local inference lane.
+    Cloud model workers use the normal global cap and are not throttled by
+    this guard. An incomplete process scan remains fail-closed for local
+    workers, matching the previous global behavior.
+    """
+    from hermes_cli.kanban_runtime_priority import priority_runtime_state, configured_priority_runtime_guard
+    if priority_runtime_guard is None:
+        priority_runtime_guard = configured_priority_runtime_guard()
+    state = priority_runtime_state(priority_runtime_guard, process_scan=process_scan)
+    if state not in {"active", "unknown"}:
+        return None
+    try:
+        protected = int((priority_runtime_guard or {}).get("max_in_progress", 3))
+    except (TypeError, ValueError):
+        protected = 3
+    if protected < 1:
+        protected = 3
+    return protected
 
 
 def configured_max_in_progress() -> Optional[int]:
@@ -2034,6 +2062,7 @@ def dispatch_once(
     max_in_progress_per_model: Optional[int] = None,
     max_in_progress_by_model: Optional[dict] = None,
     max_in_progress_by_profile: Optional[dict] = None,
+    local_model_cap: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under host admission and board writer locks.
@@ -2059,6 +2088,7 @@ def dispatch_once(
             max_in_progress_per_model=max_in_progress_per_model,
             max_in_progress_by_model=max_in_progress_by_model,
             max_in_progress_by_profile=max_in_progress_by_profile,
+            local_model_cap=local_model_cap,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2445,6 +2475,7 @@ def _dispatch_once_locked(
     max_in_progress_per_model: Optional[int] = None,
     max_in_progress_by_model: Optional[dict] = None,
     max_in_progress_by_profile: Optional[dict] = None,
+    local_model_cap: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2497,7 +2528,7 @@ def _dispatch_once_locked(
     capacity = WorkerCapacity(
         conn, model_cap=max_in_progress_per_model,
         model_caps=max_in_progress_by_model, profile_caps=max_in_progress_by_profile,
-        other_running_rows=other_running_rows,
+        other_running_rows=other_running_rows, local_model_cap=local_model_cap,
     )
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
@@ -3086,12 +3117,14 @@ def run_daemon(
         try:
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
-            max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            max_in_progress = resolve_global_max_in_progress(configured_max_in_progress())
+            local_model_cap = resolve_priority_runtime_local_cap()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    local_model_cap=local_model_cap,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

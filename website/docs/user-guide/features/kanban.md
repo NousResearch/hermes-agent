@@ -996,7 +996,7 @@ All commands are also available as a slash command in the interactive CLI and in
 
 | Config key | Default | What it does |
 |------------|---------|--------------|
-| `kanban.max_in_progress` | unset (memory-derived) | Caps the number of simultaneously running tasks across all boards. When unset, Hermes derives a conservative cap from system memory where available. Invalid or below-1 values fall through to that derived default. |
+| `kanban.max_in_progress` | unset (memory-derived) | Caps the number of simultaneously running tasks across all boards. When unset, Hermes derives a conservative cap from system memory where available. Invalid or below-1 values fall through to that derived default. Cloud workers use this host-wide budget even when the priority runtime guard is active. |
 | `kanban.max_in_progress_per_profile` | unset (unlimited) | Per-profile variant of `max_in_progress` — caps how many tasks any single assignee profile may run concurrently. Useful when one profile is slow or rate-limited but others should keep flowing. Applies alongside the board-wide `max_in_progress`; both must allow a spawn for it to proceed. |
 | `kanban.dispatch_profiles` | unset (any existing profile) | Per-home claim allowlist for boards shared across Hermes homes. When the key is present, this home's dispatcher only claims cards whose assignee is listed — fail-closed: an empty list, `null` or a bare `dispatch_profiles:` claims nothing, and a config read that fails logs a warning and claims nothing; other assignees land in `skipped_nonspawnable`. Only omitting the key means "any existing profile". `hermes kanban diagnostics` prints the resolved value for this home (`any`, the listed names, or `none (fail-closed: …)`). See [Shared boards across homes](#shared-boards-across-homes). |
 | `kanban.auto_promote_children` | `true` | After `decompose_triage_task()` produces children with no parent-blocker dependencies, they're automatically promoted to `ready` so the dispatcher can pick them up. Set to `false` to require manual review — children stay in `todo` until you promote them. |
@@ -1009,7 +1009,8 @@ kanban:
   # Bound only profiles that use a host-heavy local model.
   max_in_progress_by_profile:
     local-builder: 1
-  # Reserve resources while an exact private runtime entrypoint is active.
+  # Reserve resources for local-model workers while an exact private runtime
+  # entrypoint is active. Cloud workers keep the normal global budget above.
   priority_runtime_guard:
     enabled: true
     project_roots:

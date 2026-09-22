@@ -213,9 +213,12 @@ class _KanbanDispatcher:
             return None
         kwargs = {k: v for k, v in asdict(self.settings).items() if k != "interval"}
         guard = kwargs.pop("priority_runtime_guard")
-        kwargs["max_in_progress"] = _kbd().resolve_max_in_progress(
-            self.settings.max_in_progress, priority_runtime_guard=guard,
+        kwargs["max_in_progress"] = _kbd().resolve_global_max_in_progress(
+            self.settings.max_in_progress,
         )
+        # The protected runtime cap applies to local inference only. Cloud
+        # workers must continue to use the normal host concurrency budget.
+        kwargs["local_model_cap"] = _kbd().resolve_priority_runtime_local_cap(guard)
         try:
             # No explicit init_db(): connect() runs the migration once per
             # process (see the matching note in the notifier collector).

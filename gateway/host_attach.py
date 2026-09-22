@@ -297,6 +297,8 @@ def decide(our_home: Path, *, replace: bool = False) -> HostAttachDecision:
             return HostAttachDecision(START, "")
         gateway = waited
         if gateway.serves(profile):
+            if replace:
+                return HostAttachDecision(REPLACE_HOST, "", gateway)
             return HostAttachDecision(ATTACH, attach_message(gateway, profile), gateway, transient=True)
     try:
         attached = request_serve_profile(profile, owner=gateway)

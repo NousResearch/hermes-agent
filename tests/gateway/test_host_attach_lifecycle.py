@@ -211,6 +211,32 @@ def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatc
     assert signalled == [owner_pid]
 
 
+def test_replace_signals_owner_that_answers_during_boot_race(tmp_path, monkeypatch, owner_pid):
+    """A delayed identify answer must preserve ``--replace`` instead of attaching."""
+    owner_home = tmp_path / "root"
+    unknown = host_attach.HostGateway(owner_pid, owner_home, (), served_known=False)
+    serving = host_attach.HostGateway(owner_pid, owner_home, ("default",))
+    probes: list[float] = []
+
+    def _probe(*, wait_for_channel=0.0):
+        probes.append(wait_for_channel)
+        return unknown if len(probes) == 1 else serving
+
+    monkeypatch.setattr(host_attach, "host_gateway", _probe)
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: owner_home)
+    signalled: list[int] = []
+
+    async def _replace(pid, replace):
+        signalled.append(pid)
+        return True
+
+    monkeypatch.setattr(gateway_run, "_start_gateway_replace_existing_instance", _replace)
+
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=True)) is None
+    assert probes == [0.0, host_attach.ATTACH_CHANNEL_WAIT_S]
+    assert signalled == [owner_pid]
+
+
 def test_force_starts_without_consulting_the_owner(tmp_path, monkeypatch, owner_pid):
     """``--force`` printed the starting banner and then attached anyway. It must START."""
     owner_home = tmp_path / "root"

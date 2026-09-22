@@ -1967,6 +1967,18 @@ display:
   #   false: Silent (default)
   bell_on_prompt: false
 
+  # CLI: label the terminal tab/window with the session (OSC 0) — "Hermes · <title>",
+  # with a ◐◑ spinner while a turn runs; cleared on exit so the shell's own label returns.
+  #   true:  Label the tab (default)
+  #   false: Leave the tab alone
+  terminal_title: true
+
+  # CLI: drive the terminal's own progress bar (OSC 9;4) while a turn runs.
+  # Only terminals that support it (Ghostty, iTerm2, WezTerm) show anything.
+  #   true:  Show the progress bar (default)
+  #   false: Leave the terminal's progress display alone
+  terminal_progress: true
+
   # Show model reasoning/thinking before each response.
   # When enabled, a dim box shows the model's thought process above the response.
   # Toggle at runtime with /reasoning show or /reasoning hide.

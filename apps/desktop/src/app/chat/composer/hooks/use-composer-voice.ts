@@ -3,6 +3,7 @@ import { computed } from 'nanostores'
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 
 import { useI18n } from '@/i18n'
+import { selectAutoSpeakReply } from '@/lib/auto-speak-reply'
 import { chatMessageText, collectUnspokenTurnSpeech } from '@/lib/chat-messages'
 import { triggerHaptic } from '@/lib/haptics'
 import { adoptSpokenReplySession, markAssistantIdSpoken, resolveSpokenReply } from '@/lib/spoken-reply'
@@ -115,28 +116,11 @@ export function useComposerVoice({
     }
   }, [capturing, surfaceId])
 
+  const messagesWithSpeechText = () =>
+    $messages.get().map(message => ({ ...message, text: chatMessageText(message) }))
+
   /** Auto-speak selector: the latest unspoken reply only — a backlog collapses to the newest. */
-  const pendingResponse = () => {
-    const messages = $messages.get()
-    const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
-    const spoken = resolveSpokenReply(sessionId, messages)
-
-    if (!last || last.id === spoken?.id) {
-      return null
-    }
-
-    const text = chatMessageText(last).trim()
-
-    if (!text) {
-      return null
-    }
-
-    return {
-      id: last.id,
-      pending: Boolean(last.pending),
-      text
-    }
-  }
+  const pendingResponse = () => selectAutoSpeakReply(sessionId, messagesWithSpeechText())
 
   /**
    * Voice-conversation selector: every unspoken assistant bubble of the turn,
@@ -150,7 +134,7 @@ export function useComposerVoice({
   }
 
   const consumePendingResponse = () => {
-    const messages = $messages.get()
+    const messages = messagesWithSpeechText()
     const last = messages.findLast(m => m.role === 'assistant' && !m.hidden)
 
     if (last) {

@@ -37,6 +37,7 @@ import { PreviewAttachment } from '@/components/chat/preview-attachment'
 import { Codicon } from '@/components/ui/codicon'
 import { CopyButton } from '@/components/ui/copy-button'
 import { useI18n } from '@/i18n'
+import { chatMessageText } from '@/lib/chat-messages'
 import {
   errorRecoveryPlan,
   type ErrorSurface,
@@ -1066,7 +1067,11 @@ const ReadAloudButton: FC<{ getText: () => string; messageId: string }> = ({ get
 
     try {
       await playSpeechText(text, { connectionId, messageId, profile, source: 'read-aloud' })
-      markAssistantIdSpoken(sessionId, view.$messages.get(), messageId)
+      const messages = view.$messages.get().map(message => ({
+        ...message,
+        text: chatMessageText(message)
+      }))
+      markAssistantIdSpoken(sessionId, messages, messageId)
     } catch (error) {
       notifyError(error, copy.readAloudFailed)
     }

@@ -482,6 +482,8 @@ class TestCmdRemove:
         from hermes_cli.plugins_cmd import cmd_remove
 
         mock_plugins_dir.return_value = MagicMock()
+        # ``plugins_dir / name`` is a real directory here, not a symlink (the link case unlinks only).
+        mock_plugins_dir.return_value.__truediv__.return_value.is_symlink.return_value = False
         mock_target = MagicMock()
         mock_target.exists.return_value = True
         mock_sanitize.return_value = mock_target

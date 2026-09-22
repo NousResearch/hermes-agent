@@ -99,8 +99,9 @@ def reset_setup_profile() -> SetupProfile:
 
 
 def _write_soul(path: Path) -> None:
-    from utils import atomic_write_text
-    atomic_write_text(path / "SOUL.md", SETUP_SOUL)
+    # Bytes, so Windows text mode cannot turn the template's \n into \r\n.
+    from utils import atomic_write_bytes
+    atomic_write_bytes(path / "SOUL.md", SETUP_SOUL.encode("utf-8"))
 
 
 def _replace_dir(directory: Path) -> None:

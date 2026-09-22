@@ -139,16 +139,27 @@ The config block key is still `plugins.memory-zvec` (hard-coded in code for back
    ~/.hermes/hermes-agent/venv/bin/python -c "import zvec; print(zvec.__version__)"
    ```
 
-2. **Ollama + bge-m3:latest**: make sure Ollama is running and the model has been pulled
+2. **Embedding model (local or hosted)**: the plugin calls an
+   **Ollama-compatible API** (`{base_url}/api/embed`). The default is local
+   Ollama with `bge-m3` (1024-dim):
    ```bash
    ollama list | grep bge-m3
    # if not present
    ollama pull bge-m3:latest
    ```
+   A hosted/online endpoint works too — implement (or proxy) Ollama's
+   `/api/embed` and point the plugin's `base_url` at it; the vector dimension
+   must match the configured `vector_dim`.
 
 ---
 
 ## Step 2: Cross-Profile Deployment (⚠️ Physical Copies — Not Symlinks, and Never In-Tree)
+
+> **Optional — multi-profile fleets only.** A single-profile setup needs only
+> Step 1 + Step 3: install the plugin once in that profile and configure it.
+> Read this step only if you want the same memory backend in several profiles
+> (each profile keeps its own physical copy, config and data — nothing is
+> shared between profiles).
 
 > **Iron rule: the memory provider's discovery root is profile-scoped.** `~/.hermes/plugins/<name>/` is visible
 > only to **default**; a sub-profile without a deployment reports `Plugin: NOT installed`, and because the config

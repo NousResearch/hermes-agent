@@ -1790,16 +1790,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             # the resume path replaces the socket, the next sample reads healthy, and this
             # counter silently resets — while a resumed-but-deaf session stays event-starved
             # until the multi-hour event-silence default elapses (#118487). Escalate the
-            # first ``socket_closed`` strike; soft signals (ack staleness, latency, silence)
-            # keep the confirmation threshold.
-            if failures < threshold and reason != "socket_closed":
+            # first ``socket_closed`` / ``client_closed`` strike (both mean the transport is
+            # gone); soft signals (ack staleness, latency, silence) keep the threshold.
+            terminal = reason in ("socket_closed", "client_closed")
+            if failures < threshold and not terminal:
                 continue
             # Mark recovery before closing: Bot.start()'s done callback must not overwrite this reason.
             self._disconnecting = True
             logger.error(
                 "[%s] Discord Gateway WebSocket %s (%s, %d/%d); forcing reconnect",
                 self.name,
-                "transport closed" if reason == "socket_closed" else "remained unhealthy",
+                "transport closed" if terminal else "remained unhealthy",
                 reason, failures, threshold,
             )
             self._set_fatal_error(

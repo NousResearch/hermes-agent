@@ -86,3 +86,23 @@ class TestContentPolicyPatternsAreNarrow:
         result = classify_api_error(e, provider="openrouter", model="anthropic/claude-opus")
         assert result.reason == FailoverReason.provider_policy_blocked
         assert result.reason != FailoverReason.content_policy_blocked
+
+    def test_opencode_go_trains_on_request_data_is_provider_policy_blocked(self):
+        """OpenCode Go workspace privacy 400 must not be format_error (#119473)."""
+        from agent.error_classifier import classify_api_error, FailoverReason
+
+        class _Err(Exception):
+            def __init__(self, msg, status_code):
+                super().__init__(msg)
+                self.status_code = status_code
+                self.message = msg
+
+        e = _Err(
+            "HTTP 400: Upstream request failed: This Go model trains on request data. "
+            "Allow paid endpoints that train on request data in your workspace's Privacy settings to use it.",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="opencode-go", model="muse-spark-1.3-contributor")
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False
+        assert result.should_fallback is True

@@ -15,6 +15,7 @@ from pathlib import Path
 # wiped (#57828) so early recovery provably runs before third-party imports (test_early_recovery).
 # The parser internals are imported lazily below because gateway tests stub ``sys.modules["dotenv"]``.
 import dotenv  # noqa: F401
+from hermes_cli.env_sanitize import sanitize_env_lines
 from utils import atomic_replace, fast_safe_load
 
 logger = logging.getLogger(__name__)
@@ -324,11 +325,6 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     if not path.exists():
         return
     try:
-        from hermes_cli.config import _sanitize_env_lines
-    except ImportError:
-        return  # early bootstrap — config module not available yet
-
-    try:
         raw = path.read_bytes()
     except Exception:
         return
@@ -368,7 +364,7 @@ def _sanitize_env_file_if_needed(path: Path) -> None:
     try:
         # Strip NULs (os.environ raises ValueError on them); also repairs BOM-less UTF-16 (NUL-padded ASCII).
         stripped = [line.replace("\x00", "") for line in original]
-        sanitized = _sanitize_env_lines(stripped)
+        sanitized = sanitize_env_lines(stripped)
         if sanitized != original or force_utf8_rewrite:
             import tempfile
             fd, tmp = tempfile.mkstemp(dir=str(path.parent), suffix=".tmp", prefix=".env_")

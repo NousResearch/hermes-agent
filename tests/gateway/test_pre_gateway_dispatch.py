@@ -118,3 +118,92 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
     adapter.send.assert_not_awaited()
+
+@pytest.mark.asyncio
+async def test_authorization_is_explicit_and_profile_local(tmp_path, monkeypatch):
+    """Real plugin delivery and allowlists remain isolated across A -> B -> A."""
+    from agent import secret_scope
+    from gateway.run import _profile_runtime_scope
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setattr(secret_scope, "_MULTIPLEX_ACTIVE", True)
+    monkeypatch.setattr(plugins, "_plugin_manager", None)
+    monkeypatch.setattr(plugins, "_plugin_managers_by_home", {})
+    homes = [tmp_path / "a", tmp_path / "b"]
+    verdict = {"action": "authorize"}
+
+    def authorize(**kwargs):
+        if verdict["action"] == "error":
+            raise RuntimeError("identity lookup failed")
+        if verdict["action"] == "authorize":
+            kwargs["event"].source.user_id = "resolved-identity"
+        return dict(verdict)
+
+    for home in homes:
+        home.mkdir()
+        (home / ".env").write_text("WHATSAPP_ALLOWED_USERS=someone-else\n")
+        with _profile_runtime_scope(home):
+            manager = plugins.get_plugin_manager()
+            assert isinstance(manager, PluginManager)
+            manager._discovered = True
+            if home == homes[0]:
+                PluginContext(PluginManifest(name="identity", source="user"), manager).register_hook(
+                    "pre_gateway_dispatch", authorize,
+                )
+
+    runner, adapter = _make_runner(Platform.WHATSAPP)
+    for action, admitted in [("authorize", True), ("allow", False), ("rewrite", False),
+                             ("skip", False), ("error", False), ("unknown", False)]:
+        verdict["action"] = action
+        for home in [homes[0], homes[1], homes[0]]:
+            event = _make_event()
+            with _profile_runtime_scope(home):
+                result = await runner._hm_admit_event(event)
+            expected = admitted and home == homes[0]
+            assert (result is not None) == expected, (action, home.name)
+            if expected:
+                assert result == (event, event.source, False)
+                assert event.source.user_id == "resolved-identity"
+    adapter.send.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_authorize_keeps_ingress_guards_and_never_sticks(monkeypatch):
+    """A grant cannot admit a rejected route/bot or authorize a later dispatch."""
+    from hermes_cli import plugins
+    from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest
+
+    _clear_auth_env(monkeypatch)
+    monkeypatch.setenv("WHATSAPP_ALLOWED_USERS", "someone-else")
+    manager = PluginManager()
+    manager._discovered = True
+    monkeypatch.setattr(plugins, "get_plugin_manager", lambda: manager)
+    seen = []
+    verdict = {"action": "authorize"}
+
+    def authorize(**kwargs):
+        seen.append(kwargs["event"])
+        return dict(verdict)
+
+    PluginContext(PluginManifest(name="identity", source="user"), manager).register_hook(
+        "pre_gateway_dispatch", authorize,
+    )
+    runner, _ = _make_runner(Platform.WHATSAPP)
+    internal = _make_event()
+    internal.internal = True
+    assert (await runner._hm_admit_event(internal))[2] is True
+    rejected = _make_event()
+    rejected.source.profile_route_rejected = True
+    assert await runner._hm_admit_event(rejected) is None
+    assert not seen
+
+    runner._admit_bot_message_for_source = lambda source: not source.is_bot
+    bot = _make_event()
+    bot.source.is_bot = True
+    assert await runner._hm_admit_event(bot) is None
+    event = _make_event()
+    assert await runner._hm_admit_event(event) is not None
+    verdict["action"] = "allow"
+    assert await runner._hm_admit_event(event) is None

@@ -65,10 +65,11 @@ class GatewayInboundMixin:
 
     def _hm_pre_gateway_dispatch_hook(
         self, event: "MessageEvent", source: SessionSource
-    ) -> Optional["MessageEvent"]:
-        """Run the ``pre_gateway_dispatch`` plugin hook; None = drop, else the (maybe rewritten) event.
+    ) -> Tuple[Optional["MessageEvent"], bool]:
+        """Return the (maybe rewritten) event and whether the hook authorized this dispatch.
         Results: ``{"action": "skip"}`` → drop; ``{"action": "rewrite", "text"}`` → replace ``event.text``;
-        ``allow``/None → normal dispatch. Runs BEFORE auth so plugins can handle unauthorized senders."""
+        ``authorize`` → bypass the allowlist; ``allow``/None → normal auth. The authorization
+        verdict stays local to this dispatch, never on a reusable event or runner."""
         try:
             from hermes_cli.lifecycle import invoke_hook as _invoke_hook
             _hook_results = _invoke_hook(
@@ -90,7 +91,9 @@ class GatewayInboundMixin:
                     _result.get("reason"), source.platform.value if source.platform else "unknown",
                     source.chat_id or "unknown",
                 )
-                return None
+                return None, False
+            if _action == "authorize":
+                return event, True
             if _action == "rewrite":
                 _new_text = _result.get("text")
                 if isinstance(_new_text, str):
@@ -98,7 +101,7 @@ class GatewayInboundMixin:
                 break
             if _action == "allow":
                 break
-        return event
+        return event, False
 
     async def _hm_offer_pairing_code(self, source: SessionSource) -> None:
         """DM an unauthorized sender a pairing code (rate-limited; groups never reach here)."""
@@ -222,12 +225,12 @@ class GatewayInboundMixin:
         # scale-to-zero: only real user-originated inbound stamps the last-inbound clock;
         # counting internal/system events would keep a genuinely idle gateway awake.
         self._scale_to_zero_note_real_inbound()
-        event = self._hm_pre_gateway_dispatch_hook(event, source)
+        event, hook_authorized = self._hm_pre_gateway_dispatch_hook(event, source)
         if event is None:
             return None
         source = event.source
 
-        if not self._is_user_authorized_for_source(source):
+        if not hook_authorized and not self._is_user_authorized_for_source(source):
             if source.user_id is None:
                 # No user identity (Telegram service messages, channel forwards, anonymous admin
                 # posts, sender_chat): can't be paired but may be authorized via a chat allowlist.

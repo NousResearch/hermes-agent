@@ -484,3 +484,196 @@ def test_guard_logs_a_probe_failure_as_a_failure(tmp_path: Path):
     assert "kanban reclaim --dry-run" in out, out
     assert "kanban reclaim --logs" not in out, out
     assert "worktrees: FAIL hermes reclaim unavailable" in out, out
+
+
+# --- squash-merged reclaim: the GitHub-PR arm and the cherry arm --------------
+#
+# Measured on the live host: five DONE cards were kept forever with
+# ``unpushed commits on <branch>`` because AgentPod squash-merges. The tip is
+# never an ancestor of main, and GitHub deletes the head ref on merge so
+# ``git ls-remote --heads origin <branch>`` comes back EMPTY. The arm that
+# actually discriminates is the PR's ``headRefOid``, which is an exact-tip
+# proof rather than a heuristic.
+
+def _squash_merged_worktree(tmp_path: Path, name: str) -> tuple[Path, Path, str, str]:
+    """``(worktree, repo, branch, tip)`` for a branch squash-merged into main.
+
+    Two commits on the branch collapse into ONE new commit on main with a
+    different sha, then the remote head ref is deleted exactly as GitHub does.
+    So: not an ancestor of main, ``_remote_head`` is None, and ``git cherry``
+    still reports both commits as non-equivalent.
+    """
+    repo, bare = _with_remote(tmp_path, name)
+    branch = "ci/pin-retry"
+    wt = tmp_path / f"wts-{name}"
+    _git(repo, "worktree", "add", "-q", "-b", branch, str(wt), "main")
+    for i in (1, 2):
+        (wt / f"f{i}.txt").write_text(f"line {i}\n", encoding="utf-8")
+        _git(wt, "add", "-A")
+        _git(wt, "commit", "-qm", f"commit {i}")
+    _git(wt, "push", "-q", "origin", branch)
+    tip = _git(wt, "rev-parse", "HEAD")
+
+    # Squash-merge on main: one commit, different sha, different patch-ids.
+    for i in (1, 2):
+        (repo / f"f{i}.txt").write_text(f"line {i}\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "squashed (#4985)")
+    _git(repo, "push", "-q", "origin", "main")
+    # GitHub deletes the head ref on merge.
+    _git(repo, "push", "-q", "origin", "--delete", branch)
+    _git(repo, "fetch", "-q", "--prune", "origin")
+
+    assert kbr._remote_head(repo, branch) is None, "fixture: remote head must be gone"
+    assert subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", tip, "origin/main"],
+    ).returncode != 0, "fixture: must not be a fast-forward"
+    # Tolerate the helper being absent so the RED of the behavioural tests below
+    # lands on branch_refusal, not on the fixture's own self-check.
+    _cherry = getattr(kbr, "all_commits_equivalent_on_main", None)
+    if _cherry is not None:
+        assert not _cherry(wt, tip), \
+            "fixture: squash must leave git cherry reporting '+' lines"
+    return wt, repo, branch, tip
+
+
+def _gh(payload: str | None):
+    def _fake(path, branch):
+        return payload
+    return _fake
+
+
+def test_squash_merged_pr_with_matching_head_sha_is_safe(tmp_path: Path, monkeypatch):
+    """Arm A: the merged PR's headRefOid equals our tip -> nothing to lose."""
+    wt, repo, branch, tip = _squash_merged_worktree(tmp_path, "armA")
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(
+        f'[{{"number":4985,"state":"MERGED","mergedAt":"2026-09-21T17:36:37Z",'
+        f'"headRefOid":"{tip}"}}]'
+    ), raising=False)
+
+    assert kbr.branch_refusal(wt, repo, branch) is None
+    refusal, safe = kbr.branch_safety_reason(wt, repo, branch)
+    assert refusal is None
+    assert "PR #4985 merged 2026-09-21T17:36:37Z" == safe
+
+
+def test_all_commits_patch_equivalent_on_main_is_safe_without_gh(tmp_path: Path, monkeypatch):
+    """Arm B: offline fallback when every commit was cherry-picked onto main."""
+    repo, _bare = _with_remote(tmp_path, "armB")
+    branch = "fix/cherry"
+    wt = tmp_path / "wt-armB"
+    _git(repo, "worktree", "add", "-q", "-b", branch, str(wt), "main")
+    # main moves on independently, so the cherry-picks below cannot be a
+    # fast-forward and the branch tip stays off main's history.
+    (repo / "main-only.txt").write_text("main moved on\n", encoding="utf-8")
+    _git(repo, "add", "-A")
+    _git(repo, "commit", "-qm", "main moves on")
+    shas = []
+    for i in (1, 2):
+        (wt / f"c{i}.txt").write_text(f"c {i}\n", encoding="utf-8")
+        _git(wt, "add", "-A")
+        _git(wt, "commit", "-qm", f"cherry {i}")
+        shas.append(_git(wt, "rev-parse", "HEAD"))
+    _git(wt, "push", "-q", "origin", branch)
+    tip = _git(wt, "rev-parse", "HEAD")
+
+    for sha in shas:
+        _git(repo, "cherry-pick", sha)
+    _git(repo, "push", "-q", "origin", "main")
+    _git(repo, "push", "-q", "origin", "--delete", branch)
+    _git(repo, "fetch", "-q", "--prune", "origin")
+
+    assert kbr._remote_head(repo, branch) is None
+    assert subprocess.run(
+        ["git", "-C", str(repo), "merge-base", "--is-ancestor", tip, "origin/main"],
+    ).returncode != 0, "fixture: cherry-picks must not fast-forward"
+
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(None), raising=False)
+    assert kbr.all_commits_equivalent_on_main(wt, tip) is True
+    refusal, safe = kbr.branch_safety_reason(wt, repo, branch)
+    assert refusal is None, refusal
+    assert "patch-equivalent" in safe
+
+
+def test_genuinely_unpushed_work_is_still_kept(tmp_path: Path, monkeypatch):
+    """No PR, no equivalence: real work nobody has seen must survive."""
+    repo, _bare = _with_remote(tmp_path, "unpushed")
+    branch = "wip/unpushed"
+    wt = tmp_path / "wt-unpushed"
+    _git(repo, "worktree", "add", "-q", "-b", branch, str(wt), "main")
+    (wt / "only-here.txt").write_text("precious\n", encoding="utf-8")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-qm", "only here")
+
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(None), raising=False)
+    refusal, safe = kbr.branch_safety_reason(wt, repo, branch)
+    assert safe is None
+    assert "unpushed" in refusal
+
+
+def test_open_pr_does_not_make_the_branch_safe(tmp_path: Path, monkeypatch):
+    wt, repo, branch, tip = _squash_merged_worktree(tmp_path, "open")
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(
+        f'[{{"number":4990,"state":"OPEN","mergedAt":null,"headRefOid":"{tip}"}}]'
+    ), raising=False)
+    assert "unpushed" in kbr.branch_refusal(wt, repo, branch)
+
+
+def test_merged_pr_with_a_stale_head_sha_is_kept(tmp_path: Path, monkeypatch):
+    """The branch advanced past the merged PR: those new commits are real work."""
+    wt, repo, branch, tip = _squash_merged_worktree(tmp_path, "advanced")
+    (wt / "after-merge.txt").write_text("new work\n", encoding="utf-8")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-qm", "work after the PR merged")
+    new_tip = _git(wt, "rev-parse", "HEAD")
+    assert new_tip != tip
+
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(
+        f'[{{"number":4985,"state":"MERGED","mergedAt":"2026-09-21T17:36:37Z",'
+        f'"headRefOid":"{tip}"}}]'
+    ), raising=False)
+    assert kbr.merged_pr_for_tip(wt, branch, new_tip) is None
+    assert "unpushed" in kbr.branch_refusal(wt, repo, branch)
+
+
+@pytest.mark.parametrize("payload", [None, "", "not json at all", "{}", "[]"])
+def test_a_failed_gh_probe_is_never_evidence_of_a_merge(
+    tmp_path: Path, monkeypatch, payload,
+):
+    """Fail closed: no gh binary, non-zero exit, malformed JSON, empty list."""
+    wt, repo, branch, _tip = _squash_merged_worktree(tmp_path, "faildown")
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(payload), raising=False)
+    assert "unpushed" in kbr.branch_refusal(wt, repo, branch)
+
+
+def test_gh_nonzero_exit_returns_none_without_network(tmp_path: Path, monkeypatch):
+    """The real ``_gh_pr_json`` must swallow a missing/failing binary."""
+    wt, _repo, branch, _tip = _squash_merged_worktree(tmp_path, "nogh")
+    monkeypatch.setenv("PATH", str(tmp_path / "empty-bin"))
+    assert kbr._gh_pr_json(wt, branch) is None
+
+
+def test_dirty_worktree_wins_over_a_merged_pr(tmp_path: Path, monkeypatch):
+    wt, repo, branch, tip = _squash_merged_worktree(tmp_path, "dirty")
+    (wt / "f1.txt").write_text("locally edited, never committed\n", encoding="utf-8")
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(
+        f'[{{"number":4985,"state":"MERGED","mergedAt":"2026-09-21T17:36:37Z",'
+        f'"headRefOid":"{tip}"}}]'
+    ), raising=False)
+    refusal, safe = kbr.branch_safety_reason(wt, repo, branch)
+    assert safe is None
+    assert "uncommitted changes" in refusal
+
+
+def test_removal_reason_states_why_it_was_safe(tmp_path: Path, db: Path, monkeypatch):
+    """Dry-run and real output must carry the justification, not just the size."""
+    root = tmp_path / "wts"
+    root.mkdir()
+    wt, _repo = _done_worktree(tmp_path, db, root, "t_5a5a5a01")
+    decisions = kbr.reclaim_done_worktrees(roots=[root], db_path=db, dry_run=True)
+    reason = _reasons(decisions, "t_5a5a5a01")
+    assert "would remove" in reason and "dry run;" in reason, reason
+
+    decisions = kbr.reclaim_done_worktrees(roots=[root], db_path=db)
+    reason = _reasons(decisions, "t_5a5a5a01")
+    assert "reclaimed from" in reason and "(" in reason.split("reclaimed from")[1], reason

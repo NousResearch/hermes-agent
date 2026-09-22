@@ -3,8 +3,10 @@ import { atom } from 'nanostores'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { readKey, writeKey } from '@/lib/storage'
 
+import { $gateway } from './gateway'
 import { hasSeenIntroReveal, markIntroRevealSeen } from './intro-reveal'
 import { DEFAULT_ANSWERS, setOnboardingAnswers } from './onboarding-answers'
+import { $setupProfileName } from './setup-profile'
 
 const PHASE_KEY = 'hermes-onboarding-phase-v1'
 
@@ -159,11 +161,14 @@ export function skipGuide(): void {
   }
 }
 
-export function devResetOnboardingFlow(): void {
+/** Resets the backend's setup profile in place, then the local flow state. */
+export async function devResetOnboardingFlow(): Promise<void> {
   if (!import.meta.env.DEV) {
     return
   }
 
+  await $gateway.get()?.request('onboarding.reset_setup_profile', {})
+  $setupProfileName.set(null)
   guideKickoff = { status: 'idle' }
   setPhase('idle')
   setOnboardingAnswers({ ...DEFAULT_ANSWERS, connectors: [...DEFAULT_ANSWERS.connectors] })

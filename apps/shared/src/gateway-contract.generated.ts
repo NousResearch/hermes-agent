@@ -1624,6 +1624,7 @@ export interface ProfileRow {
   display_name?: string
   skill_count?: number
   previous_names?: string[]
+  role?: 'setup' | null
   last_session?: ProfileSessionPreview | null
   worker_session?: ProfileWorkerSession | null
   canonical_session?: ProfileCanonicalSession | null
@@ -1807,6 +1808,20 @@ export interface ProfilesRememberOnboardingResult {
   saved?: boolean
   profile?: string
   target?: string
+}
+/** Client→server method params / server→client request params. Unknown keys are rejected. */
+export type Params = Record<string, never>
+/** ``created`` is false when an existing setup profile was found (and returned untouched). */
+export interface OnboardingEnsureSetupProfileResult {
+  name: string
+  path: string
+  created: boolean
+  role?: 'setup'
+}
+export interface OnboardingResetSetupProfileResult {
+  name: string
+  path: string
+  reset?: boolean
 }
 export interface VaultListResult {
   items?: VaultItem[]
@@ -4622,6 +4637,10 @@ export interface RpcMethods {
   'model.options': { params: ModelOptionsParams; result: ModelOptionsResult }
   /** Save an API key for a provider and return its refreshed inventory row. */
   'model.save_key': { params: ModelSaveKeyParams; result: ModelSaveKeyResult }
+  /** Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role. */
+  'onboarding.ensure_setup_profile': { params: Params; result: OnboardingEnsureSetupProfileResult }
+  /** Restore the setup profile to its created state in place (soul, memories, skills, sessions). */
+  'onboarding.reset_setup_profile': { params: Params; result: OnboardingResetSetupProfileResult }
   /** Spill a large paste to a file and hand back the inline placeholder. */
   'paste.collapse': { params: PasteCollapseParams; result: PasteCollapseResult }
   /** Render a PDF's pages to PNG and queue them as images for the next turn. */
@@ -4978,6 +4997,8 @@ export const RPC_METHODS = [
   'model.disconnect',
   'model.options',
   'model.save_key',
+  'onboarding.ensure_setup_profile',
+  'onboarding.reset_setup_profile',
   'paste.collapse',
   'pdf.attach',
   'pet.cancel',

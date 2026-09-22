@@ -1,12 +1,12 @@
 /**
  * The welcome chat that guided onboarding runs in, and the seed prompts for the first build session.
  *
- * The chat belongs to a persistent `hermes-setup` profile, so it survives onboarding and can be found again. `setup`
- * is the internal name throughout this module (the profile key, the atoms, the hidden `[setup]` notes); the user sees
- * only Hermes and the title `Welcome to Hermes`.
+ * The chat belongs to the backend-owned setup profile (`store/setup-profile.ts`), so it survives onboarding and can be
+ * found again. `setup` is the internal name throughout this module (the atoms, the hidden `[setup]` notes); the user
+ * sees only Hermes and the title `Welcome to Hermes`.
  *
  * This module holds the pure pieces: names, souls, seed prompts, and the handoff request atom. The side effects
- * (profiles.create, session.create, the chat switch) run in the wiring's kickoff and handoff effects, which hold the
+ * (session.create, the chat switch) run in the wiring's kickoff and handoff effects, which hold the
  * gateway and session hooks.
  */
 
@@ -15,7 +15,6 @@ import { atom } from 'nanostores'
 import type { ProfileScope } from '@/api/client'
 import type { HandoffReceipt } from '@/app/contrib/handoff-leg'
 import { handoffReceiptKey, readHandoffReceipt } from '@/app/contrib/handoff-receipt'
-import type { GatewayRequest } from '@/app/session/hooks/use-prompt-actions/utils'
 import { CONNECTOR_LEAD_ORDER } from '@/components/onboarding-chat/options'
 import { connectorTitle } from '@/lib/connector-tools'
 import { activeGatewayConnectionId } from '@/store/gateway'
@@ -24,9 +23,6 @@ import type { OnboardingAnswers } from '@/store/onboarding-answers'
 import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { FIRST_USE_GUIDANCE, PLAIN_SPEECH } from '@/store/onboarding-script'
 import { getSessionOwnerHint } from '@/store/session'
-
-/** Profile name of the onboarding guide. Prefixed so it cannot collide with a profile the user named "setup". */
-export const SETUP_PROFILE = 'hermes-setup'
 
 /** Title of the welcome chat, and the row the user sees in the sessions list. Kickoff re-finds the chat by exact
  *  title after a relaunch, so this string is also a lookup key. */
@@ -123,23 +119,6 @@ export function firstTaskTitle(task: string): string {
   const trimmed = task.trim()
 
   return trimmed.length > 28 ? `${trimmed.slice(0, 27).trimEnd()}…` : trimmed || 'First build'
-}
-
-/** SOUL.md for the welcome profile. It applies to the welcome chat and to every later check-in. */
-export function composeSetupSoul(): string {
-  return [
-    '# Hermes',
-    '',
-    'You are Hermes, and this profile is where you met this user for the first time and stay reachable afterwards. You are the person at the front desk of somewhere good: pleased they came in, and not performing it. Quick, unhurried, never flustered, never in the way. You showed them around on their first run and you keep a loose eye on how they are getting on.',
-    '',
-    '- Never introduce yourself as "Setup", "the setup assistant", or "the onboarding guide". You are Hermes.',
-    '- Warmth is in paying attention, not in adjectives. Remember what they told you and use it. Do not thank them for answering, do not praise their choices, do not ask if they are ready.',
-    '- Offer an opinion lightly when you have one. "Most people wire that one up first" is worth more than a neutral menu.',
-    '- You are training wheels: useful early, ignorable later. Never guilt-trip, never nag. If the user asks you to stop checking in, stop.',
-    '- When you check in, look at what has actually changed (their sessions, connectors, scheduled jobs) before offering anything. One concrete suggestion beats a menu.',
-    '- Things worth offering, roughly in order: wiring a connector they said they use, scheduling something they do repeatedly, a second build based on the first, keyboard/layout niceties.',
-    '- Write like a person talking to another person. Short sentences, plain words, no headers, no bullet walls, no emoji.'
-  ].join('\n')
 }
 
 export function buildFirstTaskRunbook(
@@ -282,23 +261,4 @@ export async function buildFirstTaskSeedMessages(
  *  build's own progress, in first-build.ts. */
 export function buildHandoffCompleteNote(task: string): string {
   return `[setup] handoff complete — "${task.trim()}" is now building in its own session on the default profile, and the user is watching it there. The app is showing them a short tour of the profile rail and the sessions list right now, so do not describe either. Say ONE short line and then stop: you're around if they want a hand, and this chat stays where it is. Do not ask a question, do not offer a list, do not schedule anything.`
-}
-
-/** Creates the guide profile. The catch treats an already-existing profile as success, so kickoff can call this on
- *  every run. */
-export async function ensureSetupProfile(request: GatewayRequest): Promise<void> {
-  try {
-    await request('profiles.create', {
-      description: 'Where Hermes met you — walks your first run, then checks in as you find your feet.',
-      name: SETUP_PROFILE,
-      clone_from: 'default',
-      share_auth: true,
-      no_alias: true,
-      soul: composeSetupSoul()
-    })
-  } catch (error) {
-    if (!(error instanceof Error && /exist/i.test(error.message))) {
-      throw error
-    }
-  }
 }

@@ -15,8 +15,7 @@ import {
   firstTaskTitle,
   guideSourceConnectionId,
   readGuideHandoffReceipt,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
 import { showHandoffTour } from '@/components/onboarding-chat/signpost'
 import { findGroupOfPane } from '@/components/pane-shell/tree/model'
@@ -39,6 +38,7 @@ import {
   setSessionOwnerHint
 } from '@/store/session'
 import { patchSessionTile } from '@/store/session-states'
+import { isSetupProfile } from '@/store/setup-profile'
 
 import { BUILD_PROFILE, type HandoffDeps, type HandoffReceipt, paintHandoffBrief, startHandoff } from './handoff-leg'
 import { saveHandoffReceipt } from './handoff-receipt'
@@ -75,7 +75,7 @@ export function useOnboardingHandoff({
       !isOnboardingEnabled() ||
       $setupHandoff.get() ||
       !selectedStoredId ||
-      $activeGatewayProfile.get() !== SETUP_PROFILE
+      !isSetupProfile($activeGatewayProfile.get())
     ) {
       return
     }
@@ -104,7 +104,7 @@ export function useOnboardingHandoff({
 
       $setupSession.set({
         connectionId,
-        profile: SETUP_PROFILE,
+        profile: $activeGatewayProfile.get(),
         runtimeId: $activeSessionId.get() ?? '',
         storedId: selectedStoredId
       })

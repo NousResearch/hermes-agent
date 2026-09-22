@@ -1753,6 +1753,42 @@
       }
     },
     {
+      "name": "onboarding.ensure_setup_profile",
+      "summary": "Create-or-read the backend-owned setup profile; the backend picks the name and finds it by role.",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingEnsureSetupProfileResult"
+        }
+      }
+    },
+    {
+      "name": "onboarding.reset_setup_profile",
+      "summary": "Restore the setup profile to its created state in place (soul, memories, skills, sessions).",
+      "params": [
+        {
+          "name": "params",
+          "schema": {
+            "$ref": "#/components/schemas/Params"
+          }
+        }
+      ],
+      "result": {
+        "name": "result",
+        "schema": {
+          "$ref": "#/components/schemas/OnboardingResetSetupProfileResult"
+        }
+      }
+    },
+    {
       "name": "paste.collapse",
       "summary": "Spill a large paste to a file and hand back the inline placeholder.",
       "params": [
@@ -17347,6 +17383,61 @@
         "title": "OnboardingAnswers",
         "type": "object"
       },
+      "OnboardingEnsureSetupProfileResult": {
+        "additionalProperties": false,
+        "description": "``created`` is false when an existing setup profile was found (and returned untouched).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "created": {
+            "title": "Created",
+            "type": "boolean"
+          },
+          "role": {
+            "const": "setup",
+            "default": "setup",
+            "title": "Role",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name",
+          "path",
+          "created"
+        ],
+        "title": "OnboardingEnsureSetupProfileResult",
+        "type": "object"
+      },
+      "OnboardingResetSetupProfileResult": {
+        "additionalProperties": false,
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "path": {
+            "title": "Path",
+            "type": "string"
+          },
+          "reset": {
+            "default": true,
+            "title": "Reset",
+            "type": "boolean"
+          }
+        },
+        "required": [
+          "name",
+          "path"
+        ],
+        "title": "OnboardingResetSetupProfileResult",
+        "type": "object"
+      },
       "OpenRequestEntry": {
         "additionalProperties": false,
         "description": "One unanswered server\u2192client request (``server_requests.Request.snapshot``); the reconnecting\nclient re-delivers it to its request handlers.",
@@ -17404,6 +17495,13 @@
           "pane"
         ],
         "title": "PaneRevealPayload",
+        "type": "object"
+      },
+      "Params": {
+        "additionalProperties": false,
+        "description": "Client\u2192server method params / server\u2192client request params. Unknown keys are rejected.",
+        "properties": {},
+        "title": "Params",
         "type": "object"
       },
       "PasteCollapseParams": {
@@ -20946,6 +21044,19 @@
             },
             "title": "Previous Names",
             "type": "array"
+          },
+          "role": {
+            "anyOf": [
+              {
+                "const": "setup",
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Role"
           },
           "last_session": {
             "anyOf": [

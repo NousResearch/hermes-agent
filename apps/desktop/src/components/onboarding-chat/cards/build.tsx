@@ -22,8 +22,7 @@ import {
   parseHandoffPlan,
   readGuideHandoffReceipt,
   requestSetupHandoff,
-  retrySetupHandoff,
-  SETUP_PROFILE
+  retrySetupHandoff
 } from '@/components/onboarding-chat/setup-profile'
 import { Button } from '@/components/ui/button'
 import { answeredAfter } from '@/lib/chat-messages/parts'
@@ -32,6 +31,7 @@ import { cn } from '@/lib/utils'
 import { $onboardingAnswers, markStepCommitted } from '@/store/onboarding-answers'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
+import { requireSetupProfileName } from '@/store/setup-profile'
 
 /** A tapped option is submitted as the user's own visible message rather than as a hidden [setup] note, so the
  *  model's next message answers a real turn. */
@@ -152,7 +152,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || requireSetupProfileName()
           })
         }
       })
@@ -195,7 +195,7 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || SETUP_PROFILE
+            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || requireSetupProfileName()
           }
         })
       }

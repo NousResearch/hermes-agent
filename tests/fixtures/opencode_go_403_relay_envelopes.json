@@ -1,0 +1,41 @@
+{
+  "_provenance": {
+    "issue": "https://github.com/NousResearch/hermes-agent/issues/117869",
+    "why": "Real 403 envelopes captured by two reporters on the OpenCode Go route. The relay's wrapper prose is not the synthetic sentence the other tests use, so the transient-vs-auth verdict is pinned against the bytes the relay actually sent.",
+    "captured": [
+      "weidzhou, comment 2026-09-21T15:20:30Z — v0.21.3 (2026.9.14), platform=webui, provider=opencode-go, model=deepseek-v4.1-flash, 22:52:39 local, reproduced twice in one day",
+      "foxhoundhcm, comment 2026-09-21T13:34:17Z — Windows desktop install, provider=opencode-go (https://opencode.ai/zen/go/v1), model=deepseek-v4.1-flash, 8 occurrences in one day across 6 clusters"
+    ],
+    "normalization": "The 'console_go' message is stored with the reporter's log line-wrap collapsed to single spaces; the '(Console Go)' wrapper, the bracketed [server_error] marker and every JSON key are verbatim. No field was added, renamed or reordered, and no field is invented where the capture did not show one."
+  },
+  "envelopes": [
+    {
+      "id": "webui_relay_wrapper",
+      "provider": "opencode-go",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "model": "deepseek-v4.1-flash",
+      "status_code": 403,
+      "body": {
+        "error": {
+          "type": "server_error",
+          "code": "server_error",
+          "message": "Upstream request failed: [server_error] Upstream response was not valid JSON"
+        }
+      }
+    },
+    {
+      "id": "console_go_wrapper",
+      "provider": "opencode-go",
+      "base_url": "https://opencode.ai/zen/go/v1",
+      "model": "deepseek-v4.1-flash",
+      "status_code": 403,
+      "body": {
+        "error": {
+          "type": "server_error",
+          "code": "server_error",
+          "message": "Error from provider (Console Go): Upstream request failed: [server_error] Upstream response was not valid JSON"
+        }
+      }
+    }
+  ]
+}

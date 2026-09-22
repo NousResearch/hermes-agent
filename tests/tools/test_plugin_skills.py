@@ -139,6 +139,26 @@ class TestPluginContextRegisterSkill:
         with pytest.raises(FileNotFoundError):
             ctx.register_skill("foo", tmp_path / "nonexistent.md")
 
+    def test_accepts_str_path(self, ctx, tmp_path):
+        # Plugin register() helpers commonly pass the SKILL.md location as str
+        # (#104404); this used to abort the whole plugin load with
+        # "'str' object has no attribute 'exists'" instead of registering.
+        from pathlib import Path
+
+        skill_md = tmp_path / "skills" / "my-skill" / "SKILL.md"
+        skill_md.parent.mkdir(parents=True)
+        skill_md.write_text("---\nname: my-skill\n---\nContent.\n")
+
+        ctx.register_skill("my-skill", str(skill_md), "A test skill")
+
+        found = ctx._manager.find_plugin_skill("testplugin:my-skill")
+        assert found == skill_md
+        assert isinstance(found, Path)
+
+    def test_missing_str_path_raises_filenotfound(self, ctx, tmp_path):
+        with pytest.raises(FileNotFoundError):
+            ctx.register_skill("foo", str(tmp_path / "nonexistent.md"))
+
     def test_duplicate_qualified_name_is_rejected(self, ctx, tmp_path):
         ctx.manifest.portable = True
         first = tmp_path / "first" / "SKILL.md"

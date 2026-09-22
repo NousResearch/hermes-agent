@@ -1,6 +1,7 @@
 """Tests for plugins.platforms.feishu.adapter — Feishu scan-to-create registration."""
 
 import json
+import sys
 from unittest.mock import patch, MagicMock
 import pytest
 
@@ -220,6 +221,31 @@ class TestQrRegister:
 
         result = qr_register()
         assert result is None
+
+    @patch("plugins.platforms.feishu.adapter._render_qr", return_value=False)
+    @patch("plugins.platforms.feishu.adapter._poll_registration", return_value=None)
+    @patch("plugins.platforms.feishu.adapter._begin_registration")
+    @patch("plugins.platforms.feishu.adapter._init_registration")
+    def test_qr_fallback_tip_targets_active_interpreter(
+        self, mock_init, mock_begin, mock_poll, mock_render, capsys
+    ):
+        """#111695: the install tip must target the running venv (uv, no pip module)."""
+        from plugins.platforms.feishu.adapter import _qr_register_inner
+
+        mock_begin.return_value = {
+            "device_code": "dc_123",
+            "qr_url": "https://example.com/qr",
+            "user_code": "ABCD",
+            "interval": 1,
+            "expire_in": 60,
+        }
+
+        assert _qr_register_inner(initial_domain="feishu", timeout_seconds=60) is None
+
+        output = capsys.readouterr().out
+        assert "https://example.com/qr" in output
+        assert f"uv pip install --python {sys.executable} qrcode" in output
+        assert "Tip: pip install qrcode" not in output
 
     # -- Contract: expected errors → None, unexpected errors → propagate --
 

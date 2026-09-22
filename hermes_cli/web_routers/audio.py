@@ -382,7 +382,8 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
       client → ``{"text": "..."}`` frames (incremental; may combine with done),
                ``{"done": true}`` when the reply is complete,
                ``{"stop": true}`` or disconnect = barge-in
-      server → ``{"type": "start", "sample_rate": N, "channels": 1}``,
+      server → ``{"type": "start", "sample_rate": N, "channels": 1}`` (sent
+               with the first PCM frame, once the provider's rate is final),
                binary PCM frames, then ``{"type": "end"}``
       server → ``{"type": "fallback"}`` when the configured provider has no
                chunked API — the client uses the POST endpoint instead.
@@ -397,8 +398,7 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
 
     # Profile via query param, like /api/pty and /api/console: the provider
     # chain + API keys must resolve from the requesting profile's config, not
-    # the dashboard's own. The streamer captures its config at resolve time,
-    # so scoping resolution scopes the whole session.
+    # the dashboard's own — at resolve time AND in the synthesis thread.
     profile = (ws.query_params.get("profile") or "").strip() or None
 
     loop = asyncio.get_running_loop()
@@ -410,10 +410,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             cfg = _load_tts_config()
             streamer = resolve_streaming_provider(cfg)
             cap = _resolve_max_text_length(_get_provider(cfg), cfg) if streamer else 0
-        return streamer, cap
+        return streamer, cap, cfg
 
     try:
-        streamer, cap = await loop.run_in_executor(None, _resolve)
+        streamer, cap, cfg = await loop.run_in_executor(None, _resolve)
     except Exception:
         _log.exception("speak-stream provider resolution failed")
         streamer, cap = None, 0
@@ -423,19 +423,37 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             await ws.close()
         return
 
-    await ws.send_json(
-        {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
-    )
+    # The start frame is deferred until the first PCM chunk (or end-of-speech):
+    # the OpenAI-compatible streamer only learns the endpoint's real rate from
+    # the response headers inside stream(), and the client opens its
+    # AudioContext at whatever rate the start frame carries.
+    start_sent = False
+
+    async def _send_start():
+        nonlocal start_sent
+        if start_sent:
+            return
+        start_sent = True
+        await ws.send_json(
+            {"type": "start", "sample_rate": streamer.sample_rate, "channels": streamer.channels}
+        )
 
     stop = threading.Event()
     text_q: queue.Queue = queue.Queue()  # str deltas; None = end-of-text
     chunks: asyncio.Queue = asyncio.Queue()  # PCM out; None = synthesis done
 
     def _produce():
+        # Every streamer re-resolves its API key on each stream() call (tts_streaming ->
+        # resolve_provider_secret), so the whole synthesis body runs under the requesting
+        # profile's scope, not only the resolve step above (else the launch profile's key).
+        with _config_profile_scope(profile):
+            _synthesize()
+
+    def _synthesize():
         from tools.tts_streaming import SentenceChunker
         from tools.tts_text_normalize import _strip_markdown_for_tts
 
-        chunker = SentenceChunker()
+        chunker = SentenceChunker.from_config(cfg)  # the requesting profile's tts.streaming.min_len
 
         # The session stays open for a whole agent turn and no text arrives
         # during tool execution, so without an idle flush a narration line with
@@ -505,8 +523,10 @@ async def speak_stream_ws(ws: "WebSocket") -> None:
             chunk = await chunks.get()
             if chunk is None:
                 break
+            await _send_start()
             await ws.send_bytes(chunk)
         if not stop.is_set():
+            await _send_start()
             await ws.send_json({"type": "end"})
     except (WebSocketDisconnect, RuntimeError):
         pass

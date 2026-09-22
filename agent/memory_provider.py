@@ -27,10 +27,10 @@ def ctx_bound(fn: Callable[..., Any]) -> Callable[..., Any]:
 
 
 def spawn_context_thread(target: Callable[..., Any], *, name: str, daemon: bool = True,
-                         args: tuple = ()) -> threading.Thread:
+                         args: tuple = (), kwargs: Optional[Dict[str, Any]] = None) -> threading.Thread:
     """Unstarted thread running *target* under the spawner's contextvars (see :func:`ctx_bound`).
     Every memory-provider background job (prefetch, sync, writer loops) must go through this."""
-    return threading.Thread(target=ctx_bound(target), args=args, name=name, daemon=daemon)
+    return threading.Thread(target=ctx_bound(target), args=args, kwargs=kwargs, name=name, daemon=daemon)
 
 # v1 = best-effort on_pre_compress() with the raw message list; v2 = opt-in fail-closed
 # checkpoint (normalized evidence handoff + strict-mode failure propagation).
@@ -38,6 +38,15 @@ PRE_COMPRESS_CHECKPOINT_API_VERSION = 2
 
 # Default glyph for recall indicators; providers may use their own brand mark.
 INDICATOR_GLYPH = "🧠"
+
+# ``memory.provider`` values that mean "the built-in store, no external plugin". The built-in
+# store is core: doctor, migration and dependency refresh must never look these up as plugins.
+CORE_MEMORY_PROVIDER_SENTINELS = frozenset({"", "default", "builtin", "built-in", "none"})
+
+
+def is_core_memory_provider(name: Optional[str]) -> bool:
+    """True when ``memory.provider`` selects the built-in store rather than an external plugin."""
+    return str(name or "").strip().lower() in CORE_MEMORY_PROVIDER_SENTINELS
 
 
 @dataclass(frozen=True)

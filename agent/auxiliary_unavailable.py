@@ -87,6 +87,17 @@ def pool_cooldown_message(provider_id: str) -> Optional[str]:
             "different provider with `hermes model`.")
 
 
+class ProviderNotConfiguredError(RuntimeError):
+    """Agent init found no usable inference provider: nothing is configured, or the explicitly
+    configured one has no credentials.
+
+    A distinct type because the remedy is setup, not a retry: clients route it to their provider
+    setup / onboarding flow. The wording of the two messages has changed more than once, so a
+    client that recognises this failure by matching their text silently stops routing (#119232's
+    sibling); the type and the gateway's ``code`` survive rewording.
+    """
+
+
 def missing_provider_credentials_message(provider_id: str) -> str:
     """The "Provider 'X' is set in config.yaml but …" error for an explicit provider with no credentials.
 

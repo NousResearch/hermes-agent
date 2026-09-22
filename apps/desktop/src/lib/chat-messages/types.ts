@@ -87,6 +87,10 @@ export type GatewayEventPayload = {
   result?: unknown
   summary?: string
   error?: string | boolean
+  // error — the gateway's machine-readable cause, when it has one (currently
+  // "provider_not_configured" from a failed agent init). Absent on older
+  // gateways; consumers must fall back to string heuristics.
+  code?: string
   // message.complete with status "error" — structured {layer, code, retryable}
   // descriptor naming which stack layer failed (agent/error_surface.py).
   // Absent on older gateways; consumers must fall back to string heuristics.

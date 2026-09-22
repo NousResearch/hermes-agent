@@ -1123,8 +1123,14 @@ def _start_agent_build(sid: str, session: dict) -> None:
             notify_registered = _wire_session_agent(sid, key, agent)
             _announce_built_agent(sid, key, current, agent)
         except Exception as e:
+            from agent.auxiliary_unavailable import ProviderNotConfiguredError
             current["agent_error"] = str(e)
-            _emit("error", sid, {"message": agent_init_failed_message(e)})
+            # A client can route "no provider is set up" to its setup flow instead of a dead-end
+            # error toast — but only if it can tell. The sentence is for the reader, the code is
+            # for the client; older clients keep matching the text.
+            _emit("error", sid, {
+                "message": agent_init_failed_message(e),
+                **({"code": "provider_not_configured"} if isinstance(e, ProviderNotConfiguredError) else {})})
         finally:
             _finish_agent_build(
                 sid, key, current, notify_registered=notify_registered, scopes=scopes, session_db=session_db)

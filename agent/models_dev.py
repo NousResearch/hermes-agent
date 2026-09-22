@@ -186,11 +186,21 @@ def _models_dev_id(provider: str) -> Optional[str]:
 _UNKNOWN_CATALOG_PROVIDER_WARNED: set = set()  # (provider, alias) warned once per process
 
 
+# In-memory cache for the read-only config snapshot, populated once per process lifetime.
+# The underlying load_config_readonly() already caches by file signature, but this avoids
+# the per-call import + function call + lock acquisition + signature check overhead when
+# _cfg_get is called O(models) times during model picker operations (#119044).
+_cfg_cache: Optional[Dict[str, Any]] = None
+
+
 def _cfg_get(*keys: str, default: Any) -> Any:
     """``cfg_get`` over the read-only config; *default* on any failure."""
+    global _cfg_cache
     try:
         from hermes_cli.config import cfg_get, load_config_readonly
-        return cfg_get(load_config_readonly(), *keys, default=default)
+        if _cfg_cache is None:
+            _cfg_cache = load_config_readonly()
+        return cfg_get(_cfg_cache, *keys, default=default)
     except Exception:
         return default
 

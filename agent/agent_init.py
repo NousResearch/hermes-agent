@@ -1479,10 +1479,20 @@ def _parse_compression_config(agent, _agent_cfg) -> CompressionSettings:
     if max_attempts < 1:
         max_attempts = 3
     # threshold_tokens: absolute cap (lower of ratio threshold and this); clamped to the
-    # window at apply-time.
+    # window at apply-time. When model_thresholds are explicitly set and threshold_tokens
+    # is still the DEFAULT_CONFIG default (256_000), the user never asked for a cap —
+    # replace it with None so per-model ratio thresholds aren't silently overridden.
+    DEFAULT_COMPRESSION_THRESHOLD_TOKENS = 256_000
     threshold_tokens = cfg.get("threshold_tokens")
+    model_thresholds_raw = _cfg_dict(cfg, "model_thresholds")
+    has_explicit_model_thresholds = any(
+        isinstance(v, (int, float)) and not isinstance(v, bool)
+        for v in model_thresholds_raw.values()
+    )
     if threshold_tokens is not None:
         threshold_tokens = _positive_int(threshold_tokens)
+        if has_explicit_model_thresholds and threshold_tokens == DEFAULT_COMPRESSION_THRESHOLD_TOKENS:
+            threshold_tokens = None
     # Non-system head messages to protect (system prompt is always protected); 0 is a
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))

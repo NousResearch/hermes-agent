@@ -1,7 +1,8 @@
 # Hermes static-message catalog -- English (baseline / source of truth)
 #
-# Only user-facing static messages from the CLI approval prompt and a handful
-# of gateway slash-command replies live here.  Agent-generated output, log
+# Only user-facing static messages live here: the CLI approval prompt, a handful
+# of gateway slash-command replies, and the background-review summary line the
+# CLI/gateway prints after a self-improvement pass.  Agent-generated output, log
 # lines, error tracebacks, tool outputs, and slash-command descriptions stay
 # in English and are NOT translated -- see agent/i18n.py for scope rationale.
 #
@@ -473,3 +474,25 @@ gateway:
     session_db_unavailable_prefix: "Session database not available"
     session_not_found:           "Session not found in database."
     warn_passthrough:            "⚠️ {error}"
+
+background_review:
+  # Background self-improvement review -- the "💾 Self-improvement review: ..." summary
+  # the CLI and gateway print after a review pass. agent/background_review.py composes the
+  # line from the verbs/labels below, so a translated catalog localizes the whole summary.
+  summary:               "💾 Self-improvement review: {summary}"
+  skill_line:            "Skill '{name}' {verb}{path}"
+  verb_created:          "created"
+  verb_patched:          "patched"
+  verb_rewritten:        "rewritten"
+  verb_written:          "written"
+  verb_removed:          "removed"
+  verb_deleted:          "deleted"
+  label_memory:          "Memory"
+  label_user:            "User profile"
+  updated_skill:         "Skill updated"
+  updated_memory:        "Memory updated"
+  updated_user:          "User profile updated"
+  updated_other:         "{label} updated"
+  skill_verbose_patch:   "📝 Skill '{name}' patched: \"{old}\" → \"{new}\""
+  skill_verbose_change:  "📝 Skill '{name}' {verb}: {description}"
+  skill_action:          "Skill {action}"

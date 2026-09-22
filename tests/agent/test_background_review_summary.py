@@ -7,6 +7,8 @@ history before the review started (e.g. an earlier "Cron job '...' created.").
 
 import json
 
+import pytest
+
 from run_agent import AIAgent
 
 
@@ -110,3 +112,76 @@ def test_removed_or_replaced_relabels_by_target():
 
     assert "User profile updated" in actions
     assert "Memory updated" in actions
+
+
+# ---------------------------------------------------------------------------
+# The summary is a static notification, so its wording comes from the i18n
+# catalog (display.language / HERMES_LANGUAGE) instead of hardcoded English.
+# ---------------------------------------------------------------------------
+
+
+def _skill_call_messages(action="patch", name="demo-skill", message="Skill updated."):
+    """Review-fork messages for one applied ``skill_manage`` operation."""
+    call_id = "call_skill"
+    payload = {
+        "success": True,
+        "operations_applied": True,
+        "message": message,
+        "results": [{"success": True, "action": action, "name": name}],
+    }
+    return [
+        {
+            "role": "assistant",
+            "content": "",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "skill_manage",
+                        "arguments": json.dumps({"name": name, "action": action}),
+                    },
+                }
+            ],
+        },
+        _tool_msg(call_id, payload),
+    ]
+
+
+@pytest.fixture
+def chinese_notifications(monkeypatch):
+    """Pin the notification language to Chinese (the env override documented for display.language)."""
+    from agent import i18n
+
+    monkeypatch.setenv("HERMES_LANGUAGE", "zh")
+    i18n.reset_language_cache()
+    yield
+    i18n.reset_language_cache()
+
+
+def test_summary_lines_follow_display_language(chinese_notifications):
+    """Skill/memory action lines render in the configured language."""
+    assert _summarize(_skill_call_messages(), []) == ["技能「demo-skill」已修补"]
+
+    memory_messages = [_tool_msg("c9", {"success": True, "message": "Entry added", "target": "user"})]
+    assert _summarize(memory_messages, []) == ["用户画像已更新"]
+
+
+def test_published_notification_follows_display_language(chinese_notifications):
+    """The published "💾 …" line is the catalog's, so both the CLI print and the gateway push localize."""
+    from agent.background_review import _publish_review_summary
+
+    class _Agent:
+        def __init__(self):
+            self.printed = []
+            self.pushed = []
+            self.background_review_callback = self.pushed.append
+
+        def _safe_print(self, text):
+            self.printed.append(text)
+
+    agent = _Agent()
+    _publish_review_summary(agent, ["技能「demo-skill」已修补"])
+
+    assert agent.printed == ["  💾 自我改进评审：技能「demo-skill」已修补"]
+    assert agent.pushed == ["💾 自我改进评审：技能「demo-skill」已修补"]

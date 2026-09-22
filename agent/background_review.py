@@ -16,6 +16,7 @@ from contextlib import contextmanager, suppress
 from dataclasses import dataclass, field
 from typing import Any, Dict, Iterator, List, Optional, Tuple
 
+from agent.i18n import t as _t
 from agent.prompt_cache_scope import resolve_prompt_cache_scope_safe
 from agent.thread_scoped_output import thread_scoped_silence
 
@@ -565,6 +566,41 @@ def _memory_op_line(label: str, action: str, fields: Dict[str, str]) -> Optional
     return f"{label} {glyph} {_preview(text, limit)}" if text else None
 
 
+# Skill-manage operation -> catalog key naming that operation in a review summary line.
+_SKILL_VERB_KEYS: Dict[str, str] = {
+    "create": "background_review.verb_created", "patch": "background_review.verb_patched",
+    "edit": "background_review.verb_rewritten", "write_file": "background_review.verb_written",
+    "remove_file": "background_review.verb_removed", "delete": "background_review.verb_deleted",
+}
+
+# Memory operation target -> (verbose label, generic update line). A target outside this table
+# keeps the raw value it arrived with, exactly as before the notification was localized.
+_TARGET_KEYS: Dict[str, Tuple[str, str]] = {
+    "memory": ("background_review.label_memory", "background_review.updated_memory"),
+    "user": ("background_review.label_user", "background_review.updated_user"),
+}
+
+
+def _skill_verb(action: Any) -> str:
+    """Localized verb for a skill-manage operation (``""`` when the operation is unknown)."""
+    key = _SKILL_VERB_KEYS.get(str(action or ""))
+    return _t(key) if key else ""
+
+
+def _action_label(target: str) -> str:
+    """Localized label for a memory/profile action; unknown targets keep their raw value."""
+    keys = _TARGET_KEYS.get(target)
+    return _t(keys[0]) if keys else target
+
+
+def _action_update_line(target: str, is_skill: bool) -> str:
+    """Generic "nothing in the tool output names the change, but something was applied" line."""
+    if is_skill:
+        return _t("background_review.updated_skill")
+    keys = _TARGET_KEYS.get(target)
+    return _t(keys[1]) if keys else _t("background_review.updated_other", label=target)
+
+
 def _verbose_skill_line(data: Dict, detail: Dict, message: str) -> str:
     action = detail.get("action", "")
     skill_name = detail.get("name", "")
@@ -575,11 +611,14 @@ def _verbose_skill_line(data: Dict, detail: Dict, message: str) -> str:
     new_string = change.get("new", "") or detail.get("new_string", "")
     if action == "patch" and (old_string or new_string):
         old_preview, new_preview = (_preview(t, 80).replace("\n", " ") for t in (old_string, new_string))
-        return f"📝 Skill '{skill_name}' patched: \"{old_preview}\" → \"{new_preview}\""
-    verb = {"create": "created", "edit": "rewritten"}.get(action)
+        return _t("background_review.skill_verbose_patch", name=skill_name, old=old_preview, new=new_preview)
+    # Only ``create``/``edit`` carry a description; every other operation falls through to the
+    # tool's own message (unchanged pre-localization behavior).
+    verb = _skill_verb(action) if action in ("create", "edit") else ""
     if verb and change.get("description"):
-        return f"📝 Skill '{skill_name}' {verb}: {change['description']}"
-    return f"📝 {message}" if message else f"Skill {action}"
+        return _t("background_review.skill_verbose_change", name=skill_name, verb=verb,
+                  description=change["description"])
+    return f"📝 {message}" if message else _t("background_review.skill_action", action=action)
 
 
 def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
@@ -588,7 +627,8 @@ def _verbose_memory_lines(label: str, detail: Dict) -> List[str]:
     if isinstance(ops_raw, list) and ops_raw:
         lines = [_memory_op_line(label, op.get("action", ""), op) for op in ops_raw if isinstance(op, dict)]
         return [line for line in lines if line]
-    return [_memory_op_line(label, detail.get("action", ""), detail) or f"{label} updated"]
+    return [_memory_op_line(label, detail.get("action", ""), detail)
+            or _t("background_review.updated_other", label=label)]
 
 
 # Tool-call argument fields surfaced in action summaries, with their defaults.
@@ -653,8 +693,6 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
     if is_skill and "results" in data:
         # The requested operations are not evidence of applied writes (approval
         # and atomic rollback can leave all of them unapplied).
-        verbs = {"create": "created", "patch": "patched", "edit": "rewritten",
-                 "write_file": "written", "remove_file": "removed", "delete": "deleted"}
         results = data.get("results")
         if not data.get("operations_applied") or not isinstance(results, list):
             return []
@@ -662,10 +700,10 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         for result in results:
             if not isinstance(result, dict) or result.get("success") is not True:
                 continue
-            verb = verbs.get(result.get("action"))
+            verb = _skill_verb(result.get("action"))
             if verb and result.get("name"):
                 path = f" ({result['file_path']})" if result.get("file_path") else ""
-                lines.append(f"Skill '{result['name']}' {verb}{path}")
+                lines.append(_t("background_review.skill_line", name=result["name"], verb=verb, path=path))
         return lines
     lower = message.lower()
     if not verbose and ("created" in lower or "updated" in lower or
@@ -673,11 +711,12 @@ def _action_lines(data: Dict, detail: Dict, verbose: bool) -> List[str]:
         return [message]
     if not is_skill and not target:
         return []
-    label = "Skill" if is_skill else {"memory": "Memory", "user": "User profile"}.get(target, target)
     if verbose:
-        return [_verbose_skill_line(data, detail, message)] if is_skill else _verbose_memory_lines(label, detail)
+        if is_skill:
+            return [_verbose_skill_line(data, detail, message)]
+        return _verbose_memory_lines(_action_label(target), detail)
     hit = any(k in lower for k in ("added", "replaced", "removed", "applied")) or (target and "add" in lower)
-    return [f"{label} updated"] if hit else []
+    return [_action_update_line(target, is_skill)] if hit else []
 
 
 def summarize_background_review_actions(
@@ -1177,10 +1216,14 @@ def _run_review_fork(
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(f"  💾 Self-improvement review: {summary}")
+    # Static message, so the wording follows display.language. The review thread carries the
+    # spawning turn's profile context (run_agent.py -> propagate_context_to_thread), so a
+    # multiplexed gateway localizes each review to the profile that started it.
+    message = _t("background_review.summary", summary=summary)
+    agent._safe_print(f"  {message}")
     if agent.background_review_callback:
         with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+            agent.background_review_callback(message)
 
 
 def _run_review_in_thread(

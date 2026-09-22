@@ -42,14 +42,17 @@ import {
   eventsReconnectingMessage,
   eventsRejectedMessage,
   isEventsAuthRejection,
+  isEventsAuthRejectionMessage,
   isEventsFeedMessage,
   shouldRetryEventsClose
 } from '@/lib/events-reconnect'
+import { credentialWarning, sidecarErrorMessage } from '@/lib/chat-sidebar-banner'
 import { titleFromSessionInfoPayload } from '@/lib/chat-title'
 
 import { cn } from '@/lib/utils'
-import { AlertCircle, ChevronDown, RefreshCw } from 'lucide-react'
+import { AlertCircle, ChevronDown, KeyRound, RefreshCw } from 'lucide-react'
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useNavigate } from 'react-router'
 
 interface SessionInfo {
   cwd?: string
@@ -106,6 +109,7 @@ export function ChatSidebar({
   onDashboardNewSessionRequest,
   onSessionTitleChange
 }: ChatSidebarProps) {
+  const navigate = useNavigate()
   // `version` bumps on reconnect (manual button, profile/channel switch) and
   // re-runs the socket effects. The clients themselves live for the whole
   // component: the shared client keeps per-session seq watermarks and asks
@@ -196,7 +200,8 @@ export function ChatSidebar({
       const message = ev.payload?.message
 
       if (message) {
-        setError(message)
+        console.warn(`[chat-sidebar] sidecar error: ${message}`)
+        setError(sidecarErrorMessage(message))
       }
     })
 
@@ -215,7 +220,8 @@ export function ChatSidebar({
       })
       .catch((e: Error) => {
         if (!cancelled) {
-          setError(e.message)
+          console.warn(`[chat-sidebar] sidecar connect failed: ${e.message}`)
+          setError(sidecarErrorMessage(e.message))
         }
       })
 
@@ -302,6 +308,7 @@ export function ChatSidebar({
       if (unmounting) {
         return
       }
+      console.warn(`[chat-sidebar] events feed closed code=${code ?? 'none'}`)
       if (code !== undefined && isEventsAuthRejection(code)) {
         surface(eventsRejectedMessage(code))
         return
@@ -362,7 +369,9 @@ export function ChatSidebar({
   // sidecar gateway session, so it's available whenever the sidebar is mounted.
   const modelName = effectiveModel || info.model || '—'
   const modelLabel = modelName.split('/').slice(-1)[0] ?? '—'
-  const banner = error ?? info.credential_warning ?? null
+  const credential = credentialWarning(info.credential_warning)
+  const banner = error ?? credential?.message ?? null
+  const showReload = isEventsAuthRejectionMessage(error)
 
   return (
     <aside
@@ -429,10 +438,39 @@ export function ChatSidebar({
           <div className="min-w-0 flex-1">
             <div className="wrap-break-word text-destructive">{banner}</div>
 
-            {error && (
-              <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
-                reconnect events feed
+            {error && showReload && (
+              <Button
+                size="sm"
+                outlined
+                className="mt-1"
+                onClick={() => window.location.reload()}
+                prefix={<RefreshCw />}
+              >
+                Reload page
               </Button>
+            )}
+            {error && !showReload && (
+              <Button size="sm" outlined className="mt-1" onClick={reconnect} prefix={<RefreshCw />}>
+                Reconnect side panel
+              </Button>
+            )}
+            {!error && credential && (
+              <div className="mt-1 flex flex-wrap gap-2">
+                <Button
+                  size="sm"
+                  outlined
+                  prefix={<KeyRound />}
+                  // Router navigation: a full page load would tear down the
+                  // xterm scrollback and the chat sockets. (The mobile portal
+                  // still lives under ChatPage, so router context is present.)
+                  onClick={() => navigate('/env')}
+                >
+                  Add key
+                </Button>
+                <Button size="sm" outlined onClick={() => setModelOpen(true)}>
+                  Switch model
+                </Button>
+              </div>
             )}
           </div>
         </Card>

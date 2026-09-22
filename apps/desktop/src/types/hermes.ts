@@ -1,3 +1,7 @@
+import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
+
+export type StoredToolCallLabels = Record<string, ToolLabel[]>
+
 export interface ConfigFieldSchema {
   category?: string
   description?: string
@@ -128,6 +132,11 @@ export interface OAuthPollResponse {
    *  `account_not_anonymous` / `account_busy` / `timeout` (status `error`).
    *  `error_message` carries the matching user-facing text. */
   reason?: null | string
+  /** Failed sign-ins over a free-tier identity: the seconds the account service
+   *  asked the client to wait before trying again (0 or absent when none). */
+  retry_after?: null | number
+  /** Failed sign-ins over a free-tier identity: whether a later attempt can succeed. */
+  retryable?: boolean | null
   session_id: string
   status: 'approved' | 'denied' | 'error' | 'expired' | 'pending'
 }
@@ -147,6 +156,14 @@ export interface FreeTierStatus {
   model: string
   /** True until the one-time introduction has been acknowledged. */
   notice_pending: boolean
+  /** Present only while `enabled` and no identity exists: why the last attempt
+   *  to create one failed. `error_code` is one of the backend's `anon_*` codes
+   *  (`hermes_cli/anon_auth.py`), `error` its sentence, `retryable` whether a
+   *  later attempt can succeed, `retry_after` the seconds still to wait. */
+  error?: string
+  error_code?: string
+  retryable?: boolean
+  retry_after?: number
 }
 
 export interface MemoryProviderOAuthStatus {
@@ -206,8 +223,21 @@ export interface MemoryProviderConfig {
   name: string
 }
 
+/** Transport pinned on a custom endpoint; `''` = let the runtime auto-detect. Same
+ * choices as `hermes model`'s custom-provider setup (#93622). */
+export type CustomEndpointApiMode = '' | 'anthropic_messages' | 'chat_completions' | 'codex_responses'
+
+/** One `/v1/models` row; a gateway may advertise a reasoning alias
+ * (`gpt-5.6-sol-high` → `gpt-5.6-sol` @ `high`) that the bare id list flattens. */
+export interface CustomEndpointModelDetail {
+  canonical_model?: null | string
+  id: string
+  reasoning_effort?: null | string
+}
+
 export interface CustomEndpoint {
   api_key_preview?: null | string
+  api_mode?: CustomEndpointApiMode
   base_url: string
   context_length?: null | number
   discover_models: boolean
@@ -233,21 +263,29 @@ export interface CustomEndpointsResponse {
 
 export interface CustomEndpointUpdate {
   api_key?: string
+  api_mode?: CustomEndpointApiMode
   base_url: string
   context_length?: number
   discover_models?: boolean
   id?: string
   make_default?: boolean
   model: string
+  model_details?: CustomEndpointModelDetail[]
   models?: string[]
   name: string
 }
 
 export interface CustomEndpointValidationResponse {
   message: string
+  /** Older backends send only `models`. */
+  model_details?: CustomEndpointModelDetail[]
   models: string[]
   ok: boolean
   reachable: boolean
+  // Base URL that actually served /models (the entered URL or its /v1 variant); persist this one.
+  resolved_base_url?: string
+  /** The transport whose route the backend probed (pinned api_mode, or the runtime's URL auto-detect). */
+  transport_checked?: CustomEndpointApiMode
 }
 
 export interface MessagingEnvVarInfo {
@@ -407,12 +445,14 @@ export interface HermesConfig {
     service_tier?: string
   }
   display?: {
+    show_reasoning?: boolean | string
     personality?: string
     skin?: string
     interim_assistant_messages?: boolean
     timestamps?: boolean
   }
   desktop?: {
+    font_family?: string
     repo_scan_enabled?: boolean
     repo_scan_roots?: string[]
     repo_scan_exclude_paths?: string[]
@@ -510,6 +550,13 @@ export interface SessionInfo {
    *  elsewhere. Undefined against a backend predating the flag; treat that as
    *  "no opinion" and leave the local pin set alone. */
   pinned?: boolean
+  /** Server-side hide flag (`sessions.hidden`). Hidden rows (canonical Bot
+   *  Chats, group-chat plumbing) never reach a sidebar page, so a row
+   *  carrying `hidden: true` only exists in the local list through an
+   *  optimistic insert or a keep-list carry — the merge must not let it
+   *  survive a refresh (#113273). Undefined against older backends; treat
+   *  as visible. */
+  hidden?: boolean
   /** Derived read state (backend watermark: `last_read_at` vs `last_active`,
    *  see `SessionDB.session_unread`). True when the conversation was
    *  explicitly marked unread or a response arrived after it was last read.
@@ -549,7 +596,9 @@ export type TimelineDisplayMetadata =
       completed_count?: number
       failed_count?: number
       duration_seconds?: number
+      display_text?: string
     }
+  | { display_text: string }
   | { reactions: MessageReaction[] }
 
 /** One emoji reaction on a message. One per author, iOS-Tapback style. */
@@ -568,6 +617,8 @@ export interface SessionMessage {
    */
   args?: unknown
   codex_reasoning_items?: unknown
+  labels?: ToolLabel[]
+  tool_call_labels?: StoredToolCallLabels
   /** Responses-API assistant message items; text parts here are the
    *  user-visible reply when `content` persisted empty (#68321). */
   codex_message_items?: unknown
@@ -580,7 +631,14 @@ export interface SessionMessage {
   reasoning_content?: null | string
   reasoning_details?: unknown
   display_kind?:
-    'async_delegation_complete' | 'auto_continue' | 'hidden' | 'model_switch' | 'personality_switch' | 'steer' | string
+    | 'async_delegation_complete'
+    | 'auto_continue'
+    | 'hidden'
+    | 'model_switch'
+    | 'personality_switch'
+    | 'process_complete'
+    | 'steer'
+    | string
   /**
    * A backend older than this app can still serve this as unparsed JSON text,
    * so readers must narrow before indexing into it.
@@ -619,7 +677,7 @@ export interface SessionMessagesResponse {
   session_id: string
 }
 
-export interface SessionResumeResponse {
+export interface SessionResumeResult {
   /** Present when the backend found a fresh crash-interrupted turn and
    *  scheduled its automatic continuation; the turn arrives as a normal
    *  message.start stream right after this resume. */
@@ -639,6 +697,12 @@ export interface SessionResumeResponse {
      *  and before the output it redirected (#73793). Omitted by older
      *  gateways. */
     correction_offsets?: number[]
+    /** Display classification of a synthetic starting prompt (`process_complete`,
+     *  `async_delegation_complete`, `hidden`, …) — the same typing the persisted
+     *  row gets, so a reconnect renders the live prompt like history will
+     *  (#112144). Omitted for genuine user input and by older gateways. */
+    display_kind?: SessionMessage['display_kind']
+    display_metadata?: SessionMessage['display_metadata']
     /** Retained failed turn: the error the terminal frame carried (the frame
      *  itself may have been lost to a disconnect). */
     error?: string
@@ -664,17 +728,13 @@ export interface SessionResumeResponse {
     request_id?: string
     smart_denied?: boolean
   }
-  // The clarify question still blocking this session, if any. Same replay
-  // class as pending_approval: emitted-while-detached prompts are restored
-  // from the resume snapshot instead of being lost until server-side timeout.
-  pending_clarify?: {
-    answers?: Record<string, unknown>
-    choices?: null | string[]
-    multi_select?: boolean
-    question?: string
-    questions?: unknown
-    request_id?: string
-  }
+  // Server→client requests still unanswered for this session (clarify, sudo,
+  // vault prompts, …). The shared channel re-delivers them to the request
+  // handlers before this response resolves; listed here so resume can tell an
+  // authoritative "nothing pending" from a request the handler declined.
+  open_requests?: Array<{ id: string; method: string; params: Record<string, unknown> & { session_id?: string } }>
+  // The connection operation still blocking this session; resume restores the backend-owned card projection.
+  pending_connection?: ConnectionRequestPayload
   info?: SessionRuntimeInfo
   message_count: number
   messages: SessionMessage[]
@@ -708,6 +768,8 @@ export interface SessionRuntimeInfo {
   personality?: string
   provider?: string
   reasoning_effort?: string
+  /** What the route actually sends for `reasoning_effort` (empty when unset; equal when verbatim). */
+  reasoning_effort_wire?: string
   running?: boolean
   service_tier?: string
   skills?: Record<string, string[]> | string[]
@@ -782,6 +844,15 @@ export interface ContextUsageCategory {
   tokens: number
 }
 
+export interface ContextFileSource {
+  label: string
+  path: string
+  chars: number
+  est_tokens: number
+  loaded: boolean
+  status: string
+}
+
 export interface ContextBreakdown {
   categories: ContextUsageCategory[]
   context_max: number
@@ -791,6 +862,7 @@ export interface ContextBreakdown {
   context_used: number
   estimated_total: number
   model?: string
+  context_files?: ContextFileSource[]
 }
 
 export interface AnalyticsDailyEntry {
@@ -954,6 +1026,9 @@ export interface ProfileCreatePayload {
 export interface ProfileInfo {
   /** Presentation-only label override (profile.yaml display_name). */
   display_name?: string
+  /** Bot Mode title (profile.yaml ui_meta['hermes-bots'].title) — the name the
+   *  Bots roster shows for this profile. Presentation-only. */
+  bot_title?: string
   has_env: boolean
   is_default: boolean
   model: null | string
@@ -1201,6 +1276,10 @@ export interface ComputerUseStatus {
 }
 
 export interface SessionSearchResult {
+  /** Recency of the matched conversation, straight from the sessions row —
+   *  present on hits backed by a rich row (the search endpoint fills it).
+   *  Used to order unloaded hits honestly; falls back to session_started. */
+  last_active?: number | null
   /** Lineage root of the matched conversation. Stable across compression and
    *  used as the durable pin id; falls back to session_id when absent. */
   lineage_root?: string | null
@@ -1236,6 +1315,9 @@ export interface StatusResponse {
   env_path: string
   gateway_exit_reason: string | null
   gateway_health_url: string | null
+  /** Seconds since housekeeping last stamped gateway_state.json; set only when the process is alive
+   *  but the stamp is past the freshness TTL (loop/housekeeping wedged). null when healthy. */
+  gateway_heartbeat_stale_s?: number | null
   gateway_pid: number | null
   gateway_platforms: Record<string, PlatformStatus>
   gateway_running: boolean
@@ -1401,6 +1483,9 @@ export interface AuxiliaryTaskAssignment {
   local_endpoint?: boolean
   model: string
   provider: string
+  /** Task-level effort override (`auxiliary.<task>.reasoning_effort`); null/absent
+   *  means the task inherits the main agent's effort. */
+  reasoning_effort?: null | string
   task: string
 }
 
@@ -1458,6 +1543,9 @@ export interface ModelAssignmentRequest {
   confirm_expensive_model?: boolean
   model: string
   provider: string
+  /** Auxiliary only. Omitted → leave the task's override alone; null → clear it
+   *  (inherit); a level → set it. */
+  reasoning_effort?: null | string
   scope: 'main' | 'auxiliary'
   task?: string
 }
@@ -1468,21 +1556,6 @@ export interface StaleAuxAssignment {
   task: string
   provider: string
   model: string
-}
-
-export type CronModelDriftAxis = 'model' | 'provider'
-
-export interface CronModelImpactJob {
-  id: string
-  name: string
-  drifted_axes: CronModelDriftAxis[]
-}
-
-export interface CronModelImpact {
-  available: boolean
-  affected_count: number
-  truncated: boolean
-  jobs: CronModelImpactJob[]
 }
 
 /** One skill-hub source (official index, GitHub, skills.sh, …) as reported by
@@ -1584,6 +1657,7 @@ export interface McpServerTestResponse {
 export interface McpCatalogEntry {
   name: string
   description: string
+  connector_slug?: string | null
   source: string
   transport: string
   auth_type: string
@@ -1599,7 +1673,15 @@ export interface McpCatalogEntry {
   /** Composer-suggestion triggers (present when the manifest declares a
    *  `suggest` block; null/absent on entries without one and on older
    *  backends that predate the field). */
-  suggest?: { keywords: string[]; hosts: string[] } | null
+  suggest?: {
+    keywords: string[]
+    hosts: string[]
+    applications?: string[]
+    examples?: string[]
+    requires_app?: boolean
+  } | null
+  /** Observed on this entry's backend host, not proof that its MCP is usable. */
+  detected_apps?: string[]
   needs_install: boolean
   installed: boolean
   enabled: boolean
@@ -1608,6 +1690,7 @@ export interface McpCatalogEntry {
 export interface McpCatalogResponse {
   entries: McpCatalogEntry[]
   diagnostics: { name: string; kind: string; message: string }[]
+  discovery?: { scope: 'backend'; status: 'ok' | 'unavailable'; platform: string }
 }
 
 /** `GET /api/memory` — active provider + built-in memory file sizes. */
@@ -1644,8 +1727,6 @@ export interface ModelAssignmentResponse {
    *  switching the main provider to Nous. Empty unless provider === 'nous'
    *  and the user is a paid subscriber with unconfigured tools. */
   gateway_tools?: string[]
-  /** Additive profile-local cron impact returned after a persisted main assignment. */
-  cron_model_impact?: CronModelImpact
   confirm_message?: string
   confirm_required?: boolean
   model?: string

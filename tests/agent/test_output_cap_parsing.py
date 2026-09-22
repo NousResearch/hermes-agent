@@ -54,6 +54,13 @@ class TestParseDashScopeOutputCap:
     """DashScope / Alibaba Cloud (Qwen) reject an over-cap output request with
     a bounded range whose upper bound is the real max-output cap (#55546)."""
 
+    def test_anthropic_output_ceiling_format(self):
+        msg = (
+            "max_tokens: 100000 > 64000, which is the maximum allowed number "
+            "of output tokens for claude-sonnet-4-5"
+        )
+        assert parse_available_output_tokens_from_error(msg) == 64000
+
     def test_dashscope_range_format(self):
         msg = ("HTTP 400: InternalError.Algo.InvalidParameter: "
                "Range of max_tokens should be [1, 65536]")
@@ -99,6 +106,16 @@ class TestIsOutputCapError:
         assert is_output_cap_error(
             "max_tokens: 32768 > context_window: 200000 - "
             "input_tokens: 190000 = available_tokens: 10000"
+        ) is True
+
+    def test_anthropic_max_tokens_output_ceiling_is_output_cap(self):
+        # Anthropic invalid_request_error uses the same error type for bad
+        # schemas, images, and output-cap violations. This message is about the
+        # requested response budget, not input/context overflow, so it must stay
+        # out of the compression path. Port of cline/cline#12876.
+        assert is_output_cap_error(
+            "max_tokens: 100000 > 64000, which is the maximum allowed number "
+            "of output tokens for claude-sonnet-4-5"
         ) is True
 
     def test_real_input_overflow_is_not_output_cap(self):
@@ -191,3 +208,58 @@ class TestParseVllmTokenBasedOutputCap:
             cap = available
         assert real_input + cap <= window, f"did not converge: cap={cap}"
 
+
+
+class TestParseAdvertisedCeilingWordings:
+    """Azure and SGLang name the ceiling without any phrase the parser knew (#78405, #83521).
+    Unrecognized, the 400 carried the bare ``max_tokens`` substring (or nothing at all) into
+    the compression path and a fresh session died with "cannot be shrunk further"."""
+
+    @pytest.mark.parametrize("msg, available", [
+        # Azure OpenAI (verbatim from #78405): the advertised completion ceiling IS the budget.
+        ("Error: max_tokens is too large: 65536. This model supports at most 32768 completion tokens.", 32768),
+        # SGLang (verbatim from #83521): window - input; never mentions max_tokens.
+        ("Requested token count exceeds the model's maximum context length of 131072 tokens. You requested "
+         "a total of 132528 tokens: 66992 tokens from the input messages and 65536 tokens for the completion. "
+         "Please reduce the number of tokens in the input messages or the completion to fit within the limit.",
+         64080),
+    ])
+    def test_ceiling_is_parsed_and_classified_as_output_cap(self, msg, available):
+        assert parse_available_output_tokens_from_error(msg) == available
+        assert is_output_cap_error(msg) is True
+
+    def test_sglang_input_alone_over_window_routes_to_compression(self):
+        # Same wording, but the input by itself exceeds the window: shrinking the output cannot help.
+        msg = ("Requested token count exceeds the model's maximum context length of 100000 tokens. You requested "
+               "a total of 150000 tokens: 120000 tokens from the input messages and 30000 tokens for the completion.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert is_output_cap_error(msg) is False
+def test_limited_to_phrasing_is_an_output_cap():
+    """#67453: Scaleway rejects an oversized budget with "max_completion_tokens is limited to N for
+    <model>" — an output cap (step the budget down), not a context overflow (do not compress)."""
+    assert is_output_cap_error("max_completion_tokens is limited to 16384 for glm-5.2")
+    assert parse_available_output_tokens_from_error("max_completion_tokens is limited to 16384 for glm-5.2") == 16384
+    assert not is_output_cap_error("prompt is too long: max_tokens limited to 100 given the input")
+
+
+class TestParseOpenAiCompletionSplit:
+    """OpenAI's original overflow wording, copied by vLLM / llama-cpp-python, splits the request
+    as "(A in the messages, B in the completion)" and never names max_tokens (#90607)."""
+
+    @pytest.mark.parametrize("msg, budget", [
+        ("This model's maximum context length is 102400 tokens. However, you requested 102401 tokens "
+         "(36865 in the messages, 65536 in the completion). Please reduce the length of the messages or completion.",
+         102400 - 36865),
+        ("This model's maximum context length is 4097 tokens, however you requested 4771 tokens "
+         "(771 in your prompt; 4000 for the completion). Please reduce your prompt; or completion length.",
+         4097 - 771),
+    ])
+    def test_split_is_output_cap_with_window_minus_measured_prompt(self, msg, budget):
+        assert parse_available_output_tokens_from_error(msg) == budget
+        assert is_output_cap_error(msg)
+
+    def test_split_with_prompt_filling_window_stays_on_compression(self):
+        msg = ("This model's maximum context length is 4097 tokens. However, you requested 6000 tokens "
+               "(5000 in the messages, 1000 in the completion). Please reduce the length of the messages or completion.")
+        assert parse_available_output_tokens_from_error(msg) is None
+        assert not is_output_cap_error(msg)

@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -932,6 +933,58 @@ describe('createSlashHandler', () => {
     for (const [line] of ctx.transcript.sys.mock.calls) {
       expect(line).not.toContain('Use this skill to do X')
     }
+  })
+
+  it('surfaces the slash worker failure itself instead of the command.dispatch refusal', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new JsonRpcGatewayError('slash worker timed out', { code: 5030 }))
+            }
+
+            return Promise.reject(
+              new JsonRpcGatewayError('not a quick/plugin/bundle/skill command: insights', { code: 4018 })
+            )
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/insights')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    const line = String(ctx.transcript.sys.mock.calls.at(-1)?.[0])
+    expect(line).toContain('/insights')
+    expect(line).toMatch(/timed out/)
+    expect(line).not.toMatch(/quick\/plugin\/bundle\/skill/)
+  })
+
+  it('still falls back to command.dispatch on a 4018 "not mine" refusal', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) =>
+            method === 'slash.exec'
+              ? Promise.reject(new JsonRpcGatewayError('skill command: use command.dispatch for /x', { code: 4018 }))
+              : Promise.resolve({ type: 'alias', target: 'help' })
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    createSlashHandler(ctx)('/x')
+    await vi.waitFor(() => expect(ctx.gateway.gw.request).toHaveBeenCalledWith('command.dispatch', expect.anything()))
   })
 
   it('handles command.dispatch payloads returned directly by slash.exec', async () => {

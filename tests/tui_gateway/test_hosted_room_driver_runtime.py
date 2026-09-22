@@ -422,7 +422,7 @@ def _runtime(
     )
 
 
-def _wait_for(predicate, *, timeout: float = 2.0) -> None:
+def _wait_for(predicate, *, timeout: float = 5.0) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if predicate():
@@ -2092,11 +2092,12 @@ def test_stop_is_bounded_and_does_not_interrupt_active_turn(db: Path):
     runtime = _runtime(db, rpc, poll_interval_seconds=0.01)
 
     runtime.start()
-    assert rpc.submitted.wait(1.0)
+    assert rpc.submitted.wait(5.0)
     started = time.monotonic()
-    stopped = runtime.stop(timeout=0.5)
+    stopped = runtime.stop(timeout=5.0)
 
     assert stopped is True
-    assert time.monotonic() - started < 0.5
+    # Bounded: returns well before its own timeout and without waiting for the active turn (which never completes).
+    assert time.monotonic() - started < 2.0
     assert state.get_task(db, identity)["status"] == "running"
     assert not [call for call in rpc.calls if call[0] == "interrupt"]

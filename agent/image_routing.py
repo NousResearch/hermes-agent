@@ -286,8 +286,15 @@ def _probe_models_dev(provider: str, model: str, cfg: Optional[Dict[str, Any]]) 
     # "unknown" would fall back to attempting the call and reintroduce the bug. This preserves the
     # historical network-on-cold-cache behavior for this one path; the fetch is cached (4h TTL) and
     # backoff-limited after failures.
+    if (provider or "").strip().lower() == "openai-codex":
+        # A VALID Codex ``-900k`` picker variant is a Hermes-side alias of its base slug; the catalog
+        # only knows the base, so look that up. The runtime model id stays untouched (the transport
+        # owns wire normalization) and ineligible ``-900k`` strings pass through unchanged (#102189).
+        from agent.model_metadata import strip_codex_context_variant_suffix
+
+        model = strip_codex_context_variant_suffix(model)
     caps = get_model_capabilities(provider, model, allow_network=True)
-    return None if caps is None else bool(caps.supports_vision)
+    return None if caps is None else caps.supports_vision
 
 
 def _probe_ollama(provider: str, model: str, cfg: Optional[Dict[str, Any]]) -> Optional[bool]:
@@ -322,7 +329,8 @@ def _lookup_supports_vision(
     """Return True/False if vision capability can be resolved, None if unknown.
 
     Order: config ``supports_vision`` override → :data:`_VISION_PROBES`
-    (managed local runtime → models.dev catalog → Ollama probe).
+    (managed local runtime → models.dev catalog → Ollama probe → registered
+    ``ProviderProfile.supports_vision`` declaration).
     """
     # Named custom providers are canonicalized to ``provider="custom"``; the
     # original name lives in the context-local main runtime. Borrow it only on an

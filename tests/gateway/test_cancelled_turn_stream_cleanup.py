@@ -6,10 +6,11 @@ from unittest.mock import AsyncMock
 import pytest
 
 from gateway.run_turn import GatewayTurnMixin
+from gateway.run_busy import GatewayBusySessionMixin
 from gateway.turn_context import TurnContext
 
 
-class _TurnFixture(GatewayTurnMixin):
+class _TurnFixture(GatewayTurnMixin, GatewayBusySessionMixin):
     """Use the real turn/flush/cleanup path with controlled worker and transport I/O."""
 
     def __init__(self, *, consumer=True, hold_progress=False):
@@ -91,7 +92,7 @@ class _TurnFixture(GatewayTurnMixin):
         self.started.set()
         return SimpleNamespace(executor_task=self.worker_future, agent_timeout=None)
 
-    def _adapter_for_source(self, source):
+    def _delivery_adapter_for(self, source):
         return None
 
     def _release_running_agent_state(self, key, *, run_generation):

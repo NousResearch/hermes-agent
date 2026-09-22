@@ -8,6 +8,8 @@ import { PassThrough } from 'node:stream'
 
 import { test, vi } from 'vitest'
 
+import { macosSysroot, xcrunClangArgv } from '../scripts/macos-sysroot.mjs'
+
 import {
   type CommandScreenshotCapture,
   CommandScreenshotMonitor,
@@ -222,7 +224,7 @@ int main(void) { @autoreleasepool {
       )
       execFileSync(
         'xcrun',
-        ['clang', '-fobjc-arc', '-fblocks', '-framework', 'Cocoa', '-framework', 'CoreGraphics', fixture, '-o', binary],
+        [...xcrunClangArgv(macosSysroot()), '-fobjc-arc', '-fblocks', '-framework', 'Cocoa', '-framework', 'CoreGraphics', fixture, '-o', binary],
         { timeout: 30_000 }
       )
       assert.equal(

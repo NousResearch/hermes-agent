@@ -6,6 +6,8 @@ import { resolve } from 'node:path'
 
 import { test } from 'vitest'
 
+import { macosSysroot, xcrunClangArgv } from '../scripts/macos-sysroot.mjs'
+
 import { HudModifierMonitor, type HudModifierStatus, resolveHudModifierMonitorPath } from './hud-modifier-monitor'
 
 test.skipIf(process.platform !== 'darwin')(
@@ -13,13 +15,12 @@ test.skipIf(process.platform !== 'darwin')(
   async () => {
     const dir = mkdtempSync(resolve(tmpdir(), 'hermes-hud-native-'))
     const native = resolve(import.meta.dirname, 'native')
+    const clang = xcrunClangArgv(macosSysroot())
 
     try {
       const gesture = resolve(dir, 'gesture')
       execFileSync('xcrun', [
-        '--sdk',
-        'macosx',
-        'clang',
+        ...clang,
         '-std=c11',
         '-Wall',
         '-Wextra',
@@ -31,9 +32,7 @@ test.skipIf(process.platform !== 'darwin')(
       assert.match(execFileSync(gesture, [], { encoding: 'utf8', timeout: 5_000 }), /assertions passed/)
       const adapter = resolve(dir, 'adapter')
       execFileSync('xcrun', [
-        '--sdk',
-        'macosx',
-        'clang',
+        ...clang,
         '-fobjc-arc',
         '-fblocks',
         '-Wall',

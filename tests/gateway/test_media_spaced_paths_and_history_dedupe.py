@@ -30,6 +30,11 @@ class TestGisExtensions:
             assert ext in MEDIA_DELIVERY_EXTS
 
 
+class TestSourceExtensions:
+    def test_latex_sources_are_deliverable(self):
+        assert ".tex" in MEDIA_DELIVERY_EXTS
+
+
 class TestSpacedPaths:
 
 

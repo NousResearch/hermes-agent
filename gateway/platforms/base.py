@@ -1197,7 +1197,7 @@ MEDIA_DELIVERY_EXTS: Tuple[str, ...] = (
     ".png", ".jpg", ".jpeg", ".gif", ".webp", ".bmp", ".tiff", ".svg",  # images (embed inline)
     ".mp4", ".mov", ".avi", ".mkv", ".webm", ".3gp",  # video (embed inline where supported)
     ".mp3", ".m2a", ".wav", ".ogg", ".opus", ".m4a", ".flac",  # audio (voice/audio where supported)
-    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub",  # documents (file attachments)
+    ".pdf", ".docx", ".doc", ".odt", ".rtf", ".txt", ".md", ".epub", ".tex",  # documents/source (file attachments)
     ".xlsx", ".xls", ".ods", ".csv", ".tsv", ".json", ".xml", ".yaml", ".yml",  # spreadsheets/data
     ".kmz", ".kml", ".geojson", ".gpx",  # geospatial / GIS
     ".pptx", ".ppt", ".odp", ".key",  # presentations

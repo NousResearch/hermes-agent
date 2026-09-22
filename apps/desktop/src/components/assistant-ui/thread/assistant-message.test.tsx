@@ -21,6 +21,21 @@ import { Thread } from '.'
 const requestFreshSession = vi.hoisted(() => vi.fn())
 const startManualProviderOAuth = vi.hoisted(() => vi.fn())
 const requestModelMenuToggle = vi.hoisted(() => vi.fn<() => boolean>(() => true))
+const copiedText = vi.hoisted(() => vi.fn())
+const playSpeechText = vi.hoisted(() => vi.fn(async () => true))
+
+vi.mock('@/components/ui/copy-button', () => ({
+  CopyButton: ({ label, text }: { label?: string; text: string | (() => string) }) => (
+    <button aria-label={label} onClick={() => copiedText(typeof text === 'function' ? text() : text)} type="button">
+      Copy
+    </button>
+  )
+}))
+
+vi.mock('@/lib/voice-playback', () => ({
+  playSpeechText,
+  stopVoicePlayback: vi.fn()
+}))
 
 vi.mock('@/app/chat/composer/focus', async importOriginal => ({
   ...(await importOriginal<Record<string, unknown>>()),
@@ -49,6 +64,8 @@ afterEach(() => {
   requestFreshSession.mockClear()
   startManualProviderOAuth.mockClear()
   requestModelMenuToggle.mockReset().mockReturnValue(true)
+  copiedText.mockClear()
+  playSpeechText.mockClear()
 })
 
 function userMessage(): ThreadMessage {
@@ -89,6 +106,14 @@ function assistantMessage(): ThreadMessage {
       steps: [],
       custom: { timelineCompletedAt: completedAt, timelineTimestamp: createdAt.getTime() / 1000 }
     }
+  } as unknown as ThreadMessage
+}
+
+function assistantReply(id: string, text: string): ThreadMessage {
+  return {
+    ...assistantMessage(),
+    id,
+    content: [{ type: 'text', text }]
   } as unknown as ThreadMessage
 }
 
@@ -170,15 +195,17 @@ function LocationProbe() {
 
 function Harness({
   assistant = assistantMessage(),
+  messages,
   onBranchInNewChat,
   onReload
 }: {
   assistant?: ThreadMessage
+  messages?: ThreadMessage[]
   onBranchInNewChat?: (messageId: string) => void
   onReload?: () => Promise<void>
 }) {
   const runtime = useExternalStoreRuntime<ThreadMessage>({
-    messages: [userMessage(), assistant],
+    messages: messages ?? [userMessage(), assistant],
     isRunning: false,
     onNew: async () => {},
     ...(onReload ? { onReload } : {})
@@ -190,6 +217,30 @@ function Harness({
     </AssistantRuntimeProvider>
   )
 }
+
+describe('response group footer text (#118864)', () => {
+  it('copies and reads only the tail reply when the response group has multiple assistant messages', async () => {
+    render(
+      <Harness
+        messages={[
+          userMessage(),
+          assistantReply('assistant-earlier', 'earlier reply must not be included'),
+          assistantReply('assistant-latest', 'latest reply only')
+        ]}
+      />
+    )
+
+    await screen.findByText('latest reply only')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Copy' }))
+    expect(copiedText).toHaveBeenCalledWith('latest reply only')
+
+    fireEvent.click(screen.getByRole('button', { name: 'Read aloud' }))
+    await waitFor(() => expect(playSpeechText).toHaveBeenCalledWith('latest reply only', expect.any(Object)))
+    expect(copiedText).not.toHaveBeenCalledWith(expect.stringContaining('earlier reply'))
+    expect(playSpeechText).not.toHaveBeenCalledWith(expect.stringContaining('earlier reply'), expect.any(Object))
+  })
+})
 
 describe('AssistantMessage branch button visibility (bug #2 fix)', () => {
   it('shows the Branch in new chat button when a handler is provided (open chat)', async () => {

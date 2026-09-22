@@ -87,6 +87,12 @@ test('service admission deduplicates duplicate claims and refuses foreign source
 
   const foreign = await service.request('missing')
   assert.equal(foreign.outcome, 'refused')
+  const foreignService = createManagedSshUpdateService(
+    deps({ resolveSource: id => (id === 'cloud' ? source('cloud', 'url') : null) })
+  )
+  const foreignKind = await foreignService.request('cloud')
+  assert.equal(foreignKind.outcome, 'refused')
+  assert.match(foreignKind.error || '', /registered Desktop-managed SSH/)
   assert.equal(executions, 0)
 
   release()

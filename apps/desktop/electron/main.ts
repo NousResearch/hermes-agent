@@ -286,19 +286,15 @@ import {
   assertManagedUpdatePreflightClear,
   executeManagedRemoteUpdate,
   fenceManagedSshBootstrapPublication,
-  ManagedConnectionUpdateGate,
   managedSshRecoveryScopes,
   managedSshScopeRole,
   managedSshTokenPersistencePlan,
-  recoverManagedSshScopes,
-  refusedManagedSshUpdate,
   type RemoteUpdateTarget,
-  runManagedSshUpdate,
   validateCorrelationId,
   waitForManagedRemoteClearance,
-  waitForManagedSshBootstrapFence,
-  waitForManagedUpdateOperations
+  waitForManagedSshBootstrapFence
 } from './managed-ssh-update'
+import { createManagedSshUpdateService } from './managed-ssh-update-service'
 import { registerMcpOauthCallbackIpc } from './mcp-oauth-callback-ipc'
 import { createMediaProtocolHandler, MEDIA_PROTOCOL } from './media-protocol'
 import { fetchLocalMedia } from './media-range'
@@ -10137,40 +10133,84 @@ const sshIsolatedKeepalives = createSshIsolatedKeepaliveRegistry({
 const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PATH)
 
 // Managed SSH update lifecycle (#93042): while an update owns a registered
-// SSH connection, the gate pauses new dials and dial-material mutations for
+// SSH connection, the service pauses new dials and dial-material mutations for
 // that connection id; the durable recovery journal below survives a crash
 // mid-transaction so the next launch can restore every drained scope.
-const managedConnectionUpdateGate = new ManagedConnectionUpdateGate(
-  connectionId =>
-    readManagedSshRecoveryRecords().find(record => record.connectionId === connectionId)?.correlationId || null
-)
+const managedSshUpdateService = createManagedSshUpdateService<any, any, any>({
+  resolveSource: connectionId =>
+    readDesktopConnectionsRegistry().connections.find(connection => connection.id === connectionId) || null,
+  readRecoveryRecords: () => readManagedSshRecoveryRecords(),
+  captureScopes: source => captureManagedSshScopes(source),
+  openTransport: source => openManagedSshUpdateTransport(source),
+  targetFromState: state => remoteUpdateTargetFromState(state),
+  executeRemoteUpdate: (target, correlationId, context) =>
+    executeManagedRemoteUpdate(target, correlationId, {}, async () => {
+      markManagedSshRecoveryLaunching(context.connectionId, correlationId)
+      await context.onLaunchProved()
+    }),
+  preflightRemote: (target, correlationId) => assertManagedUpdatePreflightClear(target, correlationId),
+  awaitRestoreClearance: (target, correlationId, options) =>
+    waitForManagedRemoteClearance(target, correlationId, options),
+  drainScope: scope => drainManagedSshScope(scope),
+  closeTransports: async (scopes, ephemeral) => {
+    const transports = new Set<any>(
+      scopes
+        .filter(scope => scope.drained)
+        .map(scope => scope.state?.ssh)
+        .filter(Boolean)
+    )
 
-const managedConnectionUpdates = new Map<string, Promise<any>>()
-const managedConnectionRecoveries = new Map<string, Promise<void>>()
-const managedPrimaryRestoreOwners = new Map<string, { correlationId: string; profile: string; source: any }>()
+    await Promise.allSettled([...transports].map(ssh => ssh.close()))
+
+    if (ephemeral) {
+      await ephemeral.close()
+    }
+  },
+  restoreScope: async (scope, source, correlationId) => {
+    if (scope.unsafeDrainFailure) {
+      if (!scope.forwardRestored) {
+        throw new Error(`The original ${scope.profile} SSH forward could not be restored safely.`)
+      }
+
+      return scope.entry.connectionPromise
+    }
+
+    const scopedSource = scope.reuseToken
+      ? { ...source, token: encryptDesktopSecret(scope.reuseToken) }
+      : source
+
+    if (scope.primary) {
+      return restoreManagedPrimarySshBackend(scopedSource, scope.profile, correlationId)
+    }
+
+    return scope.registryScoped
+      ? ensureManagedSshBackend(scopedSource, scope.profile, correlationId)
+      : ensureManagedSshBackendAtKey(scopedSource, scope.profile, scope.key, correlationId, 'profile')
+  },
+  prepareRecovery: async (source, correlationId, scopes) => {
+    persistManagedSshRecovery(source, correlationId, scopes)
+  },
+  completeRecovery: async (source, correlationId) => {
+    clearManagedSshRecovery(source.id, correlationId)
+  },
+  restoreRecoveryScope: (record, scope, correlationId) =>
+    scope.kind === 'primary'
+      ? restoreManagedPrimarySshBackend(record.source, scope.profile, correlationId)
+      : scope.kind === 'legacy'
+        ? ensureManagedSshBackendAtKey(record.source, scope.profile, scope.key, correlationId, 'profile')
+        : ensureManagedSshBackend(record.source, scope.profile, correlationId),
+  logRecovery: message => sshRememberLog(message)
+})
+
+const managedConnectionUpdateGate = managedSshUpdateService.gate
+const managedConnectionUpdates = managedSshUpdateService.activeUpdates
+const managedConnectionRecoveries = managedSshUpdateService.activeRecoveries
 let managedUpdateQuitWait: Promise<void> | null = null
 let managedUpdateQuitWaitDone = false
 
 function assertCanMutateManagedPrimaryRouting() {
-  const durableIds = readManagedSshRecoveryRecords().map(record => record.connectionId)
-
-  const ids = new Set([
-    ...managedConnectionUpdates.keys(),
-    ...managedConnectionRecoveries.keys(),
-    ...managedPrimaryRestoreOwners.keys(),
-    ...durableIds
-  ])
-
-  if (ids.size > 0) {
-    const error: any = new Error(
-      `Primary connection routing cannot change while managed SSH update recovery is pending for ${[...ids].join(', ')}.`
-    )
-
-    error.code = 'managed-update-in-progress'
-    throw error
-  }
+  managedSshUpdateService.assertCanMutatePrimaryRouting()
 }
-
 function readManagedSshRecoveryRecords(): any[] {
   try {
     const stat = fs.lstatSync(DESKTOP_MANAGED_SSH_RECOVERY_PATH)
@@ -10865,7 +10905,7 @@ async function resolveRemoteBackend(profile, options: { poolKey?: string; primar
   const profileKey = String(profile || '').trim() || 'default'
 
   const managedPrimary = options.primary
-    ? [...managedPrimaryRestoreOwners.values()].find(owner => owner.profile === profileKey)
+    ? managedSshUpdateService.primaryRestoreOwnerForProfile(profileKey)
     : null
 
   if (managedPrimary) {
@@ -11923,23 +11963,10 @@ async function ensureManagedSshBackendAtKey(source, profile, key, correlationId,
 }
 
 async function restoreManagedPrimarySshBackend(source, profile, correlationId) {
-  managedConnectionUpdateGate.assertCanDial(source.id, correlationId)
-  const profileKey = String(profile || '').trim() || 'default'
-
-  if (managedPrimaryRestoreOwners.size > 0 && !managedPrimaryRestoreOwners.has(source.id)) {
-    throw new Error('Another managed SSH primary restore is already in progress.')
-  }
-
-  managedPrimaryRestoreOwners.set(source.id, { correlationId, profile: profileKey, source })
-  backendConnectionState.invalidate()
-
-  try {
-    return await startHermes()
-  } finally {
-    if (managedPrimaryRestoreOwners.get(source.id)?.correlationId === correlationId) {
-      managedPrimaryRestoreOwners.delete(source.id)
-    }
-  }
+  return managedSshUpdateService.restorePrimary(source, profile, correlationId, async () => {
+    backendConnectionState.invalidate()
+    return startHermes()
+  })
 }
 
 function managedSshConfig(source, profile = '') {
@@ -12223,140 +12250,10 @@ async function drainManagedSshScope(scope) {
   }
 }
 
-async function updateManagedSshConnection(source, correlationId) {
-  const sourceSnapshot = { ...source }
-  const scopes = await captureManagedSshScopes(sourceSnapshot)
-  let ephemeral: null | { close: () => Promise<void>; target: RemoteUpdateTarget } = null
-  let launchAttempted = false
-  const firstState = scopes.find(scope => scope.state)?.state
-
-  const target = firstState
-    ? remoteUpdateTargetFromState(firstState)
-    : (ephemeral = await openManagedSshUpdateTransport(sourceSnapshot)).target
-
-  return runManagedSshUpdate({
-    connectionId: source.id,
-    correlationId,
-    scopes,
-    preflightRemote: () => assertManagedUpdatePreflightClear(target, correlationId),
-    drainScope: drainManagedSshScope,
-    updateRemote: () =>
-      executeManagedRemoteUpdate(target, correlationId, {}, async () => {
-        markManagedSshRecoveryLaunching(source.id, correlationId)
-        launchAttempted = true
-      }),
-    awaitRestoreClearance: () =>
-      waitForManagedRemoteClearance(target, correlationId, { requireTerminal: launchAttempted }),
-    closeTransports: async () => {
-      const transports = new Set<any>(
-        scopes
-          .filter(scope => scope.drained)
-          .map(scope => scope.state?.ssh)
-          .filter(Boolean)
-      )
-
-      await Promise.allSettled([...transports].map(ssh => ssh.close()))
-
-      if (ephemeral) {
-        await ephemeral.close()
-      }
-    },
-    restoreScope: scope => {
-      if (scope.unsafeDrainFailure) {
-        if (!scope.forwardRestored) {
-          throw new Error(`The original ${scope.profile} SSH forward could not be restored safely.`)
-        }
-
-        return scope.entry.connectionPromise
-      }
-
-      const scopedSource = scope.reuseToken
-        ? { ...sourceSnapshot, token: encryptDesktopSecret(scope.reuseToken) }
-        : sourceSnapshot
-
-      if (scope.primary) {
-        return restoreManagedPrimarySshBackend(scopedSource, scope.profile, correlationId)
-      }
-
-      return scope.registryScoped
-        ? ensureManagedSshBackend(scopedSource, scope.profile, correlationId)
-        : ensureManagedSshBackendAtKey(scopedSource, scope.profile, scope.key, correlationId, 'profile')
-    },
-    prepareRecovery: async () => persistManagedSshRecovery(sourceSnapshot, correlationId, scopes),
-    completeRecovery: async () => clearManagedSshRecovery(source.id, correlationId),
-    releaseGate: () => managedConnectionUpdateGate.release(source.id, correlationId)
-  })
-}
-
-async function recoverManagedSshUpdate(record) {
-  const connectionId = record.connectionId
-
-  if (managedConnectionRecoveries.has(connectionId) || managedConnectionUpdates.has(connectionId)) {
-    return
-  }
-
-  const recoveryCorrelation = record.correlationId
-
-  if (!managedConnectionUpdateGate.claim(connectionId, recoveryCorrelation)) {
-    return
-  }
-
-  const operation = (async () => {
-    let transport: null | { close: () => Promise<void>; target: RemoteUpdateTarget } = null
-
-    try {
-      transport = await openManagedSshUpdateTransport(record.source)
-
-      const results = await recoverManagedSshScopes<any>({
-        scopes: record.scopes,
-        awaitClearance: () =>
-          waitForManagedRemoteClearance(transport!.target, record.correlationId, {
-            requireTerminal: record.phase === 'launching'
-          }),
-        afterClearance: async () => {
-          await transport!.close()
-          transport = null
-        },
-        restoreScope: scope =>
-          scope.kind === 'primary'
-            ? restoreManagedPrimarySshBackend(record.source, scope.profile, recoveryCorrelation)
-            : scope.kind === 'legacy'
-              ? ensureManagedSshBackendAtKey(record.source, scope.profile, scope.key, recoveryCorrelation, 'profile')
-              : ensureManagedSshBackend(record.source, scope.profile, recoveryCorrelation),
-        completeRecovery: async () => clearManagedSshRecovery(connectionId, record.correlationId)
-      })
-
-      if (results.every(result => result.status === 'fulfilled')) {
-        sshRememberLog(
-          `[ssh-update] restored ${record.scopes.length} scope(s) from durable recovery for ${connectionId}`
-        )
-      } else {
-        const failures = results.filter(result => result.status === 'rejected').length
-        sshRememberLog(
-          `[ssh-update] durable recovery for ${connectionId} left ${failures} scope(s) pending; will retry next launch`
-        )
-      }
-    } catch (error: any) {
-      sshRememberLog(
-        `[ssh-update] durable recovery for ${connectionId} remains pending: ${String(error?.message || error)}`
-      )
-    } finally {
-      if (transport) {
-        await transport.close().catch(() => undefined)
-      }
-
-      managedConnectionUpdateGate.release(connectionId, recoveryCorrelation)
-      managedConnectionRecoveries.delete(connectionId)
-    }
-  })()
-
-  managedConnectionRecoveries.set(connectionId, operation)
-  await operation
-}
-
 async function resumeManagedSshRecoveries() {
-  await Promise.allSettled(readManagedSshRecoveryRecords().map(record => recoverManagedSshUpdate(record)))
+  await managedSshUpdateService.resumeRecoveries()
 }
+
 
 // Stop every pooled backend and ssh scope owned by a registry connection —
 // called when the connection is removed from the registry.
@@ -13321,7 +13218,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // Classify this boot BEFORE the throwing resolve/mint runs: a remote failure
   // must NOT latch (it's transient — see shouldLatchBackendStartFailure), while
   // a local failure latches to break install-restart loops.
-  let attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
+  let attemptedRemote = managedSshUpdateService.hasPrimaryRestoreOwners() || primaryBackendIsRemote()
 
   const connectionPromise = (async () => {
     const connectRemote = async remote => {
@@ -13396,7 +13293,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
       resolveRemote: () => {
         // Classify immediately before each throwing resolve. This callback runs
         // both for an already-saved remote and after first-run remote Apply.
-        attemptedRemote = managedPrimaryRestoreOwners.size > 0 || primaryBackendIsRemote()
+        attemptedRemote = managedSshUpdateService.hasPrimaryRestoreOwners() || primaryBackendIsRemote()
 
         return resolveRemoteBackend(primaryProfile, { primary: true })
       },
@@ -16425,47 +16322,7 @@ ipcMain.handle('hermes:gateway:ws-url-for', async (_event, payload) => {
 // dials, drains only exact Desktop-owned processes, runs the launcher outside
 // those serves, proves the correlated receipt, and restores every prior scope.
 async function requestManagedSshUpdate(rawId) {
-  const connectionId = String(rawId || '').trim()
-  const existing = managedConnectionUpdates.get(connectionId)
-
-  if (existing) {
-    return existing
-  }
-
-  const correlationId = crypto.randomUUID()
-  const registry = readDesktopConnectionsRegistry()
-  const source = registry.connections.find(connection => connection.id === connectionId)
-
-  if (!source) {
-    return refusedManagedSshUpdate(connectionId, correlationId, `No connection with id "${connectionId}".`)
-  }
-
-  if (source.kind !== 'ssh') {
-    return refusedManagedSshUpdate(
-      connectionId,
-      correlationId,
-      'Only registered Desktop-managed SSH connections can use this update lifecycle.'
-    )
-  }
-
-  if (!managedConnectionUpdateGate.claim(connectionId, correlationId)) {
-    return refusedManagedSshUpdate(connectionId, correlationId, 'A managed update is already in progress.')
-  }
-
-  const operation = (async () => {
-    try {
-      return await updateManagedSshConnection(source, correlationId)
-    } catch (error: any) {
-      return refusedManagedSshUpdate(connectionId, correlationId, String(error?.message || error))
-    } finally {
-      managedConnectionUpdateGate.release(connectionId, correlationId)
-      managedConnectionUpdates.delete(connectionId)
-    }
-  })()
-
-  managedConnectionUpdates.set(connectionId, operation)
-
-  return operation
+  return managedSshUpdateService.request(rawId)
 }
 
 ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
@@ -18887,15 +18744,14 @@ app.on('before-quit', event => {
   // implementations.
   if (
     !managedUpdateQuitWaitDone &&
-    (managedUpdateQuitWait || managedConnectionUpdates.size > 0 || managedConnectionRecoveries.size > 0)
+    (managedUpdateQuitWait ||
+      managedConnectionUpdates.size > 0 ||
+      managedConnectionRecoveries.size > 0)
   ) {
     event.preventDefault()
 
     if (!managedUpdateQuitWait) {
-      managedUpdateQuitWait = waitForManagedUpdateOperations(() => [
-        ...managedConnectionUpdates.values(),
-        ...managedConnectionRecoveries.values()
-      ]).finally(() => {
+      managedUpdateQuitWait = managedSshUpdateService.waitForOperations().finally(() => {
         managedUpdateQuitWaitDone = true
         app.quit()
       })

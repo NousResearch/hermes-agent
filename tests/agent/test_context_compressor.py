@@ -3372,6 +3372,13 @@ class TestSummaryPromptBounding:
         assert "[TOOL RESULT oversized-mid]: yyyy" in sampled
         assert sampled.count("y" * 1000) < (cap // 2) // 1000
         assert sampled.count("[USER]: record-") > 8
+        # The budget-extension pass hands out headroom round-robin, so no region ends up with
+        # more than its even share plus one record (the granularity of whole-record growth).
+        per_slice = [
+            sec.count("[USER]: record-") for sec in self._ELISION_MARKER.split(sampled)
+            if "[USER]: record-" in sec
+        ]
+        assert max(per_slice) <= sum(per_slice) / len(per_slice) + 1, per_slice
 
     def test_iterative_update_path_is_bounded(self):
         """The iterative prompt (previous summary + new turns) must be bounded

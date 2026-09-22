@@ -3598,28 +3598,32 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         # Budget extension: the greedy fill leaves each slice short of `target` by up to one record
         # (5-43% of the cap unused for 8-20K records). Spend the headroom on whole neighbouring
-        # records, newest slice first (grows backward), older slices grow forward — never past cap.
+        # records, round-robin one record per slice per round so every region keeps an even share
+        # (the newest slice grows backward, older slices grow forward) — never past cap.
         cap = cls._SUMMARY_INPUT_MAX_CHARS
         rendered_len = len(_render(_merged(selected)))
-        for idx in range(len(selected) - 1, -1, -1):
-            while True:
+        grew = True
+        while grew:
+            grew = False
+            for idx in range(len(selected) - 1, -1, -1):
                 s, e = selected[idx]
                 if idx == len(selected) - 1:
                     nxt, grown = s - 1, (s - 1, e)
                     if nxt < (selected[idx - 1][1] if idx else 0):
-                        break
+                        continue
                 else:
                     nxt, grown = e, (s, e + 1)
                     if nxt >= selected[idx + 1][0]:
-                        break
+                        continue
                 if rendered_len + len(separator) + len(display_records[nxt]) > cap:
-                    break
+                    continue
                 selected[idx] = grown
                 new_len = len(_render(_merged(selected)))
                 if new_len > cap:  # marker widths shrink as records leave a gap; recheck exactly
                     selected[idx] = (s, e)
-                    break
+                    continue
                 rendered_len = new_len
+                grew = True
         selected = _merged(selected)
 
         # No overflow trim is needed: every slice holds <= `target` display chars (records are

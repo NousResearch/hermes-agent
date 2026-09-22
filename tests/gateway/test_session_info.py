@@ -1,6 +1,7 @@
 """Tests for GatewayRunner._format_session_info — session config surfacing."""
 
 import pytest
+from contextlib import nullcontext
 from unittest.mock import patch
 
 from gateway.run import GatewayRunner
@@ -127,6 +128,124 @@ class TestFormatSessionInfo:
         assert "262K" in info
         assert "config" in info
         assert "131K" not in info
+
+
+class TestChannelOverrideSessionInfo:
+    """The /new and auto-reset banners must advertise the channel override's
+    model/provider (and that provider's runtime endpoint), not the global default."""
+
+    _GLOBAL_RUNTIME = {
+        "provider": "openrouter",
+        "base_url": "https://openrouter.ai/api/v1",
+        "api_key": "global-key",
+    }
+    _OVERRIDE_RUNTIME = {
+        "provider": "anthropic",
+        "base_url": "http://127.0.0.1:4000/v1",
+        "api_key": "override-key",
+    }
+
+    def _runner_with_override(self, runner, chat_id="123", **override_kwargs):
+        from gateway.config import ChannelOverride, GatewayConfig, Platform, PlatformConfig
+        runner.config = GatewayConfig(platforms={
+            Platform.TELEGRAM: PlatformConfig(
+                enabled=True,
+                channel_overrides={chat_id: ChannelOverride(**override_kwargs)},
+            ),
+        })
+        return runner
+
+    def _source(self, chat_id="123", thread_id=None):
+        from gateway.config import Platform
+        from gateway.session import SessionSource
+        return SessionSource(
+            platform=Platform.TELEGRAM, chat_id=chat_id, user_id="u1",
+            thread_id=thread_id,
+        )
+
+    def test_override_model_and_provider_shown(self, runner, tmp_path):
+        self._runner_with_override(runner, model="override-model", provider="anthropic")
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n  provider: openrouter\n",
+            "base-model", self._GLOBAL_RUNTIME)
+        with p1, p2, p3, patch(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            return_value=self._OVERRIDE_RUNTIME,
+        ):
+            info = runner._format_session_info(self._source())
+        assert "override-model" in info
+        assert "anthropic" in info
+        assert "base-model" not in info
+
+    def test_no_source_uses_base_model(self, runner, tmp_path):
+        self._runner_with_override(runner, model="override-model")
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n",
+            "base-model", self._GLOBAL_RUNTIME)
+        with p1, p2, p3:
+            info = runner._format_session_info()
+        assert "base-model" in info
+        assert "override-model" not in info
+
+    def test_unmatched_chat_uses_base_model(self, runner, tmp_path):
+        self._runner_with_override(runner, chat_id="999", model="override-model")
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n",
+            "base-model", self._GLOBAL_RUNTIME)
+        with p1, p2, p3:
+            info = runner._format_session_info(self._source(chat_id="123"))
+        assert "base-model" in info
+        assert "override-model" not in info
+
+    def test_override_provider_survives_runtime_failure(self, runner, tmp_path):
+        self._runner_with_override(runner, model="override-model", provider="anthropic")
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n  context_length: 4096\n",
+            "base-model", self._GLOBAL_RUNTIME)
+        with p1, p2, p3, patch(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            side_effect=RuntimeError("no creds"),
+        ):
+            info = runner._format_session_info(self._source())
+        assert "override-model" in info
+        assert "anthropic" in info
+
+    def test_reset_notice_helper_uses_channel_override(self, runner, tmp_path):
+        """Production path: _reset_notice_session_info(source) must pass source through."""
+        self._runner_with_override(runner, model="override-model", provider="anthropic")
+        # Keep profile scoping a no-op so this asserts the override path, not multiplex homes.
+        runner.config.multiplex_profiles = False
+        p1, p2, p3 = _patch_info(
+            tmp_path, "model:\n  default: base-model\n  provider: openrouter\n",
+            "base-model", self._GLOBAL_RUNTIME)
+        with p1, p2, p3, patch(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            return_value=self._OVERRIDE_RUNTIME,
+        ), patch.object(GatewayRunner, "_standalone_launch_scope", return_value=nullcontext()):
+            info = runner._reset_notice_session_info(self._source())
+        assert "override-model" in info
+        assert "anthropic" in info
+        assert "base-model" not in info
+
+    def test_override_runtime_endpoint_not_global(self, runner, tmp_path):
+        """Context probe / endpoint must come from the override provider, not the global route."""
+        self._runner_with_override(runner, model="override-model", provider="anthropic")
+        p1, p2, p3 = _patch_info(
+            tmp_path,
+            "model:\n  default: base-model\n  provider: openrouter\n  context_length: 8192\n",
+            "base-model",
+            self._GLOBAL_RUNTIME,
+        )
+        with p1, p2, p3, patch(
+            "gateway.run._resolve_runtime_agent_kwargs_for_provider",
+            return_value=self._OVERRIDE_RUNTIME,
+        ) as for_provider:
+            info = runner._format_session_info(self._source())
+        for_provider.assert_called_once()
+        assert for_provider.call_args.args[0] == "anthropic"
+        assert "127.0.0.1:4000" in info
+        assert "openrouter.ai" not in info
+        assert "anthropic" in info
 
 
 class TestResetNoticeSessionInfo:

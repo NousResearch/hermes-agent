@@ -2397,12 +2397,12 @@ def _resolve_gateway_model_context(
 
     def _read_runtime() -> None:
         nonlocal provider, base_url, api_key
-        if route and route.get("base_url"):
-            # A session route with its own endpoint (a /model switch) replaces the default runtime
-            # read; a route without one (persisted / SessionDB / plain config) still resolves the
-            # default runtime credentials so a custom endpoint and its context_length pin survive.
+        if route and (route.get("base_url") or route.get("_runtime_resolved")):
+            # A session route with its own endpoint (a /model switch), or provider-specific runtime
+            # already resolved by the caller, replaces the default runtime read. A persisted route
+            # without either still resolves default credentials so a custom endpoint and its pin survive.
             provider = route.get("provider") or provider
-            base_url = route["base_url"]
+            base_url = route.get("base_url") or ""
             api_key = route.get("api_key")
             return
         runtime = _resolve_runtime_agent_kwargs()

@@ -2300,12 +2300,61 @@ class GatewayTurnMixin:
         Call via ``asyncio.to_thread``: resolution can block (credential refresh, context-length
         probes), and the scope is entered here so contextvars behave in the worker thread."""
         with self._profile_scope_for_source(source):
-            return self._format_session_info()
+            return self._format_session_info(source)
 
-    def _format_session_info(self) -> str:
-        """Model / provider / context-length / endpoint block so users can spot bad context detection."""
-        from gateway.run import _resolve_gateway_model_context
-        resolved = _resolve_gateway_model_context()
+    def _format_session_info(self, source: Optional["SessionSource"] = None) -> str:
+        """Model / provider / context-length / endpoint block so users can spot bad context detection.
+
+        When ``source`` is given, apply the same ``channel_overrides`` the turn path uses so /new
+        and auto-reset banners advertise the model/provider the session actually runs — including
+        that override provider's runtime endpoint/credentials for context probing.
+        """
+        from gateway.run import (
+            _get_channel_override,
+            _resolve_gateway_model_context,
+            _resolve_runtime_agent_kwargs_for_provider,
+        )
+
+        model = None
+        route = None
+        force_provider = None
+        cfg = getattr(self, "config", None)
+        if source is not None and cfg is not None:
+            try:
+                ch = _get_channel_override(
+                    cfg,
+                    source.platform,
+                    str(source.chat_id) if source.chat_id else "",
+                    thread_id=str(source.thread_id) if getattr(source, "thread_id", None) else None,
+                    parent_id=str(source.parent_chat_id) if getattr(source, "parent_chat_id", None) else None,
+                )
+                if ch:
+                    if ch.model:
+                        model = ch.model
+                    if ch.provider:
+                        try:
+                            # Match _resolve_session_agent_runtime: override provider gets its own
+                            # endpoint/credentials so context probing is not against the global route.
+                            runtime = _resolve_runtime_agent_kwargs_for_provider(
+                                ch.provider, target_model=model or None,
+                            )
+                            route = {
+                                "provider": runtime.get("provider") or ch.provider,
+                                "base_url": runtime.get("base_url") or "",
+                                "api_key": runtime.get("api_key"),
+                                "_runtime_resolved": True,
+                            }
+                            if not model and runtime.get("model"):
+                                model = runtime["model"]
+                        except Exception:
+                            # No-credential fallback: keep override provider; leave global endpoint alone.
+                            force_provider = ch.provider
+            except Exception:
+                pass
+
+        resolved = _resolve_gateway_model_context(model=model, route=route)
+        if force_provider:
+            resolved = dataclasses.replace(resolved, provider=force_provider)
         context_length = resolved.context_length
         ctx_source = {
             "config": "config",

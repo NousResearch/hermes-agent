@@ -3507,8 +3507,11 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
     def _sample_summary_records(cls, records: Sequence[str]) -> Tuple[str, Dict[str, int]]:
         """Sample complete serialized records while retaining the character bound.
 
-        Returns the bounded transcript and record-level coverage counters (chars count record
-        content only, not separators or elision markers) for compression telemetry.
+        Returns the bounded transcript and record-level coverage counters for compression
+        telemetry. `input_chars` counts raw serialized record content; `sampled_chars` counts the
+        *display* chars of retained records (after intra-record truncation by
+        `_bound_oversized_record`); neither includes separators or elision markers, so
+        `omitted_chars = input_chars - sampled_chars` also covers truncated-away bytes.
         """
         input_chars = sum(len(r) for r in records)
 

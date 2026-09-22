@@ -1,0 +1,21 @@
+name: deskrpg
+repo: https://github.com/dandacompany/deskrpg-hermes-plugin
+sha: 5f4c27e703fe04924d66143c6aea8bf21a5f2a1e
+description: Hermes gateway integration for DeskRPG virtual offices, with profiles, kanban, cron, and artifacts.
+maintainer: dandacompany
+tier: community
+category: automation
+requires_hermes: ">=0.21.1"
+docs_url: https://github.com/dandacompany/deskrpg-hermes-plugin/tree/5f4c27e703fe04924d66143c6aea8bf21a5f2a1e
+version: "0.12.2"
+readme: true
+platforms: []
+capabilities:
+  provides_tools:
+    - artifact_save
+    - propose_kanban_card
+  provides_hooks:
+    - post_tool_call
+    - post_llm_call
+  provides_middleware: []
+  requires_env: []

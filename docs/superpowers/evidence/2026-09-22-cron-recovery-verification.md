@@ -142,3 +142,75 @@ The follow-up `hermes cron doctor` dropped from 14 issues across 11 jobs to 9 is
 9 jobs. It no longer reports failed last runs for either cleanup job or the library catalog;
 the remaining cleanup findings are timing warnings. No incident acknowledgement command was
 run.
+
+## Review round 2: configured-worktree protection and restoration
+
+The successful LunaBot cleanup receipt exposed a critical policy gap: the script protected
+worktree-name patterns but did not protect stable checkout paths consumed by Hermes config.
+It therefore removed these two configured clean worktrees after judging their commits
+reachable from a remote branch:
+
+- `/Users/mikedemott/.codex/lunabot-support/worktrees/hermes-conversation-base`, configured
+  as both `conversation_worktree.source_worktree` and the LunaBot GitHub-feedback
+  `local_path`; the cleanup receipt reported branch `hermes/conversation-base`, reason
+  `HEAD reachable from a remote branch`, and `1,938,149,555` bytes.
+- `/Users/mikedemott/.hermes/github-pr-feedback/post-merge-deploy-worktree`, configured as
+  the LunaBot merge maintainer's `deployment_path`; the receipt reported detached HEAD,
+  reason `HEAD reachable from a remote branch`, and `540,443,987` bytes.
+
+The cleanup script now reads the active Hermes `config.yaml` with the standard library and
+fails closed if it cannot read it. Absolute `source_worktree`, `local_path`, and
+`deployment_path` values are normalized through `realpath` and rejected by `is_protected`
+before candidate evaluation. The installed script and the verified candidate have identical
+SHA-256 `c0d9abb255743c1032a42d6fb624c472e037e372d0821a401593a07b6889b616`;
+Python compilation passed. Installed runtime probes returned `True` for both restored paths.
+
+The script's GitHub repository is also scope-specific now:
+
+| Cleanup scope | Main repository checkout | GitHub repository passed to `load_pr_states` |
+|---|---|---|
+| `lunabot` | `/Users/mikedemott/LunaBot` | `mrkillbob/luna-bot` |
+| `hermes-agent` | `/Users/mikedemott/Hermes-agent` | `mrkillbob/hermes-agent` |
+
+Non-executing `main()` probes replaced the destructive and external functions and captured
+the exact `load_pr_states` argument. They returned `['mrkillbob/luna-bot']` for the LunaBot
+scope and `['mrkillbob/hermes-agent']` for the Hermes Agent scope.
+
+The conversation checkout was restored without changing or deleting any other worktree:
+
+- registered path: `/Users/mikedemott/.codex/lunabot-support/worktrees/hermes-conversation-base`
+- branch: `refs/heads/hermes/conversation-base`
+- HEAD: `009b7859622ea867bee802e7fbdb0e75113a809e`
+- origin: `https://github.com/mrkillbob/luna-bot.git`
+- status: clean
+- runtime link: `.venv -> /Users/mikedemott/LunaBot/.venv`, Python `3.13.6`
+
+The deployment checkout was restored from its configured repository and base branch as a
+detached registered worktree:
+
+- registered path: `/Users/mikedemott/.hermes/github-pr-feedback/post-merge-deploy-worktree`
+- configured repository/base: `mrkillbob/luna-bot`, `stable`
+- source ref: local `refs/remotes/origin/stable`
+- HEAD: `ebf2aed27d4a4574f73e871be657651199a93dc0`
+- origin: `https://github.com/mrkillbob/luna-bot.git`
+- status: clean and detached, matching the prior deployment-worktree shape
+
+After both restorations, `hermes github-pr-feedback doctor` no longer returned
+`invalid_configuration`. It parsed the policy and returned only the known external identity
+blocker:
+
+```json
+{"checks":{"assignee":"ok","board":"ok","gh_executable":"ok","github_identity":"failed","hermes_executable":"ok","ledger_access":"ok","repository_worktree":"ok","worker_completion_policy":"ok"},"status":"degraded"}
+```
+
+Supported direct reruns reached the governed GitHub client and failed only at its live
+authentication probe:
+
+| Job | Durable run | Result | Started (America/Los_Angeles) | Terminal cause |
+|---|---|---|---|---|
+| LunaBot PR feedback `e3753541e2fa` | `0da5cc32646b4617928d8a1b3c930f84` | failed | `2026-09-22T08:48:40.972691-07:00` | `GitHubClientError: GitHub command failed (authentication)` |
+| Hermes-agent PR feedback `def3474fce41` | `4aa217ba624146dcbb5710e8049ccf43` | failed | `2026-09-22T08:48:53.362320-07:00` | `GitHubClientError: GitHub command failed (authentication)` |
+
+The final cron doctor still reported 9 issues across 9 jobs: these two authentication
+failures plus timing warnings. The newest incidents for both PR jobs are `detected` auth
+incidents. No incident acknowledgement command was run, and no secret was read or changed.

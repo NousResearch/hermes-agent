@@ -60,6 +60,7 @@ class FailoverReason(enum.Enum):
 
     # Provider-specific
     thinking_signature = "thinking_signature"  # Anthropic thinking block sig invalid
+    tool_result_adjacency = "tool_result_adjacency"  # Anthropic tool_use lacks adjacent tool_result — repaired by conversion, retry
     long_context_tier = "long_context_tier"    # Anthropic "extra usage" tier gate
     oauth_long_context_beta_forbidden = "oauth_long_context_beta_forbidden"  # Anthropic OAuth rejects 1M beta — disable beta and retry
     llama_cpp_grammar_pattern = "llama_cpp_grammar_pattern"  # llama.cpp grammar rejects regex `pattern`/`format` — strip from tools and retry
@@ -560,7 +561,6 @@ def is_reasoning_field_rejection(error_msg: str) -> bool:
     near = msg[max(0, token.start() - 32):token.end() + 32]
     return "unsupported" in near or any(m in msg for m in UNSUPPORTED_PARAM_MARKERS)
 
-
 def _billing_hints(error_msg: str) -> Verdict:
     """Billing verdict carrying the #82154 ambiguity marker when applicable."""
     ctx: Dict[str, Any] = {}
@@ -832,6 +832,20 @@ def _provider_special_cases(c: _Ctx) -> Optional[Verdict]:
     # strips Anthropic thinking blocks and resends the same encrypted item forever.
     if status == 400 and (c.code == "thinking_signature_invalid" or "thinking_signature_invalid" in msg):
         return _V_INVALID_ENCRYPTED
+    # Anthropic tool_use/tool_result adjacency violation (400): "`tool_use` ids were
+    # found without `tool_result` blocks immediately after". The conversion pipeline's
+    # ordering pass (_hoist_tool_results_to_front) repairs the shape, so a retry
+    # self-heals. As a non-retryable client error ONE malformed pair bricked the whole
+    # session permanently: the poisoned history was persisted and replayed on every
+    # later prompt at growing cost (70k -> 151k tokens over 5 retries) until the
+    # session row was cleared by hand. Never let a repairable shape error be terminal.
+    if (
+        status == 400
+        and "tool_use" in msg
+        and "tool_result" in msg
+        and ("immediately after" in msg or "without `tool_result`" in msg or "without tool_result" in msg)
+    ):
+        return _v(_R.tool_result_adjacency, retryable=True, should_compress=False)
     # Anthropic thinking-block 400s (signature mismatch after transcript
     # mutation). Not gated on provider — OpenRouter proxies Anthropic errors.
     if status == 400 and "thinking" in msg and any(p in msg for p in _THINKING_MUTATION_WORDS):

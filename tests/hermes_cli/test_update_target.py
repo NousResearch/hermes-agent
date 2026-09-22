@@ -384,6 +384,41 @@ def test_pinned_intent_dispatches_to_exact_apply_path_without_legacy_prepare(mon
     assert called["gateway_mode"] is False
 
 
+def test_pinned_command_refuses_when_shared_update_lock_is_held(monkeypatch):
+    """Pinned updates use the same command-boundary lock as legacy updates."""
+    from types import SimpleNamespace
+
+    import hermes_cli.main as main
+    import hermes_cli.update_lock as update_lock
+    import hermes_cli.update_handoff as update_handoff
+    from hermes_cli import update_cmd
+
+    request = TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    called = []
+
+    class HeldLock:
+        holder = SimpleNamespace(pid=1234, age_seconds=2)
+
+        def acquire(self):
+            return False
+
+        def release(self):
+            raise AssertionError("a refused lock must not be released by the claimant")
+
+    monkeypatch.setattr(main, "_update_preflight_handled", lambda _args: False)
+    monkeypatch.setattr(main, "_install_hangup_protection", lambda **_kwargs: None)
+    monkeypatch.setattr(main, "_finalize_update_output", lambda _state: None)
+    monkeypatch.setattr(update_handoff, "wait_for_shim_parent_exit", lambda: None)
+    monkeypatch.setattr(update_lock, "UpdateLock", HeldLock)
+    monkeypatch.setattr(update_cmd, "_cmd_update_impl", lambda *_args, **_kwargs: called.append(True))
+
+    with pytest.raises(SystemExit) as exc_info:
+        main.cmd_update(SimpleNamespace(target_request=request, gateway=False))
+
+    assert exc_info.value.code == update_lock.UPDATE_EXIT_CONCURRENT
+    assert called == []
+
+
 # T3 behavioral fixtures use local Git only: no SSH, installation, or network.
 def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
     result = subprocess.run(

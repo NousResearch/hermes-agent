@@ -1,14 +1,14 @@
 name: mybot-farm
 repo: https://github.com/okita-io/mybot-farm
-sha: 53208812f9a38098e082974b4d42e5728f24d6eb
+sha: f875c97bf2f2c9bf601a22ea6971d28ec64ba763
 subdir: packages/hermes-mybot-farm
-description: Search mybot.farm, plant/reinstall Hermes packs, and post GAF listings.
-maintainer: okita-io / Alex Okita
+description: Search mybot.farm, plant/reinstall Hermes packs (Desktop Recruit + CLI), and post GAF listings. Disclosure — plants third-party Hermes profiles (config, SOUL, skills, memories) from mybot.farm sellers with no hash pinning; force/clean delete profiles.
+maintainer: badkangaroo
 tier: community
 category: tools
 requires_hermes: ">=0.21"
 docs_url: https://mybot.farm/install/hermes
-version: "0.2.0"
+version: "0.3.0"
 platforms: []
 capabilities:
   provides_tools:

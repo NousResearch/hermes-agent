@@ -879,6 +879,16 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with suppress(Exception):
             loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "message.delta", delta=delta))
 
+    def _reasoning_cb(text: Optional[str]) -> None:
+        # ``reasoning.delta`` rather than the one-shot ``reasoning.available``: reasoning arrives
+        # per chunk, and a snapshot event keeps only its first value. Additive — a client that
+        # doesn't know the event ignores it, and ``reasoning.available`` stays mapped in
+        # ``_FIXED_EVENT_FIELDS`` for any other producer.
+        if not text or run_id not in self._run_streams:
+            return
+        with suppress(Exception):
+            loop.call_soon_threadsafe(run.put_event, _run_event(run_id, "reasoning.delta", text=text))
+
     def _interim_cb(text: str, *, already_streamed: bool = False) -> None:
         # Mid-turn assistant commentary (Codex ``phase="commentary"``, text beside tool calls),
         # same ``message.interim`` contract as the TUI gateway; reasoning never reaches this
@@ -913,7 +923,7 @@ async def _execute_run(self, run: _RunLaunch, *, _api_server) -> None:
         with self._profile_scope(run.request_profile):
             agent = self._create_agent(
                 stream_delta_callback=_text_cb, tool_progress_callback=self._make_run_event_callback(run_id, loop),
-                interim_assistant_callback=_interim_cb, **run.agent_kwargs)
+                interim_assistant_callback=_interim_cb, reasoning_callback=_reasoning_cb, **run.agent_kwargs)
         self._active_run_agents[run_id] = agent
         approval_notify = _make_approval_notify(self, run, _api_server=_api_server)
         result, usage, served_runtime = await _submit_api_worker(

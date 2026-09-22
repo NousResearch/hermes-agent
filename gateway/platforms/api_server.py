@@ -3385,7 +3385,15 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             if delta:
                 events.enqueue("assistant.delta", {"message_id": message_id, "delta": delta})
 
+        def _reasoning(text: str) -> None:
+            # The same ``tool.progress``/``_thinking`` wire event this surface already emitted —
+            # only the source changes, from the answer echo to the model's real reasoning deltas.
+            if text:
+                events.enqueue("tool.progress", {"message_id": message_id, "tool_name": "_thinking", "delta": text})
+
         def _tool_progress(event_type: str, tool_name: str = None, preview: str = None, args=None, **kwargs) -> None:
+            # ``reasoning.available`` stays mapped for any other producer (a subagent's relay);
+            # the top-level agent's reasoning now arrives through ``_reasoning`` instead.
             if event_type == "reasoning.available":
                 events.enqueue("tool.progress", {"message_id": message_id, "tool_name": tool_name or "_thinking", "delta": preview or ""})
             elif event_type in {"tool.started", "tool.completed", "tool.failed"}:
@@ -3408,7 +3416,8 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
                 history = await self._conversation_history_for_session(session_id)
                 result, usage = await self._run_agent(
                     conversation_history=history, stream_delta_callback=_delta,
-                    tool_progress_callback=_tool_progress, interim_assistant_callback=_commentary,
+                    tool_progress_callback=_tool_progress, reasoning_callback=_reasoning,
+                    interim_assistant_callback=_commentary,
                     active_run_id=run_id, **ctx["run_kwargs"])
                 is_dict = isinstance(result, dict)
                 final_response = _resolve_media_to_data_urls(result.get("final_response", "") if is_dict else "")

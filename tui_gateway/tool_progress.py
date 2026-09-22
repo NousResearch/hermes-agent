@@ -242,7 +242,8 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     if session is not None:
         with contextlib.suppress(Exception):
             from agent.display import capture_local_edit_snapshot
-            snapshot = capture_local_edit_snapshot(name, args)
+            task_id = session.get("session_key") or getattr(session.get("agent"), "session_id", None) or sid
+            snapshot = capture_local_edit_snapshot(name, args, task_id=task_id)
             if snapshot is not None:
                 session.setdefault("edit_snapshots", {})[tool_call_id] = snapshot
         session.setdefault("tool_started_at", {})[tool_call_id] = time.time()
@@ -260,6 +261,25 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
         _emit_tool_lifecycle("tool.start", sid, name, args, payload)
 
 
+def _prepare_tool_result_metadata(sid: str, tool_call_id: str, name: str, args: dict, result: str) -> dict:
+    """Non-emitting preview preparation for the canonical tool-result append.
+
+    Retain the exact preview for the post-flush event, including an empty preview
+    for failed/no-op edits. A cold client reads the same sidecar from SQLite.
+    """
+    session = _sessions.get(sid)
+    snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
+    metadata = {}
+    with contextlib.suppress(Exception):
+        from agent.display import render_edit_diff_with_delta
+        rendered: list[str] = []
+        if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
+            metadata["inline_diff"] = "\n".join(rendered)
+    if session is not None:
+        session.setdefault("tool_result_metadata", {})[tool_call_id] = metadata
+    return {"tool_result_metadata": metadata} if metadata else {}
+
+
 def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result: str):
     if _connector_lifecycle_is_stale(sid, name, args):
         return
@@ -267,7 +287,12 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if (labels := _tool_labels(name, args)) is not None:
         payload["labels"] = labels
     session = _sessions.get(sid)
-    snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
+    prepared = session.setdefault("tool_result_metadata", {}) if session is not None else {}
+    if tool_call_id not in prepared:
+        # Native runtimes may emit lifecycle callbacks without the tool executor.
+        metadata = _prepare_tool_result_metadata(sid, tool_call_id, name, args, result)
+        payload.update(metadata.get("tool_result_metadata", {}))
+    payload.update(prepared.pop(tool_call_id, {}))
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None
     duration_s = time.time() - started_at if started_at else None
     if duration_s is not None:
@@ -286,11 +311,6 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
         payload.update(todo_state)
         if session is not None:
             _cache_todo_state(session, todo_state)
-    with contextlib.suppress(Exception):
-        from agent.display import render_edit_diff_with_delta
-        rendered: list[str] = []
-        if render_edit_diff_with_delta(name, result, function_args=args, snapshot=snapshot, print_fn=rendered.append):
-            payload["inline_diff"] = "\n".join(rendered)
     if (_tool_progress_enabled(sid) or payload.get("inline_diff") or _tool_lifecycle_required_for_ui(name)
             or name in _TODO_TOOL_NAMES or _connector_tool_lifecycle(name, args)):
         _emit_tool_lifecycle("tool.complete", sid, name, args, payload)

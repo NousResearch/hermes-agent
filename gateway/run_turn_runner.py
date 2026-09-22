@@ -1287,6 +1287,7 @@ class TurnRunner:
             mem_notif = "on" if mem_notif else "off"
         agent.memory_notifications = str(mem_notif).lower() if mem_notif else "on"
         agent.clarify_callback = self._clarify_callback_sync
+        agent.suggest_actions_callback = self._suggest_actions_callback_sync
         # Thinking between tool calls is independent of tool_progress mode (Mattermost opts in
         # per platform so global scratch-text doesn't leak into threads).
         agent.thinking_progress = ctx._thinking_enabled
@@ -1455,6 +1456,45 @@ class TurnRunner:
             except Exception:
                 logger.debug("resume_typing_for_chat after clarify answer failed", exc_info=True)
         return response, answered
+
+    def _suggest_actions_callback_sync(self, message: str, actions) -> dict:
+        """Non-blocking: register the action set, render buttons, return.
+
+        Mirrors ``_clarify_callback_sync`` for the scheduling (dispatches the adapter send onto
+        the gateway loop) but does NOT wait for a response — the agent's turn ends right after
+        this call returns. A later tap is handled by the adapter's own callback (e.g. Telegram's
+        ``sa:<set_id>:<index>``), which injects a fresh user turn through the normal inbound path.
+        """
+        from tools import suggested_actions_gateway as sa_mod
+        import uuid
+        ctx = self._ctx
+        if not ctx._status_adapter:
+            return {"delivered": False}
+        sender = getattr(ctx._status_adapter, "send_suggested_actions", None)
+        if not callable(sender):
+            return {"delivered": False, "reason": "adapter has no send_suggested_actions"}
+        session_key = ctx.session_key or ""
+        set_id = uuid.uuid4().hex[:10]
+        sa_mod.register(set_id=set_id, session_key=session_key, message=message, actions=list(actions) if actions else [])
+        fut = self._schedule(
+            sender(
+                chat_id=ctx._status_chat_id, message=message, actions=list(actions) if actions else [],
+                set_id=set_id, session_key=session_key, metadata=ctx._status_thread_metadata,
+            ),
+            "Suggested-actions send failed to schedule",
+        )
+        if fut is None:
+            sa_mod.clear_session(session_key)
+            return {"delivered": False}
+        try:
+            result = fut.result(timeout=15)
+            delivered = bool(getattr(result, "success", False))
+        except Exception as exc:
+            logger.warning("Suggested-actions send failed: %s", exc)
+            delivered = False
+        if not delivered:
+            sa_mod.clear_session(session_key)
+        return {"delivered": delivered}
 
     def _approval_notify_sync(self, approval_data: dict) -> None:
         """Send the approval request from the agent thread: the adapter's interactive button
@@ -1731,6 +1771,11 @@ class TurnRunner:
             with suppress(Exception):
                 from tools.clarify_gateway import clear_session
                 clear_session(session_key)
+            # Suggested-action sets are non-blocking (no thread hangs on them) but should still be
+            # reclaimed at run end so they don't accumulate across sessions. Idempotent.
+            with suppress(Exception):
+                from tools.suggested_actions_gateway import clear_session as clear_sa_session
+                clear_sa_session(session_key)
             reset_current_session_key(token)
 
     def _finish_stream_consumer(self, result, agent_history, stream_consumer):

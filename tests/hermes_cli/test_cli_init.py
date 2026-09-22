@@ -741,17 +741,25 @@ class TestPluginToolsetStartupValidation:
     """
 
     @staticmethod
-    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys):
+    def _init_toolsets(monkeypatch, toolsets, *, registry, plugin_keys,
+                       mcp_servers=None, portable=()):
         import cli as _cli_mod
 
         stub = object.__new__(_cli_mod.HermesCLI)
         printed: list[str] = []
         stub._console_print = printed.append
         monkeypatch.setattr(_cli_mod, "validate_toolset", lambda name: name in registry)
-        monkeypatch.setattr(_cli_mod, "CLI_CONFIG", {"agent": {}})
+        config = {"agent": {}}
+        if mcp_servers is not None:
+            config["mcp_servers"] = mcp_servers
+        monkeypatch.setattr(_cli_mod, "CLI_CONFIG", config)
         monkeypatch.setattr(
             "hermes_cli.plugins.get_plugin_toolset_keys_nowait",
             lambda: set(plugin_keys),
+        )
+        monkeypatch.setattr(
+            "hermes_cli.plugins.get_portable_mcp_server_names_nowait",
+            lambda: set(portable),
         )
         stub._init_toolsets(list(toolsets))
         return stub, printed
@@ -777,6 +785,45 @@ class TestPluginToolsetStartupValidation:
         assert len(printed) == 1
         assert "voice_stak" in printed[0]
         assert "voice_stack" not in printed[0]
+
+    def test_portable_plugin_mcp_server_not_flagged(self, monkeypatch):
+        """A plugin-shipped (portable) MCP server name is a load-bearing entry the loader itself
+        puts in the resolved toolset list; the validator must exempt it (#119457)."""
+        _, printed = self._init_toolsets(
+            monkeypatch,
+            ["a2a", "agent-plugin-snyk-8cb0f11d__sn", "lightpanda"],
+            registry={"a2a"},
+            plugin_keys=set(),
+            mcp_servers={"lightpanda": {}},
+            portable={"agent-plugin-snyk-8cb0f11d__sn"},
+        )
+        assert printed == []
+
+    def test_lookalike_of_portable_name_still_warns(self, monkeypatch):
+        """Only the exact portable names are exempt; a near-miss keeps warning."""
+        _, printed = self._init_toolsets(
+            monkeypatch,
+            ["agent-plugin-snyk-8cb0f11d__sn2"],
+            registry=set(),
+            plugin_keys=set(),
+            mcp_servers={"lightpanda": {}},
+            portable={"agent-plugin-snyk-8cb0f11d__sn"},
+        )
+        assert len(printed) == 1
+        assert "Unknown toolsets: agent-plugin-snyk-8cb0f11d__sn2" in printed[0]
+
+    def test_disabled_config_mcp_server_still_flags(self, monkeypatch):
+        """Naming a config server whose ``enabled`` flag is falsey stays a warning: it merges no
+        tools, matching the platform-side rule in _warn_all_invalid_platform_toolsets."""
+        _, printed = self._init_toolsets(
+            monkeypatch,
+            ["lightpanda"],
+            registry=set(),
+            plugin_keys=set(),
+            mcp_servers={"lightpanda": {"enabled": False}},
+            portable=set(),
+        )
+        assert len(printed) == 1 and "lightpanda" in printed[0]
 
 
 

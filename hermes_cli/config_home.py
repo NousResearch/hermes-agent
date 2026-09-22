@@ -24,7 +24,9 @@ def _operator_owned_links(links: list[Path], home: Path) -> list[Path]:
     return [link for link in links if link == home or home in link.parents]
 
 
-def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> None:
+def _ensure_directory(
+    path: Path, *, create: bool, secure: bool, home: Path, preserve_readonly: bool = False
+) -> None:
     from hermes_cli.config import _secure_dir
 
     detail = ""
@@ -35,13 +37,19 @@ def _ensure_directory(path: Path, *, create: bool, secure: bool, home: Path) -> 
         for link in links:
             if not link.is_dir():
                 raise FileNotFoundError(f"Directory link is unavailable: {link}")
+        # Only operator-provisioned skills roots can opt out of adding write access.
+        # A newly created skills directory still needs the ordinary writable mode.
+        preserve_readonly = preserve_readonly and path.is_dir()
         if create:
             path.mkdir(parents=True, exist_ok=True)
         elif not path.is_dir():
             raise FileNotFoundError(f"Required directory does not exist: {path}")
         # The operator owns permissions beyond a link, including logs/curator.
         if secure and not _operator_owned_links(links, home):
-            _secure_dir(path)
+            if preserve_readonly:
+                _secure_dir(path, preserve_readonly=True)
+            else:
+                _secure_dir(path)
     except OSError as exc:
         raise HomeInitializationError(
             f"Cannot initialize Hermes directory {path}: {exc}. "
@@ -61,7 +69,10 @@ def initialize_home(home: Path, subdirs: tuple[str, ...], ensured: set[str]) -> 
         _ensure_directory(home, create=not managed, secure=not managed, home=home)
         required = ("cron", "sessions", "logs", "memories") if managed else subdirs
         for subdir in required:
-            _ensure_directory(home / subdir, create=not managed, secure=not managed, home=home)
+            _ensure_directory(
+                home / subdir, create=not managed, secure=not managed, home=home,
+                preserve_readonly=subdir == "skills",
+            )
         if managed:
             _ensure_directory(home / "logs" / "curator", create=True, secure=False, home=home)
         try:

@@ -1116,7 +1116,7 @@ def _chown_to_hermes_uid(path) -> None:
         pass
 
 
-def apply_secure_dir_policy(path) -> None:
+def apply_secure_dir_policy(path, *, preserve_readonly: bool = False) -> None:
     """Apply the canonical Hermes home-directory permission policy to *path*.
 
     Owner-only ``0700`` by default, but the operator's explicit and managed sharing choices
@@ -1125,6 +1125,8 @@ def apply_secure_dir_policy(path) -> None:
     (a bind-mounted data dir is often shared with sibling containers, #10757); elsewhere
     ``HERMES_HOME_MODE`` (e.g. ``0701``, ``2770``) overrides the mode. ``HERMES_UID`` /
     ``HERMES_GID`` ownership is applied when those env vars are set (#34107).
+    ``preserve_readonly`` keeps the default mode from adding permissions to an existing
+    directory with no write bits; explicit modes still win.
 
     Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
     outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.
@@ -1140,6 +1142,10 @@ def apply_secure_dir_policy(path) -> None:
     except ValueError:
         mode = 0o700
     try:
+        if preserve_readonly and not explicit_mode:
+            current_mode = stat.S_IMODE(os.stat(path).st_mode)
+            if not current_mode & 0o222:
+                mode &= current_mode
         os.chmod(path, mode)
     except (OSError, NotImplementedError):
         pass

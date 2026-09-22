@@ -1,12 +1,12 @@
 name: hopper
 repo: https://github.com/mykeura/hopper
-sha: 970322b354d358f048d4dc973417428c9f63620b
-description: Hopper by @mykeura - Add and manage custom OpenRouter models in Hermes without modifying the core catalog.
+sha: 68427cf7770b393b6b4b694722d24431058fbd3f
+description: Add and manage custom OpenRouter models in Hermes without modifying the core catalog.
 maintainer: mykeura
 tier: community
 category: models
 docs_url: https://github.com/mykeura/hopper#readme
-version: "1.3.0"
+version: "1.4.0"
 requires_hermes: ">=0.21"
 capabilities:
   provides_tools: []

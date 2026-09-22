@@ -81,6 +81,7 @@ const sidebars: SidebarsConfig = {
             'user-guide/features/lsp',
             'user-guide/features/curator',
             'user-guide/features/memory',
+            'user-guide/features/engineering-memory',
             'user-guide/features/memory-providers',
             'user-guide/features/honcho',
             'user-guide/features/context-files',
@@ -287,6 +288,7 @@ const sidebars: SidebarsConfig = {
                   items: [
                     'user-guide/skills/bundled/software-development/software-development-codebase-inspection',
                     'user-guide/skills/bundled/software-development/software-development-dogfood',
+                    'user-guide/skills/bundled/software-development/software-development-engineering-memory',
                     'user-guide/skills/bundled/software-development/software-development-github',
                     'user-guide/skills/bundled/software-development/software-development-hermes-agent-skill-authoring',
                     'user-guide/skills/bundled/software-development/software-development-inspecting-hermes-desktop-dom',

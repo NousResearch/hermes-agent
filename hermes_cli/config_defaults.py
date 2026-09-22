@@ -20,6 +20,26 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Explicit cross-client engineering knowledge plane. Empty paths keep it disabled;
+    # it never aliases profile-local MEMORY.md/USER.md.
+    "engineering_memory": {
+        "enabled": False,
+        "vault_path": "",
+        "index_path": "",
+        "max_record_bytes": 16384,
+        "max_results": 8,
+        "max_result_chars": 6000,
+        "laya": {
+            "enabled": False,
+            "model_repo": "convaiinnovations/laya",
+            "revision": "",
+            "local_path": "",
+            "runtime": "subprocess",
+            "device": "auto",
+            "min_confidence": 0.8,
+            "calibration_path": "",
+        },
+    },
     "providers": {},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset

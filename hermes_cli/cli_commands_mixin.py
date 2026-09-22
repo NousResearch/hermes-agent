@@ -1982,10 +1982,13 @@ class CLICommandsMixin:
                                                    "max_tokens")}, enabled_toolsets=self.enabled_toolsets,
                     quiet_mode=True, verbose_logging=False, session_id=task_id, platform="cli",
                     side_agent=True,
-                    session_db=self._session_db, reasoning_config=self.reasoning_config,
+                    session_db=self._session_db,
+                    reasoning_config=turn_route.get("reasoning_config") or self.reasoning_config,
                     service_tier=self.service_tier,
                     request_overrides=turn_route.get("request_overrides"),
-                    **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()})
+                    **{kw: getattr(self, attr) for kw, attr in _BG_PROVIDER_KWARGS.items()
+                       if kw != "fallback_model"},
+                    fallback_model=None if turn_route.get("router_active") else self._fallback_model)
                 # Silence raw spinner; route thinking through TUI widget when no foreground agent is active.
                 bg_agent._print_fn = lambda *_a, **_kw: None
 
@@ -2119,16 +2122,23 @@ class CLICommandsMixin:
         main_runtime = {
             "model": turn_route["model"],
             **{k: runtime.get(k) for k in ("provider", "base_url", "api_key", "api_mode")},
+            "_model_router_strict": bool(turn_route.get("router_active")),
             "session_id": getattr(parent_agent, "session_id", None),
         }
         preview = _ellipsize(question, 60)
         _cp(f"  💬 Side question: \"{preview}\"",
             "  Answering from a snapshot of this conversation — the current work continues.\n")
 
+        routed_parent_agent = (
+            parent_agent if (not turn_route.get("router_active")
+                             and turn_route["signature"] == self._active_agent_route_signature) else None
+        )
+
         def produce():
             from agent.side_question import answer_side_question
             return answer_side_question(
-                question, history_snapshot, parent_agent=parent_agent, main_runtime=main_runtime)
+                question, history_snapshot, parent_agent=routed_parent_agent, main_runtime=main_runtime,
+                reasoning_config=turn_route.get("reasoning_config") or self.reasoning_config)
 
         self._side_worker(produce, name="btw-side-question", fail_label="/btw",
                           header_lines=[f"  💬 /btw: \"{preview}\""], title_suffix="(btw)",

@@ -88,6 +88,7 @@ def run_oneshot(
     temperature: Optional[float] = 0.3,
     timeout: float = 60.0,
     main_runtime: Optional[Dict[str, Any]] = None,
+    reasoning_config: Optional[dict] = None,
 ) -> str:
     """Run a single stateless LLM request and return its text (fence-stripped).
 
@@ -108,6 +109,7 @@ def run_oneshot(
         temperature=temperature,
         timeout=timeout,
         main_runtime=main_runtime,
+        reasoning_config=reasoning_config,
     )
     return _strip_code_fence((extract_content_or_reasoning(response) or "").strip())
 

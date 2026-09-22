@@ -520,15 +520,42 @@ class CLIAgentSetupMixin:
         auto/cold tiers are applied per request by agent.fast_mode instead."""
         from hermes_cli.models import resolve_fast_mode_overrides
         runtime = _current_runtime(self)
-        route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime)}
+        route = {"model": self.model, "runtime": runtime, "signature": _route_signature(self.model, runtime),
+                 "request_overrides": None, "router_active": False}
+        try:
+            from hermes_cli.config import load_config_readonly
+            from hermes_cli.model_router import resolve_turn_route
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            selected = resolve_turn_route(
+                config=load_config_readonly(), user_message=user_message,
+                base_model=self.model, base_runtime=runtime,
+                runtime_resolver=lambda provider, model: resolve_runtime_provider(
+                    requested=provider, target_model=model),
+            )
+            route["model"] = selected.model
+            route["runtime"] = selected.runtime
+            route["reasoning_config"] = selected.reasoning_config
+            if selected.decision != "disabled":
+                route["router_active"] = True
+                route["request_overrides"] = selected.request_overrides
+                route["signature"] = _route_signature(selected.model, selected.runtime) + (
+                    tuple(sorted((selected.reasoning_config or {}).items())),
+                )
+        except Exception:
+            # An enabled router is a provider-boundary policy: never silently bypass it.
+            raise
         overrides = None
         if getattr(self, "service_tier", None) == "priority":
             try:
                 overrides = resolve_fast_mode_overrides(
-                    route["model"], provider=runtime["provider"], base_url=runtime["base_url"])
+                    route["model"], provider=route["runtime"].get("provider"),
+                    base_url=route["runtime"].get("base_url"))
             except Exception:
                 pass
-        route["request_overrides"] = overrides
+        if overrides:
+            base_overrides = dict(route.get("request_overrides") or {})
+            base_overrides.update(overrides)
+            route["request_overrides"] = base_overrides
         return route
 
     def _follow_compression_chain(self, session_meta, announce):
@@ -616,7 +643,9 @@ class CLIAgentSetupMixin:
         self._reopen_session()
         return True
 
-    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None, request_overrides: dict | None = None) -> bool:
+    def _init_agent(self, *, model_override: str = None, runtime_override: dict = None,
+                    request_overrides: dict | None = None, reasoning_config: dict | None = None,
+                    route_signature: tuple | None = None) -> bool:
         """Build the agent on first use; when resuming, restore history from SQLite.
         Returns True on success."""
         from cli import ChatConsole, _cprint, _prepare_deferred_agent_startup, logger
@@ -670,7 +699,8 @@ class CLIAgentSetupMixin:
                 tool_progress_mode=getattr(self, "tool_progress_mode", "all"),
                 ephemeral_system_prompt=self.system_prompt if self.system_prompt else None,
                 prefill_messages=self.prefill_messages or None,
-                reasoning_config=self.reasoning_config, service_tier=self.service_tier,
+                reasoning_config=reasoning_config if reasoning_config is not None else self.reasoning_config,
+                service_tier=self.service_tier,
                 request_overrides=request_overrides, providers_allowed=self._providers_only,
                 providers_ignored=self._providers_ignore, providers_order=self._providers_order,
                 provider_sort=self._provider_sort,
@@ -680,7 +710,10 @@ class CLIAgentSetupMixin:
                 session_id=self.session_id, platform="cli", session_db=self._session_db,
                 clarify_callback=clarify_callback, connection_callback=connection_callback,
                 reasoning_callback=self._current_reasoning_callback(),
-                fallback_model=self._fallback_model, thinking_callback=self._on_thinking,
+                # Router-selected turns are a strict policy boundary; generic fallback
+                # providers may not receive a routed prompt.
+                fallback_model=None if route_signature and getattr(self, "_active_turn_router_active", False)
+                else self._fallback_model, thinking_callback=self._on_thinking,
                 checkpoints_enabled=self.checkpoints_enabled,
                 checkpoint_max_snapshots=self.checkpoint_max_snapshots,
                 checkpoint_max_total_size_mb=self.checkpoint_max_total_size_mb,
@@ -718,7 +751,7 @@ class CLIAgentSetupMixin:
                 seed_credits_at_session_start(self.agent)
             except Exception:
                 pass
-            self._active_agent_route_signature = _route_signature(effective_model, runtime)
+            self._active_agent_route_signature = route_signature or _route_signature(effective_model, runtime)
 
             # Force-create DB row on /title intent, then apply title.
             if self._pending_title and self._session_db:

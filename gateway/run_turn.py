@@ -303,23 +303,49 @@ class GatewayTurnMixin:
         route = {
             "model": model,
             "runtime": runtime,
+            "request_overrides": base_request_overrides,
+            "router_active": False,
             "signature": (
                 model, runtime["provider"], runtime["requested_provider"], runtime["base_url"],
                 runtime["api_mode"], runtime["command"], tuple(runtime["args"]),
             ),
         }
+        try:
+            from hermes_cli.config_effective import load_user_config_effective
+            from hermes_cli.model_router import resolve_turn_route
+            from hermes_cli.runtime_provider import resolve_runtime_provider
+            selected = resolve_turn_route(
+                config=load_user_config_effective(), user_message=user_message,
+                base_model=model, base_runtime=runtime,
+                runtime_resolver=lambda provider, target: resolve_runtime_provider(
+                    requested=provider, target_model=target),
+            )
+            route["model"] = selected.model
+            route["runtime"] = selected.runtime
+            route["reasoning_config"] = selected.reasoning_config
+            if selected.decision != "disabled":
+                route["router_active"] = True
+                route["request_overrides"] = selected.request_overrides
+                route["signature"] = (
+                    selected.model, selected.runtime.get("provider"), selected.runtime.get("requested_provider"),
+                    selected.runtime.get("base_url"), selected.runtime.get("api_mode"), selected.runtime.get("command"),
+                    tuple(selected.runtime.get("args") or ()), tuple(sorted((selected.reasoning_config or {}).items())),
+                )
+        except Exception:
+            # An enabled router is a provider-boundary policy: never silently bypass it.
+            raise
         if getattr(self, "_service_tier", None) != "priority":
             # None / auto / cold: the bounded window is applied per request by agent.fast_mode.
-            route["request_overrides"] = base_request_overrides
             return route
         try:
             overrides = resolve_fast_mode_overrides(
-                route["model"], provider=runtime["provider"], base_url=runtime["base_url"],
+                route["model"], provider=route["runtime"].get("provider"), base_url=route["runtime"].get("base_url"),
             )
         except Exception:
             overrides = None
         # Fast-mode keys (service_tier / speed) are top-level and don't collide with extra_body.
-        route["request_overrides"] = _deep_merge_request_overrides(base_request_overrides, overrides or {})
+        route["request_overrides"] = _deep_merge_request_overrides(
+            dict(route.get("request_overrides") or {}), overrides or {})
         return route
 
     def _sync_session_model_from_agent(self, session_id: str, agent: Any) -> None:
@@ -2430,7 +2456,7 @@ class GatewayTurnMixin:
                     verbose_logging=False,
                     enabled_toolsets=enabled_toolsets,
                     disabled_toolsets=disabled_toolsets,
-                    reasoning_config=reasoning_config,
+                    reasoning_config=turn_route.get("reasoning_config") or reasoning_config,
                     service_tier=self._service_tier,
                     request_overrides=turn_route.get("request_overrides"),
                     providers_allowed=pr.get("only"),
@@ -2447,7 +2473,7 @@ class GatewayTurnMixin:
                     session_db=getattr(self._session_db, "_db", self._session_db),
                     # Reload from disk — do not reuse the startup snapshot.
                     # See #60955.
-                    fallback_model=self._refresh_fallback_model(),
+                    fallback_model=None if turn_route.get("router_active") else self._refresh_fallback_model(),
                 )
                 try:
                     return agent.run_conversation(user_message=enriched_prompt, task_id=task_id)

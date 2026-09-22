@@ -234,9 +234,10 @@ export function PluginInstallModal() {
 
         if (result.ok) {
           successes.push(
-            [m.agentSuccess(result.pluginName ?? request.repo), ...installOutcome(m, result.live, result.nextChat)].join(
-              ' · '
-            )
+            [
+              m.agentSuccess(result.pluginName ?? request.repo),
+              ...installOutcome(m, result.live, result.nextChat)
+            ].join(' · ')
           )
           agentInstalled = true
           live = result.live

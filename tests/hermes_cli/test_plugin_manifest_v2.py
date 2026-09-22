@@ -366,7 +366,7 @@ class TestPythonDependenciesSeam:
         assert mgr._plugins["pipful"].enabled
         assert "definitely-not-a-real-package-64165" in caplog.text
         assert "pip install" in caplog.text
-        assert "does not install plugin dependencies automatically" in caplog.text
+        assert "hermes plugins enable pipful" in caplog.text
         assert calls == []
 
     def test_satisfied_pip_dep_is_quiet(self, hermes_home, caplog):
@@ -412,6 +412,27 @@ class TestCtxHasPlugin:
 
 
 class TestRequiresHermes:
+    def test_gate_reads_the_running_code_version_not_dist_metadata(self, monkeypatch):
+        """An editable install's dist metadata is frozen at install time (0.21.0 here) while the checkout runs
+        0.21.4; the gate must compare against the code that is running."""
+        import importlib.metadata
+        from hermes_cli import plugins_manifest
+        monkeypatch.setattr(importlib.metadata, "version", lambda name: "0.21.0")
+        monkeypatch.setattr("hermes_cli.__version__", "0.21.4")
+        assert plugins_manifest.running_hermes_version() == "0.21.4"
+        assert plugins_manifest.version_satisfies(">=0.21.4", plugins_manifest.running_hermes_version())
+
+    @pytest.mark.parametrize("spec, current, expected", [
+        (">=99.0.0rc1", "0.21.4", False),   # rc target used to parse as None -> clause silently dropped
+        (">=0.23.0", "0.22.0rc1", False),   # rc running version used to disable every gate
+        (">=0.21.0", "0.22.0rc1", True),
+        (">=1.2.3.post1", "1.2.3", True),
+        ("banana", "0.21.4", True),         # documented: unparseable target stays permissive
+    ])
+    def test_prerelease_spellings_gate(self, spec, current, expected):
+        from hermes_cli.plugins_manifest import version_satisfies
+        assert version_satisfies(spec, current) is expected
+
     def test_unsatisfied_requires_hermes_skips_without_importing(self, hermes_home, monkeypatch):
         """A too-new ``requires_hermes`` records an error and never runs register(); a satisfied one loads."""
         import sys
@@ -432,3 +453,106 @@ class TestRequiresHermes:
             for attr in ("_rh_future", "_rh_current"):
                 if hasattr(sys, attr):
                     delattr(sys, attr)
+
+
+class TestLoadIsolation:
+    def test_sys_exit_in_plugin_is_isolated_and_named(self, hermes_home, caplog):
+        """A plugin calling ``sys.exit()`` at import used to propagate SystemExit out of discovery: the whole
+        registry emptied, ``_discovered`` reset and ``hermes chat`` exited 3 with no output. It must be
+        recorded as that plugin's error while later plugins still load."""
+        _write_plugin(hermes_home / "plugins", "b_exit")
+        (hermes_home / "plugins" / "b_exit" / "__init__.py").write_text("import sys\nsys.exit(0)\n")
+        _write_plugin(hermes_home / "plugins", "c_after")
+        _enable(hermes_home, ["b_exit", "c_after"])
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()  # must not raise
+        assert mgr._discovered is True
+        assert mgr._plugins["c_after"].enabled
+        assert not mgr._plugins["b_exit"].enabled
+        assert "SystemExit(0)" in (mgr._plugins["b_exit"].error or "")
+
+    def test_keyboard_interrupt_still_propagates(self, hermes_home):
+        _write_plugin(hermes_home / "plugins", "ctrlc")
+        (hermes_home / "plugins" / "ctrlc" / "__init__.py").write_text("raise KeyboardInterrupt\n")
+        _enable(hermes_home, ["ctrlc"])
+        with pytest.raises(KeyboardInterrupt):
+            PluginManager().discover_and_load()
+
+
+class TestBundledKeyShadowing:
+    def test_impostor_dir_cannot_claim_a_bundled_key(self, tmp_path, monkeypatch, caplog):
+        """``~/.hermes/plugins/impostor_dir/plugin.yaml`` with ``name: <bundled key>`` used to displace the
+        bundled plugin silently, so ``hermes plugins enable <key>`` enabled unrelated code. The bundled
+        manifest wins and the impostor is warned about; a same-named user copy still overrides (documented)."""
+        home = tmp_path / "home"
+        (home / "plugins").mkdir(parents=True)
+        bundled = tmp_path / "bundled"
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.setenv("HERMES_ENABLE_PROJECT_PLUGINS", "0")
+        monkeypatch.setenv("HERMES_BUNDLED_PLUGINS", str(bundled))
+        _write_plugin(bundled, "genuine", register_body="import sys; sys._shadow_probe = 'bundled'")
+        _write_plugin(bundled, "overridable", register_body="import sys; sys._override_probe = 'bundled'")
+        _write_plugin(home / "plugins", "impostor_dir", manifest_extra={"name": "genuine"},
+                      register_body="import sys; sys._shadow_probe = 'impostor'")
+        (home / "plugins" / "impostor_dir" / "plugin.yaml").write_text(
+            yaml.dump({"name": "genuine", "version": "0.1.0", "description": "impostor"}))
+        _write_plugin(home / "plugins", "overridable", register_body="import sys; sys._override_probe = 'user'")
+        _enable(home, ["genuine", "overridable"])
+        import sys
+        try:
+            with caplog.at_level(logging.INFO, logger="hermes_cli.plugins"):
+                mgr = PluginManager()
+                mgr.discover_and_load()
+            assert mgr._plugins["genuine"].manifest.source == "bundled"
+            assert sys._shadow_probe == "bundled"
+            assert "impostor_dir" in caplog.text and "rename the directory" in caplog.text
+            assert mgr._plugins["overridable"].manifest.source == "user"
+            assert sys._override_probe == "user"
+            assert "shadows the bundled copy" in caplog.text
+        finally:
+            for attr in ("_shadow_probe", "_override_probe"):
+                if hasattr(sys, attr):
+                    delattr(sys, attr)
+
+
+class TestManifestParsingRobustness:
+    def test_list_manifest_is_rejected_with_a_clear_reason_and_hooks_alias(self, hermes_home, caplog):
+        """A list-typed plugin.yaml (#14066) names the actual problem instead of an AttributeError; the
+        long-standing ``hooks:`` spelling still populates ``provides_hooks`` (#108371)."""
+        from hermes_cli.plugins_discovery import scan_directory
+        bad = hermes_home / "plugins" / "listy"
+        bad.mkdir()
+        (bad / "plugin.yaml").write_text("- name: listy\n")
+        good = _write_plugin(hermes_home / "plugins", "hooky", manifest_extra={"hooks": ["pre_tool_call"]})
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            manifests = {m.name: m for m in scan_directory(hermes_home / "plugins", "user")}
+        assert "listy" not in manifests
+        assert "top level must be a mapping" in caplog.text
+        assert manifests["hooky"].provides_hooks == ["pre_tool_call"]
+        assert manifests["hooky"].path == str(good)
+
+
+class TestDirectoryPluginKeepsIdentityOverEntryPoint:
+    """A pyproject-wrapper plugin depends on a pip package that ships a ``hermes_agent.plugins``
+    entry point under the SAME name. The installed directory must stay the plugin's identity (it
+    carries catalog provenance and is what update/remove act on); the entry point must not displace it."""
+
+    def test_loader_and_listing_prefer_the_installed_directory(self, hermes_home, monkeypatch):
+        from hermes_cli.plugins_manifest import PluginManifest
+        _write_plugin(hermes_home / "plugins", "twin")
+        _enable(hermes_home, ["twin"])
+        twin_ep = PluginManifest(name="twin", version="9.9.9", description="pip twin",
+                                 source="entrypoint", path="twin_pkg:register", key="twin")
+        monkeypatch.setattr(PluginManager, "_scan_entry_points", lambda self: [twin_ep])
+        monkeypatch.setattr("hermes_cli.plugins_cmd.discover_entrypoint_manifests", lambda: [twin_ep], raising=False)
+        monkeypatch.setattr("hermes_cli.plugins.discover_entrypoint_manifests", lambda: [twin_ep])
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+        assert mgr._plugins["twin"].manifest.source == "user"
+
+        from hermes_cli.plugins_cmd import _discover_all_plugins
+        rows = [r for r in _discover_all_plugins() if r[0] == "twin"]
+        assert [r[3] for r in rows] == ["user"]
+        assert str(rows[0][4]).endswith("plugins/twin")

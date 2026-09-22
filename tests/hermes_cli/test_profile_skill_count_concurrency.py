@@ -25,16 +25,19 @@ def test_skill_scans_are_serialized_and_reuse_completed_counts(tmp_path, monkeyp
     for root in set(roots) | {cached_root}:
         skill = root / "skills" / "category" / "example" / SKILL_NAME
         skill.parent.mkdir(parents=True)
-        skill.write_text(SKILL_TEXT)
+        skill.write_text(SKILL_TEXT, encoding="utf-8")
     assert profiles._count_skills(cached_root) == 1
+    monkeypatch.setattr(profiles, "_SKILL_COUNT_NEXT_CHECK", {
+        str(cached_root / "skills"): profiles.time.time() + profiles._SKILL_COUNT_RECHECK_SECONDS,
+    })
     scan_entered = threading.Event()
     overlapping_scan = threading.Event()
     release_scan = threading.Event()
     counter_lock = threading.Lock()
     active = peak = scans = 0
-    original_rglob = Path.rglob
+    original_walk = profiles._walk_skill_count
 
-    def held_scan(path, pattern):
+    def held_scan(path):
         nonlocal active, peak, scans
         with counter_lock:
             active += 1
@@ -45,12 +48,12 @@ def test_skill_scans_are_serialized_and_reuse_completed_counts(tmp_path, monkeyp
         scan_entered.set()
         try:
             assert release_scan.wait(WAIT_SECONDS)
-            yield from original_rglob(path, pattern)
+            return original_walk(path)
         finally:
             with counter_lock:
                 active -= 1
 
-    monkeypatch.setattr(Path, "rglob", held_scan)
+    monkeypatch.setattr(profiles, "_walk_skill_count", held_scan)
     with ThreadPoolExecutor(max_workers=CALLERS + 1) as executor:
         futures = [executor.submit(profiles._count_skills, roots[0])]
         try:
@@ -58,6 +61,8 @@ def test_skill_scans_are_serialized_and_reuse_completed_counts(tmp_path, monkeyp
             futures.extend(executor.submit(profiles._count_skills, root) for root in roots[1:])
             cached = executor.submit(profiles._count_skills, cached_root)
             assert cached.result(timeout=CONTENTION_SECONDS) == 1
+            lazy_cached = executor.submit(profiles._cached_skill_count, cached_root)
+            assert lazy_cached.result(timeout=CONTENTION_SECONDS) == 1
             overlapping_scan.wait(CONTENTION_SECONDS)
         finally:
             release_scan.set()
@@ -74,19 +79,19 @@ def test_slow_scan_result_is_fresh_when_published(tmp_path, monkeypatch):
     root = tmp_path / "profile"
     skill = root / "skills" / "example" / SKILL_NAME
     skill.parent.mkdir(parents=True)
-    skill.write_text(SKILL_TEXT)
+    skill.write_text(SKILL_TEXT, encoding="utf-8")
     clock = [100.0]
     scans = 0
-    original_rglob = Path.rglob
+    original_walk = profiles._walk_skill_count
 
-    def slow_scan(path, pattern):
+    def slow_scan(path):
         nonlocal scans
         scans += 1
         clock[0] += profiles._SKILL_COUNT_TTL_SECONDS + 1
-        yield from original_rglob(path, pattern)
+        return original_walk(path)
 
     monkeypatch.setattr(profiles.time, "time", lambda: clock[0])
-    monkeypatch.setattr(Path, "rglob", slow_scan)
+    monkeypatch.setattr(profiles, "_walk_skill_count", slow_scan)
     assert profiles._count_skills(root) == 1
     assert profiles._count_skills(root) == 1
     assert scans == 1

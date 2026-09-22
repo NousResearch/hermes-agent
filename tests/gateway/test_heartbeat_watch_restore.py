@@ -10,7 +10,7 @@ from gateway.config import GatewayConfig, Platform
 from gateway.run import GatewayRunner, _profile_runtime_scope
 from gateway.session import SessionStore, SessionSource
 from hermes_cli import goals
-from hermes_cli.heartbeat import HeartbeatManager
+from hermes_cli.heartbeat import HeartbeatManager, HeartbeatState
 from hermes_state import SessionDB
 
 
@@ -50,8 +50,8 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
         runner.session_store = SessionStore(home / 'sessions', config)
         runner._heartbeat_watch = {}
         runner._start_heartbeat_poller = lambda: None
-        runner._profile_name_for_source = lambda source: source.profile
-        runner._adapter_for_source = lambda source: object()
+        runner._profile_name_for_source = lambda source, adapter_profile=None: source.profile
+        runner._delivery_adapter_for = lambda source: object()
         runner._run_in_executor_with_context = asyncio.to_thread
         original = runner.session_store.list_sessions
         with monkeypatch.context() as patch:
@@ -75,6 +75,76 @@ async def test_restore_retries_persisted_routes_in_their_own_profiles(tmp_path, 
         store.close_all_db_handles()
         if 'runner' in locals():
             runner.session_store.close_all_db_handles()
+        for db in dbs.values():
+            db.close()
+
+
+@pytest.mark.asyncio
+async def test_restore_skips_session_sweep_when_no_heartbeats_exist(tmp_path, monkeypatch):
+    """Idle case: no ACTIVE ``heartbeat:*`` row in any served profile → the restore poll must not
+    sweep the routing index (each swept origin re-parses that profile's config/secrets). An active
+    row, or a store the probe cannot read, brings the sweep back."""
+    from gateway.run_heartbeat_restore import restore_heartbeat_watches
+
+    home = tmp_path / '.hermes'
+    named = home / 'profiles' / 'work'
+    named.mkdir(parents=True)
+    (named / 'config.yaml').write_text('{}')
+    monkeypatch.setattr(Path, 'home', lambda: tmp_path)
+    monkeypatch.setenv('HERMES_HOME', str(home))
+    dbs = {str(p): SessionDB(db_path=p / 'state.db') for p in (home, named)}
+    monkeypatch.setattr(goals, '_DB_CACHE', dbs)
+    config = GatewayConfig(multiplex_profiles=True)
+    store = SessionStore(home / 'sessions', config)
+    try:
+        source = SessionSource(platform=Platform.TELEGRAM, chat_id='chat',
+                               thread_id='7', profile=None, scope_id=None)
+        store.get_or_create_session(source)
+        runner = GatewayRunner.__new__(GatewayRunner)
+        runner.config = config
+        runner.session_store = store
+        runner._heartbeat_watch = {}
+        runner._run_in_executor_with_context = asyncio.to_thread
+        sweeps = []
+        original = store.list_sessions
+        monkeypatch.setattr(store, 'list_sessions',
+                            lambda: (sweeps.append(1), original())[1])
+        await restore_heartbeat_watches(runner)
+        assert sweeps == []
+        assert runner._heartbeat_watch == {}
+
+        # A cleared heartbeat keeps its row (status=cleared): still nothing to restore.
+        dbs[str(named)].set_meta('heartbeat:old', HeartbeatState(
+            prompt='p', interval_seconds=60, status='cleared').to_json())
+        await restore_heartbeat_watches(runner)
+        assert sweeps == []
+
+        # An ACTIVE row in the secondary store opens the gate.
+        dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
+            prompt='p', interval_seconds=60, status='active').to_json())
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1]
+
+        # A `-p work` multiplexer's routing home is the named profile; an active heartbeat that
+        # lives only in the DEFAULT store must still bring the sweep back.
+        dbs[str(named)].set_meta('heartbeat:live', HeartbeatState(
+            prompt='p', interval_seconds=60, status='cleared').to_json())
+        store._routing_home = named
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1], 'no active row anywhere: still idle'
+        dbs[str(home)].set_meta('heartbeat:root', HeartbeatState(
+            prompt='p', interval_seconds=60, status='active').to_json())
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1, 1], 'active row in the default store must be seen from a named routing home'
+        dbs[str(home)].set_meta('heartbeat:root', HeartbeatState(
+            prompt='p', interval_seconds=60, status='cleared').to_json())
+
+        # Fail OPEN: a store the probe cannot open must not suppress the sweep.
+        monkeypatch.setattr('gateway.run_idle_gates._profile_session_db_probe', lambda _home: None)
+        await restore_heartbeat_watches(runner)
+        assert sweeps == [1, 1, 1]
+    finally:
+        store.close_all_db_handles()
         for db in dbs.values():
             db.close()
 

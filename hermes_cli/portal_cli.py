@@ -46,8 +46,15 @@ def _cmd_status(args) -> int:
     except Exception:
         auth = {}
     logged_in = bool(auth.get("logged_in"))
+    free_tier = bool(auth.get("free_tier"))
     _heading("Nous Portal")
-    if logged_in:
+    if free_tier:
+        from hermes_cli.anon_auth import FREE_TIER_LABEL, GUEST_MODEL, UPGRADE_HINT
+        print(f"  Auth:    {color(f'{FREE_TIER_LABEL} · {GUEST_MODEL}', Colors.GREEN)}")
+        print(f"           {UPGRADE_HINT}")
+        if auth.get("inference_base_url"):
+            print(f"  API:     {auth['inference_base_url']}")
+    elif logged_in:
         print(f"  Auth:    {color('✓ logged in', Colors.GREEN)}")
         print(f"  Portal:  {auth.get('portal_base_url') or DEFAULT_PORTAL_URL}")
         if auth.get("inference_base_url"):

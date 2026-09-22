@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import contextlib
 import subprocess
+from urllib.parse import urlparse
 
 from hermes_cli.cli_output import line_input
 from hermes_cli.config import clear_model_endpoint_credentials
@@ -156,16 +157,45 @@ def _pick_model_or_prompt(model_list, prompt: str, **kwargs):
     return _ask(prompt, cancel_msg=None)
 
 
+def _login_retry_context(args) -> tuple[str, str]:
+    """(retry_command, service_host) for a login helper's failure copy, from the ``ProviderConfig``
+    among its positional args. Nous keeps ``hermes portal``; every other OAuth provider is retried
+    with ``hermes auth add <provider>`` and named by its own portal host (``hermes login`` no longer
+    exists). Falls back to ``hermes model`` when no provider config is in play."""
+    pconfig = next((a for a in args if hasattr(a, "id") and hasattr(a, "portal_base_url")), None)
+    if pconfig is None:
+        return "hermes model", "the sign-in service"
+    provider_id = str(getattr(pconfig, "id", "") or "")
+    host = urlparse(str(getattr(pconfig, "portal_base_url", "") or "")).hostname or "the sign-in service"
+    if provider_id == "nous":
+        return "hermes portal", host
+    return (f"hermes auth add {provider_id}" if provider_id else "hermes model"), host
+
+
 def _run_login(login_fn, *args, **kwargs) -> bool:
-    """Run an OAuth login helper; print the standard failure line and return False
-    on SystemExit / any exception."""
+    """Run an OAuth login helper; print plain failure copy (what happened + retry command) and
+    return False on SystemExit / any exception. The retry command and service host come from the
+    provider config passed to the helper, so a MiniMax failure never says ``hermes portal`` /
+    ``portal.nousresearch.com``. Helpers that print their own copy raise ``SystemExit(1)`` with no
+    message, which stays silent; a SystemExit that carries a message (or a non-cancel code from a
+    helper that printed nothing) gets a one-line explanation so the user is never left with no
+    output."""
+    from hermes_cli.auth_error_copy import sign_in_failure_lines
+    retry_command, service_host = _login_retry_context(args)
     try:
         login_fn(*args, **kwargs)
-    except SystemExit:
-        print("Login cancelled or failed.")
+    except SystemExit as exc:
+        if exc.code in (130, None, 0):
+            print("Sign-in was cancelled.")
+        elif isinstance(exc.code, str) and exc.code.strip():
+            print(f"Sign-in did not complete: {exc.code.strip()}")
+            print(f"Run `{retry_command}` to try again.")
+        else:
+            print(f"Sign-in did not complete; run `{retry_command}` to try again.")
         return False
     except Exception as exc:
-        print(f"Login failed: {exc}")
+        for line in sign_in_failure_lines(exc, service_host=service_host, retry_command=retry_command):
+            print(line)
         return False
     return True
 

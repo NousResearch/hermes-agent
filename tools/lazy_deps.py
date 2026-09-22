@@ -11,6 +11,7 @@ package can only add modules, never shadow core; PyPI-by-name specs only (``_spe
 
 from __future__ import annotations
 
+import configparser
 import contextlib
 import logging
 import os
@@ -106,11 +107,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
+    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
+    # made _is_satisfied() reject every newer compatible release, so `hermes update` (and the hindsight
+    # plugin's own >=_MIN_CLIENT_VERSION auto-upgrade) kept downgrading a working 0.9.x client to 0.6.1
+    # and broke embedded daemons whose DB a newer client had migrated (#86992, #39424, #98407).
+    "memory.hindsight": ("hindsight-client>=0.6.1,<1",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
+    "memory.mem0": ("mem0ai>=2.0.10,<3",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
@@ -127,7 +132,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     ),
     "platform.slack": (
         "slack-bolt==1.30.0",
-        "slack-sdk==3.43.0",
+        "slack-sdk==3.44.1",
         "aiohttp==3.14.3",
     ),
     "platform.matrix": (
@@ -150,6 +155,17 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "platform.wecom_callback": ("defusedxml==0.7.1",),
     # Teams pulls a heavy tree (msal, dependency-injector); also the `teams` extra.
     "platform.teams": ("microsoft-teams-apps==2.0.13.4", "aiohttp==3.14.3"),
+    # Google Chat — Pub/Sub + Chat API. Not in [all]; Docker bakes `--extra google-chat`
+    # so hosted/immutable images do not have to write the sealed venv.
+    "platform.google_chat": (
+        "google-cloud-pubsub==2.39.0",
+        "google-api-python-client==2.194.0",
+        "google-auth==2.55.1",
+        "google-auth-oauthlib==1.3.1",
+        "google-auth-httplib2==0.3.1",
+        "httplib2==0.32.0",
+        "pyasn1==0.6.4",
+    ),
 
     # ─── Terminal backends ─────────────────────────────────────────────────
     "terminal.modal": ("modal==1.3.4",),
@@ -173,7 +189,7 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
     "tool.acp": ("agent-client-protocol==0.9.0",),
     "tool.dashboard": (
         "fastapi==0.133.1",
-        "uvicorn[standard]==0.41.0",
+        "uvicorn==0.41.0",
         "starlette==1.3.1",
         "python-multipart==0.0.32",  # FastAPI UploadFile/Form streaming uploads
     ),
@@ -411,6 +427,54 @@ def _core_constraints_file() -> Optional[Path]:
         return None
 
 
+def _pip_config_candidates(env: dict[str, str]) -> list[Path]:
+    """pip's config files, lowest precedence first, as ``pip._internal.configuration`` ranks them:
+    global, then user (skipped entirely when ``PIP_CONFIG_FILE`` names an existing file), then the
+    venv's ``sys.prefix`` site file, then ``PIP_CONFIG_FILE`` itself on top. ``RawConfigParser.read``
+    applies them in order, so the last file wins. ``PIP_CONFIG_FILE=os.devnull`` disables all of them."""
+    explicit = env.get("PIP_CONFIG_FILE", "")
+    if explicit == os.devnull:
+        return []
+    home = Path.home()
+    if sys.platform == "win32":
+        name = "pip.ini"
+        global_files = [Path(env.get("ProgramData") or r"C:\ProgramData") / "pip" / name]
+        user_files = [home / "pip" / name, Path(env.get("APPDATA") or home / "AppData" / "Roaming") / "pip" / name]
+    elif sys.platform == "darwin":
+        name = "pip.conf"
+        global_files = [Path("/Library/Application Support/pip") / name]
+        app_support = home / "Library" / "Application Support" / "pip"
+        user_files = [home / ".pip" / name, (app_support if app_support.is_dir() else home / ".config" / "pip") / name]
+    else:
+        name = "pip.conf"
+        xdg_dirs = (env.get("XDG_CONFIG_DIRS") or "/etc/xdg").split(os.pathsep)
+        global_files = [Path(d) / "pip" / name for d in xdg_dirs if d] + [Path("/etc") / name]
+        user_files = [home / ".pip" / name, Path(env.get("XDG_CONFIG_HOME") or home / ".config") / "pip" / name]
+    explicit_files = [Path(explicit)] if explicit else []
+    if explicit_files and explicit_files[0].is_file():
+        user_files = []
+    return global_files + user_files + [Path(sys.prefix) / name] + explicit_files
+
+
+def _pip_conf_index_url(env: dict[str, str]) -> Optional[str]:
+    """Read pip's configured index-url so uv can use the same mirror.
+
+    uv does not read ``pip.conf`` — without this bridge a user whose pip is
+    mirrored (common behind restricted networks) watches every lazy install
+    hit the default pypi.org and time out (#95608).
+    """
+    # Raw: pip does not interpolate, and mirror URLs carry percent-encoded credentials.
+    parser = configparser.RawConfigParser()
+    try:
+        parser.read(str(p) for p in _pip_config_candidates(env))
+        if not parser.has_section("global"):
+            return None
+        return parser.get("global", "index-url", fallback="").strip() or None
+    except configparser.Error as e:
+        logger.debug("Could not read pip.conf for index-url: %s", e)
+        return None
+
+
 def _installed_dist_roots(spec: str, target: Optional[Path]) -> set[Path]:
     """Package dirs a freshly installed *spec* owns, from the dist's file list (``python-telegram-bot``
     ships ``telegram``; some ship several)."""
@@ -468,6 +532,15 @@ def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
 
 
+def _uv_policy_cwd() -> Optional[str]:
+    """Directory uv must run from so the checkout's ``[tool.uv]`` policy (``exclude-newer`` quarantine and its
+    per-package exceptions) applies: uv reads it from the *current directory's* project only, so a lazy or
+    plugin install launched from ``$HOME``, a gateway service or the Desktop backend was never quarantined.
+    ``None`` (inherit cwd) when this is not a source checkout."""
+    root = Path(__file__).resolve().parent.parent
+    return str(root) if (root / "pyproject.toml").is_file() else None
+
+
 def _uv_binary() -> Optional[str]:
     """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
     downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
@@ -479,28 +552,49 @@ def _uv_binary() -> Optional[str]:
         return shutil.which("uv")
 
 
-def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _InstallResult:
+def _write_constraints_file(lines: tuple[str, ...]) -> Path:
+    import tempfile
+    fd, path = tempfile.mkstemp(prefix="hermes-plugin-constraints-", suffix=".txt")
+    with os.fdopen(fd, "w", encoding="utf-8") as f:
+        f.write("\n".join(lines) + "\n")
+    return Path(path)
+
+
+def _after_successful_install(specs: tuple[str, ...], target: Optional[Path], dry_run: bool) -> None:
+    """Post-install bookkeeping; a dry run installed nothing, so there is nothing to activate/warm."""
+    if dry_run:
+        return
+    if target is not None:
+        _activate_target_on_syspath(target)
+    _warm_installed_bytecode(specs, target)
+
+
+def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_lines: tuple[str, ...] = (),
+                      dry_run: bool = False) -> _InstallResult:
     """Install ``specs`` via the uv -> pip -> ensurepip ladder, venv-scoped or into the durable
     ``--target`` (constrained to core versions) when :data:`_LAZY_TARGET_ENV` is set. Independent of
-    ``hermes_cli.tools_config._pip_install`` (no CLI dependency)."""
+    ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
+
+    *constraint_lines* pins the resolver (plugin installs pass Hermes' own declared ranges so a plugin
+    can never move a core package out of range); *dry_run* resolves without installing."""
     if not specs:
         return _InstallResult(True, "", "")
     target = _lazy_install_target()
     constraints: Optional[Path] = None
-    extra_args: list[str] = []
+    extra_args: list[str] = ["--dry-run"] if dry_run else []
     if target is not None:
         if err := _ensure_target_ready(target):
             return _InstallResult(False, "", err)
         constraints = _core_constraints_file()
         extra_args += ["--target", str(target)]
-        if constraints is not None:
-            extra_args += ["--constraint", str(constraints)]
+    elif constraint_lines:
+        constraints = _write_constraints_file(constraint_lines)
+    if constraints is not None:
+        extra_args += ["--constraint", str(constraints)]
 
     def _finish(r: subprocess.CompletedProcess) -> _InstallResult:
         if r.returncode == 0:
-            if target is not None:
-                _activate_target_on_syspath(target)
-            _warm_installed_bytecode(specs, target)
+            _after_successful_install(specs, target, dry_run)
         return _InstallResult(r.returncode == 0, r.stdout or "", r.stderr or "")
 
     try:
@@ -511,8 +605,15 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
         # import would recompile the backend AND its transitives (_warm_installed_bytecode is the
         # belt-and-braces pass for the spec's own roots on any tier).
         if uv_bin := _uv_binary():
+            # Bridge pip's index unless any uv index knob is set; PIP_INDEX_URL beats pip.conf, as in
+            # pip (see _pip_conf_index_url for why uv needs this at all).
+            if not any(uv_env.get(k) for k in ("UV_INDEX_URL", "UV_DEFAULT_INDEX", "UV_INDEX")):
+                pip_index_url = (uv_env.get("PIP_INDEX_URL") or "").strip() or _pip_conf_index_url(uv_env)
+                if pip_index_url:
+                    uv_env["UV_INDEX_URL"] = pip_index_url
             try:
-                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs], timeout=timeout, env=uv_env)
+                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs],
+                                   timeout=timeout, env=uv_env, cwd=_uv_policy_cwd())
                 if r.returncode != 0:
                     logger.debug("uv pip install failed: %s", r.stderr)
                 # A uv resolver failure is authoritative: falling through to pip would discard uv
@@ -520,7 +621,14 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300) -> _Install
                 return _finish(r)
             except subprocess.TimeoutExpired as e:
                 logger.debug("uv invocation failed: %s", e)
-                return _InstallResult(False, "", f"uv pip install timed out: {e}")
+                # Actionable context for the #95608 shape: a 300s stall with
+                # no feedback, then silence. The failure string flows into
+                # FeatureUnavailable, which callers surface as warnings.
+                hint = (
+                    f"uv pip install timed out after {timeout}s. If your network needs a package "
+                    "mirror, set index-url in pip.conf (bridged to uv automatically) or UV_INDEX_URL."
+                )
+                return _InstallResult(False, "", hint)
             except FileNotFoundError as e:  # uv vanished between lookup and spawn; it never evaluated the requirements
                 logger.debug("uv invocation failed: %s", e)
         # Tier 2: python -m pip (ensurepip bootstrap if needed)
@@ -639,10 +747,12 @@ class InstallSpecsResult:
     stderr: str = ""
 
 
-def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> InstallSpecsResult:
+def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300,
+                  constraints: list[str] | tuple[str, ...] = (), dry_run: bool = False) -> InstallSpecsResult:
     """Install data-driven pip specs (plugin manifest ``pip_dependencies``) with the same routing and
     gating as :func:`ensure`, but unknown packages are allowed — the caller owns manifest trust, this
-    owns spec hygiene. Never raises; inspect the :class:`InstallSpecsResult`."""
+    owns spec hygiene. *constraints* are requirement lines the resolver must honour; *dry_run* only
+    resolves. Never raises; inspect the :class:`InstallSpecsResult`."""
     cleaned = tuple(str(s).strip() for s in specs if str(s).strip())
     if not cleaned:
         return InstallSpecsResult(ok=True, command="")
@@ -657,9 +767,9 @@ def install_specs(specs: list[str] | tuple[str, ...], *, timeout: int = 300) -> 
                   ) if sealed else "runtime installs disabled (security.allow_lazy_installs=false)"
         return InstallSpecsResult(ok=False, blocked=True, reason=reason)
     display = "uv pip install " + (f"--target {target} " if target is not None else "") + " ".join(cleaned)
-    logger.info("Installing pip specs %s (target=%s)", " ".join(cleaned), target or "venv")
+    logger.info("%s pip specs %s (target=%s)", "Resolving" if dry_run else "Installing", " ".join(cleaned), target or "venv")
     try:
-        result = _venv_pip_install(cleaned, timeout=timeout)
+        result = _venv_pip_install(cleaned, timeout=timeout, constraint_lines=tuple(constraints), dry_run=dry_run)
     except Exception as exc:
         logger.warning("install_specs failed unexpectedly: %s", exc)
         return InstallSpecsResult(ok=False, command=display, stderr=f"install failed: {exc}")

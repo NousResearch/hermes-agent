@@ -76,7 +76,8 @@ def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world,
 
     # Dashboard update on a catalog install = re-pin. Pin unchanged → no-op.
     assert pc.dashboard_update_user_plugin("cat-plugin") == {
-        "ok": True, "name": "cat-plugin", "sha": world["sha1"], "unchanged": True}
+        "ok": True, "name": "cat-plugin", "sha": world["sha1"], "unchanged": True,
+        "python_dependencies": [], "warnings": []}
     # Bump the catalog pin → the checkout moves to exactly that sha.
     world["state"]["pin"] = world["sha2"]
     assert pc.dashboard_update_user_plugin("cat-plugin")["unchanged"] is False
@@ -95,4 +96,98 @@ def test_kill_list_blocks_cli_dashboard_and_tui_paths(world, monkeypatch):
         pc.cmd_install("cat-plugin", enable=False)
     pc.cmd_install("cat-plugin", enable=False, allow_removed=True)
     assert (world["plugins_dir"] / "cat-plugin" / cat.CATALOG_SIDECAR).exists()
-    assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin") == "malware"
+    assert cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin",
+                                  cat.resolved_removed_entries()) == "malware"
+
+
+def test_removed_annotation_requires_a_pre_resolved_kill_list(world):
+    """No on-demand fallback: callers must resolve the kill list once, never per row."""
+    with pytest.raises(TypeError):
+        cat.removed_annotation("cat-plugin", world["plugins_dir"] / "cat-plugin")
+
+
+def test_owner_repo_hash_subdir_shorthand_resolves_like_the_catalog_spelling():
+    from hermes_cli.plugins_cmd import _resolve_git_url
+    assert _resolve_git_url("plastic-labs/honcho#hermes-plugin-honcho") == (
+        "https://github.com/plastic-labs/honcho.git", "hermes-plugin-honcho")
+    assert _resolve_git_url("owner/repo") == ("https://github.com/owner/repo.git", None)
+
+
+def _install_url(repo: Path, name: str, files: dict) -> Path:
+    """A URL (non-catalog) install of a fresh repo carrying *files*."""
+    repo.mkdir()
+    (repo / "plugin.yaml").write_text(f"name: {name}\nversion: 1.0.0\ndescription: d\n")
+    (repo / "__init__.py").write_text("def register(ctx):\n    pass\n")
+    for rel, text in files.items():
+        (repo / rel).write_text(text)
+    sp.run(["git", "init", "-q"], cwd=repo, check=True, env=_GIT_ENV)
+    _commit(repo, "v1")
+    return pc._install_plugin_core(repo.as_uri(), force=False)[0]
+
+
+def test_in_tree_sidecar_cannot_forge_catalog_provenance(world, tmp_path):
+    """Provenance is the installer's metadata record, never a file the repo ships: a URL install carrying
+    its own .hermes-catalog.json is not a catalog install and does not mark the real entry installed."""
+    forged = json.dumps({"catalog_name": "cat-plugin", "tier": "official", "sha": "0" * 40, "repo": "x"})
+    target = _install_url(tmp_path / "evil", "evil-plugin", {cat.CATALOG_SIDECAR: forged})
+    assert (target / cat.CATALOG_SIDECAR).exists()  # the file is there, and inert
+    assert cat.read_catalog_sidecar(target) is None
+    assert cat.catalog_annotation(target) is None
+    assert cat.catalog_row_fields(target, cat.catalog_pins()) == {}
+    state = cat.installed_catalog_state({"evil-plugin": {"dir": str(target), "runtime_status": None}})
+    assert state["entries"][0]["installed"] is False
+    # Control: a real catalog install is still recognised through the metadata record.
+    real, _m, _n = cat.install_catalog_entry(pc_cat.get_live_catalog_entry("cat-plugin"), force=False)
+    assert cat.catalog_annotation(real) == f"catalog:community@{world['sha1'][:8]}"
+
+
+def test_ref_install_records_installed_sha_so_update_is_offered(world):
+    """`install NAME --ref X` checks out X, not the reviewed pin; provenance must say X so list/TUI flag the
+    drift and `update` re-pins instead of answering 'already at catalog pin'."""
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    target, _m, _n = cat.install_catalog_entry(entry, force=False, ref=world["sha2"])
+    assert _head(target) == world["sha2"]
+    assert cat.read_catalog_sidecar(target)["sha"] == world["sha2"]
+    assert cat.catalog_row_fields(target, cat.catalog_pins())["update_available"] is True
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    assert result["unchanged"] is False and _head(target) == world["sha1"]
+
+
+def test_repin_keeps_local_files_backs_up_edits_and_follows_manifest_rename(world, monkeypatch):
+    entry = pc_cat.get_live_catalog_entry("cat-plugin")
+    target, _m, _n = cat.install_catalog_entry(entry, force=False)
+    (target / "config.yaml").write_text("api_key: real\n")                      # installer/user data
+    (target / "__init__.py").write_text("def register(ctx):\n    pass  # mine\n")  # tracked edit
+    pc._save_enabled_set({"cat-plugin"})
+    # New pin renames the manifest.
+    repo = world["repo"]
+    (repo / "plugin.yaml").write_text("name: cat-plugin-v2\nversion: 2.0.0\ndescription: d\n")
+    world["state"]["pin"] = _commit(repo, "rename")
+    result = pc.dashboard_update_user_plugin("cat-plugin")
+    new_target = world["plugins_dir"] / "cat-plugin-v2"
+    assert result["ok"] and result["name"] == "cat-plugin-v2" and _head(new_target) == world["state"]["pin"]
+    assert (new_target / "config.yaml").read_text() == "api_key: real\n"
+    assert not target.exists() and "cat-plugin" not in pc._read_install_metadata()
+    assert pc._get_enabled_set() == {"cat-plugin-v2"}
+    backups = list((world["plugins_dir"].parent / "plugins-backup").glob("cat-plugin-*/__init__.py"))
+    assert backups and "# mine" in backups[0].read_text()
+    assert any("plugins-backup" in w for w in result["warnings"]) and any("renamed" in w for w in result["warnings"])
+
+
+def test_kill_list_covers_update_enable_and_load_of_an_installed_plugin(world, tmp_path, monkeypatch):
+    """A URL install whose name lands on the kill list AFTER install must stop pulling, cannot be enabled
+    and is refused at load; an install made with --allow-removed keeps working."""
+    from hermes_cli.plugins_discovery import gate_manifest
+    from hermes_cli.plugins_manifest import PluginManifest
+    target = _install_url(tmp_path / "later-killed", "killed", {})
+    world["state"]["removed"].append(pc_cat.RemovedEntry(name="killed", reason="backdoor"))
+    monkeypatch.setattr(pc_cat, "_live_cache_path", lambda: tmp_path / "no-cache.json")
+    assert "backdoor" in pc.dashboard_update_user_plugin("killed")["error"]
+    with pytest.raises(SystemExit):
+        pc.cmd_enable("killed")
+    assert "killed" not in pc._get_enabled_set()
+    manifest = PluginManifest(name="killed", source="user", path=str(target), key="killed")
+    assert gate_manifest(manifest, set(), {"killed"}).action != "load"
+    # Explicit bypass at install time is remembered.
+    pc.cmd_install((tmp_path / "later-killed").as_uri(), force=True, enable=False, allow_removed=True)
+    assert gate_manifest(manifest, set(), {"killed"}).action == "load"

@@ -52,6 +52,20 @@ def to_whatsapp_jid(value: str) -> str:
     return normalized
 
 
+def normalize_whatsapp_mention_jid(value: str) -> str:
+    """Return a valid participant JID for an outbound mention, or ``""``."""
+    jid = to_whatsapp_jid(value)
+    user, separator, domain = jid.partition("@")
+    return (
+        jid
+        if separator
+        and user.isascii()
+        and user.isdigit()
+        and domain in {"s.whatsapp.net", "lid"}
+        else ""
+    )
+
+
 def expand_whatsapp_aliases(identifier: str) -> Set[str]:
     """All identifiers transitively reachable via the bridge's ``lid-mapping-*.json`` files;
     always includes the normalized input itself (empty set if it normalizes to empty)."""

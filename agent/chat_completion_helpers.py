@@ -1370,6 +1370,7 @@ def _build_bedrock_kwargs(agent, api_messages, tools_for_api):
 
 def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, request_overrides, cache_scope_id):
     from agent.codex_responses_adapter import classify_responses_route
+    from agent.codex_reasoning_replay import denied_pairs, proxy_replay_max_turns
     from agent.native_compaction import native_compaction_context_management
     is_codex_backend, is_xai_responses, is_github_responses = classify_responses_route(agent)
     # Native server-side compaction (gpt-5.6 on direct OpenAI / ChatGPT Codex routes
@@ -1398,7 +1399,7 @@ def _build_codex_kwargs(agent, api_messages, tools_for_api, reasoning_config, re
         provider=getattr(agent, "provider", None), is_github_responses=is_github_responses,
         is_codex_backend=is_codex_backend, is_xai_responses=is_xai_responses,
         github_reasoning_extra=agent._github_models_reasoning_extra_body() if is_github_responses else None,
-        replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
+        replay_denied_issuer_pairs=denied_pairs(agent), proxy_replay_max_turns=proxy_replay_max_turns(agent),
         context_management=context_management, text_verbosity=getattr(agent, "text_verbosity", None))
 
 

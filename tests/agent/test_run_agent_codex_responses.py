@@ -384,7 +384,7 @@ def test_build_api_kwargs_azure_foundry_post_tool_suppresses_reasoning(monkeypat
     dropped while function_call / function_call_output continuity is kept.
     """
     agent = _build_azure_foundry_agent(monkeypatch)
-    assert agent._codex_reasoning_replay_enabled is True
+    assert not getattr(agent, "_codex_replay_denied_pairs", None)  # no issuer pair denied
 
     kwargs = agent._build_api_kwargs(_azure_post_tool_messages())
 

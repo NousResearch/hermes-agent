@@ -484,9 +484,19 @@ class AIAgent(
 
     switch_model = _forward("agent.agent_runtime_helpers", "switch_model")
 
-    def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, int]:
-        """On HTTP 400 ``invalid_encrypted_content``: disable Responses reasoning replay and pop
-        ``codex_reasoning_items`` from every assistant message. Returns ``{"messages", "items"}`` counts."""
+    def _disable_codex_reasoning_replay(self, messages: Optional[List[Dict[str, Any]]] = None) -> Dict[str, Any]:
+        """On HTTP 400 ``invalid_encrypted_content``: deny encrypted-reasoning replay for the ISSUER
+        PAIR that minted the rejected blob (durably, when the session DB is reachable) and pop
+        ``codex_reasoning_items`` from every assistant message. Returns ``{"messages", "items"}``
+        counts plus the denied pair and whether the deny was persisted.
+
+        The deny is pair-scoped, never session-wide: a different ``(issuer_kind, issuer_model)`` in
+        the same session keeps replaying. See ``agent/codex_reasoning_replay.py``.
+        """
+        from agent.codex_reasoning_replay import current_issuer_pair, deny_pair
+
+        issuer_kind, issuer_model = current_issuer_pair(self)
+        persisted = deny_pair(self, issuer_kind, issuer_model)
         stripped_messages = stripped_items = 0
         for msg in (messages if isinstance(messages, list) else []):
             if not isinstance(msg, dict) or msg.get("role") != "assistant":
@@ -495,8 +505,10 @@ class AIAgent(
             if isinstance(items, list) and items:
                 stripped_messages += 1
                 stripped_items += len(items)
-        self._codex_reasoning_replay_enabled = False
-        return {"messages": stripped_messages, "items": stripped_items}
+        return {
+            "messages": stripped_messages, "items": stripped_items,
+            "issuer_kind": issuer_kind, "issuer_model": issuer_model, "persisted": persisted,
+        }
 
     _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")
     _stream_diag_capture_response = _forward("agent.stream_diag", "stream_diag_capture_response")

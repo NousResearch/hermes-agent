@@ -10,8 +10,9 @@ import re
 import unicodedata
 import uuid
 from types import SimpleNamespace
-from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
+from typing import Any, Callable, Dict, Iterable, Iterator, List, NamedTuple, Optional, Tuple, TypeGuard
 
+from agent.codex_reasoning_replay import replay_denied_for
 from agent.message_sanitization import coerce_tool_name, deterministic_call_id
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
@@ -390,11 +391,13 @@ def _assistant_message_item(
 def _replay_reasoning_items(
     msg: Dict[str, Any], *, seen_item_ids: set, current_issuer_kind: Optional[str],
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool,
+    replay_denied_issuer_pairs: Optional[Iterable[Tuple[str, Optional[str]]]] = None,
 ) -> List[Dict[str, Any]]:
     """Replay persisted encrypted reasoning/compaction items for one assistant turn. Skips duplicate
     ids, ``compaction`` checkpoints unless THIS request carries ``context_management`` (else a persisted
-    checkpoint erases pre-checkpoint history on a model that cannot decrypt it), and items stamped by
-    another issuer or model (HTTP 400). Items without a model stamp (legacy or unstamped) replay on a
+    checkpoint erases pre-checkpoint history on a model that cannot decrypt it), items stamped by
+    another issuer or model (HTTP 400), and items whose issuer pair the provider already rejected
+    (``replay_denied_issuer_pairs``). Items without a model stamp (legacy or unstamped) replay on a
     matching issuer. ``id`` (store=False lookups 404) and the Hermes provenance fields are stripped."""
     global _CROSS_ISSUER_WARN_EMITTED
     replayed: List[Dict[str, Any]] = []
@@ -406,6 +409,14 @@ def _replay_reasoning_items(
             continue
         item_issuer = _canonical_issuer_kind(ri.get("_issuer_kind"))
         item_model = ri.get("_issuer_model")
+        # Durable, pair-scoped deny: the identity that sealed this blob already refused it (or, for
+        # a blob persisted before model stamping, the endpoint this request is calling did).
+        if replay_denied_for(
+            replay_denied_issuer_pairs,
+            item_issuer if item_issuer is not None else current_issuer_kind,
+            item_model if item_issuer is not None else current_issuer_model,
+        ):
+            continue
         foreign_issuer = current_issuer_kind is not None and item_issuer is not None and item_issuer != current_issuer_kind
         # No model stamp → trust the endpoint stamp. Native compaction checkpoints and reasoning persisted
         # before model stamping carry none; dropping them would erase every existing session's context
@@ -532,16 +543,40 @@ def _tool_output_items(msg: Dict[str, Any], *, wire_ids: Optional[_WireCallIds] 
     return [{"type": "function_call_output", "call_id": wire_call_id, "output": output_value}]
 
 
+def _proxy_replay_turn_indices(
+    messages: List[Dict[str, Any]], *, current_issuer_kind: Optional[str], proxy_replay_max_turns: Optional[int],
+) -> Optional[set]:
+    """Message indices whose encrypted reasoning may replay, or None for "no cap".
+
+    A proxy/aggregator issuer (``issuer_kind`` starting with ``other:``) can rotate the backend
+    identity that seals its blobs, so only the ``proxy_replay_max_turns`` most recent assistant
+    turns that carry reasoning items keep them; one HTTP 400 then costs at most that many turns
+    instead of the whole session. A turn's assistant TEXT is unaffected — only the encrypted
+    sidecar drops. First-party issuers, and callers that pass no cap, replay everything.
+    """
+    cap = proxy_replay_max_turns
+    if cap is None or not isinstance(current_issuer_kind, str) or not current_issuer_kind.startswith("other:"):
+        return None
+    candidates = [
+        idx for idx, msg in enumerate(messages)
+        if isinstance(msg, dict) and msg.get("role") == "assistant"
+        and isinstance(msg.get("codex_reasoning_items"), list) and msg.get("codex_reasoning_items")
+    ]
+    return set(candidates[len(candidates) - cap:]) if cap > 0 else set()
+
+
 def _chat_messages_to_responses_input(
     messages: List[Dict[str, Any]], *, is_xai_responses: bool = False, is_github_responses: bool = False,
     replay_encrypted_reasoning: bool = True, current_issuer_kind: Optional[str] = None,
     current_issuer_model: Optional[str] = None, native_compaction_eligible: bool = False,
+    replay_denied_issuer_pairs: Optional[Iterable[Tuple[str, Optional[str]]]] = None,
+    proxy_replay_max_turns: Optional[int] = None,
 ) -> List[Dict[str, Any]]:
     """Convert internal chat-style messages to Responses input items.
 
     ``is_xai_responses``: signature compatibility only (xAI DOES replay encrypted reasoning).
     ``replay_encrypted_reasoning``: per-session kill switch, threaded False by
-    ``AIAgent._disable_codex_reasoning_replay`` after an ``invalid_encrypted_content`` 400.
+    ``agent/transports/codex.py`` for an issuer pair the provider already rejected.
     ``is_github_responses``: drops ``id`` from replayed message items (Copilot 401s on stale ids).
     ``current_issuer_kind`` / ``current_issuer_model``: provenance guard; items stamped by another issuer or
     model drop. Legacy items carrying only an endpoint stamp replay on a matching issuer.
@@ -549,6 +584,10 @@ def _chat_messages_to_responses_input(
     checkpoints and ``prune_pre_checkpoint_items``. Checkpoints persist across model swaps / compression flips / resume,
     so without the gate one checkpoint would erase pre-checkpoint history on a model that cannot decrypt it (lossless:
     local history is never truncated).
+    ``replay_denied_issuer_pairs``: durable deny-list of ``(issuer_kind, issuer_model)`` pairs whose sealed blobs the
+    provider already refused (``agent/codex_reasoning_replay.py``); their reasoning never replays, every other pair
+    is untouched. ``proxy_replay_max_turns``: for proxy issuers (``other:*``), replay reasoning for at most that many
+    of the most recent assistant turns (see :func:`_proxy_replay_turn_indices`).
 
     Earlier (PR #26644, May 2026) we believed xAI's OAuth/SuperGrok ``/v1/responses`` surface rejected
     replayed ``encrypted_content`` reasoning items minted by prior turns, and we stripped them. That
@@ -588,10 +627,14 @@ def _chat_messages_to_responses_input(
     # (#51512). It accepts only typed parts, so string text goes out as ``input_text``/``output_text``
     # there; other Responses routes keep the string shorthand they have always received.
     typed_text_only = current_issuer_kind == "codex_backend"
+    # Proxy-issuer replay window (#4): None = no cap (first-party issuer or no cap configured).
+    replay_turn_indices = _proxy_replay_turn_indices(
+        messages, current_issuer_kind=current_issuer_kind, proxy_replay_max_turns=proxy_replay_max_turns,
+    )
     def emit(new_items: List[Dict[str, Any]], msg: Dict[str, Any]) -> None:
         items.extend(new_items)
         item_sources.extend([msg] * len(new_items))
-    for msg in messages:
+    for idx, msg in enumerate(messages):
         if not isinstance(msg, dict):
             continue
         role = msg.get("role")
@@ -612,9 +655,11 @@ def _chat_messages_to_responses_input(
         if role == "user":
             emit([{"role": role, "content": wire_content(content_parts or content_text)}], msg)
             continue
-        reasoning_items = [] if not replay_encrypted_reasoning else _replay_reasoning_items(
+        replay_cap_ok = replay_turn_indices is None or idx in replay_turn_indices
+        reasoning_items = [] if not (replay_encrypted_reasoning and replay_cap_ok) else _replay_reasoning_items(
             msg, seen_item_ids=seen_item_ids, current_issuer_kind=current_issuer_kind,
             current_issuer_model=current_issuer_model, native_compaction_eligible=native_compaction_eligible,
+            replay_denied_issuer_pairs=replay_denied_issuer_pairs,
         )
         emit(reasoning_items, msg)
         message_items = _replay_message_items(
@@ -696,13 +741,15 @@ def _native_responses_replay_items(
         return None
     # The wire model may be rewritten per request (fast mode); provenance must match what the transport stamps.
     effective_model = effective_request_overrides(agent).get("model", getattr(agent, "model", None))
+    from agent.codex_reasoning_replay import denied_pairs, proxy_replay_max_turns
     try:
         items = _chat_messages_to_responses_input(
             messages, is_xai_responses=route["is_xai_responses"], is_github_responses=route["is_github_responses"],
-            replay_encrypted_reasoning=bool(getattr(agent, "_codex_reasoning_replay_enabled", True)),
             current_issuer_kind=_classify_responses_issuer(base_url=getattr(agent, "base_url", None), **route),
             current_issuer_model=_wire_model_identity(effective_model),
             native_compaction_eligible=True,
+            replay_denied_issuer_pairs=denied_pairs(agent),
+            proxy_replay_max_turns=proxy_replay_max_turns(agent),
         )
     except Exception:
         logger.debug(

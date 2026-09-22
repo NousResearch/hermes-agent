@@ -586,9 +586,12 @@ _TURN_STATE: Dict[str, Any] = {
 # Session persistence state.
 _SESSION_STATE: Dict[str, Any] = {
     "_session_messages": list,
-    # Responses encrypted-reasoning replay: routes that 400 with ``invalid_encrypted_content``
-    # make the loop disable it for the session (stateless continuity).
-    "_codex_reasoning_replay_enabled": True,
+    # Responses encrypted-reasoning replay. The gate is NOT a session bool: it is the durable,
+    # issuer-pair-scoped deny-list in agent/codex_reasoning_replay.py, consulted at replay time so
+    # one rejected endpoint identity stops replaying without costing a different issuer its own
+    # blobs (and without a restart resurrecting what a 400 already proved unreadable). This is the
+    # per-agent cache of that store (None = not loaded yet).
+    "_codex_replay_denied_pairs": None,
     "_memory_write_origin": "assistant_tool",
     "_memory_write_context": "foreground",
     # Cached system prompt (built once, rebuilt on compression) + its cross-session-stable
@@ -1368,6 +1371,15 @@ def _apply_agent_section(agent, _agent_cfg):
         logger.warning("Unknown agent.text_verbosity %r; expected low, medium or high — ignoring", _verbosity)
         _verbosity = ""
     agent.text_verbosity = _verbosity or None
+
+    # Encrypted-reasoning replay window for proxy/aggregator Responses issuers (``other:*``): at
+    # most this many of the most recent assistant turns carry their sealed blobs on the wire, so a
+    # rejected blob costs that many turns instead of the whole session. 0 = replay none for proxy
+    # issuers; first-party issuers always replay in full. See agent/codex_reasoning_replay.py.
+    from agent.codex_reasoning_replay import proxy_replay_turns_from_config
+    agent.codex_proxy_replay_turns = proxy_replay_turns_from_config(
+        _agent_section.get("codex_proxy_replay_turns")
+    )
 
     # Default-on boolean gates: anti-stall guards (notice-only), universal guidance toggles
     # (ALL models, unlike enforcement), the local toolchain probe, Bot Mode protocol section.

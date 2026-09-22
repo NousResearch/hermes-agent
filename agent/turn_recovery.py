@@ -443,12 +443,18 @@ def _is_codex_token_expired(agent: Any, api_error: Exception) -> bool:
 
 
 def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages: List[Dict[str, Any]]) -> bool:
-    """Stale ``codex_reasoning_items`` blob rejected by the provider: disable replay for the
-    session, strip cached items (mutates persisted ``messages``), retry once."""
+    """Stale ``codex_reasoning_items`` blob rejected by the provider: deny replay for the ISSUER
+    PAIR that minted it (durably — see ``agent/codex_reasoning_replay.py``), strip cached items
+    (mutates persisted ``messages``), retry once. A different issuer pair in the same session keeps
+    replaying, so one bad endpoint identity no longer costs the whole conversation."""
+    from agent.codex_reasoning_replay import current_issuer_pair, denied_pairs, pair_is_denied
+
+    issuer_kind, issuer_model = current_issuer_pair(agent)
     if (
         _retry.invalid_encrypted_content_retry_attempted
         or agent.api_mode != "codex_responses"
-        or not bool(getattr(agent, "_codex_reasoning_replay_enabled", True))
+        # Already denied for this pair: replay is off, so a 400 here is not a stale blob of ours.
+        or pair_is_denied(issuer_kind, issuer_model, denied_pairs(agent))
         or not any(
             isinstance(_m, dict)
             and _m.get("role") == "assistant"
@@ -462,13 +468,15 @@ def _recover_stale_codex_reasoning(agent: Any, _retry: TurnRetryState, messages:
     replay_stats = agent._disable_codex_reasoning_replay(messages)
     _vlines(
         agent,
-        f"⚠️  Encrypted reasoning replay was rejected by the provider — "
-        f"disabled replay and stripped {replay_stats['items']} item(s) from "
+        f"⚠️  Encrypted reasoning replay was rejected by the provider — denied replay for "
+        f"{issuer_kind}/{issuer_model} and stripped {replay_stats['items']} item(s) from "
         f"{replay_stats['messages']} message(s), retrying...",
     )
     logger.warning(
-        "%sInvalid encrypted reasoning recovery: disabled replay and stripped %d items from %d messages",
-        agent.log_prefix, replay_stats["items"], replay_stats["messages"],
+        "%sInvalid encrypted reasoning recovery: denied replay for %s/%s and stripped %d items "
+        "from %d messages (persisted=%s)",
+        agent.log_prefix, issuer_kind, issuer_model, replay_stats["items"], replay_stats["messages"],
+        replay_stats.get("persisted"),
     )
     return True
 

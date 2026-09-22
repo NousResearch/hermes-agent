@@ -1338,6 +1338,51 @@ class TestCafConversion:
         assert result["success"] is True
         mock_convert.assert_not_called()
 
+    @pytest.mark.parametrize("outcome", ["success", "provider-error"])
+    def test_caf_conversion_preserves_neighbors_and_removes_owned_output(
+        self, tmp_path, monkeypatch, outcome
+    ):
+        """Cloud CAF conversion must not clobber a sibling ``<stem>.wav`` nor
+        leave its converted output behind, whether the provider succeeds or
+        raises."""
+        from tools import transcription_audio as audio
+        from tools import transcription_tools as stt
+
+        source = tmp_path / "voice.caf"
+        source.write_bytes(b"caff fixture")
+        neighbor = source.with_suffix(".wav")
+        neighbor.write_bytes(b"existing recording")
+        outputs = []
+        monkeypatch.setattr(stt, "_load_stt_config", lambda: {
+            "provider": "groq", "cloud_trim_silence": False,
+        })
+        monkeypatch.setattr(audio, "_find_ffmpeg_binary", lambda: "ffmpeg")
+        monkeypatch.setattr(audio.shutil, "which", lambda _name: None)
+
+        def encode(command, **_kwargs):
+            output = Path(command[-1])
+            outputs.append(output)
+            output.write_bytes(b"converted recording")
+
+        def transcribe(file_path, *_args):
+            assert Path(file_path).read_bytes() == b"converted recording"
+            if outcome == "provider-error":
+                raise RuntimeError("transcription failed")
+            return {"success": True, "transcript": "hello"}
+
+        monkeypatch.setattr(audio, "_run_quiet", encode)
+        monkeypatch.setattr(stt, "_dispatch_stt_provider", transcribe)
+        if outcome == "provider-error":
+            with pytest.raises(RuntimeError, match="transcription failed"):
+                stt.transcribe_audio(str(source))
+        else:
+            assert stt.transcribe_audio(str(source))["success"] is True
+        assert source.read_bytes() == b"caff fixture"
+        assert neighbor.read_bytes() == b"existing recording"
+        assert outputs and all(
+            not path.exists() and not path.parent.exists() for path in outputs
+        )
+
 
 class TestTranscribeCredentialReadGuard:
     """transcribe_audio must refuse credential/secret stores before dispatch."""
@@ -1351,7 +1396,7 @@ class TestTranscribeCredentialReadGuard:
         from agent.file_safety import get_read_block_error
 
         env_file = tmp_path / ".env"
-        env_file.write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
+        env_file.write_text("OPENAI_API_KEY=sk-secret\n")
 
         expected = get_read_block_error(str(env_file))
         assert expected, "test setup: a .env file should be read-blocked"

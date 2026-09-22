@@ -1692,6 +1692,10 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         self._liveness_task = asyncio.create_task(self._liveness_loop())
 
+    # Reasons from ``_read_websocket_health`` that mean the transport is confirmed dead,
+    # not merely suspect: ``_liveness_loop`` escalates on the first such strike (#118487).
+    _TERMINAL_HEALTH_REASONS = frozenset({"socket_closed", "client_closed"})
+
     def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
         """Return current Discord Gateway health without making a REST request."""
         try:
@@ -1784,7 +1788,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             )
             # A closed transport is a confirmed death, not a suspicion: escalate on the
             # first strike; soft signals keep the threshold (#118487).
-            terminal = reason in ("socket_closed", "client_closed")
+            terminal = reason in self._TERMINAL_HEALTH_REASONS
             if failures < threshold and not terminal:
                 continue
             # Mark recovery before closing: Bot.start()'s done callback must not overwrite this reason.

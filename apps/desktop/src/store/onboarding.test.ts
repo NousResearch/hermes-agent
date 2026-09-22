@@ -12,6 +12,7 @@ import {
   refreshOnboarding,
   requestDesktopOnboarding,
   saveOnboardingLocalEndpoint,
+  setOnboardingModel,
   submitOnboardingCode
 } from './onboarding'
 
@@ -688,6 +689,49 @@ describe('saveOnboardingLocalEndpoint', () => {
     })
   })
 
+  it('persists the resolved_base_url that served /models, not the URL as typed (#65488)', async () => {
+    const calls: { body?: unknown; path: string }[] = []
+
+    const api = vi.fn(async ({ body, path }: { body?: unknown; path: string }) => {
+      calls.push({ body, path })
+
+      if (path === '/api/providers/validate') {
+        // The probe fell through from the bare host root to its /v1 variant.
+        return {
+          ok: true,
+          reachable: true,
+          message: '',
+          models: ['llama-3.1-8b'],
+          resolved_base_url: 'http://127.0.0.1:1234/v1'
+        }
+      }
+
+      if (path === '/api/model/set') {
+        return { ok: true, provider: 'custom', model: 'llama-3.1-8b', base_url: 'http://127.0.0.1:1234/v1' }
+      }
+
+      throw new Error(`unexpected api path: ${path}`)
+    })
+
+    installApiMock(api)
+
+    const result = await saveOnboardingLocalEndpoint('http://127.0.0.1:1234', '', {
+      requestGateway: readyGateway()
+    })
+
+    expect(result.ok).toBe(true)
+
+    // The runtime POSTs {base_url}/chat/completions verbatim, so Save must store
+    // the base that actually answered /models rather than the typed host root.
+    const assign = calls.find(c => c.path === '/api/model/set')
+    expect(assign?.body).toMatchObject({
+      scope: 'main',
+      provider: 'custom',
+      model: 'llama-3.1-8b',
+      base_url: 'http://127.0.0.1:1234/v1'
+    })
+  })
+
   it('reports the runtime reason when resolution still fails after saving', async () => {
     installApiMock(async ({ path }: { path: string }) => {
       if (path === '/api/providers/validate') {
@@ -785,7 +829,8 @@ describe('device-code poll expiry', () => {
     expect(flow.status).toBe('error')
 
     if (flow.status === 'error') {
-      expect(flow.message).toContain('Sign-in expired waiting for authorization')
+      expect(flow.message).toMatch(/timed out before you finished/)
+      expect(flow.message).not.toMatch(/server-side|CLI/)
     }
   })
 
@@ -818,5 +863,55 @@ describe('device-code poll expiry', () => {
       vi.advanceTimersByTime(700_000)
     })
     expect($desktopOnboarding.get().flow.status).toBe('idle')
+  })
+})
+
+// The happy path (cross-provider pick reaches /api/model/set with the picked
+// model's provider) is covered from the ConfirmingModelPanel in
+// components/onboarding/flow.test.tsx so it exercises the onSelect wiring.
+describe('setOnboardingModel', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+  })
+
+  afterEach(() => {
+    window.localStorage.clear()
+    $desktopOnboarding.set(baseState())
+    vi.restoreAllMocks()
+  })
+
+  function confirmingModelState(
+    overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}
+  ) {
+    return baseState({
+      flow: {
+        status: 'confirming_model',
+        currentModel: 'gpt-5.6-terra',
+        label: 'OpenAI OAuth (ChatGPT)',
+        providerSlug: 'openai',
+        saving: false,
+        ...overrides
+      }
+    })
+  }
+
+  it('reverts the model, provider and label when persistence fails', async () => {
+    installApiMock(async () => {
+      throw new Error('backend down')
+    })
+    $desktopOnboarding.set(confirmingModelState())
+
+    await setOnboardingModel('deepseek/deepseek-v4-flash-0731', 'nous', 'Nous Portal')
+
+    const flow = $desktopOnboarding.get().flow
+    expect(flow.status).toBe('confirming_model')
+
+    if (flow.status === 'confirming_model') {
+      expect(flow.currentModel).toBe('gpt-5.6-terra')
+      expect(flow.providerSlug).toBe('openai')
+      expect(flow.label).toBe('OpenAI OAuth (ChatGPT)')
+      expect(flow.saving).toBe(false)
+    }
   })
 })

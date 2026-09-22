@@ -99,7 +99,7 @@ def _make_source(platform_value="telegram", chat_id="555", user_id="u1"):
     src.user_id = user_id
     # Real SessionSource.profile is None (single-profile) or a str; a MagicMock
     # auto-attribute would read as a truthy "stamped profile" and trip the
-    # fail-closed path in _adapter_for_source (see AGENTS.md pitfall #17).
+    # fail-closed path in _delivery_adapter_for (see AGENTS.md pitfall #17).
     src.profile = None
     return src
 

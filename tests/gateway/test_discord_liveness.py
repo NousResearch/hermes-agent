@@ -95,19 +95,18 @@ def _make_adapter(
     threshold=1,
     max_ack_age=1.0,
     max_latency=1.0,
+    max_event_silence: float | None = None,
 ) -> DiscordAdapter:
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_INTERVAL_SECONDS", str(interval))
     monkeypatch.setenv("HERMES_DISCORD_LIVENESS_FAILURE_THRESHOLD", str(threshold))
-    return DiscordAdapter(
-        PlatformConfig(
-            enabled=True,
-            token="test-token",
-            extra={
-                "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
-                "websocket_max_latency_seconds": max_latency,
-            },
-        )
-    )
+    extra = {
+        "websocket_heartbeat_ack_max_age_seconds": max_ack_age,
+        "websocket_max_latency_seconds": max_latency,
+    }
+    # Only the event-silence tests pin this knob; everyone else keeps the adapter default.
+    if max_event_silence is not None:
+        extra["websocket_event_max_silence_seconds"] = max_event_silence
+    return DiscordAdapter(PlatformConfig(enabled=True, token="test-token", extra=extra))
 
 
 class _BrokenWebSocket:
@@ -227,6 +226,17 @@ def test_platform_config_extra_overrides_process_liveness_bridge(monkeypatch):
     assert adapter._max_latency_seconds == 12
 
 
+def _live_bot_factory():
+    """Stand-in for ``commands.Bot`` that yields a ``_LiveBot`` with a stubbed ``fetch_user``."""
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        return bot
+
+    return factory
+
+
 async def _connect(adapter: DiscordAdapter, monkeypatch, bot_factory):
     monkeypatch.setattr(
         "gateway.status.acquire_scoped_lock",
@@ -344,15 +354,128 @@ async def test_disconnect_cancels_liveness_task(monkeypatch):
     cleanly without leaking a background task."""
     adapter = _make_adapter(monkeypatch, interval=60, threshold=3)
 
-    def factory(**kwargs):
-        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
-    await _connect(adapter, monkeypatch, factory)
+    await _connect(adapter, monkeypatch, _live_bot_factory())
     task = adapter._liveness_task
     assert task is not None and not task.done()
 
     await adapter.disconnect()
     assert task.done()
     assert adapter._liveness_task is None
+
+
+@pytest.mark.asyncio
+@pytest.mark.parametrize("reason", ["socket_closed", "client_closed"])
+async def test_closed_transport_first_strike_forces_reconnect(monkeypatch, caplog, reason):
+    """A closed transport is a confirmed death — strike 1 must reconnect (#118487).
+
+    Pre-fix, the first ``socket_closed`` strike logged ``1/2`` and waited for a
+    confirming strike that never came: discord.py swaps in a fresh socket while
+    resuming, the next transport-side sample reads healthy, and the counter
+    silently resets while a resumed-but-deaf session stays event-starved until
+    the multi-hour event-silence default elapses.
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=2)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    calls = 0
+
+    def _probe(client):
+        nonlocal calls
+        calls += 1
+        return False, reason
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
+
+    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+        await _connect(adapter, monkeypatch, _live_bot_factory())
+        await _wait_until(
+            lambda: handler.called,
+            f"fatal handler not called after first {reason} strike",
+        )
+
+    assert calls == 1, f"first {reason} strike must escalate without a confirming strike"
+    assert adapter._disconnecting is True
+    errors = [r.getMessage() for r in caplog.records if r.levelname == "ERROR"]
+    assert any("forcing reconnect" in m and reason in m for m in errors)
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_recovery_after_unhealthy_streak_is_logged(monkeypatch, caplog):
+    """A counter reset must leave a trace (#118487).
+
+    Pre-fix, ``failures = 0`` on a healthy sample was silent, so an incident log
+    showing one strike and then nothing was indistinguishable between "probe
+    turned healthy again" and "probe task died".
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    calls = 0
+
+    def _probe(client):
+        nonlocal calls
+        calls += 1
+        # One soft unhealthy sample, then healthy forever: far below the threshold.
+        return (False, "ack_stale") if calls == 1 else (True, "healthy")
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
+
+    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+        await _connect(adapter, monkeypatch, _live_bot_factory())
+        await _wait_until(
+            lambda: any(
+                "healthy again after 1 unhealthy sample" in r.getMessage()
+                for r in caplog.records
+            ),
+            "counter reset after an unhealthy streak was never logged",
+        )
+
+    handler.assert_not_called()
+
+    await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_probe_exit_after_mark_disconnected_is_logged_at_info(monkeypatch, caplog):
+    """The probe must say why it stopped, even on a benign exit (#118487, #118504).
+
+    Reached through a *production* setter (``_mark_disconnected`` flips
+    ``_running``) rather than by poking adapter internals, so this pins the
+    unconditional INFO log at the loop's exit guard.
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    samples = 0
+
+    def _probe(client):
+        nonlocal samples
+        samples += 1
+        return True, "healthy"
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
+
+    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+        await _connect(adapter, monkeypatch, _live_bot_factory())
+        task = adapter._liveness_task
+        assert task is not None
+        await _wait_until(lambda: samples >= 1, "probe never took a sample")
+
+        adapter._mark_disconnected()
+        await _wait_until(task.done, "probe did not exit after _mark_disconnected()")
+
+    assert not task.cancelled()
+    exits = [
+        r for r in caplog.records
+        if "probe exiting (running=False" in r.getMessage()
+    ]
+    assert len(exits) == 1
+    assert exits[0].levelname == "INFO"
+    handler.assert_not_called()
+
+    await adapter.disconnect()

@@ -58,6 +58,8 @@ jobs:
       url: ${{ steps.deploy.outputs.page_url }}
     steps:
       - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd  # v6.0.2
+        with:
+          fetch-depth: 0  # extract-plugins.py derives each catalog entry's added/updated dates from git log
 
       - name: Get GitHub App token
         id: app-token
@@ -139,6 +141,8 @@ jobs:
             echo "Downloading skills-index artifact from run $SKILLS_INDEX_RUN_ID"
             if gh run download "$SKILLS_INDEX_RUN_ID" --name skills-index --dir "$tmpdir"; then
               candidate="$(find "$tmpdir" -name skills-index.json -type f | head -n 1 || true)"
+              stars="$(find "$tmpdir" -name plugin-stars.json -type f | head -n 1 || true)"
+              [ -n "$stars" ] && cp "$stars" website/static/api/plugin-stars.json
               if [ -n "$candidate" ]; then
                 cp "$candidate" "$INDEX_PATH"
                 if validate_index; then
@@ -163,6 +167,13 @@ jobs:
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
+
+      # Star counts drive the catalog ranking. Same rule as the skills index: GitHub is only
+      # probed by the scheduled skills-index run; deploys reuse its artifact (downloaded above
+      # into website/static/api/ when SKILLS_INDEX_RUN_ID is set) or the live site's copy.
+      # Never calls the GitHub API.
+      - name: Reuse plugin GitHub stars (no API calls)
+        run: python3 website/scripts/fetch-plugin-stars.py
 
       - name: Extract plugin catalog for the Plugins page
         run: python3 website/scripts/extract-plugins.py

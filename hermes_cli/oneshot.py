@@ -13,6 +13,7 @@ import logging
 import os
 import sys
 from contextlib import redirect_stderr, redirect_stdout
+import dataclasses
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -24,12 +25,86 @@ _ALL_TOOLSETS = {"all", "*"}
 
 # Keys copied from the run result into the ``--usage-file`` report. ``service_tier`` is a
 # billing-audit field: the tier REQUESTED via request_overrides.extra_body (None when unset), so
-# batch pipelines can verify the tier they pay for went out on the wire.
+# batch pipelines can verify the tier they pay for went out on the wire. ``partial`` /
+# ``interrupted`` / ``turn_exit_reason`` say WHY ``completed`` is false, so a pipeline can tell
+# an iteration-budget stop from a Ctrl-C without parsing stderr (#111770).
 _USAGE_KEYS = (
     "estimated_cost_usd", "cost_status", "cost_source", "input_tokens", "output_tokens",
     "cache_read_tokens", "cache_write_tokens", "reasoning_tokens", "total_tokens", "api_calls",
-    "model", "provider", "session_id", "completed",
+    "model", "provider", "session_id", "completed", "partial", "interrupted", "turn_exit_reason",
 )
+
+# Counters summed per auxiliary task (vision, compression, title_generation, ...) into the
+# ``auxiliary`` block of the report. The main-loop keys above stay main-loop-only (backward
+# compatible); ``total_including_auxiliary`` carries the grand total pipelines bill on (#112848).
+_AUX_COUNTERS = (
+    "api_calls", "input_tokens", "output_tokens", "cache_read_tokens", "cache_write_tokens",
+    "reasoning_tokens", "estimated_cost_usd",
+)
+
+
+def _auxiliary_usage(session_db, session_id: Optional[str]) -> dict[str, dict]:
+    """Per-task aux usage recorded for *session_id*'s lineage (``{}`` without a store / session)."""
+    if session_db is None or not session_id:
+        return {}
+    try:
+        return session_db.auxiliary_usage_by_task(session_id)
+    except Exception:
+        logging.debug("oneshot: auxiliary usage read failed", exc_info=True)
+        return {}
+
+
+def _attach_auxiliary_usage(result: dict, session_db, before: dict[str, dict],
+                            fallback_session_id: Optional[str] = None) -> None:
+    """Store this run's auxiliary usage on *result* as the delta against the pre-turn snapshot
+    (a resumed session already carries earlier runs' aux rows). Waits (bounded) for the auto-title
+    thread first: it bills from a daemon thread and can still be in flight when the turn returns.
+    Failed-turn dicts carry no ``session_id``; *fallback_session_id* keeps the delta readable then."""
+    from agent.title_generator import wait_for_title_upgrades
+
+    wait_for_title_upgrades()
+    after = _auxiliary_usage(session_db, result.get("session_id") or fallback_session_id)
+    by_task: dict[str, dict] = {}
+    for task, counters in after.items():
+        prior = before.get(task, {})
+        delta = {key: (counters.get(key) or 0) - (prior.get(key) or 0) for key in _AUX_COUNTERS}
+        if any(delta.values()):
+            by_task[task] = delta
+    result["auxiliary_usage"] = by_task
+
+
+def _auxiliary_report(report: dict, by_task: dict[str, dict]) -> None:
+    """Add the ``auxiliary`` breakdown and ``total_including_auxiliary`` to the ledger."""
+    totals = {key: sum(t.get(key) or 0 for t in by_task.values()) for key in _AUX_COUNTERS}
+    totals["total_tokens"] = totals["input_tokens"] + totals["output_tokens"]
+    report["auxiliary"] = {**totals, "by_task": by_task}
+    main_cost = report.get("estimated_cost_usd")
+    report["total_including_auxiliary"] = {
+        "estimated_cost_usd": None if main_cost is None else main_cost + totals["estimated_cost_usd"],
+        "total_tokens": (report.get("total_tokens") or 0) + totals["total_tokens"],
+        "api_calls": (report.get("api_calls") or 0) + totals["api_calls"],
+    }
+
+# Exit code for a turn stopped by an interrupt (SIGINT convention, same as ``chat -Q``).
+_INTERRUPTED_EXIT_CODE = 130
+
+
+def _oneshot_exit_code(response: Optional[str], result: dict) -> int:
+    """Map a finished ``-z`` turn onto its exit code: ``0`` only when the turn completed;
+    ``130`` interrupted; ``2`` failed or stopped partway (``partial``, ``completed: False`` such
+    as the iteration budget); ``1`` a completed turn that produced no text at all.
+
+    The outcome is judged from the result, not from whether text was printed: a partial or
+    failed turn usually leaves an explanation on stdout, and exiting 0 for it made scripts treat
+    a half-done job (or a provider error summary) as success (#111770).
+    """
+    if result.get("interrupted"):
+        return _INTERRUPTED_EXIT_CODE
+    if result.get("failed") or result.get("partial") or result.get("completed") is False:
+        return 2
+    if not (response or "").strip():
+        return 1
+    return 0
 
 
 def _normalize_toolsets(toolsets: object = None) -> list[str] | None:
@@ -151,6 +226,8 @@ def _write_usage_file(path: Optional[str], result: dict, failure: Optional[str] 
         report = {key: result.get(key) for key in _USAGE_KEYS}
         report["failed"] = bool(result.get("failed")) or failure is not None
         report["service_tier"] = result.get("service_tier")
+        if isinstance(result.get("auxiliary_usage"), dict):
+            _auxiliary_report(report, result["auxiliary_usage"])
         if failure is not None:
             report["failure"] = failure
         out = Path(path).expanduser()
@@ -200,6 +277,9 @@ def run_oneshot(
     # Non-interactive by definition — an approval prompt would hang forever.
     os.environ["HERMES_YOLO_MODE"] = "1"
     os.environ["HERMES_ACCEPT_HOOKS"] = "1"
+    # Same finite-chat marker as `hermes chat -q` (cli.py): the session-source resolver uses it to drop an
+    # inherited tui/desktop transport label, and delegate dispatch to route detached results inline.
+    os.environ["HERMES_SINGLE_QUERY_SESSION"] = "1"
 
     # Nothing here drains process_registry.completion_queue (only cli.py's process_loop and the
     # gateway watchers do), so left unbound delegate_task would be forced background and every
@@ -225,6 +305,7 @@ def run_oneshot(
                 skills=skills,
                 resume=resume,
                 reasoning=reasoning,
+                ledger=bool(usage_file),
             )
         except BaseException as exc:  # noqa: BLE001
             # Capture anything escaping the agent (OSError from prompt_toolkit on a non-TTY pipe,
@@ -256,22 +337,22 @@ def run_oneshot(
             real_stdout.write("\n")
         real_stdout.flush()
 
-    if not (response or "").strip():
-        if result.get("failed") or result.get("partial"):
-            return 2
+    exit_code = _oneshot_exit_code(response, result)
+    if exit_code == 1:
         real_stderr.write("hermes -z: no final response was produced; treating the run as failed.\n")
         real_stderr.flush()
-        return 1
-    return 0
+    return exit_code
 
 
 def _create_session_db_for_oneshot():
     """Best-effort SessionDB — oneshot bypasses ``HermesCLI._init_agent()``, so it must wire the
-    SQLite store itself or ``session_search`` is advertised but always unavailable."""
+    SQLite store itself or ``session_search`` is advertised but always unavailable. The registry
+    handle is the one in-process tools (delegation, goals) acquire during the run, so the process
+    holds one writer; ``_close_agent``'s ``close()`` releases the refcount."""
     try:
-        from hermes_state import SessionDB
+        from hermes_state_registry import acquire
 
-        return SessionDB()
+        return acquire()
     except Exception as exc:
         logging.debug("SQLite session store not available for oneshot mode: %s", exc)
         return None
@@ -315,8 +396,8 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
 
     # DIRECT_ALIASES (config.yaml ``model_aliases:``) map a user alias to (model, provider,
     # base_url) for endpoints outside any catalog (local servers, custom proxies, ...).
+    from hermes_cli import model_switch as _ms
     try:
-        from hermes_cli import model_switch as _ms
         _ms._ensure_direct_aliases()
         direct = _ms.DIRECT_ALIASES.get(explicit_model.strip().lower())
     except Exception:
@@ -326,6 +407,15 @@ def _resolve_model_and_provider(cfg: dict, model: Optional[str], provider: Optio
         if isinstance(model_cfg, dict):
             cfg_provider = str(model_cfg.get("provider") or "").strip().lower()
         current_provider = cfg_provider or os.getenv("HERMES_INFERENCE_PROVIDER", "").strip().lower() or "auto"
+        # Same owner as HermesCLI startup: a provider-qualified string (``custom:<name>:<model>``,
+        # ``<provider>/<model>``) selects that provider before auto-detection can hand the unsplit
+        # string to the configured default (#73943).
+        route = _ms.resolve_startup_model_route(
+            explicit_model, current_provider=current_provider,
+            user_providers=cfg.get("providers"), custom_providers=cfg.get("custom_providers"))
+        if route is not None:
+            choice.provider, choice.model = route.provider, route.model
+            return choice
         detected = detect_provider_for_model(explicit_model, current_provider)
         if detected:
             choice.provider, choice.model = detected
@@ -416,11 +506,13 @@ def _run_agent(
     skills: object = None,
     resume: Optional[str] = None,
     reasoning: object = None,
+    ledger: bool = False,
 ) -> tuple[str, dict]:
     """Build an AIAgent exactly like a normal CLI chat turn, run one conversation, and return
-    ``(final_response, run_result)``. Imports are local to keep CLI startup cheap."""
+    ``(final_response, run_result)``. Imports are local to keep CLI startup cheap. *ledger* (set when
+    ``--usage-file`` is requested) attaches this run's auxiliary usage to the result."""
     from hermes_cli.config import load_config
-    from hermes_cli.runtime_provider import resolve_runtime_provider
+    from hermes_cli.runtime_provider import resolve_runtime_with_fallback
     from hermes_cli.tools_config import _get_platform_tools
     from run_agent import AIAgent
 
@@ -432,12 +524,19 @@ def _run_agent(
     session_db = _create_session_db_for_oneshot()
     resume_sid, conversation_history, resume_meta = _load_resume_target(session_db, resume)
     choice = _apply_stored_session_runtime(choice, resume_meta, explicit_model=bool((model or "").strip()))
-    runtime = resolve_runtime_provider(
+    # Resolution-time fallback (#81209): a quota-exhausted/expired primary raises AuthError here, before
+    # AIAgent (and its mid-session ``fallback_model`` wiring) exists, so walk the chain like the gateway.
+    runtime, fallback_entry = resolve_runtime_with_fallback(
+        cfg,
         requested=choice.provider,
         target_model=choice.model or None,
         explicit_base_url=choice.base_url,
         explicit_api_key=choice.api_key,
     )
+    if fallback_entry is not None:
+        # The chosen entry names the model that will be sent; the primary's stored api_mode no longer applies.
+        choice = dataclasses.replace(choice, model=fallback_entry["model"], provider=runtime.get("provider"),
+                                     api_mode=None)
     if choice.api_mode:
         runtime["api_mode"] = choice.api_mode
 
@@ -498,7 +597,11 @@ def _run_agent(
         agent.stream_delta_callback = None
         agent.tool_gen_callback = None
 
+        aux_before = _auxiliary_usage(session_db, resume_sid) if ledger else {}
         result = agent.run_conversation(prompt, conversation_history=conversation_history or None)
+        if ledger:
+            _attach_auxiliary_usage(result, session_db, aux_before,
+                                    fallback_session_id=agent.session_id or resume_sid)
         return (result.get("final_response") or "", result)
     finally:
         _close_agent(agent, session_db)

@@ -17,6 +17,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     Codicon: ({ name }: { name: string }) => <span aria-hidden data-icon={name} />,
     ConfirmDialog: () => null,
     CopyButton: () => null,
+    Switch: () => null,
     Dialog: () => null,
     DialogContent: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
     DialogDescription: ({ children }: { children?: React.ReactNode }) => <>{children}</>,
@@ -145,6 +146,28 @@ describe('durable group holds', () => {
 
     expect(status.textContent).toContain('builder (mac-mini)')
     expect(status.textContent).toContain('builder (laptop)')
+  })
+
+  it('summarizes the most recent unresolved failure after a member fails again', async () => {
+    const [{ GroupChatWorkspace }, chat, activity] = await Promise.all([
+      import('./group-chat-view'),
+      import('./group-chat'),
+      import('./group-activity')
+    ])
+
+    chat.$groupChats.set({ Core: { log: [], members: MEMBERS, watermarks: {} } })
+
+    for (const member of ['research', 'builder', 'research']) {
+      activity.recordGroupActivity('Core', { kind: 'failed', member, thread: member })
+    }
+
+    activity.recordGroupActivity('Core', { kind: 'settled', member: null })
+    const view = render(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    expect(screen.getByRole('button', { name: /^Activity/ }).textContent).toContain('research hit an error')
+
+    activity.recordGroupActivity('Core', { kind: 'replied', member: 'research' })
+    view.rerender(<GroupChatWorkspace group="Core" members={MEMBERS} />)
+    expect(screen.getByRole('button', { name: /^Activity/ }).textContent).toContain('builder hit an error')
   })
 
   it('projects hydrated holds into the real group workspace', async () => {

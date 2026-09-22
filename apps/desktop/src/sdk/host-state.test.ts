@@ -129,6 +129,65 @@ describe('host.state focused-session atoms', () => {
   })
 })
 
+describe('host all-profiles mode', () => {
+  beforeEach(() => {
+    window.localStorage.clear()
+    vi.resetModules()
+  })
+
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  async function setup() {
+    const { host } = await import('@/sdk/index')
+    const profile = await import('@/store/profile')
+
+    return { host, profile }
+  }
+
+  it('is false when the preference is off', async () => {
+    const { host, profile } = await setup()
+
+    profile.$profiles.set([{ name: 'default' }, { name: 'worker' }] as never)
+
+    expect(host.state.allProfiles.get()).toBe(false)
+  })
+
+  it('is true when the preference is on and multiple profiles exist', async () => {
+    const { host, profile } = await setup()
+
+    profile.$profiles.set([{ name: 'default' }, { name: 'worker' }] as never)
+    profile.setShowAllProfiles(true)
+
+    expect(host.state.allProfiles).toBe(profile.$allProfiles)
+    expect(host.state.allProfiles.get()).toBe(true)
+  })
+
+  it('is false with one profile even when the persisted preference is on', async () => {
+    window.localStorage.setItem('hermes.desktop.showAllProfiles', 'true')
+    const { host, profile } = await setup()
+
+    profile.$profiles.set([{ name: 'default' }] as never)
+
+    expect(host.state.allProfiles.get()).toBe(false)
+  })
+
+  it('sets the core preference and persistence through the host action', async () => {
+    const { host, profile } = await setup()
+
+    host.setAllProfiles(true)
+
+    expect(profile.$showAllProfiles.get()).toBe(true)
+    expect(window.localStorage.getItem('hermes.desktop.showAllProfiles')).toBe('true')
+
+    host.setAllProfiles(false)
+
+    expect(profile.$showAllProfiles.get()).toBe(false)
+    expect(window.localStorage.getItem('hermes.desktop.showAllProfiles')).toBe('false')
+  })
+})
+
 describe('host.state.focusedSessionProfile', () => {
   beforeEach(() => {
     window.localStorage.clear()

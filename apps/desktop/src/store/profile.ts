@@ -932,6 +932,12 @@ export const $showAllProfiles = atom<boolean>(storedBoolean(SHOW_ALL_PROFILES_ST
 
 $showAllProfiles.subscribe(value => persistBoolean(SHOW_ALL_PROFILES_STORAGE_KEY, value))
 
+/** Whether the sidebar can effectively render the unified profile view. */
+export const $allProfiles = computed(
+  [$showAllProfiles, $profiles],
+  (showAll, profiles) => showAll && profiles.length > 1
+)
+
 // The profile context the sidebar is currently showing: a concrete profile key,
 // or ALL_PROFILES for the unified grouped view. Concrete scope is tied to the
 // gateway so opening/selecting a profile (which swaps the gateway) moves the

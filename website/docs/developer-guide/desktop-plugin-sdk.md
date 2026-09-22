@@ -487,6 +487,7 @@ components.
 
 ```ts
 host.state.activeSessionId  // ReadableAtom<string | null>
+host.state.allProfiles      // ReadableAtom<boolean>  sidebar is effectively showing all profiles
 host.state.awaitingResponse // ReadableAtom<boolean>  true until the first assistant payload
 host.state.busy             // ReadableAtom<boolean>  focused chat is working after a send
 host.state.busyBySession    // ReadableAtom<Record<string, boolean>>  runtime id → mid-turn
@@ -517,6 +518,7 @@ ctx.os.openExternal(url)                   // OS default handler (browser, mail,
 ctx.os.revealPath(path)                    // reveal in Finder / Explorer → Promise<boolean>
 ctx.os.writeClipboard(text)                // system clipboard → Promise<boolean>
 host.navigate('/route')                    // hash-route navigation
+host.setAllProfiles(value)                 // enter/leave the all-profiles sidebar mode
 host.openSession(id, { profile?, intent? }) // open a stored session core-style;
                                            //   profile: soft-swap to that profile's backend first
                                            //   intent: 'in-place' (default) | 'stack' | 'tab' | 'window'
@@ -537,6 +539,13 @@ host.requestProfile<T>(route, method, params?)   // registry-routed RPC; no fore
 host.requestProfile<T>(profile, method, params?) // legacy v1/local overload
 host.request<T>(method, params?)           // active-gateway JSON-RPC — the real power
 ```
+
+`host.state.allProfiles` reports the effective rendered mode: it is `true` only
+when the saved show-all preference is on **and** the current gateway exposes more
+than one profile. `host.setAllProfiles(value)` writes through the core setter so
+persistence and session refresh behavior remain core-owned. Call it only from an
+explicit user action. Feature-detect both additions when supporting older Desktop
+builds (`host.state.allProfiles && typeof host.setAllProfiles === 'function'`).
 
 `host.request` is the same JSON-RPC the app itself uses (sessions, config, skills,
 cron, kanban, …). `host.requestProfile` accepts a descriptor from

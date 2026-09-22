@@ -1,9 +1,9 @@
-"""Behavior contracts for the GPT-6 Sol/Terra/Luna registration (the 5.6 tier successors).
+"""Behavior contracts for the released GPT-6 Sol/Luna tiers.
 
 Invariant tests only, no list snapshots. They pin what would silently regress:
 
-1. `/model gpt` still lands on the flagship: Astra outranks Sol, Sol outranks
-   Terra/Luna, and every GPT-6 tier outranks its 5.6 predecessor.
+1. `/model gpt` still lands on the flagship: Astra outranks Sol/Luna,
+   and every released GPT-6 tier outranks its 5.6 predecessor.
 2. The Codex OAuth `-900k` opt-in machinery treats the gpt-6 tiers exactly like
    the 5.6 ones: picker synthesis, dated snapshots, wire stripping, the
    compaction auto-raise on the base slug (and not on the variant), and the
@@ -24,11 +24,11 @@ from hermes_cli.codex_models import _finalize_codex_models
 from hermes_cli.model_switch import _model_sort_key
 from hermes_cli.models import OPENROUTER_MODELS, _PROVIDER_MODELS
 
-GPT6_TIERS = ("gpt-6-sol", "gpt-6-terra", "gpt-6-luna")
+GPT6_TIERS = ("gpt-6-sol", "gpt-6-luna")
 
 
 def test_model_gpt_resolves_flagship_across_gpt6_tiers():
-    models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-terra", "gpt-6-sol", "gpt-6-astra"]
+    models = ["gpt-6-luna", "gpt-5.6-sol", "gpt-6-sol", "gpt-6-astra"]
     models.sort(key=lambda m: _model_sort_key(m, "gpt"))
     assert models[:2] == ["gpt-6-astra", "gpt-6-sol"]
     assert models.index("gpt-6-luna") < models.index("gpt-5.6-sol")

@@ -5,10 +5,18 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 from pathlib import Path
 from typing import List, Optional
+from urllib.parse import urlencode
 
 logger = logging.getLogger(__name__)
+
+# A local Codex CLI cache records the compatibility version that produced its account-scoped
+# catalog. Prefer it for new probes: ``0.0.0`` used to expose the whole catalog, but newer
+# GPT-6 entries can be filtered out by that legacy sentinel.
+CODEX_UNGATED_CLIENT_VERSION = "0.0.0"
+_CODEX_CLIENT_VERSION_RE = re.compile(r"\d+(?:\.\d+){2}(?:[-+][0-9A-Za-z.-]+)?\Z")
 
 # Curated offline fallback (first-run, transient API failure). Only slugs the ChatGPT Codex
 # OAuth backend actually accepts: the public API's "-pro" variants and the retired
@@ -147,6 +155,35 @@ def _ranked_slugs(entries: object) -> List[str]:
     return _dedupe(slug for _, slug in sortable)
 
 
+def _codex_home() -> Path:
+    return Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
+
+
+def _read_cache_payload(codex_home: Path) -> dict:
+    cache_path = codex_home / "models_cache.json"
+    if not cache_path.exists():
+        return {}
+    try:
+        payload = json.loads(cache_path.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
+def codex_catalog_url(codex_home: Optional[Path] = None) -> str:
+    """Catalog URL using the compatible version recorded by the local Codex CLI.
+
+    A missing, malformed, or manually edited cache fails open to Hermes's legacy request
+    version, rather than trusting an arbitrary query-string value.
+    """
+    payload = _read_cache_payload(codex_home or _codex_home())
+    cached = payload.get("client_version")
+    version = cached.strip() if isinstance(cached, str) else ""
+    if not _CODEX_CLIENT_VERSION_RE.fullmatch(version):
+        version = CODEX_UNGATED_CLIENT_VERSION
+    return "https://chatgpt.com/backend-api/codex/models?" + urlencode({"client_version": version})
+
+
 def _fetch_models_from_api(access_token: str) -> List[str]:
     """Fetch available models from the Codex API. Returns visible models sorted by priority."""
     try:
@@ -155,8 +192,7 @@ def _fetch_models_from_api(access_token: str) -> List[str]:
         # masquerades as "no models") and, for residency-enforced workspaces, the residency header.
         from agent.codex_headers import codex_account_headers
         headers = {"Authorization": f"Bearer {access_token}", **codex_account_headers(access_token)}
-        from agent.model_metadata import CODEX_MODELS_CATALOG_URL
-        resp = httpx.get(CODEX_MODELS_CATALOG_URL, headers=headers, timeout=10)
+        resp = httpx.get(codex_catalog_url(), headers=headers, timeout=10)
         if resp.status_code != 200:
             return []
         data = resp.json()
@@ -182,21 +218,13 @@ def _read_default_model(codex_home: Path) -> Optional[str]:
 
 
 def _read_cache_models(codex_home: Path) -> List[str]:
-    cache_path = codex_home / "models_cache.json"
-    if not cache_path.exists():
-        return []
-    try:
-        raw = json.loads(cache_path.read_text(encoding="utf-8"))
-    except Exception:
-        return []
-
-    entries = raw.get("models") if isinstance(raw, dict) else None
+    entries = _read_cache_payload(codex_home).get("models")
     return _ranked_slugs(entries if isinstance(entries, list) else [])
 
 
 def get_codex_model_ids(access_token: Optional[str] = None) -> List[str]:
     """Available Codex model IDs: live API (if token) > config.toml default > local cache > defaults."""
-    codex_home = Path(os.getenv("CODEX_HOME", "").strip() or str(Path.home() / ".codex")).expanduser()
+    codex_home = _codex_home()
     if access_token:
         api_models = _fetch_models_from_api(access_token)
         if api_models:

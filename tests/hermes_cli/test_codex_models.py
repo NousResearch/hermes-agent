@@ -286,10 +286,12 @@ class TestNormalizeModelForProvider:
         assert cli.model == "gpt-5.5"
 
 
-def test_catalog_requests_use_ungated_client_version(monkeypatch):
-    """Both catalog request sites send the backend's ungated ``0.0.0`` sentinel: the endpoint
-    hides models whose ``minimal_client_version`` is newer than ``client_version``, so a
-    made-up version silently drops future models."""
+def test_catalog_requests_use_cached_codex_client_version(monkeypatch, tmp_path):
+    """Both catalog request sites use the CLI cache's compatible version.
+
+    The current CLI catalog exposes GPT-6 Sol and Luna only when the request carries its
+    recorded client version; the legacy ``0.0.0`` request omits them.
+    """
     import sys
     from urllib.parse import parse_qs, urlparse
 
@@ -298,26 +300,41 @@ def test_catalog_requests_use_ungated_client_version(monkeypatch):
 
     seen_urls = []
 
+    (tmp_path / "models_cache.json").write_text(
+        json.dumps({"client_version": "0.155.0", "models": []}), encoding="utf-8"
+    )
+    monkeypatch.setenv("CODEX_HOME", str(tmp_path))
+
     class _FakeResp:
         status_code = 200
 
+        def __init__(self, url):
+            self.url = url
+
         def json(self):
-            return {"models": []}
+            version = parse_qs(urlparse(self.url).query)["client_version"]
+            models = [{"slug": "gpt-5.6-sol", "visibility": "list"}]
+            if version == ["0.155.0"]:
+                models.extend([
+                    {"slug": "gpt-6-sol", "visibility": "list"},
+                    {"slug": "gpt-6-luna", "visibility": "list"},
+                ])
+            return {"models": models}
 
     class _FakeHttpx:
         @staticmethod
         def get(url, headers=None, timeout=None):
             seen_urls.append(url)
-            return _FakeResp()
+            return _FakeResp(url)
 
     class _FakeRequests:
         @staticmethod
         def get(url, headers=None, timeout=None, verify=None):
             seen_urls.append(url)
-            return _FakeResp()
+            return _FakeResp(url)
 
     monkeypatch.setitem(sys.modules, "httpx", _FakeHttpx)
-    codex_models._fetch_models_from_api(access_token="tok")
+    assert {"gpt-6-sol", "gpt-6-luna"}.issubset(codex_models._fetch_models_from_api(access_token="tok"))
     monkeypatch.setattr(model_metadata, "requests", _FakeRequests)
     monkeypatch.setattr(model_metadata, "_ensure_requests", lambda: None)
     monkeypatch.setattr(model_metadata, "_codex_oauth_context_cache", {})
@@ -327,4 +344,4 @@ def test_catalog_requests_use_ungated_client_version(monkeypatch):
     for url in seen_urls:
         parsed = urlparse(url)
         assert parsed.netloc == "chatgpt.com" and parsed.path == "/backend-api/codex/models"
-        assert parse_qs(parsed.query)["client_version"] == ["0.0.0"]
+        assert parse_qs(parsed.query)["client_version"] == ["0.155.0"]

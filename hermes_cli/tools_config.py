@@ -92,7 +92,7 @@ CONFIGURABLE_TOOLSETS = [
     ("matrix_followup", "🔁 Matrix Reaction Follow-ups", "let a reaction to a reply start a follow-up"),
     ("matrix_read",     "📜 Matrix History",           "read room, thread and event history"),
     ("matrix_reaction", "👍 Matrix Reactions",         "add and remove the agent's reactions"),
-    ("matrix_admin",    "🛡️  Matrix Room Admin",        "pin or unpin messages in the current room"),
+    ("matrix_admin",    "🛡️  Matrix Room Admin",        "create rooms, invite, leave, forget, redact, and pin messages"),
     ("yuanbao",          "🤖 Yuanbao",                  "group info, member queries, DM"),
     ("computer_use",     "🖱️  Computer Use (macOS/Windows/Linux)", "background desktop control via cua-driver"),
 ]
@@ -649,7 +649,7 @@ def _get_platform_tools(config: dict, platform: str, *, include_default_mcp_serv
 
     if explicitly_configured and toolset_names:
         _warn_all_invalid_platform_toolsets(platform, toolset_names)
-    return enabled_toolsets
+    return {ts for ts in enabled_toolsets if _toolset_allowed_for_platform(ts, platform)}
 
 
 def _prune_toolsets_stripped_by_disabled(enabled_toolsets: set[str], disabled_names: list[str]) -> set[str]:

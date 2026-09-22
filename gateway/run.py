@@ -5957,6 +5957,13 @@ def main():
     except SystemExit as e:
         # e.code may be None (→ 0), an int, or a str (→ 1, like CPython).
         exit_code = 0 if e.code is None else e.code if isinstance(e.code, int) else 1
+        if not isinstance(e.code, int) and e.code is not None and str(e.code).strip():
+            # CPython's top level prints a str exit code to stderr before exiting 1;
+            # routing every exit through the os._exit backstop (#53107) must not
+            # swallow that reason line — for a silently dying backend it is the only
+            # human-readable cause that reaches the desktop's output tail (#118784).
+            with suppress(Exception):
+                sys.stderr.write(f"{e.code}\n")
     _exit_after_graceful_shutdown(exit_code)
 
 
@@ -5978,6 +5985,12 @@ def _exit_after_graceful_shutdown(exit_code: int) -> None:
     process, and ``release_gateway_runtime_lock`` no-ops when the lock is already released — so this is a
     no-op on the normal shutdown path and the actual cleanup on the early-exit paths.
     """
+    if exit_code:
+        # Last-words line for every non-zero exit (#118784): the desktop shell's
+        # buffered output tail otherwise holds only replayed startup lines for a
+        # backend that dies silently, leaving 129 exit(1)s with no trace at all.
+        with suppress(Exception):
+            sys.stderr.write(f"gateway exiting with code {exit_code}\n")
     for stream in (sys.stdout, sys.stderr):
         with suppress(Exception):
             stream.flush()

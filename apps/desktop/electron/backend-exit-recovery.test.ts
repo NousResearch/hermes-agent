@@ -3,7 +3,7 @@ import assert from 'node:assert/strict'
 import { test } from 'vitest'
 
 import { createBackendConnectionState } from './backend-connection-state'
-import { createBackendExitRecoveryLatch } from './backend-exit-recovery'
+import { createBackendExitRecoveryLatch, shouldNotifySupersededBackendExit } from './backend-exit-recovery'
 
 type Child = { pid: number }
 
@@ -151,4 +151,28 @@ test('a failed start that owns no recovery claim is not re-armed and spends no b
   clock += 1_000
   assert.equal(latch.claim(empty), false, 'fourth is the real budget exhaustion')
   assert.equal(latch.isCrashLooping(), true)
+})
+
+test('a stale post-ready exit notifies the renderer exactly when nobody else did (#118784)', () => {
+  const notify = (state: Parameters<typeof shouldNotifySupersededBackendExit>[0]) =>
+    shouldNotifySupersededBackendExit(state)
+
+  // The bug: backend died post-ready, the renderer's re-dial already had a
+  // start in flight, so the supervisor respawned nothing (recovered=false)
+  // and the slot hand-off was silent.
+  assert.equal(
+    notify({ ready: true, intentionalTeardown: false, recovered: false }),
+    true,
+    'unexpected post-ready death with a replacement in flight must notify'
+  )
+
+  // Deliberate teardown (re-home, quit, shutdown) reads as stale too — stay silent.
+  assert.equal(notify({ ready: true, intentionalTeardown: true, recovered: false }), false)
+
+  // The supervisor respawn path (or its crash-loop notice) already sent the payload.
+  assert.equal(notify({ ready: true, intentionalTeardown: false, recovered: true }), false)
+
+  // Pre-ready exits belong to the boot overlay's failure UX, not a toast.
+  assert.equal(notify({ ready: false, intentionalTeardown: false, recovered: false }), false)
+  assert.equal(notify({ ready: false, intentionalTeardown: true, recovered: true }), false)
 })

@@ -310,6 +310,17 @@ class TestRegistryResolution:
         assert result is not None
         assert result.is_available() is True
 
+    def test_strict_routing_fails_closed_for_unregistered_backend(
+        self, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A global explicit route never silently becomes another provider."""
+        _ensure_plugins_loaded()
+        from agent.web_search_registry import _resolve
+
+        monkeypatch.setenv("EXA_API_KEY", "real")
+        monkeypatch.setattr("agent.web_search_registry._strict_routing_enabled", lambda: True)
+        assert _resolve("not-a-real-provider", capability="search") is None
+
 
     def test_no_config_no_credentials_returns_none(
         self,

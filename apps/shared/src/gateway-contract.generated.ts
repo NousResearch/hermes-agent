@@ -3873,6 +3873,7 @@ export interface PluginsManageResult {
   plugin_name?: string | null
   warnings?: string[] | null
   missing_env?: string[] | null
+  python_dependencies?: string[] | null
   after_install_path?: string | null
   enabled?: boolean | null
   sha?: string | null

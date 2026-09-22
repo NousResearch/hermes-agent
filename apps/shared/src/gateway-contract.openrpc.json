@@ -19853,6 +19853,21 @@
             "default": null,
             "title": "Missing Env"
           },
+          "python_dependencies": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Python Dependencies"
+          },
           "after_install_path": {
             "anyOf": [
               {

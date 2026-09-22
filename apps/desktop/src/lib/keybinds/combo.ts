@@ -235,6 +235,13 @@ export function isFocusWithin(selector: string): boolean {
   return document.activeElement?.closest(selector) != null
 }
 
+// Overlays that cover the whole window (portaled to the body, or the overlay
+// shell itself): dialogs, menus, listboxes, every Radix popper layer. One
+// anywhere means the composer is behind it — its keys, and any focus the
+// user has inside it, are the overlay's own.
+export const OVERLAY_SURFACE =
+  '[role="dialog"],[role="alertdialog"],[role="menu"],[role="listbox"],[data-radix-popper-content-wrapper],[data-overlay-surface]'
+
 // True when focus is in a text-entry surface, so bare-key shortcuts don't fire
 // while the user is typing.
 export function isEditableTarget(target: EventTarget | null): boolean {
@@ -260,14 +267,38 @@ const INPUT_SAFE_ACTIONS = new Set([
 
 const TEXT_NAVIGATION_KEYS = new Set(['up', 'down', 'left', 'right', 'home', 'end', 'pageup', 'pagedown'])
 
-// Only explicit text-entry-safe actions fire while typing. Editing/navigation
-// chords such as Ctrl+Arrow/PageUp must stay with the input even if a user
-// rebinds them to a global navigation action.
+// Only explicit text-entry-safe actions fire while typing. A primary-modifier
+// chord (Cmd/Ctrl) is a deliberate two-key gesture that every browser and chat
+// app fires even with focus in a text field (⌘N, ⌘T, ⌘K, ⌃Tab…), so those stay
+// global — restoring the pre-#86586 behavior. Editing/navigation chords such
+// as Ctrl+Arrow/PageUp must stay with the input even if a user rebinds them to
+// a global navigation action, and bare/Shift-only combos (typed letters) are
+// gated by the allowlist so they never hijack normal typing.
 export function actionAllowedInInput(actionId: string, combo: string): boolean {
-  const base = combo.split('+').pop()
+  const parts = combo.split('+')
+  const base = parts.pop()
 
-  if (base && TEXT_NAVIGATION_KEYS.has(base)) {
+  // A bare modifier (no key) is not a real chord — `comboFromEvent` never
+  // yields one, but reject it here so a malformed stored binding can't pass
+  // the shape-only mod/ctrl check below.
+  if (!base || base === 'mod' || base === 'ctrl') {
     return false
+  }
+
+  // Navigation keys stay with the focused input only for chords that can BE
+  // text navigation: a single primary modifier (⌘← line-start, Ctrl+PgUp,
+  // ⌘⇧← selection) or bare Alt (⌥← word-jump). A chord that carries Alt on
+  // top of a primary modifier (⌘⌥←, Ctrl+Alt+←) has no native text-editing
+  // meaning, so an explicitly rebound global action keeps firing while
+  // typing — the same shape as the shipped `mod+alt+t` tab-strip default.
+  const hasPrimary = parts.includes('mod') || parts.includes('ctrl')
+
+  if (TEXT_NAVIGATION_KEYS.has(base) && !(hasPrimary && parts.includes('alt'))) {
+    return false
+  }
+
+  if (/^(?:mod|ctrl)(?:\+|$)/.test(combo)) {
+    return true
   }
 
   return INPUT_SAFE_ACTIONS.has(actionId)

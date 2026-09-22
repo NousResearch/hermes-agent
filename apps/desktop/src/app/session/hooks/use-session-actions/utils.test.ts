@@ -3,7 +3,7 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { textWithoutReferenceLines, WIRE_REFERENCE_KINDS } from '@/components/assistant-ui/reference-kinds'
 import { type ChatMessage, type ChatMessagePart, chatMessageText } from '@/lib/chat-messages'
 import { $approvalModes, approvalModeForProfile } from '@/store/approval-mode'
-import { $desktopOnboarding } from '@/store/onboarding'
+import { $desktopOnboarding, consumePendingCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile } from '@/store/profile'
 import {
   $currentBranch,
@@ -13,7 +13,7 @@ import {
   setSelectedStoredSessionId,
   workspaceCwdBelongsToSelectedSession
 } from '@/store/session'
-import type { SessionInfo, SessionResumeResponse } from '@/types/hermes'
+import type { SessionInfo, SessionResumeResult } from '@/types/hermes'
 
 import {
   appendLiveSessionProjection,
@@ -23,8 +23,10 @@ import {
   chatMessagesEquivalent,
   chatPartsEquivalent,
   dedupeInflightUserAgainstTranscript,
+  goneSessionVerdict,
   isSessionGoneError,
   overlayConcurrentMessageChanges,
+  preserveEquivalentTranscript,
   preserveLocalPendingTurnMessages,
   reconcileResumeMessages,
   removeRepresentedLocalLiveProjection,
@@ -73,25 +75,43 @@ const initialOnboardingState = $desktopOnboarding.get()
 
 describe('applyRuntimeInfo credential warnings', () => {
   beforeEach(() => {
+    consumePendingCredentialWarning()
     $desktopOnboarding.set({ ...initialOnboardingState, reason: null, requested: false })
   })
 
   afterEach(() => {
+    consumePendingCredentialWarning()
     $desktopOnboarding.set(initialOnboardingState)
   })
 
-  it('requests setup for the exact empty-key warning returned by the server', () => {
+  it('defers the empty-key warning to submit time instead of popping onboarding on switch', () => {
     const warning = "No API key configured for provider 'openrouter'. First message will fail."
 
     applyRuntimeInfo({ credential_warning: warning })
 
-    expect($desktopOnboarding.get()).toMatchObject({ reason: warning, requested: true })
+    // Merely switching to (or activating a session on) the unconfigured
+    // profile must NOT open the blocking overlay…
+    expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+    // …but the warning is staged for the submit path to consume.
+    expect(consumePendingCredentialWarning()).toBe(warning)
+    // Consuming clears it — the next submit doesn't double-fire.
+    expect(consumePendingCredentialWarning()).toBeNull()
+  })
+
+  it('a warning-free session event clears the stash (profile healed or switched away)', () => {
+    applyRuntimeInfo({
+      credential_warning: "No API key configured for provider 'openrouter'. First message will fail."
+    })
+    applyRuntimeInfo({ model: 'gpt-5' })
+
+    expect(consumePendingCredentialWarning()).toBeNull()
   })
 
   it('ignores an auxiliary-provider warning', () => {
     applyRuntimeInfo({ credential_warning: 'OPENROUTER_API_KEY not set' })
 
     expect($desktopOnboarding.get()).toMatchObject({ reason: null, requested: false })
+    expect(consumePendingCredentialWarning()).toBeNull()
   })
 })
 
@@ -218,6 +238,24 @@ describe('isSessionGoneError', () => {
     expect(isSessionGoneError(new Error('Session not found'))).toBe(true)
     expect(isSessionGoneError(new Error('ECONNREFUSED'))).toBe(false)
     expect(isSessionGoneError(null)).toBe(false)
+  })
+})
+
+describe('goneSessionVerdict', () => {
+  it('drafts only when the id is verifiably gone in calm conditions', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: false, switchInFlight: false })).toBe('draft')
+  })
+
+  it('retries when a profile/connection switch is in flight (#88540 route revert)', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: false, switchInFlight: true })).toBe('retry')
+  })
+
+  it('retries when the session is still listed on some profile', () => {
+    expect(goneSessionVerdict({ createdThisRun: false, stillListed: true, switchInFlight: false })).toBe('retry')
+  })
+
+  it('never discards a session created by this window in this run', () => {
+    expect(goneSessionVerdict({ createdThisRun: true, stillListed: false, switchInFlight: false })).toBe('retry')
   })
 })
 
@@ -1147,6 +1185,73 @@ describe('preserveLocalPendingTurnMessages', () => {
     ])
   })
 
+  it('does not keep a settled final-answer bubble already folded into the tool-round message', () => {
+    const folded = {
+      id: '1790016993.1043298-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), folded]
+
+    const previous = [
+      msg('1-user', 'user', 'inspect the fixture'),
+      { ...folded, parts: folded.parts.slice(0, 2) },
+      msg('assistant-stream-placeholder', 'assistant', '', { pending: false }),
+      msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })
+    ]
+
+    const preserved = preserveLocalPendingTurnMessages(next, previous)
+
+    const finals = preserved.flatMap(message =>
+      message.parts.filter(part => part.type === 'text' && part.text === 'The result is 71.')
+    )
+
+    expect(finals).toHaveLength(1)
+    expect(preserved.map(message => message.id)).not.toContain('assistant-stream-final')
+  })
+
+  it('keeps a settled final-answer bubble the folded tool round has not absorbed', () => {
+    const toolRound = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'inspect the fixture'), toolRound]
+    const previous = [...next, msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-final'
+    )
+  })
+
+  it('keeps an equal final answer that belongs to a later turn history has not stored', () => {
+    const folded = {
+      id: 'row-1-assistant',
+      role: 'assistant' as const,
+      parts: [
+        { type: 'text' as const, text: 'I will inspect the fixture, then give the final result.' },
+        { type: 'tool-call' as const, toolCallId: 'call-1', toolName: 'terminal', result: '71' },
+        { type: 'text' as const, text: 'The result is 71.' }
+      ]
+    }
+
+    const next = [msg('1-user', 'user', 'first'), folded, msg('2-user', 'user', 'again')]
+    const previous = [...next, msg('assistant-stream-later', 'assistant', 'The result is 71.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-later'
+    )
+  })
+
   // The whole point of replacing rather than appending: one reply on screen,
   // and the committed history around the live turn untouched.
   it('does not duplicate or rewrite committed history around the live turn', () => {
@@ -1226,6 +1331,46 @@ describe('preserveLocalPendingTurnMessages', () => {
 })
 
 describe('appendLiveSessionProjection', () => {
+  // A synthetic starting prompt keeps the display typing its persisted row
+  // will get: on reconnect it renders as the same timeline event as history,
+  // never as a user bubble; a real user quoting the marker text stays a user
+  // bubble because the gateway typed nothing (#112144).
+  it('renders a typed synthetic in-flight prompt as its timeline event, not a user bubble', () => {
+    const typed = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: {
+        user: '[IMPORTANT: Background process finished] fixture',
+        display_kind: 'process_complete',
+        display_metadata: { display_text: 'Background Process Finished: fixture' },
+        assistant: '',
+        streaming: true
+      }
+    })
+
+    const inflightRow = (message: ChatMessage) => message.id === 'user-inflight-runtime-1'
+
+    expect(typed.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['system', 'Background Process Finished: fixture']
+    ])
+
+    const quoted = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: '[IMPORTANT: Background process finished] fixture', assistant: '', streaming: true }
+    })
+
+    expect(quoted.filter(inflightRow).map(message => [message.role, chatMessageText(message)])).toEqual([
+      ['user', '[IMPORTANT: Background process finished] fixture']
+    ])
+  })
+
+  it('omits a hidden synthetic in-flight prompt but keeps its streaming reply', () => {
+    const restored = appendLiveSessionProjection([], {
+      session_id: 'runtime-1',
+      inflight: { user: 'scaffolding the model must see', display_kind: 'hidden', assistant: 'On it.', streaming: true }
+    })
+
+    expect(restored.map(message => [message.role, chatMessageText(message)])).toEqual([['assistant', 'On it.']])
+  })
   // Corrections typed while a turn ran are their own user bubbles on the same
   // turn, ordered by ARRIVAL. Without boundary offsets (older gateway) the
   // whole dump precedes them — never the old prompt → corrections → reply
@@ -1507,7 +1652,7 @@ describe('resolveResumedBusy', () => {
   })
 })
 
-const runningProjection = (user: string): SessionResumeResponse =>
+const runningProjection = (user: string): SessionResumeResult =>
   ({
     session_id: 'runtime-1',
     session_key: 'stored-1',
@@ -1516,7 +1661,7 @@ const runningProjection = (user: string): SessionResumeResponse =>
     messages: [],
     running: true,
     inflight: { user, assistant: 'partial answer', streaming: true }
-  }) as SessionResumeResponse
+  }) as SessionResumeResult
 
 describe('dedupeInflightUserAgainstTranscript', () => {
   it('retains the in-flight user source only when it already exists after the runtime anchor', () => {
@@ -1678,5 +1823,45 @@ describe('overlayConcurrentMessageChanges', () => {
       { type: 'text', text: 'partial A' },
       { type: 'text', text: ' + delta B' }
     ])
+  })
+})
+
+describe('preserveEquivalentTranscript', () => {
+  it('keeps the current array BY REFERENCE when the replacement is content-equivalent', () => {
+    // The exact warm-resume shape of #95595: fresh objects, identical content.
+    const current = [msg('u-1', 'user', 'hello'), msg('a-1', 'assistant', 'const x = 1')]
+    const freshObjects = current.map(message => ({ ...message, parts: [...message.parts] }))
+
+    const preserved = preserveEquivalentTranscript(current, freshObjects)
+
+    expect(preserved).toBe(current)
+    expect(preserved[0]).toBe(current[0])
+  })
+
+  it('keeps the current array when the arrays are the same reference', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+
+    expect(preserveEquivalentTranscript(current, current)).toBe(current)
+  })
+
+  it('accepts the replacement when anything changed', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello'), msg('a-1', 'assistant', 'new turn')]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
+  })
+
+  it('rejects the replacement when a message diverges in content', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello world')]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
+  })
+
+  it('rejects the replacement when metadata a row renders diverges', () => {
+    const current = [msg('u-1', 'user', 'hello')]
+    const next = [msg('u-1', 'user', 'hello', { pending: true })]
+
+    expect(preserveEquivalentTranscript(current, next)).toBe(next)
   })
 })

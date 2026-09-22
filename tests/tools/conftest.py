@@ -55,6 +55,21 @@ def _materialize_mcp_sdk_symbols():
     yield
 
 
+@pytest.fixture(autouse=True)
+def _clear_web_result_cache():
+    """Reset the web_search TTL memo between tests.
+
+    The memo is module-global state in tools/web_result_cache.py; without
+    this, a test that exercised web_search_tool leaves a cached response
+    that a later test with the same query would receive instead of its own
+    mocked provider result.
+    """
+    from tools.web_result_cache import search_memo
+    search_memo.clear()
+    yield
+    search_memo.clear()
+
+
 def register_all_web_providers():
     """Register all bundled web-search providers into the global registry.
 
@@ -67,8 +82,10 @@ def register_all_web_providers():
     from plugins.web.exa.provider import ExaWebSearchProvider
     from plugins.web.firecrawl.provider import FirecrawlWebSearchProvider
     from plugins.web.parallel.provider import ParallelWebSearchProvider
-    from plugins.web.searxng.provider import SearXNGWebSearchProvider
+    from plugins.web.keenable.provider import KeenableWebSearchProvider
     from plugins.web.tavily.provider import TavilyWebSearchProvider
+    from plugins.web.perplexity.provider import PerplexityWebSearchProvider
+    from plugins.web.searxng.provider import SearXNGWebSearchProvider
     from plugins.web.xai.provider import XAIWebSearchProvider
 
     _reset_for_tests()
@@ -78,11 +95,30 @@ def register_all_web_providers():
         ExaWebSearchProvider,
         FirecrawlWebSearchProvider,
         ParallelWebSearchProvider,
-        SearXNGWebSearchProvider,
+        KeenableWebSearchProvider,
         TavilyWebSearchProvider,
+        PerplexityWebSearchProvider,
+        SearXNGWebSearchProvider,
         XAIWebSearchProvider,
     ):
         register_provider(cls())
+
+
+@pytest.fixture
+def grant_computer_use_approvals(monkeypatch):
+    """Answer every computer_use approval prompt with "once" through the shared gate.
+
+    computer_use fails CLOSED when nobody can answer (no interactive user, no
+    gateway), so dispatch tests that only care about routing must present an
+    interactive CLI with a granting callback. "once" persists nothing, so no
+    grant leaks into ``tools.approval``'s session/permanent stores.
+    """
+    from tools.computer_use import tool as cu_tool
+
+    monkeypatch.setenv("HERMES_INTERACTIVE", "1")
+    cu_tool.set_approval_callback(lambda command, description, **kw: "once")
+    yield
+    cu_tool.set_approval_callback(None)
 
 
 @pytest.fixture

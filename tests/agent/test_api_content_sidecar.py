@@ -30,7 +30,12 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from agent.memory_manager import build_memory_context_block
-from agent.turn_context import build_turn_context, compose_user_api_content
+from agent.turn_context import (
+    _memory_query_text,
+    build_turn_context,
+    compose_multimodal_context_part,
+    compose_user_api_content,
+)
 from hermes_state import SessionDB
 
 
@@ -49,6 +54,30 @@ class TestComposeUserApiContent:
         assert out == "hello" + "\n\n" + fenced + "\n\n" + "PLUGIN-CTX"
 
 
+
+
+class TestComposeMultimodalContextPart:
+    def test_is_the_string_sidecar_injection_tail(self):
+        """Both content shapes inject byte-identical context (#71998): the text part a list
+        turn carries is exactly what the string sidecar appends after ``content``."""
+        assert compose_multimodal_context_part("", "") is None
+        sidecar = compose_user_api_content("hello", "likes tea", "CTX")
+        part = compose_multimodal_context_part("likes tea", "CTX")
+        assert sidecar == "hello\n\n" + part
+
+
+class TestMemoryQueryText:
+    def test_list_turn_queries_its_text_and_image_only_stays_trivial(self):
+        """#71998 execution side: a text+image turn must drive prefetch off its text (it used to
+        collapse to ``""`` and skip recall silently); an image-only turn has no text to query."""
+        from agent.memory_provider import is_trivial_prompt
+
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        text_plus_image = [{"type": "text", "text": "remind me what my dog's name is"}, image]
+        assert _memory_query_text(text_plus_image) == "remind me what my dog's name is"
+        assert is_trivial_prompt(_memory_query_text(text_plus_image)) is False
+        assert _memory_query_text([image]) == ""
+        assert is_trivial_prompt(_memory_query_text([image])) is True
 
 
 # ---------------------------------------------------------------------------
@@ -260,7 +289,7 @@ class TestPrologueStamping:
             describe_recall=lambda: "",
         )
 
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]):
             ctx = _build(agent, user_message="current query")
 
         assert calls[0] == (
@@ -291,7 +320,7 @@ class TestPrologueStamping:
             agent.session_id = "sess-2"
             return []
 
-        with patch("hermes_cli.plugins.invoke_hook", side_effect=_rotate_session):
+        with patch("hermes_cli.lifecycle.invoke_hook", side_effect=_rotate_session):
             _build(agent, user_message="current query")
 
         assert [call for call in calls if call[0] == "start"] == [
@@ -312,10 +341,51 @@ class TestPrologueStamping:
             {"session_id": "sess-2"},
         )
 
+    def test_restarts_current_recall_after_same_list_compaction_boundary(self):
+        from agent.turn_context_compaction import CompactionOutcome
+
+        agent = _FakeAgent()
+        calls = []
+        agent._memory_manager = types.SimpleNamespace(
+            start_prefetch_all=lambda query, **kwargs: calls.append(
+                ("start", query, kwargs)
+            ),
+            on_turn_start=lambda *args, **kwargs: None,
+            prefetch_all=lambda query, **kwargs: calls.append(
+                ("collect", query, kwargs)
+            ) or "",
+            describe_recall=lambda: "",
+        )
+
+        def _same_list_boundary(_agent, **kwargs):
+            return CompactionOutcome(
+                messages=kwargs["messages"],
+                active_system_prompt=kwargs["active_system_prompt"],
+                conversation_history=kwargs["conversation_history"],
+                current_turn_user_idx=kwargs["current_turn_user_idx"],
+                memory_invalidated=True,
+            )
+
+        with patch(
+            "agent.turn_context_compaction.run_turn_start_compaction",
+            side_effect=_same_list_boundary,
+        ), patch("hermes_cli.lifecycle.invoke_hook", return_value=[]):
+            _build(agent, user_message="current query")
+
+        assert [call for call in calls if call[0] == "start"] == [
+            ("start", "current query", {"session_id": "sess-1", "turn_number": 1}),
+            ("start", "current query", {"session_id": "sess-1", "turn_number": 1}),
+        ]
+        assert calls[-1] == (
+            "collect",
+            "current query",
+            {"session_id": "sess-1"},
+        )
+
     def test_stamps_api_content_from_plugin_context(self):
         agent = _FakeAgent()
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
@@ -330,7 +400,7 @@ class TestPrologueStamping:
 
     def test_no_stamp_without_injections(self):
         agent = _FakeAgent()
-        with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+        with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]):
             ctx = _build(agent)
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
         assert agent.api_content_at_persist is None
@@ -341,10 +411,36 @@ class TestPrologueStamping:
         agent = _FakeAgent()
         agent.api_mode = "codex_app_server"
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent)
+        assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
+
+    def test_appends_context_part_for_multimodal_turn(self):
+        """#71998: pre_llm_call context must reach an image-only (multimodal)
+        turn as a durable text part, not silently drop.
+
+        The string api_content sidecar can't ride on list content, so the
+        context is appended to the content list (the gateway must-deliver-note
+        channel) — durable, so wire == persisted == replay."""
+        agent = _FakeAgent()
+        blocks = [{"type": "image_url", "image_url": {"url": "data:img"}}]
+        with patch(
+            "hermes_cli.lifecycle.invoke_hook",
+            return_value=[{"context": "PLUGIN-CTX"}],
+        ):
+            ctx = _build(
+                agent,
+                user_message=blocks,
+                summarize_user_message_for_log=lambda _m: "[image]",
+            )
+        content = ctx.messages[ctx.current_turn_user_idx]["content"]
+        assert isinstance(content, list)
+        # Original image part preserved; plugin context appended as a text part.
+        assert content[0] == {"type": "image_url", "image_url": {"url": "data:img"}}
+        assert content[-1] == {"type": "text", "text": "PLUGIN-CTX"}
+        # Multimodal turns carry the context durably, not via the string sidecar.
         assert "api_content" not in ctx.messages[ctx.current_turn_user_idx]
 
 
@@ -526,7 +622,7 @@ def wire_env():
 
     try:
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             side_effect=lambda hook, **kw: (
                 [{"context": "PLUGIN-CTX"}] if hook == "pre_llm_call" else []
             ),
@@ -612,6 +708,32 @@ class TestWireInvariant:
         current = _user_messages(_chat_requests(handler)[0])[-1]
         assert current["content"] == "second question\n\nPLUGIN-CTX"
 
+    def test_multimodal_turn_sends_persists_and_replays_context_part(self, wire_env):
+        """#71998: on a list-content (image) turn the ``pre_llm_call`` context reaches the
+        wire as a text part, the persisted row carries it, and a resumed turn N+1 replays
+        the same view — same contract as the string sidecar path."""
+        make_agent, handler, db, sid = wire_env
+        from run_agent import AIAgent
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        turn = [{"type": "text", "text": "what is this"}, image]
+
+        agent1 = make_agent()
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):  # keep native parts on the wire
+            agent1.run_conversation(list(turn), conversation_history=[], task_id="t1")
+
+        sent = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert sent == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
+
+        history = db.get_messages_as_conversation(sid)
+        assert "PLUGIN-CTX" in history[0]["content"]  # persisted with the turn, not dropped
+
+        handler.captured_requests = []
+        agent2 = make_agent()
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            agent2.run_conversation("second question", conversation_history=history, task_id="t2")
+        replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
+        assert replayed == history[0]["content"]
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override
@@ -642,7 +764,7 @@ class TestPrologueMoaAndInPlaceBackfill:
         the wire."""
         agent = _FakeAgent()
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent, moa_active=True)
@@ -695,7 +817,7 @@ class TestPrologueMoaAndInPlaceBackfill:
             {"role": "assistant", "content": big},
         ]
         with patch(
-            "hermes_cli.plugins.invoke_hook",
+            "hermes_cli.lifecycle.invoke_hook",
             return_value=[{"context": "PLUGIN-CTX"}],
         ):
             ctx = _build(agent, conversation_history=history)
@@ -929,22 +1051,23 @@ class TestMaxIterationsSummaryReplay:
         class _Completions:
             def create(self, **kwargs):
                 captured.update(kwargs)
-                return "RAW-RESPONSE"
+                return types.SimpleNamespace(
+                    choices=[types.SimpleNamespace(
+                        message=types.SimpleNamespace(content="SUMMARY", tool_calls=None),
+                        finish_reason="stop",
+                    )],
+                )
 
         client = types.SimpleNamespace(
             chat=types.SimpleNamespace(completions=_Completions())
         )
-        transport = types.SimpleNamespace(
-            normalize_response=lambda _r: types.SimpleNamespace(content="SUMMARY")
-        )
-
         messages = [
             {"role": "user", "content": "q1", "api_content": "q1\n\nPLUGIN-CTX"},
             {"role": "assistant", "content": "a1"},
         ]
         with patch.object(
             agent, "_ensure_primary_openai_client", return_value=client
-        ), patch.object(agent, "_get_transport", return_value=transport):
+        ):
             out = handle_max_iterations(agent, messages, 5)
 
         assert out == "SUMMARY"
@@ -969,7 +1092,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
     before the delayed persist. Drives the real ``compress_context`` path
     against a real, empty SessionDB."""
 
-    def _make_agent(self, db, sid, *, in_place):
+    def _make_agent(self, db, sid, *, in_place, current_user_content="hello"):
         from run_agent import AIAgent
 
         with patch.dict(os.environ, {"OPENROUTER_API_KEY": "test-key"}):
@@ -1000,7 +1123,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         seen = {}
         compacted = [
             {"role": "assistant", "content": "[CONTEXT COMPACTION] summary"},
-            {"role": "user", "content": "hello"},
+            {"role": "user", "content": current_user_content},
         ]
 
         def _compress(_messages, **_kwargs):
@@ -1041,7 +1164,7 @@ class TestSessionRowExistsBeforePreflightCompaction:
         sid = "sess-fresh-inplace"
         try:
             agent, seen = self._make_agent(db, sid, in_place=True)
-            with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]):
                 ctx = _build(agent, conversation_history=self._oversized_history())
 
             # The row was created before compression started — without it the
@@ -1057,12 +1180,37 @@ class TestSessionRowExistsBeforePreflightCompaction:
         finally:
             db.close()
 
+    def test_in_place_compaction_multimodal_context_part_survives_reload(self, tmp_path):
+        """#71998 persistence: in-place ``archive_and_compact`` writes the current-turn user
+        row BEFORE the prologue appends the ``pre_llm_call`` text part, and the crash persist
+        identity-skips compacted dicts — the part must be pushed into that row, or a
+        resumed session replays a view the model never saw."""
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-inplace-mm"
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        turn = [{"type": "text", "text": "what is this"}, image]
+        try:
+            agent, _seen = self._make_agent(db, sid, in_place=True, current_user_content=list(turn))
+            with patch("hermes_cli.lifecycle.invoke_hook", return_value=[{"context": "PLUGIN-CTX"}]):
+                ctx = _build(
+                    agent, user_message=list(turn), conversation_history=self._oversized_history(),
+                    summarize_user_message_for_log=lambda _m: "[image]",
+                )
+            assert agent._last_compaction_in_place is True
+            live = ctx.messages[ctx.current_turn_user_idx]["content"]
+            assert live == [*turn, {"type": "text", "text": "PLUGIN-CTX"}]
+            # Reload: the durable row carries the same parts the model saw.
+            reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
+            assert reloaded[-1]["content"] == live
+        finally:
+            db.close()
+
     def test_rotation_first_turn_compaction_creates_child(self, tmp_path):
         db = SessionDB(db_path=tmp_path / "state.db")
         sid = "sess-fresh-rot"
         try:
             agent, seen = self._make_agent(db, sid, in_place=False)
-            with patch("hermes_cli.plugins.invoke_hook", return_value=[]):
+            with patch("hermes_cli.lifecycle.invoke_hook", return_value=[]):
                 _build(agent, conversation_history=self._oversized_history())
 
             # The parent row existed before compression started — the child

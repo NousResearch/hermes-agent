@@ -320,6 +320,8 @@ export const zh: Translations = {
     disableRuntime: "禁用",
     enableAfterInstall: "安装后启用",
     enableRuntime: "启用",
+    toggleTakesEffectAfterRestart:
+      "已保存 — 重启网关以应用更改。",
     forceReinstall: "强制重装（先删除已有目录）",
     headline: "发现、安装、启用和更新 Hermes 插件（对齐 `hermes plugins` CLI）。",
     identifierLabel: "Git 地址或 owner/repo",
@@ -463,6 +465,8 @@ export const zh: Translations = {
     copyCliCommand: "复制 CLI 命令（用于外部/备用方式）",
     connect: "连接",
     sessionExpires: "会话将在 {time} 后过期",
+    sessionExpiredNoError:
+      "登录已过期，且未能连接到提供方。这通常意味着登录页面在打开的标签页中卡住了（服务端问题）——请在该标签页完成登录，然后点击重试。如果仍然失败，请改用 API 密钥或 CLI。",
     initiatingLogin: "正在启动登录流程…",
     exchangingCode: "正在交换令牌…",
     connectedClosing: "已连接！正在关闭…",

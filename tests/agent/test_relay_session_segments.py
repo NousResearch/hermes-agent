@@ -76,11 +76,17 @@ class _FakeScopeType:
     Agent = "agent"
 
 
+class _FakePluginModule:
+    def report(self) -> None:
+        return None
+
+
 class _FakeRelay:
     def __init__(self, wedge_pop: threading.Event | None = None) -> None:
         self.scope = _FakeScopeModule(wedge_pop)
         self.subscribers = _FakeSubscribers()
         self.ScopeType = _FakeScopeType()
+        self.plugin = _FakePluginModule()
 
     def get_scope_stack(self) -> None:
         return None
@@ -143,6 +149,51 @@ def coordinator() -> RelaySessionCoordinator:
     return RelaySessionCoordinator()
 
 
+class TestSessionScopeFallback:
+    def test_push_runtime_error_does_not_double_push(self):
+        """A RuntimeError raised by relay.scope.push inside the future is re-raised
+        by future.result(); it must not be mistaken for executor refusal and retried."""
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+        original_push = fake.scope.push
+        calls: list = []
+
+        def failing_push(*args, **kwargs):
+            calls.append(args)
+            raise RuntimeError("scope push failed")
+
+        fake.scope.push = failing_push
+
+        with pytest.raises(RuntimeError, match="scope push failed"):
+            runtime.ensure_session({"session_id": "sess-rt"})
+        assert len(calls) == 1
+        # The failed open leaves no half-populated scope state: the session stays
+        # registered with handle/context unset so a later ensure_session retries cleanly.
+        session = runtime._sessions["sess-rt"]
+        assert session.handle is None
+        assert session.context is None
+
+        fake.scope.push = original_push
+        runtime.ensure_session({"session_id": "sess-rt"})
+        assert len(_session_pushes(fake)) == 1
+        assert session.handle is not None
+
+    def test_executor_refusal_still_uses_sync_fallback(self, monkeypatch):
+        """The intended lane: submit() refusing at interpreter shutdown pushes once,
+        synchronously, via exit_fallback."""
+
+        class _RefusingExecutor:
+            def submit(self, *args, **kwargs):
+                raise RuntimeError("cannot schedule new futures after shutdown")
+
+        monkeypatch.setattr(
+            relay_runtime, "_scope_op_executor", lambda: _RefusingExecutor()
+        )
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+
+        runtime.ensure_session({"session_id": "sess-ref"})
+        assert len(_session_pushes(fake)) == 1
 def _acquire(coordinator, runtime, session_id="sess-1"):
     class _Registry:
         def for_profile(self, key):
@@ -165,6 +216,36 @@ def _run_turn(coordinator, lease, turn_id):
     turn = coordinator.begin_turn(lease, turn_id=turn_id, task_id=f"task-{turn_id}")
     coordinator.end_turn(turn, outcome="success")
     return turn
+
+
+class TestTurnMetadata:
+    def test_includes_request_metadata_without_overriding_runtime_fields(
+        self, coordinator
+    ):
+        fake = _FakeRelay()
+        runtime = _make_runtime(fake)
+        lease = _acquire(coordinator, runtime)
+
+        turn = coordinator.begin_turn(
+            lease,
+            turn_id="t1",
+            task_id="task1",
+            metadata={
+                "request_id": "req-123",
+                "context": {"tenant": "example"},
+                relay_runtime.RUNTIME_INSTANCE_KEY: "caller-supplied",
+            },
+        )
+
+        turn_metadata = [
+            push
+            for push in fake.scope.pushes
+            if push["name"] == relay_runtime.TURN_SCOPE
+        ][-1]["metadata"]
+        assert turn_metadata["request_id"] == "req-123"
+        assert turn_metadata["context"] == {"tenant": "example"}
+        assert turn_metadata[relay_runtime.RUNTIME_INSTANCE_KEY] == runtime.runtime_id
+        coordinator.end_turn(turn, outcome="success")
 
 
 class TestDefaultsNeverRotate:
@@ -259,7 +340,10 @@ class TestCompactionRotation:
         assert len(fake.scope.pops) == 1, (
             "rotating compaction must close the old session scope"
         )
-        assert fake.subscribers.flushed >= 1
+        # Subscriber flushing is process-wide and happens once at final plugin
+        # teardown, after all sessions have drained. Flushing on this per-session
+        # close can block an active asyncio loop owned by another session.
+        assert fake.subscribers.flushed == 0
 
     def test_rotating_compaction_mid_turn_defers_close_to_end_turn(
         self, coordinator, monkeypatch

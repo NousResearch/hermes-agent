@@ -1,13 +1,17 @@
 """Tests for hermes_cli.cron command handling."""
 
+import argparse
+import time
 from argparse import Namespace
+from datetime import datetime, timedelta, timezone
 from types import SimpleNamespace
 
 import pytest
 
-from cron.jobs import create_job, get_job, list_jobs
+from cron.jobs import create_job, get_job, list_jobs, load_jobs, pause_job, save_jobs
 from hermes_cli import cron as cron_cli
 from hermes_cli.cron import cron_command
+from hermes_cli.subcommands.cron import build_cron_parser
 
 
 @pytest.fixture()
@@ -19,6 +23,30 @@ def tmp_cron_dir(tmp_path, monkeypatch):
 
 
 class TestCronCommandLifecycle:
+
+    def test_edit_persists_user_owned_inference_pins(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Daily report", schedule="every 1h")
+        parser = argparse.ArgumentParser(prog="hermes")
+        subparsers = parser.add_subparsers(dest="command")
+        build_cron_parser(subparsers, cmd_cron=cron_command)
+
+        args = parser.parse_args(
+            [
+                "cron",
+                "edit",
+                job["id"],
+                "--model",
+                "new-model",
+                "--provider",
+                "nous",
+            ]
+        )
+        cron_command(args)
+
+        updated = get_job(job["id"])
+        assert updated["model"] == "new-model"
+        assert updated["provider"] == "nous"
+        assert "Updated job" in capsys.readouterr().out
 
     def test_edit_can_replace_and_clear_skills(self, tmp_cron_dir, capsys):
         job = create_job(
@@ -103,6 +131,185 @@ class TestCronCommandLifecycle:
         assert jobs[0]["name"] == "Skill combo"
 
 
+class TestUnverifiedDeliveryVisibility:
+    """An evidence-free live-adapter ack (Slack/Matrix/Mattermost bare
+    ``SendResult(success=True)``) is accepted as delivered, but the UNVERIFIED
+    state must be visible in ``hermes cron list`` and ``hermes cron doctor``,
+    not only in a WARNING log line."""
+
+    def _seed(self):
+        job = create_job(prompt="Nightly brief", schedule="every 1h", deliver="slack:C0123456")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "ok"
+        jobs[0]["last_delivery_unverified"] = ["slack:C0123456"]
+        save_jobs(jobs)
+        return job
+
+    def test_list_shows_unverified_delivery(self, tmp_cron_dir, capsys):
+        job = self._seed()
+        cron_command(Namespace(cron_command="list", all=True, json=False))
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "Delivery UNVERIFIED" in out
+        assert "slack:C0123456" in out
+        assert "without message_id/raw_response" in out
+
+    def test_list_is_quiet_when_delivery_was_verified(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="slack:C0123456")
+        cron_command(Namespace(cron_command="list", all=True, json=False))
+        assert "UNVERIFIED" not in capsys.readouterr().out
+
+    def test_doctor_reports_unverified_delivery(self, tmp_cron_dir, capsys):
+        job = self._seed()
+        rc = cron_command(Namespace(cron_command="doctor"))
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert job["id"] in out
+        assert "last delivery unverified" in out
+        assert "slack:C0123456" in out
+
+
+class TestCronDoctor:
+    def test_doctor_reports_cron_health_issues(self, tmp_cron_dir, capsys):
+        job = create_job(prompt="Daily digest", schedule="every 1h", script="missing.py")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "error"
+        jobs[0]["last_error"] = "Provider returned error"
+        jobs[0]["last_delivery_error"] = "telegram timeout"
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "Cron doctor found 3 issue(s)" in out
+        assert job["id"] in out
+        assert "last run failed: Provider returned error" in out
+        assert "was not delivered (telegram timeout)" in out
+        assert "hermes cron edit" in out
+        assert "script not found" in out
+
+    def test_doctor_reports_healthy_jobs(self, tmp_cron_dir, capsys):
+        scripts_dir = tmp_cron_dir / "scripts"
+        scripts_dir.mkdir()
+        (scripts_dir / "ok.py").write_text("print('ok')\n", encoding="utf-8")
+        create_job(prompt="Daily digest", schedule="every 1h", script="ok.py")
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "✓ Cron doctor found no issues" in out
+
+    def test_doctor_reports_delivery_failure_once(self, tmp_cron_dir, capsys):
+        """A delivery_failed run is a delivery issue, not a failed agent run.
+
+        The agent succeeded (last_error is None), so the generic last-run-failed
+        line would only ever say "unknown error" — double-reporting the same
+        incident (#83993).
+        """
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_status"] = "delivery_failed"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "telegram timeout"
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "was not delivered (telegram timeout)" in out
+        assert "hermes cron edit" in out
+        assert "last run failed" not in out
+        assert "unknown error" not in out
+
+    def test_doctor_flags_overdue_next_run(self, tmp_cron_dir, capsys):
+        from datetime import datetime, timedelta, timezone
+
+        create_job(prompt="Hourly ping", schedule="every 1h")
+        jobs = load_jobs()
+        stale = (datetime.now(timezone.utc) - timedelta(hours=3)).isoformat()
+        jobs[0]["next_run_at"] = stale
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 1
+        assert "overdue" in out
+        assert "not firing" in out
+
+    def test_doctor_tolerates_slightly_late_next_run(self, tmp_cron_dir, capsys):
+        from datetime import datetime, timedelta, timezone
+
+        create_job(prompt="Hourly ping", schedule="every 1h")
+        jobs = load_jobs()
+        # 5 minutes late is within the ticker grace window — healthy.
+        recent = (datetime.now(timezone.utc) - timedelta(minutes=5)).isoformat()
+        jobs[0]["next_run_at"] = recent
+        save_jobs(jobs)
+
+        rc = cron_command(Namespace(cron_command="doctor"))
+
+        out = capsys.readouterr().out
+        assert rc == 0
+        assert "✓ Cron doctor found no issues" in out
+
+
+class TestCronListStatusRendering:
+    """`cron list` must never paint an undelivered run as a success (#83993)."""
+
+    def test_default_list_includes_paused_jobs(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        job = create_job(prompt="Paused digest", schedule="every 1h")
+        pause_job(job["id"])
+
+        cron_command(Namespace(cron_command="list", all=False))
+
+        out = capsys.readouterr().out
+        assert job["id"] in out
+        assert "[paused]" in out
+        assert "No scheduled jobs" not in out
+
+    def test_delivery_failed_is_not_green_ok(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        # capsys is not a tty, so force colors on to check the paint itself.
+        monkeypatch.setattr("hermes_cli.colors.should_use_color", lambda: True)
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T09:00:00+00:00"
+        jobs[0]["last_status"] = "delivery_failed"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "telegram timeout"
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
+        assert "was not delivered" in last_run_line
+        assert "telegram timeout" in last_run_line, (
+            "the delivery detail lives in last_delivery_error, not last_error"
+        )
+        assert cron_cli.Colors.GREEN not in last_run_line
+
+    def test_ok_run_still_green(self, tmp_cron_dir, capsys, monkeypatch):
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [1])
+        monkeypatch.setattr("hermes_cli.colors.should_use_color", lambda: True)
+        create_job(prompt="Daily digest", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T09:00:00+00:00"
+        jobs[0]["last_status"] = "ok"
+        save_jobs(jobs)
+
+        cron_command(Namespace(cron_command="list", all=True))
+
+        out = capsys.readouterr().out
+        last_run_line = next(l for l in out.splitlines() if "Last run:" in l)
+        assert f"{cron_cli.Colors.GREEN}ok" in last_run_line
+        assert "not delivered" not in last_run_line
+
 
 class TestGatewayNotRunningWarning:
     """`cron create` / `cron list` must warn when the gateway (and thus the
@@ -117,7 +324,7 @@ class TestGatewayNotRunningWarning:
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         cron_command(Namespace(cron_command="list", all=True))
         out = capsys.readouterr().out
-        assert "Gateway is not running" in out
+        assert "Scheduler is not ready" in out
 
 
 class TestExternalCronProviderStatus:
@@ -145,7 +352,7 @@ class TestExternalCronProviderStatus:
         assert "managed scheduler" in out
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
-        assert "Gateway is not running" not in out
+        assert "No gateway is running on this host" not in out
         # Still surfaces the active-job summary.
         assert "active job(s)" in out
 
@@ -176,7 +383,7 @@ class TestExternalCronProviderStatus:
         )
         out = capsys.readouterr().out
         assert "Created job" in out
-        assert "Gateway is not running" not in out
+        assert "Scheduler is not ready" not in out
 
 
 def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
@@ -200,7 +407,7 @@ def test_cron_list_warns_when_gateway_not_running(monkeypatch, capsys):
     cron_cli.cron_list()
 
     out = capsys.readouterr().out
-    assert "Gateway is not running" in out
+    assert "Scheduler is not ready" in out
     assert "Nightly docs" in out
 
 
@@ -357,3 +564,151 @@ class TestCronRunBackgroundDispatch:
         assert rc == 0
         assert "Running in background (delegation del-xyz)." in out
         assert "failed" not in out.lower()
+
+
+class TestSlashCronListLastStatus:
+    """The in-chat ``/cron list`` (cli_commands_mixin) renders every
+    ``last_status`` literal explicitly — ``delivery_failed`` names the delivery
+    reason (last_error is None for those runs) instead of printing the bare
+    literal next to a run that looks otherwise fine."""
+
+    def _run_list(self, tmp_cron_dir, capsys):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        _Host()._handle_cron_command("/cron list --all")
+        return capsys.readouterr().out
+
+    def test_delivery_failed_names_the_delivery_error(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h", deliver="telegram:1")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
+        jobs[0]["last_status"] = "delivery_failed"
+        jobs[0]["last_error"] = None
+        jobs[0]["last_delivery_error"] = "telegram: 502 Bad Gateway"
+        save_jobs(jobs)
+
+        out = self._run_list(tmp_cron_dir, capsys)
+        assert "Last run: 2026-09-01T07:00:00+00:00 (delivery_failed: telegram: 502 Bad Gateway)" in out
+
+    def test_ok_stays_plain(self, tmp_cron_dir, capsys):
+        create_job(prompt="Nightly brief", schedule="every 1h")
+        jobs = load_jobs()
+        jobs[0]["last_run_at"] = "2026-09-01T07:00:00+00:00"
+        jobs[0]["last_status"] = "ok"
+        save_jobs(jobs)
+
+        out = self._run_list(tmp_cron_dir, capsys)
+        assert "(ok)" in out
+
+
+class TestStatusSurfacesDeadScheduler:
+    """#114309 — with the ticker dead and a job's next_run_at stranded in the past, `cron
+    status` / `cron list` must not present the stale timestamp as an upcoming "Next run":
+    flag it as overdue and say when the scheduler last ticked."""
+
+    def _dead_gateway(self, monkeypatch, lock_dir):
+        # No gateway owns the HOST role either: point the rendezvous dir at an empty scratch dir
+        # so an unrelated host record can never make this profile look served. (Superseded by the
+        # tests/conftest.py hook in #118097 once that lands.)
+        lock_dir.mkdir(exist_ok=True)
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+        monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
+        monkeypatch.setattr(
+            "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
+        )
+        monkeypatch.setattr("gateway.status.is_gateway_runtime_lock_active", lambda: False)
+
+    def _park_next_run(self, job_id, when):
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(job_id)]["next_run_at"] = when.isoformat()
+        save_jobs(jobs)
+
+    def test_overdue_next_run_and_stale_heartbeat_are_loud(
+        self, tmp_cron_dir, capsys, monkeypatch
+    ):
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(hours=7))
+        (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
+
+        cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
+
+        assert "No gateway is running on this host" in status_out
+        assert "Scheduler last ticked" in status_out
+        assert "OVERDUE" in status_out and "7h ago" in status_out
+        # The stale timestamp must no longer read as an upcoming run on either surface.
+        assert "Next run:" not in status_out
+        assert "Overdue:" in list_out and "Next run:" not in list_out
+
+    def test_overdue_within_doctor_grace_stays_plain(self, tmp_cron_dir, capsys, monkeypatch):
+        # status shares `cron doctor`'s 15-minute grace (_OVERDUE_GRACE_SECONDS): a job only
+        # a few minutes behind the ticker's own cadence is not an outage yet, and status must
+        # not flash OVERDUE while doctor calls the same job healthy.
+        job = create_job(prompt="Hourly", schedule="every 60m")
+        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
+        self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(minutes=5))
+
+        cron_command(Namespace(cron_command="status"))
+        status_out = capsys.readouterr().out
+        cron_command(Namespace(cron_command="list", all=False, json=False))
+        list_out = capsys.readouterr().out
+
+        assert "Next run:" in status_out and "OVERDUE" not in status_out
+        assert "Scheduler last ticked" not in status_out  # no heartbeat file → nothing to date
+        assert "Next run:" in list_out and "Overdue:" not in list_out
+
+    def test_slash_cron_and_list_flag_overdue_but_not_paused(self, tmp_cron_dir, capsys):
+        # The in-chat `/cron` overview and `/cron list` (classic CLI + Ink TUI forward to the
+        # same handler) read the same rows; a 7h-past stamp must not read as an upcoming run,
+        # while a paused job keeps its plain label — pausing is why it did not fire.
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        stale = create_job(prompt="Hourly", schedule="every 60m")
+        paused = create_job(prompt="Parked", schedule="every 60m")
+        when = datetime.now(timezone.utc) - timedelta(hours=7)
+        self._park_next_run(stale["id"], when)
+        self._park_next_run(paused["id"], when)
+        jobs = load_jobs()
+        jobs[[j["id"] for j in jobs].index(paused["id"])]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command("/cron")
+        overview_out = capsys.readouterr().out
+        _Host()._handle_cron_command("/cron list --all")
+        list_out = capsys.readouterr().out
+
+        for out in (overview_out, list_out):
+            assert out.count("Overdue:") == 1 and "7h ago" in out
+        assert "Next" not in overview_out  # the overview lists enabled jobs only
+        assert list_out.count("Next run:") == 1  # only the paused job's stamp stays plain
+        assert list_out.index("Overdue:") < list_out.index("Next run:")
+
+
+class TestSlashCronRunSkipped:
+    """``/cron run`` on a job whose claim is refused (paused here; a live claim held by another
+    run is the same shape) must print the refusal, never ``Triggered … next scheduler tick``."""
+
+    def test_refused_run_prints_reason_not_triggered(self, tmp_cron_dir, capsys):
+        from hermes_cli.cli_commands_mixin import CLICommandsMixin
+
+        class _Host(CLICommandsMixin):
+            pass
+
+        job = create_job(prompt="Nightly brief", schedule="every 1h", deliver="local")
+        jobs = load_jobs()
+        jobs[0]["enabled"] = False
+        save_jobs(jobs)
+
+        _Host()._handle_cron_command(f"/cron run {job['id']}")
+        out = capsys.readouterr().out
+        assert "Job is paused/disabled; resume it before running." in out
+        assert "Triggered" not in out and "next scheduler tick" not in out

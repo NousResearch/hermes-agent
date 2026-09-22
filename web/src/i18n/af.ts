@@ -324,6 +324,8 @@ export const af: Translations = {
     disableRuntime: "Deaktiveer",
     enableAfterInstall: "Aktiveer ná installasie",
     enableRuntime: "Aktiveer",
+    toggleTakesEffectAfterRestart:
+      "Gestoor — herbegin die gateway om die verandering toe te pas.",
     forceReinstall: "Forseer herinstallasie (skrap eers bestaande gids)",
     headline:
       "Ontdek, installeer, aktiveer en werk Hermes-inproppe op (`hermes plugins` ekwivalent).",
@@ -469,6 +471,8 @@ export const af: Translations = {
     copyCliCommand: "Kopieer CLI-opdrag (vir ekstern / terugval)",
     connect: "Koppel",
     sessionExpires: "Sessie verval oor {time}",
+    sessionExpiredNoError:
+      "Aanmelding het verval sonder om die verskaffer te bereik. Dit beteken gewoonlik dat die aanmeldbladsy in die oop oortjie vasgeval het ('n bedienerkant-probleem) — voltooi die aanmelding daar en klik dan Probeer weer. As dit aanhou misluk, gebruik eerder 'n API-sleutel of die CLI.",
     initiatingLogin: "Aanmeldvloei word begin…",
     exchangingCode: "Kode word vir tokens omgeruil…",
     connectedClosing: "Gekoppel! Besig om toe te maak…",

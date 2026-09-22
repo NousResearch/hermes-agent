@@ -18,6 +18,7 @@ from fastapi import FastAPI
 from fastapi.testclient import TestClient
 
 from hermes_cli import kanban_db as kb
+from hermes_cli import kanban_db_connect as kbc
 from hermes_cli.plugins import get_plugin_manager
 
 
@@ -67,7 +68,7 @@ def captured_updates():
 
 
 def _make_task(title="t"):
-    conn = kb.connect()
+    conn = kbc.connect()
     try:
         return kb.create_task(conn, title=title, assignee="alice")
     finally:
@@ -84,6 +85,25 @@ def test_patch_priority_fires_task_updated(client, captured_updates):
     assert kw["task_id"] == tid
     assert kw["changed_fields"] == ["priority"]
     assert kw["board"]
+
+
+def test_patch_priority_uses_shared_edit_task_primitive(client, monkeypatch):
+    """The dashboard reprioritizes through ``kanban_db.edit_task`` (one event
+    kind, one observer) instead of a duplicate raw UPDATE/INSERT (#117434)."""
+    from plugins.kanban.dashboard import plugin_api
+
+    calls = []
+    real = plugin_api.kanban_db.edit_task
+
+    def spy(conn, task_id, **kw):
+        calls.append((task_id, kw))
+        return real(conn, task_id, **kw)
+
+    monkeypatch.setattr(plugin_api.kanban_db, "edit_task", spy)
+    tid = _make_task()
+    r = client.patch(f"/api/plugins/kanban/tasks/{tid}", json={"priority": 5})
+    assert r.status_code == 200
+    assert [(t, k["priority"]) for t, k in calls] == [(tid, 5)]
 
 def test_bulk_priority_fires_task_updated_per_task(client, captured_updates):
     tid1 = _make_task("a")

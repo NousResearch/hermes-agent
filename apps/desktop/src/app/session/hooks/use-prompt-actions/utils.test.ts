@@ -18,6 +18,7 @@ import {
   isSessionNotFoundError,
   isSessionRecentlyInterrupted,
   isSubmitInFlight,
+  isTargetSessionBusy,
   markSessionRecentlyInterrupted,
   readFileDataUrlForAttach,
   RECENT_INTERRUPT_COOLDOWN_MS,
@@ -96,6 +97,18 @@ describe('submit in-flight TTL', () => {
     releaseSubmitInFlight(key)
     expect(isSubmitInFlight(key, t0 + 1)).toBe(false)
     expect(acquireSubmitInFlight(key, t0 + 1)).toBe(true)
+  })
+})
+
+describe('isTargetSessionBusy', () => {
+  it('reads the target session slice, not the leftover foreground flag', () => {
+    expect(isTargetSessionBusy({ a: { busy: true }, b: { busy: false } }, 'b', true)).toBe(false)
+    expect(isTargetSessionBusy({ a: { busy: true } }, 'b', true)).toBe(false)
+  })
+
+  it('uses the focused draft flag only when there is no session id', () => {
+    expect(isTargetSessionBusy({}, null, true)).toBe(true)
+    expect(isTargetSessionBusy({}, null, false)).toBe(false)
   })
 })
 
@@ -529,6 +542,29 @@ describe('renderRpcResult', () => {
 
       expect(body.split('\n')).toEqual([
         'Usage: 1 calls · 10 in / 20 out · 30 total',
+        'Nous credits: 8,420 remaining',
+        'Resets: 2026-08-01'
+      ])
+    })
+
+    it('appends account_lines before credits_lines when present', () => {
+      const body = renderRpcResult(
+        {
+          calls: 1,
+          input: 10,
+          output: 20,
+          total: 30,
+          account_lines: ['📈 Account limits', 'Provider: openai-codex (Plus)', 'Weekly: 12% used'],
+          credits_lines: ['Nous credits: 8,420 remaining', 'Resets: 2026-08-01']
+        },
+        'usage'
+      )
+
+      expect(body.split('\n')).toEqual([
+        'Usage: 1 calls · 10 in / 20 out · 30 total',
+        '📈 Account limits',
+        'Provider: openai-codex (Plus)',
+        'Weekly: 12% used',
         'Nous credits: 8,420 remaining',
         'Resets: 2026-08-01'
       ])

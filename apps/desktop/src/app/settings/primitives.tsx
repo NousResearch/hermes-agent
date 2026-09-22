@@ -1,4 +1,5 @@
-import type { ReactNode } from 'react'
+import type { ComponentProps, ReactNode } from 'react'
+import { createContext, useContext } from 'react'
 
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
@@ -9,6 +10,9 @@ import type { IconComponent } from '@/lib/icons'
 import { cn } from '@/lib/utils'
 
 import { PAGE_INSET_X } from '../layout-constants'
+
+// The settings shell owns page titles; embedded callers retain their headings.
+export const SettingsBreadcrumbContext = createContext(false)
 
 // `bare` drops the page gutters + tall bottom pad for embedding in a tighter
 // surface (e.g. the boot-failure recovery card owns its own padding).
@@ -22,16 +26,35 @@ export function SettingsContent({ children, bare = false }: { children: ReactNod
   )
 }
 
-const PILL_VARIANT = { muted: 'muted', primary: 'default', warn: 'warn' } as const
+const PILL_VARIANT = {
+  muted: 'muted',
+  primary: 'default',
+  success: 'success',
+  warn: 'warn',
+  destructive: 'destructive'
+} as const
 
-export function Pill({ tone = 'muted', children }: { tone?: keyof typeof PILL_VARIANT; children: ReactNode }) {
-  return <Badge variant={PILL_VARIANT[tone]}>{children}</Badge>
+// Rest props spread through to the Badge's DOM node — REQUIRED for Radix
+// `asChild` composition (wrapping a Pill in `Tip` clones it with the hover
+// handlers and ref as props; swallowing them left every tooltip on a Pill
+// silently dead).
+export function Pill({
+  tone = 'muted',
+  children,
+  ...props
+}: { tone?: keyof typeof PILL_VARIANT; children: ReactNode } & Omit<ComponentProps<typeof Badge>, 'variant'>) {
+  return (
+    <Badge variant={PILL_VARIANT[tone]} {...props}>
+      {children}
+    </Badge>
+  )
 }
 
 export function SectionHeading({
   aside,
   icon: Icon,
   meta,
+  page = false,
   title
 }: {
   // Right-aligned trailing content on the heading row (e.g. a compact status +
@@ -39,12 +62,24 @@ export function SectionHeading({
   aside?: ReactNode
   icon: IconComponent
   meta?: string
+  page?: boolean
   title: string
 }) {
+  const hasBreadcrumb = useContext(SettingsBreadcrumbContext)
+  const showTitle = !page || !hasBreadcrumb
+
+  if (!showTitle && !aside && !meta) {
+    return null
+  }
+
   return (
     <div className="mb-2.5 flex items-center gap-2 pt-2 text-[length:var(--conversation-text-font-size)] font-medium">
-      <Icon className="size-4 shrink-0 text-muted-foreground" />
-      <span>{title}</span>
+      {showTitle && (
+        <>
+          <Icon className="size-4 shrink-0 text-muted-foreground" />
+          <span>{title}</span>
+        </>
+      )}
       {meta && <Pill>{meta}</Pill>}
       {aside && <div className="ml-auto flex min-w-0 items-center">{aside}</div>}
     </div>
@@ -111,6 +146,8 @@ export function ListRow({
   hint,
   action,
   below,
+  'data-tour': dataTour,
+  id,
   wide = false,
   className
 }: {
@@ -119,6 +156,9 @@ export function ListRow({
   hint?: ReactNode
   action?: ReactNode
   below?: ReactNode
+  /** Durable handle for tours (see lib/tour) — usually the field's schema key. */
+  'data-tour'?: string
+  id?: string
   wide?: boolean
   className?: string
 }) {
@@ -126,7 +166,7 @@ export function ListRow({
     // Container-queried, not viewport-queried: the label/control split keys on
     // the row's own pane width, so a narrow detail column (messaging, split
     // views) stacks instead of squishing the label against minmax(15rem,…).
-    <div className={cn('@container', className)}>
+    <div className={cn('@container', className)} data-tour={dataTour} id={id}>
       <div
         className={cn(
           'grid gap-3 py-3',

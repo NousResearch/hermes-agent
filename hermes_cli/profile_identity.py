@@ -115,11 +115,22 @@ def _purge_profile_identity(canon: str, live_mux: bool) -> bool:
         return False
 
     from hermes_cli.profiles import get_profile_dir
-    from hermes_constants import get_default_hermes_root
+    from hermes_constants import get_default_hermes_root, named_profile_is_live
     from hermes_state_registry import acquire, release_or_close
     root = get_default_hermes_root()
     purged = True
-    for db_path in (root / "state.db", get_profile_dir(canon) / "state.db"):
+    # The delete path tombstones the home before calling this, and a tombstoned home is also what
+    # ``get_profile_dir(canon)`` resolves for an already-deleted name. ``SessionDB`` refuses to open
+    # a db under such a home (the deleted-profile guard that stops a stale route re-scaffolding it),
+    # and that ``state.db`` leaves with the directory anyway — so attempting it was counted as a
+    # failed settlement, and every delete of a used profile reported
+    # ``ProfileIdentitySettlementPending`` after a delete that had fully completed. Only a home that
+    # is still a live profile owns identity worth purging here.
+    db_paths = [root / "state.db"]
+    profile_dir = get_profile_dir(canon)
+    if named_profile_is_live(profile_dir):
+        db_paths.append(profile_dir / "state.db")
+    for db_path in db_paths:
         if not db_path.exists():
             continue
         db = None

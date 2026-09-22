@@ -513,6 +513,73 @@ class TestDeleteProfile:
         finally:
             check.close()
 
+    def test_delete_settles_cleanly_when_the_profile_owns_a_state_db(self, profile_env, capsys):
+        """A profile that has served a turn owns ``profiles/<name>/state.db``; deleting it stays a
+        clean success.
+
+        The tombstone written before the identity purge is deliberate — a stale serve/logging
+        ``mkdir`` must not relist the deleted name. It also makes ``SessionDB.__init__`` →
+        ``mkdir_under_hermes_home`` refuse the profile's OWN db, so the purge counted a failed
+        settlement on every delete of a used profile and ``delete_profile`` raised
+        ``ProfileIdentitySettlementPending`` after a filesystem delete that had fully completed.
+        """
+        from hermes_state import SessionDB
+        import time
+
+        tmp_path = profile_env
+        profile_dir = create_profile("gone", no_alias=True)
+        # Isolation guard: the profile store must be the temp home, never the live one.
+        assert Path(_get_profiles_root()).resolve() == (tmp_path / ".hermes" / "profiles").resolve()
+        # A profile that has served a turn owns its own store.
+        owned = SessionDB(profile_dir / "state.db")
+        owned.close()
+        assert (profile_dir / "state.db").is_file()
+
+        scope = str(tmp_path / ".hermes" / "sessions")
+        db = SessionDB(tmp_path / ".hermes" / "state.db")
+        db.save_gateway_routing_entry(
+            "agent:gone:feishu:dm:chatA",
+            json.dumps({"session_key": "agent:gone:feishu:dm:chatA",
+                        "origin": {"platform": "feishu", "chat_id": "chatA",
+                                   "profile": "gone"}}),
+            scope=scope)
+        db.save_gateway_routing_entry(
+            "agent:keepme:feishu:dm:chatB",
+            json.dumps({"session_key": "agent:keepme:feishu:dm:chatB",
+                        "origin": {"platform": "feishu", "chat_id": "chatB",
+                                   "profile": "keepme"}}),
+            scope=scope)
+        db.register_backend_heartbeat(
+            backend_id="be-gone", pid=1, started_at=time.time(), profile="gone", host="h")
+        db.close()
+
+        # No live multiplexer: nothing else owns the store, so this process purges the durable rows.
+        with patch("hermes_cli.profiles._cleanup_gateway_service"), \
+             patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+            # Clean success: no ProfileIdentitySettlementPending for a completed delete.
+            delete_profile("gone", yes=True)
+
+        assert not profile_dir.exists()
+        assert "identity purge failed" not in capsys.readouterr().err
+
+        # The retry the CLI would print for a pending settlement is idempotent against the real
+        # path, and reports clean.
+        from hermes_cli.profile_identity import purge_profile_identity
+        with patch("hermes_cli.profiles._live_default_multiplexer", return_value=False):
+            assert purge_profile_identity("gone") is True
+        assert "identity purge failed" not in capsys.readouterr().err
+
+        # The root-store arm still purges: the deleted name's rows are gone, the other's are not.
+        check = SessionDB(tmp_path / ".hermes" / "state.db")
+        try:
+            assert set(check.load_gateway_routing_entries(scope=scope)) == {
+                "agent:keepme:feishu:dm:chatB"}
+            assert check._read_one(
+                "SELECT COUNT(*) AS n FROM gateway_heartbeats WHERE profile = ?",
+                ("gone",))["n"] == 0
+        finally:
+            check.close()
+
     def test_delete_reports_pending_settlement_for_a_live_multiplexer(self, profile_env, capsys):
         """With a live multiplexer the owner process purges, so the CLI must not race it (#111926).
 

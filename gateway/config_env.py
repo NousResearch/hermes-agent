@@ -554,6 +554,7 @@ _ENV_STEPS: tuple = (
         then=_matrix_e2ee,
     ),
     _Home(Platform.MATRIX, "MATRIX_HOME_ROOM"),
+    _ReplyMode(Platform.MATRIX, "MATRIX_REPLY_TO_MODE"),
     _Cred(
         Platform.EMAIL, ("EMAIL_ADDRESS", "EMAIL_PASSWORD", "EMAIL_IMAP_HOST", "EMAIL_SMTP_HOST"),
         fixed=(("address", "EMAIL_ADDRESS"), ("imap_host", "EMAIL_IMAP_HOST"), ("smtp_host", "EMAIL_SMTP_HOST")),

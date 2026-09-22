@@ -114,6 +114,40 @@ def run_daemon_python_selftest(root: Path, system_python: Path) -> subprocess.Co
     )
 
 
+def run_developer_dir_selftest(
+    root: Path, xcodebuild: Path, command_line_tools: Path
+) -> subprocess.CompletedProcess[str]:
+    env = os.environ.copy()
+    env.pop("DEVELOPER_DIR", None)
+    env["HERMES_DESKTOP_UPDATE_UNAME"] = "Darwin"
+    env["HERMES_DESKTOP_UPDATE_XCODEBUILD"] = str(xcodebuild)
+    env["HERMES_DESKTOP_UPDATE_CLT_DIR"] = str(command_line_tools)
+    return subprocess.run(
+        ["/bin/bash", str(POSIX_SH), "--self-test-developer-dir", "--no-ui",
+         "--install-root", str(root)],
+        capture_output=True, text=True, encoding="utf-8",
+        errors="replace", timeout=60, env=env,
+    )
+
+
+@requires_bash
+def test_unlicensed_xcode_falls_back_to_command_line_tools(tmp_path):
+    """Desktop rebuilds must not inherit an unusable full-Xcode selection."""
+    root = make_venv(tmp_path, python=GOOD_STUB, python3=GOOD_STUB, marker=None)
+    blocked_xcodebuild = tmp_path / "xcodebuild"
+    _write_exe(blocked_xcodebuild, "#!/bin/bash\nexit 69\n")
+    command_line_tools = tmp_path / "CommandLineTools"
+    (command_line_tools / "usr" / "bin").mkdir(parents=True)
+    _write_exe(command_line_tools / "usr" / "bin" / "clang", "#!/bin/bash\nexit 0\n")
+
+    proc = run_developer_dir_selftest(root, blocked_xcodebuild, command_line_tools)
+
+    assert proc.returncode == 0, proc.stderr
+    assert proc.stdout.strip().splitlines()[-1] == (
+        f"developer_dir={command_line_tools} state=fallback-command-line-tools"
+    )
+
+
 @requires_bash
 def test_daemon_launcher_falls_back_when_system_python_cannot_boot(tmp_path):
     """The Desktop hand-off must survive macOS' Xcode-license Python shim.

@@ -19,7 +19,7 @@
 #     [--sandbox-fallback]     linux: the caller vouches for a sandbox opt-out
 #                              (ELECTRON_DISABLE_SANDBOX / --no-sandbox launch)
 #     [--no-ui] [--no-marker-cleanup] [--self-test-ui] [--self-test-gate]
-#     [--self-test-marker] [--self-test-daemon-python]
+#     [--self-test-marker] [--self-test-daemon-python] [--self-test-developer-dir]
 #     [-- <args...>]           linux: filtered launch args to replay
 #
 # The shim (ui.html in a chromeless browser app window) is decoration: it
@@ -40,7 +40,7 @@ INSTALL_ROOT="" BRANCH="main" DESKTOP_PID=0 RELAUNCH_TARGET=""
 RELAUNCH_CWD="" SANDBOX_FALLBACK=0 RELAUNCH_ARGS=()
 NO_GATEWAY=0
 NO_UI=0 NO_MARKER_CLEANUP=0 SELF_TEST_UI=0 SELF_TEST_GATE=0 SELF_TEST_MARKER=0
-SELF_TEST_TCC_HEAL=0 SELF_TEST_DAEMON_PYTHON=0
+SELF_TEST_TCC_HEAL=0 SELF_TEST_DAEMON_PYTHON=0 SELF_TEST_DEVELOPER_DIR=0
 HANDOFF_DAEMONIZED=0
 while [ $# -gt 0 ]; do
   case "$1" in
@@ -57,6 +57,7 @@ while [ $# -gt 0 ]; do
     --self-test-gate) SELF_TEST_GATE=1; shift ;;
     --self-test-tcc-heal) SELF_TEST_TCC_HEAL=1; shift ;;
     --self-test-daemon-python) SELF_TEST_DAEMON_PYTHON=1; shift ;;
+    --self-test-developer-dir) SELF_TEST_DEVELOPER_DIR=1; shift ;;
     --daemonized) HANDOFF_DAEMONIZED=1; shift ;;
     --self-test-marker) SELF_TEST_MARKER=1; NO_UI=1; NO_MARKER_CLEANUP=1; shift ;;
     --) shift; RELAUNCH_ARGS=("$@"); shift $# ;;
@@ -648,7 +649,30 @@ pick_daemon_python() { # print a bootable interpreter for os.setsid hand-off
   return 1
 }
 
+configure_macos_developer_dir() {
+  local platform xcodebuild clt_dir
+  DEVELOPER_DIR_STATE="unchanged"
+  platform="${HERMES_DESKTOP_UPDATE_UNAME:-$(uname)}"
+  [ "$platform" = "Darwin" ] || return 0
+  [ -z "${DEVELOPER_DIR:-}" ] || { DEVELOPER_DIR_STATE="preserved"; return 0; }
+  xcodebuild="${HERMES_DESKTOP_UPDATE_XCODEBUILD:-/usr/bin/xcodebuild}"
+  clt_dir="${HERMES_DESKTOP_UPDATE_CLT_DIR:-/Library/Developer/CommandLineTools}"
+  if [ -x "$xcodebuild" ] \
+      && ! "$xcodebuild" -checkFirstLaunchStatus >/dev/null 2>&1 \
+      && [ -x "$clt_dir/usr/bin/clang" ]; then
+    export DEVELOPER_DIR="$clt_dir"
+    DEVELOPER_DIR_STATE="fallback-command-line-tools"
+  fi
+}
+
 # ── self-tests: no update, touch nothing ────────────────────────────────────
+if [ "$SELF_TEST_DEVELOPER_DIR" -eq 1 ]; then
+  trap - EXIT
+  configure_macos_developer_dir
+  echo "developer_dir=${DEVELOPER_DIR:-} state=$DEVELOPER_DIR_STATE"
+  exit 0
+fi
+
 if [ "$SELF_TEST_DAEMON_PYTHON" -eq 1 ]; then
   trap - EXIT
   DAEMON_PYTHON="$(pick_daemon_python)" || exit 1
@@ -764,6 +788,11 @@ fi
 # update marker above prevents a second click during this short UI-less gap.
 sleep 1
 start_ui
+
+configure_macos_developer_dir
+if [ "$DEVELOPER_DIR_STATE" = "fallback-command-line-tools" ]; then
+  log "full Xcode is not ready; using Command Line Tools for the update build ($DEVELOPER_DIR)"
+fi
 
 HERMES_BIN="$INSTALL_ROOT/venv/bin/hermes"
 [ -x "$HERMES_BIN" ] || { FINAL_CODE=3 FINAL_MSG="Update aborted: $HERMES_BIN is missing. The install needs repair (run the Hermes installer or hermes doctor)."; log "$FINAL_MSG"; exit 3; }

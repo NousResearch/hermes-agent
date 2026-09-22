@@ -218,10 +218,10 @@ class TestPluginDiscovery:
         [qualified] = manager.list_plugin_skill_metadata()
         assert qualified["name"].endswith(":summarize")
         # Skills keep the digest namespace (collision-free without coordination); the MCP server does
-        # not: its name is the plugin slug + server, so ``mcp__<server>__<tool>`` fits the 64-char
-        # provider cap with the tool verb intact instead of being hash-clamped.
+        # not: it is named what mcp.json calls it, like a config.yaml server, so ``mcp__<server>__<tool>``
+        # fits the 64-char provider cap with the tool verb intact instead of being hash-clamped.
         [internal_name] = manager.get_portable_mcp_servers()
-        assert internal_name == "portable-test__worker"
+        assert internal_name == "worker"
         from tools.mcp_tool_schema import mcp_prefixed_tool_name
         wire = mcp_prefixed_tool_name(internal_name, "nvapp_client_get_driver_status")
         assert wire.endswith("__nvapp_client_get_driver_status") and len(wire) <= 64
@@ -244,9 +244,8 @@ class TestPluginDiscovery:
         from hermes_cli import plugins as plugins_mod
 
         home = tmp_path / ".hermes"
-        # Distinct plugin keys ("vendor.tools", "vendor-tools") fold to one slug, so their "shared"
-        # servers want the same readable name.
-        for plugin_name, command in (("vendor.tools", "python-a"), ("vendor-tools", "python-b")):
+        # Two unrelated plugins both call their server "shared": one readable name, one owner.
+        for plugin_name, command in (("alpha-tools", "python-a"), ("beta-tools", "python-b")):
             plugin = home / "plugins" / plugin_name
             plugin.mkdir(parents=True)
             (plugin / "plugin.json").write_text(json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": plugin_name}))
@@ -255,7 +254,7 @@ class TestPluginDiscovery:
                 "mcpServers": {"shared": {"type": "stdio", "command": command}},
             }))
         (home / "config.yaml").write_text(
-            yaml.safe_dump({"plugins": {"enabled": ["vendor.tools", "vendor-tools"]}}))
+            yaml.safe_dump({"plugins": {"enabled": ["alpha-tools", "beta-tools"]}}))
         empty_bundled = tmp_path / "bundled"
         empty_bundled.mkdir()
         monkeypatch.setenv("HOME", str(tmp_path / "os-home"))
@@ -266,8 +265,8 @@ class TestPluginDiscovery:
         manager.discover_and_load()
 
         servers = manager.get_portable_mcp_servers()
-        assert list(servers) == ["vendor-tools__shared"]
-        assert servers["vendor-tools__shared"]["command"] in {"python-a", "python-b"}
+        assert list(servers) == ["shared"]
+        assert servers["shared"]["command"] in {"python-a", "python-b"}
 
     def test_disabled_portable_plugin_registers_nothing(self, tmp_path, monkeypatch):
         from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1

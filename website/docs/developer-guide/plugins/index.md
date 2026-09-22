@@ -75,11 +75,12 @@ one executable token with a separate argument list, never through a shell.
 Use `skills_list` to discover the full qualified skill name. Portable skill
 namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
 from the discovered plugin key so sanitized names cannot collide. A portable
-package's MCP servers are named `<plugin-slug>__<server>` (just `<plugin-slug>`
-when the two match), so the model-facing `mcp__<server>__<tool>` name keeps the
-tool verb inside the 64-character provider cap; two enabled packages whose slug
-and server name coincide are a load-time conflict, and the second server is
-skipped with a warning naming the first.
+package's MCP servers keep the names their `mcp.json` gives them, the same rule
+as a user's own `mcp_servers` block, so the model-facing `mcp__<server>__<tool>`
+name keeps the tool verb inside the 64-character provider cap. A duplicate server
+name is a load-time conflict: a `config.yaml` server wins over a package, and the
+first-loaded package wins over the next; the loser is skipped with a warning
+naming both.
 
 Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
 locations, `mcp.json`, resolved paths, and symlink containment locally. It does

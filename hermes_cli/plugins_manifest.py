@@ -70,14 +70,14 @@ def _portable_slug(key: str) -> str:
 
 
 def portable_mcp_server_name(key: str, server: str) -> str:
-    """Internal name of a portable plugin's MCP server: ``<plugin>__<server>``, or just ``<plugin>`` when the
-    two slugs match (the one-server package). No ``agent-plugin-`` prefix and no digest: those keep plugin-data
-    and skill names collision-free without coordination, but here they cost ~40 chars of every tool name, and
-    ``mcp__<server>__<tool>`` is capped at 64 by providers, so the tool verb was being hash-clamped away.
-    Server names only need to be unique among loaded portable servers, and the loader refuses a clash."""
-    plugin = _portable_slug(key)
-    server_slug = _portable_slug(server)
-    return plugin if plugin == server_slug else f"{plugin}__{server_slug}"
+    """Internal name of a portable plugin's MCP server: exactly the name its ``mcp.json`` gives it, the same
+    rule a user's own ``mcp_servers`` block in config.yaml follows. The plugin's skill namespace
+    (``agent-plugin-<slug>-<digest>``) is NOT prepended: it keeps plugin-data and skill names collision-free
+    without coordination, but here it cost ~40 chars of every ``mcp__<server>__<tool>`` name, which providers
+    cap at 64, so the tool verb was hash-clamped away. A duplicate is refused at load (native config first,
+    then first-loaded plugin) with a warning naming both owners; that beats hiding it behind a digest."""
+    del key  # one signature for loader and card; the plugin identity is deliberately not part of the name
+    return _portable_slug(server)
 
 
 def _display_author(value: object) -> str:

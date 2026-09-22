@@ -801,6 +801,45 @@ class SessionMessagesMixin:
                 logger.debug("display order backfill after user content rewrite failed", exc_info=True)
         return updated
 
+    @classmethod
+    def _dedupe_stable_tool_calls(cls, tool_calls):
+        """``tool_calls`` reduced to the identity the compressor cannot rewrite.
+
+        The compressor shrinks long tool-call ``arguments`` in place and the compacted
+        transcript is persisted, so one logical assistant turn can be stored once
+        verbatim and again with its arguments truncated. Those rows are the SAME
+        message, so the display identity must ignore the difference -- otherwise each
+        generation keys separately and the turn renders once per compaction.
+
+        Keyed on each call's ``id``/``call_id`` and function name, which the compressor
+        never touches and which are already unique per call; arguments are dropped
+        rather than normalized because the marker carries per-instance character counts
+        (two truncations of one call at different budgets differ textually) and the
+        marker itself is stored JSON-escaped, so no textual scrub is reliable.
+        Unparseable payloads fall back to the raw string.
+        """
+        if not tool_calls:
+            return tool_calls
+        try:
+            calls = json.loads(tool_calls)
+        except (TypeError, ValueError):
+            return tool_calls
+        if not isinstance(calls, list):
+            return tool_calls
+        identity = []
+        for call in calls:
+            if not isinstance(call, dict):
+                return tool_calls
+            function = call.get("function")
+            identity.append((
+                call.get("id") or call.get("call_id"),
+                function.get("name") if isinstance(function, dict) else None))
+        # A call with neither id nor name carries no stable identity: keying on that
+        # would merge unrelated turns, which is worse than rendering one twice.
+        if any(call_id is None and name is None for call_id, name in identity):
+            return tool_calls
+        return repr(identity)
+
     def _display_dedupe_key(self, row) -> Tuple[Any, ...]:
         """Historical display identity, including normalized live content from user handoff carriers."""
         dedupe_content = row["content"]
@@ -812,7 +851,7 @@ class SessionMessagesMixin:
             if handoff is not None and live_view is not None:
                 dedupe_content = self._encode_content(live_view.get("content"))
         return (row["role"], dedupe_content, row["timestamp"],
-                row["tool_call_id"], row["tool_calls"], row["tool_name"])
+                row["tool_call_id"], self._dedupe_stable_tool_calls(row["tool_calls"]), row["tool_name"])
 
     @staticmethod
     def _display_identity(key: Tuple[Any, ...]) -> bytes:

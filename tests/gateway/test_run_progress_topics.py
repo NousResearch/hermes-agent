@@ -147,6 +147,23 @@ class MetadataEditProgressCaptureAdapter(ProgressCaptureAdapter):
         return SendResult(success=True, message_id=message_id)
 
 
+class UnsupportedEditProgressCaptureAdapter(MetadataEditProgressCaptureAdapter):
+    """Model the API server, where an HTTP/SSE response owns final delivery."""
+
+    async def edit_message(
+        self, chat_id, message_id, content, *, finalize: bool = False, metadata=None
+    ) -> SendResult:
+        self.edits.append(
+            {
+                "chat_id": chat_id,
+                "message_id": message_id,
+                "content": content,
+                "metadata": metadata,
+            }
+        )
+        return SendResult(success=False, error="Not supported")
+
+
 class RetryableOverflowEditProgressAdapter(SmallLimitProgressAdapter):
     """Fail the first split edit transiently, then keep editing."""
 
@@ -1418,6 +1435,34 @@ async def test_transformed_response_edits_streamed_message_in_place(monkeypatch,
     assert any("[plugin appended this]" in text for text in edited_texts), (
         f"expected transformed text in adapter.edits, got: {edited_texts!r}"
     )
+
+
+@pytest.mark.asyncio
+async def test_transformed_api_stream_keeps_final_for_single_sse_delivery(monkeypatch, tmp_path):
+    """An API-server edit is unsupported, so the SSE owner must retain the final response.
+
+    Marking this response as already sent suppresses that one authoritative final delivery and
+    drops plugin-transformed content for the desktop client.
+    """
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        TransformedStreamAgent,
+        session_id="sess-transformed-api-stream",
+        config_data={
+            "display": {"tool_progress": "off", "interim_assistant_messages": False},
+            "streaming": {"enabled": True, "edit_interval": 0.01, "buffer_threshold": 1},
+        },
+        platform=Platform.API_SERVER,
+        chat_id="desktop-session",
+        chat_type="dm",
+        thread_id=None,
+        adapter_cls=UnsupportedEditProgressCaptureAdapter,
+    )
+
+    assert result["final_response"].endswith("[plugin appended this]")
+    assert result.get("already_sent") is not True
+    assert len(adapter.edits) == 1
 
 
 @pytest.mark.asyncio

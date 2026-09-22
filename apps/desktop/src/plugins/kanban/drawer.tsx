@@ -44,6 +44,7 @@ import {
   profilesKey,
   reassignTask,
   reclaimTask,
+  routedToScope,
   taskKey,
   uploadAttachment,
   useKanbanScope
@@ -559,7 +560,7 @@ export function TaskDrawer({
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
-    enabled: !!id,
+    enabled: query => !!id && routedToScope(query),
     queryFn: () => fetchTask(id!),
     queryKey: taskKey(scope, slug, id ?? ''),
     refetchInterval: 30_000
@@ -570,7 +571,7 @@ export function TaskDrawer({
   const defaultAssignee = useDefaultAssignee()
 
   const { data: log } = useQuery({
-    enabled: !!id,
+    enabled: query => !!id && routedToScope(query),
     queryFn: () => fetchLog(id!),
     queryKey: logKey(scope, slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000

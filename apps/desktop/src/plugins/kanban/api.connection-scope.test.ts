@@ -1,20 +1,28 @@
+import { QueryObserver } from '@tanstack/react-query'
 import { act, renderHook } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-// A board lives on ONE gateway. The kanban data layer follows the active
-// connection: keys built during render change with it (so an observer is a
-// clean cache miss on a switch), the selected slug is remembered per
-// connection (the local pool keeps the bare key — the lib/connection-scoped.ts
-// contract, and the slug picked before per-connection keys existed survives),
-// and the events socket dials the new backend exactly once per switch.
+// A board lives on ONE gateway; the kanban data layer follows the active
+// connection. See the scope comments in ./api.ts.
+
+const routed = vi.hoisted(() => ({ id: null as null | string }))
 
 vi.mock('@/hermes', () => ({ setApiRequestProfile: vi.fn() }))
+vi.mock('@/store/gateway', async importOriginal => ({
+  ...(await importOriginal<Record<string, unknown>>()),
+  activeGatewayConnectionId: () => routed.id
+}))
 
 const { $boardSlug, bindApi, boardsKey, useKanbanScope } = await import('./api')
 const { setConnection } = await import('@/store/session')
+const { queryClient } = await import('@/lib/query-client')
+
+const noopStorage = { get: <T>(_key: string, fallback: T) => fallback, remove: vi.fn(), set: vi.fn() }
 
 afterEach(() => {
   setConnection(null)
+  routed.id = null
+  queryClient.clear()
 })
 
 describe('kanban connection scope', () => {
@@ -75,6 +83,43 @@ describe('kanban connection scope', () => {
     expect(stored.get('boardSlug')).toBe('triage')
     expect(stored.get('boardSlug.spark')).toBe('research')
 
+    dispose()
+  })
+
+  it('an observer still keyed to the outgoing scope is not refetched onto the incoming backend', async () => {
+    const dispose = bindApi(
+      async () => ({}) as never,
+      noopStorage,
+      vi.fn(() => vi.fn())
+    )
+
+    const fetches: Array<null | string> = []
+
+    const observer = new QueryObserver(queryClient, {
+      queryFn: async () => {
+        fetches.push(routed.id)
+
+        return { boards: [] }
+      },
+      queryKey: boardsKey('local')
+    })
+
+    const unsubscribe = observer.subscribe(() => undefined)
+    await vi.waitFor(() => expect(observer.getCurrentResult().status).toBe('success'))
+    expect(fetches).toEqual([null])
+
+    // The request tag has moved to spark but React has not re-keyed the
+    // observer yet: the switch's invalidation must skip it.
+    routed.id = 'spark'
+    await queryClient.invalidateQueries()
+    expect(fetches).toEqual([null])
+
+    // Back on local the same observer is live again.
+    routed.id = null
+    await queryClient.invalidateQueries()
+    expect(fetches).toEqual([null, null])
+
+    unsubscribe()
     dispose()
   })
 })

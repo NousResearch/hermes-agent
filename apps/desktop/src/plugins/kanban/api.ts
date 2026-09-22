@@ -63,6 +63,11 @@ export const $lanesByProfile = atom<boolean>(false)
  *  auto: empty lanes collapse to a rail, occupied lanes expand. Persisted. */
 export const $collapsedLanes = atom<Record<string, boolean>>({})
 
+/** Cache scope of the local pool — the SDK atom's own spelling. */
+const LOCAL_SCOPE = 'local'
+
+const KANBAN_KEY_ROOT = ['kanban'] as const
+
 const BOARD_SLUG_KEY = 'boardSlug'
 const INTRO_KEY = 'introDismissed'
 const LANES_KEY = 'lanesByProfile'
@@ -74,12 +79,26 @@ const COLLAPSED_KEY = 'collapsedLanes'
  *  socket frames); rendering components use `useKanbanScope` so the keys they
  *  build during render recompute when the connection changes. */
 export function kanbanConnectionScope(): string {
-  return host.state.connectionId.get() ?? 'local'
+  return host.state.connectionId.get() ?? LOCAL_SCOPE
 }
 
 export function useKanbanScope(): string {
-  return useValue(host.state.connectionId) ?? 'local'
+  return useValue(host.state.connectionId) ?? LOCAL_SCOPE
 }
+
+/** Where a request issued NOW is routed, as a cache scope. The request tag
+ *  moves before the connection descriptor publishes, and React re-keys the
+ *  observers later still — so between the two an observer can sit on the
+ *  outgoing scope's key while a fetch would land on the incoming backend. */
+const routedScope = (): string => host.activeConnectionId() ?? LOCAL_SCOPE
+
+/** `enabled` for every kanban query: only fetch while the key's scope is the
+ *  routed one. A switch's app-wide invalidation then leaves the outgoing
+ *  observers alone (the incoming keys are already a cache miss) instead of
+ *  writing the new gateway's payload under the old connection's key — which
+ *  would paint on the way back. Installed as the `['kanban']` query default in
+ *  `bindApi`; sites with their own `enabled` compose it. */
+export const routedToScope = (query: { queryKey: readonly unknown[] }): boolean => query.queryKey[2] === routedScope()
 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
  *  each touched task's detail. The polls (8s board / 4s drawer) stay as the
@@ -116,14 +135,7 @@ interface Persisted<T> {
 /** Bind the plugin's doors at register time and return a disposer the host
  *  runs on unload/disable — so nothing (store sync, socket) survives a toggle
  *  or duplicates on re-enable. The events socket is pinned to a board at
- *  handshake, so a board switch closes + reopens it.
- *
- *  The events socket is ALSO re-opened when the active CONNECTION changes:
- *  `pluginSocket` resolves the backend only at connect time, so a socket left
- *  open across a switch keeps streaming the previous gateway's events against
- *  the new connection's request scope. The board slug re-hydrates from the
- *  per-connection storage key for the same reason — one gateway's slug pins a
- *  board the next gateway 404s on. */
+ *  handshake, so a board switch closes + reopens it. */
 export function bindApi(
   r: Rest,
   storage: PluginStorage,
@@ -134,6 +146,9 @@ export function bindApi(
   os = notifyDoors?.os ?? null
   bindCompletionNotify(r, notifyDoors?.t, notifyDoors?.os)
   const unsubs: Array<() => void> = []
+
+  queryClient.setQueryDefaults(KANBAN_KEY_ROOT, { enabled: routedToScope })
+  unsubs.push(() => queryClient.setQueryDefaults(KANBAN_KEY_ROOT, {}))
 
   // Hydrate an atom from storage and keep storage in sync with it.
   const persist = <T>(atom: Persisted<T>, key: string, fallback: T) => {
@@ -152,33 +167,31 @@ export function bindApi(
     close = socket(slug ? `/events?board=${encodeURIComponent(slug)}` : '/events', data => onEventsFrame(slug, data))
   }
 
-  // The local connection keeps the BARE key (same rule as lib/connection-scoped
-  // for single-backend users: byte-identical storage, and the slug they picked
-  // before per-connection keys existed survives the upgrade). Remotes are
-  // suffixed by registry id.
+  // The local connection keeps the BARE key (the bare-local rule of
+  // lib/connection-scoped: byte-identical storage for single-backend users, and
+  // the slug picked before per-connection keys existed survives the upgrade).
+  // Remotes are suffixed by registry id.
   const slugStorageKey = () => {
     const scope = kanbanConnectionScope()
 
-    return scope === 'local' ? BOARD_SLUG_KEY : `${BOARD_SLUG_KEY}.${scope}`
+    return scope === LOCAL_SCOPE ? BOARD_SLUG_KEY : `${BOARD_SLUG_KEY}.${scope}`
   }
 
   $boardSlug.set(storage.get(slugStorageKey(), ''))
   unsubs.push($boardSlug.listen(slug => storage.set(slugStorageKey(), slug)))
   open($boardSlug.get())
   unsubs.push($boardSlug.listen(open))
-  let scope = kanbanConnectionScope()
   unsubs.push(
-    host.state.connectionId.listen(() => {
+    host.state.connectionId.listen((next, prev) => {
       // Query keys embed the scope, so the new connection is already a cache
       // miss; only the LIVE bindings (socket, slug) follow it. The boot-time
       // null → 'local' publish is the same scope, not a switch. A changed slug
       // reopens the socket through the $boardSlug listener above; an unchanged
       // slug still needs a dial because the backend behind it changed.
-      if (kanbanConnectionScope() === scope) {
+      if ((next ?? LOCAL_SCOPE) === (prev ?? LOCAL_SCOPE)) {
         return
       }
 
-      scope = kanbanConnectionScope()
       const previous = $boardSlug.get()
       $boardSlug.set(storage.get(slugStorageKey(), ''))
 
@@ -218,9 +231,7 @@ function withBoard(path: string, params: Record<string, string> = {}): string {
   return qs ? `${path}?${qs}` : path
 }
 
-// ── query keys (connection- AND board-scoped so switching either is a clean
-// cache miss — one gateway's boards/tasks must never paint under another
-// connection's route) ─────────────────────────────────────────────────────────
+// ── query keys (connection- and board-scoped; scope is always segment [2]) ────
 
 /** Prefix matching every board query on one connection (all slugs, both
  *  archived views) — the mutation-settled invalidation target. */

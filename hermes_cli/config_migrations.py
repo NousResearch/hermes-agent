@@ -605,6 +605,26 @@ def _migrate_to_45(results: Dict[str, Any], quiet: bool) -> None:
         "Uncheck Connections in `hermes tools` to turn it off.")
 
 
+def _migrate_to_46(results: Dict[str, Any], quiet: bool) -> None:
+    # 45 → 46: bundled web backends auto-load unless listed in plugins.disabled. Plugin opt-in
+    # can park a still-configured vendor (web.backend / search_backend / extract_backend) on
+    # that deny-list, so web_search/web_extract fail. Unblock only the configured vendor(s).
+    try:
+        from hermes_cli.plugins_cmd import ensure_configured_web_backend_plugin_enabled_in_config
+
+        config = read_raw_config()
+        if ensure_configured_web_backend_plugin_enabled_in_config(config):
+            _commit(
+                config, results, quiet,
+                "unblocked configured web backend plugin(s) from plugins.disabled",
+                "  ✓ Re-enabled the configured web search/extract backend plugin "
+                "(it was listed in plugins.disabled). A later "
+                "`hermes plugins disable` still applies.",
+            )
+    except Exception:
+        return
+
+
 #: Registry of (target_version, step), strictly ascending; simple default-flip steps are
 #: declared inline via _rewrite_stale_default / _rewrite_key partials. Later steps observe
 #: earlier steps' writes via read_raw_config() (filesystem state). v12 is the support floor:
@@ -725,6 +745,8 @@ MIGRATIONS: Tuple[Tuple[int, Callable[[Dict[str, Any], bool], None]], ...] = (
             "skills/.archive/ (recoverable with `hermes curator restore`). Set it back to 90 to keep the old window."))),
     # 44 → 45: saved platform_toolsets lists predate the connections toolset (see _migrate_to_45).
     (45, _migrate_to_45),
+    # 45 → 46: unblock configured bundled web backends parked on plugins.disabled by opt-in.
+    (46, _migrate_to_46),
 )
 
 

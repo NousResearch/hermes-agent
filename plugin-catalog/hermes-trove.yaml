@@ -1,0 +1,35 @@
+name: hermes-trove
+repo: https://github.com/misterdas/hermes-trove
+sha: aebd7b8dcf755883787945f98df530b75d1da046
+description: Lossless context management — DAG-based engine, 15 tools, 9 slash commands, install/uninstall scripts, 3178 tests green
+maintainer: GOPAL
+tier: community
+category: context
+requires_hermes: '>=0.20'
+docs_url: https://github.com/misterdas/hermes-trove#readme
+version: 1.1.4
+platforms: []
+capabilities:
+  provides_tools:
+    - trove_grep
+    - trove_recall
+    - trove_query_state
+    - trove_compute
+    - trove_compile_evidence
+    - trove_evidence_pack
+    - trove_retrieve
+    - trove_recent
+    - trove_load_session
+    - trove_describe
+    - trove_expand
+    - trove_expand_query
+    - trove_status
+    - trove_inspect
+    - trove_doctor
+  provides_hooks:
+    - pre_llm_call
+    - subagent_start
+    - subagent_stop
+  provides_middleware: []
+  requires_env:
+    - TROVE_ENABLE_SLASH_COMMAND

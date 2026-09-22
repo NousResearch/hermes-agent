@@ -1173,19 +1173,50 @@ def _record_task_failure(
         return True
 
 
-def _set_worker_pid(conn: sqlite3.Connection, task_id: str, pid: int) -> None:
+def _set_worker_pid(
+    conn: sqlite3.Connection, task_id: str, pid: int, *, expected_run_id: Optional[int] = None,
+    expected_receipt_id: Optional[str] = None, expected_role: Optional[str] = None,
+) -> bool:
     """Record the spawned child's pid + its start-time fingerprint, and emit a ``spawned`` event
     carrying them. The fingerprint is what lets every later liveness/kill decision tell OUR worker
     from a process that recycled the PID after a reboot."""
     from gateway.status import get_process_start_time
     started_at = get_process_start_time(int(pid))
     with _kb.write_txn(conn):
+        task = _kb.get_task(conn, task_id)
+        if task is None:
+            return False
+        managed = bool(task.routing_role and task.routing_mode != "shadow")
+        if expected_receipt_id is not None and (
+            not managed or task.routing_receipt_id != expected_receipt_id or task.routing_role != expected_role
+        ):
+            return False
+        if managed and expected_run_id is None:
+            return False
+        if expected_run_id is not None:
+            run = conn.execute(
+                "SELECT worker_pid, ended_at FROM task_runs WHERE id=? AND task_id=?",
+                (expected_run_id, task_id),
+            ).fetchone()
+            if (task.current_run_id != expected_run_id or not task.claim_lock
+                    or run is None or run["ended_at"] is not None):
+                return False
+            if managed:
+                if started_at is None:
+                    return False
+                if task.worker_pid is not None or run["worker_pid"] is not None:
+                    fingerprint = conn.execute(
+                        "SELECT worker_started_at FROM tasks WHERE id=?", (task_id,),
+                    ).fetchone()["worker_started_at"]
+                    return (task.worker_pid == int(pid) == run["worker_pid"]
+                            and fingerprint == started_at)
         conn.execute("UPDATE tasks SET worker_pid = ?, worker_started_at = ? WHERE id = ?",
                      (int(pid), started_at, task_id))
         run_id = _kb._current_run_id(conn, task_id)
         if run_id is not None:
             conn.execute("UPDATE task_runs SET worker_pid = ? WHERE id = ?", (int(pid), run_id))
         _kb._append_event(conn, task_id, "spawned", {"pid": int(pid), "started_at": started_at}, run_id=run_id)
+        return True
 
 
 def _clear_failure_counter(conn: sqlite3.Connection, task_id: str) -> None:
@@ -1807,7 +1838,8 @@ def _dispatch_lane_task(
     try:
         pid = _call_spawn_fn(spawn_fn if spawn_fn is not None else _default_spawn, claimed, str(workspace), board)
         if pid:
-            _set_worker_pid(conn, claimed.id, int(pid))
+            if not _set_worker_pid(conn, claimed.id, int(pid), expected_run_id=claimed.current_run_id):
+                raise RuntimeError("worker registration rejected: stale or conflicting run owner")
         # Fires AFTER the PID (when reported) is durably persisted. Best-effort.
         _kb._fire_worker_spawned_hook(conn, claimed, str(workspace), pid, board=board)
         # consecutive_failures is deliberately NOT reset here: resetting on

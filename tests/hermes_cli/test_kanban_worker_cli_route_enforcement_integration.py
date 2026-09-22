@@ -184,8 +184,20 @@ def _persist_receipt(hermes_home: Path, *, provider: str, model: str, endpoint: 
     }
     record = publish_policy(hermes_home, policy, approval_ref="operator:test")
     activate_policy(hermes_home, "kanban-default", record["revision"])
-    decision = select(requirements, policy, {}, now=1000)
-    return persist_receipt(hermes_home, decision)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    board = hermes_home / "worker-test.db"
+    kb.init_db(board)
+    with connect(board) as conn:
+        tid = kb.create_task(conn, title=execution_id, assignee="test", routing_role="builder")
+        claimed = kb.claim_task(conn, tid, claimer="fixture-dispatcher")
+        assert claimed is not None and claimed.current_run_id is not None
+        requirements.update(execution_id=tid, attempt_id=str(claimed.current_run_id))
+        decision = select(requirements, policy, {}, now=1000)
+        receipt = persist_receipt(hermes_home, decision)
+        assert kb.set_routing_receipt(conn, tid, receipt, expected_run_id=claimed.current_run_id)
+    return receipt
 
 
 def _worker_python() -> str:
@@ -214,6 +226,14 @@ def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: st
             env.pop(k, None)
     env["HERMES_HOME"] = str(profile_home)
     env["HERMES_KANBAN_ROUTING_RECEIPT"] = receipt_id
+    if receipt_id:
+        from agent.model_selection_store import get_receipt
+        receipt = get_receipt(profile_home, receipt_id)
+        env["HERMES_KANBAN_DB"] = str(profile_home / "worker-test.db")
+        env["HERMES_KANBAN_ROUTING_ORIGIN_HOME"] = str(profile_home)
+        if receipt:
+            env["HERMES_KANBAN_TASK"] = receipt["requirements"]["execution_id"]
+            env["HERMES_KANBAN_RUN_ID"] = receipt["requirements"]["attempt_id"]
     env["HERMES_SESSION_SOURCE"] = "kanban"
     env["PYTHONPATH"] = str(REPO_ROOT) + os.pathsep + env.get("PYTHONPATH", "")
     env["HERMES_SINGLE_QUERY_SESSION"] = "1"
@@ -400,7 +420,7 @@ def fake_server():
 
 # ── matched route: the real worker's first inference actually lands ─────────
 
-def test_matched_route_reaches_fake_endpoint_with_only_task_content(tmp_path, fake_server):
+def test_matched_route_reaches_fake_endpoint_with_only_task_content(tmp_path, fake_server, monkeypatch):
     server, handler_cls = fake_server
     port = server.server_address[1]
     base_url = f"http://127.0.0.1:{port}/v1"
@@ -408,6 +428,23 @@ def test_matched_route_reaches_fake_endpoint_with_only_task_content(tmp_path, fa
     _write_profile_home(home, base_url, "fake-model", "custom-fake")
     receipt_id = _persist_receipt(home, provider="custom-fake", model="fake-model", endpoint=base_url)
 
+    # The dispatcher never publishes a PID, modelling death just after spawn.
+    # Observe durable ownership at HTTP arrival, not after worker completion.
+    import sqlite3
+    ownership_at_send = []
+    original_post = handler_cls.do_POST
+
+    def observe_post(handler):
+        if handler.path.rstrip("/").endswith("chat/completions"):
+            with sqlite3.connect(home / "worker-test.db") as conn:
+                ownership_at_send.append(conn.execute(
+                    "SELECT t.worker_pid, t.worker_started_at, r.worker_pid "
+                    "FROM tasks t JOIN task_runs r ON r.id=t.current_run_id "
+                    "WHERE t.routing_receipt_id=?", (receipt_id,),
+                ).fetchone())
+        original_post(handler)
+
+    monkeypatch.setattr(handler_cls, "do_POST", observe_post)
     proc = _run_worker(
         profile_home=home, provider="custom-fake", model="fake-model",
         receipt_id=receipt_id, query="what is 2+2, answer in one word",
@@ -420,6 +457,8 @@ def test_matched_route_reaches_fake_endpoint_with_only_task_content(tmp_path, fa
     )
     sent = handler_cls.requests[0]
     assert sent.get("model") == "fake-model"
+    assert ownership_at_send
+    assert all(pid and started and pid == run_pid for pid, started, run_pid in ownership_at_send), ownership_at_send
     all_text = json.dumps(sent)
     assert "2+2" in all_text
     # only the one allowed task's content — no stray leaked content from another route
@@ -611,6 +650,8 @@ def test_profile_a_and_b_workers_only_find_their_own_receipt(tmp_path, fake_serv
     # (A-B-A: A's own scope is unaffected by the intervening B attempt). A worker
     # turn may also fire an auxiliary session-title-generation call, so assert on
     # the task content actually landing rather than an exact request count.
+    receipt_a = _persist_receipt(home_a, provider="custom-fake", model="fake-model", endpoint=base_url,
+                                 execution_id="t_worker_cli_it_a_again")
     proc_a2 = _run_worker(
         profile_home=home_a, provider="custom-fake", model="fake-model",
         receipt_id=receipt_a, query="A origin task again",

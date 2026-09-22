@@ -4307,6 +4307,9 @@ def _enforce_kanban_routing_receipt(cli) -> bool:
     # real CLI subprocess launch — see test_kanban_worker_cli_route_enforcement_integration.py).
     actual_provider = (getattr(agent, "requested_provider", "") or agent.provider or "").strip()
     try:
+        from hermes_cli.kanban_worker_routing import register_managed_worker
+
+        register_managed_worker(routing_home, receipt_id, task_id, worker_run_id)
         enforce_worker_route(
             routing_home, receipt_id,
             actual_provider=actual_provider,

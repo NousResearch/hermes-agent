@@ -60,7 +60,8 @@ def test_managed_task_resolves_receipted_route_and_spawns_with_it(
         captured["model"] = task.model_override
         captured["provider"] = task.provider_override
         captured["reasoning"] = task.reasoning_effort
-        return 4242
+        import os
+        return os.getpid()
 
     with kbc.connect() as conn:
         tid = kb.create_task(

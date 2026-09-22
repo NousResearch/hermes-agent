@@ -153,7 +153,21 @@ def test_enforcement_success_path_calls_containment_before_returning_true(routin
 
     import cli as cli_module
 
-    receipt_id = _persist_receipt(routing_home)
+    from agent.model_selection import select
+    from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect
+
+    publish_policy(routing_home, _policy(), approval_ref="operator:test")
+    activate_policy(routing_home, "kanban-default", 1)
+    kb.init_db()
+    with connect() as conn:
+        tid = kb.create_task(conn, title="contain fallback", assignee="alice", routing_role="builder")
+        task = kb.claim_task(conn, tid, claimer="dispatcher")
+        decision = select(_requirements(execution_id=tid, attempt_id=str(task.current_run_id)),
+                          _policy(), {}, now=1000)
+        receipt_id = persist_receipt(routing_home, decision)
+        assert kb.set_routing_receipt(conn, tid, receipt_id, expected_run_id=task.current_run_id)
     inherited_chain = [{"provider": "anthropic", "model": "claude-unapproved-fallback"}]
     fake_cli = type("FakeCLI", (), {})()
     fake_cli.agent = _FakeAgent(
@@ -162,8 +176,8 @@ def test_enforcement_success_path_calls_containment_before_returning_true(routin
     )
     fake_cli.reasoning_config = "high"
 
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(task.current_run_id))
     monkeypatch.delenv("HERMES_KANBAN_ROUTING_ORIGIN_HOME", raising=False)
     monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", receipt_id)
     monkeypatch.setattr(

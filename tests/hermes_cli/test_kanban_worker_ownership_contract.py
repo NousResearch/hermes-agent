@@ -128,10 +128,8 @@ def test_worker_rejects_stale_claim_before_receipt_check(monkeypatch, tmp_path):
     assert calls == [], "stale claim must be rejected before any receipt/model check runs"
 
 
-def test_worker_proceeds_when_claim_is_still_live(monkeypatch, tmp_path):
-    """The live-claim gate must not be a false-positive: a worker whose
-    HERMES_KANBAN_RUN_ID still matches the task's current_run_id proceeds
-    into the normal receipt-enforcement path."""
+def test_live_claim_without_linked_receipt_cannot_authorize_worker(monkeypatch, tmp_path):
+    """A live run alone is insufficient without its canonical linked receipt."""
     import cli as cli_mod
     from hermes_cli import kanban_db as kb
 
@@ -160,8 +158,8 @@ def test_worker_proceeds_when_claim_is_still_live(monkeypatch, tmp_path):
     cli = SimpleNamespace(agent=SimpleNamespace(
         provider="openai", requested_provider="openai", model="gpt-5", base_url=None,
     ))
-    assert cli_mod._enforce_kanban_routing_receipt(cli) is True
-    assert len(calls) == 1, "a live claim must reach the receipt/route check exactly once"
+    assert cli_mod._enforce_kanban_routing_receipt(cli) is False
+    assert calls == [], "an unlinked receipt must not reach the route check"
 
 
 # ---------------------------------------------------------------------------
@@ -276,6 +274,28 @@ def test_stale_spawn_failure_breaker_trip_also_spares_successor(tmp_path):
         conn_a2.close()
     assert row["status"] == "running"
     assert row["current_run_id"] == run_b
+
+
+def test_managed_pid_registration_rejects_stale_and_conflicting_owners():
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_dispatch as dispatch
+
+    conn = _kanban_conn()
+    try:
+        tid = kb.create_task(conn, title="managed ownership", assignee="alice", routing_role="builder")
+        first = kb.claim_task(conn, tid, claimer="first")
+        conn.execute("UPDATE tasks SET status='ready', claim_lock=NULL WHERE id=?", (tid,))
+        second = kb.claim_task(conn, tid, claimer="second")
+        assert dispatch._set_worker_pid(conn, tid, os.getpid(), expected_run_id=first.current_run_id) is False
+        assert kb.get_task(conn, tid).worker_pid is None
+        assert dispatch._set_worker_pid(conn, tid, os.getpid(), expected_run_id=second.current_run_id) is True
+        assert dispatch._set_worker_pid(conn, tid, os.getpid(), expected_run_id=second.current_run_id) is True
+        assert dispatch._set_worker_pid(conn, tid, os.getpid() + 1, expected_run_id=second.current_run_id) is False
+        assert kb.get_task(conn, tid).worker_pid == os.getpid()
+        run = conn.execute("SELECT worker_pid FROM task_runs WHERE id=?", (second.current_run_id,)).fetchone()
+        assert run["worker_pid"] == os.getpid()
+    finally:
+        conn.close()
 
 
 def test_end_run_cas_guard_is_noop_for_superseded_run(tmp_path):

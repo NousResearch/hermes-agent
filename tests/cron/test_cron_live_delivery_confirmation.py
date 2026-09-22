@@ -120,8 +120,8 @@ def _gateway_config(relay=False):
     return config
 
 
-def _adapters(relay=False):
-    adapter = MagicMock()
+def _adapters(relay=False, adapter=None):
+    adapter = adapter or MagicMock()
     if relay:
         adapter.fronts_platform = lambda p: p == Platform.TELEGRAM
         return {Platform.RELAY: adapter}
@@ -135,7 +135,7 @@ def _record_verification(job, unverified_targets):
     RECORDED_VERIFICATION.append((job["id"], list(unverified_targets)))
 
 
-def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None):
+def _run(job, content, send_result, relay=False, standalone_result=None, cron_cfg=None, adapter=None):
     """Drive ``_deliver_result`` over the live lane with a stubbed router.
 
     Returns ``(error, router_calls, standalone_calls)``. ``cron_cfg`` extends
@@ -160,6 +160,8 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
 
     async def _deliver_to_platform(target, text, metadata, transport=None):
         router_calls.append({"target": target, "text": text, "metadata": metadata})
+        if isinstance(send_result, BaseException):
+            raise send_result
         return send_result
 
     router._deliver_to_platform = _deliver_to_platform
@@ -175,7 +177,7 @@ def _run(job, content, send_result, relay=False, standalone_result=None, cron_cf
          patch("gateway.delivery.DeliveryRouter", return_value=router), \
          patch("tools.send_message_tool._send_to_platform", _fake_send_to_platform), \
          patch("asyncio.run_coroutine_threadsafe", side_effect=fake_run_coro):
-        error = _deliver_result(job, content, adapters=_adapters(relay), loop=loop)
+        error = _deliver_result(job, content, adapters=_adapters(relay, adapter), loop=loop)
     return error, router_calls, standalone_calls
 
 
@@ -366,6 +368,7 @@ class TestNotifyIsConfigurable:
         from hermes_cli.config_defaults import DEFAULT_CONFIG
 
         assert DEFAULT_CONFIG["cron"]["delivery"]["notify"] is True
+        assert DEFAULT_CONFIG["cron"]["delivery"]["replace_previous"] is False
 
 
 class TestUnverifiedDeliveryIsRecordedOnTheJob:
@@ -400,6 +403,62 @@ class TestUnverifiedDeliveryIsRecordedOnTheJob:
 
         assert _format_job({"id": "j1", "name": "n", "prompt": "p",
                             "last_delivery_unverified": ["slack:C1"]})["last_delivery_unverified"] == ["slack:C1"]
+
+
+class TestReplacePreviousDelivery:
+    class _Adapter:
+        def __init__(self):
+            self.deleted = []
+
+        async def delete_message(self, chat_id, message_id):
+            self.deleted.append((chat_id, message_id))
+            return True
+
+    def test_live_replaces_only_after_a_verified_message_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = self._Adapter()
+        job = _job(thread_id="99")
+        cron_cfg = {"delivery": {"replace_previous": True}}
+
+        assert _run(
+            job, "first", _SendResult(message_id="m1"), cron_cfg=cron_cfg, adapter=adapter,
+        )[0] is None
+        assert sched_delivery._previous_delivery_message_id(
+            MagicMock(platform_name="telegram", chat_id=CHAT_ID, thread_id="99")) == "m1"
+
+        # A success ack with no delivery evidence must neither delete nor advance state.
+        assert _run(job, "unverified", _SendResult(), cron_cfg=cron_cfg, adapter=adapter)[0] is None
+        assert adapter.deleted == []
+        assert sched_delivery._read_delivery_message_state()["telegram\x1f-1001234567890\x1f99"] == "m1"
+
+        assert _run(
+            job, "second", _SendResult(message_id="m2"), cron_cfg=cron_cfg, adapter=adapter,
+        )[0] is None
+        assert adapter.deleted == [(CHAT_ID, "m1")]
+        assert sched_delivery._read_delivery_message_state()["telegram\x1f-1001234567890\x1f99"] == "m2"
+
+    def test_standalone_advances_only_when_the_fallback_returns_a_message_id(self, tmp_path, monkeypatch):
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        adapter = self._Adapter()
+        job = {**_job(), "replace_previous": True}
+        target = MagicMock(platform_name="telegram", chat_id=CHAT_ID, thread_id=None)
+        sched_delivery._remember_delivery_message_id(target, "old")
+
+        # The live lane fails, and an evidence-free standalone success must preserve the old id.
+        assert _run(
+            job, "fallback", RuntimeError("live down"), standalone_result={"success": True},
+            cron_cfg={"delivery": {"replace_previous": False}}, adapter=adapter,
+        )[0] is None
+        assert adapter.deleted == []
+        assert sched_delivery._read_delivery_message_state()[f"telegram\x1f{CHAT_ID}\x1f"] == "old"
+
+        assert _run(
+            job, "fallback", RuntimeError("live down"),
+            standalone_result={"success": True, "message_id": "new"},
+            cron_cfg={"delivery": {"replace_previous": False}}, adapter=adapter,
+        )[0] is None
+        assert adapter.deleted == [(CHAT_ID, "old")]
+        assert sched_delivery._read_delivery_message_state()[f"telegram\x1f{CHAT_ID}\x1f"] == "new"
 
 
 def test_scheduler_module_exposes_the_confirmation_helper():

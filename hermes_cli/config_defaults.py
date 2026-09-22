@@ -1791,11 +1791,15 @@ DEFAULT_CONFIG = {
         # Wrap delivered cron responses with a task-name header and "The agent cannot see this
         # message" footer. False = clean output.
         "wrap_response": True,
-        "delivery": {  # Delivery behaviour for cron output sent through a live gateway adapter.
+        "delivery": {  # Delivery behaviour for cron output sent to messaging platforms.
             # Mark cron deliveries FINAL so the platform pushes them (Telegram's "important" mode
             # otherwise sends with disable_notification=True and briefs look undelivered). False =
             # silent, no-push deliveries.
             "notify": True,
+            # After a confirmed text delivery with a message id, delete the prior cron report for
+            # the same platform/chat/thread and remember the new id. Per-job `replace_previous`
+            # overrides this default. Unsupported deletion APIs leave the prior message untouched.
+            "replace_previous": False,
         },
         # Make cron deliveries CONTINUABLE (user can reply to a brief with it in context). False
         # keeps deliveries isolated to the job's session; per-job `attach_to_session` overrides.

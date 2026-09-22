@@ -1,3 +1,5 @@
+import { LOCAL_CONNECTION_ID } from '@hermes/shared'
+
 import { hermesApi, type OwnerScope } from '@/api/client'
 import type { HermesConnection } from '@/global'
 import { desktopFsCacheKey, readDesktopFileDataUrl } from '@/lib/desktop-fs'
@@ -90,6 +92,13 @@ export function isFileMediaPath(path: string): boolean {
 export async function resolveMediaDisplaySrc(path: string, owner?: OwnerScope): Promise<string> {
   if (isInlineMediaSrc(path) || !isFileMediaPath(path)) {
     return path
+  }
+
+  // An explicit local owner is this device, even with a remote foreground.
+  // Keep the native reader and its configured size cap; the backend preview
+  // endpoint has a separate fixed limit.
+  if (owner?.connectionId === LOCAL_CONNECTION_ID && window.hermesDesktop?.readFileDataUrl) {
+    return window.hermesDesktop.readFileDataUrl(filePathFromMediaPath(path))
   }
 
   // A tile can belong to a different gateway than the foreground. Pin both

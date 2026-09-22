@@ -7,7 +7,9 @@ import contextlib
 import importlib
 import logging
 import os
+import re
 import sys
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -160,6 +162,45 @@ def _may_rewrite_profile_env(config: dict[str, Any]) -> bool:
     return not _on_disk_llm_api_key(config)
 
 
+_HERMES_MANAGED_KEYS = {
+    "HINDSIGHT_API_LLM_PROVIDER",
+    "HINDSIGHT_API_LLM_API_KEY",
+    "HINDSIGHT_API_LLM_MODEL",
+    "HINDSIGHT_API_LOG_LEVEL",
+    "HINDSIGHT_API_LLM_BASE_URL",
+    "HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT",
+    "HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU",
+    "HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU",
+    "HF_HUB_OFFLINE",
+    "HF_ENDPOINT",
+}
+
+_ENV_KEY_RE = re.compile(r"^[A-Za-z_][A-Za-z0-9_]*$")
+
+
+def _parse_bool_setting(val: Any) -> bool:
+    if isinstance(val, bool):
+        return val
+    return str(val).strip().lower() in ("true", "1", "yes", "on")
+
+
+def _sanitize_env_pair(key: str, value: Any) -> tuple[str, str] | None:
+    k = str(key).strip()
+    if not _ENV_KEY_RE.match(k):
+        return None
+    v = str(value).replace("\r", "").replace("\n", "").strip()
+    return k, v
+
+
+def _export_daemon_offline_env(config: dict[str, Any]) -> None:
+    """Export offline and mirror environment variables into os.environ before daemon spawn.
+    Bypasses upstream daemon_embed_manager's filter which only forwards HINDSIGHT_* from .env."""
+    if "hf_hub_offline" in config:
+        os.environ["HF_HUB_OFFLINE"] = "true" if _parse_bool_setting(config["hf_hub_offline"]) else "false"
+    if endpoint := (config.get("hf_endpoint") or os.environ.get("HF_ENDPOINT")):
+        os.environ["HF_ENDPOINT"] = str(endpoint).strip()
+
+
 def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
     """Build the profile-scoped env that standalone hindsight-embed consumes."""
     if llm_api_key is None:
@@ -179,23 +220,67 @@ def _build_embedded_profile_env(config: dict[str, Any], *, llm_api_key: str | No
         except UnscopedSecretError:
             base_url = ""
     if base_url:
-        env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url)
+        env_values["HINDSIGHT_API_LLM_BASE_URL"] = str(base_url).strip()
     if (idle_timeout := config.get("idle_timeout")) is None:
         idle_timeout = os.environ.get("HINDSIGHT_IDLE_TIMEOUT")
     if idle_timeout is not None and idle_timeout != "":
         env_values["HINDSIGHT_EMBED_DAEMON_IDLE_TIMEOUT"] = str(_parse_int_setting(idle_timeout, _DEFAULT_IDLE_TIMEOUT))
+
+    if "embeddings_local_force_cpu" in config:
+        env_values["HINDSIGHT_API_EMBEDDINGS_LOCAL_FORCE_CPU"] = "true" if _parse_bool_setting(config["embeddings_local_force_cpu"]) else "false"
+    if "reranker_local_force_cpu" in config:
+        env_values["HINDSIGHT_API_RERANKER_LOCAL_FORCE_CPU"] = "true" if _parse_bool_setting(config["reranker_local_force_cpu"]) else "false"
+
+    hf_offline = config.get("hf_hub_offline")
+    if hf_offline is None and "HF_HUB_OFFLINE" in os.environ:
+        hf_offline = os.environ["HF_HUB_OFFLINE"]
+    if hf_offline is not None:
+        env_values["HF_HUB_OFFLINE"] = "true" if _parse_bool_setting(hf_offline) else "false"
+
+    hf_endpoint = config.get("hf_endpoint") or os.environ.get("HF_ENDPOINT")
+    if hf_endpoint:
+        sanitized = _sanitize_env_pair("HF_ENDPOINT", hf_endpoint)
+        if sanitized:
+            env_values[sanitized[0]] = sanitized[1]
+
+    extra_env = config.get("extra_env") or config.get("env_extra")
+    if isinstance(extra_env, dict):
+        for raw_k, raw_v in extra_env.items():
+            pair = _sanitize_env_pair(raw_k, raw_v)
+            if pair and pair[0] not in _HERMES_MANAGED_KEYS:
+                env_values[pair[0]] = pair[1]
+
     return env_values
 
 
+def _compute_target_env(profile_env: Path, config: dict[str, Any], *, llm_api_key: str | None = None) -> dict[str, str]:
+    """Target configuration combining clean managed keys and unmanaged external keys."""
+    existing_env = _load_simple_env(profile_env)
+    managed_env = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
+    preserved_unmanaged = {k: v for k, v in existing_env.items() if k not in _HERMES_MANAGED_KEYS and k not in managed_env}
+    return {**preserved_unmanaged, **managed_env}
+
+
 def _secure_write_profile_env(profile_env: Path, content: str) -> None:
-    """Create/overwrite *profile_env* owner-only (0600); a pre-existing file is
-    tightened BEFORE the plaintext LLM API key is written."""
-    if profile_env.exists():
-        with contextlib.suppress(OSError):
-            os.chmod(profile_env, 0o600)
-    fd = os.open(str(profile_env), os.O_WRONLY | os.O_CREAT | os.O_TRUNC, 0o600)
-    with os.fdopen(fd, "w", encoding="utf-8") as fh:
-        fh.write(content)
+    """Create/overwrite *profile_env* owner-only (0600) via atomic rename;
+    a pre-existing file is never left truncated or partially written."""
+    parent = profile_env.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    prefix = f".{profile_env.name}."
+    fd, tmp_path_str = tempfile.mkstemp(prefix=prefix, dir=parent)
+    tmp_path = Path(tmp_path_str)
+    try:
+        os.chmod(tmp_path, 0o600)
+        with os.fdopen(fd, "w", encoding="utf-8") as fh:
+            fh.write(content)
+            fh.flush()
+            os.fsync(fh.fileno())
+        os.replace(tmp_path, profile_env)
+    except BaseException:
+        if tmp_path.exists():
+            with contextlib.suppress(OSError):
+                tmp_path.unlink()
+        raise
 
 
 def _validate_profile_env_permissions(profile_env: Path) -> None:
@@ -218,8 +303,8 @@ def _materialize_embedded_profile_env(config: dict[str, Any], *, llm_api_key: st
     permissions could not be verified."""
     profile_env = _embedded_profile_env_path(config)
     profile_env.parent.mkdir(parents=True, exist_ok=True)
-    env_values = _build_embedded_profile_env(config, llm_api_key=llm_api_key)
-    content = "".join(f"{key}={value}\n" for key, value in env_values.items())
+    target_env = _compute_target_env(profile_env, config, llm_api_key=llm_api_key)
+    content = "".join(f"{key}={value}\n" for key, value in target_env.items())
     try:
         _secure_write_profile_env(profile_env, content)
         _validate_profile_env_permissions(profile_env)

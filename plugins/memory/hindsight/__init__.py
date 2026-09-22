@@ -34,8 +34,9 @@ from utils import read_json_or_empty
 
 from .embedded import (
     _RETRIABLE_CONNECTION_MARKERS, _build_embedded_profile_env,
-    _check_local_runtime, _embedded_llm_api_key, _embedded_profile_env_path,
-    _export_port_health_grace_timeout, _load_simple_env, _local_runtime_hint, _materialize_embedded_profile_env,
+    _check_local_runtime, _compute_target_env, _embedded_llm_api_key, _embedded_profile_env_path,
+    _export_daemon_offline_env, _export_port_health_grace_timeout, _load_simple_env,
+    _local_runtime_hint, _materialize_embedded_profile_env,
     _may_rewrite_profile_env,
 )
 from .settings import (
@@ -845,7 +846,8 @@ class HindsightMemoryProvider(MemoryProvider):
             dem.console = Console(file=open(log_path, "a", encoding="utf-8"), force_terminal=False)
 
             client = self._get_client()
-            profile = self._config.get("profile", "hermes")
+            config = self._config or {}
+            profile = config.get("profile", "hermes")
             # Profile .env out of sync with config -> rewrite and restart a running daemon.
             # Fail-closed on key material: when this process holds no key (no secret
             # scope on this thread) but the file does, a rewrite would destroy the
@@ -853,9 +855,15 @@ class HindsightMemoryProvider(MemoryProvider):
             # stop: restarting the daemon now would boot it keyless, which is the
             # exact outage this guards against. _get_client() above already passed
             # whatever key WAS available into the in-process client kwargs.
-            if _load_simple_env(_embedded_profile_env_path(self._config)) != _build_embedded_profile_env(self._config):
-                if _may_rewrite_profile_env(self._config):
-                    _materialize_embedded_profile_env(self._config)
+            # Export offline/mirror env vars so child daemon inherits them
+            _export_daemon_offline_env(config)
+
+            _profile_env_path = _embedded_profile_env_path(config)
+            _target_env = _compute_target_env(_profile_env_path, config)
+            _on_disk_env = _load_simple_env(_profile_env_path)
+            if _on_disk_env != _target_env:
+                if _may_rewrite_profile_env(config):
+                    _materialize_embedded_profile_env(config)
                     if client._manager.is_running(profile):
                         _log("\n=== Config changed, restarting daemon ===\n")
                         client._manager.stop(profile)

@@ -15,6 +15,10 @@ import time
 from contextlib import contextmanager
 from typing import Any, Callable, Optional
 
+from agent.delegation_context import (
+    is_delegated_child_process_context,
+    is_dispatcher_owned_worker_context,
+)
 from agent.redact import redact_sensitive_text
 from hermes_cli.goals import judge_goal
 from tools.registry import no_cache_check_fn, registry, tool_error
@@ -483,6 +487,8 @@ def _goal_gate(tool_name: str, task, tid: str, evidence: str) -> None:
 # stays for notes / pre-extending a claim). Best-effort: never raise into the agent loop;
 # rate-limited per process (a race costs one harmless extra write); no-op outside a
 # dispatcher-spawned worker.
+# Delegated children and in-process cron jobs share the worker's process env but
+# do not own its Kanban claim, so their auto-heartbeats must also be no-ops.
 
 # --------------------------------------------------------------------------- Runtime-activity →
 # board-heartbeat bridge (#31752)
@@ -507,6 +513,20 @@ def heartbeat_current_worker_from_env() -> bool:
     succeed. ``HERMES_KANBAN_RUN_ID`` pins the run row so a reclaimed stale run is not
     heartbeated; ``HERMES_KANBAN_CLAIM_LOCK`` absent -> default claimer (local workers)."""
     global _auto_heartbeat_last_attempt, _auto_heartbeat_fence_warned
+    if is_delegated_child_process_context() or not is_dispatcher_owned_worker_context():
+        # Reject before opening the board or consuming the parent's rate-limit slot,
+        # but retain the inherited-process-fence diagnostic (in-process children stay quiet).
+        inherited_tid = os.environ.get("HERMES_KANBAN_TASK")
+        if (inherited_tid and os.environ.get("HERMES_DELEGATED_CHILD_CONTEXT")
+                and not _is_delegated_child_context() and not _auto_heartbeat_fence_warned):
+            _auto_heartbeat_fence_warned = True
+            logger.warning(
+                "kanban auto-heartbeat for task %s refused: this process carries "
+                "HERMES_DELEGATED_CHILD_CONTEXT together with HERMES_KANBAN_TASK, so the board "
+                "treats it as a delegate_task descendant and its claim will not be extended by "
+                "activity. Only the dispatcher's own spawn grants worker scope; do not copy a "
+                "worker's environment into a hand-launched process.", inherited_tid)
+        return False
     tid = os.environ.get("HERMES_KANBAN_TASK")
     now = time.monotonic()
     if not tid or (now - _auto_heartbeat_last_attempt) < _AUTO_HEARTBEAT_MIN_INTERVAL_SECONDS:

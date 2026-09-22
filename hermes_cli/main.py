@@ -403,6 +403,7 @@ from hermes_cli.subcommands.journey import build_journey_parser
 from hermes_cli.subcommands.computer_use import build_computer_use_parser
 from hermes_cli.subcommands.sessions import build_sessions_parser
 from hermes_cli.subcommands.completion import build_completion_parser
+from hermes_cli.subcommands.jev import build_jev_parser
 
 
 def _require_tty(command_name: str) -> None:
@@ -3470,6 +3471,7 @@ def _build_cli_parser():
     build_sessions_parser(subparsers, cmd_sessions=_cmd_sessions_lazy)
     build_insights_parser(subparsers, cmd_insights=cmd_insights)
     build_usage_parser(subparsers)
+    build_jev_parser(subparsers)
     build_monitoring_parser(subparsers, cmd_monitoring=cmd_monitoring)
     build_claw_parser(subparsers, cmd_claw=cmd_claw)
     build_vault_parser(subparsers)

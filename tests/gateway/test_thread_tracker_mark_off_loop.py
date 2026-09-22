@@ -36,6 +36,7 @@ import asyncio
 import contextlib
 import json
 import threading
+import time
 
 import pytest
 
@@ -78,10 +79,22 @@ def test_two_concurrent_marks_do_not_lose_an_entry(tracker, monkeypatch):
     monkeypatch.setattr(helpers, "atomic_json_write", _synchronised_write, raising=True)
 
     async def scenario():
-        await asyncio.gather(
+        marks = asyncio.gather(
             tracker.mark_async("!a:example.org"),
             tracker.mark_async("!b:example.org"),
         )
+        # A worker is parked inside the rename. Neither the second mark's
+        # in-memory insert nor a membership check may wait for it: both take
+        # the set lock ON THE LOOP THREAD, so holding that lock across
+        # ``os.replace`` stalls the loop for the whole rename.
+        started = time.monotonic()
+        await asyncio.sleep(0.05)
+        assert "!a:example.org" in tracker
+        assert time.monotonic() - started < 0.2, (
+            "the loop stalled on the tracker lock while a worker held it "
+            "across os.replace"
+        )
+        await marks
 
     asyncio.run(scenario())
 

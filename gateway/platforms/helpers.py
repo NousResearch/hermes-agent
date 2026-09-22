@@ -113,12 +113,19 @@ class ThreadParticipationTracker:
     def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
-        # Serializes the in-memory set against ``_save``'s trim.  ``mark_async``
-        # runs the persist on a worker thread, which removes the accidental
-        # serialization the event loop used to provide, so the lock has to be
-        # added in the SAME change that introduces the concurrency.  Re-entrant
-        # because ``mark`` takes it and then calls ``_save``, which takes it too.
-        self._lock = threading.RLock()
+        # ``mark_async`` runs the persist on a worker thread, which removes the
+        # accidental serialization the event loop used to provide.  Two locks,
+        # never nested the other way round:
+        #   ``_lock``    guards ONLY the in-memory set (``_remember``,
+        #                ``__contains__``, ``clear`` and the snapshot in
+        #                ``_save``); held for microseconds, safe on the loop.
+        #   ``_io_lock`` worker-only; serializes snapshot+write in ``_save`` so
+        #                two persists cannot interleave and lose an entry.
+        # ``_save`` must NOT hold ``_lock`` across ``os.replace``: the adapters'
+        # ``thread_id in tracker`` gate runs on the loop thread and would stall
+        # for the whole rename.
+        self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._threads: dict[str, None] = dict.fromkeys(str(t) for t in self._load())
 
     def _state_path(self) -> Path:
@@ -133,11 +140,12 @@ class ThreadParticipationTracker:
         return [str(thread_id) for thread_id in data] if isinstance(data, list) else []
 
     def _save(self) -> None:
-        with self._lock:
-            thread_list = list(self._threads)
-            if len(thread_list) > self._max_tracked:
-                thread_list = thread_list[-self._max_tracked:]
-                self._threads = dict.fromkeys(thread_list)
+        with self._io_lock:
+            with self._lock:
+                thread_list = list(self._threads)
+                if len(thread_list) > self._max_tracked:
+                    thread_list = thread_list[-self._max_tracked:]
+                    self._threads = dict.fromkeys(thread_list)
             atomic_json_write(self._state_path(), thread_list, indent=None)
 
     def _remember(self, thread_id: str) -> bool:

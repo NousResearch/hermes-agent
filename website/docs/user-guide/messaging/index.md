@@ -944,7 +944,7 @@ display:
   platforms:
     telegram:
       chats:
-        "-1004294267446":           # just this group
+        "-1001234567890":           # just this group
           tool_progress: 'off'
           streaming: false           # final-answer-first in this chat only
 ```

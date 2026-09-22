@@ -23,10 +23,8 @@ import types
 
 import pytest
 
-from gateway.run_turn_runner import TurnRunner
-
-_GROUP = "-1004294267446"
-_DM = "8622947177"
+_GROUP = "-1001234567890"
+_DM = "1234567890"
 
 
 def _cfg_with_chat_override():
@@ -61,6 +59,14 @@ def _runner_fake(user_config, chat_id):
     from gateway.display_config import resolve_display_setting
 
     ctx = types.SimpleNamespace(
+        # Upstream added a scheduled_heartbeat guard to _setup_stream_consumer (2026-09-14
+        # lineage, merged 6005aa1f); the real RunContext carries the field (turn_context.py),
+        # so this fixture must too or the guard AttributeErrors. Caught by the 9/16 merge audit.
+        scheduled_heartbeat=False,
+        # Upstream added a mute_notification_reply guard ahead of the streaming resolution
+        # (run_turn_runner.py:908, merged 65b5ac6ef9 2026-09-17); real RunContext carries it.
+        # Caught by the 9/17 post-restore test run.
+        mute_notification_reply=False,
         streaming_tts_consumer_holder=[None],
         user_config=user_config,
         resolve_display_setting=resolve_display_setting,
@@ -77,7 +83,13 @@ def _runner_fake(user_config, chat_id):
         _ctx=ctx,
         _runner=types.SimpleNamespace(
             config=types.SimpleNamespace(streaming=None),
+            # Upstream renamed the adapter lookup _adapter_for_source ->
+            # _delivery_adapter_for (run_turn_runner.py:267, merged 2026-09-21);
+            # the AttributeError was swallowed by the runner's own try/except,
+            # so the gate silently never opened for the positive cases. Provide
+            # BOTH names so the fixture survives a rename from either side.
             _adapter_for_source=lambda source: consulted.append(1) or None,
+            _delivery_adapter_for=lambda source: consulted.append(1) or None,
             _build_stream_consumer_config=None,
         ),
         _track_future_cleanup_id=lambda fut: None,
@@ -118,7 +130,11 @@ def _proxy_fake(user_config, chat_id):
     consulted = []
     self_obj = types.SimpleNamespace(
         config=types.SimpleNamespace(streaming=None),
+        # Upstream renamed the adapter lookup _adapter_for_source ->
+        # _delivery_adapter_for (run_turn.py:2694, merged 2026-09-21). Provide
+        # BOTH names so the fixture survives a rename from either side.
         _adapter_for_source=lambda source: consulted.append(1) or None,
+        _delivery_adapter_for=lambda source: consulted.append(1) or None,
     )
     from gateway.config import Platform
 
@@ -157,3 +173,6 @@ def test_proxy_stream_consumer_keeps_streaming_for_other_chats(monkeypatch):
         "platform streaming True with no chat override must pass the streaming "
         "gate and reach adapter lookup"
     )
+
+
+from gateway.run_turn_runner import TurnRunner  # noqa: E402  (after fakes defined)

@@ -1822,7 +1822,7 @@ display:
   #     platforms:
   #       telegram:
   #         chats:
-  #           "-1004294267446":
+  #           "-1001234567890":
   #             tool_progress: off
   #             streaming: false   # final-answer-first in just this group
 

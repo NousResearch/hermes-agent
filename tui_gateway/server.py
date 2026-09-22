@@ -1240,11 +1240,9 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from utils import atomic_roundtrip_yaml_save
+    from hermes_cli.config import atomic_config_write
     path = _active_config_path()
-    # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
-    # fails closed on an unreadable existing config.yaml like atomic_config_write.
-    atomic_roundtrip_yaml_save(path, cfg)
+    atomic_config_write(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:

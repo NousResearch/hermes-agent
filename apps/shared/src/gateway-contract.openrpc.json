@@ -18203,7 +18203,7 @@
       },
       "PluginsManageParams": {
         "additionalProperties": false,
-        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name``; ``remove``: ``name`` (user installs only).",
+        "description": "``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``\n(+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin\nthat widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only).",
         "properties": {
           "profile": {
             "anyOf": [
@@ -18316,6 +18316,18 @@
             ],
             "default": null,
             "title": "Ref"
+          },
+          "accept_capabilities": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Accept Capabilities"
           }
         },
         "title": "PluginsManageParams",
@@ -18323,7 +18335,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``name``/``plugin``;\n``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` \u2192\n``ok``/``unchanged``/``sha``; ``remove`` \u2192 ``ok``/``name``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -18387,6 +18399,30 @@
             ],
             "default": null,
             "title": "Unchanged"
+          },
+          "restart_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Restart Required"
+          },
+          "cleared_memory_provider": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Cleared Memory Provider"
           },
           "name": {
             "anyOf": [
@@ -18488,6 +18524,63 @@
             ],
             "default": null,
             "title": "Sha"
+          },
+          "consent_required": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Consent Required"
+          },
+          "delta": {
+            "anyOf": [
+              {
+                "additionalProperties": {
+                  "items": {
+                    "type": "string"
+                  },
+                  "type": "array"
+                },
+                "type": "object"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delta"
+          },
+          "delta_lines": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Delta Lines"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
           }
         },
         "title": "PluginsManageResult",
@@ -19389,6 +19482,13 @@
             "default": 0,
             "title": "Skill Count",
             "type": "integer"
+          },
+          "previous_names": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Previous Names",
+            "type": "array"
           },
           "last_session": {
             "anyOf": [

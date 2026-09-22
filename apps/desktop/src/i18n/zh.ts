@@ -622,6 +622,7 @@ export const zh = defineLocale({
         includesHeading: '此包包含',
         agentLabel: '智能体插件',
         desktopLabel: '桌面 UI',
+        profileLabel: '安装到配置文件',
         agentTargetLocal: (profile, dir) => `安装到 ${profile} 后端（${dir}）`,
         agentTargetRemote: profile => `安装到已连接的 ${profile} 后端`,
         catalogPinned: (name, sha) =>

@@ -17,6 +17,8 @@ export interface TimelinePartMetadata {
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
+  /** Durable source occurrence, even when several backend rows share a bubble. */
+  sourceRowId?: number
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
@@ -42,6 +44,10 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** Locally recovered output not yet represented by a durable completed reply. */
+  recovered?: boolean
+  /** Whether hydration reached a final assistant source row, rather than a tool round. */
+  durableComplete?: boolean
   /** Whole-turn wall-clock seconds (message.start → message.complete),
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */

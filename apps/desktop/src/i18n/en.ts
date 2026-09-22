@@ -595,6 +595,7 @@ export const en: Translations = {
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
         desktopLabel: 'Desktop UI',
+        profileLabel: 'Install for profile',
         agentTargetLocal: (profile, dir) => `Installs into the ${profile} backend (${dir})`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
         catalogPinned: (name, sha) =>
@@ -1877,6 +1878,10 @@ export const en: Translations = {
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
       updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
+      updateConsentTitle: (name: string) => `${name} asks for more`,
+      updateConsentBody: (name: string, sha: string) =>
+        `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
+      updateConsentConfirm: 'Apply update',
       uninstall: 'Uninstall',
       uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
       uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,

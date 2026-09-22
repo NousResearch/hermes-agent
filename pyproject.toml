@@ -258,10 +258,12 @@ wake = [
 ]
 honcho = ["honcho-ai==2.2.0"]
 # Cloud memory providers — opt-in, lazy-installed via tools/lazy_deps.py
-# (memory.supermemory / memory.mem0) at first use. Exact pins MUST match the
-# LAZY_DEPS pins (enforced by tests/test_project_metadata.py). Deliberately
-# excluded from [all] like honcho/hindsight so a quarantined upstream release
-# can't break fresh installs.
+# (memory.supermemory / memory.mem0) at first use. Where BOTH pin exactly the
+# versions MUST match (enforced by tests/test_project_metadata.py); LAZY_DEPS
+# entries that mirror a plugin.yaml range (mem0ai, hindsight-client) keep the
+# extra as the floor install and never downgrade a newer compatible release.
+# Deliberately excluded from [all] like honcho/hindsight so a quarantined
+# upstream release can't break fresh installs.
 supermemory = ["supermemory==3.50.0"]
 mem0 = ["mem0ai==2.0.10"]
 # Image resize recovery for the vision tools. Pillow is now a CORE dependency

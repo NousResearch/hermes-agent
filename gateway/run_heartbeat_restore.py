@@ -19,13 +19,6 @@ def _watched_homes(runner, default_home) -> list:
     return list(dict.fromkeys(Path(home) for home in homes))
 
 
-def _scope_key(runner, origin) -> str:
-    """Profile home ``_profile_scope_for_source`` would bind for ``origin`` (one key when not multiplexed)."""
-    if getattr(getattr(runner, "config", None), "multiplex_profiles", False):
-        return str(runner._resolve_profile_home_for_source(origin))
-    return ""
-
-
 async def restore_heartbeat_watches(runner) -> None:
     """Retryable startup/poll scan; failed reads never prune existing watches.
 
@@ -60,7 +53,7 @@ async def restore_heartbeat_watches(runner) -> None:
                     continue
                 try:
                     source = runner._restored_source(entry)
-                    by_scope.setdefault(_scope_key(runner, source), []).append((entry, source))
+                    by_scope.setdefault(runner._profile_scope_key_for_source(source), []).append((entry, source))
                 except Exception:
                     logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
             for group in by_scope.values():

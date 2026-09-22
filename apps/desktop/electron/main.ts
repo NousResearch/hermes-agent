@@ -13135,11 +13135,11 @@ function releaseHostSpawnReservation() {
   hostSpawnReservation = null
 }
 
-function startHermes() {
+function startHermes({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}) {
   primaryRecoverySuppressed = false
   primaryStartsInFlight += 1
 
-  const start = localBackendLifecycle.start(runHermesStart)
+  const start = localBackendLifecycle.start(() => runHermesStart({ supervisorRecovery }))
 
   const releaseStart = () => {
     primaryStartsInFlight -= 1
@@ -13156,6 +13156,43 @@ function startHermes() {
 // "log and return", and recovery then hinged on the renderer noticing its
 // socket drop — a 9 h engine-less window when it did not. Pool children are
 // deliberately not consulted: they never own the window backend.
+function primaryRecoveryState() {
+  return {
+    hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
+    hasPendingStart: primaryStartsInFlight > 0,
+    intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
+  }
+}
+
+function reportPrimaryRecoveryCrashLoop(code: number | null, signal: string | null): boolean {
+  if (!primaryExitRecovery.isCrashLooping()) {
+    return false
+  }
+
+  const message =
+    'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
+
+  rememberLog(`[supervisor] ${message}`)
+  sendBackendExit({ code, signal, error: message })
+
+  return true
+}
+
+function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
+  startHermes({ supervisorRecovery: true }).catch(respawnError => {
+    rememberLog(`[supervisor] backend respawn failed: ${respawnError.message}`)
+
+    if (primaryExitRecovery.retryAfterFailedStart(primaryRecoveryState())) {
+      rememberLog('[supervisor] backend respawn failed before ready; retrying within crash-loop budget')
+      runPrimaryRecoverySpawn(code, signal)
+
+      return
+    }
+
+    reportPrimaryRecoveryCrashLoop(code, signal)
+  })
+}
+
 function scheduleUnexpectedPrimaryRecovery({
   code = null,
   signal = null,
@@ -13166,34 +13203,20 @@ function scheduleUnexpectedPrimaryRecovery({
     return false
   }
 
-  const claimed = primaryExitRecovery.claim({
-    hasCurrentOwner: backendConnectionState.getProcess() !== null || backendConnectionState.getPromise() !== null,
-    hasPendingStart: primaryStartsInFlight > 0,
-    intentionalTeardown: primaryRecoverySuppressed || isQuittingForHandoff || backendShutdown.hasStarted()
-  })
+  const claimed = primaryExitRecovery.claim(primaryRecoveryState())
 
   if (!claimed) {
-    if (primaryExitRecovery.isCrashLooping()) {
-      const message =
-        'Hermes backend keeps crashing right after it restarts; not restarting it again. Relaunch Hermes Desktop.'
-
-      rememberLog(`[supervisor] ${message}`)
-      sendBackendExit({ code, signal, error: message })
-
-      return true
-    }
-
-    return false
+    return reportPrimaryRecoveryCrashLoop(code, signal)
   }
 
   rememberLog('[supervisor] backend exit left no primary owner and no start in flight; respawning')
   sendBackendExit({ code, signal, ...(error ? { error } : {}) })
-  startHermes().catch(respawnError => rememberLog(`[supervisor] backend respawn failed: ${respawnError.message}`))
+  runPrimaryRecoverySpawn(code, signal)
 
   return true
 }
 
-async function runHermesStart() {
+async function runHermesStart({ supervisorRecovery = false }: { supervisorRecovery?: boolean } = {}) {
   // Only the single-instance lock holder may reap/spawn/claim the desktop
   // backend. A lock-losing instance must stay inert even if some path reaches
   // here (e.g. the deferred-quit window before `ready`): its reapOrphans()
@@ -13671,7 +13694,7 @@ async function runHermesStart() {
     // child 'exit' handler to clear the cache — latching it would wedge the app
     // on "session expired" until a full restart, defeating reconnect, the
     // "Sign out & sign in" reload, and the wake-recovery revalidate path.
-    if (shouldLatchBackendStartFailure({ attemptedRemote })) {
+    if (!supervisorRecovery && shouldLatchBackendStartFailure({ attemptedRemote })) {
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 

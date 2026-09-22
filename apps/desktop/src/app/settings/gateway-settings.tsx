@@ -225,8 +225,10 @@ function GatewayManagedUpdates() {
   return (
     <SettingsContent>
       {supported && !failed && hasSsh ? (
-        <ManagedUpdatesSection />
-        <ManagedRolloutsSection />
+        <>
+          <ManagedUpdatesSection />
+          <ManagedRolloutsSection />
+        </>
       ) : (
         <EmptyState
           description={

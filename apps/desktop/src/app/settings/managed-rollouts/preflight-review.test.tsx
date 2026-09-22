@@ -9,7 +9,7 @@ describe('managed rollout preflight', () => {
     const onStart = vi.fn()
     const planner = () => [['b'], ['a']]
     const { rerender } = render(<PreflightReview compatible={false} draft={draft} planner={planner} reviewedToken="t1" onStart={onStart} />)
-    expect(screen.getByRole('button', { name: /start rollout/i })).toBeDisabled()
+    expect(screen.getByRole('button', { name: /start rollout/i })).toHaveProperty('disabled', true)
     rerender(<PreflightReview compatible onStart={onStart} draft={draft} planner={planner} reviewedToken="t1" />)
     fireEvent.click(screen.getByRole('checkbox'))
     const start = screen.getByRole('button', { name: /start rollout/i })

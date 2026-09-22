@@ -395,6 +395,54 @@ class TestPluginDiscovery:
 
 
 
+    def test_entry_point_function_form_registers(self, tmp_path, monkeypatch):
+        """Entry points declared as ``module:function`` register via the callable.
+
+        Regression for #72052: real ``EntryPoint.load()`` returns the referenced
+        attribute for the ``module:function`` form, not the module. The loader
+        used to look for ``.register`` on that function object, find nothing,
+        and warn "no register() function" on every discovery pass.
+        """
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(parents=True, exist_ok=True)
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        # Entry-point plugins load only when opted into plugins.enabled.
+        (hermes_home / "config.yaml").write_text(
+            yaml.safe_dump({"plugins": {"enabled": ["fn_plugin"]}})
+        )
+
+        fake_module = types.ModuleType("fake_fn_plugin")
+        register_calls = []
+
+        def register(ctx):
+            register_calls.append(ctx)
+
+        register.__module__ = "fake_fn_plugin"
+        fake_module.register = register  # type: ignore[attr-defined]
+        monkeypatch.setitem(sys.modules, "fake_fn_plugin", fake_module)
+
+        fake_ep = MagicMock()
+        fake_ep.name = "fn_plugin"
+        fake_ep.value = "fake_fn_plugin:register"
+        fake_ep.group = ENTRY_POINTS_GROUP
+        # Mirror real importlib behavior: load() resolves to the attribute.
+        fake_ep.load.return_value = register
+
+        def fake_entry_points():
+            result = MagicMock()
+            result.select = MagicMock(return_value=[fake_ep])
+            return result
+
+        with patch("importlib.metadata.entry_points", fake_entry_points):
+            mgr = PluginManager()
+            mgr.discover_and_load()
+
+        entry = mgr._plugins["fn_plugin"]
+        assert entry.error is None, entry.error
+        assert entry.enabled
+        assert len(register_calls) == 1
+        assert entry.module is fake_module
+
     def test_force_rediscover_clears_all_plugin_registries(self, monkeypatch):
         """force=True must clear every plugin-populated registry.
 
@@ -506,6 +554,47 @@ class TestPluginLoading:
         assert not entry.enabled
         assert entry.module is None
         assert "exclusive" in (entry.error or "").lower()
+
+    def test_bundled_cron_provider_is_not_loaded_by_general_manager(self, tmp_path, monkeypatch):
+        """``plugins/cron_providers/`` has its own discovery (``plugins.cron_providers``); the general
+        manager's PluginContext has no ``register_cron_scheduler``, so importing chronos from here
+        warned ``Failed to load plugin 'chronos'`` on every start it was enabled (#62951)."""
+        bundled = tmp_path / "bundled"
+        chronos = bundled / "cron_providers" / "chronos"
+        chronos.mkdir(parents=True)
+        (chronos / "plugin.yaml").write_text(yaml.dump({"name": "chronos"}), encoding="utf-8")
+        (chronos / "__init__.py").write_text(
+            "def register(ctx):\n    ctx.register_cron_scheduler(object())\n", encoding="utf-8")
+        hermes_home = tmp_path / "hermes_test"
+        hermes_home.mkdir(exist_ok=True)
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["chronos"]}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+        from hermes_cli import plugins as plugins_mod
+        monkeypatch.setattr(plugins_mod, "get_bundled_plugins_dir", lambda: bundled)
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        assert not any(key.endswith("chronos") for key in mgr._plugins)
+
+    def test_user_cron_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
+        """A user-installed cron provider (no ``kind:``) routes to ``plugins.cron_providers`` like a
+        memory provider does, instead of being imported by the general manager (#62951)."""
+        hermes_home = tmp_path / "hermes_test"
+        plugin_dir = hermes_home / "plugins" / "mycron"
+        plugin_dir.mkdir(parents=True)
+        (plugin_dir / "plugin.yaml").write_text(yaml.dump({"name": "mycron"}), encoding="utf-8")
+        (plugin_dir / "__init__.py").write_text(
+            "def register(ctx):\n    ctx.register_cron_scheduler(object())\n", encoding="utf-8")
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump({"plugins": {"enabled": ["mycron"]}}))
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        mgr = PluginManager()
+        mgr.discover_and_load()
+
+        entry = mgr._plugins["mycron"]
+        assert entry.manifest.kind == "exclusive"
+        assert entry.module is None and not entry.enabled
 
     def test_entrypoint_memory_provider_auto_coerced_to_exclusive(
         self, tmp_path, monkeypatch

@@ -45,6 +45,7 @@ export function KeepAlivePanes({ children }: { children: ReactNode }) {
   const panes = useContributions('panes')
   const epochs = useStore($treePaneEpochs)
   const [placements, setPlacements] = useState<Placements>(() => new Map())
+
   const place = useCallback<PlacePane>((id, placement) => {
     setPlacements(previous => {
       // Restored background tabs are lazy until first activation.
@@ -73,6 +74,7 @@ export function KeepAlivePanes({ children }: { children: ReactNode }) {
       const present = new Set(
         panes.filter(pane => pane.render && paneChrome(pane).lifecycleKeepAlive).map(pane => pane.id)
       )
+
       const retained = [...previous].filter(([id]) => present.has(id))
 
       return retained.length === previous.size ? previous : new Map(retained)
@@ -105,6 +107,7 @@ interface KeepAlivePaneHostProps {
 
 const KeepAlivePaneHost = memo(function KeepAlivePaneHost({ pane, placement, epoch }: KeepAlivePaneHostProps) {
   const ref = useRef<HTMLDivElement>(null)
+
   // Retain native guest coordinates while its placement is absent/minimized.
   // CSS follows the slot during resize; recording dimensions never re-renders
   // a guest or moves its connected host.
@@ -119,6 +122,7 @@ const KeepAlivePaneHost = memo(function KeepAlivePaneHost({ pane, placement, epo
     },
     [placement.visible]
   )
+
   useResizeObserver(rememberSize, ref)
 
   return (
@@ -190,10 +194,6 @@ export function KeepAlivePaneSlot({
   )
 
   return (
-    <div
-      aria-hidden
-      className="pointer-events-none absolute inset-0"
-      style={{ anchorName: anchor } as CSSProperties}
-    />
+    <div aria-hidden className="pointer-events-none absolute inset-0" style={{ anchorName: anchor } as CSSProperties} />
   )
 }

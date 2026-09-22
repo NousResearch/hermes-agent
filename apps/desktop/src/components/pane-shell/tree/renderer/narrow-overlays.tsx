@@ -33,6 +33,7 @@ export function NarrowOverlays() {
   const stableHosts = useStablePaneHosts()
   const hiddenPanes = useStore($hiddenTreePanes)
   const [reveal, setReveal] = useState<{ id: string; pinned: boolean } | null>(null)
+
   const onMouseLeave = useCallback<MouseEventHandler<HTMLDivElement>>(event => {
     // The overlay's chrome and its stable guest are DOM siblings, but one
     // hover boundary. Crossing between them must not dismiss an unpinned pane.

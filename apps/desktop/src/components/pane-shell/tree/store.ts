@@ -70,7 +70,9 @@ function persist(tree: LayoutNode | null) {
 export const $layoutTree = modeLayout.atom<LayoutNode | null>(
   LAYOUT_KEYS.tree,
   () => defaultTrees[modeLayout.mode],
-  Codecs.json(parsed => (isLayoutNode(parsed) ? normalize(migratePersistedTree(parsed)) : defaultTrees[modeLayout.mode])),
+  Codecs.json(parsed =>
+    isLayoutNode(parsed) ? normalize(migratePersistedTree(parsed)) : defaultTrees[modeLayout.mode]
+  ),
   true
 )
 
@@ -196,7 +198,11 @@ const paneSetCodec = {
   encode: (value: ReadonlySet<string>) => Codecs.stringArray.encode([...value])
 }
 
-export const $dismissedPanes = modeLayout.atom<ReadonlySet<string>>(LAYOUT_KEYS.dismissed, () => new Set(), paneSetCodec)
+export const $dismissedPanes = modeLayout.atom<ReadonlySet<string>>(
+  LAYOUT_KEYS.dismissed,
+  () => new Set(),
+  paneSetCodec
+)
 
 function setDismissed(paneId: string, dismissed: boolean) {
   const next = toggledSet($dismissedPanes.get(), paneId, dismissed)
@@ -288,7 +294,11 @@ function recalledEdgeWeights(paneId: string): [number, number] | undefined {
 // Persisted separately from `$hiddenTreePanes` (whose persistence each side
 // binding owns) so a hidden Bots tab stays hidden across launches even though
 // dock enforcement re-adopts the pane into the sessions zone every boot.
-export const $hiddenStripTabs = modeLayout.atom<ReadonlySet<string>>(LAYOUT_KEYS.hiddenTabs, () => new Set(), paneSetCodec)
+export const $hiddenStripTabs = modeLayout.atom<ReadonlySet<string>>(
+  LAYOUT_KEYS.hiddenTabs,
+  () => new Set(),
+  paneSetCodec
+)
 
 export function isStripTabHidden(paneId: string): boolean {
   return $hiddenStripTabs.get().has(paneId)
@@ -1137,6 +1147,7 @@ export function bindTreeSideVisibility(
   if (!hasPersistedSides) {
     setTreeSideCollapsed(side, !$open.get())
   }
+
   $open.listen(open => setTreeSideCollapsed(side, !open))
 }
 

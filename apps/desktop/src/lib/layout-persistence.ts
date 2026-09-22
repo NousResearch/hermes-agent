@@ -77,7 +77,7 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
 
       if (persistent) {
         // Explicit empties keep migration retries from reviving cleared state.
-        writeKey(keyFor(key), mode === 'simple' ? raw ?? 'null' : raw)
+        writeKey(keyFor(key), mode === 'simple' ? (raw ?? 'null') : raw)
       }
     }
   }
@@ -89,12 +89,13 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
     manual = false
   ): WritableAtom<T> {
     const memory = new Map<InterfaceMode, T>()
+
     const load = (): T => {
       if (memory.has(mode)) {
         return memory.get(mode)!
       }
 
-      const raw = persistent ? readKey(keyFor(key)) ?? (mode === 'simple' ? legacy.get(key) ?? null : null) : null
+      const raw = persistent ? (readKey(keyFor(key)) ?? (mode === 'simple' ? (legacy.get(key) ?? null) : null)) : null
 
       if (raw !== null) {
         try {
@@ -143,6 +144,7 @@ export function createLayoutPersistence(initialMode: InterfaceMode, persistent: 
     },
     onRestore(listener: () => void) {
       listeners.add(listener)
+
       return () => void listeners.delete(listener)
     },
     write,

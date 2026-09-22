@@ -51,6 +51,7 @@ it('retains legacy data in memory when migration writes fail and retries on the 
       if (key === 'hermes.desktop.layoutModeScopes.v1') {
         throw new DOMException('Full', 'QuotaExceededError')
       }
+
       storage.setItem(key, value)
     }
   })

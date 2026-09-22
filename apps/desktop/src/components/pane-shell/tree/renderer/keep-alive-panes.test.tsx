@@ -27,6 +27,7 @@ import { LayoutTreeRoot } from '.'
 // A native guest has a lifetime beyond React. DOM identity alone misses a
 // detach/reparent (even moveBefore destroys Electron's webview guest).
 const disconnected: HTMLElement[] = []
+
 class LiveGuest extends HTMLElement {
   disconnectedCallback() {
     disconnected.push(this)
@@ -37,6 +38,7 @@ customElements.define('pane-live-guest', LiveGuest)
 // jsdom has no layout. Deliver real observer notifications to the production
 // shared observer; the browser harness separately checks CSS anchor geometry.
 const observers = new Set<ResizeObserverProbe>()
+
 class ResizeObserverProbe {
   targets = new Set<Element>()
   constructor(readonly callback: ResizeObserverCallback) {
@@ -55,6 +57,7 @@ class ResizeObserverProbe {
 
 function resize(target: HTMLElement, width: number, height: number) {
   const size = { inlineSize: width, blockSize: height }
+
   const entry: ResizeObserverEntry = {
     target,
     contentRect: new DOMRectReadOnly(0, 0, width, height),
@@ -108,6 +111,7 @@ function registerPane(id: string, keepAlive = true, data: Record<string, unknown
     data: { ...data, lifecycleKeepAlive: keepAlive },
     render: Probe
   })
+
   disposers.push(dispose)
 
   return dispose
@@ -150,10 +154,12 @@ it('keeps a live body continuously connected across replacement IDs, ancestry an
   const input = page.querySelector('input')!
   input.value = 'unsaved page state'
 
-  setTree(split('row', [
-    group(['plain'], { id: 'chat' }),
-    split('column', [group(['live'], { id: 'replacement' }), group([], { id: 'empty' })])
-  ]))
+  setTree(
+    split('row', [
+      group(['plain'], { id: 'chat' }),
+      split('column', [group(['live'], { id: 'replacement' }), group([], { id: 'empty' })])
+    ])
+  )
   expect(guest()).toBe(page)
   expect(page.dataset.group).toBe('replacement')
   expect(page.dataset.visible).toBe('true')
@@ -206,9 +212,14 @@ it('destroys removed contributions and does not revive their old activation on r
 it('gates hidden side guests without mounting never-activated tabs or disconnecting live ones', () => {
   registerPane('live')
   registerPane('background')
-  disposers.push(registry.register({
-    area: 'panes', id: 'workspace', data: { placement: 'main' }, render: () => <div />
-  }))
+  disposers.push(
+    registry.register({
+      area: 'panes',
+      id: 'workspace',
+      data: { placement: 'main' },
+      render: () => <div />
+    })
+  )
   setTree(split('row', [group(['workspace']), group(['live', 'background'], { id: 'side' })]))
   $collapsedTreeSides.set(new Set(['right']))
   render(<LayoutTreeRoot />)
@@ -240,7 +251,11 @@ it('routes DOM group targeting to the new zone without adding duplicate drop zon
   expect($activeTreeGroup.get()).toBe('new-zone')
   fireEvent.pointerOver(page)
   expect($hoveredTreeGroup.get()).toBe('new-zone')
-  expect(snapshotZones().map(zone => zone.id).sort()).toEqual(['new-zone', 'other'])
+  expect(
+    snapshotZones()
+      .map(zone => zone.id)
+      .sort()
+  ).toEqual(['new-zone', 'other'])
 })
 
 it('reloads only the explicit epoch target, even while it is hidden', () => {
@@ -275,6 +290,7 @@ it('keeps live tabs outside the bounded cache while ordinary tabs still park', (
   setTree(group(panes, { id: 'zone' }))
   render(<LayoutTreeRoot />)
   const page = guest()!
+
   for (const active of ['a', 'b', 'c', 'd']) {
     setTree(group(panes, { id: 'zone', active }))
   }

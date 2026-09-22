@@ -42,10 +42,15 @@ export function bindLayoutSides() {
   const $leftEdgeOpen = computed([$panesFlipped, $sidebarOpen, $fileBrowserOpen], (flipped, sidebar, files) =>
     flipped ? files : sidebar
   )
+
   const $rightEdgeOpen = computed([$panesFlipped, $sidebarOpen, $fileBrowserOpen], (flipped, sidebar, files) =>
     flipped ? sidebar : files
   )
 
-  bindTreeSideVisibility('left', $leftEdgeOpen, open => ($panesFlipped.get() ? setFileBrowserOpen : setSidebarOpen)(open))
-  bindTreeSideVisibility('right', $rightEdgeOpen, open => ($panesFlipped.get() ? setSidebarOpen : setFileBrowserOpen)(open))
+  bindTreeSideVisibility('left', $leftEdgeOpen, open =>
+    ($panesFlipped.get() ? setFileBrowserOpen : setSidebarOpen)(open)
+  )
+  bindTreeSideVisibility('right', $rightEdgeOpen, open =>
+    ($panesFlipped.get() ? setSidebarOpen : setFileBrowserOpen)(open)
+  )
 }

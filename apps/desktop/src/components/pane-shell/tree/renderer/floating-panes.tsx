@@ -80,10 +80,12 @@ function FloatingPane({ pane }: { pane: Contribution }) {
     (update: (current: FloatingRect) => FloatingRect) => {
       const positions = $positions.get()
       const current = positions[pane.id]
+
       const next = update({
         ...anchoredRect(anchor, { width: size.width, height: size.height }, viewport.current),
         ...current
       })
+
       $positions.set({ ...positions, [pane.id]: { x: next.x, y: next.y, collapsed: current?.collapsed } })
     },
     [pane.id, anchor, size.width, size.height]
@@ -124,22 +126,25 @@ function FloatingPane({ pane }: { pane: Contribution }) {
     event.preventDefault()
   }, [])
 
-  const onPointerMove = useCallback((event: ReactPointerEvent<HTMLElement>) => {
-    const from = drag.current
+  const onPointerMove = useCallback(
+    (event: ReactPointerEvent<HTMLElement>) => {
+      const from = drag.current
 
-    if (!from) {
-      return
-    }
+      if (!from) {
+        return
+      }
 
-    drag.current = { x: event.clientX, y: event.clientY }
+      drag.current = { x: event.clientX, y: event.clientY }
 
-    setRect(current =>
-      clampFloatingRect(
-        { ...current, x: current.x + event.clientX - from.x, y: current.y + event.clientY - from.y },
-        viewport.current
+      setRect(current =>
+        clampFloatingRect(
+          { ...current, x: current.x + event.clientX - from.x, y: current.y + event.clientY - from.y },
+          viewport.current
+        )
       )
-    )
-  }, [setRect])
+    },
+    [setRect]
+  )
 
   const onPointerUp = useCallback(
     (event: ReactPointerEvent<HTMLElement>) => {

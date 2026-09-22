@@ -10,6 +10,7 @@ it.each([false, true])('restores floating geometry and collapse with keep-alive=
   const { registry } = await import('@/contrib/registry')
   const { setInterfaceMode } = await import('@/store/interface-mode')
   const { FloatingPanes } = await import('./floating-panes')
+
   const dispose = registry.register({
     area: 'panes',
     id: 'card',
@@ -17,6 +18,7 @@ it.each([false, true])('restores floating geometry and collapse with keep-alive=
     data: { placement: 'floating', width: 240, height: 180, lifecycleKeepAlive: keepAlive },
     render: () => <input aria-label="Floating draft" defaultValue="original" />
   })
+
   try {
     const view = render(<FloatingPanes />)
     const card = () => view.container.querySelector<HTMLElement>('[data-floating-pane="card"]')!
@@ -33,10 +35,12 @@ it.each([false, true])('restores floating geometry and collapse with keep-alive=
     expect(card().style.left).toBe('37px')
     expect(card().style.top).toBe('71px')
     expect(view.getByRole('textbox')).toBeDefined()
+
     if (keepAlive) {
       expect(view.getByRole('textbox')).toBe(input)
       expect(input.value).toBe('unsaved')
     }
+
     act(() => setInterfaceMode('simple'))
     expect(card().style.left).toBe(simplePosition)
     expect(view.queryByRole('textbox')).toBeNull()

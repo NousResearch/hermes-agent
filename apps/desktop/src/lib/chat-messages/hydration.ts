@@ -9,7 +9,6 @@ import {
   applyStoredToolResult,
   applyStoredToolResultToParts,
   storedToolMessagePart,
-  textFromUnknown,
   toolPartFromStoredCall,
   withUniqueToolCallIds
 } from './tool-parts'
@@ -93,8 +92,59 @@ function codexMessageItemText(message: SessionMessage): string {
   return texts.join('')
 }
 
+/** Provider content arrays can interleave private reasoning and reply blocks. */
+function visibleStructuredContent(value: unknown, depth = 0): string {
+  if (typeof value === 'string') {
+    return value
+  }
+
+  if (value === null || value === undefined || depth > 4) {
+    return ''
+  }
+
+  if (Array.isArray(value)) {
+    const parts = value.map(item => visibleStructuredContent(item, depth + 1)).filter(Boolean)
+
+    return parts.filter((part, index) => index === 0 || part.trim() !== parts[index - 1].trim()).join('')
+  }
+
+  if (typeof value !== 'object') {
+    return String(value)
+  }
+
+  const record = value as Record<string, unknown>
+  const type = typeof record.type === 'string' ? record.type.toLowerCase() : ''
+  const phase = typeof record.phase === 'string' ? record.phase.toLowerCase() : ''
+
+  // These are model trace channels, not assistant prose. Keep standalone
+  // `reasoning_details` on the dedicated disclosure path below, but never
+  // flatten embedded trace blocks into the visible reply.
+  if (
+    type.includes('reasoning') ||
+    type.includes('thinking') ||
+    type.includes('analysis') ||
+    type.includes('commentary') ||
+    phase === 'analysis' ||
+    phase === 'commentary'
+  ) {
+    return ''
+  }
+
+  const directText = record.text ?? record.output_text
+
+  if (directText !== undefined) {
+    return visibleStructuredContent(directText, depth + 1)
+  }
+
+  const nestedContent = record.content ?? record.message ?? record.output
+
+  // Never stringify an unrecognised structured object: provider metadata can
+  // contain a reasoning trace even when it has no user-visible text field.
+  return nestedContent !== undefined ? visibleStructuredContent(nestedContent, depth + 1) : ''
+}
+
 function displayContentForMessage(role: SessionMessage['role'], content: unknown): string {
-  const rawText = textFromUnknown(content)
+  const rawText = visibleStructuredContent(content)
 
   if (role !== 'user') {
     return rawText

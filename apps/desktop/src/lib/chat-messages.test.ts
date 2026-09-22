@@ -64,6 +64,27 @@ describe('withUniqueToolCallIdsWithinMessage', () => {
 })
 
 describe('toChatMessages', () => {
+  it('hydrates structured assistant content once without promoting reasoning to reply text', () => {
+    const [message] = toChatMessages([
+      {
+        role: 'assistant',
+        content: [
+          { type: 'reasoning', text: 'Compare the possible approaches.' },
+          { type: 'output_text', text: 'The visible answer.' },
+          { type: 'output_text', text: 'The visible answer.' },
+          { phase: 'analysis', text: 'This belongs to the private trace.' }
+        ],
+        reasoning_details: 'A provider-supplied reasoning trace.',
+        timestamp: 1
+      }
+    ])
+
+    expect(chatMessageText(message)).toBe('The visible answer.')
+    expect(message.parts.filter(part => part.type === 'reasoning').map(part => part.text)).toEqual([
+      'A provider-supplied reasoning trace.'
+    ])
+  })
+
   it('rebuilds the full command from a gateway tool row carrying args', () => {
     // Gateway watch-window hydration projects tool rows as
     // {role:'tool', name, context, args?}. `context` is an 80-char preview;

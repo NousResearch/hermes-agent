@@ -8,6 +8,7 @@ import hashlib
 import json
 import logging
 import re
+import uuid
 from typing import Any, Callable, Optional
 
 from agent.reasoning_effort import (
@@ -724,8 +725,8 @@ class ResponsesApiTransport(ProviderTransport):
         drives the Codex ``session_id`` header, and is the cache-scope fallback when no ``cache_scope_id``
         is given cache_scope_id: str | None — rotation-stable logical scope id (compression-lineage root;
         see agent/prompt_cache_scope.py). Preferred over session_id when deriving the prompt_cache_key
-        content hash and the xAI x-grok-conv-id header; the Codex x-client-request-id header mirrors the
-        resulting body key. Keeps the cache warm across context-compression session rotation (#79017)
+        content hash and the xAI x-grok-conv-id header. Keeps the cache warm across
+        context-compression session rotation (#79017)
         max_tokens: int | None — max_output_tokens timeout: float | None — per-request timeout forwarded to
         the SDK request_overrides: dict | None — extra kwargs merged in provider: str | None — provider name
         for backend-specific logic base_url: str | None — endpoint URL base_url_hostname: str | None —
@@ -848,10 +849,12 @@ class ResponsesApiTransport(ProviderTransport):
 
         if is_codex_backend:
             # SDK kwarg -> HTTP headers. ``session_id`` = raw physical id (transcript
-            # identity); ``x-client-request-id`` mirrors the body cache key so both agree.
+            # identity). ``x-client-request-id`` is request identity, not cache affinity:
+            # Codex clients mint a fresh UUID for every call while ``prompt_cache_key``
+            # remains stable across turns.
             headers = {
                 "session_id": str(session_id) if session_id else None,
-                "x-client-request-id": kwargs.get("prompt_cache_key") or _bounded_prompt_cache_key(_cache_scope),
+                "x-client-request-id": str(uuid.uuid4()),
             }
             headers = {k: v for k, v in headers.items() if v}
             if headers:

@@ -423,8 +423,10 @@ export class JsonRpcGatewayClient {
       return
     }
 
-    this.recordSeq(event)
-    this.dispatchEvent(event)
+    // A reconnect or overlapping listener can redeliver a sequenced frame.
+    // Streaming consumers append deltas, so dispatching it twice duplicates
+    // text in the transcript even though the watermark already recognizes it.
+    this.dispatchIfNewer(event)
   }
 
   /**

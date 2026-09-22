@@ -80,6 +80,27 @@ describe('JsonRpcGatewayClient event-seq tracking + replay resume', () => {
     client.close()
   })
 
+  it('dispatches each sequenced live stream frame only once', async () => {
+    const client = makeClient()
+    const seen: string[] = []
+    client.on('message.delta', event => seen.push(String((event.payload as { text?: string }).text)))
+
+    const connected = client.connect('ws://x')
+    sockets[0].open()
+    await connected
+
+    const frame = {
+      jsonrpc: '2.0',
+      method: 'event',
+      params: { type: 'message.delta', session_id: 's1', seq: 1, payload: { text: 'one reply' } }
+    }
+    sockets[0].serverFrame(frame)
+    sockets[0].serverFrame(frame)
+
+    expect(seen).toEqual(['one reply'])
+    client.close()
+  })
+
   it('fetches replay on reconnect for sessions it has watermarks for', async () => {
     const client = makeClient()
 

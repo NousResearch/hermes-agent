@@ -1,0 +1,58 @@
+# Nous-approved MCP catalog entry.
+# Presence in this directory = approval. Merged via PR review.
+manifest_version: 1
+
+name: pricewin
+description: 'PriceWin hotel and flight search: live prices from Booking, Agoda, Trip.com, Traveloka.'
+source: https://www.price.win/
+
+# Official vendor-hosted remote MCP (URL-only — Hermes never spawns a local
+# process for this entry). No authentication required (verified live:
+# initialize succeeds anonymously, serverInfo pricewin 1.19.0).
+
+transport:
+  type: http
+  url: https://mcp.price.win/mcp
+
+auth:
+  type: none
+
+# The server ships 13 tools. The eight below are the read-only search surface
+# and are enabled by default; the five booking/payment/cancellation tools are
+# left off so nothing that spends money or cancels a reservation is reachable
+# until the user turns it on with `hermes mcp configure pricewin`.
+tools:
+  default_enabled:
+    - search_hotels_live
+    - poll_search_results
+    - search_flights_live
+    - poll_flight_results
+    - get_hotel_detail
+    - get_ota_hotel_detail
+    - get_hotel_info
+    - get_cancellation_policy
+
+# Composer-suggestion triggers (desktop brand pills).
+suggest:
+  keywords:
+    - hotel search
+    - flight search
+    - pricewin
+  hosts:
+    - price.win
+
+post_install: |
+  No account or credentials needed — tools are available as soon as the
+  session restarts.
+
+  Search is enabled by default. Booking, payment and cancellation
+  (create_booking, check_booking_status, recreate_payment_link,
+  request_cancel_token, cancel_booking) are opt-in — add them with:
+    hermes mcp configure pricewin
+
+  Even with those enabled, payment always completes on a PriceWin link in
+  the browser, never in-conversation.
+
+  Results arrive progressively: search_hotels_live / search_flights_live
+  start a session, then poll_search_results / poll_flight_results return
+  what has landed so far. Prices are USD.

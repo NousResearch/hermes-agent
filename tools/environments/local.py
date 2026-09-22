@@ -93,7 +93,7 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
         elif subtree_touched_since(f, cutoff):
             continue
         try:
-            shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink()
+            shutil.rmtree(f, ignore_errors=True) if f.is_dir() and not f.is_symlink() else f.unlink()
             removed += 1
         except OSError:
             continue

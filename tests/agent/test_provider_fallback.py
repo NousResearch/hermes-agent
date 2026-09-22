@@ -177,6 +177,10 @@ class TestFallbackChainAdvancement:
             assert agent.model == "gpt-4o"
             assert agent._fallback_index == 2
             assert agent._rate_limit_backoff_count == 1
+            assert (
+                "⚠️ Fallback candidate nope via broken could not be resolved; "
+                "trying next provider..."
+            ) in [message for _kind, message in agent._retry_status_buffer]
 
     def test_skips_provider_that_raises_to_next(self):
         """If resolve_provider_client raises, skip to next in chain."""

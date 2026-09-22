@@ -140,6 +140,38 @@ class TestCollectKanbanNotifications:
         assert len(rows) == 1
         assert rows[0]["last_event_id"] > pre_cursor
 
+    def test_block_loop_detected_escalation_reaches_tui_subscriber(self):
+        """#82597: a re-blocked card's ``block_loop_detected`` escalation must reach the
+        Desktop/TUI subscriber too — the gateway notifier claims it (TERMINAL_KINDS),
+        but this poller's kind set and formatters never learned the escalation kinds."""
+        tid = _create_subscribed_task()
+        pre_cursor = _sub_rows(tid)[0]["last_event_id"]
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                kb._append_event(
+                    conn,
+                    tid,
+                    "block_loop_detected",
+                    {"kind": "needs_input", "recurrences": 4, "reason": "waiting on creds"},
+                )
+        finally:
+            conn.close()
+
+        first = _collect_kanban_notifications(_session())
+        second = _collect_kanban_notifications(_session())
+
+        assert len(first) == 1
+        assert "TRIAGE" in first[0]
+        assert "human decision" in first[0]
+        assert "4x" in first[0]
+        assert "waiting on creds" in first[0]
+        assert second == []
+        # Triaged is not archived -> the subscription survives for the next event.
+        rows = _sub_rows(tid)
+        assert len(rows) == 1
+        assert rows[0]["last_event_id"] > pre_cursor
+
     def test_non_tui_subscription_does_not_open_board_writable(self):
         tid = _create_subscribed_task(platform="telegram", chat_id="chat-1")
         # New subs start caught up at creation time (issue #29905); record the
@@ -263,6 +295,42 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
+
+    def test_block_loop_detected_needs_input_wording(self):
+        ev = SimpleNamespace(kind="block_loop_detected",
+                             payload={"kind": "needs_input", "recurrences": 4, "reason": "needs creds"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert "t_abc123" in text
+        assert "routed to TRIAGE" in text
+        assert "needs a human decision" in text
+        assert "blocked 4x for the same cause" in text
+        assert "needs creds" in text
+
+    def test_block_loop_detected_orchestration_attention_wording(self):
+        ev = SimpleNamespace(kind="block_loop_detected", payload={"recurrences": 2})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "routed to TRIAGE" in text
+        assert "for orchestration attention" in text
+        assert "human decision" not in text
+        assert "blocked 2x" in text
+
+    def test_review_requested_shows_title_and_summary(self):
+        ev = SimpleNamespace(kind="review_requested", payload={"summary": "first line\nsecond"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
+        assert "ready for review" in text
+        assert "build the thing" in text
+        assert "first line" in text
+        assert "second" not in text
+
+    def test_changes_requested_includes_reviewer_chain(self):
+        ev = SimpleNamespace(kind="changes_requested",
+                             payload={"reason": "tests missing", "reviewer": "alice", "implementer": "bob"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "main")
+        assert "t_abc123" in text
+        assert "changes/BLOCK" in text
+        assert "tests missing" in text
+        assert "reviewer @alice" in text
+        assert "implementer @bob" in text
 
 
 class TestNotificationPollerLoopKanbanWiring:

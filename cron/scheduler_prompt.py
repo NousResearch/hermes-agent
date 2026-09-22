@@ -50,6 +50,27 @@ def _job_skill_names(job: dict) -> list[str]:
     return [str(name).strip() for name in skills if str(name).strip()]
 
 
+def _resolve_bound_skills(job: dict, bound_skills_out: list) -> Optional[list]:
+    """Decide what to pass as ``AIAgent(bound_skills=...)`` from a run's collected
+    ``bound_skills_out`` (see ``_load_cron_skill_parts``).
+
+    Keeps three states distinct, matching the ``None`` vs ``[]`` contract
+    ``build_skills_system_prompt`` establishes:
+      - job has no ``skills``/``skill`` restriction -> ``None`` (full index).
+      - job declares skills but NONE resolved (typo'd/missing/all-bundle-members-gone)
+        -> ``[]`` (empty offer-time index) — resolution failing must not silently widen
+        to the unrestricted index.
+      - otherwise -> the canonical loaded names collected in ``bound_skills_out``.
+
+    A naive ``bound_skills_out or None`` collapses the first two cases (#119086 review
+    — JoaoMarcos44): an explicitly-scoped job with zero resolved skills would show every
+    skill instead of none.
+    """
+    if not _job_skill_names(job):
+        return None
+    return bound_skills_out
+
+
 _MAX_CONTEXT_CHARS = 8000
 
 _SELF_CONTEXT_INTRO = (

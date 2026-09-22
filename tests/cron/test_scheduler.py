@@ -2006,6 +2006,70 @@ class TestCronToSystemPromptScoping:
         assert "freshrss" not in scoped
 
 
+class TestResolveBoundSkills:
+    """_resolve_bound_skills keeps three states distinct at the run_job -> AIAgent
+    boundary (#119086 review — JoaoMarcos44): a naive ``bound_skills_out or None``
+    collapses "no skills requested" and "skills requested, none resolved" into the
+    same unrestricted-index outcome, silently widening the index exactly when
+    resolution failed."""
+
+    def test_no_skills_declared_returns_none(self):
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        assert _resolve_bound_skills({"prompt": "just a prompt"}, []) is None
+
+    def test_skills_declared_but_none_resolved_returns_empty_list(self):
+        """The bug this guards: skills=['missing-skill'] must scope to an empty
+        index, not fall back to the full one."""
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        result = _resolve_bound_skills({"skills": ["missing-skill"], "prompt": "go"}, [])
+        assert result == []
+        assert result is not None
+
+    def test_skills_declared_and_resolved_returns_canonical_names(self):
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        result = _resolve_bound_skills(
+            {"skills": ["web-crawler"], "prompt": "go"}, ["web-crawler"]
+        )
+        assert result == ["web-crawler"]
+
+
+class TestCronMissingSkillScopesToEmptyIndex:
+    """End-to-end companion to TestCronToSystemPromptScoping: a job that explicitly
+    requests a skill which fails to resolve must scope the system-prompt skill index
+    to empty, not the full index (#119086 review — JoaoMarcos44)."""
+
+    def test_missing_skill_scopes_system_prompt_to_empty_index(self, monkeypatch, tmp_path):
+        from agent.prompt_builder import build_skills_system_prompt
+        from cron.scheduler_prompt import _resolve_bound_skills
+
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        skills_dir = tmp_path / "skills" / "tools"
+        skills_dir.mkdir(parents=True)
+        d = skills_dir / "freshrss"
+        d.mkdir()
+        (d / "SKILL.md").write_text("---\nname: freshrss\ndescription: freshrss skill\n---\n")
+
+        # Baseline: unrestricted index carries the installed skill.
+        assert "freshrss" in build_skills_system_prompt(bound_skills=None)
+
+        # A cron job that lists only a skill which doesn't exist resolves nothing...
+        out: list = []
+        with patch("tools.skills_tool.SKILLS_DIR", tmp_path / "skills"):
+            _build_job_prompt(
+                {"skills": ["does-not-exist"], "prompt": "go"}, bound_skills_out=out
+            )
+        assert out == []
+
+        # ...and the run_job boundary must scope to empty, not fall back to unrestricted.
+        bound = _resolve_bound_skills({"skills": ["does-not-exist"]}, out)
+        assert bound == []
+        scoped = build_skills_system_prompt(bound_skills=bound)
+        assert "freshrss" not in scoped
+
+
 class TestSendMediaViaAdapter:
     """Unit tests for _send_media_via_adapter — routes files to typed adapter methods."""
 

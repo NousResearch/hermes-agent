@@ -2500,7 +2500,8 @@ def run_job(
         _session_db = _open_cron_session_db(job)
         agent = _construct_cron_agent(
             AIAgent, job, _cfg, setup, workdir=scope.workdir, session_id=_cron_session_id,
-            session_db=_session_db, bound_skills=_bound_skills_out or None)
+            session_db=_session_db,
+            bound_skills=_resolve_bound_skills(job, _bound_skills_out))
         _audit = _FireAudit(job, job_id, model)
 
         result = _run_agent_with_watchdog(
@@ -4137,6 +4138,7 @@ from cron.scheduler_script import (  # noqa: E402
 )
 from cron.scheduler_prompt import (  # noqa: E402
     _block_and_pause_job, _build_job_prompt, _guard_job_credential_exfil, _parse_wake_gate,
+    _resolve_bound_skills,
 )
 from cron.scheduler_preflight import (  # noqa: E402
     BLOCKED_CONFIG_MARKER, BLOCKED_CONFIG_SILENT_MARKER, _cron_preflight_enabled,

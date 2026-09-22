@@ -324,14 +324,34 @@ class TestBlueBubblesAttachmentSend:
 
 
 class TestBlueBubblesWebhookUrl:
-    """_webhook_url property normalises local hosts to 'localhost'."""
+    """_webhook_url property normalises local binds to the IPv4 loopback literal."""
 
     def test_default_host(self, monkeypatch):
         adapter = _make_adapter(monkeypatch)
-        # Default webhook_host is 0.0.0.0 → normalized to localhost
-        assert "localhost" in adapter._webhook_url
+        # Default webhook_host is 0.0.0.0 → normalized to the IPv4 literal, never
+        # "localhost" (Node resolves that to ::1 first on macOS → ECONNREFUSED).
+        assert "127.0.0.1" in adapter._webhook_url
+        assert "localhost" not in adapter._webhook_url
         assert str(adapter.webhook_port) in adapter._webhook_url
         assert adapter.webhook_path in adapter._webhook_url
+
+    @pytest.mark.parametrize("host", ["0.0.0.0", "127.0.0.1", "localhost", "::", "::1"])
+    def test_local_binds_register_ipv4_literal(self, monkeypatch, host):
+        """Every loopback/wildcard bind registers 127.0.0.1, so Node cannot pick ::1."""
+        adapter = _make_adapter(monkeypatch, webhook_host=host)
+        assert adapter._webhook_url.startswith("http://127.0.0.1:")
+
+    def test_routable_host_is_preserved(self, monkeypatch):
+        """A real bind address must round-trip unchanged — only local binds normalize."""
+        adapter = _make_adapter(monkeypatch, webhook_host="192.168.1.50")
+        assert adapter._webhook_url.startswith("http://192.168.1.50:")
+
+    def test_shared_ingress_url_wins(self, monkeypatch):
+        """Shared-listener mode still short-circuits ahead of host normalization."""
+        adapter = _make_adapter(monkeypatch)
+        # shared_ingress.bind_listener sets this attribute dynamically.
+        setattr(adapter, "_shared_ingress_url", "http://example.test/p/profile/")
+        assert adapter._webhook_url == "http://example.test/p/profile/"
 
 
     def test_register_url_omits_query_when_no_password(self, monkeypatch):

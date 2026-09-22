@@ -13713,11 +13713,8 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
     // child 'exit' handler to clear the cache — latching it would wedge the app
     // on "session expired" until a full restart, defeating reconnect, the
     // "Sign out & sign in" reload, and the wake-recovery revalidate path.
-    // A supervisor-owned respawn already has its own bounded crash-loop
-    // budget. Do not turn a pre-ready child exit into a permanent local boot
-    // latch before that budget can run; initial/user-driven starts keep the
-    // existing fail-closed latch.
-    if (!supervisorRecovery && shouldLatchBackendStartFailure({ attemptedRemote })) {
+    // A supervisor-owned respawn never latches (see the predicate).
+    if (shouldLatchBackendStartFailure({ attemptedRemote, supervisorRecovery })) {
       backendStartFailure = error instanceof Error ? error : new Error(message)
     }
 

@@ -2261,6 +2261,7 @@ def _snapshot_primary_runtime(agent):
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_echo_mode": getattr(agent, "_reasoning_echo_mode", ""),
         # Engine state _try_activate_fallback() overwrites (getattr: plugin engines may lack them).
         "compressor_model": getattr(_cc, "model", agent.model),
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),
@@ -2429,8 +2430,8 @@ def init_agent(
 
     _set_defaults(agent, _CONTROL_STATE)
 
-    # reasoning_content echo opt-in; switch_model / fallback / restore keep it in sync.
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # reasoning_content echo policy (``model.reasoning_echo``); switch_model / fallback / restore keep it in sync.
+    agent._sync_reasoning_echo_from_config()
     agent.request_overrides = dict(request_overrides or {})
     agent.prefill_messages = prefill_messages or []  # Prefilled conversation turns
     agent._force_ascii_payload = False

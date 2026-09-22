@@ -261,10 +261,13 @@ DEFAULT_CONFIG = {
         # when the current model matches. Edit in config.yaml (no CLI support: dots in keys).
         "reasoning_overrides": {},
         # Preserve assistant `reasoning_content` on history replay. Echo families (DeepSeek,
-        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host; custom
-        # providers and OpenAI-compatible gateways proxying them are not. Set `reasoning_echo: true`
-        # on a `model:` entry or a `fallback_providers:` entry to opt in per provider. Default
-        # false: strict providers (Mistral, Groq, Cerebras) reject the field.
+        # Kimi/Moonshot, Xiaomi MiMo) are auto-detected by provider name/base-URL host, and — for
+        # DeepSeek and MiMo — by model name, so a gateway serving `deepseek-*` is detected even when
+        # its own backend does not enforce the echo. Set `reasoning_echo: true` on a `model:` entry
+        # or a `fallback_providers:` entry to opt in per provider, or `reasoning_echo: never` to force
+        # the strict strip side and override detection (echoing a gateway that never required it only
+        # replays the model its own stale chain-of-thought, which it then re-emits). Default false =
+        # auto: strict providers (Mistral, Groq, Cerebras) reject the field, detected families keep it.
         "reasoning_echo": False,
         # Turn liveness watchdog: a turn with no observable progress for `timeout_s` seconds is
         # logged, force-interrupted so the UI can retry, and its lease stops renewing so stale-turn

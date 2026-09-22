@@ -4819,11 +4819,18 @@ Write only the summary body. Do not include any preamble or prefix."""
         return self._align_boundary_forward(messages, idx + 1)
 
     def _stale_thinking_on_wire(self) -> bool:
-        """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops."""
+        """Whether the route replays stale thinking every turn; tail walks and preflight MUST agree or compaction loops.
+
+        ``forced_strip`` reads ``model.reasoning_echo`` through the shared ``read_reasoning_echo_mode``,
+        the same source the preflight estimator (``turn_context._agent_stale_thinking_on_wire``) uses,
+        so a ``never`` override cannot leave the estimator and the walk disagreeing.
+        """
         try:
             from agent.message_sanitization import stale_thinking_reaches_wire
+            from agent.reasoning_params import REASONING_ECHO_NEVER, read_reasoning_echo_mode
             return stale_thinking_reaches_wire(
-                *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url"))
+                *(getattr(self, attr, "") or "" for attr in ("api_mode", "provider", "model", "base_url")),
+                forced_strip=read_reasoning_echo_mode() == REASONING_ECHO_NEVER,
             )
         except Exception:
             return False

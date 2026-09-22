@@ -411,3 +411,174 @@ class TestPerProviderReasoningEcho:
         # Flag should be restored from snapshot
         assert agent._reasoning_echo_flag is True
         assert agent.model == "glm-5.2"
+
+
+# ---------------------------------------------------------------------------
+# ``model.reasoning_echo: never`` — opt a route out of echo-back.
+#
+# The family rules match DeepSeek/MiMo by *model name*, so any gateway serving
+# ``deepseek-*`` is classified as an echo family even when its own backend does
+# not enforce the echo (opencode.ai accepts a replayed assistant tool-call turn
+# with the field absent). Echoing there only hands the model its own stale
+# chain-of-thought back, which it then re-emits as a restatement of a past
+# answer. ``never`` forces the strict strip side over every family rule.
+# ---------------------------------------------------------------------------
+
+class TestReasoningEchoNeverMode:
+    """The explicit strip-side override, and the auto default it must not disturb."""
+
+    def _make_agent(self, mode="", provider="opencode-go", model="deepseek-v4.1-flash",
+                    base_url="https://opencode.ai/zen/go/v1"):
+        """A gateway route whose model name matches the DeepSeek family rule."""
+        from run_agent import AIAgent
+        agent = object.__new__(AIAgent)
+        agent.provider = provider
+        agent.model = model
+        agent.base_url = base_url
+        agent._base_url_lower = base_url.lower()
+        agent._thinking_pad_cache = None
+        agent._reasoning_echo_mode = mode
+        agent._reasoning_echo_flag = mode == "always"
+        return agent
+
+    def test_gateway_deepseek_is_an_echo_family_without_the_override(self):
+        """Baseline: the model-name rule classifies the gateway route as echo-back."""
+        agent = self._make_agent(mode="")
+        assert agent._reasoning_echo_forced_strip() is False
+        assert agent._needs_thinking_reasoning_pad() is True
+
+    def test_never_forces_strip_over_family_detection(self):
+        """``never`` wins over the DeepSeek-by-model-name match."""
+        agent = self._make_agent(mode="never")
+        assert agent._reasoning_echo_forced_strip() is True
+        assert agent._needs_thinking_reasoning_pad() is False
+
+    def test_never_strips_even_when_the_family_predicate_says_echo(self):
+        """The override is unconditional: a True family predicate cannot re-enable the echo."""
+        agent = self._make_agent(mode="never")
+        agent._needs_deepseek_tool_reasoning = lambda: True
+        assert agent._needs_thinking_reasoning_pad() is False
+
+    def test_never_strips_even_with_a_stale_opt_in_flag(self):
+        """A leftover opt-in flag cannot out-vote ``never``."""
+        agent = self._make_agent(mode="never")
+        agent._reasoning_echo_flag = True
+        assert agent._needs_thinking_reasoning_pad() is False
+
+    def test_always_still_echoes_a_non_family_route(self):
+        """``always`` keeps the existing opt-in path working."""
+        agent = self._make_agent(mode="always", provider="custom", model="my-model",
+                                 base_url="https://gw.example.com/v1")
+        assert agent._needs_thinking_reasoning_pad() is True
+
+    def test_override_strips_the_wire_payload_end_to_end(self):
+        """End-to-end: the override reaches reapply_reasoning_echo_for_provider."""
+        from agent.agent_runtime_helpers import reapply_reasoning_echo_for_provider
+        agent = self._make_agent(mode="never")
+        api_msgs = [
+            {"role": "user", "content": "hello"},
+            {"role": "assistant", "content": "hi", "reasoning_content": "stale chain-of-thought"},
+            {"role": "user", "content": "bye"},
+        ]
+        assert reapply_reasoning_echo_for_provider(agent, api_msgs) == 1
+        assert "reasoning_content" not in api_msgs[1]
+
+    def test_auto_route_is_unchanged_by_the_override(self):
+        """No override: a detected family keeps echoing — no behavior change for existing users."""
+        agent = self._make_agent(mode="")
+        agent._needs_deepseek_tool_reasoning = lambda: True
+        assert agent._needs_thinking_reasoning_pad() is True
+
+
+class TestReasoningEchoModeParsing:
+    """``normalize_reasoning_echo_mode`` — the one parser for config keys and fallback entries."""
+
+    @pytest.mark.parametrize("raw,expected", [
+        ("never", "never"),
+        ("NEVER", "never"),
+        ("  never  ", "never"),
+        ("always", "always"),
+        (True, "always"),
+        # False and "auto" stay auto: the boolean has always meant "no opt-in, defer to
+        # detection", so an explicit False must NOT become a strip override.
+        (False, None),
+        ("auto", None),
+        ("", None),
+        ("garbage", None),
+        (None, None),
+        (1, None),
+    ])
+    def test_normalize(self, raw, expected):
+        from agent.reasoning_params import normalize_reasoning_echo_mode
+        assert normalize_reasoning_echo_mode(raw) == expected
+
+    def test_sync_never_sets_mode_and_drops_the_pad_cache(self):
+        """``_sync_reasoning_echo_from_config`` derives both carriers and invalidates the cache."""
+        from run_agent import AIAgent
+        agent = object.__new__(AIAgent)
+        agent._thinking_pad_cache = ("stale-key", True)
+        agent._read_reasoning_echo_from_config = lambda: "never"
+        agent._sync_reasoning_echo_from_config()
+        assert agent._reasoning_echo_mode == "never"
+        assert agent._reasoning_echo_flag is False
+        assert agent._thinking_pad_cache is None
+
+    def test_sync_always_sets_the_flag(self):
+        from run_agent import AIAgent
+        agent = object.__new__(AIAgent)
+        agent._thinking_pad_cache = None
+        agent._read_reasoning_echo_from_config = lambda: "always"
+        agent._sync_reasoning_echo_from_config()
+        assert agent._reasoning_echo_mode == "always"
+        assert agent._reasoning_echo_flag is True
+
+    def test_sync_auto_clears_both_carriers(self):
+        from run_agent import AIAgent
+        agent = object.__new__(AIAgent)
+        agent._thinking_pad_cache = None
+        agent._reasoning_echo_mode = "never"
+        agent._reasoning_echo_flag = True
+        agent._read_reasoning_echo_from_config = lambda: None
+        agent._sync_reasoning_echo_from_config()
+        assert agent._reasoning_echo_mode == ""
+        assert agent._reasoning_echo_flag is False
+
+
+class TestStaleThinkingWireTruthHonoursOverride:
+    """The preflight estimator and the compressor tail walk must agree, override included."""
+
+    ROUTE = ("chat_completions", "opencode-go", "deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1")
+
+    def test_forced_strip_reports_nothing_stale_on_the_wire(self):
+        from agent.message_sanitization import stale_thinking_reaches_wire
+        assert stale_thinking_reaches_wire(*self.ROUTE) is True
+        assert stale_thinking_reaches_wire(*self.ROUTE, forced_strip=True) is False
+
+    def test_both_consumers_agree_under_never(self, monkeypatch):
+        """Both sides read ``read_reasoning_echo_mode``, so a disagreement cannot open a compaction loop."""
+        from agent import reasoning_params
+        from agent.context_compressor import ContextCompressor
+        from agent.turn_context import _agent_stale_thinking_on_wire
+
+        monkeypatch.setattr(reasoning_params, "read_reasoning_echo_mode", lambda: "never")
+        agent = SimpleNamespace(api_mode="chat_completions", provider="opencode-go",
+                                model="deepseek-v4.1-flash", base_url="https://opencode.ai/zen/go/v1")
+        assert _agent_stale_thinking_on_wire(agent) is False
+        comp = object.__new__(ContextCompressor)
+        comp.api_mode, comp.provider = "chat_completions", "opencode-go"
+        comp.model, comp.base_url = "deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1"
+        assert comp._stale_thinking_on_wire() is False
+
+    def test_both_consumers_agree_without_the_override(self, monkeypatch):
+        from agent import reasoning_params
+        from agent.context_compressor import ContextCompressor
+        from agent.turn_context import _agent_stale_thinking_on_wire
+
+        monkeypatch.setattr(reasoning_params, "read_reasoning_echo_mode", lambda: None)
+        agent = SimpleNamespace(api_mode="chat_completions", provider="opencode-go",
+                                model="deepseek-v4.1-flash", base_url="https://opencode.ai/zen/go/v1")
+        assert _agent_stale_thinking_on_wire(agent) is True
+        comp = object.__new__(ContextCompressor)
+        comp.api_mode, comp.provider = "chat_completions", "opencode-go"
+        comp.model, comp.base_url = "deepseek-v4.1-flash", "https://opencode.ai/zen/go/v1"
+        assert comp._stale_thinking_on_wire() is True

@@ -68,12 +68,20 @@ def _preflight_request_tokens(
 
 def _agent_stale_thinking_on_wire(agent: Any) -> bool:
     """Whether the active route replays stale thinking text; ``True`` (conservative full
-    charge) when route facts are unavailable."""
+    charge) when route facts are unavailable.
+
+    The ``forced_strip`` side reads ``model.reasoning_echo`` through the shared
+    ``read_reasoning_echo_mode`` rather than the agent's synced mode, so this estimator and the
+    compressor's tail walk (``ContextCompressor._stale_thinking_on_wire``) derive the same answer
+    from the same source — a disagreement there is an infinite compaction loop.
+    """
     try:
         from agent.message_sanitization import stale_thinking_reaches_wire
+        from agent.reasoning_params import REASONING_ECHO_NEVER, read_reasoning_echo_mode
 
         return stale_thinking_reaches_wire(
-            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url"))
+            *(_str_attr(agent, k) for k in ("api_mode", "provider", "model", "base_url")),
+            forced_strip=read_reasoning_echo_mode() == REASONING_ECHO_NEVER,
         )
     except Exception:
         return True

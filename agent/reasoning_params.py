@@ -5,10 +5,54 @@ When ``reasoning`` extra_body is safe to send, LM Studio / Ollama / GitHub Model
 Extracted from ``run_agent.py``; every method resolves through ``AIAgent``'s MRO unchanged.
 """
 import time
+from typing import Any
 
 from agent.lazy_forward import forward as _forward, forward_static as _forward_static
 from agent.message_sanitization import matches_reasoning_echo_family
 from utils import base_url_host_matches
+
+# ``model.reasoning_echo`` modes. Read once per route change, never per message.
+REASONING_ECHO_ALWAYS = "always"
+REASONING_ECHO_NEVER = "never"
+
+
+def normalize_reasoning_echo_mode(value: Any) -> "str | None":
+    """Normalize a raw ``reasoning_echo`` value (config key or fallback-entry field) to a mode.
+
+    ``True`` / ``"always"`` → ``"always"``; ``"never"`` → ``"never"``; everything else (including
+    ``False``, ``"auto"`` and ``None``) → ``None`` (auto — defer to the family rules).
+    """
+    if isinstance(value, str):
+        mode = value.strip().lower()
+        return mode if mode in (REASONING_ECHO_ALWAYS, REASONING_ECHO_NEVER) else None
+    return REASONING_ECHO_ALWAYS if value is True else None
+
+
+def read_reasoning_echo_mode() -> "str | None":
+    """Read ``model.reasoning_echo`` as a mode: ``"always"`` (force echo-back), ``"never"`` (force the
+    strict strip side), or ``None`` (auto — defer to the family rules in
+    ``message_sanitization._REASONING_ECHO_RULES``).
+
+    Accepts the booleans the key historically carried (``True`` → ``"always"``) plus the strings
+    ``always`` / ``never`` / ``auto``. An absent key, ``False``, ``"auto"`` or anything unparseable is
+    ``None``. ``False`` deliberately stays *auto*, not *never*: the flag has always meant "no opt-in,
+    defer to detection", so a detected family must keep winning for callers that only ever set the
+    boolean — use ``"never"`` to opt a route out.
+
+    Single source of truth for both wire-truth consumers (the agent's payload policy and the
+    compressor's tail walk). They must agree or compaction loops, and two independent config reads
+    could drift; one reader cannot.
+    """
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        model_cfg = load_config_readonly().get("model") or {}
+        if "reasoning_echo" not in model_cfg:
+            return None
+        return normalize_reasoning_echo_mode(model_cfg.get("reasoning_echo"))
+    except Exception:
+        return None
+
 
 # Static OpenRouter fallback when the live /v1/models capability cache is cold.
 _OPENROUTER_REASONING_PREFIXES = (
@@ -168,29 +212,47 @@ class ReasoningParamsMixin:
         DeepSeek v4 thinking and Kimi / Moonshot thinking both reject replays of assistant tool-call
         messages that omit ``reasoning_content`` (refs 15250, #17400). Xiaomi MiMo thinking mode has the
         same requirement.
+
+        ``model.reasoning_echo: never`` wins over every rule below. A gateway can serve a family model
+        (detected by name) whose own backend does not enforce the echo — opencode.ai accepts a replayed
+        assistant turn with the field absent — and echoing there only hands the model its own stale
+        chain-of-thought back, which it then re-emits.
         """
         key = (self.provider, self.model, getattr(self, "_base_url_lower", self.base_url))
         cached = getattr(self, "_thinking_pad_cache", None)
         if cached is not None and cached[0] == key:
             return cached[1]
-        result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
-                  or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
+        if self._reasoning_echo_forced_strip():
+            result = False
+        else:
+            result = (self._needs_deepseek_tool_reasoning() or self._needs_kimi_tool_reasoning()
+                      or self._needs_mimo_tool_reasoning() or self._reasoning_echo_opt_in())
         self._thinking_pad_cache = (key, result)
         return result
 
     def _reasoning_echo_opt_in(self) -> bool:
         """``model.reasoning_echo`` opt-in for the *current* provider (covers gateways the host rules miss);
         fallback activation swaps the flag and ``restore_primary_runtime()`` restores it."""
-        return bool(getattr(self, "_reasoning_echo_flag", False))
+        return (bool(getattr(self, "_reasoning_echo_flag", False))
+                or getattr(self, "_reasoning_echo_mode", "") == REASONING_ECHO_ALWAYS)
+
+    def _reasoning_echo_forced_strip(self) -> bool:
+        """``model.reasoning_echo: never`` — force the strict strip side over family detection."""
+        return getattr(self, "_reasoning_echo_mode", "") == REASONING_ECHO_NEVER
+
+    def _sync_reasoning_echo_from_config(self) -> None:
+        """Sync ``_reasoning_echo_mode`` / ``_reasoning_echo_flag`` to ``model.reasoning_echo`` and drop the
+        per-route pad cache so the next ``_needs_thinking_reasoning_pad()`` re-derives. Called at init,
+        ``switch_model()``, fallback activation and ``restore_primary_runtime()``."""
+        mode = self._read_reasoning_echo_from_config() or ""
+        self._reasoning_echo_mode = mode
+        self._reasoning_echo_flag = mode == REASONING_ECHO_ALWAYS
+        self._thinking_pad_cache = None
 
     @staticmethod
-    def _read_reasoning_echo_from_config() -> bool:
-        """Read ``model.reasoning_echo`` from config; False on any error."""
-        try:
-            from hermes_cli.config import load_config_readonly
-            return bool((load_config_readonly().get("model") or {}).get("reasoning_echo"))
-        except Exception:
-            return False
+    def _read_reasoning_echo_from_config() -> "str | None":
+        """``model.reasoning_echo`` as a mode for the current route; ``None`` (auto) on any error."""
+        return read_reasoning_echo_mode()
 
     # Echo families are host/provider-driven, not model-name-driven: aggregators re-exporting Kimi reject the
     # echo. Rule table: ``message_sanitization._REASONING_ECHO_RULES``. Kimi deliberately passes the raw

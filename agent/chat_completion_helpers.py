@@ -2096,8 +2096,13 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent._config_context_length = None
             agent.model, agent.provider, agent.requested_provider = fb_model, fb_provider, fb_provider
             agent.base_url, agent.api_mode = fb_base_url, fb_api_mode
-            # reasoning_content echo opt-in travels with the active provider; restore_primary_runtime reverts it.
-            agent._reasoning_echo_flag = bool(fb.get("reasoning_echo", False))
+            # reasoning_content echo policy travels with the active provider; restore_primary_runtime reverts it.
+            # A fallback entry may carry "never" to force the strip side; absent/False stays auto (family rules).
+            from agent.reasoning_params import REASONING_ECHO_ALWAYS, normalize_reasoning_echo_mode
+
+            agent._reasoning_echo_mode = normalize_reasoning_echo_mode(fb.get("reasoning_echo")) or ""
+            agent._reasoning_echo_flag = agent._reasoning_echo_mode == REASONING_ECHO_ALWAYS
+            agent._thinking_pad_cache = None
             if hasattr(agent, "_transport_cache"):
                 agent._transport_cache.clear()
             agent._fallback_activated = True

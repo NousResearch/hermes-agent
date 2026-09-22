@@ -1001,6 +1001,8 @@ def _apply_primary_runtime_fields(agent, rt: Dict[str, Any]) -> None:
         agent._transport_cache.clear()
     agent.api_key = rt["api_key"]
     agent._reasoning_echo_flag = rt.get("reasoning_echo_flag", False)
+    agent._reasoning_echo_mode = rt.get("reasoning_echo_mode", "")
+    agent._thinking_pad_cache = None
     agent.request_overrides = dict(rt.get("request_overrides") or {})
     agent._client_kwargs = dict(rt["client_kwargs"])
 
@@ -2115,8 +2117,8 @@ def _swap_switch_runtime(agent, new_model, new_provider, api_key, base_url, api_
     agent._config_context_length = None
     agent.model = new_model
     agent.provider = agent.requested_provider = new_provider
-    # Re-read reasoning_echo so the flag reflects the new primary model (see _reasoning_echo_opt_in).
-    agent._reasoning_echo_flag = agent._read_reasoning_echo_from_config()
+    # Re-read reasoning_echo so the mode reflects the new primary model (see _reasoning_echo_opt_in).
+    agent._sync_reasoning_echo_from_config()
     # Empty base_url while the provider changes means upstream resolution failed; falling back to
     # the old provider's URL pairs the wrong host and persists via _primary_runtime. Fail loud.
     # Same-provider re-select (credential refresh) may keep the URL.
@@ -2243,6 +2245,7 @@ def _build_primary_runtime_snapshot(agent, api_mode) -> Dict[str, Any]:
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_config": dict(agent.reasoning_config) if getattr(agent, "reasoning_config", None) else None,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "reasoning_echo_mode": getattr(agent, "_reasoning_echo_mode", ""),
         # Overrides must travel with the switched-to identity or a later recovery/restore resurrects
         # PRE-switch overrides from the stale init snapshot.
         # See #75091.

@@ -5,6 +5,7 @@ file in both lists is dead weight; a 4,000-file skill cost 1.5 MB of ledger per 
 """
 
 import json
+import logging
 import os
 from pathlib import Path
 
@@ -99,7 +100,7 @@ def test_list_entries_is_silent_when_the_ledger_is_merely_missing(ledger_home, c
     from tools import skill_ledger
     assert not skill_ledger.ledger_path().exists()
     assert skill_ledger.list_entries() == []
-    assert "listing empty" not in caplog.text
+    assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
 def test_gc_blobs_removes_only_unreferenced(ledger_home):

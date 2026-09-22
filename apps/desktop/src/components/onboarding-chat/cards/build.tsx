@@ -153,7 +153,9 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
+            profile: isSessionOwnerRoute(owner)
+              ? owner.profile
+              : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
           })
         }
       })
@@ -196,7 +198,9 @@ export function HandoffCard({ attrs, locked }: CardProps) {
             storedId,
             runtimeId,
             connectionId: isSessionOwnerRoute(owner) ? owner.connectionId : null,
-            profile: isSessionOwnerRoute(owner) ? owner.profile : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
+            profile: isSessionOwnerRoute(owner)
+              ? owner.profile
+              : owner || $setupSession.get()?.profile || $activeGatewayProfile.get()
           }
         })
       }

@@ -80,6 +80,34 @@ def test_effective_is_user_plus_managed_plus_env_with_no_defaults(homes):
     assert "agent" in DEFAULT_CONFIG  # would be present if defaults had been merged
 
 
+def test_effective_cache_tracks_root_policy_signature(homes, monkeypatch):
+    from hermes_cli import config_effective
+    from hermes_cli.config_effective import load_user_config_effective
+
+    home, _ = homes
+    config_path = home / "config.yaml"
+    _write(config_path, "display:\n  skin: user-skin\n")
+    policy_path = home / "ROUTING_POLICY.md"
+    policy_path.write_text("policy v1", encoding="utf-8")
+
+    calls = 0
+    effective = config_effective._effective
+
+    def count_effective(raw):
+        nonlocal calls
+        calls += 1
+        return effective(raw)
+
+    monkeypatch.setattr(config_effective, "_effective", count_effective)
+    first = load_user_config_effective(config_path)
+    assert load_user_config_effective(config_path) == first
+    assert calls == 1
+
+    policy_path.write_text("policy version 2", encoding="utf-8")
+    assert load_user_config_effective(config_path) == first
+    assert calls == 2
+
+
 def test_broken_yaml_serves_last_good_and_fail_closed_raises(homes):
     """A torn mid-edit write must not silently drop user overrides: the fail-open path serves the last
     successfully parsed user file through the same pipeline; ``fail_closed`` surfaces the error to

@@ -55,6 +55,18 @@ def _configured_backend(capability: str) -> Optional[str]:
     return _read_config_key("web", f"{capability}_backend") or _read_config_key("web", "backend")
 
 
+def _strict_routing_enabled() -> bool:
+    """Whether an explicit but unavailable route must fail closed."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        web_cfg = load_config_readonly().get("web") or {}
+        return bool(web_cfg.get("strict_routing", False)) if isinstance(web_cfg, dict) else False
+    except Exception as exc:
+        logger.debug("Could not read strict web-routing setting: %s", exc)
+        return False
+
+
 # Paid providers first so existing paid setups don't get downgraded to a free
 # tier on upgrade; filtered by ``is_available()`` at walk time.
 _LEGACY_PREFERENCE = ("firecrawl", "parallel", "tavily", "perplexity", "exa", "searxng", "brave-free", "ddgs")
@@ -105,11 +117,14 @@ def _resolve(configured: Optional[str], *, capability: str) -> Optional[WebSearc
         if provider is not None and _capable(provider):
             return provider
         if provider is None:
-            logger.debug("web backend '%s' configured but not registered; falling back", configured)
+            logger.debug("web backend '%s' configured but not registered", configured)
         else:
             logger.debug(
-                "web backend '%s' configured but does not support '%s'; falling back", configured, capability
+                "web backend '%s' configured but does not support '%s'", configured, capability
             )
+        if _strict_routing_enabled():
+            logger.info("Strict web routing: refusing to substitute for configured backend '%s'", configured)
+            return None
 
     # Fallbacks are availability-filtered so a registered-but-keyless provider
     # never becomes "active" on a fresh install.

@@ -163,6 +163,24 @@ class TestCreateProfile:
         assert cfg["model"]["default"] == "some/model"
 
 
+    def test_new_profile_uses_global_route_without_copying_it(self, profile_env, monkeypatch):
+        default_home = profile_env / ".hermes"
+        (default_home / "ROUTING_POLICY.md").write_text(
+            "---\nprofile_defaults:\n  web:\n    search_backend: tavily\n"
+            "  mcp_servers:\n    parallel_search:\n      enabled: true\n---\n",
+            encoding="utf-8",
+        )
+
+        profile_dir = create_profile("routed", no_alias=True)
+        raw = yaml.safe_load((profile_dir / "config.yaml").read_text(encoding="utf-8"))
+        assert "web" not in raw
+        assert raw["mcp_servers"]["parallel_search"]["enabled"] is True
+
+        monkeypatch.setenv("HERMES_HOME", str(profile_dir))
+        from hermes_cli.config import load_config
+        assert load_config()["web"]["search_backend"] == "tavily"
+
+
     def test_fresh_profile_inherits_its_custom_provider_gateway(self, profile_env):
         """The inherited model may point at a custom `providers:` gateway (self-hosted / local
         endpoint). Copying `model` alone left the new bot with `model.provider: my-gateway` and

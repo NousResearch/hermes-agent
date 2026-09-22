@@ -45,7 +45,7 @@ from hermes_constants import (  # noqa: F401
     _chown_to_hermes_uid, _container_or_chmod_skipped, _resolve_hermes_uid_gid,
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
-from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
+from hermes_constants import get_default_hermes_root, get_hermes_home, get_process_hermes_home  # noqa: F401
 from utils import atomic_replace, fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
@@ -232,20 +232,10 @@ _CONFIG_LOCK = threading.RLock()
 # path -> last successfully loaded (expanded) config; served after a parse failure so a
 # mid-edit broken YAML never silently drops user overrides (e.g. approvals.deny rules).
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
-# path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
-# load_config() returns a deepcopy of the cached value while the signature matches (skips
-# safe_load + merge + normalize + expand, ~13 ms). Writers use atomic_config_write (fresh inode
-# -> new mtime_ns) so no explicit invalidation is needed. The managed-file signature is folded
-# in so editing the managed-scope config.yaml invalidates, and the env snapshot invalidates
-# when a referenced ${VAR} changes value (late .env load, in-process rotation).
-# (path, mtime_ns, size) -> cached expanded config dict. load_config() returns a deepcopy of the cached
-# value when the file hasn't changed since the last load, skipping yaml.safe_load + _deep_merge +
-# _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
-# atomic_config_write which produces a fresh inode, so stat() sees a new signature and the next load
-# repopulates automatically — no explicit invalidation hook. See #58514.
-_LOAD_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
-# path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
-_RAW_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
+# path -> (*user signature, *managed signature, *policy signature, merged config, env refs).
+_LOAD_CONFIG_CACHE: Dict[str, Tuple[Any, ...]] = {}
+# path -> (*user signature, raw yaml dict) for read_raw_config() (no defaults merged in).
+_RAW_CONFIG_CACHE: Dict[str, Tuple[Any, ...]] = {}
 
 # Env var names written to .env that aren't in OPTIONAL_ENV_VARS (managed by setup/provider
 # flows directly). Also the set reload_env() may remove from os.environ.
@@ -2209,10 +2199,64 @@ def apply_terminal_config_to_env(
     return target
 
 
-def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[Tuple[int, ...]]]:
+def _provider_routing_policy_path() -> Path:
+    return get_default_hermes_root() / "ROUTING_POLICY.md"
+
+
+def _provider_routing_policy_defaults() -> Dict[str, Any]:
+    """Read the one machine-wide web-routing config applied to every profile."""
+    unavailable = {
+        "backend": "__global_policy_unavailable__",
+        "search_backend": "__global_policy_unavailable__",
+        "extract_backend": "__global_policy_unavailable__",
+        "keyless_fallback": False,
+        "keyless_rescue": False,
+        "strict_routing": True,
+    }
+    path = _provider_routing_policy_path()
+    try:
+        raw = path.read_text(encoding="utf-8")
+        if not raw.startswith("---\n") or "\n---\n" not in raw[4:]:
+            raise ValueError("missing YAML frontmatter")
+        frontmatter = raw[4:].split("\n---\n", 1)[0]
+        metadata = fast_safe_load(frontmatter) or {}
+        profile_defaults = metadata.get("profile_defaults") if isinstance(metadata, dict) else None
+        web_defaults = profile_defaults.get("web") if isinstance(profile_defaults, dict) else None
+        if not isinstance(web_defaults, dict):
+            raise ValueError("profile_defaults.web must be a mapping")
+        return web_defaults
+    except FileNotFoundError:
+        # Other Hermes installs without this opt-in policy keep their existing config behavior.
+        return {}
+    except Exception as exc:
+        logger.error("Global Hermes provider routing policy unavailable: %s", exc)
+        return unavailable
+
+
+def _apply_provider_routing_defaults(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Make the root policy authoritative for every profile's web route settings."""
+    web = config.get("web")
+    if not isinstance(web, dict):
+        web = {}
+        config["web"] = web
+    defaults = _provider_routing_policy_defaults()
+    provider_tier = defaults.pop("provider_tier", None)
+    web.update(copy.deepcopy(defaults))
+    if isinstance(provider_tier, dict):
+        tiers = web.get("provider_tier")
+        if not isinstance(tiers, dict):
+            tiers = {}
+        tiers.update(copy.deepcopy(provider_tier))
+        web["provider_tier"] = tiers
+    return config
+
+
+def _load_config_cache_sig(
+    config_path: Path,
+) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[Tuple[int, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
+    User, managed, and root-policy signatures invalidate each source's dependent config cache.
+    ``cache_sig`` is None only when all sources are absent."""
     try:
         st = config_path.stat()
         user_sig: Optional[Tuple[int, int, int, int]] = file_signature(st)
@@ -2224,9 +2268,14 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
+    try:
+        pst = _provider_routing_policy_path().stat()
+        policy_sig = file_signature(pst)
+    except OSError:
+        policy_sig = (0, 0, 0, 0)
+    if user_sig is None and managed_sig == (0, 0, 0, 0) and policy_sig == (0, 0, 0, 0):
         return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
+    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig, *policy_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
@@ -2256,6 +2305,7 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         config_path, exc, fallback=fallback if lkg is not None else "defaults")
     if lkg is None:
         return None
+    lkg = _apply_provider_routing_defaults(lkg)
     # save_config() stores the pre-expansion dict (templates preserved); the load path stores the
     # expanded one. Expand defensively — idempotent when already expanded.
     lkg_copy: Dict[str, Any] = _expand_env_vars(copy.deepcopy(lkg))
@@ -2293,15 +2343,16 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
         user_sig, cache_sig = _load_config_cache_sig(config_path)
 
         cached = _LOAD_CONFIG_CACHE.get(path_key)
-        if cached is not None and cache_sig is not None and cached[:8] == cache_sig:
+        if cached is not None and cache_sig is not None and cached[:len(cache_sig)] == cache_sig:
             # Signatures match, but the cached expansion is only valid if every ${VAR} it was
             # expanded against still has the same value — otherwise a load before
             # load_hermes_dotenv() pins unexpanded literals for the process lifetime.
             # Without this, a load_config() that ran before load_hermes_dotenv() pins unexpanded literals
             # (e.g. auxiliary.<task>.api_key) for the life of the process (#58514).
-            env_snapshot = cached[9] if len(cached) > 9 else {}
+            env_snapshot = cached[len(cache_sig) + 1] if len(cached) > len(cache_sig) + 1 else {}
             if all(_env_ref_lookup(k) == v for k, v in env_snapshot.items()):
-                return copy.deepcopy(cached[8]) if want_deepcopy else cached[8]
+                cached_config = cached[len(cache_sig)]
+                return copy.deepcopy(cached_config) if want_deepcopy else cached_config
 
         config = copy.deepcopy(DEFAULT_CONFIG)
 
@@ -2330,6 +2381,7 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
 
         normalized = _canonicalize_config(config)
         expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        expanded = _apply_provider_routing_defaults(expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while

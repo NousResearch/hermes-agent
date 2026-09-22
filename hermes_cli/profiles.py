@@ -18,8 +18,8 @@ from typing import Dict, List, Optional, Tuple
 
 from hermes_cli.archive_safe import archive_root_dirs, make_targz, normalize_archive_parts, safe_extract_targz
 from hermes_constants import (
-    LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, mark_named_profile_deleted,
-    named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
+    LOCAL_RUNTIME_ROOT_DIRS, PROFILE_ID_RE, clear_named_profile_deleted, get_default_hermes_root,
+    mark_named_profile_deleted, named_profile_has_identity, named_profile_is_deleted, named_profile_is_live,
 )
 
 logger = logging.getLogger(__name__)
@@ -1091,6 +1091,32 @@ def _bootstrap_profile_dir(profile_dir: Path, source_dir: Optional[Path],
         _clone_file(source_dir, profile_dir, SYNC_MANIFEST_NAME)
 
 
+def _apply_global_provider_routing_defaults(profile_dir: Path) -> None:
+    """Seed the Parallel search tool permission for a new profile; routes load globally."""
+    from utils import atomic_roundtrip_yaml_update, fast_safe_load
+
+    policy_path = get_default_hermes_root() / "ROUTING_POLICY.md"
+    try:
+        policy = policy_path.read_text(encoding="utf-8")
+    except FileNotFoundError:
+        return
+    if not policy.startswith("---\n") or "\n---\n" not in policy[4:]:
+        raise RuntimeError(f"Global Hermes routing policy has no YAML frontmatter: {policy_path}")
+    frontmatter = policy[4:].split("\n---\n", 1)[0]
+    metadata = fast_safe_load(frontmatter) or {}
+    defaults = metadata.get("profile_defaults") if isinstance(metadata, dict) else None
+    if not isinstance(defaults, dict) or not isinstance(defaults.get("web"), dict) or not isinstance(
+        defaults.get("mcp_servers"), dict
+    ):
+        raise RuntimeError(f"Global Hermes routing policy has invalid profile defaults: {policy_path}")
+
+    config_path = profile_dir / "config.yaml"
+    # Web routing values are overlaid from ROUTING_POLICY.md by the shared config loader,
+    # so existing profiles follow policy edits without per-profile config rewrites.
+    for name, value in defaults["mcp_servers"].items():
+        atomic_roundtrip_yaml_update(config_path, f"mcp_servers.{name}", value)
+
+
 def create_profile(
     name: str, clone_from: Optional[str] = None, clone_all: bool = False, clone_config: bool = False,
     no_alias: bool = False, no_skills: bool = False, description: Optional[str] = None,
@@ -1159,6 +1185,7 @@ def create_profile(
             if stripped:
                 logger.info("profile %s: cloned without messaging channels %s", canon, stripped)
         _finish_profile_layout(staging, no_skills=no_skills, clone_all=clone_all, description=description)
+        _apply_global_provider_routing_defaults(staging)
         os.rename(staging, profile_dir)
     except BaseException:
         shutil.rmtree(staging, ignore_errors=True)

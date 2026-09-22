@@ -158,3 +158,60 @@ def test_writeback_roundtrip_byte_identical_when_unchanged(tmp_path):
     out = _run_py(code, {"HERMES_HOME": str(home)}, tmp_path)
     assert out["identical"] is True
     assert out["parsed"]["custom_prompt"] == "keep ${NOT_SET_VAR}"
+
+
+def test_global_provider_policy_overrides_profile_routes_and_invalidates_cache(tmp_path):
+    home = tmp_path / "hermes_home"
+    home.mkdir()
+    (home / "config.yaml").write_text(
+        "web:\n  backend: firecrawl\n  search_backend: exa\n  extract_backend: exa\n"
+        "  keyless_fallback: true\n  keyless_rescue: true\n"
+        "  provider_tier:\n    exa: semantic\n"
+        "mcp_servers:\n  parallel_search:\n    enabled: false\n",
+        encoding="utf-8",
+    )
+    policy_path = home / "ROUTING_POLICY.md"
+    policy = (
+            "---\nprofile_defaults:\n  web:\n    backend: ''\n"
+            "    search_backend: tavily\n    extract_backend: firecrawl\n"
+            "    keyless_fallback: false\n    keyless_rescue: false\n"
+            "    strict_routing: true\n    provider_tier:\n      parallel: free\n"
+            "---\nGlobal policy.\n"
+    )
+    policy_path.write_text(policy, encoding="utf-8")
+
+    code = textwrap.dedent(
+        """
+        import json, os
+        from pathlib import Path
+        from hermes_cli.config import load_config
+
+        policy_path = Path(os.environ['HERMES_HOME']) / 'ROUTING_POLICY.md'
+        first = load_config()
+        policy_path.write_text(
+            policy_path.read_text().replace('search_backend: tavily', 'search_backend: brave-free'),
+            encoding='utf-8',
+        )
+        second = load_config()
+        Path(os.environ['E2E_OUT_FILE']).write_text(json.dumps({
+            'first_search': first['web']['search_backend'],
+            'second_search': second['web']['search_backend'],
+            'strict': second['web']['strict_routing'],
+            'keyless_fallback': second['web']['keyless_fallback'],
+            'exa_tier': second['web']['provider_tier'].get('exa'),
+            'parallel_tier': second['web']['provider_tier'].get('parallel'),
+            'parallel_permission': second['mcp_servers']['parallel_search']['enabled'],
+        }), encoding='utf-8')
+        """
+    )
+    out = _run_py(code, {"HERMES_HOME": str(home)}, tmp_path)
+
+    assert out == {
+        "first_search": "tavily",
+        "second_search": "brave-free",
+        "strict": True,
+        "keyless_fallback": False,
+        "exa_tier": "semantic",
+        "parallel_tier": "free",
+        "parallel_permission": False,
+    }

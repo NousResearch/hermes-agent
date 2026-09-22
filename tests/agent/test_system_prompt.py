@@ -469,6 +469,9 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
     )
     expected = "\n\n".join((
         "IDENTITY",
+        "## Global Hermes provider routing policy\n\n"
+        "The canonical routing policy could not be loaded. Do not perform external web research "
+        "until it is restored.",
         "HELP",
         "STEER",
         "CODING_STABLE",
@@ -498,7 +501,7 @@ def test_coding_prompt_orders_shared_context_before_workspace(monkeypatch):
         prompt = build_system_prompt(agent, system_message="SYSTEM_MESSAGE")
 
     assert prompt == expected
-    assert agent._cached_system_prompt_static == "\n\n".join(expected.split("\n\n")[:4])
+    assert agent._cached_system_prompt_static == expected.split("\n\nSYSTEM_MESSAGE", 1)[0]
 
 
 class TestTelegramRichMessagesHint:

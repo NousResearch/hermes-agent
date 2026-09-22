@@ -548,6 +548,31 @@ def _identity_parts(agent: Any, ctx_len: Optional[int]) -> Tuple[List[str], bool
     return ([_soul_content], True) if _soul_content else ([DEFAULT_AGENT_IDENTITY], False)
 
 
+def _global_provider_routing_parts(ctx_len: Optional[int]) -> List[str]:
+    """Load the single root-level provider policy into every profile's prompt."""
+    policy_path = get_default_hermes_root() / "ROUTING_POLICY.md"
+    unavailable = (
+        "## Global Hermes provider routing policy\n\n"
+        "The canonical routing policy could not be loaded. Do not perform external web research "
+        "until it is restored."
+    )
+    try:
+        raw = _pb._read_text_with_timeout(policy_path)
+        body = _pb._strip_yaml_frontmatter(raw or "").strip()
+        if not body:
+            logger.error("Global Hermes provider routing policy is missing or empty")
+            return [unavailable]
+        section = _pb._context_section(
+            body, "Global Hermes provider routing policy", "ROUTING_POLICY.md", policy_path, ctx_len)
+        if "[BLOCKED:" in section:
+            logger.error("Global Hermes provider routing policy was blocked by the context safety scan")
+            return [unavailable]
+        return [section]
+    except Exception as exc:
+        logger.warning("Could not load the global Hermes provider routing policy: %s", exc)
+        return [unavailable]
+
+
 def _guidance_parts(agent: Any) -> List[str]:
     """Universal + tool-aware + model-gated guidance blocks, each gated by its config.yaml key."""
     parts: List[str] = []
@@ -669,6 +694,7 @@ def build_system_prompt_parts(agent: Any, system_message: Optional[str] = None) 
     _ctx_len = _cc_len if isinstance(_cc_len, int) and _cc_len > 0 else None
     # ── Stable tier ────────────────────────────────────────────────
     stable_parts, _soul_loaded = _identity_parts(agent, _ctx_len)
+    stable_parts.extend(_global_provider_routing_parts(_ctx_len))
     # The skill_view() pointer dangles without skill tools OR without the
     # hermes-agent skill installed, so the variant is chosen after the skills
     # index is built; this slot holds its position.

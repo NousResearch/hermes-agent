@@ -10,9 +10,9 @@ export function RolloutControls({ phase, onCommand, onVerify }: { phase: string;
     }
   }, [pending, phase])
   const command = (action: 'pause' | 'stop') => { if (pending) return; setPending(action); onCommand(action) }
-  return <div className="flex flex-wrap gap-2" aria-label="Managed rollout controls">
-    <Button disabled={Boolean(pending) || phase === 'stopped'} onClick={() => command('pause')} variant="secondary">{pending === 'pause' ? 'Pausing…' : 'Pause'}</Button>
-    <Button disabled={Boolean(pending) || phase === 'stopped'} onClick={() => command('stop')} variant="destructive">{pending === 'stop' ? 'Stopping…' : 'Stop'}</Button>
-    <Button disabled={Boolean(pending)} onClick={onVerify} variant="outline">Verify before promotion</Button>
+  return <div className="flex min-w-0 flex-wrap gap-2" aria-label="Managed rollout controls">
+    <Button className="motion-reduce:transition-none" disabled={Boolean(pending) || phase === 'stopped'} onClick={() => command('pause')} type="button" variant="secondary">{pending === 'pause' ? 'Pausing…' : 'Pause'}</Button>
+    <Button className="motion-reduce:transition-none" disabled={Boolean(pending) || phase === 'stopped'} onClick={() => command('stop')} type="button" variant="destructive">{pending === 'stop' ? 'Stopping…' : 'Stop'}</Button>
+    <Button className="motion-reduce:transition-none" disabled={Boolean(pending)} onClick={onVerify} type="button" variant="outline">Verify before promotion</Button>
   </div>
 }

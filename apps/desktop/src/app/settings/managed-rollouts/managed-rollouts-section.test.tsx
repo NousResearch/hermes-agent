@@ -1,6 +1,9 @@
 import { render, screen, waitFor } from '@testing-library/react'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import { managedRolloutsEn } from '@/i18n/managed-rollouts'
 import { _resetManagedRolloutsForTests } from '@/store/managed-rollouts'
+
 import { ManagedRolloutsSection } from './managed-rollouts-section'
 
 describe('managed rollout section', () => {
@@ -28,8 +31,11 @@ describe('managed rollout section', () => {
     })
 
     render(<ManagedRolloutsSection history={[]} onSelect={() => undefined} />)
+
     expect(screen.getByRole('region', { name: 'Managed rollouts' })).toBeTruthy()
     await waitFor(() => expect(capabilities).toHaveBeenCalledTimes(1))
-    expect(screen.getByText('trusted-assurance-provider-unavailable')).toBeTruthy()
+    await waitFor(() => expect(screen.getByRole('alert', { name: 'trusted-assurance-provider-unavailable' })).toBeTruthy())
+    expect(screen.getByRole('status').textContent).toContain(managedRolloutsEn.warnings.unavailable)
+    expect(screen.queryByRole('button', { name: /start rollout/i })).toBeNull()
   })
 })

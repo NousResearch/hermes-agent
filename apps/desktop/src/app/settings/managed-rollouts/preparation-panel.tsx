@@ -15,6 +15,6 @@ export function PreparationPanel({ targets, reviewGeneration, onPrepare }: { tar
     <FleetOverview key={reviewGeneration} onToggle={toggle} selected={selected} targets={targets} />
     <p className="text-xs text-(--ui-text-tertiary)">Preparation invalidates prior review and requires requalification after target, alias, source, or scope changes.</p>
     <label className="flex items-center gap-2 text-sm"><input checked={confirmed} onChange={event => setConfirmed(event.target.checked)} type="checkbox" />I confirm these targets are the intended separate preparation set.</label>
-    <Button disabled={!confirmed || chosen.length === 0 || pending} onClick={confirmPreparation}>{pending ? 'Preparing…' : 'Prepare selected targets'}</Button>
+    <Button className="motion-reduce:transition-none" disabled={!confirmed || chosen.length === 0 || pending} onClick={confirmPreparation} type="button">{pending ? 'Preparing…' : 'Prepare selected targets'}</Button>
   </section>
 }

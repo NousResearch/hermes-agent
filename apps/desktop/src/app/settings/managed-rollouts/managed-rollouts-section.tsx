@@ -16,9 +16,13 @@ function bridgeAvailable(): boolean {
   )
 }
 
-function snapshotLabel(state: ManagedRolloutsState, noActive: string): string {
+function snapshotLabel(
+  state: ManagedRolloutsState,
+  noActive: string,
+  activePhase: (phase: string) => string
+): string {
   if (!state.snapshot) return noActive
-  return `Active phase: ${state.snapshot.phase}`
+  return activePhase(state.snapshot.phase)
 }
 
 export function ManagedRolloutsSection({
@@ -40,13 +44,22 @@ export function ManagedRolloutsSection({
 
   if (!available) return null
 
+  const unsupported = state.status === 'unsupported'
+
   return (
-    <section aria-label={messages.title} className="grid gap-3">
+    <section aria-label={messages.title} className="grid min-w-0 gap-3">
       <div>
         <h2 className="text-sm font-medium">{messages.title}</h2>
-        <p className="text-xs text-(--ui-text-tertiary)">
-          {state.status === 'unsupported' ? state.error || messages.noActive : snapshotLabel(state, messages.noActive)}
+        <p aria-live="polite" className="text-xs text-(--ui-text-tertiary)" role="status">
+          {unsupported
+            ? messages.warnings.unavailable
+            : snapshotLabel(state, messages.noActive, messages.status.activePhase)}
         </p>
+        {unsupported && state.error ? (
+          <p aria-label={state.error} className="text-xs text-amber-600" role="alert">
+            {state.error}
+          </p>
+        ) : null}
       </div>
       <RolloutHistory entries={history} onSelect={onSelect} />
     </section>

@@ -16,6 +16,6 @@ export function RolloutConfig({ draft, reviewedToken, draftToken, onChange, onCo
     <label className="grid gap-1 text-sm">Concurrency<input min={1} readOnly type="number" value={draft.concurrency} /></label>
     <p className="text-xs text-(--ui-text-tertiary)">Serial capability is required by the active target contract. The selected canary remains stable until the draft changes.</p>
     {changed ? <p className="text-xs text-amber-600">Configuration changed; renew the review token before continuing.</p> : null}
-    <Button disabled={changed || !reviewedToken || draft.selectedInstallIds.length === 0 || !draft.canaryInstallId} onClick={() => reviewedToken && onContinue(reviewedToken, draft)}>Continue to preflight</Button>
+    <Button className="motion-reduce:transition-none" disabled={changed || !reviewedToken || draft.selectedInstallIds.length === 0 || !draft.canaryInstallId} onClick={() => reviewedToken && onContinue(reviewedToken, draft)} type="button">Continue to preflight</Button>
   </section>
 }

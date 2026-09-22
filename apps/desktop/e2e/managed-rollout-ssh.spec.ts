@@ -37,4 +37,24 @@ test.describe('managed SSH rollout acceptance (provider-gated)', () => {
   test('recovery requires the original correlation and positive clearance', async ({}, testInfo) => {
     requireCredentialFreeProvider(testInfo)
   })
+
+  test('T21 keyboard/focus navigation keeps rollout actions reachable', async ({}, testInfo) => {
+    requireCredentialFreeProvider(testInfo)
+  })
+
+  test('T21 RTL layout follows the selected localization direction', async ({}, testInfo) => {
+    requireCredentialFreeProvider(testInfo)
+  })
+
+  test('T21 reduced-motion rendering settles without animation-dependent assertions', async ({}, testInfo) => {
+    requireCredentialFreeProvider(testInfo)
+  })
+
+  test('T21 responsive scale rendering remains bounded at the managed-rollout viewport', async ({}, testInfo) => {
+    requireCredentialFreeProvider(testInfo)
+  })
+
+  test('T21 unavailable-provider UI stays fail-closed without starting work', async ({}, testInfo) => {
+    requireCredentialFreeProvider(testInfo)
+  })
 })

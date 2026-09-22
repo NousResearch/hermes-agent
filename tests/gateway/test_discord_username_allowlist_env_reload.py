@@ -74,6 +74,24 @@ def _resolved_adapter(ids=frozenset({OPERATOR_ID, "111222333444555666"})):
 
 
 class TestResolvedAllowlistSurvivesEnvReload:
+    def test_group_open_authorizes_discord_thread_but_not_dm(self):
+        """Discord thread messages inherit the configured group sender policy."""
+        adapter = SimpleNamespace(
+            config=SimpleNamespace(extra={"group_allow_from": ["*"]}),
+        )
+        runner = _make_runner(adapter)
+        thread_source = _discord_source()
+        dm_source = SessionSource(
+            platform=Platform.DISCORD,
+            chat_id="dm-1",
+            chat_type="dm",
+            user_id=OPERATOR_ID,
+            is_bot=False,
+        )
+
+        assert runner._is_user_authorized(thread_source) is True
+        assert runner._is_user_authorized(dm_source) is False
+
     def test_username_env_plus_resolved_adapter_authorizes(self, monkeypatch):
         """THE incident shape: env holds usernames (post-reload), adapter holds
         resolved numeric IDs — the operator must stay authorized."""

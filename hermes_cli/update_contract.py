@@ -42,6 +42,8 @@ def evaluate_update_admission(project_root: Path) -> Optional[UpdateRefusal]:
     ``None`` means the install is eligible for in-place update (git checkout or unknown-but-
     mutable). Never raises; on any internal error it falls back to the heuristic layer only.
     """
+    if (project_root / '.sprites-ready').is_file():
+        return UpdateRefusal(code='sprites-managed', message='This native runtime is managed by Hermes Cloud. Ask a system administrator to upgrade its pinned revision.', update_command='Hermes Cloud administration: Sprites runtime upgrade')
     # Layer 1: baked provenance marker — authoritative when present.
     try:
         from hermes_cli.image_provenance import read_image_provenance

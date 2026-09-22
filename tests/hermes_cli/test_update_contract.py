@@ -175,3 +175,11 @@ def test_refusal_receipt_written_as_refused(tmp_path, monkeypatch):
     steps = {s["name"]: s for s in data["steps"]}
     assert "admission" in steps and steps["admission"]["ok"] is False
     assert "docker pull" in steps["admission"]["detail"]
+
+
+def test_native_sprites_release_refuses_in_place_update(tmp_path):
+    (tmp_path / '.sprites-ready').touch()
+    refusal = evaluate_update_admission(tmp_path)
+    assert refusal is not None
+    assert refusal.code == 'sprites-managed'
+    assert 'Hermes Cloud' in refusal.update_command

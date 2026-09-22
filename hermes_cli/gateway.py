@@ -4310,14 +4310,14 @@ def _service_call(backend: str, verb: str, system: bool | None = False) -> None:
 # =============================================================================
 
 def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None) -> bool:
-    """Dispatch start/stop/restart via s6 inside an s6 container; True iff dispatched (caller returns).
-    Profile defaults to the current one; missing slot / s6 errors become actionable CLI messages."""
+    """Dispatch lifecycle actions through the native managed supervisor.
+    Profile defaults to the current one; missing slots become actionable CLI messages."""
     from hermes_cli.service_manager import (
         GatewayNotRegisteredError, detect_service_manager, get_service_manager,
         register_unregistered_profile_gateway,
     )
 
-    if detect_service_manager() != "s6":
+    if detect_service_manager() not in ("s6", "sprites"):
         return False
     if profile is None:
         profile = _current_profile_name()  # root home (Docker /opt/data included) is gateway-default
@@ -4334,7 +4334,7 @@ def _dispatch_via_service_manager_if_s6(action: str, profile: str | None = None)
             # repairs that; stop/restart on a missing slot stay an error.
             if action != "start" or not register_unregistered_profile_gateway(mgr, profile):
                 raise
-            print(f"✓ registered the s6 gateway slot for profile {profile!r}")
+            print(f"✓ registered the {mgr.kind} gateway slot for profile {profile!r}")
             mgr.start(service)
     except (RuntimeError, ValueError, OSError) as exc:  # S6Error is a RuntimeError
         print(f"✗ {exc}")
@@ -4347,12 +4347,12 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     A bare pkill is seen by s6-supervise as a crash and restarted ~1s later; the service manager flips
     ``want up``/``want down`` correctly. ``start --all`` is not a CLI surface."""
     from hermes_cli.service_manager import (detect_service_manager, get_service_manager)
-    if detect_service_manager() != "s6" or action not in ("stop", "restart"):
+    if detect_service_manager() not in ("s6", "sprites") or action not in ("stop", "restart"):
         return False
     mgr = get_service_manager()
     profiles = mgr.list_profile_gateways()
     if not profiles:
-        print("✗ No profile gateways registered under s6")
+        print(f"✗ No profile gateways registered under {mgr.kind}")
         return True
     fn = mgr.stop if action == "stop" else mgr.restart
     errors: list[tuple[str, Exception]] = []
@@ -4364,7 +4364,7 @@ def _dispatch_all_via_service_manager_if_s6(action: str) -> bool:
     succeeded = len(profiles) - len(errors)
     verb = "stopped" if action == "stop" else "restarted"
     if succeeded:
-        print(f"✓ {verb.capitalize()} {succeeded} profile gateway(s) under s6")
+        print(f"✓ {verb.capitalize()} {succeeded} profile gateway(s) under {mgr.kind}")
     for profile, exc in errors:
         print(f"✗ Could not {action} gateway-{profile}: {exc}")
     return True
@@ -4402,7 +4402,7 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
     no_supervise = getattr(args, "no_supervise", False) or \
         os.environ.get("HERMES_GATEWAY_NO_SUPERVISE", "").lower() in ("1", "true", "yes")
     # HERMES_S6_SUPERVISED_CHILD: we ARE the supervised child; fall through so the gateway starts.
-    if no_supervise or os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
+    if no_supervise or getattr(args, "external_supervisor", False) or os.environ.get("HERMES_S6_SUPERVISED_CHILD"):
         return False
     if not _dispatch_via_service_manager_if_s6("start"):
         return False
@@ -4412,6 +4412,10 @@ def _maybe_redirect_run_to_s6_supervision(args) -> bool:
     from hermes_startup_watchdog import disarm_startup_watchdog
 
     disarm_startup_watchdog()
+    from hermes_cli.service_manager import detect_service_manager
+    if detect_service_manager() == "sprites":
+        print("Gateway started under Sprites Services.", file=sys.stderr)
+        return True
     # Breadcrumb on stderr (keep stdout clean for scripts); gateway logs follow via s6-log.
     print(
         "→ gateway is now running under s6 supervision (auto-restart on crash,\n"

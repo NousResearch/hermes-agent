@@ -520,6 +520,10 @@ class GatewayShutdownMixin:
                 self._scale_to_zero_direct_platform_logged = False
                 go_dormant = getattr(self._relay_adapter_for_dormancy(), "go_dormant", None)
                 if not callable(go_dormant):
+                    sprites = getattr(self, "_sprites_activity", None)
+                    if sprites is not None and not active:
+                        await sprites.sleep_until_wake(self)
+                        self._scale_to_zero_abandon_suspend()
                     continue
                 # Quiesce only when a suspend can follow: otherwise the re-dial after the socket
                 # close just clears the flip again.
@@ -593,6 +597,11 @@ class GatewayShutdownMixin:
             brokered_sleep_url, request_brokered_suspend, self_suspend_available, suspend_self
         )
         try:
+            sprites = getattr(self, "_sprites_activity", None)
+            if sprites is not None:
+                await sprites.sleep_until_wake(self)
+                self._scale_to_zero_abandon_suspend()
+                return
             if self_suspend_available():
                 accepted = await asyncio.to_thread(suspend_self)
                 lever = "self-suspend"

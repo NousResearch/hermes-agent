@@ -1025,12 +1025,11 @@ export function useSessionActions({
 
       // Paint the click before the profile-resolve / gateway-swap awaits below,
       // so there's zero dead air: highlight the row instantly (the sidebar reads
-      // $selectedStoredSessionId) and, for a cold target, drop the previous
-      // transcript so the thread shows its loader instead of the old session
-      // lingering until resume lands. A warm-cached target keeps its transcript —
-      // the cached fast-path repaints it this same tick. Setting the ref here is
-      // also what use-route-resume's self-heal assumes ("set synchronously at
-      // resume entry").
+      // $selectedStoredSessionId) and drop the previous session's transcript so
+      // the thread shows this session's proven warm transcript or its loader
+      // instead of the old session lingering until resume lands. Setting the
+      // ref here is also what use-route-resume's self-heal assumes ("set
+      // synchronously at resume entry").
       setFreshDraftReady(false)
       clearNotifications()
       resetViewSync()
@@ -1088,7 +1087,18 @@ export function useSessionActions({
         return { runtimeId, state }
       }
 
-      if (!takeWarmCache()) {
+      // The selection moved above, but a warm runtime is only (re)bound after
+      // the awaits below. Until then the foreground may stay on a runtime only
+      // if it already IS this session's own warm runtime (a same-session
+      // re-resume). Leaving another chat's runtime bound is #89696: the primary
+      // view reads the active runtime's slice and the view sync admits only the
+      // active runtime, so a turn still streaming there keeps painting under
+      // this session's route, and a re-entrant resume of this target would
+      // snapshot it as this session's local pending turn (resumeStartMessages).
+      const warmAtEntry = takeWarmCache()
+      const foregroundIsTarget = warmAtEntry !== null && warmAtEntry.runtimeId === activeSessionIdRef.current
+
+      if (!foregroundIsTarget) {
         setActiveSessionId(null)
         activeSessionIdRef.current = null
         // History load is not turn-busy. Drop the previous session's leftover
@@ -1126,6 +1136,23 @@ export function useSessionActions({
 
       if (ownerRoute || listedStored?.profile) {
         provisional.paint(transcriptRestScope(ownerRoute, listedStored, ambientConnectionId))
+      }
+
+      // An unbound warm target whose transcript is already persisted-display
+      // authority paints now, display-only, instead of waiting out the awaits
+      // below; the fast path re-proves it against the resolved owner before
+      // binding. An unproven warm cache can be a compressed runtime tail, so it
+      // keeps the loader (#73646).
+      if (warmAtEntry && !foregroundIsTarget && listedStored) {
+        const entryProvenance = createPersistedDisplayTranscriptProvenance({
+          lineageRootId: listedStored._lineage_root_id ?? null,
+          scope: transcriptRestScope(ownerRoute, listedStored, ambientConnectionId),
+          storedSessionId
+        })
+
+        if (hasPersistedDisplayTranscriptProvenance(warmAtEntry.state, entryProvenance)) {
+          setMessages(warmAtEntry.state.messages)
+        }
       }
 
       const storedForProfile = await resolveStoredSession(storedSessionId, ownerRoute)

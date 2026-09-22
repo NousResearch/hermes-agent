@@ -3015,8 +3015,13 @@ class TelegramAdapter(BasePlatformAdapter):
                 {"transport": TelegramFallbackTransport(fallback_ips, **_transport_kwargs)},
                 {"transport": TelegramFallbackTransport(fallback_ips, **_updates_transport_kwargs)})
         elif proxy_url:
-            logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s", self.name, proxy_url)
-            request, get_updates_request = _pair(_with_limits(), {"limits": _updates_limits}, proxy=proxy_url)
+            logger.info("[%s] Proxy detected; passing explicitly to HTTPXRequest: %s (trust_env=False)", self.name, proxy_url)
+            # An explicit Telegram route must not inherit unrelated HTTP(S)_PROXY
+            # settings from the gateway process; httpx otherwise merges the two.
+            request, get_updates_request = _pair(
+                _with_limits({"trust_env": False}),
+                {"limits": _updates_limits, "trust_env": False},
+                proxy=proxy_url)
         else:
             if disable_fallback:
                 logger.info("[%s] Telegram fallback-IP transport disabled via env", self.name)

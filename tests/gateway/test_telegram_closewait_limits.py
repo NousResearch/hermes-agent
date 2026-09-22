@@ -79,38 +79,19 @@ def _drive_connect(monkeypatch, *, proxy_url, fallback_ips=None):
     monkeypatch.setattr(adapter, "_acquire_platform_lock", lambda *a, **k: True)
     # Ensure the adapter reports no statically-configured fallback IPs.
     monkeypatch.setattr(adapter, "_fallback_ips", lambda: [])
+    # Proxy/direct tests must not silently fall into seed fallback-IP discovery;
+    # the explicit fallback test below opts back in with supplied addresses.
+    if fallback_ips is None:
+        monkeypatch.setenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", "true")
 
     if fallback_ips is not None:
+        monkeypatch.delenv("HERMES_TELEGRAM_DISABLE_FALLBACK_IPS", raising=False)
         monkeypatch.setattr(adapter, "_fallback_ips", lambda: list(fallback_ips))
 
-    # builder.request(...).get_updates_request(...).build() must be harmless;
-    # make build() raise our sentinel so connect() stops right after the
-    # HTTPXRequests are constructed (before any real network/init).
-    fake_built_app = MagicMock()
-    fake_built_app.initialize = MagicMock(side_effect=_StopConnect)
-
-    chainable = MagicMock()
-    chainable.token.return_value = chainable
-    chainable.base_url.return_value = chainable
-    chainable.base_file_url.return_value = chainable
-    chainable.local_mode.return_value = chainable
-    chainable.request.return_value = chainable
-    chainable.get_updates_request.return_value = chainable
-    chainable.build.side_effect = _StopConnect
-
-    builder_root = MagicMock()
-    builder_root.builder.return_value = chainable
-    monkeypatch.setattr(tg_adapter, "Application", builder_root)
-
-    try:
-        asyncio.run(adapter.connect())
-    except _StopConnect:
-        pass
-    except Exception:
-        # connect() wraps work in a try; if it swallows the sentinel and
-        # continues to real init, the recorded instances are still valid.
-        pass
-
+    # Build only the requests under test.  Going through connect() retries and
+    # rebuilds requests after its sentinel exception, which obscures the branch
+    # selected for this test.
+    asyncio.run(adapter._build_ptb_requests())
     return list(_RecordingHTTPXRequest.instances)
 
 
@@ -145,6 +126,7 @@ def _assert_updates_pool_never_reuses(instance):
 
 def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     """The proxy path the #31599 reporter hit must wire tuned limits."""
+    monkeypatch.delenv("HERMES_TELEGRAM_PROXY_OVERRIDE", raising=False)
     instances = _drive_connect(monkeypatch, proxy_url="http://127.0.0.1:9/")
     # Both the general request pool and the get_updates pool are built here.
     assert len(instances) >= 2
@@ -152,10 +134,12 @@ def test_proxy_branch_general_pool_has_tight_keepalive(monkeypatch):
     _assert_updates_pool_never_reuses(instances[1])
     # Sanity: the proxy was actually threaded through (we're on the proxy branch).
     assert any(inst.kwargs.get("proxy") == "http://127.0.0.1:9/" for inst in instances)
+    # An explicit Telegram proxy must not also inherit the gateway's generic
+    # HTTP(S)_PROXY route through httpx's environment handling.
+    assert all(inst.kwargs["httpx_kwargs"].get("trust_env") is False for inst in instances[:2])
 
 
 def test_fallback_branch_forwards_tuned_limits_to_inner_transports(monkeypatch):
-    monkeypatch.delenv("HERMES_TELEGRAM_HTTP_POOL_SIZE", raising=False)
     monkeypatch.delenv("HERMES_GATEWAY_HTTPX_KEEPALIVE_EXPIRY", raising=False)
 
     instances = _drive_connect(

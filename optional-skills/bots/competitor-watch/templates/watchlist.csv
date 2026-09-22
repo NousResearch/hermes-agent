@@ -1,0 +1,2 @@
+target,public_url,category,baseline_observed_at,last_checked_at,baseline_value,current_value,status,source_pointer,notes
+{{company}},{{public URL}},{{pricing/product/positioning/hiring}},{{ISO timestamp}},{{ISO timestamp}},{{baseline fact}},{{current fact}},{{baseline/change/unknown}},{{capture or URL}},{{limitations}}

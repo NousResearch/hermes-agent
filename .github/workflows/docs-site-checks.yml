@@ -28,10 +28,13 @@ jobs:
       - name: Install ascii-guard
         uses: ./.github/actions/retry
         with:
-          command: python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17
+          command: python -m scripts.ci.python_packages ascii-guard==2.3.0 ruamel.yaml==0.18.17 pydantic==2.13.4
 
       - name: Extract skill metadata for dashboard
         run: python3 website/scripts/extract-skills.py
+
+      - name: Extract bot catalog for marketplace pages
+        run: python3 website/scripts/extract-bots.py
 
       - name: Regenerate per-skill docs pages + catalogs
         run: python3 website/scripts/generate-skill-docs.py

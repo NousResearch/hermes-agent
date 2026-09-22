@@ -1,0 +1,190 @@
+.hero {
+  box-shadow: inset 4px 0 0 var(--bot-color);
+}
+
+.heroAvatar {
+  display: grid;
+  place-items: center;
+  width: 3.4rem;
+  height: 3.4rem;
+  border: 1px solid;
+  border-radius: 14px;
+  font-size: 1.8rem;
+}
+
+.installNote {
+  align-self: center;
+  max-width: 34rem;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.8rem;
+  line-height: 1.4;
+}
+
+.bodyCopy {
+  max-width: 72ch;
+  font-size: 1rem;
+  line-height: 1.7;
+}
+
+.starter {
+  margin: 0;
+  padding: 1rem 1.2rem;
+  border-left: 3px solid #7c6cff;
+  border-radius: 8px;
+  background: rgba(124, 108, 255, 0.08);
+  font-size: 1rem;
+  line-height: 1.6;
+}
+
+.contractIntro {
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.86rem;
+}
+
+.soul {
+  max-height: 34rem;
+  overflow: auto;
+  padding: 1rem 1.1rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 10px;
+  background: var(--ifm-background-surface-color);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.8rem;
+  line-height: 1.55;
+}
+
+.miniAdd {
+  margin-top: 0.35rem;
+  font-size: 0.8rem;
+  font-weight: 700;
+  text-decoration: none;
+}
+
+.sectionIntro {
+  margin-bottom: 1rem;
+  color: var(--ifm-color-emphasis-700);
+  line-height: 1.6;
+}
+
+.subheading {
+  margin: 0 0 0.55rem;
+  font-size: 0.9rem;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+}
+
+.requirementGroup + .requirementGroup {
+  margin-top: 1.25rem;
+}
+
+.noRequirements {
+  margin: 0;
+  color: var(--ifm-color-emphasis-600);
+  font-style: italic;
+}
+
+.requirementList,
+.exampleTasks {
+  display: grid;
+  gap: 0.7rem;
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.requirement,
+.exampleTasks li,
+.routine,
+.sample {
+  padding: 0.85rem 1rem;
+  border: 1px solid var(--ifm-color-emphasis-200);
+  border-radius: 10px;
+  background: var(--ifm-background-surface-color);
+}
+
+.requirement p,
+.routine p {
+  margin: 0.4rem 0 0;
+  color: var(--ifm-color-emphasis-700);
+  line-height: 1.5;
+}
+
+.requirementKind {
+  margin-left: 0.35rem;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.75rem;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+}
+
+.routineNotice {
+  padding: 0.85rem 1rem;
+  border-left: 3px solid #f59e0b;
+  border-radius: 8px;
+  background: rgba(245, 158, 11, 0.08);
+  line-height: 1.55;
+}
+
+.routineList,
+.sampleList {
+  display: grid;
+  gap: 0.8rem;
+}
+
+.routine h3 {
+  margin: 0;
+  font-size: 1rem;
+}
+
+.routine summary,
+.sample summary {
+  cursor: pointer;
+  font-weight: 650;
+}
+
+.routine pre,
+.sample pre {
+  max-height: 24rem;
+  margin: 0.8rem 0 0;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  font-size: 0.78rem;
+  line-height: 1.5;
+}
+
+.exampleTasks {
+  margin-bottom: 1rem;
+  counter-reset: example;
+}
+
+.exampleTasks li {
+  position: relative;
+  padding-left: 2.75rem;
+  line-height: 1.5;
+  counter-increment: example;
+}
+
+.exampleTasks li::before {
+  position: absolute;
+  top: 0.82rem;
+  left: 1rem;
+  content: counter(example) ".";
+  color: var(--ifm-color-primary);
+  font-weight: 700;
+}
+
+.sample summary code {
+  margin-left: 0.4rem;
+  color: var(--ifm-color-emphasis-600);
+  font-size: 0.72rem;
+}
+
+@media (max-width: 560px) {
+  .heroAvatar {
+    width: 2.8rem;
+    height: 2.8rem;
+    font-size: 1.45rem;
+  }
+}

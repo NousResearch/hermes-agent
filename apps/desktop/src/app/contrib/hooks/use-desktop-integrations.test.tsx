@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { registerTerminalContextMenu } from '@/app/right-sidebar/terminal/terminal-context-menu'
 import { setApiRequestConnection, setApiRequestProfile } from '@/hermes'
 import { createClientSessionState } from '@/lib/chat-runtime'
+import { openBotMarketplaceRequest } from '@/store/bot-marketplace'
 import { adoptNewSessionDraft, stashSessionDraft, takeSessionDraft } from '@/store/composer'
 import { $confirmRequest, runConfirm, settleConfirm } from '@/store/confirm'
 import { $hubInstalledOverride } from '@/store/hub-actions'
@@ -31,6 +32,10 @@ const { hudWindowMock, peerWindowMock } = vi.hoisted(() => ({
 const closeActiveTab = vi.hoisted(() => vi.fn(() => true))
 
 vi.mock('@/app/chat/close-tab', () => ({ closeActiveTab }))
+
+vi.mock('@/store/bot-marketplace', () => ({
+  openBotMarketplaceRequest: vi.fn()
+}))
 
 vi.mock('@/store/mcp-deeplink-install', () => ({
   requestMcpInstallFromDeepLink: vi.fn()
@@ -75,6 +80,7 @@ describe('useDesktopIntegrations', () => {
     vi.mocked(requestMcpInstallFromDeepLink).mockClear()
     vi.mocked(requestPluginCatalogInstallFromDeepLink).mockClear()
     vi.mocked(openPluginInstallRequest).mockClear()
+    vi.mocked(openBotMarketplaceRequest).mockClear()
     navigate = vi.fn()
     // Every test starts as a main window; only the HUD describe flips this.
     hudWindowMock.mockReturnValue(false)
@@ -757,6 +763,29 @@ describe('useDesktopIntegrations', () => {
   })
 
   describe('notification activate + plugin deep links', () => {
+    it('opens bot catalog links in the same marketplace review flow and ignores injected fields', () => {
+      let deepLink: ((payload: { kind: string; name: string; params: Record<string, string> }) => void) | undefined
+      desktopWindow.hermesDesktop = {
+        ...desktopWindow.hermesDesktop,
+        onDeepLink: (cb: (payload: { kind: string; name: string; params: Record<string, string> }) => void) => {
+          deepLink = cb
+
+          return () => undefined
+        },
+        signalDeepLinkReady: vi.fn()
+      } as unknown as Window['hermesDesktop']
+
+      render({ profileReady: true, sessions: [] })
+      deepLink?.({
+        kind: 'bot',
+        name: 'install',
+        params: { catalog: 'research-assistant', repo: 'evil/repo', soul: 'injected' }
+      })
+
+      expect(openBotMarketplaceRequest).toHaveBeenCalledWith('research-assistant')
+      expect(navigate).toHaveBeenCalledWith('/capabilities?tab=bots')
+    })
+
     it('navigates when a plugin notification activate payload arrives', () => {
       let activate: ((payload: { activate?: string }) => void) | undefined
       desktopWindow.hermesDesktop = {

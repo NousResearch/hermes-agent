@@ -12,6 +12,7 @@ import { getSession } from '@/hermes'
 import { resolveDeepLinkAction } from '@/lib/deeplink-routes'
 import { pathFromHermesDeepLink, resolveHermesOpenPath } from '@/lib/hermes-open-target'
 import { storedSessionIdForNotification } from '@/lib/session-ids'
+import { openBotMarketplaceRequest } from '@/store/bot-marketplace'
 import { announceNewSessionDraftKey } from '@/store/composer'
 import { recordAction } from '@/store/desktop-metrics'
 import { requestMcpInstallFromDeepLink } from '@/store/mcp-deeplink-install'
@@ -427,6 +428,13 @@ export function useDesktopIntegrations({
         const command = `/blueprint ${action.name}${slots ? ' ' + slots : ''}`
         requestComposerInsert(command, { mode: 'block', target: 'main' })
         requestComposerFocus('main')
+
+        return
+      }
+
+      if (action.type === 'bot-catalog-install') {
+        openBotMarketplaceRequest(action.name)
+        navigate('/capabilities?tab=bots')
 
         return
       }

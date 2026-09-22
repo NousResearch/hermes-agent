@@ -25,6 +25,8 @@ import {
   tierOf,
 } from "../../components/PluginCatalog/catalog";
 import CopyButton from "../../components/PluginCatalog/CopyButton";
+import CatalogTabs from "../../components/Marketplace/CatalogTabs";
+import usePickerMode from "../../components/Marketplace/usePickerMode";
 
 // Routes Docusaurus serves the static API JSON from. `baseUrl` is `/docs/`,
 // `static/api/` ends up at `/docs/api/` — same pattern as the Skills Hub.
@@ -375,9 +377,7 @@ export default function PluginCatalogPage() {
   // to the parent window. The HOST performs the actual install through its
   // own gateway (plugins.manage, catalog_name=<name>) — this page never
   // installs anything; parents must validate event.origin before acting.
-  const pickerMode =
-    typeof window !== "undefined" &&
-    new URLSearchParams(window.location.search).get("embed") === "picker";
+  const pickerMode = usePickerMode();
 
   const pickPlugin = useCallback((plugin: CatalogPlugin) => {
     if (typeof window === "undefined" || window.parent === window) return;
@@ -551,14 +551,7 @@ export default function PluginCatalogPage() {
           <div className={styles.heroContent}>
             <p className={styles.heroEyebrow}>Hermes Agent</p>
             <h1 className={styles.heroTitle}>Plugin Catalog</h1>
-            <nav className={styles.crossNav} aria-label="Catalog pages">
-              <Link className={styles.crossNavLink} to="/skills">
-                Skills
-              </Link>
-              <span className={`${styles.crossNavLink} ${styles.crossNavActive}`}>
-                Plugins
-              </span>
-            </nav>
+            <CatalogTabs active="plugins" />
             <p className={styles.heroSub}>
               Give Hermes new powers. Memory, voice, messaging, browsing, Desktop panes and more,
               built by the community.

@@ -1595,6 +1595,46 @@ describe('appendLiveSessionProjection', () => {
     expect(restored[3]).toMatchObject({ id: 'assistant-stream-runtime-1', pending: true })
   })
 
+  it('does not duplicate an interrupted partial reply already present in durable history', () => {
+    const stored = [
+      msg('stored-user', 'user', 'long job'),
+      msg('stored-assistant', 'assistant', 'partial answer')
+    ]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'long job',
+        assistant: 'partial answer',
+        streaming: false,
+        status: 'interrupted',
+        recoverable: false
+      }
+    })
+
+    expect(restored).toBe(stored)
+    expect(restored.filter(message => message.role === 'assistant')).toHaveLength(1)
+  })
+
+  it('projects an interrupted partial reply when durable history does not contain it', () => {
+    const stored = [msg('stored-user', 'user', 'long job')]
+
+    const restored = appendLiveSessionProjection(stored, {
+      session_id: 'runtime-1',
+      inflight: {
+        user: 'long job',
+        assistant: 'partial answer',
+        streaming: false,
+        status: 'interrupted',
+        recoverable: false
+      }
+    })
+
+    expect(restored.map(message => message.id)).toEqual(['stored-user', 'assistant-stream-runtime-1'])
+    expect(chatMessageText(restored[1])).toBe('partial answer')
+    expect(restored[1].pending).toBe(false)
+  })
+
   it('preserves the original array when no live projection exists', () => {
     const stored = [msg('stored-user', 'user', 'earlier')]
 

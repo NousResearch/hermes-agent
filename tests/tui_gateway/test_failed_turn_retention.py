@@ -314,6 +314,13 @@ def test_only_partial_answers_on_failed_turns_set_flag(emits, turn_env, result, 
     assert "partial" not in payload
     if status == "error":
         assert server._inflight_snapshot(session)["assistant"] == ""
+    elif status == "interrupted":
+        snapshot = server._inflight_snapshot(session)
+        assert snapshot is not None
+        assert snapshot["assistant"] == "answer"
+        assert snapshot["status"] == "interrupted"
+        assert snapshot["streaming"] is False
+        assert "error" not in snapshot
     else:
         assert server._inflight_snapshot(session) is None
 
@@ -360,6 +367,45 @@ def test_exception_closes_turn_with_terminal_complete_and_partial(emits, turn_en
 
 
 # ── Resume replay (the reason retention exists) ───────────────────────
+
+
+def test_live_session_payload_exposes_interrupted_partial_reply(emits, turn_env, monkeypatch):
+    """A hard-interrupted partial reply survives reconnect without becoming an error card."""
+
+    def run(message, stream_callback=None, **kwargs):
+        assert stream_callback is not None
+        stream_callback("partial answer")
+        return {
+            "final_response": "partial answer",
+            "error": "explicit stop requested",
+            "partial": True,
+            "interrupted": True,
+        }
+
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=run,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "long job")
+
+    server._run_prompt_submit("rid", "sid", session, "long job")
+
+    payload = _events(emits, "message.complete")[0]
+    assert payload["status"] == "interrupted"
+    assert payload["text"] == "partial answer"
+    assert "error" not in payload
+
+    monkeypatch.setattr(server, "_get_db", lambda: None)
+    resumed = server._live_session_payload("sid", session)
+    assert resumed["running"] is False
+    assert resumed["inflight"]["user"] == "long job"
+    assert resumed["inflight"]["assistant"] == "partial answer"
+    assert resumed["inflight"]["status"] == "interrupted"
+    assert resumed["inflight"]["streaming"] is False
+    assert resumed["inflight"]["recoverable"] is False
+    assert "error" not in resumed["inflight"]
 
 
 def test_live_session_payload_exposes_retained_failure(emits, turn_env, monkeypatch):
@@ -422,3 +468,41 @@ def test_next_turn_replaces_retained_error_snapshot(emits, turn_env):
     completes = _events(emits, "message.complete")
     assert len(completes) == 1
     assert completes[0]["status"] == "complete"
+
+
+def test_next_turn_replaces_retained_interrupted_snapshot(emits, turn_env):
+    seen_inflight_user: list = []
+
+    def _first(message, stream_callback=None, **kwargs):
+        assert stream_callback is not None
+        stream_callback("partial")
+        return {
+            "final_response": "partial",
+            "error": "explicit stop requested",
+            "partial": True,
+            "interrupted": True,
+        }
+
+    agent = types.SimpleNamespace(
+        session_id="session-key",
+        run_conversation=_first,
+        clear_interrupt=lambda: None,
+    )
+    session = _session(agent=agent, running=True)
+    server._start_inflight_turn(session, "old prompt")
+    server._run_prompt_submit("rid-1", "sid", session, "old prompt")
+
+    retained = server._inflight_snapshot(session)
+    assert retained is not None
+    assert retained["status"] == "interrupted"
+
+    def _second(message, **kwargs):
+        turn = server._inflight_snapshot(session)
+        seen_inflight_user.append(turn and turn["user"])
+        return {"final_response": "fresh answer"}
+
+    agent.run_conversation = _second
+    server._run_prompt_submit("rid-2", "sid", session, "new prompt")
+
+    assert seen_inflight_user == ["new prompt"]
+    assert server._inflight_snapshot(session) is None

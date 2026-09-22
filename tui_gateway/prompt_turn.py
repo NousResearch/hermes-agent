@@ -142,9 +142,9 @@ def _admit_prompt_turn(
         if image_paths is None:
             session["attached_images"] = []
         inflight = session.get("inflight_turn")
-        # A retained failed turn (see _fail_inflight_turn) is a stale leftover
+        # A retained terminal turn (failed or interrupted) is a stale leftover
         # by the time a new turn starts — replace it, never append onto it.
-        if not isinstance(inflight, dict) or inflight.get("status") == "error":
+        if not isinstance(inflight, dict) or inflight.get("status") in {"error", "interrupted"}:
             _start_inflight_turn(
                 session, text, display_kind=display_kind, display_metadata=display_metadata)
         agent = session["agent"]
@@ -474,8 +474,9 @@ def _run_post_turn_followups(
 @dataclasses.dataclass(slots=True)
 class _TurnRun:
     """Shared state of one turn thread.  ``agent`` is bound eagerly so except/finally always
-    have one; ``error_retained`` makes the finally keep the failed inflight snapshot for
-    resume replay; ``error_detail`` is the "tui turn finished" failure cause."""
+    have one; ``inflight_retained`` keeps a terminal snapshot for resume replay while
+    ``error_retained`` remains specific to failures; ``error_detail`` is the
+    "tui turn finished" failure cause."""
 
     agent: Any
     one_turn_restore: Any
@@ -490,6 +491,7 @@ class _TurnRun:
     compression_count: int | None = None
     run_kwargs: Any = None
     error_retained: bool = False
+    inflight_retained: bool = False
     error_detail: str = ""
     prompt_text: str = ""
     marker_key: str = ""
@@ -850,8 +852,33 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
                 _append_inflight_delta(session, raw)
             _fail_inflight_turn(session, error_value, error_surface=_error_surface)
             st.error_retained = True
+            st.inflight_retained = True
             st.error_detail = _turn_failure_detail(
                 error_value, result.get("failure_reason"), st.prompt_text)
+        elif status == "interrupted":
+            # A hard stop is terminal, but the partial reply is still useful history.
+            # Keep the text-only live snapshot so a reconnect can repaint what the user
+            # already saw instead of dropping it until another turn is sent.
+            if has_partial_text and not (session.get("inflight_turn") or {}).get("assistant"):
+                _append_inflight_delta(session, raw)
+            turn = session.get("inflight_turn")
+            if isinstance(turn, dict):
+                turn = dict(turn)
+                turn.update(
+                    assistant=str(turn.get("assistant") or ""),
+                    user=str(turn.get("user") or ""),
+                    status="interrupted",
+                    streaming=False,
+                    updated_at=time.time(),
+                )
+                turn.pop("error", None)
+                turn.pop("error_surface", None)
+                turn.pop("recoverable", None)
+                session["inflight_turn"] = turn
+                session.pop("_submit_user_row", None)
+                st.inflight_retained = True
+            else:
+                _clear_inflight_turn(session)
         else:
             _clear_inflight_turn(session)
     if status == "error":
@@ -898,6 +925,7 @@ def _recover_turn_exception(sid: str, session: dict, st: _TurnRun, e: BaseExcept
         # Same terminal error frame shape as the returned-error path.
         _emit_terminal_turn_error(sid, session, e, retire_marker=st.receipt_committed)
         st.error_retained = True
+        st.inflight_retained = True
         st.error_detail = _turn_failure_detail(e, type(e).__name__, st.prompt_text)
     except Exception as emit_exc:
         print(
@@ -1069,7 +1097,7 @@ def _run_prompt_submit(
             with session["history_lock"]:
                 session["running"] = False
                 session["last_active"] = time.time()
-                if not st.error_retained:
+                if not st.inflight_retained:
                     _clear_inflight_turn(session)
                 _release_hosted_room_turn_slot(session)
             # Closing bookend of "tui prompt accepted" — exactly one per accepted prompt.
@@ -1081,10 +1109,10 @@ def _run_prompt_submit(
                 status = "error" if st.error_retained else "complete"
             logger.info(
                 "tui turn finished: ui_session=%s session_key=%s agent_session_id=%s status=%s "
-                "error_retained=%s duration=%.1fs%s",
+                "error_retained=%s inflight_retained=%s duration=%.1fs%s",
                 sid, session.get("session_key") or "", getattr(st.agent, "session_id", "") or "",
-                status, st.error_retained, time.monotonic() - _turn_started_monotonic,
-                st.error_detail)
+                status, st.error_retained, st.inflight_retained,
+                time.monotonic() - _turn_started_monotonic, st.error_detail)
             # Backstop for turns that never reached a terminal frame.
             if st.receipt_committed:
                 _retire_turn_marker(session, st.marker_key)

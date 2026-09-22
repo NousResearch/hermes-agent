@@ -1027,7 +1027,24 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     inflightAssistant || inflightStreaming || inflightError || (inflightUser && queuedUser)
   )
 
-  const projectAssistantDump = wantsAssistantRow && !(turnAlreadyStructured && !inflightError)
+  const interruptedAssistantText = projection.inflight?.status === 'interrupted' ? inflightAssistant.trim() : ''
+  const interruptedAssistantAlreadyDurable = Boolean(
+    interruptedAssistantText &&
+    messages.slice(latestUserIndex + 1).some(message => {
+      if (message.role !== 'assistant' || isLiveTailRow(message)) {
+        return false
+      }
+
+      const normalizedInterrupted = interruptedAssistantText.replace(/\s+/g, ' ').trim()
+      const normalizedDurable = normalizedMessageText(message)
+      const normalizedFolded = lastFoldedResponseText(message).replace(/\s+/g, ' ').trim()
+
+      return normalizedDurable === normalizedInterrupted || normalizedFolded === normalizedInterrupted
+    })
+  )
+
+  const projectAssistantDump =
+    wantsAssistantRow && !(turnAlreadyStructured && !inflightError) && !interruptedAssistantAlreadyDurable
 
   const pushCorrection = (correction: string, index: number): void => {
     if (persistedInLatestRun(correction)) {

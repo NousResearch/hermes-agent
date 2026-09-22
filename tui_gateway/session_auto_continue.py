@@ -350,7 +350,8 @@ def _inflight_snapshot(session: dict) -> dict | None:
         return None
     user, assistant = str(turn.get("user") or "").strip(), str(turn.get("assistant") or "")
     streaming, error = bool(turn.get("streaming")), str(turn.get("error") or "").strip()
-    if not (user or assistant or streaming or error):
+    status = str(turn.get("status") or "").strip()
+    if not (user or assistant or streaming or error or status == "interrupted"):
         return None
     snapshot = {"assistant": assistant, "streaming": streaming, "user": user}
     if isinstance(display_kind := turn.get("display_kind"), str) and display_kind:
@@ -369,9 +370,13 @@ def _inflight_snapshot(session: dict) -> dict | None:
     if error:
         # Retained failed turn (_fail_inflight_turn): a resuming client must rebuild the failed bubble, not render the
         # partial text as a healthy reply.
-        snapshot.update(error=error, status=str(turn.get("status") or "error"), recoverable=bool(turn.get("recoverable")))
+        snapshot.update(error=error, status=status or "error", recoverable=bool(turn.get("recoverable")))
         if isinstance(surface := turn.get("error_surface"), dict) and surface:
             snapshot["error_surface"] = surface
+    elif status == "interrupted":
+        # A completed hard-stop snapshot carries no failure card, but its partial
+        # assistant text remains replayable after reconnect.
+        snapshot.update(status="interrupted", recoverable=False)
     return snapshot
 
 

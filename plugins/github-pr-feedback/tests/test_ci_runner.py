@@ -940,7 +940,7 @@ def test_hermes_native_ci_uses_shared_workspace_lock_once(tmp_path):
         tmp_path / package for package in packages}
 
 
-@pytest.mark.parametrize("error_code", ["permission_denied", "authentication"])
+@pytest.mark.parametrize("error_code", ["permission_denied", "not_found", "authentication"])
 def test_required_local_audit_reads_real_checks_without_admin_settings(tmp_path, error_code):
     worktree = tmp_path / "worktree"
     prepare_repository(worktree)
@@ -958,7 +958,7 @@ def test_required_local_audit_reads_real_checks_without_admin_settings(tmp_path,
                            inspector=FakeInspector(), python_argv=("python3",), now=lambda: NOW,
                            required_local_ci=True).run(
         CIAuditIdentity("acme/widgets", 17, BASE_SHA, HEAD_SHA), worktree)
-    if error_code == "permission_denied":
+    if error_code in {"permission_denied", "not_found"}:
         assert receipt.status == "passed"
         assert commands.calls
         assert receipt.actions_state == CheckState(True, False, 2)

@@ -1576,6 +1576,8 @@ def content_free_violation_locations(value: Any) -> tuple[tuple[str, tuple[str, 
     def visit(item: Any, path: str) -> None:
         if isinstance(item, str):
             reasons: list[str] = []
+            if _contains_secret(item):
+                reasons.append("secret_detected")
             if _contains_canonical_base64(item):
                 reasons.append("base64_payload")
             if _contains_private_absolute_path(item):

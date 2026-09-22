@@ -482,7 +482,11 @@ class LocalCIRunner:
             try:
                 enabled = self._github.actions_enabled(repository, refresh=True)
             except GitHubClientError as error:
-                if error.code != "permission_denied":
+                # GitHub can conceal an admin-only Actions settings endpoint
+                # behind 404 when this identity has repository access but not
+                # administration access. The ordinary PR/check reads below
+                # remain authoritative and still fail closed when inaccessible.
+                if error.code not in {"permission_denied", "not_found"}:
                     raise
                 enabled = True
             return self._github.get_check_state(repository, head_sha, actions_enabled_hint=enabled)

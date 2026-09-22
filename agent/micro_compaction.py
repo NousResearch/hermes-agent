@@ -148,12 +148,16 @@ class MicroCompactionMixin:
         message = response.choices[0].message
         content = message.get("content") if isinstance(message, dict) else getattr(message, "content", message)
         content = (content if isinstance(content, str) else str(content) if content else "").strip()
+
+        from agent.agent_runtime_helpers import strip_think_blocks
+        content = strip_think_blocks(None, content).strip()
         if not content:
             logger.info("micro-summarization returned empty content")
             return None
-
-        from agent.agent_runtime_helpers import strip_think_blocks
-        return strip_think_blocks(None, content).strip() or None
+        if _cc()._is_refusal_response(response, content):
+            logger.warning("micro-summarization returned refusal content — discarding unusable summary")
+            return None
+        return content
 
     def _needs_defrag(self) -> bool:
         """Return True when the rolling summary is large enough to defrag."""

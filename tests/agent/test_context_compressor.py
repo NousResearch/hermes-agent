@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+import re
 import sqlite3
 import pytest
 import time
@@ -3315,8 +3316,90 @@ class TestDoubleCompactionSummaryRole:
 
 class TestSummaryPromptBounding:
 
+    _ELISION_MARKER = re.compile(r"\n*\.\.\.\[[^\]]*elided[^\n]*\.\.\.\n*")
 
+    def test_lean_sampling_keeps_record_boundaries(self):
+        """Lean sampling must elide whole serialized records: no section between elision markers
+        may start mid-record, and every retained record must be complete — including records
+        whose body contains blank lines, which are not record delimiters."""
+        compressor = ContextCompressor(
+            model="test/model", threshold_percent=0.85, protect_first_n=2, protect_last_n=2,
+            quiet_mode=True, tail_mode="lean",
+        )
+        body = "para1\n\npara2 " + ("x" * 1200)
+        messages = [{"role": "user", "content": f"record-{i:04d} {body}"} for i in range(1200)]
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message = MagicMock()
+        resp.choices[0].message.content = "## Historical Task Snapshot\nDone."
+        telemetry = compressor._begin_compression_telemetry(current_tokens=1_000_000)
+        with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
+            assert compressor._generate_summary(messages) is not None
+        assert mock_call.call_count == 1
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "chars elided" in prompt
 
+        transcript = prompt[prompt.index("[USER]: record-"):]
+        sections = [sec for sec in self._ELISION_MARKER.split(transcript) if "record-" in sec]
+        assert sections
+        for section in sections:
+            assert section.startswith("[USER]: record-"), section[:60]
+        whole = re.findall(r"\[USER\]: record-\d{4} " + re.escape(body) + r"(?=\n\n|\n*$)", transcript)
+        assert len(whole) == transcript.count("[USER]: record-") > 8
+        # Newest record anchors the tail and both ends of the history are represented.
+        assert whole[-1].startswith("[USER]: record-1199 ")
+        assert whole[0].startswith("[USER]: record-0000 ")
+        # Coverage telemetry describes exactly what the prompt shows, in records and record chars.
+        assert telemetry["summary_input_record_count"] == 1200
+        assert telemetry["summary_input_sampled_record_count"] == len(whole)
+        assert telemetry["summary_input_elided_record_count"] == 1200 - len(whole)
+        assert telemetry["summary_input_sampled_chars"] == sum(map(len, whole))
+        assert telemetry["summary_input_chars"] == (
+            telemetry["summary_input_sampled_chars"] + telemetry["summary_input_omitted_chars"]
+        )
+
+    def test_lean_sampling_oversized_middle_record_does_not_evict_tail(self):
+        """A record larger than one region's share is bounded inside itself, not allowed to consume
+        the other regions or push the newest record out of the prompt."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(400)]
+        records.append("[TOOL RESULT oversized-mid]: " + ("y" * (cap // 2)))
+        records.extend(f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(401, 800))
+        records.append("[USER]: newest-tail-record")
+        sampled, _coverage = ContextCompressor._sample_summary_records(records)
+        assert len(sampled) <= cap
+        assert sampled.rstrip().endswith("[USER]: newest-tail-record")
+        assert "[TOOL RESULT oversized-mid]: yyyy" in sampled
+        assert sampled.count("y" * 1000) < (cap // 2) // 1000
+        assert sampled.count("[USER]: record-") > 8
+        # The budget-extension pass hands out headroom round-robin, so no region ends up with
+        # more than its even share plus one record (the granularity of whole-record growth).
+        per_slice = [
+            sec.count("[USER]: record-") for sec in self._ELISION_MARKER.split(sampled)
+            if "[USER]: record-" in sec
+        ]
+        assert max(per_slice) <= sum(per_slice) / len(per_slice) + 1, per_slice
+
+    def test_lean_sampling_extension_closes_gaps_without_stray_markers(self):
+        """When the extension pass fully closes the gap between two slices, the neighbours become
+        one run joined by the record separator — no zero-width elision marker, no missing
+        separator — and the coverage telemetry still counts each shown record once."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:02d} " + ("x" * 8500) for i in range(20)]
+        assert sum(map(len, records)) > cap  # sampling engages, with headroom > one gap
+        sampled, coverage = ContextCompressor._sample_summary_records(records)
+        assert len(sampled) <= cap
+        shown = [int(i) for i in re.findall(r"record-(\d\d) x", sampled)]
+        assert shown == sorted(set(shown))
+        assert shown[-1] == 19 and shown[0] == 0
+        assert coverage["sampled_record_count"] == len(shown)
+        # At least one initial gap was closed: fewer markers than the n-1 the n slices started with.
+        assert sampled.count("chars elided") < ContextCompressor._SAMPLED_INPUT_SLICES - 1
+        for a, b in zip(shown, shown[1:]):
+            if b == a + 1:
+                assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)
+            else:
+                assert f"{records[a]}\n\n...[records {a + 2:,}-{b:,}:" in sampled, (a, b)
 
     def test_iterative_update_path_is_bounded(self):
         """The iterative prompt (previous summary + new turns) must be bounded

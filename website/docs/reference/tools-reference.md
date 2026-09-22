@@ -117,6 +117,8 @@ Scoped to the Feishu document-comment handler. Drives comment read/write operati
 | `search_files` | Search file contents or find files by name. Use this instead of grep/rg/find/ls in terminal. Ripgrep-backed, faster than shell equivalents. Content search (target='content'): Regex search inside files. Output modes: full matches with line… | — |
 | `write_file` | Write content to a file, completely replacing existing content. Use this instead of echo/cat heredoc in terminal. Creates parent directories automatically. OVERWRITES the entire file — use 'patch' for targeted edits. For an existing file, call read_file first: write_file refuses (file untouched) when the task has no current full read/write of the file or the file changed on disk since — on refusal, read_file, merge, retry. Auto-runs syntax checks on .py/.json/.yaml/.toml and other linted languages; only NEW errors introduced by the write are surfaced. | — |
 
+For local files, a full unredacted read (including all pages of the same file version) or a successful `write_file` supplies a whole-file baseline. Reading a smaller region afterward does not discard that baseline while the bytes remain unchanged. A changed file, an unread file, or a view with hidden/redacted or clamped content still needs a full current read before replacement; `patch` remains available for targeted edits. Writes made through terminal commands or `execute_code` do not establish a `write_file` baseline.
+
 ## `homeassistant` toolset
 
 | Tool | Description | Requires environment |

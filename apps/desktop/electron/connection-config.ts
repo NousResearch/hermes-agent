@@ -787,7 +787,19 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
     // launched for this Desktop label. Even its "primary" label must travel on
     // the wire: the dashboard's process HERMES_HOME can belong to a different
     // launch profile, so a bare request silently reads that profile instead.
-    return opts.globalRemote
+    if (opts.globalRemote) {
+      return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+    }
+
+    // The same holds for the LOCAL host backend: with one `hermes serve` per
+    // host the app attaches to whatever backend is running, and that process
+    // was launched under some OTHER profile's home whenever another app (or an
+    // earlier boot) registered it. A bare request the server can scope then
+    // resolves to that launch home, not this primary — the Settings → Models
+    // write that landed on the wrong profile's config.yaml (#118431/#118432).
+    // Naming the primary on a scopable route is a no-op for a backend that
+    // did launch as it (current-profile semantics server-side).
+    return localPrimaryRequestScope(opts) === true
       ? { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
       : { backend: 'primary', descriptorProfile: null, scopePath: false }
   }

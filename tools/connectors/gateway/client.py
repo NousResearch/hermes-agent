@@ -131,18 +131,6 @@ class ConnectorClient:
                 return items
         raise ToolGatewayError("connector list pagination incomplete", code="INVALID_RESPONSE")
 
-    def list_accounts(
-        self, *, connector: Optional[str] = None, status: Optional[Sequence[str]] = None
-    ) -> list[dict[str, Any]]:
-        query = []
-        if connector:
-            query.append(f"connector={connector}")
-        if status:
-            query.append(f"status={','.join(status)}")
-        path = wire.CONNECTOR_ACCOUNTS_PATH + (f"?{'&'.join(query)}" if query else "")
-        page = self._parse(wire.ConnectorAccountsResponse, self._request("GET", path, None), "connector accounts")
-        return [row.model_dump(by_alias=True) for row in page.accounts]
-
     def account_status(
         self, connection_id: str, *, timeout: float = DEFAULT_TIMEOUT_SECONDS
     ) -> Optional[dict[str, Any]]:

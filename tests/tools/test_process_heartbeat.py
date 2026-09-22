@@ -63,19 +63,26 @@ def test_heartbeat_carries_only_new_output_and_stops_at_exit(tmp_path, monkeypat
                            timeout=2.5)
 
 
-def test_terminal_dispatch_heartbeat_implies_notify_and_refuses_foreground(monkeypatch):
+def test_terminal_dispatch_heartbeat_implies_notify_and_is_dropped_on_foreground(monkeypatch):
     from tools import terminal_tool as tt
 
     captured = {}
 
     def fake_terminal_tool(**kwargs):
         captured.update(kwargs)
-        return json.dumps({"output": "Background process started", "session_id": "proc_x", "exit_code": 0})
+        return json.dumps({"output": "ok", "exit_code": 0})
 
     monkeypatch.setattr(tt, "terminal_tool", fake_terminal_tool)
     dispatch = tt._handle_terminal
-    fg = json.loads(dispatch({"command": "sleep 1", "heartbeat": 120}))
-    assert fg.get("error") and "background" in fg["error"]
+    # A provider that materializes every advertised property sends the full
+    # schema shape on a plain foreground call; it executes once in the
+    # foreground with the heartbeat dropped (no tracked process, no
+    # notification arming) instead of feeding a validation-error retry loop.
+    fg = json.loads(dispatch({"command": "pwd", "background": False, "notify": False,
+                              "heartbeat": 60, "pty": False, "timeout": 20}))
+    assert "error" not in fg or not fg["error"]
+    assert captured["background"] is False and captured["heartbeat"] == 0
+    assert captured["notify_on_complete"] is False and not captured["watch_patterns"]
 
     bg = json.loads(dispatch({"command": "sleep 1", "background": True, "heartbeat": 120}))
     assert "error" not in bg or not bg["error"]

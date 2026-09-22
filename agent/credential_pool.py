@@ -467,6 +467,17 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
         return None
     reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
     if reset_at is not None:
+        # Cap the persisted reset_at to the TTL so a subscription-period 429
+        # (which can report a reset timestamp days/weeks in the future) cannot
+        # permanently freeze a sole credential. See #119163.
+        ttl = _exhausted_ttl(
+            entry.last_error_code,
+            sole_credential=sole_credential,
+            failure_reason=entry.failure_reason,
+        )
+        if ttl is not None:
+            now = time.time()
+            return min(reset_at, now + ttl)
         return reset_at
     if entry.last_status_at:
         return entry.last_status_at + _exhausted_ttl(

@@ -140,9 +140,10 @@ _EMPTY_OK_COMMANDS: frozenset = frozenset({"close", "record"})  # legitimately e
 # Sentinel _find_agent_browser returns/caches to mean "resolve via npx" rather
 # than a concrete path (also compared in hermes_cli/tools_config.py and doctor.py).
 NPX_AGENT_BROWSER_SENTINEL = "npx agent-browser"
-# Pinned to match scripts/install.sh / install.ps1's managed install so a bare-npx
-# resolution gets the same version instead of floating latest. Update together.
-AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.26.0"
+# Keep the npx fallback at the first agent-browser release whose native Lightpanda
+# launcher is compatible with current Lightpanda binaries. The 0.26.x launcher
+# passes a removed ``serve --timeout`` option; this is the sole npx version pin.
+AGENT_BROWSER_NPX_SPEC = "agent-browser@^0.36.0"
 
 # Process caches (``_cached_X`` + ``_X_resolved`` pairs) for config-derived lookups;
 # reset by ``cleanup_all_browsers``. Written/read by the sibling modules via ``browser_tool_origin``.

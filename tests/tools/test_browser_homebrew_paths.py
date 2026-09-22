@@ -33,6 +33,20 @@ def _clear_browser_caches():
 class TestSanePath:
     """Verify _SANE_PATH includes fallback directories used by browser_tool."""
 
+    def test_npx_agent_browser_spec_meets_lightpanda_compatibility_floor(self):
+        """Keep the npx fallback on the verified agent-browser 0.36.x line.
+
+        npm's caret range for a 0.x release is minor-bounded, so moving to a
+        newer minor must be an explicit compatibility review rather than an
+        accidental range change.
+        """
+        package, version_spec = AGENT_BROWSER_NPX_SPEC.split("@", 1)
+        assert package == "agent-browser"
+        assert version_spec.startswith("^0.36.")
+        version = AGENT_BROWSER_NPX_SPEC.removeprefix("agent-browser@^")
+        parsed = tuple(int(part) for part in version.split("."))
+        assert parsed >= (0, 36, 0)
+
     def test_includes_termux_bin(self):
         assert "/data/data/com.termux/files/usr/bin" in _SANE_PATH.split(os.pathsep)
 

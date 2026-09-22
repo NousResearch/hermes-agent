@@ -714,6 +714,22 @@ describe('recoverInFlightTurnJournal', () => {
     ])
   })
 
+  it('retires a journal row by durable identity regardless of turn position', () => {
+    journalEntry([assistant('assistant-old', 'the committed answer', { rowId: 42 })])
+
+    const base = [
+      user('db-u1', 'the real prompt'),
+      assistant('db-a1', 'the committed answer', { rowId: 42 }),
+      user('db-u2', 'and then?'),
+      assistant('db-a2', 'done', { rowId: 43 })
+    ]
+
+    const result = recoverInFlightTurnJournal('stored-1', base, { keepPending: false })
+
+    expect(result.caughtUp).toBe(true)
+    expect(result.messages).toEqual(base)
+  })
+
   it('does not re-append committed answers when the journal tail has no user row', () => {
     // A tail captured after a partial hydrate can end on assistant rows with
     // no user prompt before them. The old code appended them verbatim, so the

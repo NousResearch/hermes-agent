@@ -209,6 +209,7 @@ export function collectUnspokenTurnSpeech(
 export const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
 type TextPart = Extract<ChatMessagePart, { type: 'text' }>
+const isTextPart = (part: ChatMessagePart): part is TextPart => part.type === 'text'
 
 /** The same physical row delivered twice is one occurrence; keep its last copy. */
 function dedupeRepeatedRowText(parts: ChatMessagePart[]): ChatMessagePart[] {
@@ -241,24 +242,24 @@ function dedupeRepeatedRowText(parts: ChatMessagePart[]): ChatMessagePart[] {
  */
 export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
   const rowDeduped = dedupeRepeatedRowText(parts)
-  const last = rowDeduped.findLastIndex(part => part.type === 'text')
-  const previous = rowDeduped.findLastIndex((part, index) => index < last && part.type === 'text')
+  const texts = rowDeduped.flatMap((part, index) => (isTextPart(part) ? [{ index, part }] : []))
+  const [previous, last] = texts.slice(-2)
 
-  if (previous < 0 || rowDeduped.slice(last + 1).some(part => part.type === 'tool-call')) {
+  if (!last || !previous || rowDeduped.slice(last.index + 1).some(part => part.type === 'tool-call')) {
     return rowDeduped
   }
 
-  const key = normalizeWs((rowDeduped[last] as TextPart).text)
+  const key = normalizeWs(last.part.text)
 
   if (
     !key ||
-    key !== normalizeWs((rowDeduped[previous] as TextPart).text) ||
-    !rowDeduped.slice(previous + 1, last).some(part => part.type === 'tool-call')
+    key !== normalizeWs(previous.part.text) ||
+    !rowDeduped.slice(previous.index + 1, last.index).some(part => part.type === 'tool-call')
   ) {
     return rowDeduped
   }
 
-  return rowDeduped.filter((_, index) => index !== previous)
+  return rowDeduped.filter((_, index) => index !== previous.index)
 }
 
 /**

@@ -713,6 +713,9 @@ export function useMessageStream({
           ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)
           : -1
 
+        const settleAt = (index: number) =>
+          prev.map((message, messageIndex) => (messageIndex === index ? completeMessage(message) : message))
+
         let collapsed: DuplicateFinalCollapse | null = null
 
         if (streamIndex >= 0) {
@@ -722,9 +725,7 @@ export function useMessageStream({
             hasFailure: Boolean(failure) || Boolean(completionError),
             interimBoundaryPending
           })
-          nextMessages =
-            collapsed?.messages ??
-            prev.map((message, index) => (index === streamIndex ? completeMessage(message) : message))
+          nextMessages = collapsed?.messages ?? settleAt(streamIndex)
         } else {
           const fallbackIndex = prev.findLastIndex(
             (message, index) => index > lastUserIndex && message.role === 'assistant' && !message.hidden
@@ -756,9 +757,7 @@ export function useMessageStream({
             )
 
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
-              nextMessages = prev.map((message, messageIndex) =>
-                messageIndex === index ? completeMessage(message) : message
-              )
+              nextMessages = settleAt(index)
             } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Two distinct
@@ -781,9 +780,7 @@ export function useMessageStream({
               //   reset between this turn's interim and completion must not
               //   force an append of a duplicate bubble (#74560). This also
               //   closes the non-previewed tool-call gap from #63679.
-              nextMessages = prev.map((message, messageIndex) =>
-                messageIndex === index ? completeMessage(message) : message
-              )
+              nextMessages = settleAt(index)
             } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
@@ -796,19 +793,14 @@ export function useMessageStream({
             const sealedIndex =
               !streamId && interimBoundaryPending && finalText
                 ? prev.findLastIndex(
-                    (message, index) =>
-                      index < lastUserIndex &&
-                      message.role === 'assistant' &&
-                      !message.hidden &&
-                      message.interim === true &&
-                      chatMessageText(message).trim() === finalText
+                    (message, index) => index < lastUserIndex && message.role === 'assistant' && !message.hidden
                   )
                 : -1
 
-            if (sealedIndex >= 0) {
-              nextMessages = prev.map((message, messageIndex) =>
-                messageIndex === sealedIndex ? completeMessage(message) : message
-              )
+            const sealed = sealedIndex >= 0 ? prev[sealedIndex] : null
+
+            if (sealed?.interim === true && chatMessageText(sealed).trim() === finalText) {
+              nextMessages = settleAt(sealedIndex)
             } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }

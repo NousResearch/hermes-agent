@@ -717,12 +717,15 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
     return false
   }
 
-  const lastTurnStart = baseMessages.findLastIndex(message => message.role === 'user' && !message.hidden)
+  // Hidden prompts (bots mode, slash commands) start turns too.
+  const lastTurnStart = baseMessages.findLastIndex(message => message.role === 'user')
+
+  const identityCovers = (base: ChatMessage, index: number, journaled: ChatMessage) =>
+    base.id === journaled.id ||
+    (journaled.rowId === undefined ? index > lastTurnStart : base.rowId === journaled.rowId)
 
   return recoverable.every(message => baseMessages.some((base, index) =>
-    base.role === 'assistant' && !base.hidden && isCommittedRow(base) &&
-    (base.id === message.id ||
-      (message.rowId === undefined ? index > lastTurnStart : base.rowId !== undefined && base.rowId === message.rowId)) &&
+    base.role === 'assistant' && !base.hidden && isCommittedRow(base) && identityCovers(base, index, message) &&
     base.error === message.error &&
     normalizedText(chatMessageText(base)) === normalizedText(chatMessageText(message)) &&
     message.parts.every(part => {
@@ -964,6 +967,8 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
     return
   }
 
+  // `some(recovered)` is a cheap pre-check: this runs on every idle commit of
+  // every cached session, and recovered rows are rare.
   if (!state.busy && !state.awaitingResponse && !state.streamId &&
       !(state.messages.some(message => message.recovered) &&
         recoverableTail(state.messages, null).some(message => message.recovered))) {

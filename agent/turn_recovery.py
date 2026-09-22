@@ -773,6 +773,50 @@ def _failed_turn_result(final_response: str, messages: Any, api_call_count: int,
     }
 
 
+def _recover_delivered_partial_text(agent: Any, messages: Any) -> str:
+    """Visible assistant text already delivered this turn ("" when none).
+
+    ``build_api_request`` resets ``_current_streamed_assistant_text`` on every
+    attempt, so after a mid-stream death + continuation + pre-stream 429 the
+    live accumulator is empty and the only record is the
+    ``_length_continuation_fragment`` rows the truncation path appended (#119001).
+    """
+    try:
+        _live = getattr(agent, "_current_streamed_assistant_text", "") or ""
+    except Exception:
+        _live = ""
+    if isinstance(_live, str) and _live.strip():
+        return _live.strip()
+    _parts = [
+        m["content"].strip() for m in messages or ()
+        if isinstance(m, dict) and m.get("_length_continuation_fragment")
+        and isinstance(m.get("content"), str) and m["content"].strip()
+    ]
+    if not _parts:
+        return ""
+    # Same glue as _join_truncated_parts: newline where two parts would stick.
+    _joined = ""
+    for _part in _parts:
+        if _joined and not _joined[-1].isspace() and not _part[0].isspace():
+            _joined += "\n"
+        _joined += _part
+    return _joined.strip()
+
+
+def _with_delivered_partial(final_response: str, error_summary: str, agent: Any, messages: Any) -> tuple:
+    """Prepend delivered partial text to a terminal error body ("" unchanged).
+
+    Returns ``(final_response, keep_partial)``; callers set ``result["partial"]``
+    when ``keep_partial`` so the gateway emits ``payload.partial`` and surfaces
+    retain the bubble instead of clearing it. ``final_response`` must stay
+    distinct from ``error`` — that inequality is the retention contract.
+    """
+    _delivered = _recover_delivered_partial_text(agent, messages)
+    if not _delivered or _delivered.strip() == (error_summary or "").strip():
+        return final_response, False
+    return f"{_delivered}\n\n{final_response}", True
+
+
 def limit_reset_epoch(agent: Any, api_error: Exception) -> Optional[float]:
     """Epoch seconds when the provider says its limit lifts (Retry-After header, ``resets_at`` /
     ``retry_after`` body fields, "try again in N" text) — the same datum the backoff honours."""
@@ -1043,14 +1087,19 @@ def nonretryable_client_error_result(
             classified, provider=provider, model=model, summary=_nonretryable_summary,
             prefix_suggestion=_prefix_suggestion,
         )
-    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     # Same verdict fields as the max-retries path: without them the UI descriptor
     # (agent/error_surface.py) reads a rejected OAuth token as a retryable
     # "Provider error" and offers Retry instead of a re-login.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _nonretryable_summary, agent, messages,
+    )
+    result = _failed_turn_result(_final_response, messages, api_call_count, _nonretryable_summary)
     result.update({
         "failure_reason": classified.reason.value,
         "failure_retryable": bool(classified.retryable),
     })
+    if _keep_partial:
+        result["partial"] = True
     _stamp_limit_reset(result, agent, api_error)
     if _welcome_hint and (_kind := _welcome_surface_kind(classified)):
         # The card form: the desktop renders the sign-in as a button, so no "To sign in" tail.
@@ -1190,6 +1239,15 @@ def max_retries_exhausted_result(
         # Present only for billing walls: (provider, billing_url, is_nous, message).
         "billing_block": _billing_block,
     })
+    # Retry-exhaustion after partial delivery (#119001): the text was already
+    # shown, so keep it as the reply (marked failed) instead of an error-only
+    # turn — the gateway flags ``partial`` and surfaces retain the bubble.
+    _final_response, _keep_partial = _with_delivered_partial(
+        _final_response, _final_summary, agent, messages,
+    )
+    if _keep_partial:
+        result["final_response"] = _final_response
+        result["partial"] = True
     _stamp_limit_reset(result, agent, api_error)
     if _free_tier_kind:
         _stamp_free_tier(result, _free_tier_kind, (

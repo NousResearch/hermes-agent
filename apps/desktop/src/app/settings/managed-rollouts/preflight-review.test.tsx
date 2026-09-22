@@ -7,9 +7,10 @@ const draft = { mode: 'manual' as const, concurrency: 1, canaryInstallId: 'b', s
 describe('managed rollout preflight', () => {
   it('blocks incompatible starts and suppresses duplicate Start', () => {
     const onStart = vi.fn()
-    const { rerender } = render(<PreflightReview compatible={false} draft={draft} reviewedToken="t1" onStart={onStart} />)
+    const planner = () => [['b'], ['a']]
+    const { rerender } = render(<PreflightReview compatible={false} draft={draft} planner={planner} reviewedToken="t1" onStart={onStart} />)
     expect(screen.getByRole('button', { name: /start rollout/i })).toBeDisabled()
-    rerender(<PreflightReview compatible onStart={onStart} draft={draft} reviewedToken="t1" />)
+    rerender(<PreflightReview compatible onStart={onStart} draft={draft} planner={planner} reviewedToken="t1" />)
     fireEvent.click(screen.getByRole('checkbox'))
     const start = screen.getByRole('button', { name: /start rollout/i })
     fireEvent.click(start)

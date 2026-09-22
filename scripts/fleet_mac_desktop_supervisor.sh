@@ -80,11 +80,13 @@ start_runner() {
     export HERMES_FLEET_TOKEN="$token"
     typeset -a profile_args
     typeset -a profile_names
+    typeset -a local_model_args
     typeset -a profile_model_args
     typeset -a profile_provider_args
     typeset -A seen_profiles
     profile_args=()
     profile_names=()
+    local_model_args=()
     profile_model_args=()
     profile_provider_args=()
     for profile_name in default coding-expert task-orchestrator; do
@@ -127,12 +129,18 @@ start_runner() {
             [[ -n "$provider_name" ]] && profile_provider_args+=(--profile-provider "$profile_name=$provider_name")
         fi
     done
+    for model_path in "$hermes_root/models"/*.gguf(N); do
+        model_name="${model_path:t:r}"
+        model_name="$(print -r -- "$model_name" | /usr/bin/sed -E 's/-[0-9]{5}-of-[0-9]{5}$//')"
+        local_model_args+=(--model "$model_name")
+    done
     HERMES_FLEET_TOKEN="$token" /usr/bin/nohup "$python_executable" \
         "$source_root/scripts/fleet_runner.py" \
         --node-id mac --coordinator http://127.0.0.1:8799 \
         --hermes-executable /Users/mikedemott/.local/bin/hermes \
         "${profile_args[@]}" \
         --project "Hermes Agent" --project LunaBot \
+        "${local_model_args[@]}" \
         "${profile_model_args[@]}" "${profile_provider_args[@]}" \
         --liveness-file "$marker" --interval 2 \
         >> "$runner_log" 2>&1 &

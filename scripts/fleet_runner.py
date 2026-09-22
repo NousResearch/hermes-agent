@@ -29,6 +29,25 @@ def _parser() -> argparse.ArgumentParser:
     return parser
 
 
+def _models_for_profile(
+    profile: str,
+    profile_models: dict[str, str],
+    profile_providers: dict[str, str],
+    local_models: list[str],
+) -> tuple[str, ...]:
+    """Advertise the machine's full local library only through local profiles.
+
+    Cloud profiles remain model-specific so a profile's provider identity is preserved.
+    """
+    configured = profile_models.get(profile)
+    provider = profile_providers.get(profile, "").lower()
+    if configured is None:
+        return tuple(local_models)
+    if provider in {"local", "llamacpp", "llama.cpp", "llama-cpp"}:
+        return tuple(dict.fromkeys((*local_models, configured)))
+    return (configured,)
+
+
 def main(argv: list[str] | None = None) -> int:
     args = _parser().parse_args(argv)
     if not args.token:
@@ -50,7 +69,7 @@ def main(argv: list[str] | None = None) -> int:
         RunnerCapability(
             node_id=args.node_id,
             profile=profile,
-            models=((profile_models[profile],) if profile in profile_models else args.model),
+            models=_models_for_profile(profile, profile_models, profile_providers, args.model),
             tools=args.tool,
             projects=args.project,
             platform="windows" if Path(args.hermes_executable).drive else "posix",

@@ -90,6 +90,44 @@ function Get-ProfileModelConfig([string]$ProfileName) {
     return @($model, $provider)
 }
 
+function Get-LocalModelIds {
+    $modelsDir = Join-Path $HermesRoot "models"
+    if (-not (Test-Path -LiteralPath $modelsDir)) {
+        return @()
+    }
+
+    @(
+        Get-ChildItem -LiteralPath $modelsDir -File -Filter "*.gguf" -ErrorAction SilentlyContinue |
+            ForEach-Object { $_.BaseName -replace '-\d{5}-of-\d{5}$', '' }
+    )
+}
+
+function Resolve-ProfileModel([string]$Model, [string]$Provider, [string[]]$LocalModelIds) {
+    $localProviders = @("local", "llamacpp", "llama.cpp", "llama-cpp")
+    if (-not $Model -or $localProviders -notcontains $Provider.ToLowerInvariant() -or $LocalModelIds.Count -eq 0) {
+        return $Model
+    }
+
+    $exact = @($LocalModelIds | Where-Object { $_ -ieq $Model })
+    if ($exact.Count -gt 0) {
+        return $exact[0]
+    }
+
+    # A profile can be shared between machines with different GGUF quantizations. Match the
+    # model family before the quantization suffix so Q4 on the Mac can resolve to Q5 on Windows.
+    $family = ($Model -replace '[-.]Q\d.*$', '').ToLowerInvariant()
+    $variant = @(
+        $LocalModelIds |
+            Where-Object { $_.ToLowerInvariant().StartsWith($family) } |
+            Sort-Object
+    )
+    if ($variant.Count -gt 0) {
+        Write-Host "Fleet local model remap: $Model -> $($variant[0])"
+        return $variant[0]
+    }
+    return $Model
+}
+
 function Start-Runner {
     if (-not (Test-Path -LiteralPath $bundle)) {
         throw "Fleet runner bundle does not exist: $bundle"
@@ -111,13 +149,15 @@ function Start-Runner {
         $profileNames += @(Get-ChildItem -LiteralPath $profileRoot -Directory | Select-Object -ExpandProperty Name)
     }
     $profileNames = @($profileNames | Select-Object -Unique)
+    $localModelIds = @(Get-LocalModelIds)
     $profileModelArgs = @()
     $profileProviderArgs = @()
     $hermesExecutable = Join-Path $HermesRoot "bin\\hermes.exe"
     foreach ($profileName in $profileNames) {
         $modelInfo = @(Get-ProfileModelConfig $profileName)
         if ($modelInfo.Count -ge 2 -and $modelInfo[0] -and $modelInfo[1]) {
-            $profileModelArgs += @("--profile-model", "$profileName=$($modelInfo[0])")
+            $resolvedModel = Resolve-ProfileModel $modelInfo[0] $modelInfo[1] $localModelIds
+            $profileModelArgs += @("--profile-model", "$profileName=$resolvedModel")
             $profileProviderArgs += @("--profile-provider", "$profileName=$($modelInfo[1])")
         }
     }
@@ -133,6 +173,9 @@ function Start-Runner {
     }
     foreach ($projectName in $Project) {
         $arguments += "--project $(Quote-Argument $projectName)"
+    }
+    foreach ($localModelId in $localModelIds) {
+        $arguments += "--model $(Quote-Argument $localModelId)"
     }
     foreach ($profileModelArg in $profileModelArgs) {
         $arguments += (Quote-Argument $profileModelArg)

@@ -1571,14 +1571,28 @@ def _cmd_init(args: argparse.Namespace) -> int:
 
 def _cmd_heartbeat(args: argparse.Namespace) -> int:
     with kb.connect_closing() as conn:
-        ok = kb.heartbeat_worker(
+        hb = kb.heartbeat_worker(
             conn,
             args.task_id,
             note=getattr(args, "note", None),
             expected_run_id=_worker_run_id_for(args.task_id),
         )
-    if not ok:
-        print(f"cannot heartbeat {args.task_id} (not running?)", file=sys.stderr)
+    if getattr(hb, "superseded", False):
+        print(
+            f"cannot heartbeat {args.task_id}: run superseded — stop and exit. "
+            f"You hold run "
+            f"{hb.expected_run_id if hb.expected_run_id is not None else '(unknown)'}, "
+            f"task is now status={hb.task_status!r} with current_run_id="
+            f"{hb.current_run_id if hb.current_run_id is not None else 'NULL'}. "
+            f"A fresh dispatch will pick the card up.",
+            file=sys.stderr,
+        )
+        return 1
+    if not hb:
+        print(
+            f"cannot heartbeat {args.task_id} (unknown id — no such task)",
+            file=sys.stderr,
+        )
         return 1
     print(f"Heartbeat recorded for {args.task_id}")
     return 0
@@ -2959,7 +2973,15 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
     health_state = {"bad_ticks": 0, "last_warn_at": 0}
 
     def _on_tick(res):
-        ready_pending = bool(res.skipped_unassigned) or _ready_queue_nonempty()
+        # Cards the respawn guard deferred this tick are excluded from the
+        # "is there work waiting" probe — deliberate deferral by a healthy
+        # dispatcher is not a stuck dispatcher, exactly as with
+        # ``skipped_nonspawnable``. Genuinely spawnable work with 0 spawns
+        # still counts as a bad tick.
+        guarded = kb.guard_deferred_ids(res)
+        ready_pending = (
+            bool(res.skipped_unassigned) or _ready_queue_nonempty(guarded)
+        )
         spawned_any = bool(res.spawned)
         if ready_pending and not spawned_any:
             health_state["bad_ticks"] += 1
@@ -2998,7 +3020,7 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
                 flush=True,
             )
 
-    def _ready_queue_nonempty() -> bool:
+    def _ready_queue_nonempty(exclude_ids=None) -> bool:
         """Cheap probe — is there at least one ready+assigned+unclaimed
         task whose assignee maps to a real Hermes profile (i.e. one the
         dispatcher would actually try to spawn for)?
@@ -3006,11 +3028,13 @@ def _cmd_daemon(args: argparse.Namespace) -> int:
         Filters out tasks assigned to control-plane lanes
         (e.g. ``orion-cc``, ``orion-research``) that are pulled by
         terminals via ``claim_task`` directly — those are correctly idle
-        from the dispatcher's perspective, not stuck.
+        from the dispatcher's perspective, not stuck. ``exclude_ids``
+        drops the cards the respawn guard deferred this tick on the same
+        grounds.
         """
         try:
             with kb.connect_closing() as conn:
-                return kb.has_spawnable_ready(conn)
+                return kb.has_spawnable_ready(conn, exclude_ids)
         except Exception:
             return False
 

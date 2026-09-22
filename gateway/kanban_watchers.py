@@ -1558,7 +1558,7 @@ class GatewayKanbanWatchersMixin:
                 out.append((slug, _tick_once_for_board(slug)))
             return out
 
-        def _ready_nonempty() -> bool:
+        def _ready_nonempty(exclude_ids=None) -> bool:
             """Cheap probe: is there at least one ready+assigned+unclaimed
             task on ANY board whose assignee maps to a real Hermes profile
             (i.e. one the dispatcher would actually spawn for)?
@@ -1569,6 +1569,16 @@ class GatewayKanbanWatchersMixin:
             of those is "correctly idle", not "stuck". Filtering them out
             here keeps the stuck-warn fire only on real failures (broken
             PATH, missing venv, credential loss for a real Hermes profile).
+
+            ``exclude_ids`` carries the cards the respawn guard deferred
+            on THIS tick. A guard deferral is a deliberate decision by a
+            healthy dispatcher — the same grounds on which
+            ``skipped_nonspawnable`` is already excluded — so a queue
+            holding only deferred cards must not accumulate bad ticks.
+            Card t_6a6ac2d3 logged "stuck: ready queue non-empty ... 0
+            workers spawned" while the dispatcher was correctly (if
+            wrongly, see the guard fix) deferring. Any OTHER spawnable
+            card still trips the warning.
             """
             # Only probe the review column when autonomous review dispatch is
             # actually on. With ``review_dispatch`` off (the default — no
@@ -1586,9 +1596,11 @@ class GatewayKanbanWatchersMixin:
                 conn = None
                 try:
                     conn = _kb.connect(board=slug)
-                    if _kb.has_spawnable_ready(conn):
+                    if _kb.has_spawnable_ready(conn, exclude_ids):
                         return True
-                    if _review_probe and _kb.has_spawnable_review(conn):
+                    if _review_probe and _kb.has_spawnable_review(
+                        conn, exclude_ids
+                    ):
                         return True
                 except Exception:
                     continue
@@ -1745,8 +1757,14 @@ class GatewayKanbanWatchersMixin:
                                 res.promoted,
                                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
                             )
-                    # Health telemetry (aggregate across boards)
-                    ready_pending = await _to_thread_process_service(_ready_nonempty)
+                    # Health telemetry (aggregate across boards). Cards the
+                    # respawn guard deferred this tick are excluded from the
+                    # probe: deliberate deferral by a healthy dispatcher is
+                    # not a stuck dispatcher.
+                    _guarded = _kb.guard_deferred_ids(results)
+                    ready_pending = await _to_thread_process_service(
+                        _ready_nonempty, _guarded
+                    )
                     if ready_pending and not any_spawned:
                         bad_ticks += 1
                     else:

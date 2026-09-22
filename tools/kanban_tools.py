@@ -1055,15 +1055,36 @@ def _handle_heartbeat(args: dict, **kw) -> str:
             claim_lock = os.environ.get("HERMES_KANBAN_CLAIM_LOCK")
             kb.heartbeat_claim(conn, tid, claimer=claim_lock)
 
-            ok = kb.heartbeat_worker(
+            held_run_id = _worker_run_id(tid)
+            hb = kb.heartbeat_worker(
                 conn,
                 tid,
                 note=note,
-                expected_run_id=_worker_run_id(tid),
+                expected_run_id=held_run_id,
             )
-            if not ok:
+            if getattr(hb, "superseded", False):
+                # The run this worker holds is no longer the task's
+                # current run (it was blocked/completed/reclaimed and the
+                # card was re-queued). Generic wording here is what let a
+                # superseded worker keep working for 4h45m on card
+                # t_6a6ac2d3 — say exactly what happened and what to do.
                 return tool_error(
-                    f"could not heartbeat {tid} (unknown id or not running)"
+                    f"kanban_heartbeat: run superseded — STOP WORKING ON "
+                    f"{tid} AND EXIT IMMEDIATELY. This worker holds run "
+                    f"{hb.expected_run_id if hb.expected_run_id is not None else '(unknown)'}, "
+                    f"but the task is now status={hb.task_status!r} with "
+                    f"current_run_id="
+                    f"{hb.current_run_id if hb.current_run_id is not None else 'NULL'}. "
+                    f"Your run was closed (blocked / completed / reclaimed) "
+                    f"and any further work, commits, comments or PRs from "
+                    f"this process are unowned and will conflict. Do not "
+                    f"retry the heartbeat. A fresh dispatch will pick the "
+                    f"card up with up-to-date context."
+                )
+            if not hb:
+                return tool_error(
+                    f"could not heartbeat {tid} (unknown id — no such task "
+                    f"on this board)"
                 )
             return _ok(task_id=tid)
         finally:

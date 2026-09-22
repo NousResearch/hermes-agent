@@ -29,7 +29,10 @@ import {
 //   - object scope     → explicit (connection, profile) pin; 'local' pins the
 //                        local pool and DROPS the ambient connection tag
 describe('capability helpers are connection-scoped', () => {
-  const api = vi.fn(async (_req: { connectionId?: string; path: string; profile?: string }) => ({}) as never)
+  const api = vi.fn(
+    async (_req: { body?: Record<string, unknown>; connectionId?: string; path: string; profile?: string }) =>
+      ({}) as never
+  )
 
   beforeEach(() => {
     ;(window as { hermesDesktop?: unknown }).hermesDesktop = { api }
@@ -149,6 +152,9 @@ describe('capability helpers are connection-scoped', () => {
       expect((call[0] as { connectionId?: string }).connectionId).toBe('homelab')
       expect(call[0].profile).toBe('inbox-bot')
     }
+
+    const toolsetWrite = api.mock.calls.find(call => call[0].path === '/api/tools/toolsets/browser')?.[0]
+    expect(toolsetWrite?.body).toEqual({ enabled: true, profile: 'inbox-bot' })
   })
 
   it("a 'local' pin carries an explicit connectionId even while a remote gateway is active", () => {

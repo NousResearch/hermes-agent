@@ -890,7 +890,8 @@ def cmd_install(
 
 
 def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None) -> str:
-    """Shared ``update`` core: refuse pinned / non-git checkouts, ``git pull``, record the new
+    """Shared ``update`` core: refuse pinned checkouts, ``git pull`` (or re-install from the
+    recorded source when the tree carries no ``.git`` — subdirectory installs), record the new
     revision. Returns the pull output; raises :class:`PluginOperationError` on any refusal.
     *pinned_msg(install_record)* / *not_git_msg()* build the caller-specific error text."""
     metadata = _read_install_metadata()
@@ -898,7 +899,12 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
     if install_record.get("pinned") is True:
         raise PluginOperationError(pinned_msg(install_record))
     if not (target / ".git").exists():
-        raise PluginOperationError(not_git_msg())
+        source = install_record.get("source")
+        if not isinstance(source, str) or not source:
+            raise PluginOperationError(not_git_msg())
+        if before_pull is not None:
+            before_pull()
+        return _reclone_plugin_update(source, install_record.get("revision"))
     # A URL install whose name/repo later landed on the kill list must not keep pulling new code.
     from hermes_cli import plugins_cmd_catalog as catalog
     catalog.refuse_if_installed_removed(target.name, target)
@@ -914,6 +920,19 @@ def _pull_plugin_update(target: Path, pinned_msg, not_git_msg, before_pull=None)
         metadata[target.name] = install_record
         _write_install_metadata(metadata)
     return output
+
+
+def _reclone_plugin_update(source: str, previous_revision: object) -> str:
+    """Update a plugin whose tree is not a git checkout: a subdirectory install ships only
+    ``<clone>/<subdir>``, so the ``.git`` stays in the temp clone (#65314). Re-run the install
+    from the recorded source (same URL, same subdir) and swap the fresh tree in; the metadata
+    revision is rewritten by the installer. Returns pull-shaped output for the callers."""
+    new_target, _manifest, _name = _install_plugin_core(source, force=True)
+    revision = str(_read_install_metadata().get(new_target.name, {}).get("revision") or "")
+    previous = previous_revision if isinstance(previous_revision, str) else ""
+    if revision and revision == previous:
+        return "Already up to date."
+    return f"Re-installed from {source}: {previous[:8]}..{revision[:8]}"
 
 
 def cmd_update(name: str) -> None:

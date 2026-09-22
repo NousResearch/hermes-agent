@@ -776,6 +776,39 @@ class TestSubdirInstallE2E:
         with pytest.raises(PluginOperationError, match="does not exist"):
             pc._install_plugin_core(identifier, force=False)
 
+    def test_subdir_install_stays_updatable(self, tmp_path, monkeypatch):
+        """A subdir install ships no ``.git`` (it stays in the temp clone), so ``plugins update``
+        must re-install from the recorded source instead of refusing (#65314)."""
+        if shutil.which("git") is None:
+            pytest.skip("git not available")
+        import subprocess as sp
+
+        from hermes_cli import plugins_cmd as pc
+
+        repo_root = tmp_path / "monorepo"
+        self._make_repo_with_subdir_plugin(repo_root)
+        plugins_dir = tmp_path / "installed"
+        plugins_dir.mkdir()
+        monkeypatch.setattr(pc, "_plugins_dir", lambda: plugins_dir)
+        monkeypatch.setattr(pc, "_install_metadata_path", lambda: plugins_dir / ".install-metadata.json")
+        target, _manifest, _name = pc._install_plugin_core(f"file://{repo_root}#my-plugin", force=False)
+        assert not (target / ".git").exists()
+
+        (repo_root / "my-plugin" / "__init__.py").write_text("VERSION = 2\n", encoding="utf-8")
+        env = {**os.environ, "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@t",
+               "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@t"}
+        sp.run(["git", "commit", "-qam", "v2"], cwd=repo_root, check=True, env=env)
+        new_sha = sp.run(["git", "rev-parse", "HEAD"], cwd=repo_root, check=True,
+                         capture_output=True, text=True).stdout.strip()
+
+        output = pc._pull_plugin_update(target, lambda rec: "pinned", lambda: "not git")
+
+        assert "VERSION = 2" in (target / "__init__.py").read_text(encoding="utf-8")
+        assert pc._read_install_metadata()["my-plugin"]["revision"] == new_sha
+        assert "Already up to date" not in output
+        # A second update with nothing new upstream reports up to date, like `git pull`.
+        assert "Already up to date" in pc._pull_plugin_update(target, lambda rec: "pinned", lambda: "not git")
+
     def test_installs_portable_root_package_disabled(self, tmp_path, monkeypatch):
         if shutil.which("git") is None:
             pytest.skip("git not available")

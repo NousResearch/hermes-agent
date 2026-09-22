@@ -1310,7 +1310,9 @@ def _handle_write_file(args, **kw):
     if not isinstance(args["content"], str):
         return tool_error(
             f"write_file: 'content' must be a string, got "
-            f"{type(args['content']).__name__}."
+            f"{type(args['content']).__name__}. Re-emit the tool call with 'content' as a "
+            "single string — serialize structured data yourself (JSON text, YAML, CSV) — or "
+            "use execute_code with hermes_tools.write_file() for very large files."
         )
     return write_file_tool(
         path=args["path"], content=args["content"], task_id=tid,

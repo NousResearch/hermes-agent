@@ -139,12 +139,14 @@ class TestWriteFileHandler:
             assert result["status"] == "ok"
 
     def test_non_string_content_returns_error(self):
-        """#19096 — content must be a string, not a dict or list."""
+        """#19096 — content must be a string, not a dict or list; the error names the fix so a
+        model that emitted the wrong shape can recover instead of replaying the call."""
         from tools.file_tools import _handle_write_file
 
         result = json.loads(_handle_write_file({"path": "/tmp/x.txt", "content": {"nested": "dict"}}))
         assert "error" in result
         assert "string" in result["error"].lower() or "content" in result["error"].lower()
+        assert "Re-emit" in result["error"]
 
 
 class TestPatchHandler:

@@ -277,6 +277,9 @@ def _drop_repeated_recall_lines(text: str) -> str:
     into the user row's ``api_content`` sidecar and replayed verbatim on every later request for as
     long as that row is in context, so each duplicate is paid once per turn, forever.
 
+    The ``seen`` set is scoped per section — every heading or ``---`` separator starts a new one — so
+    a repeat is only dropped when the SAME section already states it.
+
     Only a SELF-CONTAINED bullet is considered — a marker, whitespace, content, and no continuation
     line indented beneath it. A bullet that carries continuation lines is never dropped and never
     suppresses a later one, because two entries can share a headline and differ underneath it
@@ -290,6 +293,12 @@ def _drop_repeated_recall_lines(text: str) -> str:
     kept: list[str] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
+        # Dedupe is scoped per section: a heading (``## …`` / ``**…**``) or a ``---`` separator opens a
+        # fresh scope. Without it, identical placeholder bullets under different headings
+        # (``- (none recorded)`` twice) collapse into the first section and the second heading is left
+        # claiming nothing.
+        if stripped.startswith("#") or stripped.startswith("**") or stripped == "---":
+            seen.clear()
         if _RECALL_BULLET_RE.match(stripped):
             following = lines[index + 1] if index + 1 < len(lines) else ""
             indent = len(line) - len(line.lstrip())

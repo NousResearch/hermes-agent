@@ -121,6 +121,17 @@ export function findGroupOfPane(node: LayoutNode, paneId: string): GroupNode | n
   return null
 }
 
+/** Whether a pane owns its group's active tab and is available in the strip. */
+export function isPaneActiveInLayoutGroup(
+  tree: LayoutNode | null,
+  hiddenStripTabs: ReadonlySet<string>,
+  paneId: string
+): boolean {
+  const group = tree ? findGroupOfPane(tree, paneId) : null
+
+  return group?.active === paneId && !hiddenStripTabs.has(paneId)
+}
+
 export function allPaneIds(node: LayoutNode): string[] {
   return node.type === 'group' ? [...node.panes] : node.children.flatMap(allPaneIds)
 }

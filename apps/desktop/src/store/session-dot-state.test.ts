@@ -17,9 +17,13 @@ import {
   $delegatingSessionIds,
   $sessionDotStateById,
   $unreadSessionCount,
+  $unreadSessionIds,
+  $unreadSessionTargets,
   hasLiveTurn,
   showsRunningArc,
-  unreadSessionCount
+  unreadSessionCount,
+  unreadSessionIds,
+  unreadSessionTargets
 } from './session-dot-state'
 import { clearAllSessionStates, publishSessionState } from './session-states'
 import { $unreadWriteGuard } from './session-unread-remote'
@@ -238,5 +242,148 @@ describe('$unreadSessionCount (titlebar badge)', () => {
 
     expect($unreadSessionCount.get()).toBe(0)
     expect($sessionDotStateById.get()['cron-1']).not.toBe('unread')
+  })
+})
+
+describe('unreadSessionIds', () => {
+  it('globally orders listed rows by effective recency', () => {
+    expect(
+      unreadSessionIds(
+        { cron: 'unread', message: 'unread', normal: 'unread' },
+        [{ id: 'normal', last_active: 10 }],
+        [{ id: 'cron', last_active: 30 }],
+        [{ id: 'message', last_active: 20 }]
+      )
+    ).toEqual(['cron', 'message', 'normal'])
+  })
+
+  it('uses started_at as the fallback and excludes archived or non-unread rows', () => {
+    expect(
+      unreadSessionIds(
+        { archived: 'unread', idle: 'idle', newer: 'unread', older: 'unread' },
+        [
+          { id: 'older', last_active: 0, started_at: 4 },
+          { archived: true, id: 'archived', last_active: 99 },
+          { id: 'idle', last_active: 100 }
+        ],
+        [{ id: 'newer', last_active: 0, started_at: 8 }]
+      )
+    ).toEqual(['newer', 'older'])
+  })
+})
+
+describe('$unreadSessionIds (titlebar navigation)', () => {
+  beforeEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $unreadFinishedSessionIds.set([])
+    $unreadWriteGuard.set(new Map())
+  })
+
+  afterEach(() => {
+    clearAllSessionStates()
+    $sessions.set([])
+    $cronSessions.set([])
+    $messagingSessions.set([])
+    $unreadFinishedSessionIds.set([])
+    $unreadWriteGuard.set(new Map())
+  })
+
+  it('orders regular and messaging targets while excluding cron', () => {
+    setSessions([storedRow('regular', { last_active: 10, unread: true })])
+    setMessagingSessions([storedRow('message', { last_active: 20 })])
+    setCronSessions([storedRow('cron', { last_active: 30, source: 'cron' })])
+    $unreadFinishedSessionIds.set(['message', 'cron'])
+
+    expect($unreadSessionIds.get()).toEqual(['message', 'regular'])
+  })
+
+  it.each([
+    [
+      { connection_id: 'source-a', profile: 'ops' },
+      { connection_id: 'source-b', profile: 'ops' }
+    ],
+    [
+      { connection_id: 'source-a', profile: 'ops' },
+      { connection_id: 'source-a', profile: 'other' }
+    ],
+    [{ profile: 'ops' }, { connection_id: 'source-b', profile: 'ops' }]
+  ])('qualifies eligibility before ranking duplicate IDs (%j / %j)', (unreadOwner, readOwner) => {
+    $sessions.set([
+      storedRow('twin', { ...unreadOwner, last_active: 100, unread: true }),
+      storedRow('twin', { ...readOwner, last_active: 200, unread: false })
+    ])
+
+    expect($unreadSessionTargets.get()).toEqual([
+      {
+        id: 'twin',
+        kind: 'session',
+        profile: unreadOwner.profile,
+        ...('connection_id' in unreadOwner ? { connectionId: unreadOwner.connection_id } : {})
+      }
+    ])
+    expect($unreadSessionCount.get()).toBe(1)
+  })
+
+  it('does not assign an ID-only runtime unread marker to either source twin', () => {
+    $sessions.set([
+      storedRow('twin', { connection_id: 'a', unread: false }),
+      storedRow('twin', { connection_id: 'b', unread: false })
+    ])
+    $unreadFinishedSessionIds.set(['twin'])
+
+    expect($sessionDotStateById.get().twin).toBe('unread')
+    expect($unreadSessionTargets.get()).toEqual([])
+  })
+
+  it.each([true, false])('does not attribute an unscoped optimistic write (%s) to a source twin', value => {
+    $sessions.set([
+      storedRow('twin', { connection_id: 'a', unread: true }),
+      storedRow('twin', { connection_id: 'b', unread: false })
+    ])
+    $unreadFinishedSessionIds.set(['twin'])
+    $unreadWriteGuard.set(new Map([['twin', { at: Date.now(), value }]]))
+
+    expect($unreadSessionTargets.get()).toEqual([])
+    $unreadWriteGuard.set(new Map())
+    expect($unreadSessionTargets.get()).toMatchObject([{ id: 'twin', connectionId: 'a' }])
+  })
+
+  it('qualifies a messaging twin as well as regular sessions', () => {
+    $sessions.set([storedRow('twin', { connection_id: 'a', unread: true })])
+    $messagingSessions.set([storedRow('twin', { connection_id: 'b', unread: false, last_active: 200 })])
+
+    expect($unreadSessionTargets.get()).toMatchObject([{ id: 'twin', kind: 'session', connectionId: 'a' }])
+  })
+})
+
+describe('unreadSessionTargets', () => {
+  it('preserves source kind through the global recency ordering', () => {
+    expect(
+      unreadSessionTargets(
+        { cron: 'unread', message: 'unread', normal: 'unread' },
+        [{ id: 'normal', last_active: 10 }],
+        [{ id: 'cron', last_active: 30 }],
+        [{ id: 'message', last_active: 20 }]
+      )
+    ).toEqual([
+      { id: 'cron', kind: 'cron' },
+      { id: 'message', kind: 'messaging' },
+      { id: 'normal', kind: 'session' }
+    ])
+  })
+
+  it('carries a trimmed profile and registry connection owner', () => {
+    expect(
+      unreadSessionTargets({ local: 'unread', remote: 'unread' }, [
+        { connection_id: ' conn-a ', id: 'remote', last_active: 20, profile: ' research ' },
+        { id: 'local', last_active: 10 }
+      ])
+    ).toEqual([
+      { connectionId: 'conn-a', id: 'remote', kind: 'session', profile: 'research' },
+      { id: 'local', kind: 'session' }
+    ])
   })
 })

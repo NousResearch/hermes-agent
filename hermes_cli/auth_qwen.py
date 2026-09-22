@@ -146,3 +146,18 @@ def get_qwen_auth_status() -> Dict[str, Any]:
         }
     except AuthError as exc:
         return {"logged_in": False, "auth_file": str(auth_path), "error": str(exc)}
+
+
+def get_qwen_auth_status_local() -> Dict[str, Any]:
+    """Return the persisted Qwen status without refreshing or rewriting the CLI store."""
+    from hermes_cli.auth import _qwen_cli_auth_path, resolve_qwen_runtime_credentials
+    auth_path = _qwen_cli_auth_path()
+    try:
+        creds = resolve_qwen_runtime_credentials(refresh_if_expiring=False)
+        return {
+            "logged_in": not _qwen_access_token_is_expiring(creds.get("expires_at_ms"), 0),
+            "auth_file": str(auth_path), "source": creds.get("source"),
+            "api_key": creds.get("api_key"), "expires_at_ms": creds.get("expires_at_ms"),
+        }
+    except AuthError as exc:
+        return {"logged_in": False, "auth_file": str(auth_path), "error": str(exc)}

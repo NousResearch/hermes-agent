@@ -85,7 +85,7 @@ from hermes_cli.auth_spotify import (  # noqa: F401  re-exported
 from hermes_cli.auth_openrouter import _openrouter_pkce_login  # noqa: F401  re-exported
 from hermes_cli.auth_qwen import (  # noqa: F401  re-exported
     _qwen_access_token_is_expiring, _qwen_cli_auth_path, _read_qwen_cli_tokens,
-    _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status,
+    _refresh_qwen_cli_tokens, _save_qwen_cli_tokens, get_qwen_auth_status, get_qwen_auth_status_local,
     resolve_qwen_runtime_credentials)
 from hermes_cli.auth_constants import (  # noqa: F401  re-exported
     _decode_jwt_claims, AUTH_STORE_VERSION, AUTH_LOCK_TIMEOUT_SECONDS, DEFAULT_NOUS_PORTAL_URL,
@@ -1886,12 +1886,26 @@ def get_codex_auth_status() -> Dict[str, Any]:
         on_pool_miss=_codex_pool_rate_limited_status)
 
 
+def get_codex_auth_status_local() -> Dict[str, Any]:
+    """Refresh-free Codex status for diagnostic and display surfaces."""
+    return _pool_first_oauth_status(
+        "openai-codex", is_expiring=_codex_access_token_is_expiring, auth_mode="chatgpt",
+        resolve=None, on_pool_miss=_codex_pool_rate_limited_status)
+
+
 def get_xai_oauth_auth_status() -> Dict[str, Any]:
     # auth_mode is display/telemetry only; device-code is the only xAI OAuth flow, so report it
     # unconditionally (auth.json may still carry a legacy ``oauth_pkce`` label).
     return _pool_first_oauth_status(
         "xai-oauth", is_expiring=_xai_access_token_is_expiring, auth_mode="oauth_device_code",
         resolve=lambda: resolve_xai_oauth_runtime_credentials(refresh_if_expiring=False))
+
+
+def get_xai_oauth_auth_status_local() -> Dict[str, Any]:
+    """Refresh-free xAI status for diagnostic and display surfaces."""
+    return _pool_first_oauth_status(
+        "xai-oauth", is_expiring=_xai_access_token_is_expiring,
+        auth_mode="oauth_device_code", resolve=None)
 
 
 def _provider_env_base_url(pconfig: ProviderConfig) -> str:

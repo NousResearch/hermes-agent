@@ -45,7 +45,10 @@ def _skip(name: str) -> ProbeResult:
 def _has_healthy_oauth_fallback_for_apikey_provider(provider_label: str) -> bool:
     """True when a failed direct API-key probe is non-blocking because the same provider family's OAuth
     runtime path is already healthy: the failed row is still shown, but not promoted into the summary."""
-    getter = {"minimax": "get_minimax_oauth_auth_status", "xai": "get_xai_oauth_auth_status"}.get((provider_label or "").strip().lower())
+    getter = {
+        "minimax": "get_minimax_oauth_auth_status",
+        "xai": "get_xai_oauth_auth_status_local",
+    }.get((provider_label or "").strip().lower())
     if not getter:
         return False
     try:

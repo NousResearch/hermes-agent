@@ -2122,6 +2122,25 @@ def load_config_readonly() -> Dict[str, Any]:
     return _load_config_impl(want_deepcopy=False)
 
 
+def load_config_observational() -> Dict[str, Any]:
+    """Load effective defaults and user settings without creating or backing up profile state.
+
+    Diagnostic commands use this path because even the ordinary config loader's first-load
+    bootstrap and last-known-good backup are mutations from an observer's point of view.
+    """
+    user_config = read_raw_config()
+    if "max_turns" in user_config:
+        agent_user_config = dict(user_config.get("agent") or {})
+        if agent_user_config.get("max_turns") is None:
+            agent_user_config["max_turns"] = user_config["max_turns"]
+        user_config["agent"] = agent_user_config
+        user_config.pop("max_turns", None)
+    config = _deep_merge(copy.deepcopy(DEFAULT_CONFIG), user_config)
+    normalized = _canonicalize_config(config)
+    expanded, _managed = _merge_managed_overlay(_expand_env_vars(normalized))
+    return expanded
+
+
 def _ensure_dict(parent: Dict[str, Any], key: str) -> Dict[str, Any]:
     """Return ``parent[key]`` as a dict, replacing a missing or non-dict value with ``{}``."""
     child = parent.get(key)

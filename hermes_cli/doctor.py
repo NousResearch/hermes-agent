@@ -70,17 +70,18 @@ _PROVIDER_ENV_HINTS = (
 def _check_auth_providers(should_fix: bool, f: Finding) -> None:
     """Refresh-free OAuth status snapshot (doctor must never trigger a token refresh)."""
     with warn_on_error("Auth provider status", "(could not check: {e})"):
-        from hermes_cli.auth import get_nous_auth_status_local, get_codex_auth_status, get_minimax_oauth_auth_status
+        from hermes_cli.auth import (
+            get_codex_auth_status_local, get_minimax_oauth_auth_status, get_nous_auth_status_local)
         _login_row("Nous Portal auth", get_nous_auth_status_local())
         # Native OAuth is Hermes' own device-code flow; the Codex CLI only imports existing ~/.codex/auth.json
         # tokens, so the hint sits under the Codex row (not as another provider's remedy).
-        if not _login_row("OpenAI Codex auth", get_codex_auth_status(), show_error=True) and not _safe_which("codex"):
+        if not _login_row("OpenAI Codex auth", get_codex_auth_status_local(), show_error=True) and not _safe_which("codex"):
             check_info("codex CLI not installed (optional — only required to import tokens from an existing Codex CLI login)")
         minimax_status = get_minimax_oauth_auth_status()
         _login_row("MiniMax OAuth", minimax_status, f"(logged in, region={minimax_status.get('region', 'global')})")
     with warn_on_error(""):  # xAI OAuth separately, so an import failure cannot disrupt the rows already printed
-        from hermes_cli.auth import get_xai_oauth_auth_status
-        _login_row("xAI OAuth", get_xai_oauth_auth_status() or {}, show_error=True)
+        from hermes_cli.auth import get_xai_oauth_auth_status_local
+        _login_row("xAI OAuth", get_xai_oauth_auth_status_local() or {}, show_error=True)
 
 
 def _login_row(label: str, status: dict, ok_detail: str = "(logged in)", show_error: bool = False) -> bool:

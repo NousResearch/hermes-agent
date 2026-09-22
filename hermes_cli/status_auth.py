@@ -63,8 +63,8 @@ _FILE_REFRESH_ROWS = (
 
 _OAUTH_BLOCKS = (
     # (row name, auth getter, login hint, detail rows)
-    ("OpenAI Codex", "get_codex_auth_status", "hermes model", _FILE_REFRESH_ROWS),
-    ("Qwen OAuth", "get_qwen_auth_status", "qwen auth qwen-oauth", (
+    ("OpenAI Codex", "get_codex_auth_status_local", "hermes model", _FILE_REFRESH_ROWS),
+    ("Qwen OAuth", "get_qwen_auth_status_local", "qwen auth qwen-oauth", (
         ("Auth file:", "auth_file", None, None),
         ("Access exp:", "expires_at_ms", _qwen_expiry, None),
         ("Error:", "error", None, False))),
@@ -72,7 +72,7 @@ _OAUTH_BLOCKS = (
         ("Region:", "region", None, True),
         ("Access exp:", "expires_at", None, None),
         ("Error:", "error", None, False))),
-    ("xAI OAuth", "get_xai_oauth_auth_status", "hermes auth add xai-oauth", _FILE_REFRESH_ROWS))
+    ("xAI OAuth", "get_xai_oauth_auth_status_local", "hermes auth add xai-oauth", _FILE_REFRESH_ROWS))
 
 _APIKEY_PROVIDERS = {
     "Z.AI / GLM": ("GLM_API_KEY", "ZAI_API_KEY", "Z_AI_API_KEY"), "Kimi / Moonshot": ("KIMI_API_KEY",),
@@ -108,9 +108,9 @@ def _render_auth_providers(ctx):
         nous_status, statuses = {}, {}
     # xAI OAuth is guarded separately so an import failure there cannot disrupt the other rows.
     try:
-        statuses["get_xai_oauth_auth_status"] = auth.get_xai_oauth_auth_status() or {}
+        statuses["get_xai_oauth_auth_status_local"] = auth.get_xai_oauth_auth_status_local() or {}
     except Exception:
-        statuses["get_xai_oauth_auth_status"] = {}
+        statuses["get_xai_oauth_auth_status_local"] = {}
 
     info = None
     if any(nous_status.get(k) for k in ("logged_in", "access_token", "portal_base_url",

@@ -152,7 +152,8 @@ def test_managed_reference_slot_reaches_real_endpoint_and_pins_receipt(routed_ho
 
     slot = {
         "provider": "does-not-matter", "model": "does-not-matter",
-        "routing_role": "moareference", "routing_requirements": {"task_class": "established-pattern"},
+        "routing_role": "moareference", "routing_requirements": {
+            "task_class": "established-pattern", "input_tokens": 1000, "reserve_tokens": 8192},
     }
     label, text, acct = _run_reference(
         slot, [{"role": "user", "content": "Summarize the managed routing design in one sentence."}],
@@ -162,6 +163,26 @@ def test_managed_reference_slot_reaches_real_endpoint_and_pins_receipt(routed_ho
     assert len(handler.requests) == 1, "the real slot must reach the approved endpoint exactly once"
     sent = json.dumps(handler.requests[0])
     assert "Summarize the managed routing design" in sent
+
+
+@pytest.mark.parametrize("slot_kind", ["reference", "aggregator"])
+def test_moa_assembled_budget_cannot_be_understated(routed_home, monkeypatch, slot_kind):
+    from agent.moa_loop import _run_reference, aggregate_moa_context
+    from agent.model_selection_types import RoutingBlocked
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    slot = {"provider": "custom", "model": "test-model", "routing_role": "moa" + slot_kind,
+            "routing_requirements": {"input_tokens": 1, "reserve_tokens": 1}}
+    messages = [{"role": "user", "content": "oversize " * 30000}]
+    with pytest.raises(RoutingBlocked, match="input_too_large"):
+        if slot_kind == "reference":
+            _run_reference(slot, messages, execution_id="oversize", slot_id="reference-0")
+        else:
+            aggregate_moa_context(user_prompt=messages[0]["content"], api_messages=messages,
+                                  reference_models=[], aggregator=slot)
+    assert not handler.requests
 
 
 def test_managed_reference_slot_denied_route_hard_fails_by_default(routed_home, monkeypatch):
@@ -197,7 +218,8 @@ def test_managed_aggregator_slot_reaches_real_endpoint(routed_home, monkeypatch)
         user_prompt="What should I do next?",
         api_messages=[{"role": "user", "content": "What should I do next?"}],
         reference_models=[],
-        aggregator={"provider": "does-not-matter", "model": "does-not-matter", "routing_role": "moaaggregator"},
+        aggregator={"provider": "does-not-matter", "model": "does-not-matter", "routing_role": "moaaggregator",
+                    "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}},
     )
     assert isinstance(result, str)
     assert len(handler.requests) == 1, "the real aggregator must reach the approved endpoint exactly once"

@@ -187,7 +187,7 @@ def test_requirements_task_class_established_pattern_selects_shallow_route(
     with kbc.connect() as conn:
         tid = kb.create_task(
             conn, title="typo fix", assignee="alice", routing_role="builder",
-            routing_requirements={"task_class": "established-pattern"},
+            routing_requirements={"task_class": "established-pattern", "input_tokens": 1000, "reserve_tokens": 8192},
         )
         kbd.dispatch_once(conn, dry_run=False, spawn_fn=_fake_spawn)
         task = kb.get_task(conn, tid)
@@ -207,7 +207,8 @@ def test_requirements_unclassified_task_class_defaults_deep(kanban_home, all_ass
         return 1
 
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="vague task", assignee="alice", routing_role="builder")
+        tid = kb.create_task(conn, title="vague task", assignee="alice", routing_role="builder",
+                             routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192})
         kbd.dispatch_once(conn, dry_run=False, spawn_fn=_fake_spawn)
         task = kb.get_task(conn, tid)
 
@@ -268,6 +269,7 @@ def test_requirements_capabilities_affect_eligibility(kanban_home, all_assignees
             conn, title="needs tools", assignee="alice", routing_role="builder",
             routing_requirements={
                 "task_class": "established-pattern", "required_capabilities": ["tool_use"],
+                "input_tokens": 1000, "reserve_tokens": 8192,
             },
         )
         kbd.dispatch_once(conn, dry_run=False, spawn_fn=_fake_spawn)
@@ -323,6 +325,7 @@ def test_review_role_with_real_provenance_excludes_contributing_maker(
             conn, title="review PR", assignee="alice", routing_role="reviewquality",
             reasoning_effort="high",
             routing_requirements={
+                "input_tokens": 1000, "reserve_tokens": 8192,
                 "provenance": {
                     "frozen_sha": "a" * 40, "verified_by": "parent", "complete": True,
                     "contributors": [{"maker": "openai", "evidence": "run:builder-attempt"}],
@@ -354,7 +357,8 @@ def test_ordinary_builder_role_never_blocked_for_lacking_review_provenance(
         return 1
 
     with kbc.connect() as conn:
-        tid = kb.create_task(conn, title="plain build", assignee="alice", routing_role="builder")
+        tid = kb.create_task(conn, title="plain build", assignee="alice", routing_role="builder",
+                             routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192})
         res = kbd.dispatch_once(conn, dry_run=False, spawn_fn=_fake_spawn)
         task = kb.get_task(conn, tid)
 

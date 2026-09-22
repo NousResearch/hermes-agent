@@ -147,6 +147,15 @@ def get_active_policy(hermes_home, policy_id: str) -> Optional[dict]:
     return json.loads(row["content_json"]) if row is not None else None
 
 
+def get_policy_revision(hermes_home, policy_id: str, revision: int) -> Optional[dict]:
+    with transaction(_connect(hermes_home)) as conn:
+        row = conn.execute(
+            "SELECT content_json FROM policy_revisions WHERE policy_id=? AND revision=?",
+            (policy_id, revision),
+        ).fetchone()
+    return json.loads(row["content_json"]) if row is not None else None
+
+
 def list_policy_revisions(hermes_home, policy_id: str) -> list[dict]:
     with transaction(_connect(hermes_home)) as conn:
         rows = conn.execute(

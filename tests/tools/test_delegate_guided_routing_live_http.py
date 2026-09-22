@@ -181,7 +181,7 @@ def test_managed_delegation_task_reaches_real_child_and_pins_receipt(routed_home
         tasks=[{
             "goal": "Summarize the managed routing design in one sentence.",
             "routing_role": "builder",
-            "routing_requirements": {"task_class": "established-pattern"},
+            "routing_requirements": {"task_class": "established-pattern", "input_tokens": 1000, "reserve_tokens": 8192},
         }],
         parent_agent=parent,
     )
@@ -229,7 +229,7 @@ def test_nested_managed_delegation_cannot_widen_role(routed_home, monkeypatch):
         "schema_version": 1, "role": "builder", "execution_kind": "delegation",
         "execution_id": "parent-task", "attempt_id": "0", "slot_id": "",
         "task_class": "established-pattern", "required_capabilities": [],
-        "input_tokens": 0, "reserve_tokens": 0, "reasoning": "medium",
+        "input_tokens": 1000, "reserve_tokens": 8192, "reasoning": "medium",
         "provenance": {"frozen_sha": "x", "verified_by": "t", "complete": True, "contributors": []},
     }
     decision = select(requirements, policy, {}, now=1000)

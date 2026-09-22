@@ -60,19 +60,27 @@ overrides, and per-launch timeouts are explicitly rejected until Hermes can
 support them without weakening isolation. Use `allowed_toolsets` to narrow a
 child; Hermes's existing unsafe-tool block remains enforced.
 
-## Guided model routing — not yet wired into this public API
+## Guided model routing
 
 `delegate_task`'s task dict (the model-tool schema) accepts `routing_role` /
 `routing_requirements` / `routing_policy_id` to resolve a route through the shared
 guided-routing selector and policy store also used by Kanban and MoA (see
 [Delegation → Guided model routing](../user-guide/features/delegation.md#guided-model-routing-opt-in-per-task)).
 
-`SubagentLaunchRequest` above — the public, plugin-safe lifecycle API — has **no**
-equivalent field today. A plugin calling `service.launch(...)` gets the existing
-`model` override behavior only; it cannot opt a launch into guided routing, and it
-does not inherit a parent's managed-route authority the way a `delegate_task` child
-does. This is a known gap against the design's stated goal ("both the registry
-handler and public lifecycle API must enter the same selector") — treat any claim
-that this API supports guided routing as false until a `routing_role`-equivalent
-field ships here and is covered by an isolated integration test, not just the
-`delegate_task` adapter.
+`SubagentLaunchRequest` exposes the same `routing_role`, `routing_policy_id`, and
+`routing_requirements` fields. The host-owned service uses the delegated-child
+constructor and shared selector, rather than interpreting `model` as an unrestricted
+provider override. Under managed authority, a `model` preference must agree with the
+selected route.
+
+A managed parent, including a managed Kanban worker or a managed MoA aggregator's
+tool-executing agent, passes its authority ceiling to nested lifecycle launches.
+Omitting routing fields does not remove that ceiling. Children cannot replace the
+parent's provenance, widen its role/policy, or admit routes outside its receipted
+selection and eligible alternatives. Unsupported custom constructors fail closed.
+Tool restrictions, spawn depth, and the lifecycle's existing ownership still apply.
+
+Provide positive input and output/tool-growth reserve estimates in the requirements.
+Unknown or zero estimates block selection; a last-mile assembled-input check is
+performed again before transmission. This API does not approve a roster or activate
+another profile's credentials.

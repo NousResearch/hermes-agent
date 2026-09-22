@@ -161,9 +161,11 @@ def _managed_preset() -> dict:
     return {
         "enabled": True,
         "reference_models": [
-            {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": "moareference"},
+            {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": "moareference",
+             "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}},
         ],
-        "aggregator": {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": "moaaggregator"},
+        "aggregator": {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": "moaaggregator",
+                       "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}},
     }
 
 

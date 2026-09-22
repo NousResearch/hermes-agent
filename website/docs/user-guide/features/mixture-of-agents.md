@@ -264,10 +264,18 @@ does not change any existing fixed preset.
 - **The virtual maker `moa` cannot satisfy an independence requirement** — cohort
   diversity is checked against each slot's actual resolved maker, never the
   aggregation mechanism itself.
+- **Diversity does not replace contributor provenance.** Each review slot retains
+  its original frozen SHA, verifier, completeness and contributor makers. Earlier
+  reference makers narrow the later reference's eligibility separately; a missing
+  review manifest cannot be filled in by the diversity mechanism.
+- **Input estimates must be explicit.** Missing or zero input/reserve estimates
+  block before dispatch. Managed references and aggregators check assembled text
+  against verified route capacity rather than silently trimming it to fit.
 - **Failure is a denied slot, not silent unmanaged.** A managed slot whose route is
   denied or mismatched at the call boundary raises before that call is made, rather
   than falling back to whatever the preset's static config would otherwise pick.
 
 See [Kanban worker lanes → Guided model routing](./kanban-worker-lanes.md#guided-model-routing-opt-in-per-task)
 for the `hermes kanban routing` commands that manage the shared policy this resolves
-against. No policy has been activated for live dispatch in this project.
+against. Live activation and remote route qualification are separate operator
+steps; local fixture success is not proof of remote model access.

@@ -20,14 +20,15 @@ from typing import Optional
 from agent.model_selection import select
 from agent.model_selection_guard import managed_child_kwargs, validate_actual_route
 from agent.model_selection_store import (
-    append_outcome, find_active_revocation, get_active_policy, get_receipt, persist_receipt,
+    append_outcome, find_active_revocation, get_active_policy, get_policy_revision, get_receipt, persist_receipt,
 )
 from agent.model_selection_types import RoutingBlocked
 
 __all__ = ["resolve_route", "enforce_worker_route"]
 
 
-def resolve_route(hermes_home, policy_id: str, requirements: dict, *, now: int) -> dict:
+def resolve_route(hermes_home, policy_id: str, requirements: dict, *, now: int,
+                  policy_revision: Optional[int] = None) -> dict:
     """Select, receipt and persist a route for ``requirements`` under the active policy
     ``policy_id``. Returns ``managed_child_kwargs``-shaped dict plus ``receipt_id``.
 
@@ -36,10 +37,17 @@ def resolve_route(hermes_home, policy_id: str, requirements: dict, *, now: int) 
     This function does NOT itself know about Kanban claims/task rows or delegation batches --
     callers own their own execution-kind-specific linking (e.g. Kanban's claim/run CAS).
     """
-    policy = get_active_policy(hermes_home, policy_id)
+    policy = (get_active_policy(hermes_home, policy_id) if policy_revision is None
+              else get_policy_revision(hermes_home, policy_id, policy_revision))
     if policy is None:
         raise RoutingBlocked("schema_invalid", f"no active policy published for {policy_id!r}")
-    decision = select(requirements, policy, {}, now)
+    from agent.managed_route_health import load_availability
+    from hermes_constants import get_hermes_home
+
+    requirements = dict(requirements)
+    requirements.setdefault("target_profile", str(get_hermes_home().resolve()))
+    availability = load_availability(hermes_home, policy_id, requirements["target_profile"])
+    decision = select(requirements, policy, availability, now)
     receipt_id = persist_receipt(hermes_home, decision)
     append_outcome(hermes_home, receipt_id, "routing_selected", {
         "execution_kind": requirements["execution_kind"], "execution_id": requirements["execution_id"],

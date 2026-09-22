@@ -71,7 +71,8 @@ def two_profiles():
 
 
 def _slot(role: str) -> dict:
-    return {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": role}
+    return {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": role,
+            "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
 
 
 def test_same_execution_id_across_profiles_never_shares_cohort(two_profiles):

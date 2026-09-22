@@ -178,12 +178,17 @@ def _build_child_agent(
     routing_cfg: Optional[Dict[str, Any]] = None,
     # Legacy; accepted for wire compat but ignored (capability is depth-derived).
     role: str = "leaf",
+    managed_resolution: Optional[Dict[str, Any]] = None,
 ):
     """Build (don't run) a child AIAgent on the main thread. override_* (from delegation config) replace parent
     inheritance so children can run on a different provider:model pair."""
     import uuid as _uuid
     from run_agent import AIAgent
     from agent.delegation_context import delegated_child_context
+    from tools.delegate_tool_routing import _parent_managed_context
+    if managed_resolution is None and _parent_managed_context(parent_agent)[1] is not None:
+        from agent.model_selection_types import RoutingBlocked
+        raise RoutingBlocked("unsupported_executor", "managed direct construction requires routed launch; use delegation or SubagentLifecycleService with input estimates")
     # Role is depth-derived: a child may delegate iff the kill switch is on and
     # depth budget remains below max_spawn_depth. The `role` arg is ignored.
     child_depth = getattr(parent_agent, "_delegate_depth", 0) + 1
@@ -223,6 +228,8 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
     )
+    if managed_resolution is not None:
+        rt["fallback_model"] = []
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
         # _resolve_delegation_credentials already merged OVER the parent's
@@ -363,6 +370,7 @@ def _build_children(
     task_list: List[Dict[str, Any]], task_schemas: List[Optional[Dict[str, Any]]], creds: Dict[str, Any], *,
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
+    allowed_toolsets: Optional[List[str]] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -426,9 +434,10 @@ def _build_children(
         try:
             child = _build_child_preserving_parent_tools(
                 task_index=i, goal=t["goal"], context=_child_context,
-                toolsets=None,  # always inherit the parent's toolsets
+                toolsets=allowed_toolsets,
                 model=_managed_model, max_iterations=max_iterations, task_count=len(task_list),
-                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **_task_overrides,
+                parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role),
+                managed_resolution=_routing_resolution, **_task_overrides,
             )
         except ValueError as exc:
             return [], str(exc)

@@ -449,22 +449,36 @@ def _run_reference(
         # advising a glm-5.2 @ 1M conversation); without this trim the provider returns a hard HTTP 400
         # which the except below silently converts to a [failed: …] note (issue #60345). Estimated AFTER the
         # advisory system prompt is prepended so its tokens count against the budget too.
-        trimmed = _trim_messages_for_reference(
-            messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
-        )
+        if managed_resolution is not None:
+            from agent.managed_route_budget import enforce_input_budget
+
+            enforce_input_budget(managed_resolution["routing_home"], managed_resolution["receipt_id"],
+                                 messages, max_tokens=max_tokens)
+            trimmed = messages  # Never trim to disguise failed initial qualification.
+        else:
+            trimmed = _trim_messages_for_reference(
+                messages, slot, runtime, reserve_output_tokens=max_tokens, context_length_cache=context_length_cache,
+            )
         trimmed = _maybe_apply_moa_cache_control(trimmed, _with_cache_disabled(runtime, cache_disabled), cache_ttl=cache_ttl)
 
         # Copilot gates premium models on request attribution; MoA fan-out serves the
         # user's current turn, so mirror the main agent's x-initiator header.
         from agent.auxiliary_client import _normalize_aux_provider
         is_copilot = _normalize_aux_provider(str(runtime.get("provider") or "")) in ("copilot", "copilot-acp")
-        response = call_llm(
-            task="moa_reference", messages=trimmed, temperature=temperature,
-            max_tokens=max_tokens,
-            timeout=reference_timeout, reasoning_config=reasoning_config,
-            extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
-        )
-        output_text = _extract_text(response) or "(empty response)"
+        from agent.managed_route_health import observe_request
+        health_route = managed_resolution or {}
+        with observe_request(health_route.get("routing_home"), health_route.get("receipt_id")):
+            response = call_llm(
+                task="moa_reference", messages=trimmed, temperature=temperature,
+                max_tokens=max_tokens,
+                timeout=reference_timeout, reasoning_config=reasoning_config,
+                extra_headers={"x-initiator": "user"} if is_copilot else None, **runtime,
+            )
+        output_text = _extract_text(response)
+        from agent.moa_model_routing import MoARequiredSlotDenied, is_moa_slot_required
+        if is_moa_slot_required(slot) and not (output_text or "").strip():
+            raise MoARequiredSlotDenied(slot_id, slot["routing_role"], "empty_output", "required reference returned empty output")
+        output_text = output_text or "(empty response)"
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
     except Exception as exc:
@@ -958,10 +972,19 @@ def aggregate_moa_context(
         agg_messages = _maybe_apply_moa_cache_control(
             [{"role": "user", "content": synth_prompt}], _with_cache_disabled(agg_runtime, cache_disabled), cache_ttl=cache_ttl,
         )
-        synthesis = _extract_text(call_llm(
-            task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
-            reasoning_config=agg_reasoning_config, **agg_runtime,
-        ))
+        if agg_managed_resolution is not None:
+            from agent.managed_route_budget import enforce_input_budget
+
+            enforce_input_budget(agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"], agg_messages)
+        from agent.managed_route_health import observe_request
+        health_route = agg_managed_resolution or {}
+        with observe_request(health_route.get("routing_home"), health_route.get("receipt_id")):
+            synthesis = _extract_text(call_llm(
+                task="moa_aggregator", messages=agg_messages, temperature=aggregator_temperature,
+                reasoning_config=agg_reasoning_config, **agg_runtime,
+            ))
+        if agg_required and not (synthesis or "").strip():
+            raise MoARequiredSlotDenied("aggregator", aggregator["routing_role"], "empty_output", "required aggregator returned empty output")
     except Exception as exc:
         logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
         if agg_required:
@@ -1229,6 +1252,15 @@ class MoAChatCompletions:
         agg_messages, tools = self._plan_aggregator_cache(
             prepared["messages"], api_kwargs.get("tools"), prepared.get("guidance"), agg_runtime
         )
+        if agg_managed_resolution is not None and self._agent is not None:
+            # The virtual agent executes the aggregator's tool calls. Its
+            # delegation ceiling belongs to this turn, not its virtual provider.
+            self._agent._managed_moa_authority = (execution_id, agg_managed_resolution)
+        if agg_managed_resolution is not None:
+            from agent.managed_route_budget import enforce_input_budget
+
+            enforce_input_budget(agg_managed_resolution["routing_home"], agg_managed_resolution["receipt_id"],
+                                 agg_messages, tools, api_kwargs.get("max_tokens"))
         trace = self._pending_trace
         if trace is not None:
             # Trace the exact aggregator INPUT (persisted copy redacted; live input raw).

@@ -5,11 +5,8 @@ no clock reads (caller passes `now`). It filters an approved-route policy
 snapshot against structured task requirements and returns an immutable
 decision dict, or raises RoutingBlocked with a typed reason code.
 
-See /Users/jhaynes/.hermes/plans/2026-09-15_141016-guided-model-routing.md
-sections 3-4 and 12 for the binding design. This module implements ONLY the
-pure selection contract (implementation step 2); the common managed-route
-guard, delegation/Kanban/MoA adapters and receipt persistence are separate,
-not-yet-implemented steps (3-6) tracked in .hermes/implementation-status.md.
+Runtime guards, receipt persistence and the Kanban/delegation/MoA adapters
+are separate consumers; selection itself never launches work.
 """
 from __future__ import annotations
 
@@ -22,9 +19,6 @@ from .model_selection_types import (
 )
 
 __all__ = ["select", "RoutingBlocked"]
-
-_FRESHNESS_HEALTHY_SECONDS = 300  # design §12: 5 minutes for a successful route health check
-_FRESHNESS_COOLDOWN_SECONDS = 60  # unclassified transient failure cooldown
 
 
 def _quality_floor(task_class: str) -> str:
@@ -42,23 +36,79 @@ def _quality_floor(task_class: str) -> str:
 
 
 def _validate_requirements(requirements: dict) -> None:
+    if not isinstance(requirements, dict):
+        raise RoutingBlocked("schema_invalid", "requirements must be an object")
     missing = [f for f in REQUIRED_REQUIREMENT_FIELDS if f not in requirements]
     if missing:
         raise RoutingBlocked("schema_invalid", f"requirements missing fields: {missing}")
-    provenance = requirements.get("provenance") or {}
+    if requirements["schema_version"] != 1 or type(requirements["schema_version"]) is not int:
+        raise RoutingBlocked("schema_invalid", "unsupported requirements schema_version")
+    for field in ("role", "execution_kind", "execution_id", "attempt_id", "task_class", "reasoning"):
+        if not isinstance(requirements[field], str):
+            raise RoutingBlocked("schema_invalid", f"{field} must be text")
+    _string_list(requirements["required_capabilities"], "required_capabilities")
+    if "allowed_route_ids" in requirements:
+        _string_list(requirements["allowed_route_ids"], "allowed_route_ids")
+    _string_list(requirements.get("cohort_excluded_makers", []), "cohort_excluded_makers")
+    provenance = requirements.get("provenance")
+    if not isinstance(provenance, dict):
+        raise RoutingBlocked("schema_invalid", "provenance must be an object")
     missing_prov = [f for f in REQUIRED_PROVENANCE_FIELDS if f not in provenance]
     if missing_prov:
         raise RoutingBlocked("schema_invalid", f"provenance missing fields: {missing_prov}")
+    if type(provenance["complete"]) is not bool or not isinstance(provenance["contributors"], list):
+        raise RoutingBlocked("schema_invalid", "provenance needs a boolean complete and contributor list")
+    if any(not isinstance(c, dict) or not isinstance(c.get("maker", ""), str) for c in provenance["contributors"]):
+        raise RoutingBlocked("schema_invalid", "contributors must be objects with textual maker identities")
+    for field in ("input_tokens", "reserve_tokens"):
+        value = requirements[field]
+        if value is not None and (type(value) is not int or value < 0):
+            raise RoutingBlocked("schema_invalid", f"{field} must be a non-negative integer")
+        if field == "input_tokens" and value == 0 and requirements.get("input_empty") is True:
+            continue
+        if value is None or value == 0:
+            raise RoutingBlocked(
+                "missing_input_estimate",
+                f"{field} is unknown; supply a positive estimate covering assembled prompt, "
+                "context and tools plus an output/tool-growth reserve before dispatch",
+            )
+
+
+
+def _string_list(value, field: str) -> None:
+    if not isinstance(value, list) or any(not isinstance(item, str) for item in value):
+        raise RoutingBlocked("schema_invalid", f"{field} must be a list of strings")
 
 
 def _validate_policy(policy: dict) -> None:
+    if not isinstance(policy, dict):
+        raise RoutingBlocked("schema_invalid", "policy must be an object")
     for field in ("schema_version", "policy_id", "revision", "approval_ref", "routes"):
         if field not in policy:
             raise RoutingBlocked("schema_invalid", f"policy missing field: {field}")
+    if type(policy["schema_version"]) is not int or policy["schema_version"] != 1:
+        raise RoutingBlocked("schema_invalid", "unsupported policy schema_version")
+    if type(policy["revision"]) is not int or policy["revision"] < 1:
+        raise RoutingBlocked("schema_invalid", "policy revision must be a positive integer")
+    if not isinstance(policy["routes"], list) or not isinstance(policy.get("rankings", {}), dict):
+        raise RoutingBlocked("schema_invalid", "policy needs a routes list and rankings object")
+    for ranking in policy.get("rankings", {}).values():
+        if not isinstance(ranking, dict):
+            raise RoutingBlocked("schema_invalid", "role rankings must be an object")
+        for routes in ranking.values():
+            _string_list(routes, "ranked route ids")
+    seen = set()
     for route in policy["routes"]:
+        if not isinstance(route, dict):
+            raise RoutingBlocked("schema_invalid", "each route must be an object")
         missing = [f for f in REQUIRED_ROUTE_FIELDS if f not in route]
         if missing:
             raise RoutingBlocked("schema_invalid", f"route {route.get('route_id')} missing: {missing}")
+        if not isinstance(route["route_id"], str) or route["route_id"] in seen:
+            raise RoutingBlocked("schema_invalid", "route ids must be unique strings")
+        seen.add(route["route_id"])
+        for field in ("allowed_roles", "capabilities", "allowed_reasoning"):
+            _string_list(route[field], field)
 
 
 def _contributing_makers(requirements: dict) -> set:
@@ -77,8 +127,12 @@ def _contributing_makers(requirements: dict) -> set:
 
 def _route_rejection(route: dict, requirements: dict, quality: str, excluded_makers: set) -> str | None:
     role = requirements["role"]
+    if "allowed_route_ids" in requirements and route["route_id"] not in requirements["allowed_route_ids"]:
+        return "outside_parent_authority"
     if route["status"] != "approved":
         return "not_approved"
+    if not isinstance(route["maker"], str) or not route["maker"]:
+        return "unknown_maker"
     if role not in route["allowed_roles"]:
         return "role_not_allowed"
     if route["maker"] in excluded_makers:
@@ -118,16 +172,19 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
 
     Returns an immutable-shaped decision dict (never mutated by callers).
     Raises RoutingBlocked with a typed reason code when no candidate qualifies.
-    `availability` is a bounded freshness snapshot keyed by route_id (design §12);
-    an empty dict means "no availability evidence gathered", which this pure
-    selector does not itself treat as unavailable — the common guard (step 3)
-    owns bounded startup attempts and cooldowns.
+    Availability is scoped to the target profile, route revision and endpoint.
+    Unknown health permits a receipted startup attempt; known unavailable
+    candidates remain excluded through their cooldown, without lowering quality.
     """
     _validate_requirements(requirements)
     _validate_policy(policy)
+    from agent.model_selection_availability import UNAVAILABLE, availability_snapshot
+
+    health = availability_snapshot(requirements, policy["routes"], availability, now)
 
     quality = _quality_floor(requirements["task_class"])
     excluded_makers = _contributing_makers(requirements)
+    excluded_makers.update(requirements.get("cohort_excluded_makers", []))
 
     role = requirements["role"]
     ranking = policy.get("rankings", {}).get(role, {}).get(quality, [])
@@ -143,6 +200,8 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
     for route_id in ordered_candidates:
         route = routes_by_id[route_id]
         reason = _route_rejection(route, requirements, quality, excluded_makers)
+        if reason is None and health[route_id]["status"] in UNAVAILABLE:
+            reason = "provider_unavailable"
         if reason is not None:
             rejections[route_id] = [reason]
             continue
@@ -160,11 +219,13 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
         rejections[route_id] = [reason] if reason else ["not_in_curated_ranking"]
 
     if selected is None:
+        if any(reasons == ["provider_unavailable"] for reasons in rejections.values()):
+            raise RoutingBlocked("provider_unavailable", "qualified routes are in cooldown", rejections=rejections)
         if excluded_makers and all(
             rejections.get(rid) == ["contributing_maker"] for rid in ordered_candidates
         ) and ordered_candidates:
-            raise RoutingBlocked("independence_unavailable", "no non-contributing-maker route qualifies")
-        raise RoutingBlocked("no_qualified_route", f"no route satisfies role={role} quality={quality}")
+            raise RoutingBlocked("independence_unavailable", "no non-contributing-maker route qualifies", rejections=rejections)
+        raise RoutingBlocked("no_qualified_route", f"no route satisfies role={role} quality={quality}", rejections=rejections)
 
     alternates = [
         rid for rid in ordered_candidates
@@ -183,6 +244,13 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
             "task_class": requirements["task_class"],
             "quality": quality,
             "reasoning": requirements["reasoning"],
+            "input_tokens": requirements["input_tokens"],
+            "input_empty": requirements.get("input_empty", False),
+            "reserve_tokens": requirements["reserve_tokens"],
+            "required_capabilities": requirements["required_capabilities"],
+            "provenance": requirements["provenance"],
+            "cohort_excluded_makers": requirements.get("cohort_excluded_makers", []),
+            "target_profile": requirements.get("target_profile"),
         },
         "selected": {
             "route_id": selected["route_id"],
@@ -191,9 +259,11 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
             "model": selected["model"],
             "endpoint": selected["endpoint"],
             "maker": selected["maker"],
+            "verified_input_budget": selected["verified_input_budget"],
         },
         "rejections": rejections,
         "alternates": alternates,
         "selection_timestamp": now,
+        "availability": health,
     }
     return decision

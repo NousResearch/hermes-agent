@@ -285,7 +285,11 @@ def resolve_task_route(
         raise RoutingBlocked("schema_invalid", f"no active policy published for {_POLICY_ID!r}")
 
     requirements = _build_requirements(task, frozen_sha=frozen_sha, verified_by=verified_by)
-    decision = select(requirements, policy, {}, now)
+    from agent.managed_route_health import load_availability
+
+    requirements["target_profile"] = task.assignee
+    availability = load_availability(hermes_home, _POLICY_ID, task.assignee)
+    decision = select(requirements, policy, availability, now)
     receipt_id = persist_receipt(hermes_home, decision)
 
     from hermes_cli.kanban_db import set_routing_receipt

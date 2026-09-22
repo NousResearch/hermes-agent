@@ -668,8 +668,9 @@ The agent handles delegation automatically based on the task complexity. You don
 A delegated task's dict can carry `routing_role` (plus optional `routing_requirements`
 and `routing_policy_id`) to have the child's actual provider/model/reasoning resolved
 by the same guided-routing selector and policy store the Kanban adapter uses, instead
-of a fixed `model`/`provider` override. This is opt-in and additive: a task without
-`routing_role` behaves exactly as documented above, unaffected.
+of a fixed `model`/`provider` override. A task without `routing_role` retains legacy
+behavior only when its parent is unmanaged; managed parents impose their authority
+on every nested launch.
 
 - **Batch members are independent decisions.** Each task in a batch resolves its own
   route against its own requirements; there is no single static model chosen for the
@@ -690,6 +691,10 @@ of a fixed `model`/`provider` override. This is opt-in and additive: a task with
 
 See [Kanban worker lanes → Guided model routing](./kanban-worker-lanes.md#guided-model-routing-opt-in-per-task)
 for the `hermes kanban routing` commands that manage the shared policy this resolves
-against. The public [Subagent lifecycle API](../../developer-guide/subagent-lifecycle-api.md#guided-model-routing--not-yet-wired-into-this-public-api)
-does **not** yet expose an equivalent field — only the `delegate_task` tool schema
-does today. No policy has been activated for live dispatch in this project.
+against. The public [Subagent lifecycle API](../../developer-guide/subagent-lifecycle-api.md#guided-model-routing)
+exposes the same routing fields and uses the host-owned delegated-child constructor.
+Positive input and output/tool-growth reserve estimates are required; omitted or
+zero estimates block with `missing_input_estimate`, not an assumed empty prompt.
+The assembled prompt/context/tools are checked again before transmission. Enabling
+a policy does not grant access to another profile's credentials or prove remote
+model availability.

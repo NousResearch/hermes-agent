@@ -23,7 +23,7 @@ def _requirements(**overrides):
         "schema_version": 1, "role": "builder", "execution_kind": "kanban",
         "execution_id": "t_worker_1", "attempt_id": "1", "slot_id": "",
         "task_class": "cross-component", "required_capabilities": [],
-        "input_tokens": 0, "reserve_tokens": 0, "reasoning": "high",
+        "input_tokens": 1000, "reserve_tokens": 8192, "reasoning": "high",
         "provenance": {"frozen_sha": "deadbeef", "verified_by": "test",
                        "complete": True, "contributors": []},
     }
@@ -128,7 +128,8 @@ def test_resolve_task_route_carries_receipt_id_for_worker_enforcement(routing_ho
 
     conn = kbc.connect()
     try:
-        tid = kb.create_task(conn, title="managed", assignee="alice", routing_role="builder")
+        tid = kb.create_task(conn, title="managed", assignee="alice", routing_role="builder",
+                             routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192})
         kb.claim_task(conn, tid, claimer="alice")
         task = kb.get_task(conn, tid)
         kwargs = resolve_task_route(

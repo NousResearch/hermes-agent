@@ -65,6 +65,7 @@ def test_managed_task_resolves_receipted_route_and_spawns_with_it(
     with kbc.connect() as conn:
         tid = kb.create_task(
             conn, title="managed card", assignee="alice", routing_role="builder",
+            routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192},
         )
         res = kbd.dispatch_once(conn, dry_run=False, spawn_fn=_fake_spawn)
         task = kb.get_task(conn, tid)
@@ -80,6 +81,19 @@ def test_managed_task_resolves_receipted_route_and_spawns_with_it(
     assert decision["selected"]["provider"] == "openai"
     assert decision["selected"]["model"] == "gpt-5"
     assert decision["requirements"]["role"] == "builder"
+    assert decision["requirements"]["target_profile"] == "alice"
+    from agent.model_selection_store import append_outcome
+    import time
+    append_outcome(kanban_home, task.routing_receipt_id, "routing_health", {
+        "target_profile": "alice", "route_revision": 1,
+        "endpoint": "https://api.openai.com/v1", "status": "outage",
+        "observed_at": int(time.time()), "retry_after": 0,
+    })
+    with kbc.connect() as conn:
+        kb.create_task(conn, title="same unavailable route", assignee="alice", routing_role="builder",
+                       routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192})
+        res = kbd.dispatch_once(conn, spawn_fn=_fake_spawn, reconcile_orphans=False)
+    assert res.spawned == []
 
 
 def test_unmanaged_task_is_never_touched_by_routing(kanban_home, all_assignees_spawnable):

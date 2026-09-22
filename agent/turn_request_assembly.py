@@ -200,6 +200,11 @@ def assemble_api_request(
     # the canonical tool registry stays undecorated. Marked ``content`` becomes text
     # blocks the whitespace pass skips, so the same row's bytes vary across turns.
     tools_for_api = agent.tools
+    if getattr(agent, "_managed_routing_receipt_id", None):
+        from agent.managed_route_budget import enforce_input_budget
+
+        enforce_input_budget(agent._managed_routing_home, agent._managed_routing_receipt_id,
+                             api_messages, tools_for_api)
     if agent._use_prompt_caching and agent.provider != "moa":
         from agent.prompt_caching import envelope_tool_part_cache_markers_supported
 

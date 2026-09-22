@@ -157,7 +157,7 @@ def _write_profile_home(home: Path, base_url: str, model: str, provider_name: st
 
 
 def _persist_receipt(hermes_home: Path, *, provider: str, model: str, endpoint: str,
-                      reasoning: str = "high", execution_id: str = "t_worker_cli_it"):
+                      reasoning: str = "high", execution_id: str = "t_worker_cli_it", capacity: int = 200000):
     from agent.model_selection import select
     from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
 
@@ -168,7 +168,7 @@ def _persist_receipt(hermes_home: Path, *, provider: str, model: str, endpoint: 
             "route_id": "fake-route", "route_revision": 1, "provider": provider,
             "model": model, "endpoint": endpoint, "maker": "test",
             "model_family": model, "status": "approved", "allowed_roles": ["builder"],
-            "capabilities": [], "verified_input_budget": 200000,
+            "capabilities": [], "verified_input_budget": capacity,
             "allowed_reasoning": ["low", "medium", "high"],
             "qualifications": ["shallow", "deep"], "assessment": "reviewed", "evidence": {},
         }],
@@ -178,7 +178,7 @@ def _persist_receipt(hermes_home: Path, *, provider: str, model: str, endpoint: 
         "schema_version": 1, "role": "builder", "execution_kind": "kanban",
         "execution_id": execution_id, "attempt_id": "1", "slot_id": "",
         "task_class": "cross-component", "required_capabilities": [],
-        "input_tokens": 0, "reserve_tokens": 0, "reasoning": reasoning,
+        "input_tokens": 1000, "reserve_tokens": 8192, "reasoning": reasoning,
         "provenance": {"frozen_sha": "deadbeef", "verified_by": "test",
                        "complete": True, "contributors": []},
     }
@@ -202,7 +202,7 @@ def _worker_python() -> str:
 
 def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: str,
                  query: str, reasoning: str = "high", timeout: float = 60.0,
-                 base_url: str = None):
+                 base_url: str = None, bootstrap=None):
     """Launches the REAL CLI entry point exactly as
     ``hermes_cli.kanban_db_dispatch._worker_argv``/``_resolve_hermes_argv``
     would (module form, since no ``hermes`` console script is guaranteed on
@@ -226,11 +226,167 @@ def _run_worker(*, profile_home: Path, provider: str, model: str, receipt_id: st
         # receipted route's endpoint (kanban_db_dispatch.py::_worker_argv).
         argv.extend(["--base-url", base_url])
     argv.extend(["chat", "-q", query, "-Q"])
+    if bootstrap is not None:
+        argv[1:3] = [str(bootstrap)]
     proc = subprocess.run(
         argv, cwd=str(REPO_ROOT), env=env,
         capture_output=True, text=True, timeout=timeout,
     )
     return proc
+
+
+def test_worker_checks_assembled_input_not_claimed_estimate(tmp_path, fake_server):
+    server, handler = fake_server
+    url = f"http://127.0.0.1:{server.server_port}/v1"
+    home = tmp_path / "home"
+    _write_profile_home(home, url, "fake-model", "custom-fake")
+    receipt = _persist_receipt(home, provider="custom-fake", model="fake-model", endpoint=url, capacity=10000)
+    proc = _run_worker(profile_home=home, provider="custom-fake", model="fake-model",
+                       receipt_id=receipt, query="oversized task " * 10000)
+    assert not handler.requests, "a small caller estimate cannot authorize larger assembled content"
+    assert "input_too_large" in proc.stdout + proc.stderr
+
+
+from typing import Callable
+
+
+class _DelegatingHandler(_CapturingHandler):
+    task_overrides: dict
+    before_delegate: Callable | None = None
+
+    def do_POST(self):
+        req = json.loads(self.rfile.read(int(self.headers.get("Content-Length", "0"))))
+        type(self).requests.append(req)
+        messages = req.get("messages", [])
+        child = any(m.get("role") == "user" and m.get("content") == "NESTED_TASK" for m in messages)
+        finished = any(m.get("role") == "tool" for m in messages)
+        message = {"role": "assistant", "content": "done"}
+        reason = "stop"
+        if not child and not finished:
+            if self.before_delegate is not None and any(
+                tool.get("function", {}).get("name") == "delegate_task" for tool in req.get("tools", [])
+            ):
+                self.before_delegate()
+                type(self).before_delegate = None
+            task = {"goal": "NESTED_TASK", "routing_requirements": {
+                "input_tokens": 1000, "reserve_tokens": 8192,
+            }, **self.task_overrides}
+            message = {"role": "assistant", "content": None, "tool_calls": [{
+                "id": "delegate-1", "type": "function", "function": {
+                    "name": "delegate_task", "arguments": json.dumps({"tasks": [task]}),
+                },
+            }]}
+            reason = "tool_calls"
+        if req.get("stream"):
+            payload = {"id": "nested", "model": req.get("model"), "choices": [{
+                "index": 0, "delta": message, "finish_reason": reason,
+            }]}
+            for call in message.get("tool_calls", []):
+                call["index"] = 0
+            body = (f"data: {json.dumps(payload)}\n\ndata: [DONE]\n\n").encode()
+            content_type = "text/event-stream"
+        else:
+            body = json.dumps({"id": "nested", "model": req.get("model"), "choices": [{
+                "index": 0, "message": message, "finish_reason": reason,
+            }]}).encode()
+            content_type = "application/json"
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Content-Length", str(len(body)))
+        self.end_headers()
+        self.wfile.write(body)
+
+
+@pytest.mark.parametrize("surface", ["kanban", "moa", "unmanaged", "kanban-lifecycle", "moa-lifecycle"])
+@pytest.mark.parametrize("overrides", [{}, {"routing_role": "wider"}, {"routing_policy_id": "other"},
+                                      {"model": "forbidden-model"}, {"refresh_policy": True}])
+def test_real_worker_tool_round_inherits_managed_authority(tmp_path, surface, overrides):
+    from agent.model_selection_store import activate_policy, get_active_policy, publish_policy
+    handler = type("DelegatingHandler", (_DelegatingHandler,), {
+        "requests": [], "task_overrides": {} if "refresh_policy" in overrides else overrides})
+    server = http.server.HTTPServer(("127.0.0.1", 0), handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    forbidden, forbidden_handler = _start_fake_server()
+    try:
+        url = f"http://127.0.0.1:{server.server_port}/v1"
+        forbidden_url = f"http://127.0.0.1:{forbidden.server_port}/v1"
+        home = tmp_path / "home"
+        _write_profile_home(home, url, "fake-model", "custom-fake")
+        config = yaml.safe_load((home / "config.yaml").read_text())
+        config.update({"toolsets": ["delegation"], "delegation": {
+            "provider": "custom-forbidden", "model": "forbidden-model", "max_iterations": 2,
+        }, "agent": {"max_iterations": 3}})
+        config["custom_providers"].append({
+            "name": "custom-forbidden", "base_url": forbidden_url, "api_key": "test-only",
+            "api_mode": "chat_completions", "models": ["forbidden-model"],
+        })
+        config["moa"] = {"default_preset": "nested", "presets": {"nested": {
+            "enabled": False, "reference_models": [], "aggregator": {
+                "provider": "custom-fake", "model": "fake-model", "routing_role": "builder",
+                "reasoning_effort": "high", "routing_requirements": {
+                    "input_tokens": 1000, "reserve_tokens": 8192,
+                },
+            },
+        }}}
+        (home / "config.yaml").write_text(yaml.safe_dump(config))
+        receipt = _persist_receipt(home, provider="custom-fake", model="fake-model", endpoint=url)
+        if "refresh_policy" in overrides and surface.startswith("kanban"):
+            policy = get_active_policy(home, "kanban-default")
+            assert policy is not None
+            policy["revision"] += 1
+            policy["routes"][0].update(provider="custom-forbidden", model="forbidden-model", endpoint=forbidden_url)
+            publish_policy(home, policy, approval_ref="local-test-update")
+            activate_policy(home, "kanban-default", policy["revision"])
+        if "refresh_policy" in overrides and surface.startswith("moa"):
+            def update_policy():
+                policy = get_active_policy(home, "kanban-default")
+                assert policy is not None
+                policy["revision"] += 1
+                policy["routes"][0].update(provider="custom-forbidden", model="forbidden-model", endpoint=forbidden_url)
+                publish_policy(home, policy, approval_ref="local-test-update")
+                activate_policy(home, "kanban-default", policy["revision"])
+            handler.before_delegate = staticmethod(update_policy)
+        bootstrap = None
+        if surface.endswith("-lifecycle"):
+            bootstrap = tmp_path / "lifecycle_worker.py"
+            bootstrap.write_text('''import json
+import runpy
+import tools.delegate_tool
+from agent.subagent_lifecycle import SubagentLaunchRequest, SubagentLifecycleService, get_active_subagent_parent
+
+def launch(**kwargs):
+    service = SubagentLifecycleService(get_active_subagent_parent)
+    task = kwargs["tasks"][0]
+    handle = service.launch(SubagentLaunchRequest(
+        goal="NESTED_TASK", model=task.get("model"), routing_role=task.get("routing_role"),
+        routing_policy_id=task.get("routing_policy_id"), routing_requirements=task.get("routing_requirements")))
+    service.wait(handle, timeout_seconds=20)
+    return json.dumps({"summary": service.result(handle).summary})
+
+tools.delegate_tool.delegate_task = launch
+runpy.run_module("hermes_cli.main", run_name="__main__")
+''')
+        is_moa = surface.startswith("moa")
+        proc = _run_worker(profile_home=home, provider="moa" if is_moa else "custom-fake",
+                           model="nested" if is_moa else "fake-model",
+                           receipt_id=receipt if surface.startswith("kanban") else "", query="PARENT_TASK",
+                           bootstrap=bootstrap)
+        assert proc.returncode == 0, proc.stdout + proc.stderr
+        assert any(m.get("role") == "tool" for r in handler.requests for m in r.get("messages", [])), proc.stdout + proc.stderr
+        if surface == "unmanaged" and "routing_role" not in overrides:
+            assert forbidden_handler.requests, "ordinary unmanaged delegation must retain its configured route"
+        else:
+            assert not forbidden_handler.requests, "managed authority escaped to the configured forbidden target"
+        if surface != "unmanaged" and (not overrides or "refresh_policy" in overrides):
+            assert any(m.get("content") == "NESTED_TASK" for r in handler.requests for m in r.get("messages", [])), "must construct and run an authorized child, not merely block every launch"
+        if bootstrap is not None:
+            assert not any(r.get("model") == "forbidden-model" for r in handler.requests), "model-only lifecycle calls must be constrained preferences, not raw overrides"
+    finally:
+        server.shutdown()
+        forbidden.shutdown()
+        server.server_close()
+        forbidden.server_close()
 
 
 @pytest.fixture

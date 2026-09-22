@@ -175,7 +175,7 @@ def _persist_receipt(hermes_home, *, provider: str, model: str, endpoint: str,
         "schema_version": 1, "role": "builder", "execution_kind": "kanban",
         "execution_id": execution_id, "attempt_id": "1", "slot_id": "",
         "task_class": "cross-component", "required_capabilities": [],
-        "input_tokens": 0, "reserve_tokens": 0, "reasoning": "high",
+        "input_tokens": 1000, "reserve_tokens": 4096, "reasoning": "high",
         "provenance": {"frozen_sha": "deadbeef", "verified_by": "test",
                        "complete": True, "contributors": []},
     }
@@ -298,6 +298,11 @@ def test_matched_route_multi_iteration_turn_reaches_only_approved_endpoint(manag
 
     assert len(approved.requests) == 2
     assert unapproved.requests == []
+    from agent.model_selection_store import list_outcomes
+    health = [event["payload"] for event in list_outcomes(env["hermes_home"], env["receipt_id"])
+              if event["kind"] == "routing_health"]
+    assert len(health) == len(approved.requests)
+    assert all(event["status"] == "healthy" for event in health)
 
 
 def test_revocation_between_requests_blocks_the_next_request_content(managed_agent_env):

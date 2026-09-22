@@ -151,7 +151,33 @@ def _patch_custom_provider(monkeypatch, url):
 
 
 def _slot(role: str) -> dict:
-    return {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": role}
+    return {"provider": "does-not-matter", "model": "does-not-matter", "routing_role": role,
+            "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
+
+
+@pytest.mark.parametrize("kind", ["reference", "aggregator"])
+def test_required_slot_empty_response_does_not_complete_gate(routed_home, monkeypatch, kind):
+    from agent.moa_loop import _run_reference, aggregate_moa_context
+    from agent.moa_model_routing import MoARequiredSlotDenied
+
+    _publish_active(routed_home["hermes_home"], routed_home["url"], makers={"route-a": "maker-a"})
+    _patch_custom_provider(monkeypatch, routed_home["url"])
+    original = _CapturingHandler._send_json
+
+    def empty_response(handler, payload):
+        if "choices" in payload:
+            payload["choices"][0]["message"]["content"] = "  "
+        original(handler, payload)
+
+    monkeypatch.setattr(_CapturingHandler, "_send_json", empty_response)
+    with pytest.raises(MoARequiredSlotDenied, match="empty"):
+        if kind == "reference":
+            _run_reference(_slot("moareference"), [{"role": "user", "content": "fixture"}],
+                           execution_id="empty", slot_id="reference-0")
+        else:
+            aggregate_moa_context(user_prompt="fixture", api_messages=[], reference_models=[],
+                                  aggregator=_slot("moaaggregator"))
+    assert len(routed_home["handler"].requests) == 1
 
 
 # ---------------------------------------------------------------------------
@@ -214,6 +240,9 @@ def test_full_required_cohort_end_to_end_reaches_every_approved_endpoint(routed_
     assert isinstance(agg_result, str)
     # 2 references + 1 aggregator = 3 real requests reaching the fake endpoint.
     assert len(handler.requests) == 3
+    from agent.managed_route_health import load_availability
+    health = load_availability(hermes_home, "kanban-default", os.path.realpath(hermes_home))
+    assert health and all(item["status"] == "healthy" for item in health.values())
 
 
 # ---------------------------------------------------------------------------

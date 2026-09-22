@@ -83,6 +83,10 @@ _STEP_HANDOFF = (
 )
 
 _ROUTING_SPECS = [
+    _cmd("validate", [_arg("policy_json"), _json_flag()],
+         help="Validate a policy JSON file without publishing or activating it"),
+    _cmd("explain", [_arg("policy_json"), _arg("requirements_json"), _json_flag()],
+         help="Explain a prospective requirements-to-route decision without dispatch or writes"),
     _cmd("publish", [
         _arg("policy_json", help="Path to a policy JSON file (schema_version, policy_id, revision, routes, ...)"),
         _arg("--approval-ref", required=True,

@@ -185,24 +185,10 @@ def resolve_moa_cohort(
 
     for idx, slot in enumerate(reference_slots):
         slot_id = f"reference-{idx}"
-        resolve_slot = slot
-        if is_moa_slot_required(slot) and excluded_makers:
-            # Actively diversify: exclude makers already used by an EARLIER required reference
-            # in this same cohort, using the same real contributing-maker exclusion `select()`
-            # already implements for review roles (agent.model_selection._contributing_makers) --
-            # never a fabricated route filter, just the genuine mechanism fed real prior-cohort
-            # identities (design §6: "Joint selection validates required cohort diversity").
-            existing_requirements = slot.get("routing_requirements")
-            existing_requirements = dict(existing_requirements) if isinstance(existing_requirements, dict) else {}
-            existing_requirements["provenance"] = {
-                "frozen_sha": "0" * 40, "verified_by": "moa-cohort-diversity", "complete": True,
-                "contributors": [{"maker": m} for m in sorted(excluded_makers)],
-            }
-            resolve_slot = dict(slot)
-            resolve_slot["routing_requirements"] = existing_requirements
         try:
             resolution = resolve_moa_slot_route(
-                resolve_slot, execution_id=execution_id, slot_id=slot_id, hermes_home=hermes_home,
+                slot, execution_id=execution_id, slot_id=slot_id, hermes_home=hermes_home,
+                cohort_excluded_makers=sorted(excluded_makers) if is_moa_slot_required(slot) else (),
             )
         except RoutingBlocked as exc:
             if is_moa_slot_required(slot):
@@ -424,6 +410,7 @@ def _build_requirements(
 def resolve_moa_slot_route(
     slot: dict, *, execution_id: str, attempt_id: str = "0", slot_id: str,
     hermes_home: Optional[str] = None,
+    cohort_excluded_makers=(),
 ) -> Optional[dict]:
     """Resolve a managed route for one MoA reference/aggregator slot, or ``None`` when the slot
     carries no ``routing_role`` (the existing unmanaged path, byte-for-byte).
@@ -450,6 +437,9 @@ def resolve_moa_slot_route(
     requirements = _build_requirements(
         slot, requirements_intake, role=role, execution_id=execution_id, attempt_id=attempt_id, slot_id=slot_id,
     )
+    # Diversity narrows eligibility; it is not implementation provenance and
+    # must not manufacture a verified manifest for a missing review intake.
+    requirements["cohort_excluded_makers"] = list(cohort_excluded_makers)
     decision_kwargs = resolve_route(hermes_home, policy_id, requirements, now=int(time.time()))
     decision_kwargs["routing_home"] = hermes_home
     return decision_kwargs

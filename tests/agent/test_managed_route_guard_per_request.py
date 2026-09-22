@@ -43,7 +43,7 @@ def _requirements(execution_id="t_guard_unit"):
         "schema_version": 1, "role": "builder", "execution_kind": "kanban",
         "execution_id": execution_id, "attempt_id": "1", "slot_id": "",
         "task_class": "cross-component", "required_capabilities": [],
-        "input_tokens": 0, "reserve_tokens": 0, "reasoning": "high",
+        "input_tokens": 1000, "reserve_tokens": 8192, "reasoning": "high",
         "provenance": {"frozen_sha": "deadbeef", "verified_by": "test",
                        "complete": True, "contributors": []},
     }

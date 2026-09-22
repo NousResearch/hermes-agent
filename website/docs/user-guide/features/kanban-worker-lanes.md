@@ -156,9 +156,11 @@ the others.
 # see `hermes kanban create --help` for the exact JSON shape.
 hermes kanban create --title "..." --assignee <profile> \
   --routing-role reviewarchitecture \
-  --routing-requirements '{"task_class": "cross-component", "required_capabilities": []}'
+  --routing-requirements '<reviewed requirements JSON>'
 
 # Manage the policy a board resolves routing roles against:
+hermes kanban routing validate <policy.json>       # read-only schema check
+hermes kanban routing explain <policy.json> <requirements.json>  # no dispatch or publication
 hermes kanban routing publish <policy.json> --approval-ref "<who/what approved this>"
 hermes kanban routing activate <policy_id> <revision>
 hermes kanban routing show [policy_id]            # currently active revision, if any
@@ -170,6 +172,19 @@ hermes kanban routing readmit <policy_id> [--route-id ID] --reason "..." --appro
 ```
 
 Key properties, so operators know what this does and doesn't do:
+
+- **Budgets are required.** Requirements include positive `input_tokens` and
+  `reserve_tokens` estimates covering prompt/context/tools and output/tool growth.
+  A review role also requires `provenance` with `frozen_sha`, `verified_by`,
+  `complete`, and the actual contributing makers. Missing estimates do not mean
+  empty input. A second check uses the assembled request before transmission;
+  unsupported attachment accounting blocks rather than silently truncating.
+- **Health is evidence, not admission.** Receipted provider outcomes distinguish
+  auth, denied-model, quota, outage, healthy, and unknown status. Evidence is scoped
+  to the target profile, route revision and endpoint. Healthy evidence expires
+  after five minutes; failures cool down for at least a minute, honoring a longer
+  numeric provider retry-after. Missing, expired, or clock-ambiguous health remains
+  unknown and permits a receipted startup attempt, not a hidden content probe.
 
 - **Publishing is not activating.** `publish` records an immutable, approval-referenced
   policy revision; only `activate` makes one revision the one new claims resolve against.
@@ -196,14 +211,14 @@ Key properties, so operators know what this does and doesn't do:
   the normal Kanban breaker/re-queue path — it does not fall back to an unmanaged
   default route.
 
-This project has not activated any policy for live dispatch. The delegation adapter
+Live activation is a separate operator action. The delegation adapter
 (`delegate_task`'s `routing_role`/`routing_requirements`/`routing_policy_id`, see
 [Delegation → Guided model routing](./delegation.md#guided-model-routing-opt-in-per-task))
 and the MoA reference/aggregator adapter (see
 [Mixture of Agents](./mixture-of-agents.md#guided-model-routing-for-moa-slots-opt-in-per-preset))
 share this same policy store and selector. The public
-[Subagent lifecycle API](../../developer-guide/subagent-lifecycle-api.md#guided-model-routing--not-yet-wired-into-this-public-api)
-does not expose an equivalent field yet.
+[Subagent lifecycle API](../../developer-guide/subagent-lifecycle-api.md#guided-model-routing)
+exposes equivalent routing fields and inherits managed parent authority.
 
 ## Related
 

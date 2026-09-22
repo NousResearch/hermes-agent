@@ -1272,6 +1272,9 @@ def _cmd_routing(args: argparse.Namespace) -> int:
     from hermes_constants import get_hermes_home
 
     action = getattr(args, "routing_action", None)
+    if action in ("validate", "explain"):
+        from hermes_cli.routing_diagnostics import run_diagnostic
+        return run_diagnostic(args)
     hermes_home = get_hermes_home()
     as_json = bool(getattr(args, "json", False))
     try:

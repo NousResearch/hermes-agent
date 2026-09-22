@@ -58,6 +58,9 @@ class SubagentLaunchRequest:
     correlation_id: Optional[str] = None
     metadata: Mapping[str, Any] = dataclasses.field(default_factory=dict)
     timeout_seconds: Optional[float] = None
+    routing_role: Optional[str] = None
+    routing_policy_id: Optional[str] = None
+    routing_requirements: Optional[Mapping[str, Any]] = None
 
 
 @dataclasses.dataclass(frozen=True)
@@ -257,11 +260,15 @@ class SubagentLifecycleService:
                 raise SubagentLifecycleError("Duplicate correlation_id for this parent session.")
         # Lazy: delegate construction stays internal, plugins never import private delegation helpers.
         from tools.delegate_tool import _build_child_preserving_parent_tools, DEFAULT_MAX_ITERATIONS
-        child = _build_child_preserving_parent_tools(
-            task_index=0, goal=request.goal, context=request.context,
-            toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
-            model=request.model, max_iterations=DEFAULT_MAX_ITERATIONS, task_count=1, parent_agent=parent, role=request.role,
-        )
+        from tools.delegate_tool_routing import _parent_managed_context, build_lifecycle_child
+        if request.routing_role or _parent_managed_context(parent)[1] is not None:
+            child = build_lifecycle_child(request, parent)
+        else:
+            child = _build_child_preserving_parent_tools(
+                task_index=0, goal=request.goal, context=request.context,
+                toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
+                model=request.model, max_iterations=DEFAULT_MAX_ITERATIONS, task_count=1, parent_agent=parent, role=request.role,
+            )
         subagent_id = str(getattr(child, "_subagent_id", "") or "")
         if not subagent_id:
             raise SubagentLifecycleError("Hermes failed to assign a child identity.")

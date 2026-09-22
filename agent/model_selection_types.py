@@ -39,8 +39,9 @@ class RoutingBlocked(Exception):
     unsupported_executor, stale_or_revoked_decision, no_qualified_route.
     """
 
-    def __init__(self, reason: str, detail: str = ""):
+    def __init__(self, reason: str, detail: str = "", *, rejections: dict | None = None):
         self.reason = reason
         self.detail = detail
+        self.rejections = rejections or {}
         message = reason if not detail else f"{reason}: {detail}"
         super().__init__(message)

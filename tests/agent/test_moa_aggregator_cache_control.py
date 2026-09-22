@@ -132,6 +132,7 @@ def test_prepared_aggregator_plans_tools_without_decorating_prepared_state(monke
     )
     completions = moa_loop.MoAChatCompletions.__new__(moa_loop.MoAChatCompletions)
     completions._pending_trace = None
+    completions._agent = None
     prepared = {
         "messages": [
             {"role": "system", "content": "system"},

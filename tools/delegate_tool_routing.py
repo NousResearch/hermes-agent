@@ -41,21 +41,27 @@ class DelegationRoutingBlocked(RoutingBlocked):
     """Re-raised with the delegation call site's context; same reason codes as RoutingBlocked."""
 
 
-def _parent_managed_context(parent_agent) -> tuple[Optional[str], Optional[str], Optional[str]]:
-    """``(hermes_home, policy_id, role)`` the parent's OWN receipt was authorized under, or
-    ``(None, None, None)`` when the parent carries no managed authority to inherit. Read from the
+def _parent_managed_context(parent_agent) -> tuple[Optional[str], Optional[dict]]:
+    """``(hermes_home, decision)`` the parent's OWN receipt was authorized under, or
+    ``(None, None)`` when the parent carries no managed authority to inherit. Read from the
     parent's already-persisted receipt (never re-derived/guessed) so the ceiling this function
     enforces is the ceiling the parent itself was actually given."""
     receipt_id = getattr(parent_agent, "_managed_routing_receipt_id", None)
     hermes_home = getattr(parent_agent, "_managed_routing_home", None)
+    moa_authority = getattr(parent_agent, "_managed_moa_authority", None)
+    if isinstance(moa_authority, tuple) and len(moa_authority) == 2:
+        turn_id, resolution = moa_authority
+        if turn_id == getattr(parent_agent, "_current_turn_id", None):
+            receipt_id = resolution["receipt_id"]
+            hermes_home = resolution["routing_home"]
     # Real values are always a non-empty str (receipt id) / str-or-Path (home) -- a test double
     # (MagicMock etc.) that auto-vivifies unset attributes returns a Mock object here, not None;
     # require the actual expected types so an unconfigured mock parent is correctly "unmanaged"
     # rather than accidentally treated as carrying inherited authority.
-    if not isinstance(receipt_id, str) or not receipt_id or hermes_home is None:
-        return None, None, None
+    if not isinstance(receipt_id, str) or not receipt_id:
+        return None, None
     if not isinstance(hermes_home, (str,)) and not hasattr(hermes_home, "__fspath__"):
-        return None, None, None
+        raise DelegationRoutingBlocked("stale_or_revoked_decision", "managed parent is missing its origin home")
     from agent.model_selection_store import get_receipt
 
     decision = get_receipt(hermes_home, receipt_id)
@@ -67,7 +73,14 @@ def _parent_managed_context(parent_agent) -> tuple[Optional[str], Optional[str],
             "parent agent carries a managed routing receipt id with no persisted decision; "
             "refusing to authorize a nested delegation under a vanished parent receipt",
         )
-    return hermes_home, decision["policy_id"], decision["requirements"]["role"]
+    from agent.managed_route_runtime import enforce_worker_route
+    from agent.model_selection_guard import managed_child_kwargs
+
+    route = managed_child_kwargs(decision)
+    enforce_worker_route(hermes_home, receipt_id, actual_provider=route["provider"],
+                         actual_model=route["model"], actual_endpoint=route["endpoint"],
+                         actual_reasoning=route["reasoning_effort"], record_outcome=False)
+    return hermes_home, decision
 
 
 def _task_intake(task: dict) -> tuple[Optional[str], Optional[dict], Optional[str]]:
@@ -99,7 +112,9 @@ def resolve_delegation_route(
     fall back to constructing an unmanaged/default-route child instead (§5 no silent escape).
     """
     task_role, task_requirements, task_policy_id = _task_intake(task)
-    parent_home, parent_policy_id, parent_role = _parent_managed_context(parent_agent)
+    parent_home, parent_decision = _parent_managed_context(parent_agent)
+    parent_policy_id = parent_decision["policy_id"] if parent_decision else None
+    parent_role = parent_decision["requirements"]["role"] if parent_decision else None
 
     if parent_policy_id is None:
         # Parent carries no managed authority: this task is managed ONLY if it explicitly asked.
@@ -132,10 +147,31 @@ def resolve_delegation_route(
             )
         role = parent_role
 
+        parent_requirements = parent_decision["requirements"]
+        task_requirements = dict(task_requirements or {})
+        task_requirements["required_capabilities"] = sorted(set(
+            task_requirements.get("required_capabilities", [])
+        ) | set(parent_requirements.get("required_capabilities", [])))
+        if parent_requirements["quality"] == "deep":
+            task_requirements["task_class"] = parent_requirements["task_class"]
+        parent_provenance = parent_requirements.get("provenance")
+        if parent_provenance is None:
+            raise DelegationRoutingBlocked("provenance_incomplete", "parent receipt predates nested authority requirements; start a new attempt")
+        if "provenance" in task_requirements and task_requirements["provenance"] != parent_provenance:
+            raise DelegationRoutingBlocked("unsupported_executor", "nested delegation cannot replace parent provenance")
+        task_requirements["provenance"] = parent_provenance
+
     requirements = _build_requirements(
         task, task_requirements, role=role, task_index=task_index, attempt_id=attempt_id,
     )
-    decision_kwargs = resolve_route(hermes_home, policy_id, requirements, now=int(time.time()))
+    if parent_decision is not None:
+        requirements["allowed_route_ids"] = [parent_decision["selected"]["route_id"], *parent_decision["alternates"]]
+    decision_kwargs = resolve_route(
+        hermes_home, policy_id, requirements, now=int(time.time()),
+        policy_revision=parent_decision["policy_revision"] if parent_decision else None,
+    )
+    if task.get("model") and task["model"] != decision_kwargs["model"]:
+        raise DelegationRoutingBlocked("unsupported_executor", "model preference is outside the selected managed route")
     decision_kwargs["routing_home"] = hermes_home
     return decision_kwargs
 
@@ -186,6 +222,28 @@ def _current_hermes_home():
     from hermes_constants import get_hermes_home
 
     return get_hermes_home()
+
+
+def build_lifecycle_child(request, parent):
+    """Public host lifecycle uses the same routed construction as the tool."""
+    import uuid
+    from tools import delegate_tool as dt
+
+    cfg = dt._load_config()
+    creds = dt._resolve_delegation_credentials(cfg, parent)
+    task = {"goal": request.goal, "context": request.context, "model": request.model,
+            "routing_role": request.routing_role, "routing_policy_id": request.routing_policy_id,
+            "routing_requirements": request.routing_requirements,
+            "_delegation_id": uuid.uuid4().hex}
+    children, error = dt._build_children(
+        [task], [None], creds, top_role=request.role,
+        max_iterations=cfg.get("max_iterations", dt.DEFAULT_MAX_ITERATIONS),
+        parent_agent=parent, routing_cfg=cfg, live_deleg_id=None, live_writers=[],
+        allowed_toolsets=list(request.allowed_toolsets) if request.allowed_toolsets else None,
+    )
+    if error:
+        raise DelegationRoutingBlocked("unsupported_executor", error)
+    return children[0][2]
 
 
 def stamp_managed_route(child, resolution: dict) -> None:

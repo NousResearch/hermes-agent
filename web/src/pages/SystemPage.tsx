@@ -28,6 +28,8 @@ import {
   X,
 } from "lucide-react";
 import { Badge } from "@nous-research/ui/ui/components/badge";
+
+import { configSchemaBehind } from "@/lib/config-schema-drift";
 import { Button } from "@nous-research/ui/ui/components/button";
 import { Spinner } from "@nous-research/ui/ui/components/spinner";
 import { H2 } from "@nous-research/ui/ui/components/typography/h2";
@@ -703,6 +705,7 @@ export default function SystemPage() {
 
   const gatewayRunning = status?.gateway_running;
   const canUpdateHermes = status?.can_update_hermes !== false;
+  const configSchemaDrift = configSchemaBehind(status);
   const activeMemoryProvider = memory?.active
     ? memory.providers.find((provider) => provider.name === memory.active)
     : null;
@@ -937,6 +940,15 @@ export default function SystemPage() {
                     ) : updateInfo.behind === 0 ? (
                       <Badge tone="success">latest</Badge>
                     ) : null)}
+                  {configSchemaDrift > 0 && (
+                    <span
+                      title={`config.yaml is at schema version ${status?.config_version}; this build expects ${status?.latest_config_version}. Run \`hermes setup\` to migrate it.`}
+                    >
+                      <Badge tone="warning">
+                        config schema {configSchemaDrift} behind
+                      </Badge>
+                    </span>
+                  )}
                 </div>
               </div>
               <div>

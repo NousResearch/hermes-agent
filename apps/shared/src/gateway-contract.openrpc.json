@@ -4546,6 +4546,18 @@
             "title": "Session Id",
             "type": "string"
           },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
+          },
           "request_id": {
             "title": "Request Id",
             "type": "string"
@@ -7124,6 +7136,18 @@
           "session_id": {
             "title": "Session Id",
             "type": "string"
+          },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
           },
           "question": {
             "anyOf": [
@@ -11631,6 +11655,18 @@
           "session_id": {
             "title": "Session Id",
             "type": "string"
+          },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
           }
         },
         "required": [
@@ -20051,6 +20087,18 @@
             "title": "Session Id",
             "type": "string"
           },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
+          },
           "action": {
             "title": "Action",
             "type": "string"
@@ -23861,6 +23909,18 @@
             "title": "Session Id",
             "type": "string"
           },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
+          },
           "start": {
             "anyOf": [
               {
@@ -25486,6 +25546,18 @@
           "session_id": {
             "title": "Session Id",
             "type": "string"
+          },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
           },
           "env_var": {
             "title": "Env Var",
@@ -31968,6 +32040,18 @@
             "title": "Session Id",
             "type": "string"
           },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
+          },
           "command": {
             "default": "",
             "title": "Command",
@@ -32854,6 +32938,18 @@
             "title": "Session Id",
             "type": "string"
           },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
+          },
           "action": {
             "title": "Action",
             "type": "string"
@@ -33702,6 +33798,18 @@
             "title": "Session Id",
             "type": "string"
           },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
+          },
           "site": {
             "anyOf": [
               {
@@ -33934,6 +34042,18 @@
             "title": "Session Id",
             "type": "string"
           },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
+          },
           "origin": {
             "title": "Origin",
             "type": "string"
@@ -34116,6 +34236,18 @@
           "session_id": {
             "title": "Session Id",
             "type": "string"
+          },
+          "owner_quorum": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Owner Quorum"
           },
           "backend": {
             "title": "Backend",

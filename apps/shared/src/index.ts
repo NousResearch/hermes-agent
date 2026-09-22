@@ -76,6 +76,7 @@ export {
   type GatewayRequestId,
   JSON_RPC_INTERNAL_ERROR,
   JSON_RPC_METHOD_NOT_FOUND,
+  JSON_RPC_REQUEST_NOT_OWNER,
   jsonRpcErrorFromFrame,
   type JsonRpcErrorPayload,
   type JsonRpcFrame,

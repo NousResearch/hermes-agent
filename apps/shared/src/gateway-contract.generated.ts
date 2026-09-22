@@ -3936,6 +3936,7 @@ export interface PluginActivation {
 /** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
 export interface ClarifyRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   question?: string | null
   choices?: string[] | null
   multi_select?: boolean | null
@@ -3956,6 +3957,7 @@ export interface ClarifyResult {
 /** ``tui_gateway/server.py::_approval_request_payload`` — the command is redacted server-side. */
 export interface ApprovalRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   request_id: string
   command?: string
   description?: string
@@ -3974,6 +3976,7 @@ export interface ApprovalResult {
 /** Original command, redacted server-side before any password-injection rewrite. */
 export interface SudoRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   command?: string
 }
 /** The answer to any one-string prompt (sudo, secret, vault prompts, desktop bridges): ``''`` means skipped / declined. */
@@ -3982,36 +3985,43 @@ export interface ValueResult {
 }
 export interface SecretRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   env_var: string
   prompt: string
   metadata?: Record<string, unknown> | null
 }
 export interface VaultUnlockRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   backend: string
   display_name: string
 }
 export interface VaultSaveLoginRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   origin: string
   site: string
 }
 export interface VaultCodeRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   site?: string | null
   hint?: string | null
 }
 export interface ReadRangeRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   start?: number | null
   count?: number | null
 }
 export interface EmptyRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
 }
 /** ``tools/drive_preview_tool.py`` and ``tools/annotate_preview_tool.py`` field sets. */
 export interface PreviewActRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   action: string
   ref?: string | null
   selector?: string | null
@@ -4026,6 +4036,7 @@ export interface PreviewActRequestParams {
 /** ``tools/tour_tool.py`` field set. */
 export interface TourRequestParams {
   session_id: string
+  owner_quorum?: boolean | null
   action: string
   surface?: string | null
   selector?: string | null

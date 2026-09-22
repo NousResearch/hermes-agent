@@ -72,6 +72,9 @@ export const JSON_RPC_METHOD_NOT_FOUND = -32601
 /** JSON-RPC "internal error" — used when a server→client request handler throws. */
 export const JSON_RPC_INTERNAL_ERROR = -32603
 
+/** A window-scoped server request reached a client that does not host its session. */
+export const JSON_RPC_REQUEST_NOT_OWNER = -32004
+
 /** Map a raw `error` member of a response frame to the typed error every surface inspects. */
 export function jsonRpcErrorFromFrame(raw: unknown, fallbackMessage = 'Hermes RPC failed'): JsonRpcGatewayError {
   const err = (raw && typeof raw === 'object' ? raw : {}) as JsonRpcErrorPayload

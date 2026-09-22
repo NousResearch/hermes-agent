@@ -1,3 +1,5 @@
+import { JSON_RPC_REQUEST_NOT_OWNER } from '@hermes/shared'
+
 import { readActivePreview } from '@/app/chat/right-rail/preview-reader'
 import { readActiveTerminal } from '@/app/right-sidebar/terminal/buffer'
 import { pendingClarifyToolPayload } from '@/app/session/hooks/use-session-actions/restore-pending-clarify'
@@ -66,6 +68,12 @@ type PreviewSessionRoute = 'ignore' | 'retry' | 'run'
  * the owner's pane is open (#113348).
  */
 const WINDOW_OWNED_REQUESTS = new Set(['preview.act', 'preview.read', 'terminal.read', 'window.read', 'tour'])
+
+const rejectNoWindowOwner = (request: ScopedServerRequest) => {
+  if (request.params.owner_quorum === true) {
+    request.fail(JSON_RPC_REQUEST_NOT_OWNER, 'this window does not host the requesting session')
+  }
+}
 
 /** This window hosts the session: it is the primary view or an open session tile. */
 export function windowHostsSession(sessionId: string, activeSessionId: null | string): boolean {
@@ -447,6 +455,7 @@ export function handleServerRequest(
     const route = previewSessionRoute({ activeSessionId, replayed: request.replayed, sessionId })
 
     if (route === 'ignore') {
+      rejectNoWindowOwner(request)
       return true
     }
 
@@ -460,6 +469,8 @@ export function handleServerRequest(
           'run'
         ) {
           handler({ deps, request, sessionId, isActiveSession: true })
+        } else {
+          rejectNoWindowOwner(request)
         }
       }, 0)
 

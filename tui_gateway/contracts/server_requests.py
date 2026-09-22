@@ -17,6 +17,7 @@ class ServerRequestParams(Params):
     """Every request frame's params start with the session the question belongs to."""
 
     session_id: str
+    owner_quorum: bool | None = None
 
 
 class ValueResult(Result):

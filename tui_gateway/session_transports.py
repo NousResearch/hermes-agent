@@ -47,6 +47,13 @@ def _session_client_answers_requests(sid: str) -> bool:
     return not clients or any(server_requests.answers_requests(peer) for peer in clients)
 
 
+def _session_clients_answering_requests(sid: str) -> set:
+    """Live session peers that advertised server-request support."""
+    from tui_gateway import server_requests
+    return {peer for peer in _session_live_transports(_sessions.get(sid))
+            if server_requests.answers_requests(peer)}
+
+
 def _warn_foreign_login(session: dict, transport) -> None:
     """Ownership is not enforced; a second login sharing a session is only logged, and the agent keeps the
     creator's user id."""

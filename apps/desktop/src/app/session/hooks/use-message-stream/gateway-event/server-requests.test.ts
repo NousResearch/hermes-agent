@@ -112,6 +112,18 @@ describe('preview action request routing', () => {
     }
   })
 
+  it('reports a scoped pane request as unowned when the backend supports owner quorum', () => {
+    const { fail, handled, respond } = deliver(
+      'preview.read',
+      { owner_quorum: true, session_id: 'session-a' },
+      'session-b'
+    )
+
+    expect(handled).toBe(true)
+    expect(respond).not.toHaveBeenCalled()
+    expect(fail).toHaveBeenCalledWith(-32004, 'this window does not host the requesting session')
+  })
+
   it("answers pane reads for a session hosted in one of this window's tiles", async () => {
     // The tile session is not the active one, but this window hosts it: its
     // panes are here, so an 'ignore' would stall the tool until its deadline.

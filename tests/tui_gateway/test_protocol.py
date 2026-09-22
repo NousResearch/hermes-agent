@@ -456,6 +456,34 @@ def test_server_request_error_response_fails_fast(server):
     assert box["result"] is None
 
 
+def test_window_request_waits_for_owner_or_fails_after_every_client_rejects(capture):
+    """A non-owner cannot beat the owner, while unanimous non-owner replies settle immediately."""
+    from tui_gateway import server_requests
+
+    owner, other = object(), object()
+
+    req = server_requests.ServerRequest("s1", "preview.read", {})
+    req.owner_candidates = {owner, other}
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+    nack = {"id": req.id, "error": {"code": -32004}}
+    assert server_requests.resolve_response(nack, other)
+    assert req.id in server_requests._open and not req.event.is_set()
+    assert server_requests.resolve_response({"id": req.id, "result": {"value": "page"}}, owner)
+    assert req.result == {"value": "page"} and req.event.is_set()
+
+    req = server_requests.ServerRequest("s1", "preview.read", {})
+    req.owner_candidates = {owner, other}
+    with server_requests._lock:
+        server_requests._open[req.id] = req
+    nack = {"id": req.id, "error": {"code": -32004}}
+    assert server_requests.resolve_response(nack, owner)
+    assert not req.event.is_set()
+    assert server_requests.resolve_response(nack, other)
+    assert req.event.is_set()
+    assert json.loads(req.result["value"])["error"].startswith("This chat is not displayed")
+
+
 @pytest.mark.parametrize("method", ["secret", "sudo", "terminal.read", "tour"])
 def test_server_request_timeout_emits_one_request_cancel(capture, method):
     from tui_gateway import server_requests

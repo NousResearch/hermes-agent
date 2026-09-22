@@ -48,6 +48,12 @@ deepseek = DeepSeekProfile(
     description="DeepSeek — native DeepSeek API", signup_url="https://platform.deepseek.com/",
     fallback_models=("deepseek-v4-pro", "deepseek-flash"), base_url="https://api.deepseek.com/v1",
     default_aux_model="deepseek-flash",
+    # V4 models think by default and the API's own default output cap is low: without
+    # an explicit max_tokens the thinking plus a large tool-call body exceed it and the
+    # response truncates (finish_reason='length'). 65536 mirrors the qwen-oauth profile;
+    # the server-side hard ceiling (pricing page: MAX OUTPUT MAXIMUM 384K) authorizes
+    # truncation-retry escalation past the requested cap.
+    default_max_tokens=65536, max_output_tokens=384000,
     # Native API implements only ``json_object`` (https://api-docs.deepseek.com/guides/json_mode);
     # ``json_schema`` is a guaranteed HTTP 400 "This response_format type is unavailable now".
     unsupported_response_formats=("json_schema",),

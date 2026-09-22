@@ -226,6 +226,27 @@ describe('useComposerQueue park integration', () => {
     expect(onSubmit.mock.calls[0]?.[0]).toBe('kept on reject')
   })
 
+  it('a rejected steer moves the entry to the FRONT so the live turn reads it next', async () => {
+    enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'older follow-up' })
+    const steered = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: 'read me next' })
+    const onSteer = vi.fn(async () => false)
+    const { hook, onSubmit } = renderQueueHook({ busy: true, onSteer })
+
+    await act(async () => {
+      expect(await hook.result.current.steerQueuedNow(steered!.id)).toBe(false)
+    })
+
+    expect(getQueuedPrompts(SESSION_KEY).map(entry => entry.text)).toEqual([
+      'read me next',
+      'older follow-up'
+    ])
+
+    // Nothing is lost: the promoted entry is the first thing the next turn reads.
+    hook.rerender({ busy: false })
+    await waitFor(() => expect(onSubmit).toHaveBeenCalledTimes(1))
+    expect(onSubmit.mock.calls[0]?.[0]).toBe('read me next')
+  })
+
   it('steerQueuedNow refuses unsteerable entries (slash commands execute, never steer)', async () => {
     const slash = enqueueQueuedPrompt(SESSION_KEY, { attachments: [], text: '/compress' })
     const onSteer = vi.fn(async () => true)

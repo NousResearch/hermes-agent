@@ -324,10 +324,13 @@ export function useComposerQueue({
 
       const accepted = await Promise.resolve(onSteer(entry.text))
 
-      // Rejected (turn already settling, gateway said no): leave the entry
-      // queued exactly where it was — the settle drain picks it up, so the
-      // words are never lost. Only a delivered redirect consumes the entry.
+      // Rejected (nothing in flight to cancel, an agent-side refusal, the turn
+      // settling): leave the entry queued so the settle drain reads it — and move
+      // it to the FRONT, because the click said "read this next". Only a delivered
+      // redirect consumes the entry; steerPrompt owns the notice saying why.
       if (!accepted) {
+        promoteQueuedPrompt(activeQueueSessionKey, id)
+
         return false
       }
 

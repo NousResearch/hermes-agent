@@ -2096,13 +2096,30 @@ def _(rid, params: dict) -> dict:
     return _ok(rid, {"status": "interrupted"})
 
 
-def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str) -> dict:
+def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status: str,
+                      *, fallback: "tuple[str, str] | None" = None) -> dict:
     """``agent.<verb>(text)``; on acceptance record it on the live turn (mid-turn resume rebuilds the bubble)
-    and purge queued self-copies so post-turn drain cannot re-fire the old prompt."""
+    and purge queued self-copies so post-turn drain cannot re-fire the old prompt.
+
+    ``fallback`` — ``(verb, accepted_status)`` tried when the primary verb REFUSES while the turn is
+    still live. A redirect can only cancel an in-flight model request: between two iterations (or
+    past the last one) there is nothing to interrupt, and a bare 'rejected' is what the clients
+    swallow — a queued message then looks like a dead Steer button. The steer rides the next tool
+    result and, past the final one, is requeued as the next turn (turn_finalizer → prompt_turn), so
+    the words are never lost either way."""
+    agent = session["agent"]
     try:
-        accepted = getattr(session["agent"], verb)(text)
+        accepted = getattr(agent, verb)(text)
     except Exception as exc:
         return _err(rid, 5000, f"{verb} failed: {exc}")
+    if not accepted and fallback is not None and session.get("running"):
+        fallback_verb, fallback_status = fallback
+        try:
+            accepted = bool(getattr(agent, fallback_verb)(text))
+        except Exception:
+            accepted = False
+        if accepted:
+            accepted_status = fallback_status
     if accepted:
         with session["history_lock"]:
             _record_inflight_correction(session, text)
@@ -2115,9 +2132,11 @@ def _apply_correction(rid, session: dict, verb: str, text: str, accepted_status:
     return _ok(rid, {"status": accepted_status if accepted else "rejected", "text": text})
 
 
-def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str):
+def _correction_method(name: str, verb: str, accepted_status: str, supported, unsupported: str,
+                       *, fallback: "tuple[str, str] | None" = None):
     """steer/redirect RPC: ``params.text`` (4002, checked before the session) into a live session;
-    ``supported(agent)`` gates 4010."""
+    ``supported(agent)`` gates 4010. ``fallback`` is forwarded so a refusal while the turn is live
+    still delivers the correction instead of reporting it away."""
     @method(name)
     def _(rid, params: dict) -> dict:
         if not (text := (params.get("text") or "").strip()):
@@ -2134,7 +2153,7 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
             return _ok(rid, {"status": "queued", "text": text})
         if not supported(agent):
             return _err(rid, 4010, unsupported)
-        return _apply_correction(rid, session, verb, text, accepted_status)
+        return _apply_correction(rid, session, verb, text, accepted_status, fallback=fallback)
 
 
 # Inject text into the next tool result without interrupting (AIAgent.steer(): no new user turn, no role
@@ -2142,9 +2161,13 @@ def _correction_method(name: str, verb: str, accepted_status: str, supported, un
 _correction_method("session.steer", "steer", "queued", lambda agent: hasattr(agent, "steer"),
                    "agent does not support steer")
 # Redirect the active model turn while preserving valid work/context.
+# A redirect needs something IN FLIGHT to cancel; between two iterations (or past the last one) the
+# agent refuses it, and a bare 'rejected' used to be the end of the road — the desktop swallowed it
+# and the queued message looked like a dead Steer button. Falling back to a steer keeps the words.
 _correction_method("session.redirect", "redirect", "redirected",
                    lambda agent: getattr(agent, "_supports_active_turn_redirect", False) is True
-                   and hasattr(agent, "redirect"), "agent does not support active-turn redirect")
+                   and hasattr(agent, "redirect"), "agent does not support active-turn redirect",
+                   fallback=("steer", "queued"))
 
 
 # ── delegation / spawn trees ─────────────────────────────────────────

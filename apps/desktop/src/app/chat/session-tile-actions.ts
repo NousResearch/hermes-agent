@@ -20,7 +20,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { clearClarifyRequest } from '@/store/clarify'
 import type { ComposerAttachment } from '@/store/composer'
 import { resetSessionBackground } from '@/store/composer-status'
-import { notifyError } from '@/store/notifications'
+import { notify, notifyError } from '@/store/notifications'
 import { clearPreviewArtifacts } from '@/store/preview-status'
 import { clearAllPrompts } from '@/store/prompts'
 import { $sessions, knownSessionOwner, ownerLookupSessionRows, sessionMatchesStoredId } from '@/store/session'
@@ -475,16 +475,35 @@ export function useSessionTileActions({ requestGateway, runtimeId, scope, stored
         }
       } catch {
         discardOptimisticMessage()
-        // Swallow — the caller queues the text so nothing is lost.
+        // The caller queues the text so nothing is lost — and says so: a refusal the user cannot
+        // see is indistinguishable from a dead Steer button (one notify id, so a second refusal
+        // updates the notice instead of stacking another).
+        notify({
+          id: 'composer-steer-refused',
+          kind: 'warning',
+          title: t.composer.queueSteerRefusedTitle,
+          message: t.composer.queueSteerRefusedBody
+        })
 
         return false
       }
 
       discardOptimisticMessage()
+      notify({
+        id: 'composer-steer-refused',
+        kind: 'warning',
+        title: t.composer.queueSteerRefusedTitle,
+        message: t.composer.queueSteerRefusedBody
+      })
 
       return false
     },
-    [bindRecoveredRuntime, requestSessionGateway]
+    [
+      bindRecoveredRuntime,
+      requestSessionGateway,
+      t.composer.queueSteerRefusedBody,
+      t.composer.queueSteerRefusedTitle
+    ]
   )
 
   // Rewind primitive (interrupt-first for live turns, busy-retry) — shared with

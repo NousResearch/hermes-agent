@@ -81,6 +81,42 @@ describe('session tile optimistic owner metadata', () => {
 // withSessionNotFoundResume) — see use-prompt-actions/index.test.tsx's
 // "sleep/wake session recovery" suite for the same regression on the
 // primary chat's own reloadFromMessage.
+describe('steer refusal is never silent', () => {
+  beforeEach(() => {
+    requestGatewayMock.mockReset()
+  })
+
+  afterEach(() => {
+    $sessionStates.set({})
+    $sessionTiles.set([])
+  })
+
+  it('emits a notice and reports false when the gateway refuses the redirect', async () => {
+    requestGatewayMock.mockImplementation(async (method: string) => {
+      if (method === 'session.redirect') {
+        return { status: 'rejected' }
+      }
+
+      return {}
+    })
+
+    const { $notifications } = await import('@/store/notifications')
+    const seenBefore = $notifications.get().length
+    const { result } = renderTileActions()
+
+    const ok = await act(async () => result.current.steerPrompt('read me next'))
+
+    // The caller keeps the words queued — but the click must not look dead.
+    expect(ok).toBe(false)
+    const notices = $notifications.get().slice(seenBefore)
+    expect(notices).toHaveLength(1)
+    expect(notices[0]).toMatchObject({
+      kind: 'warning',
+      title: 'Steer not taken'
+    })
+  })
+})
+
 describe('useSessionTileActions sleep/wake session recovery', () => {
   beforeEach(() => {
     $activeSessionId.set('foreground-runtime')

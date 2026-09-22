@@ -636,6 +636,42 @@ def test_merged_pr_with_a_stale_head_sha_is_kept(tmp_path: Path, monkeypatch):
     assert "unpushed" in kbr.branch_refusal(wt, repo, branch)
 
 
+def test_tip_behind_the_merged_pr_head_is_safe(tmp_path: Path, monkeypatch):
+    """Local tip is an ANCESTOR of the merged head: everything local was merged.
+
+    Live case t_83a16100: local tip da55c03c is the parent of PR #4981's merged
+    head 6869ac96 — the PR carried one commit the worktree never got. Nothing
+    local can be lost, so refusing it kept the worktree forever.
+    """
+    wt, repo, branch, tip = _squash_merged_worktree(tmp_path, "behind")
+    # A commit that exists only on the PR head, ahead of our tip.
+    (wt / "only-on-pr.txt").write_text("added in review\n", encoding="utf-8")
+    _git(wt, "add", "-A")
+    _git(wt, "commit", "-qm", "review fixup that never reached this worktree")
+    pr_head = _git(wt, "rev-parse", "HEAD")
+    _git(wt, "reset", "-q", "--hard", tip)
+    assert _git(wt, "rev-parse", "HEAD") == tip
+
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(
+        f'[{{"number":4981,"state":"MERGED","mergedAt":"2026-09-21T15:25:22Z",'
+        f'"headRefOid":"{pr_head}"}}]'
+    ), raising=False)
+    reason = kbr.merged_pr_for_tip(wt, branch, tip)
+    assert reason and "#4981" in reason and "ancestor" in reason, reason
+    assert kbr.branch_refusal(wt, repo, branch) is None
+
+
+def test_an_unfetched_merged_head_sha_fails_closed(tmp_path: Path, monkeypatch):
+    """A headRefOid absent from the local object DB is never proof of anything."""
+    wt, repo, branch, tip = _squash_merged_worktree(tmp_path, "unfetched")
+    monkeypatch.setattr(kbr, "_gh_pr_json", _gh(
+        '[{"number":4999,"state":"MERGED","mergedAt":"2026-09-21T15:25:22Z",'
+        '"headRefOid":"dead0beefdead0beefdead0beefdead0beefdead"}]'
+    ), raising=False)
+    assert kbr.merged_pr_for_tip(wt, branch, tip) is None
+    assert "unpushed" in kbr.branch_refusal(wt, repo, branch)
+
+
 @pytest.mark.parametrize("payload", [None, "", "not json at all", "{}", "[]"])
 def test_a_failed_gh_probe_is_never_evidence_of_a_merge(
     tmp_path: Path, monkeypatch, payload,

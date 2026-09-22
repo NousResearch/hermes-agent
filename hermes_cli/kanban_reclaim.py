@@ -264,13 +264,22 @@ def _gh_pr_json(path: Path, branch: str) -> Optional[str]:
 
 
 def merged_pr_for_tip(path: Path, branch: str, tip: str) -> Optional[str]:
-    """Human string for a MERGED PR whose head sha is exactly ``tip``, else None.
+    """Human string for a MERGED PR that contains ``tip``, else None.
 
     This is the arm that discriminates squash merges: GitHub deletes the head
     ref on merge, so ``ls-remote`` goes empty and ``git cherry`` still reports
     the rewritten commits as non-equivalent — but the PR records the exact sha
-    that was merged. Any failure of the probe (no ``gh``, non-zero exit, network
-    error, malformed JSON, empty list, sha mismatch) returns None: a failed
+    that was merged.
+
+    A PR counts when its ``headRefOid`` is ``tip`` itself, OR when ``tip`` is an
+    ANCESTOR of that sha — measured on the live host: t_83a16100's local tip
+    da55c03c is the parent of PR #4981's merged head 6869ac96, i.e. the PR
+    carried one commit more than the worktree has. Everything local was merged,
+    so nothing can be lost. Ancestry is checked with git against the local object
+    database, so a sha we never fetched simply fails the check.
+
+    Any failure of the probe (no ``gh``, non-zero exit, network error, malformed
+    JSON, empty list, sha neither equal nor an ancestor) returns None: a failed
     probe is never evidence of a merge.
     """
     raw = _gh_pr_json(path, branch)
@@ -290,9 +299,18 @@ def merged_pr_for_tip(path: Path, branch: str, tip: str) -> Optional[str]:
         merged_at = pr.get("mergedAt")
         if not merged_at:
             continue
-        if pr.get("headRefOid") != tip:
+        head = pr.get("headRefOid")
+        if not head or not isinstance(head, str):
             continue
-        return f"PR #{pr.get('number')} merged {merged_at}"
+        if head == tip:
+            return f"PR #{pr.get('number')} merged {merged_at}"
+        # ``tip`` strictly behind the merged head: every local commit is in the
+        # merge. Fails closed when ``head`` is not in the local object database.
+        if _git(path, "merge-base", "--is-ancestor", tip, head).returncode == 0:
+            return (
+                f"PR #{pr.get('number')} merged {merged_at} "
+                f"(tip {tip[:9]} is an ancestor of merged head {head[:9]})"
+            )
     return None
 
 

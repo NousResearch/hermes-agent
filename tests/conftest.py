@@ -492,7 +492,7 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 
 
 @pytest.fixture(autouse=True)
-def _hermetic_environment(tmp_path, monkeypatch):
+def _hermetic_environment(tmp_path, tmp_path_factory, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
     Also redirects HERMES_HOME to a per-test tempdir so code that reads
@@ -546,8 +546,10 @@ def _hermetic_environment(tmp_path, monkeypatch):
     # Relay 0.9 normally discovers the user's XDG plugins.toml. Select an empty
     # per-test user file instead so tests cannot activate a developer's plugins,
     # without changing XDG_CONFIG_HOME for unrelated Hermes code under test.
-    relay_plugins = tmp_path / "relay-plugins.toml"
-    relay_plugins.write_text("version = 1\n", encoding="utf-8")
+    # Outside tmp_path: tests that list or git-status their tmp dir must not see it.
+    relay_plugins = tmp_path_factory.getbasetemp() / "relay-plugins.toml"
+    if not relay_plugins.exists():
+        relay_plugins.write_text("version = 1\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(relay_plugins))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so

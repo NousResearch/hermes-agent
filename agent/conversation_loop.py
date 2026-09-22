@@ -33,6 +33,9 @@ from agent.runtime_cwd import resolve_agent_cwd
 from agent.surface_switch import (
     identity_line_value, note_inert_pinned_tools, split_runtime_boundary, stage_surface_switch_note,
 )
+from agent.skills_index_delta import (  # noqa: F401 — patch seam shared with the tests
+    stage_skills_index_note,
+)
 from agent.turn_context import PreflightCompressionTimedOut, build_turn_context
 from agent.turn_retry_state import TurnRetryState
 # Phase helpers of the turn loop, bound at import so a source-tree swap cannot load a
@@ -710,6 +713,9 @@ def _restore_or_build_system_prompt(agent, system_message, conversation_history)
         # The reused bytes may describe the surface this conversation STARTED on; correct that
         # at the tail of the request instead of rebuilding the prompt in front of it (#104414).
         announced_switch = stage_surface_switch_note(agent, stored_prompt, conversation_history)
+        # Same channel for a skills index that drifted since the prompt was built (a skill
+        # installed or removed mid-conversation); the index bytes stay, the delta rides behind them.
+        stage_skills_index_note(agent, stored_prompt, conversation_history)
         # Same contract for tools[]: pin the array to the order this session already
         # sent (tools freeze) instead of re-probing every check_fn on a fresh AIAgent.
         # The pin holds ON the announcing turn too.  tools[] is serialized AHEAD of the system

@@ -136,6 +136,11 @@ def consume_surface_switch_note(agent: Any) -> str:
     return _pop_turn_note(agent, "_surface_switch_note")
 
 
+def consume_skills_index_note(agent: Any) -> str:
+    """Pop the skills-index delta staged by the system-prompt restore; same channel as above."""
+    return _pop_turn_note(agent, "_skills_index_note")
+
+
 def append_notes_to_multimodal_content(content: Any, notes: str) -> bool:
     """Append must-deliver notes as a durable text part on a multimodal (list) user
     message (the sidecar path returns ``None`` for non-string content)."""
@@ -798,7 +803,8 @@ def _merge_gateway_notes(
     append a durable text part instead."""
     _turn_notes = "\n\n".join(
         part for part in (consume_gateway_turn_context_notes(agent),
-                          consume_surface_switch_note(agent)) if part
+                          consume_surface_switch_note(agent),
+                          consume_skills_index_note(agent)) if part
     )
     if not _turn_notes:
         return plugin_user_context

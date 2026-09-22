@@ -123,3 +123,93 @@ def test_unknown_permission_is_fail_closed_without_assistant_text() -> None:
 
     assert projected.messages == []
     assert projected.error == "unsupported Antigravity approval/permission event; refusing by default"
+
+
+def test_bridge_touches_agent_activity_on_assistant_delta() -> None:
+    """Regression for the 10:45:15 session watchdog abort (#antigravity-liveness):
+
+    the global turn-liveness watchdog samples ``agent._last_activity_ts``/``_last_activity_desc``,
+    which are ONLY updated through ``agent._touch_activity``. The Antigravity transport renews its
+    own NDJSON idle timeout per event but never called ``_touch_activity``, so a turn that received
+    many substantive agy events for ~10 minutes still looked stalled to the watchdog and got
+    force-aborted. Every substantive projected event must renew turn activity.
+    """
+    agent = SimpleNamespace(
+        _fire_stream_delta=MagicMock(),
+        _fire_reasoning_delta=MagicMock(),
+        tool_progress_callback=MagicMock(),
+        tool_start_callback=MagicMock(),
+        tool_complete_callback=MagicMock(),
+        _emit_interim_assistant_message=MagicMock(),
+        _touch_activity=MagicMock(),
+    )
+
+    make_antigravity_event_bridge(agent)({
+        "type": "step_update", "sequence": 4, "step_index": 1,
+        "delta": {"type": "assistant", "text": "hello"},
+    })
+
+    agent._touch_activity.assert_called_once()
+    (desc,), _kwargs = agent._touch_activity.call_args
+    assert isinstance(desc, str) and desc
+
+
+def test_bridge_touches_agent_activity_on_tool_lifecycle() -> None:
+    agent = SimpleNamespace(
+        _fire_stream_delta=MagicMock(),
+        _fire_reasoning_delta=MagicMock(),
+        tool_progress_callback=MagicMock(),
+        tool_start_callback=MagicMock(),
+        tool_complete_callback=MagicMock(),
+        _emit_interim_assistant_message=MagicMock(),
+        _touch_activity=MagicMock(),
+    )
+    bridge = make_antigravity_event_bridge(agent)
+
+    bridge({
+        "type": "step_update", "sequence": 7, "step_index": 2,
+        "step": {"type": "tool", "status": "ACTIVE", "id": "shell-1", "name": "terminal", "command": "pwd"},
+    })
+    bridge({
+        "type": "step_update", "sequence": 8, "step_index": 2,
+        "step": {"type": "tool", "status": "DONE", "id": "shell-1", "name": "terminal", "output": "/repo\n"},
+    })
+
+    assert agent._touch_activity.call_count == 2
+
+
+def test_bridge_survives_a_raising_touch_activity_callback() -> None:
+    """A broken/misbehaving activity callback must never drop the underlying event."""
+    agent = SimpleNamespace(
+        _fire_stream_delta=MagicMock(),
+        _fire_reasoning_delta=MagicMock(),
+        tool_progress_callback=MagicMock(),
+        tool_start_callback=MagicMock(),
+        tool_complete_callback=MagicMock(),
+        _emit_interim_assistant_message=MagicMock(),
+        _touch_activity=MagicMock(side_effect=RuntimeError("boom")),
+    )
+
+    make_antigravity_event_bridge(agent)({
+        "type": "step_update", "sequence": 4, "step_index": 1,
+        "delta": {"type": "assistant", "text": "hello"},
+    })
+
+    agent._fire_stream_delta.assert_called_once_with("hello")
+
+
+def test_bridge_does_not_touch_activity_on_unknown_event() -> None:
+    """Only substantive projected events renew liveness; noise must not mask a real stall."""
+    agent = SimpleNamespace(
+        _fire_stream_delta=MagicMock(),
+        _fire_reasoning_delta=MagicMock(),
+        tool_progress_callback=MagicMock(),
+        tool_start_callback=MagicMock(),
+        tool_complete_callback=MagicMock(),
+        _emit_interim_assistant_message=MagicMock(),
+        _touch_activity=MagicMock(),
+    )
+
+    make_antigravity_event_bridge(agent)({"event": "some_future_event_type"})
+
+    agent._touch_activity.assert_not_called()

@@ -46,6 +46,18 @@ export function captureSteeringSession(deps: SteeringSessionDeps) {
   // interrupt it, so any disagreement refuses and the composer queues the text.
   const routeLeftSelection = Boolean(routedStoredSessionId && !matchesSelection(routedStoredSessionId))
 
+  // A compression can evict the selected tip before the route-follow effect
+  // publishes its successor. In that narrow state route and selection still
+  // agree, but the old tip is no longer represented in the session list. The
+  // active runtime's current binding is then the only authoritative target.
+  const rotationResidue = Boolean(
+    selectedStoredSessionId &&
+      routedStoredSessionId === selectedStoredSessionId &&
+      !sessions.some(
+        session => session.id === selectedStoredSessionId || session._lineage_root_id === selectedStoredSessionId
+      )
+  )
+
   // Selection names a stored chat, yet this runtime proves no binding at all.
   const runtimeUnbound = Boolean(
     selectedStoredSessionId && selectedStoredSessionId !== sessionId && !boundStoredSessionId
@@ -53,7 +65,7 @@ export function captureSteeringSession(deps: SteeringSessionDeps) {
 
   // Any stored id bound to this runtime outside the selected lineage — which is
   // every binding when nothing is selected (a fresh draft next to a live turn).
-  const runtimeBoundElsewhere = [...bindings].some(
+  const runtimeBoundElsewhere = !rotationResidue && [...bindings].some(
     ([stored, runtime]) => runtime === sessionId && !matchesSelection(stored)
   )
 

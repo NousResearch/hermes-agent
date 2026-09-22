@@ -1196,10 +1196,10 @@ def _run_review_fork(
 
 def _publish_review_summary(agent: Any, actions: List[str]) -> None:
     summary = " · ".join(dict.fromkeys(actions))
-    agent._safe_print(f"  💾 Self-improvement review: {summary}")
+    agent._safe_print(f"  💾 Self-improvement: {summary}")
     if agent.background_review_callback:
         with suppress(Exception):
-            agent.background_review_callback(f"💾 Self-improvement review: {summary}")
+            agent.background_review_callback(f"💾 Self-improvement: {summary}")
 
 
 def _run_review_in_thread(

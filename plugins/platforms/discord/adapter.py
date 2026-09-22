@@ -179,7 +179,7 @@ _DISCORD_IMAGE_MAX_REDIRECTS = 10
 # Upgrade-bridge fallback: recognizes status bumps from gateway versions pre-dating
 # metadata["non_conversational"]. New emitters must set the metadata flag, not add regexes.
 _DISCORD_NONCONVERSATIONAL_HISTORY_MESSAGE_PATTERNS = (
-    re.compile(r"^\s*💾\s*Self-improvement review:\s+\S[\s\S]*$", re.IGNORECASE),
+    re.compile(r"^\s*💾\s*Self-improvement(?:\s+review)?:\s+\S[\s\S]*$", re.IGNORECASE),
     # Shorter legacy form still used by background-review test doubles.
     re.compile(
         r"^\s*💾\s+Skill\s+['\"].+?['\"]\s+(?:created|updated|improved|patched)\.?\s*$",

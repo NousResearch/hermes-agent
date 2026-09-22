@@ -3000,15 +3000,31 @@ def _shorten_command_for_display(command: str, limit: int = 80) -> str:
     return one_line
 
 
+_TEST_COMMAND_RE = re.compile(r"\b(pytest|tox|run_tests|test_[a-z0-9_]+|tests?/)", re.IGNORECASE)
+
+
+def _friendly_job_label(command: str) -> str:
+    """Plain-English name for a background command, for the chat receipt.
+
+    The receipt exists only so the chat is not mute while the agent's own next turn is still
+    running, and a shell line is noise to the reader: a test run is named "the tests" rather
+    than echoed back. Anything unrecognised falls back to a neutral "that job", because
+    guessing wrong reads worse than saying less.
+    """
+    if _TEST_COMMAND_RE.search(command or ""):
+        return "the tests"
+    return "that job"
+
+
 def _format_concise_process_notification(
     session_id: str, command: str, exit_code, output: str, duration_seconds=None) -> str:
-    """One-line completion message for ``concise`` display mode; failure appends a short output tail."""
+    """One-line completion message for ``concise`` display mode; failure appends a short output tail.
+
+    Human wording on purpose: the agent's own next turn is the real report, and this receipt only
+    exists so the chat is not mute while that turn is still running. The command line is noise to
+    the reader, so it is replaced by a plain-English label, never echoed back.
+    """
     ok = exit_code in {0, None}
-    icon = "✅" if ok else "❌"
-    parts = [f"{icon} Background task {'finished' if ok else 'failed'}"]
-    short_cmd = _shorten_command_for_display(command)
-    if short_cmd:
-        parts.append(f"— `{short_cmd}`")
     details = []
     if isinstance(duration_seconds, (int, float)) and duration_seconds >= 0:
         secs = int(duration_seconds)
@@ -3020,9 +3036,9 @@ def _format_concise_process_notification(
             details.append(f"{secs}s")
     if not ok:
         details.append(f"exit {exit_code}")
-    if details:
-        parts.append(f"({', '.join(details)})")
-    text = " ".join(parts)
+    suffix = f" ({', '.join(details)})" if details else ""
+    label = _friendly_job_label(command).capitalize()
+    text = f"✅ Done. {label} came back clean{suffix}" if ok else f"❌ {label} hit a problem{suffix}"
     if not ok and output:
         tail_lines = [ln for ln in output.strip().splitlines() if ln.strip()][-5:]
         tail = "\n".join(tail_lines)
@@ -3031,7 +3047,7 @@ def _format_concise_process_notification(
         if tail:
             text += f". Last output:\n```\n{tail}\n```"
     if not ok:
-        text += "\nAsk me to rerun it or show the full log."
+        text += "\nWant me to rerun it or show the full log?"
     return text
 
 

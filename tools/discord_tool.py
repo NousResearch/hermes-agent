@@ -404,6 +404,33 @@ def _remove_own_reaction(token: str, channel_id: str, message_id: str, emoji: st
     return json.dumps({"success": True, "message_id": message_id, "emoji": emoji})
 
 
+def _github_issue_closed(repo: str, number: str) -> bool:
+    """Read an issue state from GitHub; failures fail closed and never complete a post."""
+    url = f"https://api.github.com/repos/{repo}/issues/{number}"
+    request = urllib.request.Request(url, headers={"Accept": "application/vnd.github+json"})
+    try:
+        with urllib.request.urlopen(request, timeout=15) as response:
+            return json.loads(response.read()).get("state") == "closed"
+    except Exception:
+        logger.warning("Could not verify GitHub issue %s#%s before completing demand", repo, number)
+        return False
+
+
+def _complete_demand(
+    token: str, channel_id: str, message_id: str, issue_repo: str, issue_number: str,
+    epic_number: str, **_kwargs: Any,
+) -> str:
+    """Complete a demands post only after its technical issue and epic are closed on GitHub."""
+    channel = _discord_request("GET", f"/channels/{channel_id}", token)
+    if str(channel.get("parent_id") or "") != "1550141272243707914":
+        return tool_error("Completion reactions are limited to the #demandas forum.")
+    if not (_github_issue_closed(issue_repo, issue_number) and _github_issue_closed(issue_repo, epic_number)):
+        return json.dumps({"success": False, "completed": False, "reason": "issue_or_epic_open"})
+    _discord_request("DELETE", _reaction_path(channel_id, message_id, "⌛"), token)
+    _discord_request("PUT", _reaction_path(channel_id, message_id, "✅"), token)
+    return json.dumps({"success": True, "completed": True, "message_id": message_id})
+
+
 # ── action dispatch + metadata ───────────────────────────────────────────────
 # Single source of truth: (action, handler, required-param signature, description). Order is
 # the schema/enum order; the signature drives runtime required-param validation.
@@ -418,6 +445,7 @@ _ACTION_MANIFEST = [
     ("fetch_messages", _fetch_messages, "(channel_id)", "recent messages; optional before/after snowflakes"),
     ("add_reaction", _add_reaction, "(channel_id, message_id, emoji)", "add this bot's reaction to a message"),
     ("remove_own_reaction", _remove_own_reaction, "(channel_id, message_id, emoji)", "remove this bot's matching reaction from a message"),
+    ("complete_demand", _complete_demand, "(channel_id, message_id, issue_repo, issue_number, epic_number)", "after GitHub verifies closure, replace ⌛ with ✅ in #demandas"),
     ("list_pins", _list_pins, "(channel_id)", "pinned messages in a channel"),
     ("pin_message", _pin_message, "(channel_id, message_id)", "pin a message"),
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
@@ -433,7 +461,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "add_reaction", "remove_own_reaction"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "add_reaction", "remove_own_reaction", "complete_demand"})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -497,6 +525,9 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "role_id": {"type": "string", "description": "Discord role ID."},
     "message_id": {"type": "string", "description": "Discord message ID."},
     "emoji": {"type": "string", "description": "Unicode emoji reaction."},
+    "issue_repo": {"type": "string", "description": "GitHub owner/repository for the technical issue and epic."},
+    "issue_number": {"type": "string", "description": "Technical GitHub issue number."},
+    "epic_number": {"type": "string", "description": "GitHub epic issue number."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
     "limit": {
@@ -600,7 +631,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "emoji": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "emoji": "", "issue_repo": "", "issue_number": "", "epic_number": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

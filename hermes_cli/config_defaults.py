@@ -295,6 +295,9 @@ DEFAULT_CONFIG = {
         # Seconds between SIGTERM and escalated SIGKILL for host process trees (browser daemons). 0
         # = SIGTERM only.
         "daemon_term_grace_seconds": 2.0,
+        # Cap on half-RAM worker MemoryMax (MiB); also clamped by enclosing cgroup memory.max
+        # and TERMINAL_LOCAL_MEMORY_MAX_MB. Minimum 64 MiB; HERMES_WORKER_MEMORY_MAX_MB overrides.
+        "worker_memory_max_mb": 4096,
         # Max seconds a one-shot CLI run (-q/-Q/-z) lingers for tracked notify_on_complete
         # background processes to finish. The dying parent owns their stdout pipes, so exiting
         # immediately kills the delivery (e.g. Bot Mode handoff replies via message_agent /

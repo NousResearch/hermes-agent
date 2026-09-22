@@ -2642,6 +2642,117 @@ class TestSystemdCgroupIsolation:
 
         assert pr._worker_memory_max_bytes() == pr._DEFAULT_WORKER_MEMORY_MAX_BYTES
 
+    @staticmethod
+    def _patch_worker_memory_host(
+        monkeypatch, pr, *, ram_gib: int, parent_memory_max_gib=None
+    ):
+        monkeypatch.delenv("HERMES_WORKER_MEMORY_MAX_MB", raising=False)
+        monkeypatch.delenv("TERMINAL_LOCAL_MEMORY_MAX_MB", raising=False)
+        pr._WORKER_MEMORY_MAX_LOGGED = None
+        page_size = 4096
+        pages = ram_gib * 1024**3 // page_size
+        parent_bytes = (
+            ram_gib * 1024**3
+            if parent_memory_max_gib is None
+            else parent_memory_max_gib * 1024**3
+        )
+
+        def fake_sysconf(name):
+            if name == "SC_PHYS_PAGES":
+                return pages
+            if name == "SC_PAGE_SIZE":
+                return page_size
+            raise OSError(name)
+
+        monkeypatch.setattr(pr.os, "sysconf", fake_sysconf)
+
+        def fake_read_text(self, encoding="utf-8"):
+            path = str(self)
+            if path.endswith("/proc/self/cgroup"):
+                return "0::/test.scope\n"
+            if path.endswith("memory.max"):
+                return str(parent_bytes)
+            raise OSError(path)
+
+        monkeypatch.setattr(pr.Path, "read_text", fake_read_text)
+
+    def test_worker_memory_max_knob_raises_ceiling_but_never_past_the_clamps(
+        self, monkeypatch
+    ):
+        """The knob is the only way to widen the per-worker ceiling, and it can
+        never push it past half of physical RAM or past the enclosing cgroup's
+        own memory.max. With no override at all, resolution is unchanged (4 GiB)
+        - that is the bound every other host already relies on."""
+        import hermes_cli.config as cfg_mod
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(cfg_mod, "read_raw_config", lambda: {})
+        self._patch_worker_memory_host(monkeypatch, pr, ram_gib=32)
+        assert pr._worker_memory_max_bytes() == 4096 * 1024 * 1024
+
+        monkeypatch.setattr(
+            cfg_mod,
+            "read_raw_config",
+            lambda: {"terminal": {"worker_memory_max_mb": 8192}},
+        )
+        self._patch_worker_memory_host(monkeypatch, pr, ram_gib=32)
+        assert pr._worker_memory_max_bytes() == 8192 * 1024 * 1024
+
+        monkeypatch.setattr(
+            cfg_mod,
+            "read_raw_config",
+            lambda: {"terminal": {"worker_memory_max_mb": 16384}},
+        )
+        self._patch_worker_memory_host(monkeypatch, pr, ram_gib=8)
+        assert pr._worker_memory_max_bytes() == 4096 * 1024 * 1024
+
+        monkeypatch.setattr(
+            cfg_mod,
+            "read_raw_config",
+            lambda: {"terminal": {"worker_memory_max_mb": 8192}},
+        )
+        self._patch_worker_memory_host(
+            monkeypatch, pr, ram_gib=32, parent_memory_max_gib=6
+        )
+        assert pr._worker_memory_max_bytes() == 6 * 1024**3
+
+    def test_worker_memory_max_env_wins_over_knob_and_bad_values_are_refused(
+        self, monkeypatch
+    ):
+        """HERMES_WORKER_MEMORY_MAX_MB overrides the config key; a value that
+        cannot be honoured is warned about and ignored (falling through to the
+        config key, then to the unchanged default) instead of being applied."""
+        import hermes_cli.config as cfg_mod
+        import tools.process_registry as pr
+
+        monkeypatch.setattr(
+            cfg_mod,
+            "read_raw_config",
+            lambda: {"terminal": {"worker_memory_max_mb": 8192}},
+        )
+        self._patch_worker_memory_host(monkeypatch, pr, ram_gib=32)
+
+        monkeypatch.setenv("HERMES_WORKER_MEMORY_MAX_MB", "2048")
+        assert pr._worker_memory_max_bytes() == 2048 * 1024 * 1024
+
+        monkeypatch.setenv("HERMES_WORKER_MEMORY_MAX_MB", "abc")
+        with patch.object(pr.logger, "warning") as warning:
+            assert pr._worker_memory_max_bytes() == 8192 * 1024 * 1024
+        warning.assert_called_once()
+        assert "HERMES_WORKER_MEMORY_MAX_MB" in warning.call_args[0][0]
+
+        monkeypatch.delenv("HERMES_WORKER_MEMORY_MAX_MB")
+        monkeypatch.setattr(
+            cfg_mod,
+            "read_raw_config",
+            lambda: {"terminal": {"worker_memory_max_mb": 10}},
+        )
+        with patch.object(pr.logger, "warning") as warning:
+            assert pr._worker_memory_max_bytes() == 4096 * 1024 * 1024
+        warning.assert_called_once()
+        assert "terminal.worker_memory_max_mb" in warning.call_args[0][0]
+
+
     def test_kill_recovered_detached_already_exited_stops_persisted_scope(
         self, registry, monkeypatch
     ):

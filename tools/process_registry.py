@@ -28,7 +28,7 @@ _IS_LINUX = platform.system() == "Linux"
 from tools.environments.local import _find_shell, _resolve_safe_cwd, _sanitize_subprocess_env
 from hermes_cli._subprocess_compat import windows_hide_flags
 from dataclasses import dataclass, field
-from typing import Any, Dict, List, Literal, NamedTuple, Optional
+from typing import Any, Dict, List, Literal, NamedTuple, Optional, Tuple
 
 from hermes_cli.config import get_hermes_home
 
@@ -106,19 +106,79 @@ _SYSTEMD_SCOPE_PROBED_AT = 0.0
 # #110803) and reappear after a False (linger enabled later, #104893).
 _SYSTEMD_SCOPE_PROBE_TTL_SECONDS = 60.0
 _MIN_WORKER_MEMORY_MAX_BYTES = 64 * 1024 * 1024
+_DEFAULT_WORKER_MEMORY_MAX_MB = 4096
 _DEFAULT_WORKER_MEMORY_MAX_BYTES = 1024 * 1024 * 1024
-_WORKER_MEMORY_MAX_CAP_BYTES = 4 * 1024 * 1024 * 1024
+_WORKER_MEMORY_MAX_CAP_BYTES = _DEFAULT_WORKER_MEMORY_MAX_MB * 1024 * 1024
+_WORKER_MEMORY_MAX_LOGGED: Optional[Tuple[str, int]] = None
+
+
+def _worker_memory_max_cap_bytes_and_source() -> Tuple[int, str]:
+    """Resolve the RAM/2 cap from env, config, or the built-in default (MiB knob -> bytes)."""
+    min_mib = _MIN_WORKER_MEMORY_MAX_BYTES // (1024 * 1024)
+    env_raw = os.getenv("HERMES_WORKER_MEMORY_MAX_MB", "").strip()
+    if env_raw:
+        try:
+            env_mib = int(env_raw)
+        except ValueError:
+            env_mib = -1
+        if env_mib >= min_mib:
+            return env_mib * 1024 * 1024, "HERMES_WORKER_MEMORY_MAX_MB"
+        logger.warning(
+            "Ignoring invalid HERMES_WORKER_MEMORY_MAX_MB=%r; "
+            "expected an integer representing at least %d MiB",
+            env_raw,
+            min_mib,
+        )
+    try:
+        from hermes_cli.config import cfg_get, read_raw_config
+
+        val = cfg_get(read_raw_config(), "terminal", "worker_memory_max_mb")
+        if val is not None:
+            try:
+                cfg_mib = int(val)
+            except (TypeError, ValueError):
+                cfg_mib = -1
+            if cfg_mib >= min_mib:
+                return cfg_mib * 1024 * 1024, "terminal.worker_memory_max_mb"
+            logger.warning(
+                "Ignoring invalid terminal.worker_memory_max_mb=%r; "
+                "expected an integer representing at least %d MiB",
+                val,
+                min_mib,
+            )
+    except Exception:
+        pass
+    return _DEFAULT_WORKER_MEMORY_MAX_MB * 1024 * 1024, "default"
+
+
+def _maybe_log_worker_memory_max_cap(cap_bytes: int, source: str) -> None:
+    global _WORKER_MEMORY_MAX_LOGGED
+    if source == "default":
+        return
+    pair = (source, cap_bytes)
+    if _WORKER_MEMORY_MAX_LOGGED == pair:
+        return
+    _WORKER_MEMORY_MAX_LOGGED = pair
+    logger.info(
+        "Per-worker cgroup memory ceiling: %d MiB (from %s)",
+        cap_bytes // (1024 * 1024),
+        source,
+    )
 
 
 def _worker_memory_max_bytes() -> int:
     """Finite per-worker cgroup limit that can never widen host risk.
-    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* the safe
-    bound (min of the gateway's cgroup-v2 ``memory.max`` and half of physical RAM,
-    capped at 4 GiB), so an oversized override cannot exceed the enclosing slice.
 
-    The proposed local-memory-guard environment override is honored when it tightens the safe bound, so this
-    isolation composes with PR #57121 instead of inventing a second knob.
+    The safe bound is ``min(enclosing cgroup-v2 memory.max, half of physical RAM
+    capped by ``terminal.worker_memory_max_mb`` / ``HERMES_WORKER_MEMORY_MAX_MB``,
+    default 4096 MiB)``. When nothing is readable, fall back to
+    ``_DEFAULT_WORKER_MEMORY_MAX_BYTES`` (1 GiB).
+
+    ``TERMINAL_LOCAL_MEMORY_MAX_MB`` is honored only when it *tightens* that safe
+    bound, so an oversized override cannot exceed the enclosing slice.
     """
+    cap_bytes, cap_source = _worker_memory_max_cap_bytes_and_source()
+    _maybe_log_worker_memory_max_cap(cap_bytes, cap_source)
     override_bound: Optional[int] = None
     override = os.getenv("TERMINAL_LOCAL_MEMORY_MAX_MB", "").strip()
     if override:
@@ -144,7 +204,9 @@ def _worker_memory_max_bytes() -> int:
                 candidates.append(int(raw_limit))
     with suppress(OSError, ValueError, TypeError):
         physical_bytes = int(os.sysconf("SC_PHYS_PAGES")) * int(os.sysconf("SC_PAGE_SIZE"))
-        candidates.append(min(_WORKER_MEMORY_MAX_CAP_BYTES, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2)))
+        candidates.append(
+            min(cap_bytes, max(_MIN_WORKER_MEMORY_MAX_BYTES, physical_bytes // 2))
+        )
     safe_bound = min(candidates) if candidates else _DEFAULT_WORKER_MEMORY_MAX_BYTES
     return min(override_bound, safe_bound) if override_bound else safe_bound
 

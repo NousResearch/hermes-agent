@@ -392,6 +392,13 @@ def _build_children(
                 parent_agent=parent_agent, role=_normalize_role(t.get("role") or top_role), **overrides,
             )
         except ValueError as exc:
+            # Partially-built children never run: close them so their dedicated
+            # SessionDB handles (acquired per child in _build_child_agent), task
+            # resources and parent attachments don't leak. Events/hook already
+            # emitted (spawn_requested, subagent_start) cannot be retracted.
+            for _idx, _t, _child in children:
+                with _quiet("subagent: closing partially-built child %d failed", _idx):
+                    _child.close()
             return [], str(exc)
         if _task_schema is not None:
             with _quiet("Could not attach output schema to child %d", i):
@@ -434,6 +441,15 @@ def _oneshot_spawn_budget(parent_agent: Any, requested: int) -> Optional[str]:
         )
     parent_agent._oneshot_children_spawned = spent + requested
     return None
+
+
+def _refund_oneshot_spawn_budget(parent_agent: Any, requested: int) -> None:
+    """Give back a charged-but-never-run spawn count. The budget is charged up front (atomic check-and-charge
+    against concurrent delegate_task calls); when batch construction fails before any child runs, the charge
+    must be rolled back or a failed spawn permanently eats the one-shot run's delegation budget."""
+    spent = getattr(parent_agent, "_oneshot_children_spawned", None)
+    if isinstance(spent, int) and spent >= requested:
+        parent_agent._oneshot_children_spawned = spent - requested
 
 
 def delegate_task(
@@ -523,6 +539,8 @@ def delegate_task(
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
     )
     if err:
+        # No child was built or run: the one-shot budget charged above must not stick.
+        _refund_oneshot_spawn_budget(parent_agent, len(task_list))
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,

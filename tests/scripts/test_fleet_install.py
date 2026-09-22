@@ -19,6 +19,7 @@ def test_bundle_is_standalone_and_contains_no_checkout_or_secret_files(tmp_path)
     assert "__main__.py" in names
     assert "fleet_runner.py" in names
     assert "hermes_cli/fleet_protocol.py" in names
+    assert "hermes_cli/urllib_security.py" in names
     assert not any(name.startswith(".git/") or name.endswith(".env") for name in names)
 
 

@@ -11,6 +11,7 @@ _BUNDLE_MODULES = (
     "fleet_store.py",
     "fleet_client.py",
     "fleet_runner.py",
+    "urllib_security.py",
 )
 
 
@@ -45,4 +46,3 @@ def liveness_marker_is_active(path: str | Path) -> bool:
 
 def runner_command(python_executable: str | Path, bundle: str | Path, node_id: str) -> list[str]:
     return [str(python_executable), str(bundle), "--node-id", node_id]
-

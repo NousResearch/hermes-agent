@@ -9,6 +9,8 @@ forwarders. Symbols tests patch on ``run_agent`` (``cleanup_vm`` /
 
 from __future__ import annotations
 
+from hermes_cli.routing_policy import RoutingPolicyError
+
 import contextlib
 import contextvars
 import json
@@ -696,16 +698,24 @@ def _bedrock_converse_call(api_kwargs: dict, *, stream: bool, on_stream_denied=N
         recover_from_cache_point_rejection)
     region = api_kwargs.pop("__bedrock_region__", "us-east-1")
     api_kwargs.pop("__bedrock_converse__", None)
+    from agent.bedrock_adapter import check_bedrock_wire_route
     client = _get_bedrock_runtime_client(region)
     method = client.converse_stream if stream else client.converse
     finish = (lambda raw: raw.get("stream", [])) if stream else normalize_converse_response
     try:
+        check_bedrock_wire_route(client, api_kwargs, region)
         raw_response = method(**api_kwargs)
+    except RoutingPolicyError:
+        # A route denial is terminal: never reinterpret it as a cache-point or
+        # streaming IAM failure, and never make a second boto call.
+        raise
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, api_kwargs)
         if retry_kwargs is not None:
+            check_bedrock_wire_route(client, retry_kwargs, region)
             return finish(method(**retry_kwargs))
         if on_stream_denied is not None and is_streaming_access_denied_error(exc):
+            check_bedrock_wire_route(client, api_kwargs, region)
             return on_stream_denied(client, api_kwargs, exc)
         if is_stale_connection_error(exc):
             invalidate_runtime_client(region)
@@ -721,6 +731,10 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     so callers can register it with their abort/close machinery; bedrock / MoA
     manage their own clients. Interrupt/abort/close semantics stay in callers.
     """
+    from hermes_cli.routing_policy import check_route, current_routing_policy, effective_wire_model
+    check_route(current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+                model=str(effective_wire_model(api_kwargs, getattr(agent, "model", "")) or ""),
+                base_url=str(getattr(agent, "base_url", "") or ""))
     if agent.api_mode == "codex_responses":
         return agent._run_codex_stream(api_kwargs, client=make_client("codex_stream_request"),
             on_first_delta=getattr(agent, "_codex_on_first_delta", None))
@@ -746,6 +760,9 @@ def _dispatch_nonstreaming_api_request(agent, api_kwargs: dict, *, make_client):
     # request transform. No-op unless this really is the OpenAI SDK, so the
     # MoA facade above and the suite's stand-in clients are unaffected.
     api_kwargs = bypass_chat_sdk_request_transform(api_kwargs, request_client)
+    check_route(current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+                model=str(effective_wire_model(api_kwargs, getattr(agent, "model", "")) or ""),
+                base_url=str(getattr(request_client, "base_url", "") or ""))
     return request_client.chat.completions.create(**api_kwargs)
 
 
@@ -2057,6 +2074,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
                 try:
                     from hermes_cli.model_normalize import normalize_model_for_provider
                     fb_model = normalize_model_for_provider(fb_model, fb_provider)
+                except RoutingPolicyError:
+                    raise
                 except Exception as _norm_err:
                     logger.warning("Could not normalize fallback model %r for provider %r: %s", fb_model, fb_provider, _norm_err)
 
@@ -2119,6 +2138,8 @@ def try_activate_fallback(agent, reason: "FailoverReason | None" = None, reset_a
             agent.runtime_capabilities = resolve_native_compaction_capabilities(
                 model=agent.model, base_url=agent.base_url, provider=fb_provider, is_codex_backend=fb_provider == "openai-codex")
             return True
+        except RoutingPolicyError:
+            raise
         except Exception as e:
             if fb_provider == "nous":
                 unavailable.add(fb_key)
@@ -2201,10 +2222,25 @@ def _iteration_summary_api_messages(agent, messages: list) -> list:
     return api_messages
 
 
-def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int):
+def _managed_summary_call(agent, api_request_id: str, request, callback, *, retry_count: int, client=None):
     from agent import relay_llm
+    from hermes_cli.routing_policy import check_route, current_routing_policy, effective_wire_model
+    check_route(
+        current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+        model=str(effective_wire_model(request, getattr(agent, "model", "")) or ""),
+        base_url=str(getattr(agent, "base_url", "") or ""),
+    )
+    def guarded_callback(final_request):
+        # Relay may rewrite the request after the early validation above.  This is the
+        # last point before the SDK callback and therefore the authoritative wire guard.
+        check_route(
+            current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+            model=str(effective_wire_model(final_request, getattr(agent, "model", "")) or ""),
+            base_url=str(getattr(client, "base_url", "") or getattr(agent, "base_url", "") or ""),
+        )
+        return callback(final_request)
     return relay_llm.execute_current(
-        request, callback,
+        request, guarded_callback,
         name=str(getattr(agent, "provider", "") or "provider"), model_name=str(getattr(agent, "model", "") or ""),
         metadata={"api_mode": str(getattr(agent, "api_mode", "") or "chat_completions"),
             "api_request_id": api_request_id, "call_role": "iteration_summary", "retry_count": retry_count},
@@ -2264,7 +2300,7 @@ def _chat_summary_attempt(agent, api_messages: list, api_request_id: str):
         response = _managed_summary_call(
             agent, api_request_id, summary_kwargs,
             lambda request: summary_client.chat.completions.create(**bypass_chat_sdk_request_transform(request, summary_client)),
-            retry_count=retry_count)
+            retry_count=retry_count, client=summary_client)
         return _summary_text(agent, response)
     return _attempt
 
@@ -2312,6 +2348,9 @@ def handle_max_iterations(agent, messages: list, api_call_count: int) -> str:
             break
 
     except Exception as e:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(e, RoutingPolicyError):
+            raise
         logger.warning("Failed to get summary response: %s", e)
         from agent.turn_failure_copy import site_copy
         final_response = site_copy("max_iterations_no_summary", limit=agent.max_iterations)
@@ -2511,6 +2550,8 @@ class _BedrockStream:
         # InvokeModel-only IAM policies cannot stream; fall back inside the same Relay
         # attempt (one lifecycle boundary).
         from agent.bedrock_adapter import normalize_converse_response
+        from agent.bedrock_adapter import check_bedrock_wire_route
+        check_bedrock_wire_route(client, final_kwargs, getattr(self.agent, "_bedrock_region", self.region))
         self.agent._disable_streaming = True
         self.agent._safe_print("\n⚠  AWS IAM denied bedrock:InvokeModelWithResponseStream — "
             "falling back to non-streaming InvokeModel.\n"
@@ -2917,6 +2958,10 @@ class _StreamingCall(StreamingWaitMonitor):
         # #93650: as above — the streaming path carries the same bulk
         # messages/tools payload and pays the same client-side walk.
         stream_kwargs = bypass_chat_sdk_request_transform(stream_kwargs, request_client)
+        from hermes_cli.routing_policy import check_route, current_routing_policy, effective_wire_model
+        check_route(current_routing_policy(), provider=str(getattr(self.agent, "provider", "") or ""),
+                    model=str(effective_wire_model(stream_kwargs, getattr(self.agent, "model", "")) or ""),
+                    base_url=str(getattr(request_client, "base_url", "") or getattr(self.agent, "base_url", "") or ""))
         return request_client.chat.completions.create(**stream_kwargs)
 
     def _chat_stream_created(self, raw_stream: Any) -> None:
@@ -3274,6 +3319,13 @@ class _StreamingCall(StreamingWaitMonitor):
         def _open_anthropic_stream(next_api_kwargs: dict[str, Any]):
             final_kwargs = dict(next_api_kwargs)
             sanitize_anthropic_kwargs(final_kwargs, log_prefix=getattr(self.agent, "log_prefix", ""))
+            from hermes_cli.routing_policy import check_route, current_routing_policy, effective_wire_model
+            check_route(
+                current_routing_policy(),
+                provider=str(getattr(self.agent, "provider", "") or ""),
+                model=str(effective_wire_model(final_kwargs, getattr(self.agent, "model", "")) or ""),
+                base_url=str(getattr(request_client, "base_url", "") or getattr(self.agent, "base_url", "") or ""),
+            )
             manager = request_client.messages.stream(**final_kwargs)
             _stream_context["manager"] = manager
             return manager.__enter__()

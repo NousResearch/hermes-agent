@@ -273,6 +273,9 @@ def _slot_runtime(slot: dict[str, Any]) -> dict[str, Any]:
         if isinstance(extra_body, dict) and extra_body:
             out["extra_body"] = dict(extra_body)
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.warning("MoA slot %s: provider '%s' could not be resolved (%s); calling with bare provider/model",
                        _slot_label(slot), provider, exc)
         return out
@@ -403,6 +406,10 @@ def _run_reference(
         acct = _RefAccounting(*_price_reference_response(response, slot, runtime), messages=trimmed, output=output_text, **trace_fields)
         return label, output_text, acct
     except Exception as exc:
+        # A policy denial is a terminal safety verdict, not an unavailable advisor.
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.warning("MoA reference model %s failed: %s", label, exc)
         note = f"[failed: {exc}]"
         return label, note, _RefAccounting(CanonicalUsage(), messages=messages, output=note, **trace_fields)
@@ -873,6 +880,10 @@ def aggregate_moa_context(
             reasoning_config=_aggregator_reasoning_config(aggregator), **agg_runtime,
         ))
     except Exception as exc:
+        # Never downgrade a post-resolution wire policy rejection into raw advice.
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.warning("MoA aggregator model %s failed: %s", agg_label, exc)
         synthesis = ""
 

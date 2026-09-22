@@ -120,3 +120,23 @@ class TestAnthropicStreamPoolCleanup:
         agent._anthropic_client.close.assert_called()
         assert attempt_count[0] == 2  # retried once, then succeeded
 
+    def test_denied_effective_extra_body_model_never_opens_native_stream(self, monkeypatch):
+        """The native stream callback must enforce the model the SDK will actually send."""
+        from hermes_cli import routing_policy
+
+        agent = _make_anthropic_agent(model="allowed-model")
+        monkeypatch.setattr(
+            routing_policy,
+            "current_routing_policy",
+            lambda: {"enabled": True, "require_explicit": False,
+                     "deny": {"providers": [], "models": ["denied-model"], "base_url_hosts": []}},
+        )
+
+        with pytest.raises(routing_policy.RoutingPolicyError, match="selected model"):
+            agent._interruptible_streaming_api_call(
+                {"model": "allowed-model", "extra_body": {"model": "denied-model"}},
+            )
+
+        agent._anthropic_client.messages.stream.assert_not_called()
+        agent._anthropic_client.messages.create.assert_not_called()
+

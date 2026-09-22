@@ -65,6 +65,25 @@ class TestResolveRuntimeWithFallback:
         assert entry["provider"] == "openai"
         assert any("anthropic/claude-x is misconfigured" in r.getMessage() for r in caplog.records)
 
+    def test_policy_denied_fallback_is_terminal_and_stops_the_chain(self, monkeypatch):
+        """An AuthError primary may enter the ladder, but a policy rejection may not advance it."""
+        from hermes_cli.routing_policy import RoutingPolicyError
+
+        calls = []
+
+        def resolve(**kw):
+            calls.append(kw["requested"])
+            if kw["requested"] == "openai-codex":
+                raise AuthError("primary unavailable")
+            if kw["requested"] == "anthropic":
+                raise RoutingPolicyError("denied fallback")
+            pytest.fail("second fallback must not be attempted")
+
+        monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", resolve)
+        with pytest.raises(RoutingPolicyError, match="denied fallback"):
+            resolve_runtime_with_fallback(_CFG, requested="openai-codex")
+        assert calls == ["openai-codex", "anthropic"]
+
 
 def test_run_agent_falls_back_when_primary_resolution_raises_auth_error(monkeypatch):
     """End-to-end: ``_run_agent`` builds AIAgent against the fallback entry's provider/model (#81209)."""

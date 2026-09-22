@@ -22,6 +22,7 @@ from typing import List, Dict, Any, Optional
 
 import fire
 from dotenv import load_dotenv
+from hermes_cli.routing_policy import RoutingPolicyError
 from agent.tool_dispatch_helpers import make_tool_result_message
 from trajectory_compressor import _effective_temperature_for_model
 
@@ -247,7 +248,11 @@ class MiniSWERunner:
         if fixed_temperature is not None:
             api_kwargs["temperature"] = fixed_temperature
         try:
+            from agent.auxiliary_client import _check_auxiliary_wire_route
+            _check_auxiliary_wire_route(self.client, api_kwargs)
             return self.client.chat.completions.create(**api_kwargs).choices[0].message
+        except RoutingPolicyError:
+            raise
         except Exception as e:
             self.logger.error("API call failed: %s", e)
 
@@ -318,6 +323,8 @@ class MiniSWERunner:
                 try:
                     result = self.run_task(prompt)
                     print(f"✅ Task {i} completed (api_calls={result['api_calls']})")
+                except RoutingPolicyError:
+                    raise
                 except Exception as e:
                     self.logger.error("Error on task %s: %s", i, e)
                     result = {"conversations": [], "completed": False, "api_calls": 0, "error": str(e),

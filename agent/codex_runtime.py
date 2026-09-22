@@ -499,6 +499,19 @@ def _start_codex_thread(agent) -> str:
         return agent._codex_session.ensure_started()
 
 
+def check_codex_app_server_route() -> None:
+    # The app server authenticates and may compact independently, so Hermes cannot
+    # observe the physical endpoint/model at either subprocess dispatch boundary.
+    # A configured policy therefore fails closed rather than trusting agent metadata.
+    from hermes_cli.routing_policy import RoutingPolicyError, current_routing_policy
+    policy = current_routing_policy()
+    if policy.get("enabled"):
+        raise RoutingPolicyError(
+            "routing policy cannot verify the Codex app-server subprocess route; dispatch is forbidden",
+            code="unverifiable_subprocess_route",
+        )
+
+
 def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -> None:
     """Lazily spawn one CodexAppServerSession per AIAgent (reused across turns, closed by the _cleanup hook).
     A live session whose thread was started with a different prompt composition (TUI/Desktop ``/personality``
@@ -506,6 +519,7 @@ def _ensure_codex_session(agent, messages: List[Dict[str, Any]] | None = None) -
     Only the FIRST session of an AIAgent resumes the stored codex thread: a retired/recreated one keeps
     today's fresh-thread behaviour and overwrites the binding once its turn is committed. ``messages`` is the
     turn's transcript (current user row last); a thread started from scratch is seeded with the prior turns."""
+    check_codex_app_server_route()
     developer_instructions = _codex_developer_instructions(agent)
     if getattr(agent, "_codex_session", None) is not None:
         # Only a session whose recorded composition differs is stale; one attached without a record is kept.
@@ -1077,6 +1091,7 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
 
     def _open_codex_stream(next_api_kwargs: dict[str, Any]):
         from hermes_cli.providers import is_actual_route
+        from hermes_cli.routing_policy import check_route, current_routing_policy, effective_wire_model
 
         if is_actual_route(
             getattr(agent, "provider", ""),
@@ -1087,6 +1102,9 @@ def run_codex_stream(agent, api_kwargs: dict, client: Any = None, on_first_delta
             )
         stream_kwargs = _sanitize_consumer_codex_request(agent, next_api_kwargs)
         stream_kwargs["stream"] = True
+        check_route(current_routing_policy(), provider=str(getattr(agent, "provider", "") or ""),
+                    model=str(effective_wire_model(stream_kwargs, getattr(agent, "model", "")) or ""),
+                    base_url=str(getattr(active_client, "base_url", "") or getattr(agent, "base_url", "") or ""))
         return active_client.responses.create(**bypass_sdk_request_transform(stream_kwargs))
 
     def _log_failure(exc: BaseException) -> None:

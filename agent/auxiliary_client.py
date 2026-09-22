@@ -8,6 +8,8 @@ in neither chain (undocumented, shifting allow-list): main provider or explicit
 ``auxiliary.<task>.provider`` only. HTTP 402 in call_llm() falls through the chain.
 """
 
+from hermes_cli.routing_policy import RoutingPolicyError
+
 import contextlib
 import contextvars
 import functools
@@ -1415,7 +1417,8 @@ class _CodexCompletionsAdapter:
             classify_responses_route,
         )
         from agent.transports.codex import _alias_wire_tools
-        model = kwargs.get("model", self._model)
+        from hermes_cli.routing_policy import effective_wire_model
+        model = effective_wire_model(kwargs, self._model)
         wire_model = _wire_model_identity(model)
         host = str(getattr(self._client, "base_url", "") or "")
         is_copilot = base_url_host_matches(host, "githubcopilot.com")
@@ -1547,6 +1550,7 @@ class _CodexCompletionsAdapter:
         # Last, like the main transport: caller extra_body must not put a rejected Astra field back.
         from agent.transports.codex import _sanitize_astra_request_kwargs
         _sanitize_astra_request_kwargs(resp_kwargs, model, host)
+        _check_auxiliary_wire_route(self._client, resp_kwargs)
         return resp_kwargs, model, timeout
 
     def create(self, **kwargs) -> Any:
@@ -1783,9 +1787,11 @@ class _AnthropicCompletionsAdapter:
                 if not isinstance(existing, dict):
                     existing = {}
                 anthropic_kwargs["extra_body"] = {**existing, **passthrough}
+        _check_auxiliary_wire_route(self._client, anthropic_kwargs)
         response = create_anthropic_message(
             self._client,
             anthropic_kwargs,
+            before_wire=lambda request: _check_auxiliary_wire_route(self._client, request),
             # Record provider-response timing every event, but tick forward progress only for
             # substantive payloads so keepalives can't hold a stalled summary open. None keeps
             # the fast get_final_message path.
@@ -1837,7 +1843,12 @@ class _BedrockCompletionsAdapter:
 
     def create(self, **kwargs) -> Any:
         from agent.bedrock_adapter import call_converse
-        model = kwargs.get("model", self._model)
+        from hermes_cli.routing_policy import check_route, current_routing_policy, effective_wire_model
+        model = effective_wire_model(kwargs, self._model)
+        check_route(
+            current_routing_policy(), provider="bedrock", model=str(model or ""),
+            base_url=f"https://bedrock-runtime.{self._region}.amazonaws.com",
+        )
         max_tokens = kwargs.get("max_tokens") or kwargs.get("max_completion_tokens")
         # OpenAI accepts ``stop`` as str or list; Converse requires a list.
         stop = kwargs.get("stop")
@@ -2187,7 +2198,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         if provider_id == "gemini":
             from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
             if is_native_gemini_base_url(base_url):
-                return GeminiNativeClient(api_key=api_key, base_url=base_url), model
+                client = GeminiNativeClient(api_key=api_key, base_url=base_url)
+                client._hermes_aux_effective_provider = provider_id
+                return client, model
         if base_url_host_matches(base_url, "api.kimi.com"):
             headers = {"User-Agent": "claude-code/0.1.0"}
         elif base_url_host_matches(base_url, "githubcopilot.com"):
@@ -2201,8 +2214,9 @@ def _resolve_api_key_provider() -> Tuple[Optional[OpenAI], Optional[str]]:
         merged = _apply_user_default_headers(extra.get("default_headers"))
         if merged:
             extra["default_headers"] = merged
-        client = _create_openai_client(api_key=api_key, base_url=base_url, **extra)
-        return _maybe_wrap_anthropic(client, model, api_key, raw_base_url), model
+        client = _maybe_wrap_anthropic(_create_openai_client(api_key=api_key, base_url=base_url, **extra), model, api_key, raw_base_url)
+        client._hermes_aux_effective_provider = provider_id
+        return client, model
     return None, None
 
 
@@ -2651,9 +2665,12 @@ def _relay_sync_stream(
     from agent.auxiliary_wire import prepare_chat_messages
 
     kwargs = prepare_chat_messages(client, kwargs)
+    _check_auxiliary_wire_route(client, kwargs)
     # The bypass runs inside the provider callback, AFTER Relay has seen (and possibly
     # rewritten) the real conversation; applying it to `kwargs` would hand Relay an empty one.
-    create = lambda request: client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))  # noqa: E731
+    def create(request: dict[str, Any]) -> Any:
+        _check_auxiliary_wire_route(client, request)
+        return client.chat.completions.create(**bypass_chat_sdk_request_transform(request, client))
     route = _relay_auxiliary_metadata(provider=provider, api_mode=api_mode)
     if route is None:
         return create(kwargs)
@@ -2780,6 +2797,9 @@ def _resolve_custom_runtime() -> Tuple[Optional[str], Optional[str], Optional[st
         logger.debug("Auxiliary client: no custom endpoint configured: %s", exc)
         return None, None, None
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         logger.debug("Auxiliary client: custom runtime resolution failed: %s", exc)
         runtime = None
     if not isinstance(runtime, dict):
@@ -3896,12 +3916,16 @@ def _complete_fallback_destination(
         if _endpoint_speaks_anthropic_messages(base_url):
             api_mode = "anthropic_messages"
         else:
-            with contextlib.suppress(Exception):
+            try:
                 from hermes_cli.runtime_provider import resolve_runtime_provider
                 runtime = resolve_runtime_provider(
                     requested=provider, explicit_base_url=base_url or None, target_model=model or ""
                 )
                 api_mode = str(runtime.get("api_mode") or "").strip() or None
+            except Exception as exc:
+                from hermes_cli.routing_policy import RoutingPolicyError
+                if isinstance(exc, RoutingPolicyError):
+                    raise
     return _FallbackDestination(provider, base_url, api_mode, model)
 
 
@@ -4078,6 +4102,8 @@ def _call_fallback_candidate_sync(
             lambda c, kw: _send(c, kw, dest), client, request_kwargs, task=task)
     try:
         return _send_recovering(fb_client, fb_kwargs, destination)
+    except RoutingPolicyError:
+        raise
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             capacity = fallback_candidate_unavailable_reason(fb_err)
@@ -4094,6 +4120,8 @@ def _call_fallback_candidate_sync(
             failed_destination = retry[2]
             try:
                 return _send_recovering(*retry)
+            except RoutingPolicyError:
+                raise
             except Exception as retry_err:
                 if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
@@ -4128,6 +4156,8 @@ async def _call_fallback_candidate_async(
             lambda c, kw: _send(c, kw, dest), client, request_kwargs, task=task)
     try:
         return await _send_recovering(fb_client, fb_kwargs, destination)
+    except RoutingPolicyError:
+        raise
     except Exception as fb_err:
         if not _is_auth_error(fb_err):
             capacity = fallback_candidate_unavailable_reason(fb_err)
@@ -4144,6 +4174,8 @@ async def _call_fallback_candidate_async(
             failed_destination = retry[2]
             try:
                 return await _send_recovering(*retry)
+            except RoutingPolicyError:
+                raise
             except Exception as retry_err:
                 if not _is_auth_error(retry_err) and fallback_candidate_unavailable_reason(retry_err) is None:
                     raise
@@ -4247,6 +4279,8 @@ def _try_main_agent_model_fallback(
         return None, None, ""
     try:
         client, resolved_model = resolve_provider_client(provider=main_provider, model=main_model)
+    except RoutingPolicyError:
+        raise
     except Exception:
         client, resolved_model = None, None
     if client is None:
@@ -4343,7 +4377,10 @@ def _try_configured_fallback_chain(
         label = f"fallback_chain[{i}]({fb_provider})"
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
-        except Exception:
+        except Exception as exc:
+            from hermes_cli.routing_policy import RoutingPolicyError
+            if isinstance(exc, RoutingPolicyError):
+                raise
             fb_client, resolved_model = None, None
         if fb_client is not None:
             too_small = _context_too_small(
@@ -4435,6 +4472,9 @@ def _try_main_fallback_chain(
         try:
             fb_client, resolved_model = _resolve_fallback_entry(entry)
         except Exception as exc:
+            from hermes_cli.routing_policy import RoutingPolicyError
+            if isinstance(exc, RoutingPolicyError):
+                raise
             logger.debug("Auxiliary %s: main fallback %s failed to resolve: %s", task or "call", label, exc)
             fb_client, resolved_model = None, None
         if fb_client is not None:
@@ -4577,7 +4617,10 @@ def _try_discovery_chain() -> Tuple[Optional[OpenAI], Optional[str], str]:
                             label, model or "default", ", ".join(tried))
             else:
                 logger.info("Auxiliary auto-detect: using %s (%s)", label, model or "default")
-            return client, model, label
+            # ``api-key`` is a discovery bucket, not a physical wire identity.
+            # Keep a native/registry client's explicit attribution for the
+            # terminal guard after auto routing.
+            return client, model, _effective_provider_for_client(client, label)
         tried.append(label)
     logger.warning("Auxiliary auto-detect: no provider available (tried: %s). "
                    "Compression, summarization, and memory flush will not work. "
@@ -4892,9 +4935,25 @@ def _profile_declared_messages_wire(provider: str) -> Optional[str]:
 
 def _route_client(req: _ResolveRequest, client_obj: Any, final_model_str: Optional[str]) -> _ResolveResult:
     """Return (client, model), converting to the async wrapper when ``req.async_mode``."""
-    if req.async_mode:
-        return _to_async_client(client_obj, final_model_str, is_vision=req.is_vision)
-    return client_obj, final_model_str
+    physical_provider = getattr(client_obj, "_hermes_aux_effective_provider", "")
+    # A named custom alias can resolve through Gemini's native transport. The
+    # alias is not the physical provider which owns the HTTP request, and the
+    # identity must survive the async client conversion below.
+    with contextlib.suppress(ImportError):
+        from agent.gemini_native_adapter import GeminiNativeClient
+        if isinstance(client_obj, GeminiNativeClient):
+            physical_provider = "gemini"
+    client, model = (_to_async_client(client_obj, final_model_str, is_vision=req.is_vision)
+                     if req.async_mode else (client_obj, final_model_str))
+    # The final wire client (including an async rebuild) owns the physical provider identity.
+    # `_resolve_auto_branch` overwrites this provisional value with its discovered provider.
+    if client is not None and (physical_provider or req.provider):
+        try:
+            setattr(client, "_hermes_aux_effective_provider", physical_provider or req.provider)
+        except (AttributeError, TypeError):
+            logger.debug("Auxiliary client %s cannot retain effective provider %s",
+                         type(client).__name__, req.provider)
+    return client, model
 
 
 def _route_or_warn(req: _ResolveRequest, client: Any, default: Optional[str], unavailable_msg: str, *args: Any) -> _ResolveResult:
@@ -5145,6 +5204,13 @@ def _resolve_named_custom_branch(req: _ResolveRequest) -> Optional[_ResolveResul
         return _route_client(
             req, AnthropicAuxiliaryClient(real_client, final_model, custom_key, custom_base,
                                           is_oauth=anthropic_route_is_oauth(custom_base, custom_key)), final_model)
+    # A named gateway may intentionally point at Gemini's native API rather
+    # than an OpenAI-compatible proxy. Build the physical native client here;
+    # otherwise the named alias loses Gemini identity and targets /chat/completions.
+    with contextlib.suppress(ImportError):
+        from agent.gemini_native_adapter import GeminiNativeClient, is_native_gemini_base_url
+        if is_native_gemini_base_url(custom_base):
+            return _route_client(req, GeminiNativeClient(api_key=custom_key, base_url=custom_base), final_model)
     client = _named_custom_openai_wire_client(custom_base, custom_key, entry_headers)
     # codex_responses, or auto-detect via _wrap_transport (which reads the task-level api_mode).
     if entry_api_mode == "codex_responses":
@@ -5355,6 +5421,12 @@ def resolve_provider_client(
     client for ``responses.stream()`` callers. ``api_mode`` forces "codex_responses"/"chat_completions"/
     "anthropic_messages" instead of auto-detect. Returns (client, resolved_model) or (None, None)."""
     _validate_proxy_env_urls()
+    # This precedes all discovery so require_explicit cannot select an incidental credential.
+    from hermes_cli.routing_policy import check_requested_route, check_route, current_routing_policy
+    policy = current_routing_policy()
+    check_requested_route(policy, requested_provider=str(provider or ""), model=str(model or ""))
+    check_route(policy, provider=str(provider or ""), model=str(model or ""),
+                base_url=str(explicit_base_url or ""))
     # Keep the pre-alias name so a custom_providers entry named like a built-in alias
     # (e.g. "kimi" → "kimi-coding") is still reachable via the named-custom branch.
     original_provider = (provider or "").strip().lower()
@@ -6860,6 +6932,8 @@ def _create_with_progress(
     budget retries ONCE with that cap (only ever lowering); anything else re-raises."""
     try:
         return _create_with_progress_once(client, kwargs, task, force_stream=force_stream)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         affordable = _affordable_max_tokens_from_error(exc)
         if affordable is None:
@@ -6887,6 +6961,22 @@ def _stream_request_plan(kwargs: Dict[str, Any]) -> "Tuple[Dict[str, Any], str, 
             _aux_stream_total_ceiling(kwargs.get("timeout")))
 
 
+def _check_auxiliary_wire_route(client: Any, kwargs: Dict[str, Any]) -> None:
+    """Enforce the policy against the effective model before an auxiliary SDK call."""
+    from hermes_cli.routing_policy import check_route, current_routing_policy, effective_wire_model
+
+    provider = (
+        getattr(client, "_hermes_aux_effective_provider", "")
+        or getattr(client, "provider", "")
+    )
+    check_route(
+        current_routing_policy(),
+        provider=str(provider or ""),
+        model=str(effective_wire_model(kwargs, "") or ""),
+        base_url=str(getattr(client, "base_url", "") or ""),
+    )
+
+
 def _create_with_progress_once(
     client: Any, kwargs: Dict[str, Any], task: Optional[str] = None, *, force_stream: bool = False
 ) -> Any:
@@ -6906,6 +6996,7 @@ def _create_with_progress_once(
     error is surfaced to the normal recovery chains instead.
     """
     kwargs = bypass_chat_sdk_request_transform(kwargs, client)
+    _check_auxiliary_wire_route(client, kwargs)
     _notify_aux_dispatch()
     # Dispatch alone is not forward progress: a 401/retry/fallback dispatch must not
     # reset the compression inactivity fence, or a zero-output attempt runs to the
@@ -6919,6 +7010,8 @@ def _create_with_progress_once(
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
         chunks = client.chat.completions.create(**stream_kwargs)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         # Genuine provider failures aren't streaming's fault — surface unchanged so the
         # recovery chains see the same error as a plain call.
@@ -7135,6 +7228,7 @@ async def _acreate_with_progress(
     """Async :func:`_create_with_progress`: stream + re-aggregate (ticking the hook per substantive
     chunk) when a progress hook is active or the provider is stream-only; plain create otherwise."""
     kwargs = bypass_chat_sdk_request_transform(kwargs, client)
+    _check_auxiliary_wire_route(client, kwargs)
     _notify_aux_dispatch()
     # Same contract as the sync twin (#114938): dispatch alone is not progress.
     if (not _aux_progress_active() and not force_stream) or _async_client_streams_internally(client):
@@ -7145,6 +7239,8 @@ async def _acreate_with_progress(
     stream_kwargs, model, total_ceiling = _stream_request_plan(kwargs)
     try:
         chunks = await client.chat.completions.create(**stream_kwargs)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         # Only a rejected stream NEGOTIATION falls back to a plain call (mirrors the sync wrapper); a
         # failure mid-consumption below reaches the classified recovery ladder instead of silently
@@ -7181,6 +7277,16 @@ def _resolve_call_client(
 ) -> _ResolvedAuxRoute:
     """Resolve the client for one aux call: vision chain, or cached text client with the
     explicit-provider fallback_chain / auto-chain rescue; RuntimeError when nothing is configured."""
+    # This helper also owns vision and cached-client routes, which can bypass
+    # resolve_provider_client. Reject implicit discovery before either branch.
+    from hermes_cli.routing_policy import check_requested_route, current_routing_policy
+    check_requested_route(
+        current_routing_policy(), requested_provider=str(provider or resolved_provider or ""),
+        model=str(model or resolved_model or ""),
+    )
+    from hermes_cli.routing_policy import check_route
+    check_route(current_routing_policy(), provider=str(resolved_provider or provider or ""),
+                model=str(resolved_model or model or ""), base_url=str(resolved_base_url or base_url or ""))
     effective_provider = resolved_provider
     if task == "vision":
         effective_provider, client, final_model = resolve_vision_provider_client(
@@ -7334,6 +7440,9 @@ def _rung(step: "_LadderStep", accept: Callable[[Exception], bool]):
     try:
         result = yield step
     except Exception as exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(exc, RoutingPolicyError):
+            raise
         if not accept(exc):
             raise
         return None, exc
@@ -7428,6 +7537,8 @@ def _ladder_parameter_rungs(
     temperature AND max_tokens; a reasoning-strip retry can then trip temperature, #78273), each
     field stripped at most once, so a request with N rejected fields recovers in N retries.
     Returns ``(response, None, kwargs)`` or ``(None, narrowed_err, stripped_kwargs)``."""
+    if isinstance(first_err, RoutingPolicyError):
+        raise first_err
     client, task, tag = route.client, route.task, route.tag
     rungs = list(_parameter_rungs(client, max_tokens))
     while rungs:
@@ -7562,6 +7673,8 @@ def _ladder_credential_rungs(
             try:
                 return (yield _LadderStep(
                     "retry_same_provider", (resolved_provider, route.resolved_model))), None
+            except RoutingPolicyError:
+                raise
             except Exception as retry2_err:
                 # Rotated key also hit a wall: mark it now so concurrent processes skip it,
                 # then fall through to the provider fallback.
@@ -7704,6 +7817,8 @@ def _aux_recovery_ladder(
     strips → Nous heal/refresh → credential refresh/pool rotation → provider fallback.
     Each rung returns a response, narrows ``first_err`` and falls through, or re-raises.
     Raises the narrowed ``first_err`` when exhausted (after evicting a connection-poisoned client)."""
+    if isinstance(first_err, RoutingPolicyError):
+        raise first_err
     tag = " (async)" if async_mode else ""
     route = _LadderRoute(
         client, task, tag, async_mode, base_info, resolved_provider, resolved_model,
@@ -7948,6 +8063,7 @@ def _call_llm_impl(
         if task == "moa_aggregator" and isinstance(client, CodexAuxiliaryClient):
             # Responses-shim clients consume the stream internally and return a completed
             # object Relay's managed stream would iterate; the MoA facade wraps it as one chunk.
+            _check_auxiliary_wire_route(client, kwargs)
             return client.chat.completions.create(**kwargs)
         return _relay_sync_stream(client, kwargs, provider=request_provider, api_mode=req.resolved_api_mode)
 
@@ -7980,6 +8096,8 @@ def _call_llm_impl(
         # abandon a healthy provider (matters for pinned MoA advisors).
         try:
             return _primary(provider=request_provider, base_url=req.base_info)
+        except RoutingPolicyError:
+            raise
         except Exception as transient_err:
             if not _should_retry_same_provider(task, transient_err, ""):
                 raise
@@ -7993,11 +8111,15 @@ def _call_llm_impl(
                 time.sleep(_backoff)
                 try:
                     return _primary()
+                except RoutingPolicyError:
+                    raise
                 except Exception as retry_transient:
                     if not _is_transient_transport_error(retry_transient):
                         raise
                     _last_transient = retry_transient
             raise _last_transient
+    except RoutingPolicyError:
+        raise
     except Exception as first_err:
         def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)
@@ -8138,6 +8260,8 @@ async def _async_call_llm_impl(
                 task, **validate_kw)
         try:
             return await _primary(provider=request_provider, base_url=req.base_info)
+        except RoutingPolicyError:
+            raise
         except Exception as transient_err:
             # The async Codex adapter wraps the sync stream via to_thread: same TimeoutError here.
             if not _should_retry_same_provider(task, transient_err, " (async)"):
@@ -8145,6 +8269,8 @@ async def _async_call_llm_impl(
             logger.info("Auxiliary %s (async): transient transport error; retrying "
                         "once on the same provider before fallback: %s", task or "call", transient_err)
             return await _primary()
+    except RoutingPolicyError:
+        raise
     except Exception as first_err:
         async def _perform(step: _LadderStep) -> Any:
             kind, args, kw = _ladder_step_call(step, req, retry_kwargs, candidate_kwargs)

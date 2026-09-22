@@ -123,6 +123,45 @@ class TestAuxProgressHook:
 
 class TestCreateWithProgress:
 
+    def test_denied_effective_model_makes_no_sync_sdk_call(self, monkeypatch):
+        """Policy rejection is terminal before an auxiliary completion reaches the SDK."""
+        from hermes_cli import routing_policy
+
+        client = _FakeClient(response=_COMPLETE)
+        monkeypatch.setattr(
+            routing_policy,
+            "current_routing_policy",
+            lambda: {"enabled": True, "require_explicit": False,
+                     "deny": {"providers": [], "models": ["denied-model"], "base_url_hosts": []}},
+        )
+
+        with pytest.raises(routing_policy.RoutingPolicyError, match="selected model"):
+            _create_with_progress_once(
+                client, {"model": "allowed-model", "messages": [],
+                         "extra_body": {"model": "denied-model"}},
+            )
+
+        assert client.calls == []
+
+    def test_denied_effective_provider_makes_no_sync_sdk_call(self, monkeypatch):
+        """The concrete provider stamped on an auxiliary client is checked at the wire."""
+        from hermes_cli import routing_policy
+
+        client = _FakeClient(response=_COMPLETE)
+        client._hermes_aux_effective_provider = "denied-provider"
+        monkeypatch.setattr(
+            routing_policy,
+            "current_routing_policy",
+            lambda: {"enabled": True, "require_explicit": False,
+                     "deny": {"providers": ["denied-provider"], "models": [], "base_url_hosts": []}},
+        )
+
+        with pytest.raises(routing_policy.RoutingPolicyError, match="denies provider"):
+            _create_with_progress_once(client, {"model": "allowed-model", "messages": []})
+
+        assert client.calls == []
+
+
     def test_hook_upgrades_to_streaming_and_ticks_only_for_payload(self):
         empty_tool_call = SimpleNamespace(
             index=0,
@@ -741,3 +780,33 @@ class TestAsyncStreamAggregation:
             )
         assert dispatches == [1]
         assert fence.progress_observed is False
+
+    @pytest.mark.asyncio
+    async def test_denied_effective_model_makes_no_async_sdk_call(self, monkeypatch):
+        """Async auxiliary dispatch has the same terminal pre-wire policy gate."""
+        from hermes_cli import routing_policy
+
+        calls = []
+
+        class _AsyncClient:
+            def __init__(self):
+                self.chat = SimpleNamespace(completions=SimpleNamespace(create=self._create))
+
+            async def _create(self, **kwargs):
+                calls.append(kwargs)
+                return _COMPLETE
+
+        monkeypatch.setattr(
+            routing_policy,
+            "current_routing_policy",
+            lambda: {"enabled": True, "require_explicit": False,
+                     "deny": {"providers": [], "models": ["denied-model"], "base_url_hosts": []}},
+        )
+
+        with pytest.raises(routing_policy.RoutingPolicyError, match="selected model"):
+            await _acreate_with_progress(
+                _AsyncClient(), {"model": "allowed-model", "messages": [],
+                                 "extra_body": {"model": "denied-model"}},
+            )
+
+        assert calls == []

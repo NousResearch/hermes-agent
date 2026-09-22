@@ -10,6 +10,8 @@ one pass per session at a time (durable lock) but sessions run concurrently, so 
 
 from __future__ import annotations
 
+from hermes_cli.routing_policy import RoutingPolicyError
+
 import concurrent.futures
 import contextlib
 import contextvars
@@ -1021,6 +1023,8 @@ def _run_pinned_compression_retry(
                 on_timeout_cause=on_timeout_cause, fence=retry_fence, telemetry_agent=telemetry_agent,
                 stall_fallback=False,
             )
+    except RoutingPolicyError:
+        raise
     except Exception:
         # The primary already failed; a failing fallback must degrade, never
         # turn "continue without compression" into a raised turn.
@@ -2060,6 +2064,8 @@ def check_compression_model_feasibility(agent: Any) -> None:
         # user can tell where the compression model is actually called.
         try:
             _aux_cfg_provider, _, _, _, _ = _resolve_task_provider_model("compression")
+        except RoutingPolicyError:
+            raise
         except Exception:
             _aux_cfg_provider = ""
         client, aux_model = get_text_auxiliary_client("compression", main_runtime=agent._current_main_runtime())
@@ -2132,6 +2138,8 @@ def check_compression_model_feasibility(agent: Any) -> None:
     except ValueError:
         # Hard rejections (aux below minimum context) must propagate so the session refuses to start.
         raise
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         logger.debug("Compression feasibility check failed (non-fatal): %s", exc)
 
@@ -2146,6 +2154,8 @@ def revalidate_compression_feasibility(agent: Any) -> None:
         return
     try:
         check_compression_model_feasibility(agent)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         logger.debug("Compression feasibility re-check deferred to the next compaction: %s", exc)
         return
@@ -2165,6 +2175,8 @@ def ensure_compression_feasibility_checked(agent: Any, estimated_tokens: int) ->
         return
     try:
         check_compression_model_feasibility(agent)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         logger.debug("Compression feasibility probe deferred to the first compaction: %s", exc)
         return
@@ -4154,6 +4166,8 @@ def _compress_context_via_codex_app_server(
             len(messages), _tokens,
         )
         return messages, _existing_system_prompt(agent, system_message)
+    from agent.codex_runtime import check_codex_app_server_route
+    check_codex_app_server_route()
     logger.info("codex app-server compaction started: session=%s messages=%d tokens=~%s", _sid, len(messages), _tokens)
     with contextlib.suppress(Exception):
         agent._emit_status(COMPACTION_STATUS)

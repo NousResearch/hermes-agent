@@ -1717,6 +1717,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
             runtime_kwargs["explicit_base_url"] = job.get("base_url")
         return resolve_runtime_provider(**runtime_kwargs), model
     except Exception as resolve_exc:
+        from hermes_cli.routing_policy import RoutingPolicyError
+        if isinstance(resolve_exc, RoutingPolicyError):
+            raise
         # Walk the fallback chain on AuthError AND transient network/DNS failures (e.g. during
         # OAuth refresh); anything else re-raises.
         is_auth = isinstance(resolve_exc, AuthError)
@@ -1758,6 +1761,9 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
                     model, runtime.get("provider"), fb_model)
                 return runtime, fb_model
             except Exception as fb_exc:
+                from hermes_cli.routing_policy import RoutingPolicyError
+                if isinstance(fb_exc, RoutingPolicyError):
+                    raise
                 logger.debug("Job '%s': fallback %s failed: %s", job_id, fb_provider, fb_exc)
         raise RuntimeError(format_runtime_provider_error(resolve_exc)) from resolve_exc
 

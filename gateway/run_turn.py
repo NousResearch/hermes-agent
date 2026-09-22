@@ -166,6 +166,24 @@ def hygiene_no_commit_reason(agent) -> str:
 class GatewayTurnMixin:
     """Agent-turn execution for GatewayRunner (see module docstring)."""
 
+    def _routing_policy_for_session(self, source: Optional[SessionSource], session_key: Optional[str]):
+        """Read routing policy in the source/session owner's bound profile scope."""
+        from gateway.run import _profile_runtime_scope
+        from hermes_cli.routing_policy import current_routing_policy
+
+        session_store = getattr(self, "session_store", None)
+        profile_home = (
+            self._resolve_profile_home_for_source(source)
+            if source is not None
+            else session_store._profile_home_for_key(session_key)
+            if session_key and session_store is not None
+            else None
+        )
+        if profile_home is None:
+            return current_routing_policy()
+        with _profile_runtime_scope(profile_home, {}):
+            return current_routing_policy()
+
     def _resolve_session_agent_runtime(
         self, *, source: Optional[SessionSource] = None, session_key: Optional[str] = None,
         user_config: Optional[dict] = None,
@@ -204,6 +222,13 @@ class GatewayTurnMixin:
                 logger.debug(
                     "Session model override (fast): session=%s config_model=%s -> override_model=%s provider=%s",
                     skey or "", model, override_model, override_runtime.get("provider"),
+                )
+                from hermes_cli.routing_policy import check_route
+                check_route(
+                    self._routing_policy_for_session(source, skey),
+                    provider=str(override_runtime.get("provider") or ""),
+                    model=str(override_model or ""),
+                    base_url=str(override_runtime.get("base_url") or ""),
                 )
                 return override_model, override_runtime
             # No api_key on the override: env-based resolution below, override model/provider on top.
@@ -250,6 +275,14 @@ class GatewayTurnMixin:
         if override and skey:
             model, runtime_kwargs = self._apply_session_model_override(skey, model, runtime_kwargs)
 
+        policy = self._routing_policy_for_session(source, skey)
+        from hermes_cli.routing_policy import check_requested_route
+        check_requested_route(
+            policy,
+            requested_provider=str(runtime_kwargs.get("requested_provider") or runtime_kwargs.get("provider") or ""),
+            model=str(model or ""),
+        )
+
         # Provider resolved but no model.default (`hermes auth add` without `hermes model`): use the
         # provider's first catalog model.
         if not model and runtime_kwargs.get("provider"):
@@ -277,7 +310,14 @@ class GatewayTurnMixin:
                     "empty; see #35314)", skey or "", _recovered,
                 )
                 model = _recovered
-        else:
+        from hermes_cli.routing_policy import check_route
+        check_route(
+            policy,
+            provider=str(runtime_kwargs.get("provider") or ""),
+            model=str(model or ""),
+            base_url=str(runtime_kwargs.get("base_url") or ""),
+        )
+        if model:
             # Cache the good resolution for future recovery turns.
             if skey:
                 self._session_state(skey).conversation.last_resolved_model = model

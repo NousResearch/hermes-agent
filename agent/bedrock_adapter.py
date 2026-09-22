@@ -5,6 +5,7 @@ control-plane model discovery. OpenAI-format messages/tools are converted to Con
 and responses normalized back to OpenAI-shaped objects.
 """
 
+from hermes_cli.routing_policy import RoutingPolicyError
 import base64
 import importlib
 import json
@@ -1038,6 +1039,14 @@ def build_converse_kwargs(
     return kwargs
 
 
+def check_bedrock_wire_route(client: Any, request: Dict[str, Any], region: str) -> None:
+    """Boto resolves endpoint overrides itself; validate its actual destination on every send."""
+    from hermes_cli.routing_policy import check_route, current_routing_policy
+    endpoint = getattr(getattr(client, "meta", None), "endpoint_url", None)
+    check_route(current_routing_policy(), provider="bedrock", model=str(request.get("modelId") or ""),
+                base_url=str(endpoint or f"https://bedrock-runtime.{region}.amazonaws.com"))
+
+
 def call_converse(
     region: str, model: str, messages: List[Dict], tools: Optional[List[Dict]] = None,
     max_tokens: Optional[int] = 4096, temperature: Optional[float] = None, top_p: Optional[float] = None,
@@ -1047,14 +1056,19 @@ def call_converse(
     placement; evicts the cached client on stale-connection errors."""
     client = _get_bedrock_runtime_client(region)
     kwargs = build_converse_kwargs(model, messages, tools, max_tokens, temperature, top_p, stop_sequences, guardrail_config)
+    check_bedrock_wire_route(client, kwargs, region)
     try:
         response = client.converse(**kwargs)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
+            check_bedrock_wire_route(client, retry_kwargs, region)
             return normalize_converse_response(client.converse(**retry_kwargs))
         redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
         if redacted_retry_kwargs is not None:
+            check_bedrock_wire_route(client, redacted_retry_kwargs, region)
             return normalize_converse_response(client.converse(**redacted_retry_kwargs))
         if is_stale_connection_error(exc):
             logger.warning(
@@ -1203,18 +1217,23 @@ def probe_bedrock_context_length(model_id: str, region: str) -> Optional[int]:
     from agent.model_metadata import parse_context_limit_from_error
     try:
         client = _get_bedrock_runtime_client(region)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:  # boto3 missing / credential resolution failure
         logger.debug("Bedrock context probe skipped for %s: %s", model_id, exc)
         return None
     last_error = ""
     for tier_tokens in _BEDROCK_PROBE_TIERS:
         oversized = "data " * int(tier_tokens / _WORDS_PER_TOKEN)
+        check_bedrock_wire_route(client, {"modelId": model_id}, region)
         try:
             client.converse(modelId=model_id, messages=[{"role": "user", "content": [{"text": oversized}]}],
                             inferenceConfig={"maxTokens": 8})
             logger.debug("Bedrock context probe for %s accepted ~%s-token prompt; "
                          "window is at least that", model_id, f"{tier_tokens:,}")
             return tier_tokens
+        except RoutingPolicyError:
+            raise
         except Exception as exc:
             last_error = str(exc)
             limit = parse_context_limit_from_error(last_error)
@@ -1331,16 +1350,21 @@ def call_converse_stream(
         guardrail_config=guardrail_config,
     )
 
+    check_bedrock_wire_route(client, kwargs, region)
     try:
         response = client.converse_stream(**kwargs)
+    except RoutingPolicyError:
+        raise
     except Exception as exc:
         retry_kwargs = recover_from_cache_point_rejection(exc, kwargs)
         if retry_kwargs is not None:
+            check_bedrock_wire_route(client, retry_kwargs, region)
             return normalize_converse_stream_events(
                 client.converse_stream(**retry_kwargs)
             )
         redacted_retry_kwargs = recover_from_redacted_reasoning_rejection(exc, kwargs)
         if redacted_retry_kwargs is not None:
+            check_bedrock_wire_route(client, redacted_retry_kwargs, region)
             return normalize_converse_stream_events(
                 client.converse_stream(**redacted_retry_kwargs)
             )
@@ -1353,6 +1377,7 @@ def call_converse_stream(
                 "falling back to non-streaming converse().",
                 region, model,
             )
+            check_bedrock_wire_route(client, kwargs, region)
             return normalize_converse_response(client.converse(**kwargs))
         if is_stale_connection_error(exc):
             logger.warning(

@@ -229,6 +229,20 @@ def test_interpreter_shutdown_copy_substitutes_the_real_session_id():
     assert "<session-id>" not in verdict.final_response
 
 
+def test_outer_loop_policy_denial_is_terminal_not_a_retry():
+    from hermes_cli.routing_policy import RoutingPolicyError
+
+    agent = _Agent()
+    verdict = handle_outer_loop_error(
+        agent, e=RoutingPolicyError("routing policy denies the selected model"),
+        _outer_error_count=0, api_call_count=1, messages=[], conversation_history=None,
+        _turn_exit_reason="unknown", failed=False, final_response=None,
+    )
+    assert verdict.action == "break"
+    assert verdict.failed is True
+    assert "routing policy" in verdict.final_response
+
+
 @pytest.mark.parametrize("code", sorted(SITE_FAILURE_CODES))
 def test_site_failure_codes_never_collapse_to_unknown(code):
     """Every site code is listed in error_surface's layer table (no fall-through guesswork)."""

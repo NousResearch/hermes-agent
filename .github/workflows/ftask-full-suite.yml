@@ -2,18 +2,29 @@ name: Tests
 
 on:
   workflow_call:
+    inputs:
+      via_ci:
+        description: Run the canonical suite from the CI orchestrator.
+        required: false
+        type: boolean
+        default: false
+  pull_request:
 
 permissions:
   contents: read
 
 # Cancel in-progress runs for the same ref
 concurrency:
-  group: tests-${{ github.ref }}
+  group: tests-${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: true
 
 jobs:
-  test:
+  full-suite:
     name: Run tests
+    # The pull_request trigger makes this canonical gate statically visible to
+    # release tooling. CI still owns the single real invocation; the direct
+    # trigger is skipped so the 96-core suite never runs twice.
+    if: github.event_name != 'pull_request' || inputs.via_ci
     # One 96-core runner for the whole suite. There is no slicing. Slicing
     # existed to spread the suite over 4-core runners. It cost a matrix job, a
     # duration cache, a per-slice artifact and a merge job to do it.
@@ -113,7 +124,7 @@ jobs:
         # set is identical to the list the removed matrix job used to pass in.
         run: |
           source .venv/bin/activate
-          scripts/run_tests.sh
+          ./scripts/run_tests.sh
         env:
           # This is the maximum number of test FILES that run together.
           # run_tests_parallel.py starts one pytest subprocess for each file
@@ -151,6 +162,7 @@ jobs:
           key: test-durations-${{ github.run_id }}
 
   e2e:
+    if: github.event_name != 'pull_request' || inputs.via_ci
     runs-on: ubuntu-latest
     timeout-minutes: 15
     steps:

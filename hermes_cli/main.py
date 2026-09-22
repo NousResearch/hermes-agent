@@ -2928,8 +2928,12 @@ def _prepare_agent_startup(args) -> None:
         return
 
     _accept_hooks = bool(getattr(args, "accept_hooks", False))
-    if not _is_tui_chat_launch(args):
+    if not _is_tui_chat_launch(args) and args.command != "gateway":
         # The TUI backend does its own discovery; the launcher only spawns Node.
+        # The gateway runtime also owns synchronous discovery. Starting it on
+        # a worker here can deadlock Python's cross-thread import locks when a
+        # directory plugin imports gateway-facing modules while the main
+        # thread is still importing the gateway itself.
         try:
             from hermes_cli.plugins import start_background_plugin_discovery
 

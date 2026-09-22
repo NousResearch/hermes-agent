@@ -1,6 +1,6 @@
 import { atom, computed } from 'nanostores'
 
-import { $gateway } from './gateway'
+import { respondToServerRequest } from './server-requests'
 import { $activeSessionId } from './session'
 
 export interface ClarifyQuestion {
@@ -187,8 +187,8 @@ export const hasClarifyRequest = (sessionId: string | null | undefined): boolean
  * (default 5 min) — the message looks sent and nothing happens. Skipping lets
  * the tool return and the turn carry on with the user's actual words.
  *
- * An empty answer is the same thing the card's own Skip button sends, and
- * `clarify.respond` is `allow_expired`, so racing the timeout is harmless.
+ * An empty answer is the same thing the card's own Skip button sends; answering
+ * a request that already expired is a no-op, so racing the timeout is harmless.
  */
 export async function skipClarifyRequest(sessionId: string | null | undefined): Promise<boolean> {
   const request = $clarifyRequests.get()[keyFor(sessionId)]
@@ -201,12 +201,7 @@ export async function skipClarifyRequest(sessionId: string | null | undefined): 
   // leave a live card the user can answer a second time.
   clearClarifyRequest(request.requestId, request.sessionId)
 
-  try {
-    await $gateway.get()?.request('clarify.respond', { request_id: request.requestId, answer: '' })
-  } catch {
-    // The tool times out on its own; a failed skip must never swallow the
-    // message the user is actually sending.
-  }
+  respondToServerRequest(request.requestId, { answer: '' })
 
   return true
 }

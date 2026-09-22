@@ -34,6 +34,26 @@ class TestAuxProbeMode:
         with aux._client_cache_lock:
             assert key not in aux._client_cache
 
+    @pytest.mark.parametrize("wrap", [False, True], ids=["bare-stub", "adapter-wrapped-stub"])
+    def test_repeat_probes_stay_resolvable_and_never_cache(self, wrap):
+        """Probes go through _get_cached_client's inline store, not _store_cached_client,
+        so the stub (bare, or wrapped in a Codex adapter whose leaf is the stub) used to
+        land under the runtime key; the next probe then hit _compat_model() on the stub
+        and check_vision_requirements() flipped to False for the process (#87654).
+        """
+        import agent.auxiliary_client as aux
+
+        def _resolve(*a, **k):
+            stub = aux._AuxProbeClientStub(api_key="k", base_url="https://x.invalid/v1")
+            return (aux.CodexAuxiliaryClient(stub, "v/m") if wrap else stub), "v/m"
+
+        aux.shutdown_cached_clients()
+        with patch.object(aux, "resolve_provider_client", _resolve), aux.aux_probe_mode():
+            answers = [aux._get_cached_client("probe-guard-test", "vendor/model")[0] is not None for _ in range(3)]
+        assert answers == [True, True, True]
+        with aux._client_cache_lock:
+            assert not [k for k in aux._client_cache if k[1:2] == (False,) and k[-1] == "vendor/model"]
+
     def test_probe_stub_raises_on_runtime_use(self):
         import agent.auxiliary_client as aux
 

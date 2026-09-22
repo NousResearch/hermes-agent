@@ -204,7 +204,9 @@ method("skills.manage", params=SkillsManageParams, result=SkillsManageResult,
 
 
 class SkillsReloadParams(Params):
-    pass
+    """``session_id`` binds the rescan to that session's profile and workspace (project skills)."""
+
+    session_id: str | None = None
 
 
 class SkillCommandRef(Result):
@@ -339,6 +341,7 @@ method("learning.edit", params=LearningEditParams, result=LearningMutationResult
 class McpCatalogEntry(Result):
     name: str
     description: str
+    connector_slug: str | None = None
     installed: bool
     enabled: bool
     requires: list[str]
@@ -351,6 +354,11 @@ class McpCatalogResult(Result):
 
 method("mcp.catalog", params=ProfileParams, result=McpCatalogResult,
        doc="Curated MCP presets with per-profile installed/enabled state and the env keys each needs.")
+
+
+class McpServerSource(WireEnum):
+    config = "config"
+    plugin = "plugin"
 
 
 class McpServerSummary(Result):
@@ -366,6 +374,8 @@ class McpServerSummary(Result):
     oauth_tokens_present: bool | None = None
     enabled: bool
     tools: JsonValue | None = None
+    source: McpServerSource
+    plugin: str | None = None
 
 
 class McpServersListResult(Result):
@@ -381,6 +391,7 @@ class McpRuntimeStatus(WireEnum):
     disabled = "disabled"
     connecting = "connecting"
     failed = "failed"
+    lazy = "lazy"
     configured = "configured"
 
 
@@ -393,6 +404,8 @@ class McpServerRuntimeRow(Result):
     connected: bool
     disabled: bool
     status: McpRuntimeStatus
+    source: McpServerSource
+    plugin: str | None = None
 
 
 class McpServersStatusResult(Result):
@@ -570,11 +583,15 @@ class PluginsAction(WireEnum):
     toggle = "toggle"
     install = "install"
     update = "update"
+    remove = "remove"
+    settings = "settings"
 
 
 class PluginsManageParams(ProfileParams):
     """``toggle``: ``key``/``name`` + ``enable``; ``install``: ``identifier``/``repo`` or ``catalog_name``
-    (+ ``force``, ``enable``, ``ref``); ``update``: ``name``."""
+    (+ ``force``, ``enable``, ``ref``); ``update``: ``name`` (+ ``accept_capabilities`` to apply a re-pin
+    that widened the plugin after the user confirmed the ``delta``); ``remove``: ``name`` (user installs only);
+    ``settings``: ``key`` + ``values`` (``{setting_key: value}``, non-secret schema keys only)."""
 
     action: PluginsAction = PluginsAction.list
     key: str | None = None
@@ -585,6 +602,50 @@ class PluginsManageParams(ProfileParams):
     catalog_name: str | None = None
     force: bool | None = None
     ref: str | None = None
+    accept_capabilities: bool | None = None
+    values: dict[str, JsonValue] | None = None
+
+
+class PluginSettingFieldType(WireEnum):
+    string = "string"
+    number = "number"
+    boolean = "boolean"
+    enum = "enum"
+    secret = "secret"
+    json = "json"
+
+
+class PluginSettingField(Result):
+    """One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub
+    (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env``
+    names the ``.env`` variable and ``has_value`` whether it is set."""
+
+    key: str
+    type: PluginSettingFieldType
+    label: str
+    description: str
+    required: bool
+    value: JsonValue | None = None
+    default: JsonValue | None = None
+    choices: list[str] | None = None
+    env: str | None = None
+    has_value: bool | None = None
+
+
+class PluginServerState(WireEnum):
+    connected = "connected"
+    app_not_running = "app_not_running"
+    endpoint_unavailable = "endpoint_unavailable"
+    no_interactive_session = "no_interactive_session"
+    version_too_old = "version_too_old"
+    missing_app = "missing_app"
+    unknown = "unknown"
+
+
+class PluginServerRow(Result):
+    name: str
+    state: PluginServerState
+    sentence: str
 
 
 class AgentPluginRow(Result):
@@ -599,33 +660,68 @@ class AgentPluginRow(Result):
     portable: bool
     install_dir: str
     has_desktop_half: bool
+    servers: list[PluginServerRow]
     catalog_name: str | None = None
     catalog_tier: str | None = None
     installed_sha: str | None = None
     catalog_sha: str | None = None
+    catalog_version: str | None = None
     update_available: bool | None = None
     pinned_sha: str | None = None
+    settings_schema: list[PluginSettingField] | None = None
+
+
+class PluginActivation(Result):
+    """What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}``
+    with only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names),
+    ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in
+    the running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and
+    ``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server
+    names (exactly as ``mcp.servers.*`` know them) — not connected until ``mcp.reload``.
+    The Desktop "Installed. Connect its servers now" card reads exactly ``deferred.mcp_servers``."""
+
+    name: str
+    key: str
+    activated_now: dict[str, list[str]] = Field(default_factory=dict)
+    deferred: dict[str, list[str]] = Field(default_factory=dict)
 
 
 class PluginsManageResult(Result):
-    """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``name``/``plugin``;
-    ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s ok payload; ``update`` →
-    ``ok``/``unchanged``/``sha``."""
+    """``list`` → ``plugins`` + counts; ``toggle`` → ``ok``/``unchanged``/``restart_required``/``name``
+    (the canonical key written)/``plugin``; ``install`` → ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s
+    ok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the
+    running gateway picked it up and re-wired its handlers) and ``activation`` — the honest split of what is
+    live now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` → ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the
+    ``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds — nothing changed until the
+    client retries with ``accept_capabilities``; ``remove`` → ``ok``/``name`` plus
+    ``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``."""
 
     plugins: list[AgentPluginRow] | None = None
     user_count: int | None = None
     bundled_count: int | None = None
     ok: bool | None = None
     unchanged: bool | None = None
+    restart_required: bool | None = None
+    gateway_reloaded: bool | None = None
+    activation: PluginActivation | None = None
+    cleared_memory_provider: bool | None = None
     name: str | None = None
     plugin: AgentPluginRow | None = None
     plugin_name: str | None = None
     warnings: list[str] | None = None
     missing_env: list[str] | None = None
+    # ``install`` → the manifest's ``python_dependencies`` the installer applied (``[]`` when none).
+    python_dependencies: list[str] | None = None
     after_install_path: str | None = None
     enabled: bool | None = None
     sha: str | None = None
+    consent_required: bool | None = None
+    delta: dict[str, list[str]] | None = None
+    delta_lines: list[str] | None = None
+    error: str | None = None
+    written: list[str] | None = None
 
 
 method("plugins.manage", params=PluginsManageParams, result=PluginsManageResult,
-       doc="Plugins Hub backend: list installed plugins, toggle, git-install or re-pin a catalog install.")
+       doc="Plugins Hub backend: list installed plugins, toggle, git-install, re-pin a catalog install, "
+           "or remove a user install.")

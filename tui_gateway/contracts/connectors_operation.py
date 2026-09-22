@@ -9,10 +9,12 @@ projection: every frame carries the full target snapshot, and the renderer never
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import Params, Payload, Result, WireEnum
-from .common import ProfileParams
+from .common import ConnectorOwner, ProfileParams
 from .registry import event, method
 
 
@@ -38,7 +40,6 @@ class ConnectionTargetState(WireEnum):
     skipped = "skipped"
     failed = "failed"
     expired = "expired"
-    unavailable = "unavailable"
     not_connected = "not_connected"
 
 
@@ -46,7 +47,6 @@ class ConnectionActor(WireEnum):
     """``tools/connectors/contract.py::Actor``."""
 
     user = "user"
-    renderer_flow = "renderer_flow"
     backend_watcher = "backend_watcher"
     clock = "clock"
 
@@ -58,7 +58,17 @@ class ConnectionSettleReason(WireEnum):
     continue_ = "continue"
     deadline = "deadline"
     interrupt = "interrupt"
-    unavailable = "unavailable"
+
+
+class ConnectionTargetEnvField(Payload):
+    """One credential an MCP install still needs; the card renders a field per entry and sends the
+    values back with the approval."""
+
+    name: str
+    required: bool
+    secret: bool
+    default: str
+    prompt: str | None = None
 
 
 class ConnectionOperationTarget(Payload):
@@ -70,8 +80,14 @@ class ConnectionOperationTarget(Payload):
     action: ConnectionTargetAction
     state: ConnectionTargetState
     detail: str | None = None
+    instructions: str | None = None
+    discovery_error: str | None = None
     connect_url: str | None = None
+    # The vendor account a managed mint created or observed; never the desktop transport's id.
+    connection_id: str | None = None
     attempt: str | None = None
+    # Present only on an MCP install that is waiting for credentials.
+    required_env: list[ConnectionTargetEnvField] | None = None
     tools: list[str] | None = None
     hint: str | None = None
 
@@ -81,6 +97,9 @@ class ConnectionRequestPayload(Payload):
     snapshot so a client that missed the event restores the card with the server's deadline."""
 
     op_id: str
+    # Monotonic write counter for the operation; a frame whose seq is not higher than the one the
+    # renderer holds is older and moves no row.
+    seq: int
     deadline_at: float
     timeout_seconds: float
     targets: list[ConnectionOperationTarget]
@@ -96,6 +115,7 @@ class ConnectionOperationStatus(Result):
     """``methods_connectors._operation_view``: the operation's full snapshot."""
 
     op_id: str
+    seq: int
     deadline_at: float
     settled: bool
     settled_at: float | None = None
@@ -107,6 +127,7 @@ class ConnectionUpdatePayload(ConnectionOperationStatus, Payload):
     """``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/
     ``actor``) or the settlement (none of those), with the full snapshot."""
 
+    owner: ConnectorOwner
     target: str | None = None
     from_: ConnectionTargetState | None = Field(default=None, alias="from")  # ``from`` is a keyword
     to: ConnectionTargetState | None = None
@@ -118,26 +139,37 @@ event("connection.update", ConnectionUpdatePayload,
 
 
 class ConnectionOperationParams(ProfileParams):
-    session_id: str
+    owner: ConnectorOwner
     op_id: str
 
 
 method("connectors.operation.status", params=ConnectionOperationParams, result=ConnectionOperationStatus,
-       doc="The current snapshot of one open operation on an owned session.")
+       doc="The current snapshot of one open session or account operation.")
+
+
+class ConnectionWakeResult(Result):
+    status: Literal["ok"]
+
+
+method("connectors.operation.wake", params=ConnectionOperationParams, result=ConnectionWakeResult,
+       doc="The browser leg came back (hermes://connections/done): read the accounts now, not at the next tick.")
+
+
+class ConnectionAnswerStatus(WireEnum):
+    """What the card says about one row: ``tools/connectors/mcp.py::apply_answer``."""
+
+    approved = "approved"
+    skipped = "skipped"
 
 
 class ConnectionAnswerTarget(Params):
-    """One row's answer from the card. ``status`` is what the card observed for that row
-    (``tools/connectors/mcp.py::_OUTCOME_STATES`` maps it onto a target state); ``state`` is the
-    older spelling of the same field and one of the two is present."""
-
-    model_config = Params.model_config | {"extra": "allow"}
+    """One row's answer from the card. ``env`` carries the credential values an install asked for
+    through ``required_env``."""
 
     name: str
-    status: str | None = None
-    state: str | None = None
+    status: ConnectionAnswerStatus
     detail: str | None = None
-    tools: list[str] | None = None
+    env: dict[str, str] | None = None
 
 
 class ConnectionAnswer(Params):
@@ -153,7 +185,7 @@ class ConnectionRespondParams(ConnectionOperationParams):
 
 
 class ConnectionRespondResult(Result):
-    status: str
+    status: Literal["ok"]
     settled: bool
 
 

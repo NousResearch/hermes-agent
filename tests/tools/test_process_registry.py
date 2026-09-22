@@ -1416,6 +1416,10 @@ class TestKillProcess:
         registry._running[s.id] = s
 
         terminate_calls = []
+        # Post-#115490 kill_process verifies tree death after signalling: the
+        # fake terminate must actually kill, or the live fake reads as a
+        # survivor and the kill correctly reports incomplete.
+        kill_state = {"alive": True}
 
         class FakeProcess:
             def __init__(self, pid):
@@ -1424,6 +1428,7 @@ class TestKillProcess:
                 return []
             def terminate(self):
                 terminate_calls.append(("terminate", self.pid))
+                kill_state["alive"] = False
 
         import psutil as _psutil
 
@@ -1435,7 +1440,7 @@ class TestKillProcess:
             # touches ``os.kill`` directly. Mock both seams.  Disable the
             # SIGKILL-escalation step (grace=0) so it doesn't call
             # ``psutil.wait_procs`` on the FakeProcess.
-            with patch("gateway.status._pid_exists", return_value=True), \
+            with patch("gateway.status._pid_exists", side_effect=lambda pid: kill_state["alive"]), \
                  patch.object(ProcessRegistry, "_daemon_term_grace_seconds",
                               staticmethod(lambda: 0.0)), \
                  patch.object(_psutil, "Process", side_effect=lambda pid: FakeProcess(pid)):
@@ -1445,6 +1450,58 @@ class TestKillProcess:
             assert ("terminate", 424242) in terminate_calls
         finally:
             registry._running.pop(s.id, None)
+
+    def test_kill_receipt_rewritten_when_reader_finalises_first(self, registry):
+        """A kill racing the reader thread must not persist as a plain exit.
+
+        The signal path blocks for the SIGKILL grace window, during which the
+        reader thread can observe the exit and finalise the session first. The
+        durable receipt from that first save says ``exited``; the kill result
+        returned to the caller says ``killed``. The second save must rewrite
+        the receipt so the persisted record matches what the caller was told.
+        """
+        s = _make_session(sid="proc_kill_race", command="sleep 999")
+        s.pid = 424243
+        s.detached = True
+        registry._running[s.id] = s
+
+        def reader_wins_during_signal(pid, start=None):
+            # The reader thread observes the SIGTERMed exit while the signal
+            # path is still inside its grace window and finalises first.
+            registry._finish_exited(s, 0)
+
+        saved = []
+
+        def record_save(session):
+            saved.append(
+                (session.completion_reason, session.termination_source, session.exit_code)
+            )
+
+        try:
+            host_guard = patch.object(
+                ProcessRegistry, "_host_pid_is_ours", return_value=True
+            )
+            term_patch = patch.object(
+                ProcessRegistry,
+                "_terminate_host_pid",
+                side_effect=reader_wins_during_signal,
+            )
+            saver = patch(
+                "tools.process_registry.save_completed_result", side_effect=record_save
+            )
+            with host_guard, term_patch, saver:
+                result = registry.kill_process(s.id)
+
+            assert result["status"] == "killed"
+            assert result["completion_reason"] == "killed"
+            assert result["termination_source"] == "process.kill"
+            # First save: the reader won the race and persisted a plain exit.
+            assert saved[0] == ("exited", "", 0)
+            # Second save: the receipt rewritten with the kill outcome.
+            assert saved[-1] == ("killed", "process.kill", -15)
+        finally:
+            registry._running.pop(s.id, None)
+            registry._finished.pop(s.id, None)
 
 
 # =========================================================================
@@ -1632,9 +1689,9 @@ class TestTerminateHostPidWindows:
         assert "/F" in captured["args"], "Force flag required for headless Chromium"
 
 class TestTerminateHostPidPosix:
-    """POSIX branch walks the tree via psutil and SIGTERMs children first."""
+    """POSIX branch gives a managed parent its shutdown window first."""
 
-    def test_posix_walks_tree_and_terminates_children_then_parent(self, monkeypatch):
+    def test_posix_terminates_parent_before_snapshot_descendants(self, monkeypatch):
         from tools import process_registry as pr
         import psutil
 
@@ -1659,17 +1716,57 @@ class TestTerminateHostPidPosix:
                 terminate_order.append(self.pid)
 
         monkeypatch.setattr(psutil, "Process", _FakeParent)
-        # This test covers only the SIGTERM tree-walk ordering; disable the
-        # SIGKILL-escalation step (which would call psutil.wait_procs on the
-        # fakes) by setting the grace to 0.
+        # A zero grace keeps this ordering probe deterministic while retaining
+        # the configured no-SIGKILL behavior.
         monkeypatch.setattr(pr.ProcessRegistry, "_daemon_term_grace_seconds",
                             staticmethod(lambda: 0.0))
 
         pr.ProcessRegistry._terminate_host_pid(12345)
 
-        assert terminate_order == [101, 102, 103, 12345], (
-            "Children must be terminated before the parent"
+        assert terminate_order == [12345, 101, 102, 103], (
+            "Parent must receive SIGTERM before any snapshot descendant"
         )
+
+    @pytest.mark.skipif(sys.platform == "win32", reason="POSIX signal ordering; Windows uses taskkill")
+    @pytest.mark.live_system_guard_bypass
+    def test_posix_self_reaping_supervisor_child_is_never_signalled_by_registry(self, monkeypatch, tmp_path):
+        """A parent that tears down its own children on SIGTERM keeps that job.
+
+        #111598: Chromium/Electron reap their zygotes during an async SIGTERM
+        shutdown; SIGTERMing the descendants first left the browser without a
+        zygote and it crash-dumped (SIGTRAP). Invariant: the registry signals the
+        parent first and a child the parent reaps inside the grace window is
+        never signalled by the registry, so the parent exits 0.
+        """
+        monkeypatch.setattr(ProcessRegistry, "_daemon_term_grace_seconds",
+                            staticmethod(lambda: 2.0))
+        log = tmp_path / "order.log"
+        child_sh = tmp_path / "child.sh"
+        parent_sh = tmp_path / "parent.sh"
+        # Child logs a registry-delivered TERM; the parent kills it with KILL
+        # (logs nothing) and reaps it, then exits 0 — like a browser reaping its zygote.
+        child_sh.write_text(
+            "#!/bin/bash\n"
+            f"trap 'echo child-TERM >> {log}; exit 0' TERM\n"
+            f"echo up >> {log}\nwhile :; do sleep 0.1; done\n")
+        parent_sh.write_text(
+            "#!/bin/bash\n"
+            f"bash {child_sh} & kid=$!\n"
+            f"trap 'echo parent-TERM >> {log}; kill -KILL $kid; wait $kid; exit 0' TERM\n"
+            "while :; do sleep 0.1; done\n")
+        parent = subprocess.Popen(["bash", str(parent_sh)], stdin=subprocess.DEVNULL)
+        try:
+            assert _wait_until(lambda: log.exists() and "up" in log.read_text(), timeout=5.0)
+            ProcessRegistry._terminate_host_pid(parent.pid)
+            assert _wait_until(lambda: parent.poll() is not None, timeout=5.0)
+            lines = log.read_text().split()
+            assert parent.returncode == 0, f"supervisor must exit cleanly, got {parent.returncode}"
+            assert "parent-TERM" in lines and "child-TERM" not in lines, (
+                f"registry must SIGTERM only the parent, which reaps its own child: {lines}")
+        finally:
+            if parent.poll() is None:
+                parent.kill()
+            parent.wait()
 
     def test_posix_oserror_falls_back_to_os_kill(self, monkeypatch):
         from tools import process_registry as pr
@@ -1947,6 +2044,53 @@ class TestHandleProcessRedaction:
         assert "zzzopaque1234567890abcdef" in out["output"]
 
 
+class TestHandleProcessTransformHook:
+    """Background-process output goes through the same ``transform_terminal_output`` plugin seam
+    as the foreground ``terminal`` result — issue #70760 — hook FIRST, redaction AFTER, so a
+    replacement the plugin returns is still masked (the ordering the foreground path documents)."""
+
+    def _setup(self, monkeypatch, output, *, hook):
+        import agent.redact as _r
+        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
+        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
+        from tools import process_registry as pr
+        reg = ProcessRegistry()
+        sess = _make_session(sid="proc_xform1", command="python app.py")
+        sess.output_buffer = output
+        sess.exited = True
+        sess.exit_code = 3
+        reg._running[sess.id] = sess
+        monkeypatch.setattr(pr, "process_registry", reg)
+        return pr, sess
+
+    def test_poll_wait_log_kill_results_are_transformed(self, monkeypatch):
+        seen = []
+
+        def hook(hook_name, **kw):
+            seen.append((hook_name, kw.get("command"), kw.get("returncode"), kw.get("task_id")))
+            return ["REWRITTEN:" + kw["output"]] if hook_name == "transform_terminal_output" else []
+
+        pr, sess = self._setup(monkeypatch, "raw line\n", hook=hook)
+        for action, key in (("poll", "output_preview"), ("log", "output"), ("wait", "output"), ("kill", "output")):
+            out = json.loads(pr._handle_process({"action": action, "session_id": sess.id}, task_id="task-bg"))
+            assert out[key].startswith("REWRITTEN:raw line"), (action, out)
+        assert [s for s in seen if s[0] == "transform_terminal_output"]
+        # The hook sees the command, the recorded exit code (None while running) and the process
+        # OWNER's task_id (the session's, not the caller's — a sibling polling a handed-off process
+        # is still observing that owner's output).
+        assert ("transform_terminal_output", "python app.py", 3, "t1") in seen
+
+    def test_hook_replacement_is_still_redacted(self, monkeypatch):
+        secret = "sk-proj-abc123def456ghi789jkl012mno345"
+        pr, sess = self._setup(
+            monkeypatch, "plain output",
+            hook=lambda hook_name, **kw: [f"OPENAI_API_KEY={secret}"] if hook_name == "transform_terminal_output" else [],
+        )
+        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
+        assert secret not in out["output"]
+        assert "OPENAI_API_KEY=" in out["output"]
+
+
 # =========================================================================
 # Reader loop: orphaned grandchild holding the stdout pipe (issue #68915)
 # =========================================================================
@@ -2104,7 +2248,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         # _build_systemd_scope_argv calls shutil.which — point it at a stub.
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
@@ -2172,7 +2316,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
 
         with (
@@ -2199,7 +2343,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: False,
+            lambda environ=None: False,
         )
 
         with (
@@ -2325,7 +2469,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2360,7 +2504,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2410,7 +2554,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2447,7 +2591,7 @@ class TestSystemdCgroupIsolation:
         )
         monkeypatch.setattr(
             "gateway.restart.is_gateway_supervisor_process",
-            lambda: True,
+            lambda environ=None: True,
         )
         monkeypatch.setattr("shutil.which", lambda name: "/usr/bin/systemd-run")
 
@@ -2806,7 +2950,7 @@ class TestSystemdCgroupIsolation:
         monkeypatch.setattr(pr, "_SYSTEMD_SCOPE_AVAILABLE", None)
         monkeypatch.setattr("tools.process_registry._find_shell", lambda: "/bin/bash")
         monkeypatch.setattr(
-            "gateway.restart.is_gateway_supervisor_process", lambda: True
+            "gateway.restart.is_gateway_supervisor_process", lambda environ=None: True
         )
         # If any branch consults the probe or builds a scope argv on darwin,
         # fail loudly.

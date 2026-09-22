@@ -1,11 +1,33 @@
 """Validation for the ``platform_toolsets`` config section."""
 
-from typing import Callable, List
+import ast
+from typing import Callable, List, Optional
 
 from hermes_cli.platforms import PLATFORMS
 from hermes_cli.toolset_scope import toolset_allowed_for_platform
 
 _NO_TOOLS = "the agent will have no tools on this platform. Run `hermes tools` to reconfigure."
+
+
+def parse_platform_toolsets_value(value: object) -> Optional[List[str]]:
+    """The toolset list a saved ``platform_toolsets.<platform>`` value encodes, or None.
+
+    Older ``hermes config set`` builds stored a bare ``[...]`` argument as a plain string, so an
+    explicit selection like ``'["browser", "terminal"]'`` parses as str, not list (#115866).
+    Every reader and writer of the section goes through this one parser so the runtime,
+    ``hermes doctor`` and ``hermes plugins enable`` agree on what the user configured. Any other
+    shape (null, scalar, unparseable string) is None: the caller decides how to report it.
+    """
+    if isinstance(value, list):
+        return value
+    if isinstance(value, str) and value.strip().startswith("["):
+        try:
+            parsed = ast.literal_eval(value.strip())
+        except (ValueError, SyntaxError):
+            return None
+        if isinstance(parsed, list):
+            return [str(item) for item in parsed]
+    return None
 
 
 def _platform_default_toolset(platform: object) -> str:
@@ -47,7 +69,8 @@ def validate_platform_toolsets(
         default = _platform_default_toolset(platform)
         default_valid = _platform_default_is_valid(platform, default, is_valid_toolset, is_allowed_for_platform)
         platform_valid_count = 0
-        if not isinstance(raw, list):
+        toolsets = parse_platform_toolsets_value(raw)
+        if toolsets is None:
             if default_valid:
                 valid_count += 1
                 platform_valid_count += 1
@@ -65,7 +88,7 @@ def validate_platform_toolsets(
                 warnings.append(f"platform '{platform}' has no valid toolsets configured — {_NO_TOOLS}")
             continue
 
-        for name in raw:
+        for name in toolsets:
             if not isinstance(name, str):
                 value_detail = "null" if name is None else type(name).__name__
                 warnings.append(
@@ -86,7 +109,7 @@ def validate_platform_toolsets(
                 )
 
         if platform_valid_count == 0:
-            reason = "is configured with an empty toolset list" if not raw else "has no valid toolsets configured"
+            reason = "is configured with an empty toolset list" if not toolsets else "has no valid toolsets configured"
             warnings.append(f"platform '{platform}' {reason} — {_NO_TOOLS}")
 
     if valid_count == 0:

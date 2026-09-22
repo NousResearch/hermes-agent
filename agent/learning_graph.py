@@ -18,7 +18,7 @@ from typing import Any, Optional
 
 from hermes_constants import get_hermes_home
 
-_SKIP_PARTS = {".archive", ".hub", "node_modules", ".git"}
+_SKIP_PARTS = {".archive", ".hub", ".locks", "node_modules", ".git"}
 _USAGE_TS_KEYS = ("last_activity_at", "last_used_at", "last_viewed_at", "last_patched_at", "created_at")
 
 

@@ -331,6 +331,34 @@ def test_manual_compress_routes_to_live_thread():
     assert "compacted" in reply
 
 
+@pytest.mark.parametrize("entry", ["hygiene", "manual"])
+def test_codex_compaction_releases_the_live_sessions_read_dedup(tmp_path, entry, monkeypatch):
+    """Both out-of-turn codex compaction entry points reset the read_file dedup under the LIVE
+    session row id — the task_id the main turn hands to run_conversation — not the "default"
+    bucket, so a post-compaction re-read returns content instead of a stub (#98206)."""
+    from tools import file_tools_read_tracking as tracking
+
+    tracker = {
+        "sess-1": {"dedup_generation_reads": {"/live/file.py"}},
+        "default": {"dedup_generation_reads": {"/other/file.py"}},
+    }
+    monkeypatch.setattr(tracking, "_read_tracker", tracker)
+    agent = LiveCodexAgent(mode="hermes")
+
+    if entry == "hygiene":
+        gw, _db = _gateway(tmp_path, "tg:123", agent)
+        outcome = asyncio.run(run_codex_hygiene_compaction(
+            gw, "tg:123", agent.session_id, auto_mode="hermes", history=_history(),
+            approx_tokens=345_000, timeout_seconds=30.0))
+        assert outcome == "compacted"
+    else:
+        reply = asyncio.run(_slash_host(agent)._compress_codex_app_server_session("tg:123", agent.session_id))
+        assert "compacted" in reply
+
+    assert tracker["sess-1"]["dedup_generation_reads"] == set()
+    assert tracker["default"]["dedup_generation_reads"] == {"/other/file.py"}
+
+
 def test_manual_compress_without_live_thread_reports_honestly():
     host = _slash_host(None)
     reply = asyncio.run(

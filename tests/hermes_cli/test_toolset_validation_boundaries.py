@@ -55,3 +55,13 @@ def test_real_config_warning_path_matches_runtime_resolution(
     )
     assert str(invalid_member) in enabled
     assert "web" in enabled
+
+
+def test_list_literal_parser_path_remains_validated_as_a_list():
+    """The later list-literal compatibility parser still validates decoded names."""
+    warnings = validate_platform_toolsets(
+        {"cli": '["web", "terminal"]'},
+        lambda name: name in {"web", "terminal"},
+    )
+
+    assert warnings == []

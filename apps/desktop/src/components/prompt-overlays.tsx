@@ -3,7 +3,6 @@
 import { useStore } from '@nanostores/react'
 import { type FormEvent, useCallback, useEffect, useMemo, useState } from 'react'
 
-import { PendingApprovalFallback } from '@/components/assistant-ui/tool/approval'
 import { Button } from '@/components/ui/button'
 import {
   Dialog,
@@ -582,7 +581,6 @@ function VaultCodeDialog({ sessionId }: { sessionId: string | null }) {
 export function PromptOverlays({ sessionId }: { sessionId: string | null }) {
   return (
     <>
-      <PendingApprovalFallback />
       <SudoDialog sessionId={sessionId} />
       <SecretDialog sessionId={sessionId} />
       <VaultUnlockDialog sessionId={sessionId} />

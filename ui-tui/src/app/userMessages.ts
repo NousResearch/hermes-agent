@@ -39,6 +39,12 @@ export const BACKEND_RESTARTING =
 
 export const BACKEND_RESTARTING_ACTIVITY = 'Hermes stopped unexpectedly · restarting…'
 
+// Attached (dashboard / embedded) mode: only the socket dropped; Hermes and any
+// reply in progress are still alive on the backend and come back on reconnect.
+export const CONNECTION_LOST = 'Connection to Hermes lost — reconnecting and reopening your chat…'
+
+export const CONNECTION_LOST_ACTIVITY = 'connection lost · reconnecting…'
+
 export const backendGaveUp = (code: null | number, lastLine?: string): string => {
   const exit = code === null ? '' : ` (exit code ${code})`
   const detail = detailLine(lastLine)
@@ -114,7 +120,10 @@ const SESSION_NOT_FOUND_RE = /session not found/i
 const NOT_CONNECTED_RE = /^gateway not (?:connected|running)\b/
 const TIMED_OUT_RE = /^request timed out after (\d+)s/
 
-type RpcErrorRow = [matcher: (code: number | undefined, text: string) => RegExpExecArray | boolean | null, render: (m: RegExpExecArray | null) => string]
+type RpcErrorRow = [
+  matcher: (code: number | undefined, text: string) => RegExpExecArray | boolean | null,
+  render: (m: RegExpExecArray | null) => string
+]
 
 // Ordered: first matching row wins. 4001 is reused by the backend for unrelated
 // refusals ("no active session", "slug is required", NOT_OWNER), so the code
@@ -132,7 +141,8 @@ const RPC_ERROR_ROWS: RpcErrorRow[] = [
   ],
   [
     (_code, text) => TIMED_OUT_RE.exec(text),
-    m => `Hermes did not answer within ${m?.[1] ?? '?'}s. Try again; if it keeps happening, type /logs and report the last lines.`
+    m =>
+      `Hermes did not answer within ${m?.[1] ?? '?'}s. Try again; if it keeps happening, type /logs and report the last lines.`
   ]
 ]
 
@@ -235,6 +245,10 @@ const TURN_CODE_COPY: Record<string, [string, string]> = {
     "Check the endpoint's certificate, then /retry."
   ],
   timeout: ['The model provider did not answer in time', 'Try /retry; if it keeps happening, switch with /model.'],
+  upstream_blocked: [
+    'A firewall/CDN in front of the model provider blocked the request',
+    "Set a User-Agent via the provider's extra_headers, or switch with /model."
+  ],
   upstream_rate_limit: ['The model provider is rate-limiting requests', 'Wait a moment, then /retry.']
 }
 

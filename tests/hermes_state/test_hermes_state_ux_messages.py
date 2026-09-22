@@ -61,3 +61,23 @@ def test_db_unavailable_without_cause_still_names_doctor():
     assert "hermes doctor" in text
     assert "will not be saved" in text.lower()
     assert "Details:" not in text
+
+
+def test_db_unavailable_commands_are_pinned_to_the_failing_profile(monkeypatch, tmp_path):
+    """Both fallbacks that bypass the shared cause table (no cause; network-drive gloss) name the
+    profile whose store failed, like the table's actions do."""
+    from hermes_constants import profile_cli_selector
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / ".hermes" / "profiles" / "research"))
+    selector = profile_cli_selector()
+    assert selector.strip()
+    hermes_state._set_last_init_error(None)
+    no_cause = format_session_db_unavailable()
+    hermes_state._set_last_init_error("OperationalError: locking protocol")
+    try:
+        network = format_session_db_unavailable()
+    finally:
+        hermes_state._set_last_init_error(None)
+    for text in (no_cause, network):
+        assert f"`hermes {selector}doctor`" in text and "`hermes doctor`" not in text
+        assert "{profile_arg}" not in text

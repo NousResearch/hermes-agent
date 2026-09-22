@@ -24,9 +24,15 @@
 import { atom } from 'nanostores'
 
 import { $botMeta, saveBotMeta } from './data'
+import { $groupChats, updateGroupChat } from './group-chat'
 import { botRosterMeta } from './routing'
 import { getPluginCtx } from './shared'
-import type { BotMeta, RosterRow } from './types'
+import type { BotMeta, GroupChat, RosterRow } from './types'
+
+/** The one section-name dialog's state: New section (optionally filing the
+ *  bot or group whose menu opened it) or Rename. */
+export type SectionDialogState =
+  null | { bot?: RosterRow; group?: string; mode: 'create' } | { id: string; mode: 'rename'; name: string }
 
 export const UNASSIGNED_SECTION_KEY = 'section:unassigned'
 export const BOT_SECTIONS_KEY = 'bot-sections-v1'
@@ -108,7 +114,7 @@ export function createBotSection(name: string, bots: RosterRow[] = []): BotSecti
   return section
 }
 
-export function renameBotSection(id: string, name: string): void {
+export function renameBotSection(id: string, name: string, roster: RosterRow[] = []): void {
   const clean = String(name || '').trim()
 
   if (!clean) {
@@ -116,6 +122,82 @@ export function renameBotSection(id: string, name: string): void {
   }
 
   persistBotSections($botSections.get().map(s => (s.id === id ? { ...s, name: clean } : s)))
+  // Members carry the name with their membership (see moveBotsToSection), so
+  // a rename re-stamps them — that is how the new name reaches other desktops.
+  void moveBotsToSection(
+    (roster || []).filter(bot => botSectionId(bot, $botMeta.get()) === id),
+    id
+  )
+}
+
+/**
+ * Sections another desktop made. The section RECORD lives in that machine's
+ * plugin storage, but every member's ui_meta reaches this machine carrying the
+ * section's id AND name — so rebuild the records we have never seen, and the
+ * roster draws the same folders here. A known section takes the members' name
+ * only when every member agrees on it (a rename elsewhere, fully stamped);
+ * while members disagree — a re-stamp still in flight — the local name stays.
+ * Order and empty sections remain this desktop's own. The roster pane calls
+ * this on every roster/meta change.
+ */
+export function adoptBotSectionsFromMeta(roster: RosterRow[], metaByName: Record<string, BotMeta>): void {
+  const names = new Map<string, Set<string>>()
+
+  for (const bot of roster || []) {
+    const meta = bot ? botRosterMeta(bot, metaByName) : null
+    const id = meta?.sectionId ? String(meta.sectionId) : null
+    const name = String(meta?.sectionName || '').trim()
+
+    if (id && name) {
+      names.set(id, (names.get(id) || new Set()).add(name))
+    }
+  }
+
+  const agreed = (id: string): null | string => {
+    const set = names.get(id)
+
+    return set?.size === 1 ? [...set][0]! : null
+  }
+
+  const local = $botSections.get()
+  const known = new Set(local.map(s => s.id))
+  const renamed = local.map(s => ({ ...s, name: agreed(s.id) ?? s.name }))
+  const adopted = [...names.keys()].filter(id => !known.has(id)).map(id => ({ id, name: [...names.get(id)!][0]! }))
+  const next = [...renamed, ...adopted]
+
+  if (next.some((s, i) => s.id !== local[i]?.id || s.name !== local[i]?.name)) {
+    persistBotSections(next)
+  }
+}
+
+/**
+ * The other half of adoptBotSectionsFromMeta: bots filed before the name rode
+ * along carry only `sectionId`, and a desktop that never made that section
+ * has nothing to rebuild it from. So the desktop that DOES know the section —
+ * usually the one that created it — stamps the name onto every such member
+ * through the same one-write-per-profile path filing uses. Returns the members
+ * being stamped. Runs once per member: the write sets `sectionName`, so the
+ * next roster pass finds nothing to do. Members of a section nobody here
+ * knows are left alone — there is no name to give them.
+ */
+export function backfillBotSectionNames(roster: RosterRow[], metaByName: Record<string, BotMeta>): RosterRow[] {
+  const known = new Set($botSections.get().map(s => s.id))
+  const bySection = new Map<string, RosterRow[]>()
+
+  for (const bot of roster || []) {
+    const meta = bot ? botRosterMeta(bot, metaByName) : null
+    const id = meta?.sectionId ? String(meta.sectionId) : null
+
+    if (id && known.has(id) && !String(meta?.sectionName || '').trim()) {
+      bySection.set(id, [...(bySection.get(id) || []), bot])
+    }
+  }
+
+  for (const [id, members] of bySection) {
+    void moveBotsToSection(members, id)
+  }
+
+  return [...bySection.values()].flat()
 }
 
 /**
@@ -169,12 +251,22 @@ export function moveBotSection(id: string, delta: number): void {
  * `null` clears the assignment (back to Unassigned). One `saveBotMeta` per
  * bot — membership is a field on each bot's own profile, so that IS one write
  * per profile — and the writes run in sequence rather than fanned out, so the
- * shared local snapshot is never committed by two saves at once.
+ * shared local snapshot is never committed by two saves at once. The section's
+ * NAME rides along: the record itself is local to the desktop that made it,
+ * and the name is what lets another desktop rebuild it (adoptBotSectionsFromMeta).
  */
 export async function moveBotsToSection(bots: RosterRow[], sectionId: null | string): Promise<void> {
+  const sectionName = (sectionId && $botSections.get().find(s => s.id === sectionId)?.name) || null
+
   for (const bot of bots || []) {
-    if (bot && botSectionId(bot, $botMeta.get()) !== (sectionId || null)) {
-      await saveBotMeta(bot, { sectionId: sectionId || null })
+    if (!bot) {
+      continue
+    }
+
+    const current = botRosterMeta(bot, $botMeta.get())
+
+    if (botSectionId(bot, $botMeta.get()) !== (sectionId || null) || (current?.sectionName || null) !== sectionName) {
+      await saveBotMeta(bot, { sectionId: sectionId || null, sectionName })
     }
   }
 }
@@ -183,6 +275,52 @@ export function botSectionId(bot: RosterRow, metaByName: Record<string, BotMeta>
   const id = botRosterMeta(bot, metaByName)?.sectionId
 
   return id ? String(id) : null
+}
+
+// ── group chats ──────────────────────────────────────────────────────────────
+//
+// A group chat files into a section by the same membership-on-the-item rule as
+// a bot, but a group has no profile meta to carry the field — its room record
+// is its only durable identity. So the assignment is a field on the room and
+// rides the room's own persistence (plugin storage), which is also why it is
+// deliberately NOT part of the bounded gateway sync projection: that mirror
+// carries conversations to other clients, not this machine's sidebar layout —
+// the same local scope the section list itself has.
+
+/** The drag payload prefix that marks an in-flight GROUP row (vs a bot's
+ *  roster key). */
+export const GROUP_DRAG_PREFIX = 'group:'
+
+export function groupDragKey(name: string): string {
+  return `${GROUP_DRAG_PREFIX}${name}`
+}
+
+/** A group's section, off the live room record. */
+export function groupChatSectionId(name: string, rooms: Record<string, GroupChat>): null | string {
+  const id = rooms?.[name]?.sectionId
+
+  return id ? String(id) : null
+}
+
+/** File `groups` into a section (`null` clears, back to the group-chat
+ *  bucket). One room write per group whose assignment actually changes,
+ *  through `updateGroupChat` so the durable record and the atom move together. */
+export function moveGroupChatsToSection(groups: string[], sectionId: null | string): void {
+  for (const name of groups || []) {
+    if (!name || groupChatSectionId(name, $groupChats.get()) === (sectionId || null)) {
+      continue
+    }
+
+    updateGroupChat(
+      name,
+      (room: GroupChat) => ({
+        ...room,
+        sectionId: sectionId || null
+      }),
+      // Layout-only: no reason to publish the conversation projection.
+      { sync: false }
+    )
+  }
 }
 
 export interface SectionBlock<TRow> {
@@ -196,12 +334,15 @@ export interface SectionBlock<TRow> {
  * Split roster rows into section blocks, in section order, with Unassigned
  * last. Pure, and returns EVERY row exactly once: a row whose `sectionId`
  * names a section that no longer exists lands in Unassigned rather than
- * vanishing, which is what makes deleting a section safe.
+ * vanishing, which is what makes deleting a section safe. Group rows seat per
+ * their room record's `sectionId` (`rooms`); a group with no room yet is
+ * unassigned.
  */
 export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>(
   rows: TRow[],
   sections: unknown,
-  metaByName: Record<string, BotMeta>
+  metaByName: Record<string, BotMeta>,
+  groupRooms: Record<string, GroupChat> = {}
 ): SectionBlock<TRow>[] {
   const list = normalizeBotSections(sections)
   const known = new Set(list.map(s => s.id))
@@ -209,8 +350,11 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
   const loose: TRow[] = []
 
   for (const row of rows || []) {
-    const bot = ((row as { bot?: RosterRow })?.bot || row) as RosterRow
-    const id = bot ? botSectionId(bot, metaByName) : null
+    const group = (row as { kind?: string; name?: string })?.kind === 'group' ? row : null
+
+    const id = group
+      ? groupChatSectionId(String((group as { name?: string }).name || ''), groupRooms)
+      : botSectionId(((row as { bot?: RosterRow })?.bot || row) as RosterRow, metaByName)
 
     if (id && known.has(id)) {
       byId.get(id)!.push(row)

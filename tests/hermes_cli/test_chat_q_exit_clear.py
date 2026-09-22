@@ -1,5 +1,6 @@
 """Regression tests for #53009: chat -q final response erased by exit-summary clear."""
 
+import os
 from types import SimpleNamespace
 
 import pytest
@@ -86,6 +87,7 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
 
         def chat(self, query, images=None):
             calls.append(("chat", query, images))
+            self._last_turn_result = {"final_response": "done", "completed": True}
             return "done"
 
         def _print_exit_summary(self, clear_screen=True):
@@ -101,8 +103,10 @@ def test_single_query_main_skips_clear_on_exit_summary(monkeypatch):
         lambda fake_cli: calls.append(("finalize", fake_cli.session_id)),
     )
 
-    cli_mod.main(query="hello", quiet=False, toolsets="terminal")
+    with pytest.raises(SystemExit) as exc_info:  # the one-shot path exits with the turn's outcome
+        cli_mod.main(query="hello", quiet=False, toolsets="terminal")
 
+    assert exc_info.value.code == 0
     assert calls == [
         ("claim", "cli", False),
         "query-label",
@@ -147,3 +151,83 @@ def test_print_exit_summary_still_clears_in_interactive_path(monkeypatch):
     assert "clear" in calls, (
         "Interactive mode should still clear the screen (regression test for #38928)"
     )
+
+
+# ── #116904: the escape-sequence fallback must not go through os.system() ───
+
+def _fallback_cli():
+    """A stdout that is a tty but whose write() raises, forcing the clear fallback."""
+
+    class ExplodingStdout:
+        def isatty(self):
+            return True
+
+        def write(self, _data):
+            raise OSError("terminal rejects the escape sequence")
+
+        def flush(self):
+            pass
+
+    return SimpleNamespace(), ExplodingStdout()
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX `clear` path; the nt path has its own test")
+def test_clear_fallback_spawns_no_shell(monkeypatch):
+    """#116904: fallback used os.system() — a shell spawn (console flash on Windows,
+    silent no-op without `clear`). It must now be an argv subprocess.run of the
+    resolved `clear` binary, with the real (0 off-Windows) hide flags."""
+    import subprocess as sp
+
+    import hermes_cli.cli_session_mixin as mixin_mod
+
+    calls = []
+    monkeypatch.setattr(mixin_mod.shutil, "which",
+                        lambda exe: f"/usr/bin/{exe}" if exe == "clear" else None)
+    monkeypatch.setattr(sp, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+
+    _, stdout = _fallback_cli()
+    monkeypatch.setattr(mixin_mod.sys, "stdout", stdout)
+
+    mixin_mod.CLISessionMixin._clear_terminal_on_exit(SimpleNamespace())
+
+    assert calls == [(["/usr/bin/clear"], {"stdin": sp.DEVNULL, "creationflags": 0, "check": False})]
+
+
+@pytest.mark.windows_only
+def test_clear_fallback_windows_runs_cls_with_hidden_console(monkeypatch):
+    """Native Windows: `cls` is a cmd builtin, so the argv is cmd /c cls, run with the
+    real windows_hide_flags() (CREATE_NO_WINDOW) so no console flashes (#116904)."""
+    import subprocess as sp
+
+    import hermes_cli.cli_session_mixin as mixin_mod
+    from hermes_cli._subprocess_compat import windows_hide_flags
+
+    calls = []
+    monkeypatch.setattr(sp, "run", lambda argv, **kwargs: calls.append((argv, kwargs)))
+
+    _, stdout = _fallback_cli()
+    monkeypatch.setattr(mixin_mod.sys, "stdout", stdout)
+
+    mixin_mod.CLISessionMixin._clear_terminal_on_exit(SimpleNamespace())
+
+    assert windows_hide_flags() == sp.CREATE_NO_WINDOW
+    assert calls == [(["cmd", "/c", "cls"], {"stdin": sp.DEVNULL, "creationflags": sp.CREATE_NO_WINDOW, "check": False})]
+
+
+@pytest.mark.skipif(os.name == "nt", reason="POSIX `clear` lookup")
+def test_clear_fallback_skips_spawn_when_no_clear(monkeypatch):
+    """POSIX without `clear` on PATH: skip the spawn entirely instead of letting a
+    shell swallow the failure (#116904's silent no-op)."""
+    import hermes_cli.cli_session_mixin as mixin_mod
+
+    calls = []
+    monkeypatch.setattr(mixin_mod.shutil, "which", lambda _exe: None)
+    import subprocess as sp
+    monkeypatch.setattr(sp, "run", lambda *a, **k: calls.append(a))
+
+    _, stdout = _fallback_cli()
+    monkeypatch.setattr(mixin_mod.sys, "stdout", stdout)
+
+    mixin_mod.CLISessionMixin._clear_terminal_on_exit(SimpleNamespace())
+
+    assert calls == [], "no clear binary => nothing to spawn"

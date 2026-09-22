@@ -1015,7 +1015,8 @@ class TestWidenedPruner:
 
 
     def test_merged_predicate_fails_safe_without_upstream(self, git_repo_no_remote):
-        import cli
+        """No remote: the local trunk is the baseline (a tree at trunk IS merged). No trunk at
+        all — detached main checkout, no main/master — leaves nothing to compare against -> False."""
         repo = git_repo_no_remote
         p = repo / ".worktrees" / "hermes-noremote"
         (repo / ".worktrees").mkdir(exist_ok=True)
@@ -1023,7 +1024,15 @@ class TestWidenedPruner:
             ["git", "worktree", "add", str(p), "-b", "wt/noremote", "HEAD"],
             cwd=repo, capture_output=True,
         )
+        assert worktree_ops._worktree_commits_all_merged_upstream(str(p)) is True
+
+        trunk = subprocess.run(["git", "branch", "--show-current"], cwd=repo, capture_output=True,
+                               text=True).stdout.strip()
+        subprocess.run(["git", "checkout", "-q", "--detach"], cwd=repo, capture_output=True)
+        subprocess.run(["git", "branch", "-m", trunk, "scratch/not-a-trunk"], cwd=repo, capture_output=True)
+        assert worktree_ops._worktree_merge_base_ref(str(p)) is None
         assert worktree_ops._worktree_commits_all_merged_upstream(str(p)) is False
+        assert worktree_ops._worktree_has_unpushed_commits(str(p)) is True
 
 
     # -- preserved-work warning ----------------------------------------------

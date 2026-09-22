@@ -27,6 +27,7 @@ import { bootSeededPin, invalidateBootBackground, writeBootTheme } from '../lib/
 import { defaultThemeForCurrentBackground, fromSkin, skinIsLight, type Theme, themeToneHex } from '../theme.js'
 import type { Msg, SessionInfo, SubagentProgress } from '../types.js'
 
+import { applyConnectionRequest, applyConnectionUpdate } from './connectionOperationStore.js'
 import { applyDelegationStatus, getDelegationState } from './delegationStore.js'
 import type { GatewayEventHandlerContext, NoticeLevel } from './interfaces.js'
 import { getOverlayState, patchOverlayState } from './overlayStore.js'
@@ -695,7 +696,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       void rpc('wake.start', { surface: 'tui' }).catch(() => undefined)
     }
 
-    rpc<CommandsCatalogResponse>('commands.catalog', {})
+    // Bound to the live session when one exists (reconnect): project-local
+    // skills follow the session's repo. Before the first session the gateway
+    // uses the same workspace it seeds a new session with.
+    const catalogSid = getUiState().sid
+
+    rpc<CommandsCatalogResponse>('commands.catalog', catalogSid ? { session_id: catalogSid } : {})
       .then(r => {
         if (!r?.pairs) {
           return
@@ -715,15 +721,16 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
       })
       .catch((e: unknown) => turnController.pushActivity(`command catalog unavailable: ${rpcErrorMessage(e)}`, 'info'))
 
-    // Crash recovery: a respawn triggered by an unexpected gateway death
-    // resumes the session that was live, not a brand-new one. One-shot — the
-    // ref is cleared so an ordinary later restart still forges/resumes per
-    // config. No startup prompt here (this is mid-session, not a cold boot).
+    // Keep the recovery target until resume succeeds, including across a second
+    // disconnect during setup or history loading. Recovery never resends the prompt.
     const recoverSid = recoverSidRef?.current
 
     if (recoverSidRef && recoverSid) {
-      recoverSidRef.current = null
-      resumeById(recoverSid)
+      void resumeById(recoverSid).then(() => {
+        if (getUiState().sid && recoverSidRef.current === recoverSid) {
+          recoverSidRef.current = null
+        }
+      })
       // After resumeById: it synchronously sets status to 'resuming…' on entry,
       // so override it here to keep the distinct "recovering" label visible for
       // the duration of the resume RPC (which later flips status to 'ready').
@@ -787,6 +794,23 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
     }
 
     switch (ev.type) {
+      case 'connection.request':
+        if (ev.payload) {
+          applyConnectionRequest(ev.payload)
+        }
+
+        return
+
+      case 'connection.update':
+        if (ev.payload) {
+          // The settling frame is the only record of how each app ended; the card is gone by then.
+          for (const line of applyConnectionUpdate(ev.payload)) {
+            sys(line)
+          }
+        }
+
+        return
+
       case 'gateway.ready':
         handleReady(ev.payload?.skin)
 
@@ -799,7 +823,7 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
 
         return
       case 'session.info': {
-        const info = ev.payload as SessionInfo | undefined
+        let info = ev.payload as SessionInfo | undefined
 
         if (!info) {
           return
@@ -813,10 +837,20 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           setStatus('ready')
         }
 
+        // Agent-less producers (lazy cwd switches, `_fallback_session_info`) send
+        // payloads without a durable id — keep the one we already track so a
+        // later reconnect still resumes this session.
+        const storedSid = info.stored_session_id || getUiState().storedSid
+
+        if (storedSid) {
+          info = { ...info, stored_session_id: storedSid }
+        }
+
         patchUiState(state => ({
           ...state,
           info,
           status: state.status === 'starting agent…' ? 'ready' : state.status,
+          storedSid,
           usage: info.usage ? mergeUsageStable(state.usage, info.usage) : state.usage
         }))
 
@@ -1234,7 +1268,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           ev.payload.tool_id,
           ev.payload.name ?? 'tool',
           ev.payload.context ?? '',
-          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined
+          ev.payload.args_text ? stripAnsi(String(ev.payload.args_text)) : undefined,
+          ev.payload.labels ?? undefined
         )
 
         return
@@ -1262,7 +1297,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.tool_id,
             ev.payload.name,
             ev.payload.duration_s ?? undefined,
-            resultText
+            resultText,
+            ev.payload.labels ?? undefined
           )
         } else {
           turnController.recordToolComplete(
@@ -1271,7 +1307,8 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
             ev.payload.summary ?? undefined,
             ev.payload.duration_s ?? undefined,
             ev.payload.todos ?? undefined,
-            resultText
+            resultText,
+            ev.payload.labels ?? undefined
           )
         }
 
@@ -1504,7 +1541,12 @@ export function createGatewayEventHandler(ctx: GatewayEventHandlerContext): (ev:
           const msgs: Msg[] = failed
             ? [
                 ...finalMessages.filter(
-                  (m, i) => !(i === finalMessages.length - 1 && m.role === 'assistant' && isBareErrorText(m.text, payload.error))
+                  (m, i) =>
+                    !(
+                      i === finalMessages.length - 1 &&
+                      m.role === 'assistant' &&
+                      isBareErrorText(m.text, payload.error)
+                    )
                 ),
                 { role: 'assistant', text: describeTurnFailure(payload) }
               ]

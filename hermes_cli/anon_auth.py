@@ -162,6 +162,21 @@ def is_guest_state(state: Any) -> bool:
     return isinstance(state, dict) and state.get("auth_method") == ANON_AUTH_METHOD
 
 
+def is_anonymous_request(provider: Any, api_key: Any) -> bool:
+    """Select anonymous error UX from the credential actually sent, never the saved profile or URL.
+
+    This is display/recovery metadata, not token verification; the gateway authenticates the JWT.
+    Named free accounts and opaque API keys must retain normal provider errors.
+    """
+    from hermes_cli.auth_constants import _decode_jwt_claims
+    return provider == "nous" and _decode_jwt_claims(api_key).get("account_tier") == ANON_ACCOUNT_TIER
+
+
+def is_anonymous_agent(agent: Any) -> bool:
+    """:func:`is_anonymous_request` for a live agent: read at call time, since the credential rotates."""
+    return is_anonymous_request(getattr(agent, "provider", ""), getattr(agent, "api_key", None))
+
+
 def current_nous_state() -> Optional[Dict[str, Any]]:
     """The profile's ``providers.nous`` state without locking or network (status/picker reads)."""
     from hermes_cli.auth import _load_auth_store, _load_provider_state
@@ -405,7 +420,9 @@ class MintFailure:
     attempts: int = 1
 
     def remaining(self) -> float:
-        return 0.0 if not self.retryable else max(0.0, self.not_before - time.monotonic())
+        # Rounded to the millisecond: ``(now + wait) - now`` is not exactly ``wait`` in floating point,
+        # and the ceil below turned that dust into an extra whole second ("retry in 61s").
+        return 0.0 if not self.retryable else max(0.0, round(self.not_before - time.monotonic(), 3))
 
     def as_payload(self) -> Dict[str, Any]:
         """The wire shape every status RPC carries: ``{error_code, error, retryable, retry_after}``

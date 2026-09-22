@@ -103,6 +103,38 @@ class TestGetProviderGroq:
             from tools.transcription_tools import _get_provider
             assert _get_provider({"provider": "groq"}) == "groq"
 
+
+class TestProcessErrorDetail:
+    """#112582: a failed STT helper reports its real error even when
+    CalledProcessError carries no captured output (stderr/stdout default to None)."""
+
+    @staticmethod
+    def _detail(*, stderr=None, stdout=None):
+        from tools.transcription_common import _process_error_detail
+
+        error = subprocess.CalledProcessError(
+            1,
+            ["ffmpeg"],
+            output=stdout,
+            stderr=stderr,
+        )
+        return _process_error_detail(error)
+
+    def test_prefers_stderr_over_stdout(self):
+        assert self._detail(stderr=" stderr detail \n", stdout="stdout detail") == "stderr detail"
+
+    @pytest.mark.parametrize(
+        ("stderr", "stdout", "expected"),
+        [
+            (None, None, "returned non-zero exit status 1"),
+            (None, " stdout detail \n", "stdout detail"),
+            (b" bad \xff output \n", None, "bad \ufffd output"),
+        ],
+    )
+    def test_missing_or_byte_output_does_not_mask_the_failure(self, stderr, stdout, expected):
+        assert expected in self._detail(stderr=stderr, stdout=stdout)
+
+
 class TestGetProviderFallbackPriority:
     """Auto-detect fallback priority and explicit provider behaviour."""
 
@@ -192,6 +224,32 @@ class TestTranscribeGroq:
             result = _transcribe_groq("/tmp/test.ogg", "whisper-large-v3-turbo")
         assert result["success"] is False
         assert "openai package" in result["error"]
+
+
+class TestOpenAIClientConfig:
+    @pytest.mark.parametrize(
+        ("openai_config", "expected_timeout", "expected_retries"),
+        [({}, 60, 1), ({"timeout": 95, "max_retries": 3}, 95, 3)],
+    )
+    def test_stt_openai_config_controls_sdk_client(
+        self, monkeypatch, tmp_path, sample_wav, openai_config, expected_timeout, expected_retries
+    ):
+        monkeypatch.setenv("GROQ_API_KEY", "gsk-test")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+        config_lines = ["stt:", "  openai:"]
+        config_lines.extend(f"    {key}: {value}" for key, value in openai_config.items())
+        (tmp_path / "config.yaml").write_text("\n".join(config_lines) + "\n", encoding="utf-8")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.return_value = "hi"
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client) as openai_client:
+            from tools.transcription_tools import _transcribe_groq
+            result = _transcribe_groq(sample_wav, "whisper-large-v3-turbo")
+
+        assert result["success"] is True
+        assert openai_client.call_args.kwargs["timeout"] == expected_timeout
+        assert openai_client.call_args.kwargs["max_retries"] == expected_retries
 
 
     def test_null_groq_subsection_is_safe(self, monkeypatch, sample_wav):
@@ -497,6 +555,63 @@ class TestTranscribeLocalExtended:
         assert mock_whisper_cls.call_count == 1
         assert result["success"] is False
         assert "CUDA out of memory" in result["error"]
+
+    @staticmethod
+    def _lazy_failure(message):
+        """faster-whisper's transcribe() returns a lazy generator: the decode — and the CUDA
+        dlopen-on-first-use — only fires while segments are iterated (#103793, #105295, #111929)."""
+        def segments():
+            raise RuntimeError(message)
+            yield  # pragma: no cover
+        return segments()
+
+    def test_iteration_time_cuda_dlopen_retries_on_cpu(self, tmp_path):
+        """A missing CUDA library raised while ITERATING segments must evict the cached model and
+        retry on CPU/int8, not surface as a hard failure (Windows: cublas64_12.dll)."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+        info = MagicMock(language="en", duration=1.0)
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (
+            self._lazy_failure("Library cublas64_12.dll is not found or cannot be loaded"), info)
+        cpu_segment = MagicMock(text="hi", no_speech_prob=0.0, avg_logprob=0.0)
+        cpu_model = MagicMock()
+        cpu_model.transcribe.return_value = ([cpu_segment], info)
+        mock_whisper_cls = MagicMock(side_effect=[cuda_model, cpu_model])
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is True, result.get("error")
+        assert result["transcript"] == "hi"
+        assert mock_whisper_cls.call_count == 2
+        retry_kwargs = mock_whisper_cls.call_args_list[1].kwargs
+        assert (retry_kwargs["device"], retry_kwargs["compute_type"]) == ("cpu", "int8")
+
+    def test_iteration_time_non_lib_error_surfaces_without_cpu_retry(self, tmp_path):
+        """A real runtime failure during iteration must NOT trigger the CPU retry."""
+        audio = tmp_path / "test.ogg"
+        audio.write_bytes(b"fake")
+
+        cuda_model = MagicMock()
+        cuda_model.transcribe.return_value = (self._lazy_failure("CUDA out of memory"), MagicMock())
+        mock_whisper_cls = MagicMock(return_value=cuda_model)
+
+        with patch("tools.transcription_tools._HAS_FASTER_WHISPER", True), \
+             patch("faster_whisper.WhisperModel", mock_whisper_cls), \
+             patch("tools.transcription_tools._local_model", None), \
+             patch("tools.transcription_tools._local_model_name", None):
+            from tools.transcription_tools import _transcribe_local
+            result = _transcribe_local(str(audio), "base")
+
+        assert result["success"] is False
+        assert "CUDA out of memory" in result["error"]
+        assert mock_whisper_cls.call_count == 1
 
 
 # ============================================================================
@@ -1185,7 +1300,9 @@ class TestCafConversion:
         """_convert_caf_to_wav uses ffmpeg when available."""
         caf_path = tmp_path / "voice.caf"
         caf_path.write_bytes(b"caff\x00" * 20)
-        wav_path = str(tmp_path / "voice.wav")
+        work_dir = tmp_path / "converted"
+        work_dir.mkdir()
+        wav_path = str(work_dir / "voice.wav")
 
         def fake_run(cmd, **kwargs):
             Path(wav_path).write_bytes(b"RIFF\x00\x00\x00\x00")
@@ -1198,7 +1315,7 @@ class TestCafConversion:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         from tools.transcription_tools import _convert_caf_to_wav
-        result = _convert_caf_to_wav(str(caf_path))
+        result = _convert_caf_to_wav(str(caf_path), str(work_dir))
         assert result == wav_path
         assert Path(result).exists()
 
@@ -1220,6 +1337,50 @@ class TestCafConversion:
 
         assert result["success"] is True
         mock_convert.assert_not_called()
+
+    @pytest.mark.parametrize("outcome", ["success", "provider-error"])
+    def test_caf_conversion_preserves_neighbors_and_removes_owned_output(
+        self, tmp_path, monkeypatch, outcome
+    ):
+        """Cloud CAF conversion must not clobber a sibling ``<stem>.wav`` nor
+        leave its converted output behind, whether the provider succeeds or
+        raises."""
+        from tools import transcription_audio as audio
+        from tools import transcription_tools as stt
+
+        source = tmp_path / "voice.caf"
+        source.write_bytes(b"caff fixture")
+        neighbor = source.with_suffix(".wav")
+        neighbor.write_bytes(b"existing recording")
+        outputs = []
+        monkeypatch.setattr(stt, "_load_stt_config", lambda: {
+            "provider": "groq", "cloud_trim_silence": False,
+        })
+        monkeypatch.setattr(audio, "_find_ffmpeg_binary", lambda: "ffmpeg")
+
+        def encode(command, **_kwargs):
+            output = Path(command[-1])
+            outputs.append(output)
+            output.write_bytes(b"converted recording")
+
+        def transcribe(file_path, *_args):
+            assert Path(file_path).read_bytes() == b"converted recording"
+            if outcome == "provider-error":
+                raise RuntimeError("transcription failed")
+            return {"success": True, "transcript": "hello"}
+
+        monkeypatch.setattr(audio, "_run_quiet", encode)
+        monkeypatch.setattr(stt, "_dispatch_stt_provider", transcribe)
+        if outcome == "provider-error":
+            with pytest.raises(RuntimeError, match="transcription failed"):
+                stt.transcribe_audio(str(source))
+        else:
+            assert stt.transcribe_audio(str(source))["success"] is True
+        assert source.read_bytes() == b"caff fixture"
+        assert neighbor.read_bytes() == b"existing recording"
+        assert outputs and all(
+            not path.exists() and not path.parent.exists() for path in outputs
+        )
 
 
 class TestTranscribeCredentialReadGuard:
@@ -1422,3 +1583,67 @@ class TestExplicitOpenaiSelectionError:
 
         assert result["success"] is False
         assert "No STT provider available" in result["error"]
+
+# _transcribe_openai — 5xx transcode-and-retry (#81644)
+# ============================================================================
+
+
+class TestTranscribeOpenaiFiveXxRetry:
+    """A 5xx rejection of the audio container must reach the
+    transcode-and-retry path, not propagate as a plain API error."""
+
+    def _status_error(self, status_code: int, message: str) -> Exception:
+        import httpx
+        from openai import APIStatusError
+
+        request = httpx.Request(
+            "POST", "https://api.example.com/v1/audio/transcriptions"
+        )
+        return APIStatusError(
+            message,
+            response=httpx.Response(status_code, request=request),
+            body={"type": "system_error"},
+        )
+
+    def test_server_error_triggers_transcode_and_retry(self, sample_wav, tmp_path):
+        """The provider rejects the container with a 5xx (the gapgpt case in
+        #81644): the transcode-and-retry must run and succeed."""
+        converted = tmp_path / "retry.m4a"
+        converted.write_bytes(b"fake audio")
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = [
+            self._status_error(503, "503 system_error"),  # first attempt: 5xx
+            "retried transcript",                          # retry after transcode
+        ]
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch(
+                 "tools.transcription_cloud._transcode_audio_for_stt",
+                 return_value=(str(converted), None),
+             ):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(
+                sample_wav, "gpt-4o-transcribe", api_key="sk-test"
+            )
+
+        assert result["success"] is True
+        assert result["transcript"] == "retried transcript"
+        assert mock_client.audio.transcriptions.create.call_count == 2
+
+    def test_server_error_without_transcode_keeps_provider_error(self, sample_wav):
+        """No ffmpeg: the 5xx surfaces as the provider's own error, not a transcode message,
+        and the file is not re-sent."""
+        mock_client = MagicMock()
+        mock_client.audio.transcriptions.create.side_effect = self._status_error(503, "503 system_error")
+
+        with patch("tools.transcription_tools._HAS_OPENAI", True), \
+             patch("openai.OpenAI", return_value=mock_client), \
+             patch("tools.transcription_cloud._transcode_audio_for_stt",
+                   return_value=(None, "ffmpeg not found")):
+            from tools.transcription_tools import _transcribe_openai
+            result = _transcribe_openai(sample_wav, "whisper-1", api_key="sk-test")
+
+        assert result["success"] is False
+        assert "503" in result["error"] and "ffmpeg" not in result["error"]
+        assert mock_client.audio.transcriptions.create.call_count == 1

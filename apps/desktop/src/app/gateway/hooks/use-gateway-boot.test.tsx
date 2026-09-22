@@ -43,7 +43,13 @@ import {
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
-import { $sessionTiles, $workingSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import {
+  $sessionTiles,
+  $workingSessionIds,
+  clearAllSessionStates,
+  publishSessionState,
+  runtimeSessionOwner
+} from '@/store/session-states'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 
 import { deferred } from '../../../test/deferred'
@@ -377,6 +383,80 @@ async function advanceBackoff() {
   })
 }
 
+describe('default-route profile adoption', () => {
+  it('keeps a peer primary on its registered gateway across boot, reconnect and soft switch', async () => {
+    const originalUrl = window.location.href
+    window.history.replaceState(null, '', '/?peer=1&profile=coder&connectionId=coder-remote')
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+      getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+      getGatewayWsUrlFor: vi.fn(async () => coderConn.wsUrl)
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    try {
+      render(<Harness />)
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+      FakeWebSocket.instances.at(-1)!.drop()
+      await advanceBackoff()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+
+      act(() => connectionApplied?.())
+      await flushAsync()
+      expect(FakeWebSocket.instances.at(-1)?.url).toBe(coderConn.wsUrl)
+      expect(desktop.getGatewayWsUrlFor).toHaveBeenCalledWith({ connectionId: 'coder-remote', profile: 'coder' })
+      expect(desktop.getGatewayWsUrl).not.toHaveBeenCalled()
+    } finally {
+      window.history.replaceState(null, '', originalUrl)
+    }
+  })
+
+  it.each([null, 'coder-remote'])(
+    'dials the saved startup route before an ambient sender can replace it (%s)',
+    async connectionId => {
+      const base = fakeDesktop()
+      const route = { connectionId, profile: 'coder' }
+
+      const desktop = {
+        ...base,
+        getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
+        profile: { ...base.profile, getDefault: vi.fn(async () => route) }
+      }
+
+      ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+      render(<Harness />)
+      await flushAsync()
+
+      if (connectionId) {
+        expect(desktop.getConnectionFor).toHaveBeenCalledWith(route)
+      } else {
+        expect(desktop.getConnection).toHaveBeenCalledWith('coder')
+        expect(desktop.getConnectionFor).not.toHaveBeenCalled()
+      }
+
+      expect($connection.get()?.profile).toBe('coder')
+      expect($desktopBoot.get().running).toBe(false)
+    }
+  )
+
+  it('adopts the resolved backend profile rather than the old last-used preference', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, profile: 'research' })
+    desktop.profile.get.mockResolvedValue({ profile: 'old-last-used' })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()?.profile).toBe('research')
+    expect($activeGatewayProfile.get()).toBe('research')
+    expect($desktopBoot.get().running).toBe(false)
+  })
+})
+
 describe('primary failure foreground isolation', () => {
   it('ignores a boot snapshot superseded by a successful connection', async () => {
     const snapshot = deferred<Awaited<ReturnType<ReturnType<typeof fakeDesktop>['getBootProgress']>>>()
@@ -473,6 +553,47 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().visible).toBe(false)
     }
   )
+  it('a rejected background primary offers Settings instead of parking silently', async () => {
+    const desktop = Object.assign(fakeDesktop(), {
+      getConnectionFor: vi.fn(async () => ({
+        ...coderConn,
+        connectionId: 'local',
+        profile: 'default',
+        mode: 'local',
+        baseUrl: 'http://127.0.0.1:9191',
+        wsUrl: 'ws://127.0.0.1:9191/api/ws?token=c'
+      }))
+    })
+
+    desktop.getConnection.mockResolvedValue({
+      ...primaryConn,
+      mode: 'remote',
+      remoteKind: 'cloud',
+      authMode: 'oauth'
+    } as typeof primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('local', 'default')
+    })
+    await flushAsync()
+    expect(await opening).toBe(true)
+
+    desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    // The parked primary no longer retries by itself, so the user must learn
+    // about it from where they are — without the foreground being hijacked.
+    expect(isActivePrimary()).toBe(false)
+    expect($desktopBoot.get().error).toBeNull()
+    const toasts = $notifications.get().filter(entry => entry.kind === 'error')
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].action?.label).toBe('Open Gateways')
+  })
+
   it.each(['progress', 'reconnect'] as const)(
     'primary auth via %s follows the foreground, including a latched error',
     async path => {
@@ -575,8 +696,13 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().error).toContain(error)
 
       desktop.getGatewayWsUrl.mockImplementation(async conn => conn?.wsUrl ?? primaryConn.wsUrl)
-      act(() => FakeWebSocket.instances[0].drop())
-      await advanceBackoff()
+      // A rejected session waits for explicit recovery, even after credentials change.
+      let recovery!: Promise<void>
+      act(() => {
+        recovery = reconnectGateway()
+      })
+      await flushAsync()
+      await recovery
       expect($gatewayState.get()).toBe('open')
       expect($desktopBoot.get().error).toBeNull()
       expect(overlay.queryByRole('heading')).toBeNull()
@@ -589,7 +715,96 @@ describe('primary failure foreground isolation', () => {
   )
 })
 
+describe('shared host backend event provenance', () => {
+  // Multiplex-only: ONE backend serves every local profile, so the primary
+  // socket carries profile B's events and no secondary closure exists to stamp
+  // them. Unstamped, runtimeSessionOwner() is blank for B and the live
+  // sessions/cron sync falls back to slow polling.
+  // A LOCAL host backend: no registry connection id, so ownership can only come
+  // from the stamp (a registry-tagged event already carries its exact owner).
+  const sharedPrimaryConn = {
+    ...primaryConn,
+    baseUrl: 'http://127.0.0.1:8899',
+    connectionId: '',
+    profile: 'beta',
+    sharedPrimary: true,
+    wsUrl: 'ws://127.0.0.1:8899/api/ws?token=t'
+  }
+
+  function deliverEvent(socket: FakeWebSocket, frame: Record<string, unknown>) {
+    ;(socket as unknown as { emit: (type: string, ev: unknown) => void }).emit('message', {
+      data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: frame })
+    })
+  }
+
+  it('stamps a shared-primary profile-B event with B, not with the boot-time profile', async () => {
+    const desktop = fakeDesktop()
+
+    desktop.getConnection.mockResolvedValue(sharedPrimaryConn)
+    desktop.getGatewayWsUrl.mockResolvedValue(sharedPrimaryConn.wsUrl)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+
+    // The window moved to profile B after boot; the socket did not.
+    act(() => {
+      $connection.set(sharedPrimaryConn as unknown as ReturnType<typeof $connection.get>)
+      $activeGatewayProfile.set('beta')
+    })
+
+    act(() => {
+      deliverEvent(FakeWebSocket.instances[0], { session_id: 'rt-B', type: 'session.info' })
+    })
+
+    expect(runtimeSessionOwner('rt-B')).toBe('beta')
+  })
+
+  it('leaves an unshared primary on its exact owner — the socket already IS its profile', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => {
+      deliverEvent(FakeWebSocket.instances[0], { session_id: 'rt-A', type: 'session.info' })
+    })
+
+    // The registry (connectionId, profile) owner, NOT a bare-profile marker:
+    // the stamp is reserved for the shared-primary topology.
+    expect(runtimeSessionOwner('rt-A')).toEqual({ connectionId: 'primary-vps', profile: 'default' })
+  })
+})
+
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
+  it('parks rejected primary auth across timers and wake signals until explicit recovery', async () => {
+    const desktop = fakeDesktop()
+    desktop.getConnection.mockResolvedValue({ ...primaryConn, authMode: 'oauth' })
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+    expect($desktopBoot.get().error).toContain('session has expired')
+    const calls = desktop.getGatewayWsUrl.mock.calls.length
+    await advanceBackoff()
+    act(() => {
+      powerResume?.()
+      window.dispatchEvent(new Event('focus'))
+      window.dispatchEvent(new Event('online'))
+    })
+    await advanceBackoff()
+    expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(calls)
+    desktop.getGatewayWsUrl.mockResolvedValue(primaryConn.wsUrl)
+    act(() => {
+      connectionApplied?.()
+    })
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect($desktopBoot.get().error).toBeNull()
+  })
+
   it('INITIAL boot against a dead VPS: getConnection hangs (waitForHermes) → app sits in the connecting combo, then fails', async () => {
     // The report's actual path: a fresh launch pointed at an unreachable VPS.
     // startHermes()'s remote branch awaits waitForHermes() for 45s before it
@@ -1269,6 +1484,36 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).not.toBe('open')
     // Still retrying.
     expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+  })
+
+  it('#83134: a proxy that accepts then immediately closes every socket does not reset the backoff to attempt 0', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    // Deterministic full jitter: every delay is exactly half its ceiling, so
+    // attempt 0 costs 150ms and the ladder is 150, 300, 600, 1200, 2400, ...
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+    // 12s of a proxy that ACCEPTS the upgrade and closes on the first frame:
+    // every socket opens and is dropped ~100ms later, never a stable 5s open.
+    for (let elapsed = 0; elapsed < 12_000; elapsed += 100) {
+      const latest = FakeWebSocket.instances.at(-1)
+
+      if (latest?.readyState === FakeWebSocket.OPEN) {
+        act(() => latest.drop())
+      }
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+    }
+
+    // Attempt 0 forever redials every 150ms (~80 sockets / 12s — the reporter's
+    // 55 opens / 12s). A climbing ladder reaches the 15s cap in ~7 dials.
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(5)
+    expect(FakeWebSocket.instances.length).toBeLessThanOrEqual(10)
   })
 
   it('FIX: a successful reconnect after a prolonged drop restores the open gateway', async () => {
@@ -2025,6 +2270,124 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect(desktop.getConnection).toHaveBeenCalledTimes(6)
   })
 
+  it('a failed cold boot keeps its recovery surface while main replays cold-boot progress behind it (#112899)', async () => {
+    // Main keeps startHermes() available after the renderer's boot concluded
+    // in failure; any later getConnection() caller re-enters it and replays
+    // `backend.resolve` (running:true — hides BootFailureOverlay) then
+    // `backend.remote` (error:null — the store's late-progress guard only
+    // holds while running is false, so this wipes boot.error). Each replay
+    // buried the recovery surface under the CONNECTING overlay for the whole
+    // ~45s readiness wait, indefinitely.
+    const desktop = fakeDesktop()
+    desktop.getConnection = vi.fn(async () => {
+      throw new Error('Hermes backend did not become ready: getaddrinfo ENOTFOUND gateway.tailnet.example')
+    })
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'Hermes backend did not become ready: getaddrinfo ENOTFOUND gateway.tailnet.example',
+      fakeMode: false,
+      message: 'Desktop boot failed',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: false,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($desktopBoot.get().error).toBeTruthy()
+    expect($desktopBoot.get().running).toBe(false)
+
+    for (let replay = 0; replay < 2; replay += 1) {
+      act(() => {
+        desktop.emitBootProgress({
+          error: null,
+          fakeMode: false,
+          message: 'Resolving Hermes backend',
+          phase: 'backend.resolve',
+          progress: 8,
+          running: true,
+          timestamp: Date.now()
+        })
+        desktop.emitBootProgress({
+          error: null,
+          fakeMode: false,
+          message: 'Connecting to remote Hermes backend at https://gateway.tailnet.example:8443',
+          phase: 'backend.remote',
+          progress: 24,
+          running: true,
+          timestamp: Date.now()
+        })
+      })
+
+      // BootFailureOverlay renders on `boot.error && !boot.running`.
+      expect($desktopBoot.get().error).toBeTruthy()
+      expect($desktopBoot.get().running).toBe(false)
+    }
+  })
+
+  it('a boot failed by a startup backend exit still shows the progress of its own bounded retry (#112899)', async () => {
+    // The failure latch must not outlive the boot it describes: onBackendExit
+    // concludes the in-flight boot, but boot()'s catch may then classify the
+    // failure as retryable and start a FRESH lifecycle. That retry's progress
+    // events must reach the overlay, or the retry runs blind behind a stale
+    // "couldn't start" surface.
+    const desktop = fakeDesktop()
+    let rejectConnection: (err: Error) => void = () => undefined
+    desktop.getConnection = vi
+      .fn()
+      .mockImplementationOnce(
+        () =>
+          new Promise<never>((_resolve, reject) => {
+            rejectConnection = reject
+          })
+      )
+      .mockImplementation(() => new Promise<never>(() => undefined))
+    desktop.getBootProgress = vi.fn(async () => ({
+      error: 'Could not verify the existing SSH backend.',
+      fakeMode: false,
+      message: 'Desktop boot failed',
+      phase: 'backend.error',
+      progress: 24,
+      retryable: true,
+      running: false,
+      timestamp: Date.now()
+    }))
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => backendExit?.({ code: 1, signal: null }))
+    expect($desktopBoot.get().error).toBeTruthy()
+
+    await act(async () => {
+      rejectConnection(new Error('Could not verify the existing SSH backend.'))
+      await vi.advanceTimersByTimeAsync(0)
+    })
+    await advanceBackoff()
+
+    expect(desktop.getConnection).toHaveBeenCalledTimes(2)
+    expect($desktopBoot.get().error).toBeNull()
+
+    act(() => {
+      desktop.emitBootProgress({
+        error: null,
+        fakeMode: false,
+        message: 'Resolving Hermes backend',
+        phase: 'backend.resolve',
+        progress: 8,
+        running: true,
+        timestamp: Date.now()
+      })
+    })
+
+    expect($desktopBoot.get().phase).toBe('backend.resolve')
+    expect($desktopBoot.get().running).toBe(true)
+  })
+
   it('FIX #82679: a NON-retryable boot failure (local / confirmed reauth) fails immediately without auto-retry', async () => {
     const desktop = fakeDesktop()
     desktop.getConnection = vi.fn(async () => {
@@ -2207,5 +2570,42 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
       await vi.advanceTimersByTimeAsync(20_000)
     })
     expect($gatewayState.get()).toBe('open')
+  })
+})
+
+describe('window-state IPC before the first connection publishes (#108641)', () => {
+  it('a fullscreen toggle that lands while getConnection is still pending reaches the published connection', async () => {
+    // Main snapshots chrome state into the descriptor at mint time; a toggle
+    // that fires after the mint but before the renderer publishes it is newer
+    // than the snapshot and used to be dropped because $connection was null.
+    let windowState: ((payload: Record<string, unknown>) => void) | null = null
+    const pending = deferred<Record<string, unknown>>()
+
+    const desktop = {
+      ...fakeDesktop(),
+      getConnection: vi.fn(() => pending.promise),
+      onWindowStateChanged: vi.fn((callback: (payload: Record<string, unknown>) => void) => {
+        windowState = callback
+
+        return () => undefined
+      })
+    }
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+    expect($connection.get()).toBeNull()
+
+    act(() => windowState?.({ isFullscreen: true, nativeOverlayWidth: 0, windowButtonPosition: null }))
+    expect($connection.get()).toBeNull()
+
+    await act(async () => {
+      pending.resolve({ ...primaryConn, isFullscreen: false, windowButtonPosition: { x: 12, y: 16 } })
+      await vi.advanceTimersByTimeAsync(0)
+    })
+
+    expect($connection.get()?.isFullscreen).toBe(true)
+    expect($connection.get()?.windowButtonPosition).toBeNull()
   })
 })

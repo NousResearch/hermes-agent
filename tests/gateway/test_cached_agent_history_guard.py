@@ -65,3 +65,35 @@ def test_select_cached_history_ignores_unmarked_ephemeral_scaffolding():
     ]
 
     assert _select_cached_agent_history(persisted, live) is persisted
+
+
+def test_persistent_transcript_lag_escalates_to_error(caplog):
+    """The 'Persisted transcript lagged live cached history' line repeated at WARNING for 11 days in
+    #114266. A per-session streak of lagging turns escalates it to ERROR; a turn whose disk copy
+    caught up resets the streak."""
+    import logging
+    from types import SimpleNamespace
+
+    from gateway.run_turn_runner import _TRANSCRIPT_LAG_ESCALATION_TURNS, TurnRunner
+
+    persisted = [{"role": "user", "content": "hello"}]
+    live = [{"role": "user", "content": "hello", "_db_persisted": True},
+            {"role": "assistant", "content": "not written"}]
+    runner = SimpleNamespace()
+    ctx = SimpleNamespace(history=persisted, channel_prompt=None, user_config=None,
+                          session_id="sid-1", session_key="agent:main:telegram:dm:1")
+    turn = TurnRunner(runner, ctx)
+    agent = SimpleNamespace(session_id="sid-1", _session_messages=live)
+
+    with caplog.at_level(logging.WARNING, logger="gateway.run"):
+        for _ in range(_TRANSCRIPT_LAG_ESCALATION_TURNS):
+            history, _observed, _media = turn._load_turn_history(agent, reused_cached_agent=True)
+    assert len(history) == len(live)  # live context still preserved
+    levels = [r.levelno for r in caplog.records if "lagged live cached history" in r.getMessage()]
+    assert levels == [logging.WARNING] * (_TRANSCRIPT_LAG_ESCALATION_TURNS - 1) + [logging.ERROR]
+    assert "consecutive_turns=%d" % _TRANSCRIPT_LAG_ESCALATION_TURNS in caplog.records[-1].getMessage()
+
+    # Disk caught up: the streak resets, so the next lag starts again at WARNING.
+    agent._session_messages = [dict(persisted[0], _db_persisted=True)]
+    turn._load_turn_history(agent, reused_cached_agent=True)
+    assert ctx.session_key not in runner._transcript_lag_streaks

@@ -164,7 +164,8 @@ def _apply_field_values(provider: ProviderConfigSchema, values: Dict[str, str], 
 
 def _write_json_0600(path: Path, data: Dict[str, Any]) -> None:
     from utils import atomic_json_write
-    path.parent.mkdir(parents=True, exist_ok=True)
+    from hermes_constants import mkdir_under_hermes_home
+    mkdir_under_hermes_home(path.parent)
     atomic_json_write(path, data, mode=0o600)
 
 
@@ -533,20 +534,26 @@ async def get_memory_provider_config(name: str, surface: Optional[str] = None, p
 
 
 @router.post("/api/memory/providers/{name}/setup")
-async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest):
+async def setup_memory_provider(name: str, body: MemoryProviderSetupRequest,
+                                profile: Optional[str] = None):
     _require_valid_memory_provider_name(name)
-    provider = _load_memory_provider(name)
-    if provider is None and not _memory_provider_manifest(name):
-        # No discoverable plugin directory -> no manifest that could declare
-        # setup commands; refuse before the command-running path. (provider
-        # may be None with a manifest present when its pip deps aren't
-        # installed yet — that's the setup use case.)
-        raise _unknown_provider(name)
-    if provider is not None and body.values:
-        with _value_errors_as_http("Failed to persist memory provider setup values for %s", name, passthrough_http=False):
-            _write_memory_provider_config_values(name, provider, body.values)
-    _invalidate_plugins_hub_cache()
-    return _install_memory_provider_setup(name)
+
+    def _run():
+        provider = _load_memory_provider(name)
+        if provider is None and not _memory_provider_manifest(name):
+            # No discoverable plugin directory -> no manifest that could declare
+            # setup commands; refuse before the command-running path. (provider
+            # may be None with a manifest present when its pip deps aren't
+            # installed yet — that's the setup use case.)
+            raise _unknown_provider(name)
+        if provider is not None and body.values:
+            with _value_errors_as_http("Failed to persist memory provider setup values for %s", name,
+                                       passthrough_http=False):
+                _write_memory_provider_config_values(name, provider, body.values)
+        _invalidate_plugins_hub_cache()
+        return _install_memory_provider_setup(name)
+
+    return await scoped_to_thread(profile, _run)
 
 
 @router.put("/api/memory/providers/{name}/config")

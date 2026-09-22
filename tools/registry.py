@@ -8,6 +8,7 @@ model_tools."""
 import ast
 import functools
 import importlib
+import inspect
 import json
 import logging
 import sys
@@ -170,7 +171,8 @@ def _save_discovery_cache(cache: Dict[str, list]) -> None:
         return
     try:
         from utils import atomic_json_write  # stdlib+yaml only; no cycle
-        path.parent.mkdir(parents=True, exist_ok=True)
+        from hermes_constants import mkdir_under_hermes_home
+        mkdir_under_hermes_home(path.parent)
         atomic_json_write(path, cache, indent=0)
     except Exception as e:
         logger.debug("Could not write tool discovery cache %s: %s", path, e)
@@ -225,6 +227,8 @@ _CHECK_FN_FAILURE_GRACE_SECONDS = 60.0
 _CHECK_FN_CACHE_MAX = 512
 _check_fn_cache: Dict[tuple[Callable, Optional[str]], tuple[float, bool]] = {}
 _check_fn_last_good: Dict[tuple[Callable, Optional[str]], float] = {}
+_check_fn_ever_good: Set[tuple[Callable, Optional[str]]] = set()  # probes that admitted tools this process
+_check_fn_core_drop_warned: Set[tuple[Callable, Optional[str]]] = set()  # once-per-process WARNING gate
 _check_fn_cache_lock = threading.Lock()
 CHECK_FN_CACHE_BYPASS = ""
 _NO_CACHE_CHECK_FNS: Set[Callable] = set()
@@ -266,7 +270,12 @@ def check_fn_cache_scope() -> Optional[str]:
     try:
         from gateway.session_context import get_session_env
         if all(str(get_session_env(k, "") or "").strip() for k in _BROWSER_IDENTITY_KEYS):
-            return CHECK_FN_CACHE_BYPASS
+            # api_server binds a server-derived principal + transport family on EVERY request, so
+            # identity-present != controller-attached; only bypass when the extension-control
+            # feature is actually on (#79047).
+            from gateway.browser_control_broker import browser_control_enabled
+            if browser_control_enabled():
+                return CHECK_FN_CACHE_BYPASS
     except Exception:
         pass
     try:
@@ -335,10 +344,13 @@ def _check_fn_cached(fn: Callable) -> bool:
         # ``exc_info=True`` would resolve to nothing): a check_fn that raises is a bug in the probe
         # or its resolver, and a bare "raised" verdict reads as "nothing configured" (#87950).
         value, outcome, exc_info = False, "raised", exc
+    # Resolved outside the cache lock: the registry snapshot takes its own lock.
+    core_dropped = sorted(_core_tools_gated_by(fn)) if not value else []
     with _check_fn_cache_lock:
         _prune_check_fn_caches(now)
         if value:
             _check_fn_last_good[cache_key] = now
+            _check_fn_ever_good.add(cache_key)
             _check_fn_cache[cache_key] = (now, True)
             return True
         last_good = _check_fn_last_good.get(cache_key)
@@ -350,13 +362,37 @@ def _check_fn_cached(fn: Callable) -> bool:
                 _fn_label(fn), outcome, _CHECK_FN_FAILURE_GRACE_SECONDS)
             return True
 
-        # No recent success (or grace expired) — honor the failure; logged so silent tool
-        # loss in quiet mode (subagents) is diagnosable.
-        logger.warning(
-            "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
-            exc_info=exc_info)
+        # No recent success (or grace expired) — honor the failure. A False verdict is the
+        # expected state for optional, unconfigured toolsets; only a raised probe is actionable.
+        # Core (non-deferrable) tools are the exception when they were available earlier in
+        # this process and the probe now fails: dropped, they leave neither the schema nor the
+        # tool_search catalog, so the model's "no such tool" is accurate and nothing points at
+        # the probe. That regression is a WARNING once per probe per process (#112649). A core
+        # tool whose probe never succeeded (browser, image_gen, HA unconfigured on a stock home)
+        # is the expected state and keeps the INFO verdict.
+        if core_dropped and cache_key in _check_fn_ever_good and cache_key not in _check_fn_core_drop_warned:
+            _check_fn_core_drop_warned.add(cache_key)
+            logger.warning(
+                "check_fn %s %s; previously available core tool(s) %s dropped (non-deferrable, "
+                "so not searchable either); dependent tools will be unavailable this turn",
+                _fn_label(fn), outcome, ", ".join(core_dropped), exc_info=exc_info)
+        else:
+            log = logger.warning if exc_info else logger.info
+            log(
+                "check_fn %s %s; dependent tools will be unavailable this turn", _fn_label(fn), outcome,
+                exc_info=exc_info)
         _check_fn_cache[cache_key] = (now, False)
         return False
+
+
+def _core_tools_gated_by(fn: Callable) -> Set[str]:
+    """Names of ``_HERMES_CORE_TOOLS`` members whose registered ``check_fn`` is *fn*."""
+    try:
+        from toolsets import _HERMES_CORE_TOOLS
+        core = frozenset(_HERMES_CORE_TOOLS)
+    except Exception:
+        return set()
+    return {e.name for e in registry._snapshot_entries() if e.check_fn is fn and e.name in core}
 
 
 def _memo_check(fn: Callable, memo: Dict[Callable, bool]) -> bool:
@@ -371,6 +407,8 @@ def invalidate_check_fn_cache() -> None:
     with _check_fn_cache_lock:
         _check_fn_cache.clear()
         _check_fn_last_good.clear()
+        _check_fn_ever_good.clear()
+        _check_fn_core_drop_warned.clear()
 
 
 def get_cached_check_fn_result(fn: Callable) -> Optional[bool]:
@@ -847,6 +885,10 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
+            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
+            # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
+            # plugin handler is not broken by every field the dispatcher injects (#68318).
+            kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
@@ -973,3 +1015,16 @@ def tool_error(message, **extra) -> str:
 def tool_result(data=None, **kwargs) -> str:
     """JSON-encode a dict positional arg *or* keyword arguments (not both)."""
     return json.dumps(data if data is not None else kwargs, ensure_ascii=False)
+
+
+def _kwargs_accepted_by(handler: Callable, kwargs: dict) -> dict:
+    """*kwargs* narrowed to what *handler*'s signature declares; everything when it takes ``**kwargs`` or
+    cannot be introspected (builtins, some C callables)."""
+    try:
+        parameters = inspect.signature(handler).parameters
+    except (TypeError, ValueError):
+        return kwargs
+    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
+        return kwargs
+    keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
+    return {k: v for k, v in kwargs.items() if k in parameters and parameters[k].kind in keyword_kinds}

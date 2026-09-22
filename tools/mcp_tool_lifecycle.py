@@ -127,22 +127,30 @@ def _reregister_orphaned_adopters() -> None:
             reset_hermes_home_override(home_token)
 
 
-def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None):
+def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = None,
+                         timeout: float = 15.0):
     """Close MCP server connections (in parallel) and stop the background loop. Each server
     Task is signalled to exit its own ``async with`` so the anyio cancel-scope cleanup runs in
     the Task that opened it. ``scope`` restricts teardown to one multiplexed profile's servers
     (its ``/reload-mcp`` must not kill other profiles') and leaves the shared loop running if
     anything else is still connected. ``names`` restricts it further to those server names
-    (dropped-from-config pruning); other servers' bookkeeping is untouched."""
+    (dropped-from-config pruning); other servers' bookkeeping is untouched. Only the bare call
+    (no ``scope``, no ``names``) is the process-wide wildcard: the launch profile's registry
+    scope IS ``None``, so ``scope=None, names={...}`` prunes that unscoped owner's servers and
+    must leave a served profile's same-named ``(B, name)`` connection alone. ``timeout`` bounds
+    the wait for the close to land on the MCP loop — a caller running one pass per served
+    profile under a total budget divides it, or N profiles × 15s starve the wildcard pass that
+    actually stops the loop."""
     from tools.mcp_tool_scope import _key_name
+    wildcard = scope is None and names is None
     with _core._lock:
-        selected = [key for key in _core._servers if scope is None or _core._server_scope_keys.get(key) == scope]
+        selected = [key for key in _core._servers if wildcard or _core._server_scope_keys.get(key) == scope]
         if names is not None:
             selected = [key for key in selected if _key_name(key) in names]
         servers_snapshot = [_core._servers[key] for key in selected]
         if names is not None:
             selected_status = set(selected)
-        elif scope is None:
+        elif wildcard:
             selected_status = (
                 set(_core._servers) | set(_core._server_scope_keys)
                 | set(_core._server_tool_scopes)
@@ -152,7 +160,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
         # Adopters of the connections being torn down lose their overlays with the tasks' own
         # ``_deregister_tools``; remember them so the next discovery pass re-registers them
         # (``_reregister_orphaned_adopters``).
-        if scope is not None:
+        if not wildcard:
             for key in selected:
                 for adopter in _core._server_tool_scopes.get(key, ()):
                     if adopter != scope:
@@ -180,7 +188,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
                     _core._servers.pop(key, None)
                     _core._server_scope_keys.pop(key, None)
                 clear_selected_status()
-                _clear_connect_cooldowns(None if scope is None and names is None else selected_status)
+                _clear_connect_cooldowns(None if wildcard else selected_status)
 
         with _core._lock:
             loop = _core._mcp_loop
@@ -189,7 +197,7 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
             future = safe_schedule_threadsafe(_shutdown(), loop, logger=logger, log_message="MCP shutdown: failed to schedule")
             if future is not None:
                 try:
-                    future.result(timeout=15)
+                    future.result(timeout=timeout)
                 except BaseException as exc:
                     logger.debug("Error during MCP shutdown: %s", exc)
 
@@ -199,8 +207,8 @@ def shutdown_mcp_servers(*, scope: Optional[str] = None, names: Optional[set] = 
     with _core._lock:
         if not servers_snapshot:
             clear_selected_status()
-        _clear_connect_cooldowns(None if scope is None and names is None else selected_status)
-    _loop._stop_mcp_loop(only_if_idle=scope is not None or names is not None)
+        _clear_connect_cooldowns(None if wildcard else selected_status)
+    _loop._stop_mcp_loop(only_if_idle=not wildcard)
     # A removed subset still shares its profile's log with the remaining servers.
     # Full/profile shutdown must also release handles left by completed CLI/UI probes.
     if names is None:

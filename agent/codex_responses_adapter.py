@@ -12,7 +12,8 @@ import uuid
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, Iterator, List, NamedTuple, Optional, TypeGuard
 
-from agent.message_sanitization import coerce_tool_name, deterministic_call_id
+from agent.message_sanitization import (
+    _repair_tool_call_arguments, coerce_tool_name, deterministic_call_id)
 from agent.prompt_builder import DEFAULT_AGENT_IDENTITY
 from hermes_cli.route_identity import normalize_route_base_url
 
@@ -1037,10 +1038,14 @@ def _format_responses_error(error_obj: Any, response_status: str) -> str:
 
 # --- Full response normalization ----------------------------------------------
 
-def _response_tool_call(item: Any, item_type: str, index: int) -> SimpleNamespace:
-    """Build a chat-style tool_call from a ``function_call``/``custom_tool_call`` item."""
+def _response_tool_call(
+    item: Any, item_type: str, index: int, *, arguments: Optional[str] = None,
+) -> SimpleNamespace:
+    """Build a chat-style tool_call from a ``function_call``/``custom_tool_call`` item.
+    ``arguments`` overrides the item's own payload (repaired JSON from ``_OutputScan``)."""
     fn_name = getattr(item, "name", "") or ""
-    arguments = getattr(item, "arguments" if item_type == "function_call" else "input", "{}")
+    if arguments is None:
+        arguments = getattr(item, "arguments" if item_type == "function_call" else "input", "{}")
     if not isinstance(arguments, str):
         arguments = json.dumps(arguments, ensure_ascii=False)
     raw_item_id = getattr(item, "id", None)
@@ -1089,6 +1094,8 @@ class _OutputScan:
         self.has_incomplete_items = response_status in _INCOMPLETE_STATUSES
         self.saw_streaming_or_item_incomplete = response_status in {"queued", "in_progress"}
         self.saw_commentary_phase = self.saw_final_answer_phase = self.saw_reasoning_item = False
+        # Names of tool calls whose argument JSON was truncated past repair.
+        self.truncated_tool_call_names: List[str] = []
 
     def scan(self, output: List[Any], issuer_kind: Optional[str], issuer_model: Optional[str] = None) -> None:
         for item in output:
@@ -1115,7 +1122,25 @@ class _OutputScan:
                             "Native Responses compaction item captured (%d chars encrypted).", len(raw_item["encrypted_content"]),
                         )
             elif item_type == "custom_tool_call" or (item_type == "function_call" and item_status not in _INCOMPLETE_STATUSES):
-                self.tool_calls.append(_response_tool_call(item, item_type, len(self.tool_calls)))
+                self._tool_call(item, item_type)
+
+    def _tool_call(self, item: Any, item_type: str) -> None:
+        """Accept one tool call, repairing malformed argument JSON the way the Chat Completions
+        assembler does; an unrepairable (truncated) payload is recorded instead of executed."""
+        repaired: Optional[str] = None
+        # function_call only: a custom_tool_call's ``input`` is free-form text, not JSON.
+        raw_arguments = getattr(item, "arguments", None) if item_type == "function_call" else None
+        if isinstance(raw_arguments, str) and raw_arguments.strip():
+            try:
+                json.loads(raw_arguments)
+            except (json.JSONDecodeError, ValueError):
+                fn_name = getattr(item, "name", "") or "?"
+                # "{}" means unrepairable: the payload was cut mid-JSON, not merely malformed.
+                repaired = _repair_tool_call_arguments(raw_arguments, fn_name)
+                if repaired == "{}":
+                    self.truncated_tool_call_names.append(fn_name)
+                    return
+        self.tool_calls.append(_response_tool_call(item, item_type, len(self.tool_calls), arguments=repaired))
 
     def _message(self, item: Any, item_status: Optional[str]) -> None:
         normalized_phase = _lower_or_none(getattr(item, "phase", None))
@@ -1165,6 +1190,20 @@ def _normalize_codex_response(
     scan = _OutputScan(response_status)
     scan.scan(output, issuer_kind, issuer_model)
     tool_calls, reasoning_parts = scan.tool_calls, scan.reasoning_parts
+    # A tool call whose arguments were cut mid-JSON is not executable. Handing it to the loop
+    # anyway returns "Invalid tool arguments" as the tool RESULT, and the send-path canonicalizer
+    # rewrites the stored payload to "{}" — so the next request shows the model a syntactically
+    # valid empty object plus an error about it, destroying the truncation evidence it needs to
+    # shorten the call, and it re-emits the same one. Chat Completions already drops such a batch
+    # (``_assemble_tool_calls``); mirror that here and let the incomplete continuation re-elicit it.
+    if scan.truncated_tool_call_names:
+        logger.warning(
+            "Codex response carried tool call(s) whose arguments were truncated past repair "
+            "(tools=%s); dropping the batch and marking the turn incomplete so the continuation "
+            "re-elicits them instead of executing an unparseable call.",
+            scan.truncated_tool_call_names,
+        )
+        tool_calls = []
     final_text = "\n".join(scan.content_parts).strip()
     if not final_text and (scan.saw_final_answer_phase or not scan.saw_commentary_phase):
         out_text = getattr(response, "output_text", "")
@@ -1214,6 +1253,7 @@ def _normalize_codex_response(
         finish_reason = "content_filter"
     elif (
         leaked_tool_call_text
+        or scan.truncated_tool_call_names
         or scan.saw_streaming_or_item_incomplete
         or ((scan.has_incomplete_items or scan.saw_commentary_phase) and not scan.saw_final_answer_phase)
         or (reasoning_only and not trusted_final)

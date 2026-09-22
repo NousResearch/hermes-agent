@@ -238,6 +238,51 @@ class TestBuildSessionContextPrompt:
         assert "current turn's sender prefix" in prompt
         assert "Do not guess or reuse `<@U...>` mentions" in prompt
 
+    def test_shared_slack_prompt_requires_raw_id_mention_syntax(self):
+        """Knowing WHICH user to mention is not enough: the prompt must also say
+        that a mention only renders when written as the raw `<@U...>` id form.
+
+        Regression: the agent was told to bind the target to the sender prefix but
+        nothing told it the OUTPUT syntax, so it emitted the display name as plain
+        text (`@Richard Hojun Jang`), which Slack renders as inert text and never
+        notifies the user.
+        """
+        config = GatewayConfig(
+            platforms={
+                Platform.SLACK: PlatformConfig(enabled=True, token="fake"),
+            },
+        )
+        source = SessionSource(
+            platform=Platform.SLACK,
+            chat_id="C123",
+            chat_name="team-channel",
+            chat_type="group",
+            user_id="U123",
+            user_name="Alice",
+            thread_id="171.000",
+        )
+        ctx = build_session_context(source, config)
+        prompt = build_session_context_prompt(ctx)
+
+        # Isolate the shared-thread mention guidance so the assertions cannot be
+        # satisfied by unrelated prompt text elsewhere.
+        guidance = next(
+            (ln for ln in prompt.splitlines() if "sender prefix" in ln), ""
+        )
+        assert guidance, "shared-thread mention guidance line is missing"
+
+        # It must state the OUTPUT syntax: only the raw `<@U...>` id actually pings.
+        lowered = guidance.lower()
+        assert "raw" in lowered or "verbatim" in lowered or "exactly as" in lowered, (
+            "guidance must tell the agent to emit the id verbatim, not just which "
+            f"user to target; got: {guidance!r}"
+        )
+        # And it must warn that a display name written as plain text does NOT ping.
+        assert "display name" in lowered or "plain text" in lowered, (
+            "guidance must warn that a plain display name does not create a "
+            f"mention; got: {guidance!r}"
+        )
+
     def test_non_shared_slack_prompt_omits_self_mention_guidance(self):
         """1:1 Slack DMs are single-user: the shared-thread mention guidance
         must not appear."""

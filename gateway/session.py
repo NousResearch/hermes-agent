@@ -301,7 +301,10 @@ def _slack_platform_notes(context: SessionContext) -> List[str]:
         lines.append(
             "In shared Slack threads, use the current turn's sender prefix as the only verified "
             "current-author mention target. Do not guess or reuse `<@U...>` mentions from names, "
-            "memory, or prior conversation history."
+            "memory, or prior conversation history. To actually mention them, copy that id raw "
+            "into your reply as `<@U...>` — Slack only turns the raw id form into a real mention, "
+            "and a display name typed as plain text (`@Some Name`) stays inert text that never "
+            "notifies anyone."
         )
     return lines
 

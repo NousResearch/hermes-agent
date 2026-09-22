@@ -176,7 +176,8 @@ def collect_directory_manifests() -> List[PluginManifest]:
     # Excluded bundled top-level categories have their own discovery; platforms scan separately.
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
-    _scan("bundled (top-level)", repo_plugins, "bundled", {"memory", "context_engine", "platforms", "model-providers"})
+    _scan("bundled (top-level)", repo_plugins, "bundled",
+          {"memory", "context_engine", "platforms", "model-providers", "cron_providers"})
     _scan("bundled/platforms", repo_plugins / "platforms", "bundled")
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)

@@ -38,8 +38,8 @@ def matrix_tool_activity_bodies(
             continue
         s = s.splitlines()[0].strip()
         s = re.sub(r"\s+", " ", s)
-        if len(s) > 160:
-            s = s[:157] + "..."
+        if len(s) > 400:
+            s = s[:397] + "..."
         n += 1
         item = f"<li>{_html.escape(s)}</li>"
         size = len(json.dumps(item, ensure_ascii=True))

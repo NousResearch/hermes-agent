@@ -56,15 +56,17 @@ def test_matrix_html_is_single_ol_no_fences_or_details():
 
 def test_plain_fallback_hides_arguments_and_rich_lines_are_bounded():
     private_path = "/home/alice/private/customer-records.csv"
+    prefix = f"📖 read_file: {private_path} "
     body, html = matrix_tool_activity_bodies(
-        [f"📖 read_file: {private_path} " + ("x" * 240) + "\nignored second line"]
+        [prefix + ("x" * 480) + "\nignored second line"]
     )
 
     assert body == "🛠 Tool activity (1 update)"
     assert private_path not in body
     assert private_path in html
     assert "ignored second line" not in html
-    assert ("x" * 160) not in html
+    assert ("x" * 400) not in html
+    assert ("x" * (397 - len(prefix))) in html
     assert "..." in html
 
 

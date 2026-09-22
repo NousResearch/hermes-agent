@@ -30,6 +30,9 @@ class _StubCapture(_CaptureMixin):
         return [{"app_name": "Finder", "pid": 607, "window_id": 382, "title": "", "z_index": 1,
                  "off_screen": False}]
 
+    def _set_active_target(self, target: Dict[str, Any]) -> None:
+        self._active_pid, self._active_window_id = target["pid"], target["window_id"]
+
 
 def _write_config(tmp_path, body: str) -> None:
     """A user config.yaml the backend readers reach through ``load_config`` (not a patched reader)."""
@@ -45,8 +48,9 @@ class TestAxWalkBound:
         assert cua_backend._cua_configured_ax_max_elements() == 350
         stub = _StubCapture()
         assert stub._gws_args()["max_elements"] == 350
-        # the backend records the bound it sent, so CaptureResult.ax_max_elements can report it
-        assert stub._ax_max_elements_sent == 350
+        # ... and capture() forwards the bound it actually sent onto the CaptureResult
+        monkeypatch.setattr(stub, "_capture_window_state", lambda: (None, None, [], ""))
+        assert stub.capture("ax").ax_max_elements == 350
 
     def test_zero_disables_the_bound(self, tmp_path, monkeypatch):
         """0 restores the driver default and must not leak a ``max_elements`` key into the payload."""

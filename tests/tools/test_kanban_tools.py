@@ -379,7 +379,8 @@ def test_block_happy_path(worker_env):
     from hermes_cli import kanban_db_connect as kbc
     conn = kbc.connect()
     try:
-        assert kb.get_task(conn, worker_env).status == "blocked"
+        task = kb.get_task(conn, worker_env)
+        assert (task.status, task.assignee) == ("ready", "task-orchestrator")
     finally:
         conn.close()
 
@@ -456,15 +457,12 @@ def test_block_goal_mode_rejects_disallowed_kind(monkeypatch, tmp_path):
         conn.close()
 
 
-def test_block_dependency_without_open_parent_is_rekinded(worker_env):
-    """kind=dependency with no incomplete parent must not park in todo; the
-    tool reports the landed kind and tells the worker why."""
+def test_block_dependency_without_open_parent_is_routed(worker_env):
+    """A worker dependency handoff returns to Task Orchestrator, never blocked."""
     from tools import kanban_tools as kt
 
     d = json.loads(kt._handle_block({"reason": "upstream input is missing", "kind": "dependency"}))
-    assert (d["ok"], d["status"], d["block_kind"]) == (True, "blocked", "needs_input")
-    assert d["requested_kind"] == "dependency"
-    assert "no parent is open" in d["note"]
+    assert (d["ok"], d["status"], d["routed_to"]) == (True, "ready", "task-orchestrator")
 
 
 def test_heartbeat_extends_claim_expires(worker_env):

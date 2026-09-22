@@ -3798,6 +3798,72 @@ def block_task(
     return True
 
 
+def route_worker_block_to_orchestrator(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str]]:
+    """Route a worker's unresolved handoff back to Task Orchestrator.
+
+    ``blocked`` is not a worker workflow state: it strands work until an
+    operator intervenes.  A worker that cannot finish instead returns the card
+    to the orchestrator queue with the evidence it found.  If the orchestrator
+    itself reaches this path, keep the card visible in triage so it cannot
+    immediately loop back into another orchestrator run.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, current_run_id FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] not in {"running", "ready"}:
+            return False, None
+        current_run_id = _row_get(row, "current_run_id")
+        if expected_run_id is not None and int(current_run_id or -1) != int(expected_run_id):
+            return False, None
+        already_orchestrator = row["assignee"] == "task-orchestrator"
+        new_status = "triage" if already_orchestrator else (
+            "ready" if _parents_satisfied(conn, task_id) else "todo"
+        )
+        new_assignee = "task-orchestrator"
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, assignee = ?, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+            "block_kind = NULL, block_recurrences = 0 "
+            "WHERE id = ? AND status IN ('running', 'ready')",
+            (new_status, new_assignee, task_id),
+        )
+        if cur.rowcount != 1:
+            return False, None
+        run_id = _end_or_synthesize_run(
+            conn,
+            task_id,
+            outcome="routed_to_orchestrator",
+            status="routed",
+            summary=reason,
+            metadata={"from_assignee": row["assignee"], "to_assignee": new_assignee,
+                      "landed_status": new_status},
+            synthesize=True,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "routed_to_orchestrator",
+            {
+                "reason": reason,
+                "from_assignee": row["assignee"],
+                "to_assignee": new_assignee,
+                "status": new_status,
+            },
+            run_id=run_id,
+        )
+        landed = get_task(conn, task_id)
+    notify_task_updated(conn, task_id, ("status", "assignee"))
+    return True, landed.status if landed else new_status
+
+
 def _route_block(
     kind: Optional[str], reason: Optional[str], source_status: str, *,
     prev_kind: Optional[str], prev_recurrences: int,

@@ -24,7 +24,9 @@ def _kanban_config() -> dict:
     try:
         from hermes_cli.config import load_config
         cfg = load_config()
-        return (cfg.get("kanban", {}) if isinstance(cfg, dict) else {}) or {}
+        return kbd.shared_kanban_config(
+            (cfg.get("kanban", {}) if isinstance(cfg, dict) else {}) or {}
+        )
     except Exception:
         return {}
 
@@ -64,7 +66,9 @@ def _cmd_dispatch(args: argparse.Namespace) -> int:
     try:
         from hermes_cli.config import load_config
         _cfg = load_config()
-        _kanban_cfg = _cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}
+        _kanban_cfg = kbd.shared_kanban_config(
+            (_cfg.get("kanban", {}) if isinstance(_cfg, dict) else {}) or {}
+        )
         default_assignee = (_kanban_cfg.get("default_assignee") or "").strip() or None
         max_in_progress_per_profile = kbd._positive_int(
             _kanban_cfg.get("max_in_progress_per_profile"), None

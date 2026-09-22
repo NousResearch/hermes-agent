@@ -146,6 +146,7 @@ def _run_and_exit_oneshot(
     usage_file: object = None,
     resume: object = None,
     reasoning: object = None,
+    ignore_rules: bool = False,
 ) -> None:
     try:
         from hermes_cli.oneshot import run_oneshot
@@ -159,6 +160,7 @@ def _run_and_exit_oneshot(
             usage_file=usage_file,
             resume=resume,
             reasoning=reasoning,
+            ignore_rules=ignore_rules,
         )
     except KeyboardInterrupt:
         rc = 130
@@ -3086,6 +3088,8 @@ def _run_oneshot_from_args(args) -> None:
         usage_file=getattr(args, "usage_file", None),
         resume=getattr(args, "resume", None),
         reasoning=getattr(args, "reasoning", None),
+        ignore_rules=(getattr(args, "ignore_rules", False)
+                      or getattr(args, "safe_mode", False)),
     )
 
 

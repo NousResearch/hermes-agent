@@ -156,7 +156,8 @@ def _add_top_level_flags(parser: argparse.ArgumentParser) -> None:
         "config.yaml for this run only; the persistent level lives there "
         "(or per-model under agent.reasoning_overrides)."))
     add("-t", "--toolsets", default=None,
-        help="Comma-separated toolsets to enable for this invocation. Applies to -z/--oneshot and --tui.")
+        help="Comma-separated toolsets to enable for this invocation; use 'none' for no tools. "
+             "Applies to -z/--oneshot and --tui.")
     add("--resume", "-r", metavar="SESSION", default=None, help=(
         "Resume a previous session by ID or title, or pass 'latest' for "
         "the most recent session (workspace-scoped, like -c with no name)"))

@@ -18,6 +18,8 @@ import pytest
 from hermes_cli import update_handoff, update_receipt
 from hermes_cli.update_target import (
     TargetRequest,
+    SourceBinding,
+    validate_source_binding,
     TargetAdmissionError,
     apply_pinned_target,
     verify_pinned_post_swap,
@@ -80,26 +82,37 @@ def _remote_fixture(tmp_path: Path) -> tuple[Path, Path, str, str]:
     return checkout, author, a_sha, b_sha
 
 
-def _request(target: str, current: str) -> TargetRequest:
-    return TargetRequest(target, INSTALL_ID, current)
+def _request(checkout: Path, target: str, current: str) -> TargetRequest:
+    source = SourceBinding(
+        str(checkout.resolve()), _git(checkout, "remote", "get-url", "origin"),
+        "refs/remotes/origin/main", target, "fixture", "d" * 64, 1,
+    )
+    return TargetRequest(target, INSTALL_ID, current, source)
+
+
+def _synthetic_source(root: Path, target: str, branch: str = "main") -> dict:
+    return SourceBinding(
+        str(root.resolve()), "https://example.test/hermes.git",
+        f"refs/remotes/origin/{branch}", target, "fixture", "d" * 64, 1,
+    ).to_wire()
 
 
 def test_post_swap_head_mismatch_is_refused_without_repair(tmp_path):
     checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
 
     with pytest.raises(TargetAdmissionError, match="post-swap-head-mismatch"):
-        verify_pinned_post_swap(checkout, _request(b_sha, a_sha))
+        verify_pinned_post_swap(checkout, _request(checkout, b_sha, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == a_sha
 
 
 def test_post_swap_install_identity_mismatch_is_refused_without_repair(tmp_path):
     checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
-    apply_pinned_target(checkout, _request(b_sha, a_sha))
+    apply_pinned_target(checkout, _request(checkout, b_sha, a_sha))
     (Path(os.environ["HERMES_HOME"]) / "install_id").write_text("f" * 32 + "\n", encoding="utf-8")
 
     with pytest.raises(TargetAdmissionError, match="post-swap-install-id-mismatch"):
-        verify_pinned_post_swap(checkout, _request(b_sha, a_sha))
+        verify_pinned_post_swap(checkout, _request(checkout, b_sha, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == b_sha
 
@@ -110,10 +123,10 @@ def test_install_identity_is_read_from_authoritative_hermes_home(tmp_path, monke
     (home / "install_id").write_text(INSTALL_ID + "\n", encoding="utf-8")
     monkeypatch.setenv("HERMES_HOME", str(home))
 
-    result = apply_pinned_target(checkout, _request(b_sha, a_sha))
+    result = apply_pinned_target(checkout, _request(checkout, b_sha, a_sha))
 
     assert result.outcome == "applied"
-    assert verify_pinned_post_swap(checkout, _request(b_sha, a_sha)) == {
+    assert verify_pinned_post_swap(checkout, _request(checkout, b_sha, a_sha)) == {
         "post_sha": b_sha,
         "post_install_id": INSTALL_ID,
     }
@@ -125,7 +138,7 @@ def test_moving_origin_still_applies_reviewed_target_not_new_tip(tmp_path):
     c_sha = _commit(author, "C")
     _git(author, "push", "origin", "main")
 
-    result = apply_pinned_target(checkout, _request(b_sha, a_sha))
+    result = apply_pinned_target(checkout, _request(checkout, b_sha, a_sha))
 
     assert result.outcome == "applied"
     assert result.post_sha == b_sha
@@ -140,7 +153,7 @@ def test_dirty_checkout_refuses_without_moving_head(tmp_path):
     (checkout / "payload.txt").write_text("local edit\n", encoding="utf-8")
 
     with pytest.raises(TargetAdmissionError, match="dirty-checkout"):
-        apply_pinned_target(checkout, _request(b_sha, a_sha))
+        apply_pinned_target(checkout, _request(checkout, b_sha, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == a_sha
 
@@ -149,7 +162,7 @@ def test_expected_current_sha_mismatch_refuses_before_fetch_or_apply(tmp_path):
     checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
 
     with pytest.raises(TargetAdmissionError, match="current-sha-mismatch"):
-        apply_pinned_target(checkout, _request(b_sha, "f" * 40))
+        apply_pinned_target(checkout, _request(checkout, b_sha, "f" * 40))
 
     assert _git(checkout, "rev-parse", "HEAD") == a_sha
 
@@ -160,7 +173,7 @@ def test_diverged_target_refuses_instead_of_merge_or_reset(tmp_path):
     d_sha = _commit(checkout, "local divergence")
 
     with pytest.raises(TargetAdmissionError, match="diverged-target"):
-        apply_pinned_target(checkout, _request(b_sha, d_sha))
+        apply_pinned_target(checkout, _request(checkout, b_sha, d_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == d_sha
     assert not _git(checkout, "stash", "list")
@@ -170,7 +183,7 @@ def test_unreachable_target_refuses_without_code_movement(tmp_path):
     checkout, _author, a_sha, _b_sha = _remote_fixture(tmp_path)
 
     with pytest.raises(TargetAdmissionError, match="target-unreachable"):
-        apply_pinned_target(checkout, _request("d" * 40, a_sha))
+        apply_pinned_target(checkout, _request(checkout, "d" * 40, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == a_sha
 
@@ -189,7 +202,7 @@ def test_target_removed_from_authorized_origin_branch_is_refused(tmp_path):
     _git(bare, "update-ref", "refs/heads/main", c_sha)
 
     with pytest.raises(TargetAdmissionError, match="target-not-on-authorized-origin"):
-        apply_pinned_target(checkout, _request(b_sha, a_sha))
+        apply_pinned_target(checkout, _request(checkout, b_sha, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == a_sha
     assert c_sha != b_sha
@@ -206,7 +219,7 @@ def test_incompatible_target_is_refused_before_code_movement(tmp_path):
     _git(bare, "update-ref", "refs/heads/main", incompatible_sha)
 
     with pytest.raises(TargetAdmissionError, match="incompatible-target"):
-        apply_pinned_target(checkout, _request(incompatible_sha, a_sha))
+        apply_pinned_target(checkout, _request(checkout, incompatible_sha, a_sha))
 
     assert _git(checkout, "rev-parse", "HEAD") == a_sha
     assert (checkout / "payload.txt").read_text(encoding="utf-8") == "A\n"
@@ -216,7 +229,7 @@ def test_already_equal_target_is_distinct_no_code_change(tmp_path):
     checkout, _author, a_sha, b_sha = _remote_fixture(tmp_path)
     _git(checkout, "merge", "--ff-only", b_sha)
 
-    result = apply_pinned_target(checkout, _request(b_sha, b_sha))
+    result = apply_pinned_target(checkout, _request(checkout, b_sha, b_sha))
 
     assert result.outcome == "already-current"
     assert result.prior_sha == b_sha
@@ -235,6 +248,7 @@ def test_receipt_carries_immutable_intent_across_resume_and_writes_once(
         "correlation_id": "c" * 32,
         "prior_sha": "b" * 40,
         "branch": "main",
+        "source": _synthetic_source(tmp_path, "a" * 40),
     }
 
     update_receipt.begin_update_receipt(intent=intent)
@@ -280,6 +294,7 @@ def test_pinned_handoff_binds_operational_intent(tmp_path, monkeypatch, field):
         "correlation_id": "e" * 32,
         "prior_sha": "b" * 40,
         "branch": "main",
+        "source": _synthetic_source(tmp_path, "a" * 40),
     }
     payload = {
         "receipt": {"update_intent": intent},
@@ -296,13 +311,96 @@ def test_pinned_handoff_binds_operational_intent(tmp_path, monkeypatch, field):
         update_handoff.read_handoff(handoff)
 
 
+def test_pinned_handoff_refuses_dropped_pinned_intent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    intent = {
+        "target": "a" * 40, "install_id": INSTALL_ID,
+        "correlation_id": "e" * 32, "prior_sha": "b" * 40, "branch": "main",
+        "source": _synthetic_source(tmp_path, "a" * 40),
+    }
+    handoff = update_handoff.write_handoff({
+        "receipt": {"update_intent": intent}, "pinned_intent": intent,
+        "branch": "main", "pre_pull_sha": "b" * 40,
+    })
+    body = json.loads(handoff.read_text(encoding="utf-8"))
+    body.pop("pinned_intent")
+    handoff.write_text(json.dumps(body), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="missing pinned intent"):
+        update_handoff.read_handoff(handoff)
+
+
+def test_pinned_handoff_refuses_source_stripped_from_intent(tmp_path, monkeypatch):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    intent = {
+        "target": "a" * 40, "install_id": INSTALL_ID,
+        "correlation_id": "e" * 32, "prior_sha": "b" * 40, "branch": "main",
+    }
+    with pytest.raises(ValueError, match="source-binding-required"):
+        update_handoff.write_handoff({
+            "receipt": {"update_intent": intent}, "pinned_intent": intent,
+            "branch": "main", "pre_pull_sha": "b" * 40,
+        })
+
+
+def test_pinned_post_swap_argv_refuses_legacy_handoff(tmp_path, monkeypatch):
+    from hermes_cli import update_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    handoff = update_handoff.write_handoff({"branch": "main", "receipt": None})
+    called = []
+    monkeypatch.setattr(update_cmd, "_execute_post_swap", lambda *_args: called.append(True))
+    args = SimpleNamespace(
+        post_swap=str(handoff), target_request=TargetRequest("a" * 40, INSTALL_ID, "b" * 40),
+    )
+
+    with pytest.raises(ValueError, match="missing pinned intent"):
+        update_cmd._run_post_swap_phase(args, gateway_mode=False)
+    assert called == []
+
+
+def test_post_swap_refuses_source_changed_between_argv_and_handoff(tmp_path, monkeypatch):
+    from hermes_cli import update_cmd
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    intent = {
+        "target": "a" * 40, "install_id": INSTALL_ID,
+        "correlation_id": "e" * 32, "prior_sha": "b" * 40, "branch": "main",
+        "source": _synthetic_source(tmp_path, "a" * 40),
+    }
+    handoff = update_handoff.write_handoff({
+        "receipt": {"update_intent": intent}, "pinned_intent": intent,
+        "branch": "main", "pre_pull_sha": "b" * 40,
+    })
+    changed_source = _synthetic_source(tmp_path, "a" * 40)
+    changed_source["originUrl"] = "https://other.example.test/hermes.git"
+    args = SimpleNamespace(
+        post_swap=str(handoff),
+        target_request=TargetRequest(
+            "a" * 40, INSTALL_ID, "b" * 40, validate_source_binding(changed_source),
+        ),
+    )
+    called = []
+    monkeypatch.setattr(update_cmd, "_execute_post_swap", lambda *_args: called.append(True))
+
+    with pytest.raises(ValueError, match="post-swap reviewed source mismatch"):
+        update_cmd._run_post_swap_phase(args, gateway_mode=False)
+    assert called == []
+
+
 def test_pinned_command_carries_resulting_branch_into_handoff_without_legacy_prepare(
     tmp_path, monkeypatch
 ):
     from hermes_cli import update_cmd
     from hermes_cli.update_target import PinnedApplyResult
 
-    request = TargetRequest("a" * 40, INSTALL_ID, "b" * 40)
+    request = TargetRequest(
+        "a" * 40, INSTALL_ID, "b" * 40,
+        SourceBinding(
+            str(tmp_path.resolve()), "https://example.test/hermes.git",
+            "refs/remotes/origin/release/1", "a" * 40, "fixture", "d" * 64, 1,
+        ),
+    )
     args = SimpleNamespace(target_request=request, branch=None, post_swap=None, gateway=False)
     captured = {}
     monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
@@ -358,7 +456,8 @@ def test_pinned_dependency_warning_is_terminal(monkeypatch, capsys):
 
 
 @pytest.mark.real_post_swap_handoff
-def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypatch):
+@pytest.mark.parametrize("ack_present", [True, False])
+def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypatch, ack_present):
     from types import SimpleNamespace
 
     from hermes_cli import update_cmd
@@ -371,13 +470,24 @@ def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypa
         "correlation_id": "f" * 32,
         "prior_sha": "b" * 40,
         "branch": "main",
+        "source": _synthetic_source(tmp_path, "a" * 40),
     }
     ack = home / "logs" / "update_receipts" / "post_swap_123.ack"
     ack.parent.mkdir(parents=True)
-    ack.write_text(json.dumps({
-        "schema": 1, "correlation_id": intent["correlation_id"],
-        "outcome": "success", "finished_at": "now", "receipt_path": "child.json",
-    }), encoding="utf-8")
+    update_receipt._current = None
+    update_receipt.begin_update_receipt(intent=intent)
+    update_receipt.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True,
+    )
+    child_receipt = update_receipt.finalize_update_receipt("success")
+    assert child_receipt is not None
+    child = json.loads(child_receipt.read_text(encoding="utf-8"))
+    if ack_present:
+        ack.write_text(json.dumps({
+            "schema": 1, "correlation_id": intent["correlation_id"],
+            "outcome": "success", "finished_at": child["finished_at"],
+            "receipt_path": str(child_receipt),
+        }), encoding="utf-8")
     payload = {
         "receipt": {"update_intent": intent}, "pinned_intent": intent,
         "target_intent": intent, "correlation_id": intent["correlation_id"],
@@ -390,7 +500,7 @@ def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypa
         update_cmd._hand_off_post_swap(SimpleNamespace(), gateway_mode=False)
 
     assert exc_info.value.code == 0
-    assert not list((home / "logs" / "update_receipts").glob("update_*.json"))
+    assert list((home / "logs" / "update_receipts").glob("update_*.json")) == [child_receipt]
     assert not ack.exists()
 
 
@@ -429,6 +539,7 @@ def test_real_subprocess_handoff_imports_target_tree_and_preserves_intent(
         "correlation_id": "d" * 32,
         "prior_sha": "b" * 40,
         "branch": "main",
+        "source": _synthetic_source(tmp_path, "a" * 40),
     }
     payload = {
         "receipt": {"update_intent": intent},

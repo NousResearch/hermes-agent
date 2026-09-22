@@ -20,6 +20,7 @@ from typing import Any
 
 from hermes_constants import get_default_hermes_root
 from hermes_cli.update_inventory import RuntimeRecord
+from hermes_cli.update_target import credential_free_origin
 
 PROTOCOL_VERSION = 1
 _INSTALL_ID_RE = re.compile(r"^[0-9a-f]{32}$")
@@ -43,7 +44,10 @@ def _run_git(root: Path, *args: str) -> str | None:
             ["git", *args], cwd=str(root), stdin=subprocess.DEVNULL,
             capture_output=True, text=True, encoding="utf-8", errors="replace",
             timeout=3, check=False,
-            env={**os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1"},
+            env={
+                **os.environ, "GIT_TERMINAL_PROMPT": "0", "GIT_CONFIG_NOSYSTEM": "1",
+                "GIT_NO_LAZY_FETCH": "1", "GIT_OPTIONAL_LOCKS": "0",
+            },
         )
     except (OSError, subprocess.SubprocessError):
         return None
@@ -282,10 +286,12 @@ def collect_observation(*, mode: str = "inventory", correlation_id: str | None =
         "state": "matched" if runtime.get("generation") is not None else "unknown",
         "observed": runtime.get("generation"),
     })
+    install_id = _read_raw_install_id(root)
     observation = {
-        "installId": _read_raw_install_id(root),
+        "installId": install_id,
         "codeRoot": git.get("codeRoot") or str(_CODE_ROOT.resolve()),
-        "repository": {"origin": git.get("origin"), "trackingBranch": git.get("trackingBranch")},
+        "repository": {"origin": credential_free_origin(git.get("origin")),
+                       "trackingBranch": git.get("trackingBranch")},
         "checkoutSha": git.get("checkoutSha"),
         "checkout": {
             "state": checkout_state, "divergence": git.get("divergence", "unknown"),
@@ -303,7 +309,13 @@ def collect_observation(*, mode: str = "inventory", correlation_id: str | None =
         "runtime": runtime,
         "dependencies": dependencies,
         "readiness": {
-            "state": "ready" if deployment_eligible and checkout_state == "clean" and dependencies["state"] == "ready" else "blocked",
+            "state": "ready" if (
+                deployment_eligible and checkout_state == "clean"
+                and dependencies["state"] == "ready"
+                and install_id is not None
+                and recovery.get("state") == "clear"
+                and process_generation.get("state") == "matched"
+            ) else "blocked",
             "deploymentEligible": deployment_eligible,
             "dependencies": dependencies["state"],
             "processGeneration": process_generation,

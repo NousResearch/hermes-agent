@@ -1,6 +1,7 @@
 """Behavioral tests for strict pinned update intent parsing."""
 
 import argparse
+import base64
 import json
 import subprocess
 from itertools import combinations
@@ -10,7 +11,9 @@ from unittest.mock import Mock
 import pytest
 
 from hermes_cli.subcommands.update import build_update_parser
-from hermes_cli.update_target import TargetRequest, validate_target_request
+from hermes_cli.update_target import (
+    TargetRequest, parse_reviewed_source, validate_target_request,
+)
 
 
 @pytest.fixture
@@ -42,6 +45,77 @@ def _parser(collaborator=None):
     subparsers = parser.add_subparsers(dest="command")
     build_update_parser(subparsers, cmd_update=collaborator or Mock())
     return parser
+
+
+def _reviewed_source(*, remote="https://example.test/hermes.git", target=REVISION):
+    body = {
+        "repositoryRoot": "C:/reviewed/hermes-agent",
+        "originUrl": remote,
+        "resolvedRef": "refs/remotes/origin/main",
+        "targetSha": target,
+        "assuranceProfile": "fixture-profile",
+        "assuranceEvidenceSha256": "d" * 64,
+        "assuranceGeneration": 7,
+    }
+    return base64.urlsafe_b64encode(json.dumps(body).encode()).decode().rstrip("=")
+
+
+def _source():
+    return parse_reviewed_source(_reviewed_source())
+
+
+def _request():
+    return TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA, _source())
+
+
+def test_pinned_parser_requires_reviewed_source_binding():
+    with pytest.raises(SystemExit) as exc:
+        _parser().parse_args([
+            "update", "--revision", REVISION,
+            "--expected-install-id", INSTALL_ID,
+            "--expected-current-sha", CURRENT_SHA,
+        ])
+    assert exc.value.code == 2
+
+
+def test_pinned_parser_carries_complete_reviewed_source_binding():
+    args = _parser().parse_args([
+        "update", "--revision", REVISION,
+        "--expected-install-id", INSTALL_ID,
+        "--expected-current-sha", CURRENT_SHA,
+        "--reviewed-source", _reviewed_source(),
+    ])
+    assert args.target_request.source.origin_url == "https://example.test/hermes.git"
+    assert args.target_request.source.target_sha == REVISION
+    assert args.target_request.source.assurance_generation == 7
+
+
+def test_reviewed_source_cannot_be_used_as_a_legacy_update_switch():
+    with pytest.raises(SystemExit) as exc:
+        _parser().parse_args(["update", "--reviewed-source", _reviewed_source()])
+    assert exc.value.code == 2
+
+
+def test_reviewed_source_rejects_embedded_remote_credentials():
+    with pytest.raises(SystemExit) as exc:
+        _parser().parse_args([
+            "update", "--revision", REVISION,
+            "--expected-install-id", INSTALL_ID,
+            "--expected-current-sha", CURRENT_SHA,
+            "--reviewed-source", _reviewed_source(
+                remote="https://secret@example.test/hermes.git?token=secret",
+            ),
+        ])
+    assert exc.value.code == 2
+
+
+def test_update_intent_preserves_reviewed_source_binding():
+    from hermes_cli.update_target import build_update_intent, parse_reviewed_source
+
+    source = parse_reviewed_source(_reviewed_source())
+    request = TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA, source)
+    intent = build_update_intent(request, "operation-1", "main")
+    assert intent["source"] == source.to_wire()
 
 
 @pytest.mark.parametrize(
@@ -133,7 +207,7 @@ def test_complete_intent_is_frozen_and_preserved_field_for_field():
         request.revision = "d" * 40
 
 
-def test_actual_update_parser_exposes_the_three_target_flags():
+def test_actual_update_parser_exposes_complete_pinned_identity():
     args = _parser().parse_args(
         [
             "update",
@@ -143,11 +217,13 @@ def test_actual_update_parser_exposes_the_three_target_flags():
             INSTALL_ID,
             "--expected-current-sha",
             CURRENT_SHA,
+            "--reviewed-source",
+            _reviewed_source(),
         ]
     )
     assert args.expected_install_id == INSTALL_ID
     assert args.expected_current_sha == CURRENT_SHA
-    assert args.target_request == TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    assert args.target_request == _request()
 
 
 def test_top_level_parser_accepts_exact_pinned_options(actual_cli):
@@ -162,9 +238,10 @@ def test_top_level_parser_accepts_exact_pinned_options(actual_cli):
             "--revision=" + REVISION,
             "--expected-install-id=" + INSTALL_ID,
             "--expected-current-sha=" + CURRENT_SHA,
+            "--reviewed-source=" + _reviewed_source(),
         ],
     )
-    assert args.target_request == TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    assert args.target_request == _request()
     collaborator.assert_not_called()
 
 
@@ -173,7 +250,7 @@ def test_top_level_parser_accepts_exact_pinned_options(actual_cli):
     ("exact_option", "abbreviated_option"),
     [
         (option, option[:length])
-        for option in ("--revision", "--expected-install-id", "--expected-current-sha")
+        for option in ("--revision", "--expected-install-id", "--expected-current-sha", "--reviewed-source")
         for length in range(3, len(option))
     ],
 )
@@ -187,6 +264,7 @@ def test_top_level_parser_rejects_abbreviated_pinned_options_before_handler(
         "--revision": REVISION,
         "--expected-install-id": INSTALL_ID,
         "--expected-current-sha": CURRENT_SHA,
+        "--reviewed-source": _reviewed_source(),
     }
 
     def argv(replacement):
@@ -199,15 +277,15 @@ def test_top_level_parser_rejects_abbreviated_pinned_options_before_handler(
     # The control and rejection differ in exactly one spelling, never in
     # completeness; incomplete-intent cannot masquerade as abbreviation safety.
     admitted = main._parse_cli_args(parser, subparsers, argv(exact_option))
-    assert admitted.target_request == TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    assert admitted.target_request == _request()
     with pytest.raises(SystemExit) as exc:
         main._parse_cli_args(parser, subparsers, argv(abbreviated_option))
     assert exc.value.code == 2
     error = capsys.readouterr().err
     diagnostics = [f"unrecognized arguments: {abbreviated_option}"]
-    if exact_option == "--revision" and abbreviated_option in {"--r", "--re"}:
+    if abbreviated_option in {"--r", "--re"}:
         # The parent resolves these collisions before reaching the update parser.
-        token = f"{abbreviated_option}={REVISION}" if equals else abbreviated_option
+        token = f"{abbreviated_option}={options[exact_option]}" if equals else abbreviated_option
         diagnostics.append(
             f"ambiguous option: {token} could match --reasoning, --resume"
         )
@@ -232,6 +310,7 @@ PINNED_OPTIONS = {
     "--revision": REVISION,
     "--expected-install-id": INSTALL_ID,
     "--expected-current-sha": CURRENT_SHA,
+    "--reviewed-source": _reviewed_source(),
 }
 
 
@@ -328,7 +407,7 @@ def test_parser_validates_read_only_intent_without_invoking_collaborator(
     args = main._parse_cli_args(parser, subparsers, argv)
     assert getattr(args, mode[2:]) is True
     assert args.branch == branch  # T3, not parsing, owns tracking-branch admission.
-    assert args.target_request == TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    assert args.target_request == _request()
     assert args.func is collaborator
     collaborator.assert_not_called()
 
@@ -357,7 +436,7 @@ def test_complete_intent_preserves_remainders_values_and_last_option_wins(
         "update", "--revision=" + "d" * 40, *_complete_argv(),
         "--branch=--rev", *suffix,
     ])
-    assert args.target_request == TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    assert args.target_request == _request()
     assert args.branch == "--rev"  # A value, not an abbreviated pinned flag.
     assert remainder == suffix
     collaborator.assert_not_called()
@@ -369,7 +448,7 @@ def test_pinned_intent_dispatches_to_exact_apply_path_without_legacy_prepare(mon
 
     from hermes_cli import update_cmd
 
-    request = TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    request = _request()
     called = {}
     monkeypatch.setattr(
         update_cmd,
@@ -401,7 +480,7 @@ def test_pinned_command_refuses_when_shared_update_lock_is_held(monkeypatch):
     import hermes_cli.update_handoff as update_handoff
     from hermes_cli import update_cmd
 
-    request = TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    request = _request()
     called = []
 
     class HeldLock:
@@ -472,6 +551,18 @@ def _commit_source(fixture: dict[str, object], text: str, message: str) -> str:
     return _git(source, "rev-parse", "HEAD").stdout.strip()
 
 
+def _git_request(fixture, target, current):
+    from hermes_cli.update_target import SourceBinding
+
+    install = fixture["install"]
+    assert isinstance(install, Path)
+    source = SourceBinding(
+        str(install.resolve()), _git(install, "remote", "get-url", "origin").stdout.strip(),
+        "refs/remotes/origin/main", target, "fixture", "d" * 64, 1,
+    )
+    return TargetRequest(target, "1" * 32, current, source)
+
+
 def test_pinned_apply_lands_reviewed_b_when_origin_moves_to_c(tmp_path):
     from hermes_cli.update_target import apply_pinned_target
 
@@ -486,7 +577,7 @@ def test_pinned_apply_lands_reviewed_b_when_origin_moves_to_c(tmp_path):
     install = fixture["install"]
     assert isinstance(install, Path)
     result = apply_pinned_target(
-        install, TargetRequest(commit_b, "1" * 32, str(fixture["a"]))
+        install, _git_request(fixture, commit_b, str(fixture["a"]))
     )
 
     assert result.target_sha == commit_b
@@ -495,6 +586,87 @@ def test_pinned_apply_lands_reviewed_b_when_origin_moves_to_c(tmp_path):
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == commit_b
     assert (install / "payload.txt").read_text(encoding="utf-8") == "B\n"
     assert _git(install, "remote").stdout.strip() == "origin"
+
+
+def test_pinned_apply_refuses_missing_reviewed_source_before_fetch(tmp_path):
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    install = fixture["install"]
+    assert isinstance(install, Path)
+    with pytest.raises(PinnedTargetRefused, match="source-binding-required"):
+        apply_pinned_target(
+            install, TargetRequest(str(fixture["a"]), "1" * 32, str(fixture["a"])),
+        )
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == fixture["a"]
+
+
+def test_pinned_apply_refuses_changed_origin_even_when_target_object_matches(tmp_path):
+    from hermes_cli.update_target import SourceBinding, PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    source = fixture["source"]
+    install = fixture["install"]
+    assert isinstance(source, Path) and isinstance(install, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+    binding = SourceBinding(
+        str(install.resolve()), "https://wrong.example.test/hermes.git",
+        "refs/remotes/origin/main", commit_b, "fixture", "d" * 64, 7,
+    )
+
+    with pytest.raises(PinnedTargetRefused, match="reviewed-origin-mismatch"):
+        apply_pinned_target(
+            install, TargetRequest(commit_b, "1" * 32, str(fixture["a"]), binding),
+        )
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == fixture["a"]
+
+
+def test_pinned_apply_refuses_wrong_repository_even_with_same_target_object(tmp_path):
+    from hermes_cli.update_target import PinnedTargetRefused, SourceBinding, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    install = fixture["install"]
+    source = fixture["source"]
+    assert isinstance(install, Path) and isinstance(source, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+    bound = _git_request(fixture, commit_b, str(fixture["a"]))
+    wrong = SourceBinding(
+        str(source.resolve()), bound.source.origin_url, bound.source.resolved_ref,
+        bound.source.target_sha, bound.source.assurance_profile,
+        bound.source.assurance_evidence_sha256, bound.source.assurance_generation,
+    )
+    with pytest.raises(PinnedTargetRefused, match="reviewed-repository-mismatch"):
+        apply_pinned_target(
+            install, TargetRequest(commit_b, "1" * 32, str(fixture["a"]), wrong),
+        )
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == fixture["a"]
+
+
+def test_pinned_apply_refuses_origin_rebound_during_fetch(tmp_path, monkeypatch):
+    from hermes_cli import update_target
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    install = fixture["install"]
+    source = fixture["source"]
+    assert isinstance(install, Path) and isinstance(source, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+    request = _git_request(fixture, commit_b, str(fixture["a"]))
+    original_run_git = update_target._run_git
+
+    def rebind_after_fetch(root, *args, **kwargs):
+        result = original_run_git(root, *args, **kwargs)
+        if args[:1] == ("fetch",) and result.returncode == 0:
+            _git(install, "remote", "set-url", "origin", str(source))
+        return result
+
+    monkeypatch.setattr(update_target, "_run_git", rebind_after_fetch)
+    with pytest.raises(PinnedTargetRefused, match="reviewed-origin-mismatch"):
+        apply_pinned_target(install, request)
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == fixture["a"]
 
 
 def test_pinned_apply_refuses_dirty_tree_before_movement(tmp_path):
@@ -510,7 +682,7 @@ def test_pinned_apply_refuses_dirty_tree_before_movement(tmp_path):
     (install / "payload.txt").write_text("local edit\n", encoding="utf-8")
 
     with pytest.raises(PinnedTargetRefused, match="dirty-checkout"):
-        apply_pinned_target(install, TargetRequest(commit_b, "1" * 32, str(fixture["a"])))
+        apply_pinned_target(install, _git_request(fixture, commit_b, str(fixture["a"])))
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
     assert (install / "payload.txt").read_text(encoding="utf-8") == "local edit\n"
 
@@ -536,7 +708,7 @@ def test_pinned_apply_rechecks_clean_tree_after_fetch_before_movement(tmp_path, 
 
     monkeypatch.setattr(update_target, "_run_git", inject_race)
     with pytest.raises(PinnedTargetRefused, match="dirty-checkout"):
-        apply_pinned_target(install, TargetRequest(commit_b, "1" * 32, str(fixture["a"])))
+        apply_pinned_target(install, _git_request(fixture, commit_b, str(fixture["a"])))
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
 
 
@@ -552,10 +724,10 @@ def test_pinned_apply_refuses_current_sha_identity_and_branch_admission(tmp_path
     assert isinstance(install, Path)
 
     with pytest.raises(PinnedTargetRefused, match="current-sha-mismatch"):
-        apply_pinned_target(install, TargetRequest(commit_b, "1" * 32, "f" * 40))
+        apply_pinned_target(install, _git_request(fixture, commit_b, "f" * 40))
     with pytest.raises(PinnedTargetRefused, match="branch-not-admitted"):
         apply_pinned_target(
-            install, TargetRequest(commit_b, "1" * 32, str(fixture["a"])), branch="release"
+            install, _git_request(fixture, commit_b, str(fixture["a"])), branch="release"
         )
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
 
@@ -576,7 +748,7 @@ def test_pinned_apply_checks_protocol_before_moving_code(tmp_path):
 
     with pytest.raises(PinnedTargetRefused, match="incompatible-target"):
         apply_pinned_target(
-            install, TargetRequest(incompatible, "1" * 32, str(fixture["a"]))
+            install, _git_request(fixture, incompatible, str(fixture["a"]))
         )
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
     assert (install / "hermes_cli" / "update_rollout_protocol.json").is_file()
@@ -601,6 +773,6 @@ def test_pinned_apply_refuses_target_removed_from_authorized_origin(tmp_path):
 
     with pytest.raises(PinnedTargetRefused, match="target-not-reachable"):
         apply_pinned_target(
-            install, TargetRequest(commit_b, "1" * 32, str(fixture["a"]))
+            install, _git_request(fixture, commit_b, str(fixture["a"]))
         )
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])

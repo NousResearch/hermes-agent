@@ -14,10 +14,16 @@ interface FleetNode {
   projects: string[]
 }
 
+// The two production supervisors use stable node IDs. Ignore retired smoke
+// runners in the shared registry so the pool summary reflects actual machines.
+const PRODUCTION_NODE_IDS = new Set(['mac', 'windows'])
+
 function groupNodes(runners: FleetRunnerStatus[]): FleetNode[] {
   const nodes = new Map<string, FleetNode>()
 
   for (const runner of runners) {
+    if (!PRODUCTION_NODE_IDS.has(runner.node_id)) continue
+
     const existing = nodes.get(runner.node_id) ?? {
       activeLoad: 0,
       models: [],

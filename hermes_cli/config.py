@@ -3299,6 +3299,7 @@ def _coerce_config_set_value(key: str, value: str) -> Any:
     model_string_keys = {
         "model.provider", "model.default", "model.model", "model.name",
         "model.base_url", "model.api_base", "model.api_mode",
+        "model.api_key", "model.api",
     }
     if key in model_string_keys or isinstance(_default_value_for_key(key), str):
         return value

@@ -57,9 +57,7 @@ def receipt_home(tmp_path, monkeypatch):
     """Hermetic HERMES_HOME so receipts never touch the real profile."""
     home = tmp_path / ".hermes"
     home.mkdir()
-    monkeypatch.setattr(
-        "hermes_cli.config.get_hermes_home", lambda: home, raising=False
-    )
+    monkeypatch.setenv("HERMES_HOME", str(home))
     ur._current = None
     yield home
     ur._current = None
@@ -70,6 +68,20 @@ def _receipt_files(home):
     if not directory.is_dir():
         return []
     return sorted(directory.glob("*.json"))
+
+
+def test_receipt_home_is_production_persistence_target(receipt_home):
+    """An empty-directory assertion must inspect the writer's actual target."""
+    assert ur._receipt_dir().resolve() == (
+        receipt_home / "logs" / "update_receipts"
+    ).resolve()
+    ur.begin_update_receipt()
+    assert _receipt_files(receipt_home) == []
+    path = ur.finalize_update_receipt("success")
+    assert path is not None
+    assert path in _receipt_files(receipt_home)
+    assert path.parent == receipt_home / "logs" / "update_receipts"
+    assert ur.read_latest_receipt() == json.loads(path.read_text(encoding="utf-8"))
 
 
 def _plan_with_runtimes(records):

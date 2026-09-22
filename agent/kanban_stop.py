@@ -9,6 +9,8 @@ instead of exiting.
 from __future__ import annotations
 
 import os
+import sqlite3
+from enum import Enum
 from typing import Any, Iterable, Optional
 
 from agent.delegation_context import owned_kanban_task
@@ -60,6 +62,44 @@ def session_called_kanban_terminal(messages: Iterable[dict] | None) -> bool:
     return False
 
 
+class RunStanding(Enum):
+    ACTIVE = "active"
+    HANDED_OFF = "handed_off"
+    UNKNOWN = "unknown"
+
+
+def _worker_run_id() -> Optional[int]:
+    raw = (os.environ.get("HERMES_KANBAN_RUN_ID") or "").strip()
+    return int(raw) if raw.isdigit() else None
+
+
+def read_run_standing(task_id: str) -> RunStanding:
+    run_id = _worker_run_id()
+    if not task_id or run_id is None:
+        return RunStanding.UNKNOWN
+    try:
+        from hermes_cli.kanban_db import kanban_db_path
+
+        uri = kanban_db_path().resolve().as_uri() + "?mode=ro"
+        conn = sqlite3.connect(uri, uri=True, timeout=1.0)
+    except Exception:
+        return RunStanding.UNKNOWN
+    try:
+        row = conn.execute(
+            "SELECT r.ended_at, t.current_run_id FROM task_runs r JOIN tasks t ON t.id = r.task_id "
+            "WHERE r.id = ? AND r.task_id = ?",
+            (run_id, task_id),
+        ).fetchone()
+    except sqlite3.Error:
+        return RunStanding.UNKNOWN
+    finally:
+        conn.close()
+    if row is None:
+        return RunStanding.UNKNOWN
+    ended_at, current_run_id = row
+    return RunStanding.ACTIVE if ended_at is None and current_run_id == run_id else RunStanding.HANDED_OFF
+
+
 def build_kanban_stop_nudge(
     *,
     messages: Iterable[dict] | None = None,
@@ -69,21 +109,21 @@ def build_kanban_stop_nudge(
 ) -> Optional[str]:
     """Synthetic follow-up when a kanban worker exits without a terminal tool; ``None`` when
     the guard should not fire (not a kanban worker, already completed/blocked, budget exhausted)."""
-    if (
-        not kanban_stop_nudge_enabled()
-        or attempts >= max_attempts
-        or session_called_kanban_terminal(messages)
-    ):
+    if not kanban_stop_nudge_enabled() or attempts >= max_attempts:
+        return None
+    owned = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip()
+    standing = read_run_standing(owned)
+    if standing is RunStanding.HANDED_OFF:
+        return None
+    if standing is RunStanding.UNKNOWN and session_called_kanban_terminal(messages):
         return None
 
-    tid = (task_id or os.environ.get("HERMES_KANBAN_TASK") or "").strip() or "this task"
-    # The transcript is the status source: this text is only reached when the session made no
-    # handoff call, so it never tells a worker to close a card it already sent to review.
+    tid = owned or "this task"
     return (
         "[System: You are a Hermes kanban worker. A plain-text reply is NOT a "
         "terminal state for the board.\n\n"
-        f"Task `{tid}` has not been handed off: this session made no terminal board "
-        "call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "
+        f"Task `{tid}` has not been handed off: your run is still open, with no accepted "
+        "terminal board call (`kanban_complete` / `kanban_request_review` / `kanban_block`). Ending now "
         "causes a protocol violation (clean exit with the card still `running`).\n\n"
         "Do this immediately in your next response — do not narrate intent:\n"
         "1. Finish any remaining deliverable (write the required file(s) now).\n"
@@ -97,4 +137,10 @@ def build_kanban_stop_nudge(
     )
 
 
-__all__ = ["build_kanban_stop_nudge", "kanban_stop_nudge_enabled", "session_called_kanban_terminal"]
+__all__ = [
+    "RunStanding",
+    "build_kanban_stop_nudge",
+    "kanban_stop_nudge_enabled",
+    "read_run_standing",
+    "session_called_kanban_terminal",
+]

@@ -305,6 +305,10 @@ def _cmd_watch(args: argparse.Namespace) -> int:
 def _cmd_gc(args: argparse.Namespace) -> int:
     """Remove archived tasks' scratch workspaces, old events, and old worker logs."""
     import shutil
+    event_days = getattr(args, "event_retention_days", 30)
+    log_days = getattr(args, "log_retention_days", 30)
+    if event_days < 0 or log_days < 0:
+        return _err("kanban gc: retention days must be >= 0 (0 disables that sweep)", 2)
     scratch_root = kb.workspaces_root()
     removed_ws = 0
     with kbc.connect_closing() as conn:
@@ -338,10 +342,6 @@ def _cmd_gc(args: argparse.Namespace) -> int:
             shutil.rmtree(path, ignore_errors=True)
             removed_ws += 1
 
-    event_days = getattr(args, "event_retention_days", 30)
-    log_days = getattr(args, "log_retention_days", 30)
-    if event_days < 0 or log_days < 0:
-        return _err("kanban gc: retention days must be >= 0 (0 disables that sweep)", 2)
     removed_events = 0
     if event_days:
         with kbc.connect_closing() as conn:

@@ -565,6 +565,28 @@ When scheduling jobs, you specify where the output goes:
 | `"telegram,discord"` | Fan out to a specific set of channels | Comma-separated list |
 | `"origin,all"` | Deliver to the origin **plus** every other connected channel | Combine any tokens |
 
+### Delivering results from API-origin jobs
+
+The API server is a stateless request/response surface and cannot push a later scheduled result back
+through the original HTTP request. Configure an explicit authenticated HTTP sink for jobs that were
+created from an API server session and use `deliver: origin`:
+
+```yaml
+cron:
+  api_origin_delivery:
+    url: https://private.example/api/cron/deliveries
+    token_env: CRON_API_ORIGIN_DELIVERY_TOKEN
+    timeout_seconds: 10
+```
+
+Put the bearer credential named by `token_env` in the profile's `.env`, never in `config.yaml`.
+Hermes sends the job ID and name, execution ID and timestamps, execution status, a bounded result
+summary, and delivery status. The receiver must acknowledge with a 2xx JSON object containing
+`{"ok": true, "entry_id": 1, "run_id": "<matching execution id>", "duplicate": false}`.
+Authentication failures, other non-2xx responses, timeouts, connection errors, and malformed or
+mismatched acknowledgements set the job's delivery status to failed. Non-API origins and jobs using
+another delivery lane are unchanged.
+
 The agent's final response is automatically delivered to the configured `deliver:` target — the agent does not send messages itself, so there is nothing to call in the cron prompt.
 
 Delivered output is secret-redacted on the way out, on every lane: the platform message, the

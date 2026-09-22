@@ -1897,7 +1897,8 @@ def _unresolved_delivery_outcome(job: dict, for_failure: bool) -> Optional[str]:
 
 
 def _deliver_result(
-    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False
+    job: dict, content: str, adapters=None, loop=None, *, for_failure: bool = False,
+    execution_success: Optional[bool] = None,
 ) -> Optional[str]:
     """Deliver job output to the configured target(s). With ``adapters``/``loop`` (gateway
     running) the live adapter is tried first (E2EE rooms can't use the standalone HTTP path), then
@@ -1905,6 +1906,18 @@ def _deliver_result(
     ``failure_deliver`` override when present (NS-788). Returns None on success, else an error."""
     job.pop("_bot_chat_delivery_receipts", None)
     job.pop("_notification_all_targets_suppressed", None)
+    from cron.api_origin_delivery import deliver_api_origin
+
+    handled, api_origin_error = deliver_api_origin(
+        job,
+        content,
+        execution_success=(not for_failure if execution_success is None else execution_success),
+        for_failure=for_failure,
+        config=_sched.load_config(),
+    )
+    if handled:
+        return api_origin_error
+
     targets = _resolve_delivery_targets(job, for_failure=for_failure)
     if not targets:
         _record_delivery_verification(job, [])

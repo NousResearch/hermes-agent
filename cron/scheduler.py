@@ -1177,6 +1177,7 @@ def drain_delivery_queue(adapters, loop) -> int:
             adapters=adapters,
             loop=loop,
             for_failure=queued_for_failure,
+            execution_success=not queued_for_failure,
         )
     )
 
@@ -2845,6 +2846,7 @@ def _save_compose_deliver(
                 # Failure summaries (and drift/blocked-config alerts composed into deliver_content
                 # on the failure path) honor the job's failure_deliver override (NS-788).
                 for_failure=not d.success,
+                execution_success=d.success,
             )
     except Exception as de:
         if isinstance(de, _FireClaimLostDuringSideEffect):
@@ -2941,6 +2943,7 @@ def _deliver_crash_failure(
             adapters=adapters,
             loop=loop,
             for_failure=True,
+            execution_success=False,
         )
     except Exception as delivery_exc:
         delivery_error = str(delivery_exc)

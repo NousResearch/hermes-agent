@@ -2630,6 +2630,37 @@ class TelegramAdapter(BasePlatformAdapter):
         await self._bot.edit_forum_topic(chat_id=chat_id_arg, message_thread_id=int(thread_id), name=name)
         logger.info("[%s] Renamed DM topic in chat %s thread_id=%s -> '%s'", self.name, chat_id, thread_id, name)
 
+    async def close_topic(self, chat_id: int, thread_id: int) -> None:
+        """Close a forum topic without deleting its messages or persisted session binding."""
+        if not self._bot:
+            raise RuntimeError("Telegram bot is not connected")
+        try:
+            chat_id_arg = int(chat_id)
+        except (TypeError, ValueError):
+            chat_id_arg = chat_id
+        await self._bot.close_forum_topic(chat_id=chat_id_arg, message_thread_id=int(thread_id))
+        logger.info("[%s] Closed topic in chat %s thread_id=%s", self.name, chat_id, thread_id)
+
+    close_dm_topic = close_topic
+
+    async def pin_message(self, chat_id: str, message_id: str, *, thread_id: Optional[str] = None) -> None:
+        """Pin an existing message; ``thread_id`` documents the subject but Telegram pins by message id."""
+        if not self._bot:
+            raise RuntimeError("Telegram bot is not connected")
+        await self._bot.pin_chat_message(
+            chat_id=int(chat_id), message_id=int(message_id), disable_notification=True,
+        )
+
+    async def edit_text_message(
+        self, chat_id: str, message_id: str, text: str, *, thread_id: Optional[str] = None,
+    ) -> None:
+        """Edit a plain-text persistent status message."""
+        if not self._bot:
+            raise RuntimeError("Telegram bot is not connected")
+        await self._bot.edit_message_text(
+            chat_id=int(chat_id), message_id=int(message_id), text=text,
+        )
+
     def _persist_dm_topic_thread_id(self, chat_id: int, topic_name: str, thread_id: int, replace_existing: bool = False) -> None:
         """Save a newly created thread_id back into config.yaml so it survives restarts."""
         try:

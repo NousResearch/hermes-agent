@@ -1,6 +1,8 @@
 import asyncio
 import sqlite3
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import AsyncMock
 
 
 from gateway.config import Platform
@@ -21,6 +23,7 @@ class RecordingAdapter:
 
     async def send(self, chat_id, text, metadata=None):
         self.sent.append({"chat_id": chat_id, "text": text, "metadata": metadata or {}})
+        return SimpleNamespace(success=True, message_id=str(len(self.sent)))
 
     async def handle_message(self, event):
         self.handled.append(event)
@@ -131,6 +134,50 @@ def test_kanban_notifier_replays_telegram_dm_topic_delivery_metadata(tmp_path, m
     assert len(adapter.handled) == 1
     assert adapter.handled[0].source.chat_type == "dm"
     assert adapter.handled[0].source.thread_id == "20197"
+
+
+def test_topic_lifecycle_rolls_up_to_root_and_specialist_bot(tmp_path, monkeypatch):
+    import hermes_cli.config as hermes_config
+
+    monkeypatch.setenv("HERMES_KANBAN_DB", str(tmp_path / "subject-lifecycle.db"))
+    monkeypatch.setattr(hermes_config, "load_config", lambda: {"kanban": {
+        "telegram_topic_rollups": True, "specialist_status_updates": True,
+    }})
+    kb.init_db()
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="Player login", assignee="worker")
+        kbn.add_notify_sub(
+            conn, task_id=tid, platform="telegram", chat_id="chat-1", thread_id="20197",
+            notifier_profile="default", chat_type="supergroup",
+            delivery_metadata={"chat_type": "supergroup", "thread_id": "20197"},
+        )
+        kb.claim_task(conn, tid)
+        kb.complete_task(
+            conn, tid, summary="verified", expected_run_id=kb.get_task(conn, tid).current_run_id,
+        )
+    finally:
+        conn.close()
+
+    adapter = RecordingAdapter()
+    specialist = RecordingAdapter()
+    runner = _make_runner(adapter)
+    runner._kanban_telegram_topic_rollups = True
+    runner._kanban_specialist_status_updates = True
+    runner._session_db = SimpleNamespace(record_telegram_topic_rollup=AsyncMock())
+    runner._authorization_adapter = lambda platform, profile=None: specialist if profile == "worker" else adapter
+
+    asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
+
+    assert len(adapter.sent) == 4
+    detailed, root_start, detailed_done, root_done = adapter.sent
+    assert detailed["metadata"]["thread_id"] == "20197"
+    assert root_start["metadata"] == {"chat_type": "supergroup"}
+    assert detailed_done["metadata"]["thread_id"] == "20197"
+    assert root_done["metadata"] == {"chat_type": "supergroup"}
+    assert all(item["text"].startswith("📌 Player login\n") for item in adapter.sent)
+    assert len(specialist.sent) == 2
+    assert runner._session_db.record_telegram_topic_rollup.await_count == 2
 
 
 def test_active_named_profile_subscription_is_delivered(tmp_path, monkeypatch):
@@ -736,8 +783,10 @@ def test_review_requested_wakes_the_origin_session(tmp_path, monkeypatch):
     runner = _make_runner(adapter)
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert len(adapter.sent) == 1, "the passive review ping is unchanged"
-    assert "ready for review" in adapter.sent[0]["text"]
+    assert len(adapter.sent) == 2
+    assert "started" in adapter.sent[0]["text"]
+    assert adapter.sent[0]["text"].startswith("📌 implement the thing\n")
+    assert "ready for review" in adapter.sent[1]["text"]
 
     wake = _wake_text(adapter)
     assert tid in wake
@@ -796,7 +845,9 @@ def test_review_requested_does_not_wake_a_notify_only_subscription(
     runner = _make_runner(adapter)
     asyncio.run(_run_one_notifier_tick(monkeypatch, runner))
 
-    assert len(adapter.sent) == 1
+    assert len(adapter.sent) == 2
+    assert "started" in adapter.sent[0]["text"]
+    assert "ready for review" in adapter.sent[1]["text"]
     assert adapter.handled == [], (
         "notify-only subscriptions must not be woken by a review handoff"
     )

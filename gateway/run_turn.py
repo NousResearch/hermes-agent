@@ -388,7 +388,8 @@ class GatewayTurnMixin:
         # cross-topic Reply doesn't fragment the conversation.
         event_metadata = getattr(event, "metadata", None) or {}
         expected_session_key = str(event_metadata.get("gateway_session_key") or "").strip()
-        recovered = (await asyncio.to_thread(self._recover_telegram_topic_thread_id, source)
+        recovered = (await asyncio.to_thread(
+            self._recover_telegram_topic_thread_id, source, getattr(event, "reply_to_message_id", None))
                      if not expected_session_key else None)
         if recovered is not None:
             logger.info(

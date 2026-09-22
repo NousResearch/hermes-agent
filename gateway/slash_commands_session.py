@@ -633,7 +633,34 @@ class GatewaySessionCommandsMixin:
                 "mode is off — preserving original transcript instead of overwriting it (#44794).")
         await self.async_session_store.update_session(session_entry.session_key, last_prompt_tokens=0)
 
-    # ------------------------------------------------------------------------ /topic
+    # ------------------------------------------------------------------------ /topic, /kill
+
+    async def _handle_kill_command(self, event: MessageEvent):
+        """Close the current Telegram topic while preserving its session and Kanban records."""
+        source = event.source
+        if source.platform != Platform.TELEGRAM or source.chat_type not in {"dm", "group", "supergroup"}:
+            return "/kill is available only inside a Telegram topic."
+        is_dm_topic = source.chat_type == "dm" and self._is_telegram_topic_lane(source)
+        is_group_topic = source.chat_type in {"group", "supergroup"} and str(source.thread_id or "") not in {"", "1"}
+        if not (is_dm_topic or is_group_topic):
+            return "Open the subject you want to close, then run /kill inside it."
+        adapter = self._delivery_adapter_for(source)
+        close_topic = getattr(adapter, "close_topic", None) if adapter is not None else None
+        if not callable(close_topic) and adapter is not None:
+            close_topic = getattr(adapter, "close_dm_topic", None)
+        if not callable(close_topic):
+            return "This Telegram connection cannot close topics."
+        notice = "Subject closed. Its conversation, Kanban cards, and evidence are preserved."
+        try:
+            await adapter.send(
+                str(source.chat_id), notice,
+                metadata=self._thread_metadata_for_source(source, self._reply_anchor_for_event(event)),
+            )
+            await close_topic(chat_id=str(source.chat_id), thread_id=str(source.thread_id))
+        except Exception as exc:
+            logger.warning("Failed to close Telegram topic %s: %s", source.thread_id, exc)
+            return "Telegram could not close this subject. Nothing was deleted."
+        return None
 
     async def _handle_topic_command(self, event: MessageEvent, args: str = "") -> str:
         """Handle /topic for Telegram DM user-managed topic sessions."""

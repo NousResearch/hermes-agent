@@ -181,6 +181,10 @@ def _is_summary_refusal(content: str) -> bool:
     normalized = " ".join(content.split())
     if not _SUMMARY_REFUSAL_PREFIX_RE.match(normalized):
         return False
+    # A refusal-only body never carries the template's "## " section headings; a real summary
+    # that merely opens with a hedging preamble ("I cannot see earlier turns, but here is...") does.
+    if re.search(r"(?m)^##\s", content):
+        return False
     # Limit the search to the opener so a structured checkpoint that records a
     # historical refusal elsewhere is not rejected. Stems catch summary/summarize/summarise.
     return any(term in normalized[:400].casefold() for term in ("summar", "checkpoint"))

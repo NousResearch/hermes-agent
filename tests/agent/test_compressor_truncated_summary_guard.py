@@ -80,6 +80,16 @@ class TestSummaryRefusalGuard:
         summary = "## Goal\nPreserve the user's task.\n\n## Completed Actions\n1. Recorded that a provider refused an earlier request."
         assert _is_summary_refusal(summary) is False
 
+    def test_narrowing_and_heading_exemption(self):
+        # Narrow by design: a refusal that never mentions the summary/checkpoint is not ours to judge.
+        assert _is_summary_refusal("I can't help with that request.") is False
+        # A hedging preamble in front of a real templated summary is not a refusal.
+        preamble = (
+            "I cannot see the earlier turns, but here is the summary:\n"
+            "## Goal\nFinish the task.\n\n## Completed Actions\n1. Did X."
+        )
+        assert _is_summary_refusal(preamble) is False
+
 
 class TestGenerateSummaryTruncationGuard:
     def test_length_stop_is_rejected_and_aborts(self):

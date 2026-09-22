@@ -2,11 +2,14 @@
 // is armed, but the tail bubble has settled — a sealed interim row, or a turn
 // whose last message completed while the agent kept going. The transcript used
 // to show nothing there, and the seconds went uncounted.
-import { type ThreadMessage } from '@assistant-ui/react'
+import { AssistantRuntimeProvider, type ThreadMessage } from '@assistant-ui/react'
 import { act, cleanup, render, screen } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { useRuntimeMessageRepository } from '@/app/chat/runtime-repository'
 import { __resetElapsedTimerRegistryForTests } from '@/components/chat/activity-timer'
+import type { ChatMessage } from '@/lib/chat-messages'
+import { useIncrementalExternalStoreRuntime } from '@/lib/incremental-external-store-runtime'
 import { $activeSessionId, $busy, $messages, $turnStartedAt } from '@/store/session'
 
 import { stubThreadEnvironment, ThreadRuntime, userMessage } from '../test-utils'
@@ -41,6 +44,19 @@ const Harness = ({ messages }: { messages: ThreadMessage[] }) => (
     <Thread />
   </ThreadRuntime>
 )
+
+// Exercise the production conversion/adapter: reconnect may retire busy
+// before a pending transcript row receives its terminal message.complete.
+const RuntimeHarness = ({ messages }: { messages: ChatMessage[] }) => {
+  const messageRepository = useRuntimeMessageRepository(messages)
+  const runtime = useIncrementalExternalStoreRuntime({ messageRepository, isRunning: false, onNew: async () => {} })
+
+  return (
+    <AssistantRuntimeProvider runtime={runtime}>
+      <Thread />
+    </AssistantRuntimeProvider>
+  )
+}
 
 const timerText = (value: string) => screen.getAllByText((_, node) => node?.textContent === value)
 
@@ -115,5 +131,38 @@ describe('the turn timer covers the gaps, not just the streaming', () => {
     act(() => vi.advanceTimersByTime(7_000))
 
     expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
+  })
+
+  it('does not revive a tail timer from a pending row after the session retires its busy claim', () => {
+    $busy.set(false)
+    $turnStartedAt.set(null)
+
+    const messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'do the thing' }] },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'Done.' }], pending: true }
+    ]
+
+    const { container } = render(<RuntimeHarness messages={messages} />)
+
+    act(() => vi.advanceTimersByTime(7_000))
+
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).toBeNull()
+  })
+
+  it('still narrates a pending first bubble before the session busy flush arrives', () => {
+    $busy.set(false)
+    // Submit has armed the turn clock; the non-critical busy=true view flush
+    // can trail the first streamed message by a frame.
+
+    const messages: ChatMessage[] = [
+      { id: 'u1', role: 'user', parts: [{ type: 'text', text: 'do the thing' }] },
+      { id: 'a1', role: 'assistant', parts: [{ type: 'text', text: 'Working.' }], pending: true }
+    ]
+
+    const { container } = render(<RuntimeHarness messages={messages} />)
+
+    act(() => vi.advanceTimersByTime(7_000))
+
+    expect(container.querySelector('[data-slot="aui_turn-activity"]')).not.toBeNull()
   })
 })

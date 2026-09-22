@@ -229,7 +229,13 @@ export function useSessionTileDelegate({
           return false
         }
 
-        updateSessionState(runtimeId, state => ({ ...state, awaitingResponse: false, busy: false }))
+        updateSessionState(runtimeId, state => ({
+          ...state,
+          awaitingResponse: false,
+          busy: false,
+          turnLive: false,
+          turnStartedAt: null
+        }))
 
         return true
       },

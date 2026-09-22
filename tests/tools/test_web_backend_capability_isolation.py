@@ -20,7 +20,7 @@ def _ladder_env(monkeypatch, raw_web):
     # No keyed backends, no gateway: the ladder can only reach ddgs.
     for var in (
         "TAVILY_API_KEY", "PERPLEXITY_API_KEY", "EXA_API_KEY",
-        "PARALLEL_API_KEY", "KEENABLE_API_KEY",
+        "PARALLEL_API_KEY", "KEENABLE_API_KEY", "LINKUP_API_KEY",
         "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL",
         "BRAVE_SEARCH_API_KEY", "SEARXNG_URL",
     ):

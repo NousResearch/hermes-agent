@@ -160,6 +160,9 @@ For native Anthropic auth, Hermes prefers Claude Code's own credential files whe
 | `PERPLEXITY_BASE_URL` | Override the Perplexity API endpoint (default `https://api.perplexity.ai`) for proxies (optional) |
 | `SEARXNG_URL` | SearXNG instance URL for free self-hosted web search — no API key required ([searxng.github.io](https://searxng.github.io/searxng/)) |
 | `EXA_API_KEY` | Exa API key for AI-native web search and contents ([exa.ai](https://exa.ai/)) |
+| `LINKUP_API_KEY` | Linkup API key for agent web search and page fetch ([app.linkup.so](https://app.linkup.so)) |
+| `LINKUP_SEARCH_DEPTH` | Linkup search depth: `flash`, `fast` (default), `standard`, or `deep` |
+| `LINKUP_BASE_URL` | Override the Linkup API origin (default `https://api.linkup.so`) for proxies |
 | `BRAVE_SEARCH_API_KEY` | Brave Search API subscription token for web search (free tier available) ([brave.com/search/api](https://brave.com/search/api/)) |
 | `BROWSERBASE_API_KEY` | Browser automation ([browserbase.com](https://browserbase.com/)) |
 | `BROWSERBASE_PROJECT_ID` | Browserbase project ID |

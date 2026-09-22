@@ -2810,6 +2810,10 @@ OPTIONAL_ENV_VARS = {
         "Keenable API key for fast independent-index web search and page fetch (optional — "
         "keyless free tier works without it)", "Keenable API key", "https://keenable.ai",
         tools=["web_search", "web_extract"]),
+    "LINKUP_API_KEY": _tool(
+        "Linkup API key for agent web search and page fetch",
+        "Linkup API key", "https://app.linkup.so",
+        tools=["web_search", "web_extract"]),
     "SEARXNG_URL": _tool("URL of your SearXNG instance for free self-hosted web search",
         "SearXNG URL (e.g. http://localhost:8080)", "https://searxng.github.io/searxng/",
         tools=["web_search"], password=False),

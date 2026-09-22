@@ -1,0 +1,9 @@
+name: web-linkup
+version: 1.0.0
+description: "Linkup web search + page fetch. Requires LINKUP_API_KEY — sign up at https://app.linkup.so."
+author: Linkup
+kind: backend
+provides_web_providers:
+  - linkup
+requires_env:
+  - LINKUP_API_KEY

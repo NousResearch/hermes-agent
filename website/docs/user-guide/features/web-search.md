@@ -27,10 +27,11 @@ Both are configured through a single backend selection. Providers are chosen via
 | **Tavily** | `TAVILY_API_KEY` (optional) | ✔ | ✔ | ✔ Opt-in keyless when selected |
 | **Perplexity** | `PERPLEXITY_API_KEY` | ✔ | ✔ (query-relevant snippets) | Paid (per-request Search API pricing) |
 | **Keenable** | `KEENABLE_API_KEY` (optional) | ✔ | ✔ | ✔ Keyless ring member · paid with key |
+| **Linkup** | `LINKUP_API_KEY` | ✔ | ✔ | Paid |
 | **xAI (Grok)** | `XAI_API_KEY` or `hermes auth add xai-oauth` | ✔ | — | Paid (SuperGrok or per-token) |
 | **OpenAI Native (Codex)** | `hermes auth add openai-codex` | ✔ | — | Requires a ChatGPT/Codex subscription |
 
-Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). OpenAI Native declares the same kind of provider-executed tool on the Codex Responses endpoint (see [below](#openai-native)).
+Brave Search, DDGS, xAI, and OpenAI Native are **search-only** — pair any of them with Firecrawl/Tavily/Perplexity/Keenable/Exa/Parallel/Linkup when you also need `web_extract`. DDGS uses the [`ddgs` Python package](https://pypi.org/project/ddgs/) under the hood; if it isn't already installed, run `pip install ddgs` (or let Hermes lazy-install it on first use). xAI runs Grok's server-side `web_search` tool on the Responses API — results are LLM-generated rather than index-backed, so titles, descriptions, and URL choice are all model output (see the [trust-model caveat](#xai-grok) below). OpenAI Native declares the same kind of provider-executed tool on the Codex Responses endpoint (see [below](#openai-native)).
 
 **Per-capability split:** you can use different providers for search and extract independently — for example SearXNG (free) for search and Firecrawl for extract. See [Per-capability configuration](#per-capability-configuration) below.
 
@@ -271,7 +272,7 @@ SearXNG handles search; you need a separate provider for `web_extract`. Use the 
 # ~/.hermes/config.yaml
 web:
   search_backend: "searxng"
-  extract_backend: "firecrawl"   # or tavily, perplexity, keenable, exa, parallel
+  extract_backend: "firecrawl"   # or tavily, perplexity, keenable, exa, parallel, linkup
 ```
 
 With this config, Hermes uses SearXNG for all search queries and Firecrawl for URL extraction — combining free search with high-quality extraction.
@@ -328,6 +329,19 @@ PARALLEL_API_KEY=your-parallel-key-here
 ```
 
 Get access at [parallel.ai](https://parallel.ai).
+
+---
+
+### Linkup
+
+Agent web search and page fetch. Search uses Linkup's `fast` depth by default. Set `LINKUP_SEARCH_DEPTH` to `flash`, `standard`, or `deep` when you want a different tradeoff. `web_extract` fetches each URL as markdown, with JavaScript rendering on.
+
+```bash
+# ~/.hermes/.env
+LINKUP_API_KEY=your-linkup-key-here
+```
+
+Get a key at [app.linkup.so](https://app.linkup.so). Set `LINKUP_BASE_URL` to route through a proxy.
 
 ---
 
@@ -436,6 +450,7 @@ If no shared backend has **ever** been selected (no `web.backend` written by you
 | `PERPLEXITY_API_KEY` | perplexity |
 | `EXA_API_KEY` | exa |
 | `PARALLEL_API_KEY` | parallel |
+| `LINKUP_API_KEY` | linkup |
 | `FIRECRAWL_API_KEY` or `FIRECRAWL_API_URL` (or the Nous Tool Gateway is ready) | firecrawl |
 | `SEARXNG_URL` | searxng |
 | `BRAVE_SEARCH_API_KEY` | brave-free |

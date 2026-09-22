@@ -6,7 +6,7 @@ description: "How to build a web-search/extract/crawl backend plugin for Hermes 
 
 # Building a Web Search Provider Plugin
 
-Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Perplexity, Exa, Parallel, Keenable, Brave Search (free tier), xAI, and DDGS — all ship as plugins under `plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
+Web-search provider plugins register a backend that services `web_search`, `web_extract`, and (optionally) deep-crawl tool calls. Built-in providers — Firecrawl, SearXNG, Tavily, Perplexity, Exa, Parallel, Keenable, Linkup, Brave Search (free tier), xAI, and DDGS — all ship as plugins under `plugins/web/<name>/`. You can add a new one, or override a bundled one, by dropping a directory next to them.
 
 :::tip
 Web search is one of several **backend plugins** Hermes supports. The others (with their own ABCs) are [Image Generation Provider Plugins](./image-gen-provider-plugin.md), [Video Generation Provider Plugins](./video-gen-provider-plugin.md), [Memory Provider Plugins](./memory-provider-plugin.md), [Context Engine Plugins](./context-engine-plugin.md), and [Model Provider Plugins](./model-provider-plugin.md). General tool/hook/CLI plugins live in [Build a Hermes Plugin](./plugins/index.md).

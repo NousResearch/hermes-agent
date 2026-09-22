@@ -443,6 +443,7 @@ class TestXAIBackendWiring:
         for key in (
             "FIRECRAWL_API_KEY", "FIRECRAWL_API_URL", "PARALLEL_API_KEY",
             "EXA_API_KEY", "SEARXNG_URL", "BRAVE_SEARCH_API_KEY", "KEENABLE_API_KEY",
+            "LINKUP_API_KEY",
         ):
             monkeypatch.delenv(key, raising=False)
         monkeypatch.setenv("XAI_API_KEY", "xai-test-key")

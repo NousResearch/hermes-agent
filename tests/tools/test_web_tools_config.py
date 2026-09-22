@@ -210,6 +210,7 @@ class TestBackendSelection:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
+        "LINKUP_API_KEY",
         "TAVILY_API_KEY",
     )
 
@@ -268,6 +269,13 @@ class TestBackendSelection:
         with patch("tools.web_tools._load_web_config", return_value={}), \
              patch.dict(os.environ, {"KEENABLE_API_KEY": "kn-test"}):
             assert _get_backend() == "keenable"
+
+    def test_fallback_linkup_only_key(self):
+        """Only LINKUP_API_KEY set → 'linkup'."""
+        from tools.web_tools import _get_backend
+        with patch("tools.web_tools._load_web_config", return_value={}), \
+             patch.dict(os.environ, {"LINKUP_API_KEY": "lnk-test"}):
+            assert _get_backend() == "linkup"
 
     def test_fallback_exa_beats_firecrawl_direct(self):
         """Exa ranks above firecrawl in the explicit-credential block."""
@@ -532,6 +540,7 @@ class TestCheckWebApiKey:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
+        "LINKUP_API_KEY",
         "TAVILY_API_KEY",
     )
 
@@ -699,6 +708,7 @@ class TestNonBuiltinProviderAvailability:
         "TOOL_GATEWAY_SCHEME",
         "TOOL_GATEWAY_USER_TOKEN",
         "KEENABLE_API_KEY",
+        "LINKUP_API_KEY",
         "TAVILY_API_KEY",
         "SEARXNG_URL",
         "BRAVE_SEARCH_API_KEY",
@@ -841,6 +851,7 @@ class TestSiblingProvidersEnvResolution:
         ("plugins.web.parallel.provider", "ParallelWebSearchProvider", "PARALLEL_API_KEY"),
         ("plugins.web.keenable.provider", "KeenableWebSearchProvider", "KEENABLE_API_KEY"),
         ("plugins.web.tavily.provider", "TavilyWebSearchProvider", "TAVILY_API_KEY"),
+        ("plugins.web.linkup.provider", "LinkupWebSearchProvider", "LINKUP_API_KEY"),
         ("plugins.web.brave_free.provider", "BraveFreeWebSearchProvider", "BRAVE_SEARCH_API_KEY"),
     ]
 

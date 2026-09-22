@@ -112,7 +112,7 @@ VALID_HOOKS: Set[str] = {
     # Streaming observers (agent.plugin_stream_hooks), off the token path; payloads are immutable
     # normalized text/lifecycle and cannot transform the stream.
     "on_stream_start", "on_stream_delta", "on_stream_end", "on_interim_message",
-    # pre_verify: once per turn when the agent edited code and is about to verify/finish. Return
+    # pre_verify: once per turn when the agent edited files or ran a side-effecting tool and is about to finish. Return
     # {"action": "continue", "message"} (or Claude-Code Stop {"decision": "block", "reason"}) to keep
     # going; anything else finishes. Bounded by agent.max_verify_nudges.
     "pre_verify", "pre_api_request", "post_api_request", "api_request_error",
@@ -1915,6 +1915,7 @@ def _dispatch_pre_tool_call_hooks(
 def get_pre_verify_continue_message(
     *, session_id: str = "", platform: str = "", model: str = "", coding: bool = False,
     attempt: int = 0, final_response: str = "", changed_paths: Optional[List[str]] = None,
+    effect_tools: Optional[List[str]] = None,
 ) -> Optional[str]:
     """Check ``pre_verify`` hooks for ``{"action": "continue", "message"}`` (or Claude-Code Stop
     ``{"decision": "block", "reason"}``) to keep the turn going; first non-empty message wins, any
@@ -1922,6 +1923,7 @@ def get_pre_verify_continue_message(
     hook_results = invoke_hook(
         "pre_verify", session_id=session_id, platform=platform, model=model, coding=coding,
         attempt=attempt, final_response=final_response, changed_paths=list(changed_paths or []),
+        effect_tools=list(effect_tools or []),
     )
     for result in hook_results:
         if not isinstance(result, dict):

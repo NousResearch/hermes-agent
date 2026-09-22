@@ -12,7 +12,7 @@ from agent.tool_dispatch_helpers import (
     _extract_error_preview, _extract_file_mutation_targets, _extract_landed_file_mutation_paths
 )
 from agent.tool_result_classification import (
-    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed
+    FILE_MUTATING_TOOL_NAMES as _FILE_MUTATING_TOOLS, file_mutation_result_landed, tool_may_have_side_effect
 )
 
 _NO_REPLY = "⚠️ No reply: "
@@ -237,7 +237,12 @@ class TurnExplainersMixin:
         spelling; ``identity`` is the resolved on-disk target and ``stat`` its signature at
         failure time. A later success on the same identity (any spelling) removes the entry.
         No-op when the per-turn state dict is not initialised (tool dispatched outside ``run_conversation``).
+        Effect-capable non-file tools (terminal, execute_code, browser, …) are ledgered by name so the
+        ``pre_verify`` gate also sees turns that changed the world without ``write_file``/``patch``.
         """
+        effects = getattr(self, "_turn_effect_tools", None)
+        if effects is not None and tool_may_have_side_effect(tool_name):
+            effects.add(tool_name)
         if tool_name not in _FILE_MUTATING_TOOLS:
             return
         state = getattr(self, "_turn_failed_file_mutations", None)

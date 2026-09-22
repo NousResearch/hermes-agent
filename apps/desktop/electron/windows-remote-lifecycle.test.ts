@@ -58,6 +58,8 @@ test('Windows spawn publishes the initial ownership record before releasing the 
 
   assert.match(script, /read-lock/)
   assert.match(script, /write-lock/)
+  assert.match(script, /\$lock\s*\|\s*&.*write-lock/)
+  assert.doesNotMatch(script, /write-lock[^;]*\$lock\|Out-Null/)
   assert.ok(script.indexOf('write-lock') < script.indexOf('Unlock'))
 })
 

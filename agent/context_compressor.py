@@ -3536,6 +3536,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
 
         cap = self._SUMMARY_INPUT_MAX_CHARS
         eligible = [index for index, record in enumerate(records) if len(record) <= cap]
+        oversized = [index for index, record in enumerate(records) if len(record) > cap]
 
         def marker(start: int, end: int, omitted_chars: int) -> str:
             return (
@@ -3543,7 +3544,28 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 f"{omitted_chars:,} chars) — recover via session_search]..."
             )
 
-        def render(selected_indices: list[int]) -> tuple[str, int]:
+        def truncate_oversized_record(index: int, budget: int) -> tuple[str, int] | None:
+            """Represent one oversized record while accounting only retained source chars."""
+            record = records[index]
+            marker_template = (
+                "\n...[serialized record truncated: {omitted:,} chars elided "
+                "— recover via session_search]...\n"
+            )
+            omitted = len(record)
+            for _ in range(5):
+                truncation_marker = marker_template.format(omitted=omitted)
+                retained = budget - len(truncation_marker)
+                if retained < 2:
+                    return None
+                head_chars = retained // 2
+                tail_chars = retained - head_chars
+                actual_omitted = len(record) - head_chars - tail_chars
+                if actual_omitted == omitted:
+                    return record[:head_chars] + truncation_marker + record[-tail_chars:], omitted
+                omitted = actual_omitted
+            return None
+
+        def render(selected_indices: list[int], partial_records: Dict[int, tuple[str, int]]) -> tuple[str, int]:
             """Return rendered text and omitted *source* chars, never marker chars."""
             selected_indices = sorted(selected_indices)
             if not selected_indices:
@@ -3568,7 +3590,12 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                     omitted = span_end - span_start
                     omitted_chars += omitted
                     parts.append(marker(previous + 1, index - 1, omitted))
-                parts.append(records[index])
+                if index in partial_records:
+                    represented, truncated_chars = partial_records[index]
+                    parts.append(represented)
+                    omitted_chars += truncated_chars
+                else:
+                    parts.append(records[index])
                 previous = index
             if previous < record_count - 1:
                 omitted = total_chars - offsets[previous][1]
@@ -3580,6 +3607,7 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         # before lower-value anchors when marker text needs more space.
         selected: list[int] = []
         priority: dict[int, int] = {}
+        partial_records: dict[int, tuple[str, int]] = {}
         used_record_chars = 0
 
         def consider(index: int, value: int) -> None:
@@ -3590,8 +3618,29 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             priority[index] = value
             used_record_chars += len(records[index])
 
-        if eligible:
+        def consider_oversized(index: int, value: int, marker_reserve: int) -> None:
+            nonlocal used_record_chars
+            if index in selected:
+                return
+            representation = truncate_oversized_record(index, cap - used_record_chars - marker_reserve)
+            if representation is None:
+                return
+            selected.append(index)
+            priority[index] = value
+            partial_records[index] = representation
+            used_record_chars += len(representation[0])
+
+        newest_index = record_count - 1
+        if eligible and eligible[-1] == newest_index:
             consider(eligible[-1], 1_000_000)
+        elif oversized and oversized[-1] == newest_index:
+            # The newest oversized record carries current state, so reserve
+            # room for its leading aggregate-elision marker before anchors.
+            consider_oversized(newest_index, 1_000_000, 0 if record_count == 1 else 128)
+        if oversized and oversized[-1] != newest_index:
+            # A middle oversized record may be represented only after the
+            # newest normal tail has claimed its whole-record budget.
+            consider_oversized(oversized[-1], 900_000, 128)
         slice_count = min(max(2, self._SAMPLED_INPUT_SLICES), record_count)
         # Raw source offsets make anchors uniform even when records vary wildly.
         for anchor_rank, anchor in enumerate(
@@ -3606,19 +3655,20 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
                 # Head and interior anchors rank below the protected newest tail.
                 consider(nearest, slice_count - anchor_rank)
 
-        sampled, omitted_chars = render(selected)
+        sampled, omitted_chars = render(selected, partial_records)
         # Marker text is dynamic (including comma widths), so enforce the hard
         # cap with actual rendering rather than a brittle fixed reserve.
         while len(sampled) > cap and selected:
             discard = min(selected, key=lambda index: (priority[index], index))
             selected.remove(discard)
-            sampled, omitted_chars = render(selected)
+            partial_records.pop(discard, None)
+            sampled, omitted_chars = render(selected, partial_records)
 
         if len(sampled) > cap:
             # This can only happen when the explicit fallback marker itself is
             # wider than an unusually tiny configured cap.  It is safe because
             # ``render`` bounded it and no partial source record is emitted.
-            sampled, omitted_chars = render([])
+            sampled, omitted_chars = render([], {})
 
         coverage = {
             "input_chars": total_chars, "sampled_chars": total_chars - omitted_chars,

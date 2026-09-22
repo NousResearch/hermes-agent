@@ -3359,15 +3359,42 @@ class TestSummaryPromptBounding:
         assert coverage["input_chars"] == coverage["sampled_chars"]
         assert coverage["omitted_chars"] == 0
 
-    def test_lean_sampling_handles_a_single_record_larger_than_aggregate_cap(self, monkeypatch):
-        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 128)
+    def test_lean_sampling_represents_a_single_record_larger_than_aggregate_cap(self, monkeypatch):
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 160)
         compressor = ContextCompressor(model="test", quiet_mode=True)
-        record = "[ASSISTANT]: " + ("x" * 300)
+        record = "[ASSISTANT]: oversized-head " + ("x" * 300) + " oversized-tail"
         sampled, coverage = compressor._sample_summary_records([record])
         assert len(sampled) <= compressor._SUMMARY_INPUT_MAX_CHARS
-        assert "record exceeds aggregate cap" in sampled
-        assert coverage["sampled_record_count"] == 0
-        assert coverage["input_chars"] == coverage["omitted_chars"]
+        assert "oversized-head" in sampled and "oversized-tail" in sampled
+        assert "serialized record truncated:" in sampled
+        assert coverage["sampled_record_count"] == 1
+        assert coverage["input_chars"] == coverage["sampled_chars"] + coverage["omitted_chars"]
+        assert int(re.search(r"truncated: ([\d,]+) chars", sampled).group(1).replace(",", "")) == coverage["omitted_chars"]
+
+    def test_lean_sampling_keeps_newest_oversized_record_observable(self, monkeypatch):
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 320)
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        record = "[ASSISTANT]: newest-identifying-head " + ("x" * 1_000) + " newest-identifying-tail"
+        sampled, coverage = compressor._sample_summary_records(["[USER]: older", record])
+        assert len(sampled) <= compressor._SUMMARY_INPUT_MAX_CHARS
+        assert "newest-identifying-head" in sampled
+        assert "newest-identifying-tail" in sampled
+        assert "serialized record truncated:" in sampled
+        assert "serialized records elided" not in sampled
+        assert coverage["input_chars"] == coverage["sampled_chars"] + coverage["omitted_chars"]
+        assert coverage["sampled_chars"] > 0
+
+    def test_lean_sampling_represents_oversized_middle_without_dropping_newest_normal_record(self, monkeypatch):
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 560)
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        newest = "[ASSISTANT]: newest-normal-record-must-remain-whole"
+        middle = "[ASSISTANT]: middle-identifying-head " + ("x" * 1_000) + " middle-identifying-tail"
+        sampled, coverage = compressor._sample_summary_records(["[USER]: head", middle, newest])
+        assert len(sampled) <= compressor._SUMMARY_INPUT_MAX_CHARS
+        assert "middle-identifying-head" in sampled and "middle-identifying-tail" in sampled
+        assert "serialized record truncated:" in sampled
+        assert newest in sampled
+        assert coverage["input_chars"] == coverage["sampled_chars"] + coverage["omitted_chars"]
 
     def test_lean_sampling_keeps_serialized_records_whole_and_labels_elided_ranges(self, monkeypatch):
         """Even sampling must account for whole serialized records, not character fragments."""

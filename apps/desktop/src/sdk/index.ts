@@ -1344,12 +1344,13 @@ export const host = {
    * multi-RPC sequence. Material edit/remove/ABA invalidates assertCurrent and
    * every later request without retargeting to the reusable connection id. */
   acquireProfileRoute: async (route: PluginProfileRoute): Promise<PluginProfileRouteLease> => {
-    if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
+    const captured = { ...route }
+
+    if (!captured.connectionId.trim() || !captured.profile.trim() || !captured.targetProfile.trim()) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
-    const lease = await acquireGatewayRouteLease(route.connectionId, route.profile)
-    const captured = { ...route }
+    const lease = await acquireGatewayRouteLease(captured.connectionId, captured.profile)
 
     return {
       generation: lease.generation,

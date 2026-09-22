@@ -91,7 +91,13 @@ it('leases the SDK shared route across RPCs and rejects an in-flight primary ABA
   setPrimaryGateway(a as never)
   setPrimaryGatewayConnectionId('gateway-a')
 
-  const lease = await host.acquireProfileRoute(route())
+  const requestedRoute = route()
+  const acquiring = host.acquireProfileRoute(requestedRoute)
+  Object.assign(requestedRoute, {
+    connectionId: 'gateway-b', profile: 'other-profile', targetProfile: 'other-profile'
+  })
+  const lease = await acquiring
+  expect(lease.route).toEqual(route())
   const held = deferred<{ method: string; params: Record<string, unknown> }>()
   a.request.mockReturnValueOnce(held.promise)
   const response = lease.request('groups.import_history', { private_history: 'bytes' })

@@ -64,6 +64,7 @@ def mirror_to_session(
         _append_to_sqlite(session_id, {
             "role": role, "content": message_text, "timestamp": datetime.now().isoformat(),
             "mirror": True, "mirror_source": source_label,
+            "display_metadata": {"mirror_source": source_label},
         })
         logger.debug("Mirror: wrote to session %s (from %s)", session_id, source_label)
         return True
@@ -136,6 +137,10 @@ def _append_to_sqlite(session_id: str, message: dict) -> None:
 
     db = acquire()
     try:
-        db.append_message(session_id=session_id, role=message.get("role", "assistant"), content=message.get("content"))
+        db.append_message(
+            session_id=session_id, role=message.get("role", "assistant"),
+            content=message.get("content"),
+            display_metadata=message.get("display_metadata"),
+        )
     finally:
         release_or_close(db)

@@ -97,6 +97,7 @@ class Window extends EventEmitter {
 }
 
 let home: string
+const platform = process.platform
 beforeEach(() => {
   home = fs.mkdtempSync(path.join(os.tmpdir(), 'hermes-tray-'))
   native.windows = []
@@ -104,7 +105,10 @@ beforeEach(() => {
   native.fail = false
   vi.clearAllMocks()
 })
-afterEach(() => fs.rmSync(home, { recursive: true, force: true }))
+afterEach(() => {
+  Object.defineProperty(process, 'platform', { configurable: true, value: platform })
+  fs.rmSync(home, { recursive: true, force: true })
+})
 
 function setup() {
   const main = new Window()
@@ -115,7 +119,13 @@ function setup() {
   const controller = createMinimizeToTray({
     preferencesPath: path.join(home, 'minimize-to-tray.json'),
     getIconPath: () => 'icon.png',
-    restoreMainWindow: () => main.showInactive(),
+    restoreMainWindow: () => {
+      if (main.isMinimized()) {
+        main.restore()
+      }
+
+      main.showInactive()
+    },
     isQuittingForHandoff: () => handoff,
     log: vi.fn()
   })
@@ -143,7 +153,7 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   expect(native.ipc.get('hermes:minimize-to-tray:get')!()).toEqual({ enabled: true, available: true })
   main.minimize()
   expect(main.destroyed).toBe(false)
-  expect(main.visible).toBe(false)
+  expect(main.visible).toBe(true)
   expect(peer.visible).toBe(true)
 
   if (process.platform === 'darwin') {
@@ -151,30 +161,32 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   }
 
   peer.minimize()
-  expect(peer.visible).toBe(false)
+  expect(peer.visible).toBe(true)
 
   if (process.platform === 'darwin') {
-    expect(native.app.dock.hide).toHaveBeenCalled()
+    expect(native.app.dock.hide).not.toHaveBeenCalled()
   }
 
   if (process.platform === 'win32') {
-    expect(main.skipped && peer.skipped).toBe(true)
+    expect(main.skipped || peer.skipped).toBe(false)
   }
 
   native.trays[0].menu[0].click()
   expect(main.visible && peer.visible).toBe(true)
-  expect(main.minimized || peer.minimized).toBe(false)
+  expect(main.minimized).toBe(false)
+  expect(peer.minimized).toBe(true)
   expect(main.skipped || peer.skipped).toBe(false)
   peer.close()
   expect(peer.destroyed).toBe(true)
   main.minimize()
+  expect(main.visible).toBe(true)
   native.trays[0].menu[2].click()
   expect(native.app.quit).toHaveBeenCalledOnce()
   // A cancelled guard doesn't call beginQuit; hide remains enabled.
   controller.restore()
   main.minimize()
   expect(main.destroyed).toBe(false)
-  expect(main.visible).toBe(false)
+  expect(main.visible).toBe(true)
   // X/Alt+F4 hides the primary, but an accepted explicit quit closes it.
   expect(main.close().preventDefault).toHaveBeenCalledOnce()
   expect(main.destroyed).toBe(false)
@@ -187,6 +199,28 @@ test('opt-in minimize and primary Close preserve windows while explicit Quit sti
   expect(main.destroyed).toBe(true)
   native.app.on.mock.calls.find(([event]) => event === 'will-quit')![1]()
   expect(native.trays[0].destroyed).toBe(true)
+})
+
+test('Windows minimize keeps the taskbar button while primary close hides to the tray', async () => {
+  Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+  const { controller, main } = setup()
+
+  await controller.start()
+  await controller.setEnabled(true)
+
+  main.minimize()
+  expect(main.visible).toBe(true)
+  expect(main.minimized).toBe(true)
+  expect(main.skipped).toBe(false)
+
+  const close = main.close()
+  expect(close.preventDefault).toHaveBeenCalledOnce()
+  expect(main.visible).toBe(false)
+  expect(main.skipped).toBe(true)
+
+  controller.restore()
+  expect(main.visible).toBe(true)
+  expect(main.skipped).toBe(false)
 })
 
 test('persistence, disabling, failed tray creation, and handoff never strand hidden windows', async () => {

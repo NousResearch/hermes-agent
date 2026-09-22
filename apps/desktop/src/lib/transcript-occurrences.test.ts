@@ -36,14 +36,23 @@ afterEach(() => {
   vi.useRealTimers()
 })
 
-it('hydrates authored occurrences rather than deduplicating equal text across tool rounds', () => {
+// Equal commentary across tool rounds is authored twice and must hydrate in
+// step with the live stream. Only the provider echo folds: a final stop row
+// re-sending the previous tool round's prose verbatim (d690e0220e).
+it('hydrates repeated tool-round commentary but folds the stop-row echo', () => {
   const first = round(2, 'Status unchanged.')
   const second = round(4, 'Status unchanged.')
   const final: SessionMessage = { id: 6, role: 'assistant', content: 'Status unchanged.', timestamp: 6 }
   const messages = toChatMessages([prompt, ...first, ...second, final])
   const textParts = messages.flatMap(row => row.parts.filter(part => part.type === 'text'))
 
-  expect(textParts.map(part => part.text)).toEqual(['Inspect each phase', ...Array(3).fill('Status unchanged.')])
+  expect(textParts.map(part => part.text)).toEqual(['Inspect each phase', 'Status unchanged.', 'Status unchanged.'])
+  expect(textParts.at(-1)?.sourceRowId).toBe(6)
+  expect(
+    toChatMessages([prompt, ...first, ...second, { ...final, content: 'Done.' }])
+      .flatMap(row => row.parts.filter(part => part.type === 'text'))
+      .map(part => part.text)
+  ).toEqual(['Inspect each phase', 'Status unchanged.', 'Status unchanged.', 'Done.'])
   expect(messages.at(-1)?.durableComplete).toBe(true)
   expect(toChatMessages([prompt, ...first, ...second]).at(-1)?.durableComplete).toBe(false)
   // The same physical row is not another authored occurrence.

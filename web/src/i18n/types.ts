@@ -774,6 +774,13 @@ export interface Translations {
     status: string;
     workspace: string;
     skills: string;
+    goalMode: string;
+    goalModeDescription: string;
+    goalTurnBudget: string;
+    goalTurnBudgetDescription: string;
+    goalTurnBudgetDefault: string;
+    goalTurnBudgetValidation: string;
+    goalConfigurationLocked: string;
     createdBy: string;
     result: string;
     comments: string;

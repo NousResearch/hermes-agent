@@ -41,6 +41,22 @@
     }, rest));
   };
 
+  // Newer hosts expose the design-system Switch. Preserve compatibility with
+  // older dashboards by adapting the same checked/onCheckedChange contract to
+  // a native checkbox when that component is absent.
+  const Switch = SDK.components.Switch || function (props) {
+    const { checked, onCheckedChange, className, ...rest } = props;
+    return h("input", Object.assign({
+      type: "checkbox",
+      role: "switch",
+      checked: !!checked,
+      className: className,
+      onChange: function (e) {
+        if (onCheckedChange) onCheckedChange(e.target.checked);
+      },
+    }, rest));
+  };
+
   // useI18n is a hook each component calls locally. Older host dashboards
   // may not expose it yet; fall back to a shim so the bundle still renders
   // English against an older host SDK. English fallback strings live
@@ -3334,13 +3350,14 @@
       }
       const wpTrim = workspacePath.trim();
       if (wpTrim) body.workspace_path = wpTrim;
-      // Goal-mode toggle. Only send the keys when enabled so the request
-      // shape stays small and old dispatchers ignore it cleanly.
+      // Goal mode and its turn budget are independent launch settings. A
+      // budget may be prepared while goal mode is off and retained for when
+      // the task is enabled later.
       if (goalMode) {
         body.goal_mode = true;
-        const gmt = parseInt(goalMaxTurns, 10);
-        if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       }
+      const gmt = parseInt(goalMaxTurns, 10);
+      if (Number.isFinite(gmt) && gmt > 0) body.goal_max_turns = gmt;
       props.onSubmit(body);
       setTitle(""); setAssignee(""); setPriority(0); setParent(""); setSkills("");
       setWorkspaceKind(defaultWorkspaceKind); setWorkspacePath(defaultWorkspacePath);
@@ -3476,28 +3493,29 @@
               }),
             ),
           ),
-          h("div", { className: "flex gap-2 items-center" },
+          h("div", { className: "flex flex-col gap-2" },
             h("label", {
-              className: "flex items-center gap-1.5 text-xs cursor-pointer select-none",
-              title: "Goal mode: the worker keeps going in the same session until a judge agrees the card is done (or the turn budget runs out, which blocks it for review). Best for open-ended cards one shot rarely finishes.",
+              className: "flex items-center gap-2 text-xs cursor-pointer select-none",
+              title: tx(t, "goalModeDescription", "The worker keeps going until a judge agrees the task is done."),
             },
-              h("input", {
-                type: "checkbox",
+              h(Switch, {
                 checked: goalMode,
-                onChange: function (e) { setGoalMode(!!e.target.checked); },
-                className: "h-3.5 w-3.5 accent-current",
+                onCheckedChange: function (checked) { setGoalMode(!!checked); },
               }),
-              tx(t, "goalMode", "goal mode"),
+              tx(t, "goalMode", "Goal mode"),
             ),
-            goalMode ? h(Input, {
+            h("div", { className: "flex flex-col gap-1" },
+              fieldLabel(tx(t, "goalTurnBudget", "Goal turn budget")),
+              h(Input, {
               type: "number",
               value: goalMaxTurns,
               onChange: function (e) { setGoalMaxTurns(e.target.value); },
-              placeholder: tx(t, "goalMaxTurns", "max turns (default 20)"),
-              className: "h-8 text-sm w-44",
-              title: "Turn budget for the goal loop. Blank = backend default (20).",
+              placeholder: tx(t, "goalTurnBudgetDefault", "Engine default"),
+              className: "h-8 text-sm w-full",
+              title: tx(t, "goalTurnBudgetDescription", "Maximum worker turns. Leave blank to use the engine default."),
               min: 1,
-            }) : null,
+              }),
+            ),
           ),
         ),
         h("div", { className: "hermes-kanban-dialog-actions" },
@@ -3530,6 +3548,7 @@
     // surface (``err``) is hidden behind the loaded ``data`` and the
     // Ready/Block/Complete buttons feel like no-ops.  See #26744.
     const [patchErr, setPatchErr] = useState(null);
+    const [goalRefreshRequired, setGoalRefreshRequired] = useState(false);
     const [newComment, setNewComment] = useState("");
     const [uploadBusy, setUploadBusy] = useState(false);
     const [uploadErr, setUploadErr] = useState(null);
@@ -3541,10 +3560,19 @@
     const [homeBusy, setHomeBusy] = useState({});
     const boardSlug = props.boardSlug;
 
-    const load = useCallback(function () {
+    const load = useCallback(function (options) {
       return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug))
-        .then(function (d) { setData(d); setErr(null); setPatchErr(null); })
-        .catch(function (e) { setErr(String(e.message || e)); })
+        .then(function (d) {
+          setData(d);
+          setErr(null);
+          setGoalRefreshRequired(false);
+          if (!options || !options.preservePatchErr) setPatchErr(null);
+          return d;
+        })
+        .catch(function (e) {
+          if (!options || !options.preserveDataOnError) setErr(String(e.message || e));
+          return null;
+        })
         .finally(function () { setLoading(false); });
     }, [props.taskId, boardSlug]);
 
@@ -3661,13 +3689,27 @@
       function applyPatch(patch) {
         const finalPatch = withCompletionSummary(patch);
         if (!finalPatch) return Promise.resolve();
+        const goalPatch = Object.prototype.hasOwnProperty.call(finalPatch, "goal_mode")
+          || Object.prototype.hasOwnProperty.call(finalPatch, "goal_max_turns");
         setPatchErr(null);
         return SDK.fetchJSON(withBoard(`${API}/tasks/${encodeURIComponent(props.taskId)}`, boardSlug), {
           method: "PATCH",
           headers: { "Content-Type": "application/json" },
           body: JSON.stringify(finalPatch),
-        }).then(function () { load(); props.onRefresh(); })
-          .catch(function (e) { setPatchErr(parseApiErrorMessage(e)); });
+        }).then(function () {
+          props.onRefresh();
+          return load().then(function (detail) {
+            if (goalPatch && !detail) setGoalRefreshRequired(true);
+            return true;
+          });
+        }, function (e) {
+          const message = parseApiErrorMessage(e);
+          setPatchErr(message);
+          if (!goalPatch) return false;
+          setGoalRefreshRequired(true);
+          return load({ preservePatchErr: true, preserveDataOnError: true })
+            .then(function () { return false; });
+        });
       }
     };
 
@@ -3836,11 +3878,13 @@
           onDeleteAttachment: handleDeleteAttachment,
           uploadBusy: uploadBusy,
           uploadErr: uploadErr,
+          patchErr: patchErr,
+          goalRefreshRequired: goalRefreshRequired,
           onOpenTask: function (taskId) {
             props.onClose();
             if (props.onOpenTask) props.onOpenTask(taskId);
           },
-                    requestDialog: props.requestDialog,
+          requestDialog: props.requestDialog,
         }) : null,
         data ? h("div", { className: "hermes-kanban-drawer-comment-foot" },
           h("div", {
@@ -4032,12 +4076,14 @@
           label: tx(i18n, "skills", "Skills"),
           value: t.skills.join(", "),
         }) : null,
-        t.goal_mode ? h(MetaRow, {
-          label: tx(i18n, "goalMode", "Goal mode"),
-          value: t.goal_max_turns
-            ? `on (max ${t.goal_max_turns} turns)`
-            : "on",
-        }) : null,
+        h(GoalConfigurationEditor, {
+          task: t,
+          // Older backends do not expose the authoritative lock decision;
+          // fail closed so a stale host cannot offer an edit it may reject.
+          locked: props.data.goal_configuration_locked !== false,
+          refreshRequired: props.goalRefreshRequired,
+          onPatch: props.onPatch,
+        }),
         t.created_by ? h(MetaRow, { label: tx(i18n, "createdBy", "Created by"), value: t.created_by }) : null,
       ),
       h(StatusActions, {
@@ -4046,6 +4092,10 @@
         onSpecify: props.onSpecify,
         onDecompose: props.onDecompose,
       }),
+      props.patchErr ? h("div", {
+        className: "text-xs text-destructive",
+        role: "alert",
+      }, props.patchErr) : null,
       h(DiagnosticsSection, {
         task: t,
         boardSlug: props.boardSlug,
@@ -4331,6 +4381,130 @@
     return h("div", { className: "hermes-kanban-meta-row" },
       h("span", { className: "hermes-kanban-meta-label" }, props.label),
       h("span", { className: "hermes-kanban-meta-value" }, props.value),
+    );
+  }
+
+  function GoalConfigurationEditor(props) {
+    const { t } = useI18n();
+    const task = props.task;
+    const locked = props.locked === true;
+    const taskBudget = task.goal_max_turns == null ? "" : String(task.goal_max_turns);
+    const [goalMode, setGoalMode] = useState(!!task.goal_mode);
+    const [budget, setBudget] = useState(taskBudget);
+    const [budgetErr, setBudgetErr] = useState(null);
+    const [savingGoalMode, setSavingGoalMode] = useState(false);
+    const [savingBudget, setSavingBudget] = useState(false);
+    const skipBudgetSave = useRef(false);
+
+    // The task query is authoritative after refreshes, external edits, and
+    // rejected optimistic writes.
+    useEffect(function () {
+      setGoalMode(!!task.goal_mode);
+      setBudget(task.goal_max_turns == null ? "" : String(task.goal_max_turns));
+      setBudgetErr(null);
+    }, [task]);
+
+    const lockText = tx(t, "goalConfigurationLocked",
+      "Goal settings are locked because this task has already had a run.");
+    const goalDescription = tx(t, "goalModeDescription",
+      "The worker keeps going until a judge agrees the task is done.");
+
+    const toggleGoalMode = function (next) {
+      if (locked || props.refreshRequired || savingGoalMode) return;
+      setGoalMode(!!next);
+      setSavingGoalMode(true);
+      props.onPatch({ goal_mode: !!next }).then(function () {
+        setSavingGoalMode(false);
+      });
+    };
+
+    const saveBudget = function () {
+      if (locked || props.refreshRequired || savingBudget) return;
+      const trimmed = budget.trim();
+      let next = null;
+      if (trimmed) {
+        next = Number(trimmed);
+        if (!Number.isInteger(next) || next <= 0) {
+          setBudgetErr(tx(t, "goalTurnBudgetValidation", "Enter a positive whole number."));
+          setBudget(taskBudget);
+          return;
+        }
+      }
+      setBudgetErr(null);
+      const current = task.goal_max_turns == null ? null : Number(task.goal_max_turns);
+      if (next === current) return;
+      setSavingBudget(true);
+      props.onPatch({ goal_max_turns: next }).then(function () {
+        setSavingBudget(false);
+      });
+    };
+
+    return h(React.Fragment, null,
+      h("div", { className: "hermes-kanban-meta-row hermes-kanban-goal-row" },
+        h("span", {
+          className: "hermes-kanban-meta-label",
+          title: goalDescription,
+        }, tx(t, "goalMode", "Goal mode")),
+        h("div", { className: "hermes-kanban-goal-control" },
+          h(Switch, {
+            checked: goalMode,
+            disabled: locked || props.refreshRequired || savingGoalMode,
+            onCheckedChange: toggleGoalMode,
+            title: locked ? lockText : goalDescription,
+            "aria-label": tx(t, "goalMode", "Goal mode"),
+          }),
+        ),
+      ),
+      h("div", { className: "hermes-kanban-meta-row hermes-kanban-goal-row" },
+        h("span", {
+          className: "hermes-kanban-meta-label",
+          title: tx(t, "goalTurnBudgetDescription",
+            "Maximum worker turns. Leave blank to use the engine default."),
+        }, tx(t, "goalTurnBudget", "Goal turn budget")),
+        h("div", { className: "hermes-kanban-goal-budget" },
+          h(Input, {
+            type: "number",
+            min: 1,
+            step: 1,
+            value: budget,
+            disabled: locked || props.refreshRequired || savingBudget,
+            placeholder: tx(t, "goalTurnBudgetDefault", "Engine default"),
+            title: locked ? lockText : tx(t, "goalTurnBudgetDescription",
+              "Maximum worker turns. Leave blank to use the engine default."),
+            className: "h-7 text-xs w-full",
+            onChange: function (e) {
+              setBudget(e.target.value);
+              setBudgetErr(null);
+            },
+            onBlur: function () {
+              if (skipBudgetSave.current) {
+                skipBudgetSave.current = false;
+                return;
+              }
+              saveBudget();
+            },
+            onKeyDown: function (e) {
+              if (e.key === "Enter") e.currentTarget.blur();
+              if (e.key === "Escape") {
+                skipBudgetSave.current = true;
+                setBudget(taskBudget);
+                setBudgetErr(null);
+                e.currentTarget.blur();
+              }
+            },
+            "aria-label": tx(t, "goalTurnBudget", "Goal turn budget"),
+            "aria-invalid": !!budgetErr,
+          }),
+          budgetErr ? h("div", {
+            className: "hermes-kanban-goal-message text-destructive",
+            role: "alert",
+          }, budgetErr) : null,
+        ),
+      ),
+      locked ? h("div", {
+        className: "hermes-kanban-goal-lock",
+        role: "note",
+      }, lockText) : null,
     );
   }
 

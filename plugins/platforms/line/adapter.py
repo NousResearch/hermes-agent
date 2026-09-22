@@ -364,6 +364,17 @@ _INBOUND_AV_CACHERS = {"audio": cache_audio_from_bytes_async, "video": cache_vid
 _LIFECYCLE_EVENTS = frozenset({"follow", "unfollow", "join", "leave"})
 _ENV_SEED_KEYS = (("LINE_PORT", "port", int), ("LINE_HOST", "host", None), ("LINE_PUBLIC_URL", "public_url", None))
 
+def _message_mentions_bot(message: Dict[str, Any], bot_user_id: Optional[str]) -> bool:
+    mention = message.get("mention") or {}
+    mentionees = mention.get("mentionees") or []
+    for mentionee in mentionees:
+        if mentionee.get("type") != "user":
+            continue
+        if mentionee.get("isSelf") is True:
+            return True
+        if bot_user_id and mentionee.get("userId") == bot_user_id:
+            return True
+    return False
 
 class LineAdapter(BasePlatformAdapter):
     """LINE Messaging API gateway adapter (no message editing → REQUIRES_EDIT_FINALIZE stays False)."""
@@ -392,6 +403,9 @@ class LineAdapter(BasePlatformAdapter):
         self.allowed_users = allowlist("LINE_ALLOWED_USERS", "allowed_users")
         self.allowed_groups = allowlist("LINE_ALLOWED_GROUPS", "allowed_groups")
         self.allowed_rooms = allowlist("LINE_ALLOWED_ROOMS", "allowed_rooms")
+        # ``require_mention`` is the shared config.yaml platform setting.
+        # LINE applies it only to group and room messages; DMs remain direct.
+        self.require_group_mention = bool(extra.get("require_mention", False))
         # Slow-LLM postback button threshold + user-overridable copy
         threshold = env_or("LINE_SLOW_RESPONSE_THRESHOLD", "slow_response_threshold", DEFAULT_SLOW_RESPONSE_THRESHOLD)
         self.slow_response_threshold = _coerce(float, threshold, DEFAULT_SLOW_RESPONSE_THRESHOLD)
@@ -501,7 +515,12 @@ class LineAdapter(BasePlatformAdapter):
             payload = json.loads(body.decode("utf-8"))
         except (UnicodeDecodeError, json.JSONDecodeError):
             return web.Response(status=400, text="bad json")
-        for event in payload.get("events", []) or []:
+        destination = payload.get("destination", "") or ""
+        if destination and not self._bot_user_id:
+            self._bot_user_id = destination
+
+        events = payload.get("events", []) or []
+        for event in events:
             try:
                 await self._dispatch_event(event)
             except Exception:
@@ -537,7 +556,16 @@ class LineAdapter(BasePlatformAdapter):
         source = event.get("source") or {}
         chat_id, chat_type = _resolve_chat(source)
         user_id = source.get("userId", "") or chat_id
-        if chat_id and reply_token:  # stash the reply token for outbound use
+        if (
+            self.require_group_mention
+            and chat_type in ("group", "room")
+            and not _message_mentions_bot(msg, self._bot_user_id)
+        ):
+            logger.info("LINE: ignoring group/room message without bot mention chat=%s", chat_id)
+            return
+
+        # Stash the reply token for outbound use.
+        if chat_id and reply_token:
             self._reply_tokens[chat_id] = (reply_token, time.time() + LINE_REPLY_TOKEN_TTL_SECONDS)
         media_urls: List[str] = []
         media_types: List[str] = []

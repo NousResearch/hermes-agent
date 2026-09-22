@@ -20,12 +20,22 @@ def _body(block: str) -> str:
 
 
 def test_a_repeated_bullet_is_kept_once_in_first_position():
+    """Within a section a repeat is dropped; a section is delimited by a heading of ANY style.
+    RetainDB writes prose headings (``Profile:`` / ``Relevant memories:``); other providers write
+    markdown ones. In both shapes a placeholder bullet repeated under the second heading belongs to
+    that heading and must stay, or the heading is left claiming nothing."""
     raw = "- alpha\n- beta\n- alpha\n- gamma\n"
 
     body = _body(build_memory_context_block(raw))
 
     # First-occurrence order, not a re-sort, and nothing else moved.
     assert body.splitlines() == ["- alpha", "- beta", "- gamma"]
+
+    prose = "Profile:\n- None\nRelevant memories:\n- None\n"
+    markdown = "## A\n- (none recorded)\n\n## B\n- (none recorded)\n"
+
+    assert _body(build_memory_context_block(prose)) == prose
+    assert _body(build_memory_context_block(markdown)) == markdown
 
 
 def test_a_bullet_with_continuation_lines_is_never_touched():
@@ -35,15 +45,3 @@ def test_a_bullet_with_continuation_lines_is_never_touched():
            "- prefers draft PRs\n  (logged 3 Feb, source: builtin)\n")
 
     assert _body(build_memory_context_block(raw)) == raw
-
-
-def test_identical_placeholder_bullets_under_different_headings_both_survive():
-    """A section is delimited by a heading of ANY style. RetainDB writes prose headings
-    (``Profile:`` / ``Relevant memories:``); other providers write markdown ones. In both shapes a
-    placeholder bullet repeated under the second heading belongs to that heading and must stay, or
-    the heading is left claiming nothing."""
-    prose = "Profile:\n- None\nRelevant memories:\n- None\n"
-    markdown = "## A\n- (none recorded)\n\n## B\n- (none recorded)\n"
-
-    assert _body(build_memory_context_block(prose)) == prose
-    assert _body(build_memory_context_block(markdown)) == markdown

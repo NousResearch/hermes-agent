@@ -409,7 +409,23 @@ When E2EE is enabled, Hermes:
 
 ### Matrix Tools and Controls
 
-Hermes does not expose Matrix-specific agent tools (such as room creation, invites, or redaction) — the agent interacts with Matrix through normal message delivery. The adapter uses reactions and redactions internally to power approval prompts and pickers.
+The agent interacts with Matrix through normal message delivery. The adapter
+uses reactions and redactions internally to power approval prompts and pickers;
+there are no agent tools for invites or redaction.
+
+The one exception is the opt-in **room-admin** tool set, which completes the
+room lifecycle over the Matrix Client-Server API:
+
+| Tool | Action |
+|---|---|
+| `matrix_create_room` | Create a room (preset / topic / invite / optional E2EE) |
+| `matrix_leave_room` | Leave (unjoin) a room |
+| `matrix_delete_room` | Leave **+ forget** the room from the bot's own account |
+
+All three are disabled by default and require `MATRIX_TOOLS_ALLOW_ROOM_CREATE=true`.
+Creating a **public** room additionally requires `MATRIX_ALLOW_PUBLIC_ROOMS=true`.
+`matrix_delete_room` is an account-level delete: other members keep their copy,
+and a true server-side purge requires a homeserver admin.
 
 If `MATRIX_ALLOWED_ROOMS` is set, Hermes only responds in those rooms (DMs are exempt).
 

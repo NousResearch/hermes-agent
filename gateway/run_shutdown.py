@@ -417,9 +417,14 @@ class GatewayShutdownMixin:
     def _scale_to_zero_should_arm(self) -> bool:
         """Whether to start the idle watcher (D1/D11/§3.4(1))."""
         from gateway.scale_to_zero import messaging_is_relay_only_or_absent, scale_to_zero_enabled, should_arm
+        active = self._scale_to_zero_active_messaging_platforms()
+        # A dashboard-only Sprite wakes through native ingress. Messaging still
+        # requires the connector's acknowledged dormancy and registered wake URL.
+        if getattr(self, '_sprites_activity', None) is not None and not active:
+            return True
         return should_arm(
             enabled=scale_to_zero_enabled(),
-            relay_only_or_absent=messaging_is_relay_only_or_absent(self._scale_to_zero_active_messaging_platforms()),
+            relay_only_or_absent=messaging_is_relay_only_or_absent(active),
             wake_url=self._relay_wake_url_or_none(),
         )
 

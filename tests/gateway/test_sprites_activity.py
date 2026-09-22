@@ -8,6 +8,16 @@ from gateway import sprites_activity
 from hermes_cli import sprites_api
 
 
+def test_native_ingress_arms_dashboard_only_idle_but_not_direct_messaging():
+    from gateway.run_shutdown import GatewayShutdownMixin
+    runner = SimpleNamespace(_sprites_activity=object(),
+                             _scale_to_zero_active_messaging_platforms=lambda: [],
+                             _relay_wake_url_or_none=lambda: None)
+    assert GatewayShutdownMixin._scale_to_zero_should_arm(runner)
+    runner._scale_to_zero_active_messaging_platforms = lambda: ['discord']
+    assert not GatewayShutdownMixin._scale_to_zero_should_arm(runner)
+
+
 @pytest.mark.asyncio
 async def test_idle_release_fences_renewals_and_wake_reacquires(monkeypatch, tmp_path):
     api = Mock(return_value={})

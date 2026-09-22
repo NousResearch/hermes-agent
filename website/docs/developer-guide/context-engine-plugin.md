@@ -99,6 +99,7 @@ These have sensible defaults in the ABC. Override as needed:
 | `get_status()` | Standard token/threshold dict | You have custom metrics to expose |
 | `select_context(request_messages, *, conversation_messages, incoming_message, budget_tokens)` | Returns `None` (no-op) | You select/route which context enters **this** request (retrieval, topic routing) — see below |
 | `on_turn_complete(messages, usage=None, **kwargs)` | No-op | You ingest/index/observe the finished turn — see below |
+| `clone_for_agent()` | `copy.deepcopy(self)` | Your engine holds uncopyable state (locks, SQLite/DB connections) — see [Via general plugin system](#via-general-plugin-system) |
 
 ## Per-turn context selection and observation
 
@@ -203,6 +204,21 @@ def register(ctx):
 ```
 
 Only one engine can be registered. A second plugin attempting to register is rejected with a warning.
+
+The registered instance is shared process-wide, but every `AIAgent` (parent, subagents, gateway
+sessions) needs its own engine so a child's `update_model()` cannot mutate the parent's budget.
+Hermes therefore calls `engine.clone_for_agent()` on the registered instance at each agent init.
+The default is `copy.deepcopy(self)`; override it when the engine holds state that cannot be
+deep-copied (locks, SQLite or HTTP connections) and return a fresh engine sharing the durable
+backend while copying only the mutable budget fields. If the clone raises, the agent falls back to
+the built-in compressor and logs `Context engine 'X' could not be safely copied for this agent`.
+
+```python
+def clone_for_agent(self):
+    clone = LCMEngine(db_path=self.db_path)  # reopens its own connection
+    clone.threshold_percent = self.threshold_percent
+    return clone
+```
 
 ## Lifecycle
 

@@ -1870,22 +1870,20 @@ def _select_context_engine(_agent_cfg):
         except Exception:
             _candidate = None
         if _candidate is not None and _candidate.name == _engine_name:
-            # Deep-copy the shared singleton so a child's update_model() can't mutate the
-            # parent's. Uncopyable state (locks, DB conns) → built-in with an ACCURATE message.
-            import copy
+            # The plugin system holds ONE shared instance; each agent gets its own so a child's
+            # update_model() can't mutate the parent's (#42449). clone_for_agent() defaults to
+            # deepcopy; engines with uncopyable state (locks, DB conns) override it. A failure
+            # falls back to the built-in compressor with an ACCURATE message, not "not found".
             try:
-                # Copy can fail for engines holding uncopyable state (locks, DB connections, clients); in
-                # that case fall back to the built-in compressor with an ACCURATE message rather than
-                # silently mislabelling it "not found". See #42449.
-                _selected_engine = copy.deepcopy(_candidate)
+                _selected_engine = _candidate.clone_for_agent()
             except Exception as _copy_err:
                 _copy_failed = True
                 _ra().logger.warning(
                     "Context engine '%s' could not be safely copied for this "
                     "agent (%s) — falling back to built-in compressor. Plugin "
                     "engines that hold uncopyable state (locks, DB connections) "
-                    "should implement __deepcopy__ to copy only mutable budget "
-                    "state.",
+                    "should override clone_for_agent() (or __deepcopy__) to copy "
+                    "only mutable budget state.",
                     _engine_name, _copy_err,
                 )
 

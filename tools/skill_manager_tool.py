@@ -428,8 +428,16 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
-    from hermes_constants import mkdir_under_hermes_home
-    mkdir_under_hermes_home(skill_dir)
+    occupied_error = (f"Cannot create skill '{name}': refusing to adopt or delete an existing path "
+                      f"at {skill_dir}.")
+    if skill_dir.exists() or skill_dir.is_symlink():
+        return _err(occupied_error)
+    from hermes_constants import assert_named_profile_home_live
+    assert_named_profile_home_live(skill_dir)
+    try:
+        skill_dir.mkdir(parents=True, exist_ok=False)
+    except FileExistsError:
+        return _err(occupied_error)
     skill_md = skill_dir / "SKILL.md"
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):

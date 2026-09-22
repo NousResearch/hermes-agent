@@ -226,6 +226,17 @@ def test_platform_config_extra_overrides_process_liveness_bridge(monkeypatch):
     assert adapter._max_latency_seconds == 12
 
 
+def _live_bot_factory():
+    """Stand-in for ``commands.Bot`` that yields a ``_LiveBot`` with a stubbed ``fetch_user``."""
+
+    def factory(**kwargs):
+        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
+        bot.fetch_user = AsyncMock()
+        return bot
+
+    return factory
+
+
 async def _connect(adapter: DiscordAdapter, monkeypatch, bot_factory):
     monkeypatch.setattr(
         "gateway.status.acquire_scoped_lock",
@@ -343,12 +354,7 @@ async def test_disconnect_cancels_liveness_task(monkeypatch):
     cleanly without leaking a background task."""
     adapter = _make_adapter(monkeypatch, interval=60, threshold=3)
 
-    def factory(**kwargs):
-        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
-    await _connect(adapter, monkeypatch, factory)
+    await _connect(adapter, monkeypatch, _live_bot_factory())
     task = adapter._liveness_task
     assert task is not None and not task.done()
 
@@ -374,11 +380,6 @@ async def test_closed_transport_first_strike_forces_reconnect(monkeypatch, caplo
 
     calls = 0
 
-    def factory(**kwargs):
-        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
     def _probe(client):
         nonlocal calls
         calls += 1
@@ -387,7 +388,7 @@ async def test_closed_transport_first_strike_forces_reconnect(monkeypatch, caplo
     monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
 
     with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
-        await _connect(adapter, monkeypatch, factory)
+        await _connect(adapter, monkeypatch, _live_bot_factory())
         await _wait_until(
             lambda: handler.called,
             f"fatal handler not called after first {reason} strike",
@@ -415,11 +416,6 @@ async def test_recovery_after_unhealthy_streak_is_logged(monkeypatch, caplog):
 
     calls = 0
 
-    def factory(**kwargs):
-        bot = _LiveBot(intents=kwargs["intents"], allowed_mentions=kwargs.get("allowed_mentions"))
-        bot.fetch_user = AsyncMock()
-        return bot
-
     def _probe(client):
         nonlocal calls
         calls += 1
@@ -429,7 +425,7 @@ async def test_recovery_after_unhealthy_streak_is_logged(monkeypatch, caplog):
     monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
 
     with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
-        await _connect(adapter, monkeypatch, factory)
+        await _connect(adapter, monkeypatch, _live_bot_factory())
         await _wait_until(
             lambda: any(
                 "healthy again after 1 unhealthy sample" in r.getMessage()

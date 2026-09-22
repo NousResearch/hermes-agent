@@ -73,10 +73,13 @@ class ReclaimDecision:
 
 # --- Process liveness (hardening; see module docstring) ----------------------
 
-def _run(argv: Sequence[str], *, timeout: int = 20) -> subprocess.CompletedProcess:
+def _run(
+    argv: Sequence[str], *, timeout: int = 20, cwd: Optional[str] = None,
+) -> subprocess.CompletedProcess:
     try:
         return subprocess.run(
             list(argv), capture_output=True, text=True, timeout=timeout, check=False,
+            cwd=cwd,
         )
     except (OSError, subprocess.SubprocessError):
         return subprocess.CompletedProcess(list(argv), returncode=127, stdout="", stderr="")
@@ -240,14 +243,20 @@ def _gh_pr_json(path: Path, branch: str) -> Optional[str]:
 
     Module-level and deliberately tiny so tests can replace it wholesale — unit
     tests must never need the network or a ``gh`` binary.
+
+    ``gh`` has NO ``-C`` flag (that is git); it resolves the repo from the cwd,
+    so the worktree is passed as ``cwd=``. Measured: ``gh -C . pr list ...``
+    exits 1 with "unknown shorthand flag: 'C' in -C", which would have made this
+    arm silently dead on every real host while the mocked unit tests stayed green.
     """
     res = _run(
         [
-            "gh", "-C", str(path), "pr", "list",
+            "gh", "pr", "list",
             "--head", branch, "--state", "merged", "--limit", "10",
             "--json", "number,state,mergedAt,headRefOid",
         ],
         timeout=_GH_TIMEOUT,
+        cwd=str(path),
     )
     if res.returncode != 0:
         return None

@@ -34,7 +34,7 @@ interface ModelPickerDialogProps {
   currentModel: string
   currentProvider: string
   onSelect: (selection: { provider: string; model: string }) => void
-  ownerConnectionId?: string
+  ownerConnectionId?: null | string
   profile?: string
   request?: <T>(method: string, params?: Record<string, unknown>) => Promise<T>
   /**
@@ -184,7 +184,10 @@ export function ModelPickerDialog({
   // model-confirm) instead of duplicating provider UI here. Closes the picker
   // so the onboarding overlay isn't rendered underneath it.
   const addProvider = () => {
-    startManualOnboarding()
+    startManualOnboarding(
+      undefined,
+      ownerConnectionId !== undefined ? { connectionId: ownerConnectionId, profile } : profile
+    )
     onOpenChange(false)
   }
 

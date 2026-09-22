@@ -17,7 +17,9 @@ from typing import Any, Dict, List, Optional, Tuple
 from agent.image_eviction_policy import outbound_image_retire_count
 from agent.auxiliary_client import (
     AuxiliaryExplicitCancellation,
+    _coerce_llm_message,
     _is_connection_error,
+    _message_field,
     aux_interrupt_protection,
     call_llm,
     extract_content_or_reasoning,
@@ -190,12 +192,10 @@ def _response_refusal_text(response: Any) -> str:
     OpenAI-style structured-output refusals put the refusal here and leave ``content`` as filler or
     empty, so the prose detector never sees it.
     """
-    choices = (response.get("choices") if isinstance(response, dict) else getattr(response, "choices", None)) or []
-    if not choices:
+    message = _coerce_llm_message(response)
+    if message is None or isinstance(message, str):
         return ""
-    first = choices[0]
-    message = first.get("message") if isinstance(first, dict) else getattr(first, "message", None)
-    refusal = message.get("refusal") if isinstance(message, dict) else getattr(message, "refusal", None)
+    refusal = _message_field(message, "refusal")
     if isinstance(refusal, dict):
         refusal = refusal.get("message") or refusal.get("reason") or refusal.get("text")
     return refusal.strip() if isinstance(refusal, str) else ""

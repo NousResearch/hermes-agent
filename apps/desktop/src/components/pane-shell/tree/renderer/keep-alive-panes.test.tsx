@@ -20,8 +20,9 @@ import {
   reloadTreePane
 } from '../store'
 
-import { LayoutTreeRoot } from '.'
 import { snapshotZones } from './drag-session'
+
+import { LayoutTreeRoot } from '.'
 
 // A native guest has a lifetime beyond React. DOM identity alone misses a
 // detach/reparent (even moveBefore destroys Electron's webview guest).
@@ -53,9 +54,18 @@ class ResizeObserverProbe {
 }
 
 function resize(target: HTMLElement, width: number, height: number) {
+  const size = { inlineSize: width, blockSize: height }
+  const entry: ResizeObserverEntry = {
+    target,
+    contentRect: new DOMRectReadOnly(0, 0, width, height),
+    borderBoxSize: [size],
+    contentBoxSize: [size],
+    devicePixelContentBoxSize: [size]
+  }
+
   for (const observer of observers) {
     if (observer.targets.has(target)) {
-      observer.callback([{ target, contentRect: { width, height } } as ResizeObserverEntry], observer)
+      observer.callback([entry], observer)
     }
   }
 }

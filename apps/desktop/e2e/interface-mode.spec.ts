@@ -11,12 +11,24 @@
  *
  * Prerequisite: `npm run build` must have been run so dist/ exists.
  */
-import { LAYOUT_KEYS } from '../src/lib/layout-persistence'
-
 import { type MockBackendFixture, setupMockBackend, waitForAppReady } from './fixtures'
 import { expect, test } from './test'
 
 const MODE_KEY = 'hermes.desktop.interfaceMode.v1'
+// The E2E contract names only arrangement keys; importing renderer stores here
+// couples the Playwright process to the app's browser-only module graph.
+const ARRANGEMENT_KEYS = [
+  'hermes.desktop.floatingPanes.v1',
+  'hermes.desktop.layoutTree.v2',
+  'hermes.desktop.layoutPreset.active',
+  'hermes.desktop.paneStates.v1',
+  'hermes.desktop.dismissedPanes.v1',
+  'hermes.desktop.paneShare.v1',
+  'hermes.desktop.hiddenStripTabs.v1',
+  'hermes.desktop.userPlacedPanes.v1',
+  'hermes.desktop.panesFlipped',
+  'hermes.desktop.collapsedTreeSides.v1'
+]
 
 let fixture: MockBackendFixture | null = null
 
@@ -45,7 +57,7 @@ async function preferenceSnapshot(page: MockBackendFixture['page']): Promise<Rec
       }
       return out
     },
-    { modeKey: MODE_KEY, layoutKeys: Object.values(LAYOUT_KEYS) }
+    { modeKey: MODE_KEY, layoutKeys: ARRANGEMENT_KEYS }
   )
 }
 

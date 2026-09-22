@@ -1,4 +1,4 @@
-import { beforeEach, expect, it, vi } from 'vitest'
+import { assert, beforeEach, expect, it, vi } from 'vitest'
 
 import type { LayoutNode } from './model'
 
@@ -178,5 +178,8 @@ it.each(['advanced', 'simple'] as const)('keeps legacy %s data and never re-inhe
   expect(reloaded.panes.$paneStates.get()['chat-sidebar'].widthOverride).toBe(210)
   reloaded.mode.setInterfaceMode('advanced')
   expect(reloaded.panes.$paneStates.get()).toEqual(legacyPanes)
-  expect(reloaded.model.allPaneIds(reloaded.tree.$layoutTree.get()!)).toEqual(reloaded.model.allPaneIds(normalize(legacyTree)))
+  const restoredTree = reloaded.tree.$layoutTree.get()
+  const expectedTree = normalize(legacyTree)
+  assert(restoredTree && expectedTree)
+  expect(reloaded.model.allPaneIds(restoredTree)).toEqual(reloaded.model.allPaneIds(expectedTree))
 })

@@ -9,10 +9,13 @@
 import { act } from 'react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { registry as contributionRegistry } from '@/contrib/registry'
 import { reactRoot } from '@/test/react-root'
 
-let registry: typeof import('@/contrib/registry').registry
-let FloatingPanes: typeof import('./floating-panes').FloatingPanes
+import type { FloatingPanes as FloatingPanesComponent } from './floating-panes'
+
+let registry: typeof contributionRegistry
+let FloatingPanes: typeof FloatingPanesComponent
 
 const mount = reactRoot()
 let disposers: (() => void)[] = []

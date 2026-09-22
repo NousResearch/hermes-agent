@@ -273,6 +273,9 @@ contextBridge.exposeInMainWorld('hermesDesktop', {
   setSecretStorageEncryption: (on: boolean) => ipcRenderer.invoke('hermes:secret-storage:set', on),
   // v2 multi-connection registry: named agent sources (local / remote / cloud / ssh).
   connections: {
+    managedRollouts: {
+      capabilities: () => ipcRenderer.invoke('hermes:managed-rollouts:capabilities')
+    },
     list: () => ipcRenderer.invoke('hermes:connections:list'),
     save: payload => ipcRenderer.invoke('hermes:connections:save', payload),
     remove: id => ipcRenderer.invoke('hermes:connections:remove', id),

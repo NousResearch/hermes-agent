@@ -223,6 +223,15 @@ declare global {
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections: {
+        managedRollouts?: {
+          capabilities: () => Promise<{
+            protocol: 1
+            available: false
+            reason: 'trusted-assurance-provider-unavailable'
+            maxConcurrency: 0
+            maxInstallations: 0
+          }>
+        }
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput

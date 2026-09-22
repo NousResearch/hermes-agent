@@ -16327,6 +16327,17 @@ async function requestManagedSshUpdate(rawId) {
 
 ipcMain.handle('hermes:connections:update-managed', async (_event, rawId) => requestManagedSshUpdate(rawId))
 
+// T12.3 intentionally exports no rollout mutation surface until main owns the
+// trusted #92618 source, inventory, and assurance readers. A present bridge is
+// therefore an explicit fail-closed capability, not a legacy fallback.
+ipcMain.handle('hermes:managed-rollouts:capabilities', async () => ({
+  protocol: 1,
+  available: false,
+  reason: 'trusted-assurance-provider-unavailable',
+  maxConcurrency: 0,
+  maxInstallations: 0
+}))
+
 // Fan out `hermes update` to every eligible registered connection at once.
 // Cloud entries are excluded (platform-managed); each dispatch reports
 // independently so one dead LAN box can't wedge the batch. Local reuses the

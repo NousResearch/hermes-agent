@@ -41,6 +41,15 @@ def get_memory_dir() -> Path:
     return get_hermes_home() / "memories"
 
 
+def _is_generic_gateway_session_key(session_key: str) -> bool:
+    parts = session_key.strip().split(":")
+    return (
+        len(parts) == 4
+        and parts[0] == "agent"
+        and all(part.strip() for part in parts[1:])
+    )
+
+
 def resolve_memory_scope(gateway_session_key: Optional[str] = None) -> Optional[str]:
     """Return a stable conversation directory name when conversation scope is enabled."""
     from hermes_cli.config import load_config_readonly
@@ -51,6 +60,8 @@ def resolve_memory_scope(gateway_session_key: Optional[str] = None) -> Optional[
     if scope != "conversation":
         raise ValueError("memory.scope must be profile or conversation")
     if not isinstance(gateway_session_key, str) or not gateway_session_key.strip():
+        raise ValueError("Conversation memory requires a trusted gateway session key")
+    if _is_generic_gateway_session_key(gateway_session_key):
         raise ValueError("Conversation memory requires a trusted gateway session key")
     return hashlib.sha256(gateway_session_key.encode("utf-8")).hexdigest()
 

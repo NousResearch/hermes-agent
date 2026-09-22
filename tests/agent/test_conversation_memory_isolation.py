@@ -92,6 +92,34 @@ def test_missing_conversation_identity_cannot_open_global_memory(tmp_path, monke
         provider.shutdown()
 
 
+@pytest.mark.parametrize("backend", ["builtin", "holographic"])
+@pytest.mark.parametrize("scope", ["conversation", "profile"])
+def test_unidentified_gateway_cannot_open_conversation_memory(tmp_path, monkeypatch, backend, scope):
+    from tools.memory_tool import MemoryStore
+
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    (tmp_path / "config.yaml").write_text(f"memory:\n  scope: {scope}\n")
+    source = SessionSource(platform=Platform.WHATSAPP, chat_type="dm", chat_id="")
+    key = build_session_key(source, profile="selim")
+    provider = HolographicMemoryProvider(config={"hrr_dim": 64})
+
+    def open_store():
+        if backend == "builtin":
+            return MemoryStore(gateway_session_key=key)
+        return provider.initialize("unidentified", gateway_session_key=key)
+
+    try:
+        if scope == "conversation":
+            with pytest.raises(ValueError, match="trusted gateway session key"):
+                open_store()
+            assert not list(tmp_path.rglob("*.db"))
+            assert not list((tmp_path / "memories").rglob("*.md"))
+        else:
+            open_store()
+    finally:
+        provider.shutdown()
+
+
 @pytest.mark.parametrize("batch", [False, True])
 def test_pending_memory_approval_cannot_cross_buyers(tmp_path, monkeypatch, batch):
     from hermes_cli.write_approval_commands import handle_pending_subcommand

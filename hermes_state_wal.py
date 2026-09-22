@@ -180,6 +180,10 @@ class WalUnsupportedError(sqlite3.OperationalError):
 # Detection is Linux ``/proc/self/mountinfo`` only (statvfs carries no fstype); elsewhere, or when the table is
 # unreadable, the answer is False and behaviour is unchanged. Nothing else (ext4/btrfs/xfs/zfs/tmpfs/overlay/nfs)
 # is ever flagged here — those keep the existing reactive paths.
+# gVisor (runsc) is the one ``9p`` that is not a VM boundary: its sentry names every host-backed mount ``9p``
+# after the gofer protocol, but the sandbox is a single kernel — every opener maps the same host file and
+# shares one lock table — so WAL is as safe there as on ext4. The sentry announces itself in ``/proc/version``
+# (``Linux version 4.19.0-gvisor``); see ``_running_under_gvisor``.
 _CROSS_VM_FSTYPES = frozenset({"virtiofs", "fuse.virtiofs", "9p", "9p2000", "9p2000.l", "9p2000.u"})
 _cross_vm_fs_cache: Dict[str, bool] = {}  # per DB directory; kanban_db.connect() opens per operation
 _cross_vm_fs_cache_lock = threading.Lock()
@@ -212,11 +216,25 @@ def _mountinfo_fstype(directory: str, mountinfo_path: str = "/proc/self/mountinf
     return best_fstype.lower()
 
 
-def _detect_cross_vm_fs(directory: str, mountinfo_path: str = "/proc/self/mountinfo") -> bool:
-    """True only when ``directory`` sits on a virtiofs/9p mount per ``mountinfo_path``."""
+def _running_under_gvisor(proc_version_path: str = "/proc/version") -> bool:
+    """True inside a gVisor (runsc) sandbox: the sentry's kernel banner carries ``gvisor``. Unreadable -> False,
+    so an unknown host keeps the refusal."""
+    try:
+        with open(proc_version_path, "r", encoding="utf-8", errors="replace") as fh:
+            return "gvisor" in fh.read().lower()
+    except OSError:
+        return False
+
+
+def _detect_cross_vm_fs(directory: str, mountinfo_path: str = "/proc/self/mountinfo",
+                        proc_version_path: str = "/proc/version") -> bool:
+    """True only when ``directory`` sits on a virtiofs/9p mount per ``mountinfo_path`` and the kernel is not
+    gVisor, whose ``9p`` mounts are same-kernel passthroughs (``_running_under_gvisor``)."""
     if sys.platform != "linux":
         return False
-    return _mountinfo_fstype(directory, mountinfo_path) in _CROSS_VM_FSTYPES
+    if _mountinfo_fstype(directory, mountinfo_path) not in _CROSS_VM_FSTYPES:
+        return False
+    return not _running_under_gvisor(proc_version_path)
 
 
 def _path_on_cross_vm_fs(path: str) -> bool:

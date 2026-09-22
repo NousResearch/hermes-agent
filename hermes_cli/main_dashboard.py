@@ -751,6 +751,20 @@ def _is_electron_packaged_web_dist(path: str) -> bool:
     return "app.asar" in path.replace("\\", "/")
 
 
+def _is_desktop_owned_backend() -> bool:
+    """Whether this process is the backend that Desktop spawned and owns.
+
+    ``HERMES_DESKTOP`` is a marker inherited by shells launched from Desktop;
+    it is not ownership proof. Desktop gives only its backend a fresh session
+    credential, so requiring both values keeps inherited terminal commands on
+    the normal one-host-backend path.
+    """
+    return (
+        os.environ.get("HERMES_DESKTOP") == "1"
+        and bool(os.environ.get("HERMES_DASHBOARD_SESSION_TOKEN"))
+    )
+
+
 def _host_backend_attachment():
     """Live host serve/dashboard record to attach to, or ``None``.
 
@@ -826,7 +840,7 @@ def _attach_to_host_backend(args, headless_backend: bool) -> None:
 
     Returns normally — leaving the caller to BIND — when no owner answers.
     """
-    if getattr(args, "isolated", False) or os.environ.get("HERMES_DESKTOP") == "1":
+    if getattr(args, "isolated", False) or _is_desktop_owned_backend():
         return
     record = _host_backend_attachment()
     if record is None:
@@ -893,7 +907,7 @@ def _route_named_profile_dashboard(
         _launch_profile in ("default", "custom")
         or getattr(args, "isolated", False)
         or getattr(args, "open_profile", "")
-        or os.environ.get("HERMES_DESKTOP") == "1"
+        or _is_desktop_owned_backend()
     ):
         return
 

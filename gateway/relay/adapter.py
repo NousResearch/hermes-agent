@@ -2252,25 +2252,35 @@ class RelayAdapter(BasePlatformAdapter):
     _ACK_EMOJI_BY_PLATFORM = {
         "telegram": ("👀", "👍", "👎"),
     }
+    # `_event_from_wire` maps an absent OR unknown wire platform to
+    # `Platform.RELAY`, so an unresolved lane arrives as the truthy string
+    # "relay", never as "". Treating only "" as unresolved makes the fallback
+    # dead code and silently serves ✅ to a Telegram-primary gateway whose
+    # connector did not stamp the platform.
+    _ACK_PLATFORM_UNRESOLVED = frozenset({"", "relay"})
 
     def _ack_emoji(self, event, chat_id) -> tuple:
         """(in_progress, success, failure) for the lane this event arrived on.
 
         Prefers the EVENT's own platform: an ack always follows an inbound
-        event, so the platform is on hand and needs no cache. `_chat_platform`
-        is the fallback, and it can only answer for a chat already seen inbound
-        — the descriptor's primary platform covers the rest.
+        event, so the platform is on hand and needs no cache. Falls back to the
+        chat's lane as seen inbound, then to the descriptor's primary platform.
+        Each candidate is checked in turn because any of them can be the
+        placeholder "relay", which resolves nothing.
 
         `Platform` is a plain `Enum`, so `str()` on a member yields
         "Platform.TELEGRAM", not "telegram" — read `.value` first or every
         lookup misses and silently falls back to the default set.
         """
-        raw = getattr(getattr(event, "source", None), "platform", None)
-        platform = str(getattr(raw, "value", raw) or "").lower()
-        if not platform:
-            lane = self._chat_platform(str(chat_id))
-            platform = str(getattr(lane, "value", lane) or "").lower()
-        return self._ACK_EMOJI_BY_PLATFORM.get(platform, self._ACK_EMOJI_DEFAULT)
+        for candidate in (
+            getattr(getattr(event, "source", None), "platform", None),
+            self._platform_by_chat.get(str(chat_id)),
+            getattr(self.descriptor, "platform", None),
+        ):
+            name = str(getattr(candidate, "value", candidate) or "").lower()
+            if name and name not in self._ACK_PLATFORM_UNRESOLVED:
+                return self._ACK_EMOJI_BY_PLATFORM.get(name, self._ACK_EMOJI_DEFAULT)
+        return self._ACK_EMOJI_DEFAULT
 
     async def _react(
         self,

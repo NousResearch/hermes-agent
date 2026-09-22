@@ -29,6 +29,7 @@ from gateway.config import Platform, PlatformConfig
 from gateway.platforms.event import MessageEvent, MessageType, ProcessingOutcome
 from gateway.relay.adapter import RelayAdapter
 from gateway.relay.descriptor import CONTRACT_VERSION, CapabilityDescriptor
+from gateway.relay.ws_transport import _event_from_wire
 from gateway.session import SessionSource
 
 from tests.gateway.relay.stub_connector import StubConnector
@@ -315,16 +316,50 @@ async def test_free_form_reaction_platforms_keep_the_check_mark():
 
 
 @pytest.mark.asyncio
-async def test_ack_platform_falls_back_to_the_chat_lane_then_the_descriptor():
-    """An event with no platform on its source still resolves: a multi-platform
-    gateway records the chat's lane inbound, and the descriptor's primary
-    platform covers a chat never seen inbound. A telegram-primary descriptor
-    must therefore never emit ✅."""
-    adapter, stub = _adapter()  # make_desc default platform is telegram
-    event = _reactable_event(platform=None)
+async def test_ack_platform_falls_back_through_the_real_wire_decode():
+    """`_event_from_wire` maps an absent OR unknown wire platform to
+    `Platform.RELAY` — never to "" — so the fallback must treat the "relay"
+    placeholder as unresolved. Built through the real decoder, because an
+    event with no platform at all is a state the wire cannot produce."""
+    for wire_platform in ({}, {"platform": "relay"}, {"platform": "not_a_platform"}):
+        adapter, stub = _adapter()  # make_desc default platform is telegram
+        event = _event_from_wire(
+            {
+                "text": "hi",
+                "message_id": "m42",
+                "source": {"chat_id": "ch1", "chat_type": "channel", "user_id": "u1", **wire_platform},
+            }
+        )
+        assert event.source.platform is Platform.RELAY, wire_platform
+        await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+        emojis = [a["emoji"] for a in stub.sent if a["op"] == "react"]
+        assert emojis == ["👀", "👍"], f"{wire_platform} fell back to {emojis}"
+
+
+@pytest.mark.asyncio
+async def test_ack_platform_prefers_the_chat_lane_over_the_primary():
+    """A multi-platform gateway records each chat's lane inbound. When the
+    event itself is unresolved, that lane must win over the primary platform —
+    otherwise every non-primary lane gets the primary's emoji."""
+    adapter, stub = _adapter(platform="slack", label="Slack")
+    adapter._platform_by_chat["ch1"] = "telegram"
+    event = _event_from_wire(
+        {"text": "hi", "message_id": "m42", "source": {"chat_id": "ch1", "chat_type": "channel"}}
+    )
     await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
-    emojis = [a["emoji"] for a in stub.sent if a["op"] == "react"]
-    assert emojis == ["👀", "👍"]
+    assert [a["emoji"] for a in stub.sent if a["op"] == "react"] == ["👀", "👍"]
+
+
+@pytest.mark.asyncio
+async def test_ack_on_a_genuinely_generic_relay_keeps_the_check_mark():
+    """Nothing resolves to a real platform: a relay-primary descriptor with no
+    inbound lane must not invent Telegram's vocabulary."""
+    adapter, stub = _adapter(platform="relay", label="Relay")
+    event = _event_from_wire(
+        {"text": "hi", "message_id": "m42", "source": {"chat_id": "ch1", "chat_type": "channel"}}
+    )
+    await adapter.on_processing_complete(event, ProcessingOutcome.SUCCESS)
+    assert [a["emoji"] for a in stub.sent if a["op"] == "react"] == ["👀", "✅"]
 
 
 # ── fanned-out prompt answers (one press, many gateways) ─────────────────

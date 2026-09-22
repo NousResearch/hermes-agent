@@ -88,7 +88,7 @@ class _CrossOriginRequestSanitizer(urllib.request.BaseHandler):
 # since no opener is ever installed globally. Memoise on the bundles' ``_bundle_signature`` so a
 # rotated/reconfigured bundle is still picked up. The context is shared and never mutated by callers.
 # No lock: a race costs one duplicate parse.
-_HTTPS_CONTEXT_CACHE: tuple[tuple, ssl.SSLContext | None] | None = None
+_HTTPS_CONTEXT_CACHE: tuple[tuple, ssl.SSLContext] | None = None
 
 
 def _ca_bundle_candidates() -> tuple[str, ...]:
@@ -148,8 +148,9 @@ def _resolved_https_context() -> ssl.SSLContext | None:
     if cached is not None and cached[0] == key:
         return cached[1]
     context, used_path = _build_https_context(candidates)
-    if context is not None and candidates and used_path == candidates[0]:
-        # Only a context built from the preferred bundle is memoised. A failed (possibly transient)
+    if candidates and used_path == candidates[0]:
+        # Only a context built from the preferred bundle is memoised (used_path is None whenever
+        # context is None, so this also excludes a failed load). A failed (possibly transient)
         # load — whether it left us with no context or with a fallback bundle (certifi on macOS) —
         # must be retried on the next request, not pinned until the file's mtime/size changes.
         _HTTPS_CONTEXT_CACHE = (key, context)

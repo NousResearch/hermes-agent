@@ -76,3 +76,63 @@ def test_unset_allowlist_keeps_default_claimable(kanban_home, all_assignees_spaw
         res = kbd.dispatch_once(conn, dry_run=True)
     assert [t for t, _a, _w in res.spawned] == [tid]
     assert res.skipped_nonspawnable == []
+
+
+@pytest.mark.parametrize("value", ["", None], ids=["empty_string", "bare_key"])
+def test_present_blank_or_null_allowlist_skips_all_cards(
+    kanban_home, all_assignees_spawnable, value, caplog,
+):
+    """A present key with no names must not fall back to unrestricted claims,
+    and must say so once in the log so an upgraded home that copied the old
+    ``dispatch_profiles: null`` example is not silently idle (#113620)."""
+    rendered = "" if value is None else ' ""'
+    (kanban_home / "config.yaml").write_text(
+        f"kanban:\n  dispatch_profiles:{rendered}\n", encoding="utf-8",
+    )
+    with kbc.connect() as conn, caplog.at_level("WARNING", logger="hermes_cli.kanban_db"):
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+    assert any("present but empty" in r.getMessage() and "omit the key" in r.getMessage()
+               for r in caplog.records)
+
+
+def test_allowlist_config_read_failure_skips_all_cards(
+    kanban_home, all_assignees_spawnable, monkeypatch,
+):
+    """A broken config read must not make this shared home claim every profile."""
+    from hermes_cli import config_effective
+
+    def raise_read_error(**_kwargs):
+        raise OSError("config unavailable")
+
+    monkeypatch.setattr(config_effective, "load_user_config_effective", raise_read_error)
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="foreign card", assignee="default")
+        res = kbd.dispatch_once(conn, dry_run=True)
+    assert res.spawned == []
+    assert res.skipped_nonspawnable == [tid]
+
+
+@pytest.mark.parametrize("config, expected", [
+    ("", "any"),
+    ("kanban:\n  dispatch_profiles: [researcher, sage]\n", "researcher, sage"),
+    ("kanban:\n  dispatch_profiles: []\n", "none (fail-closed"),
+], ids=["absent", "listed", "empty_list"])
+def test_diagnostics_reports_resolved_allowlist(kanban_home, capsys, config, expected):
+    """`hermes kanban diagnostics` (text and --json) shows what this home may claim."""
+    import argparse
+    import json
+
+    from hermes_cli import kanban as kanban_cli
+
+    if config:
+        (kanban_home / "config.yaml").write_text(config, encoding="utf-8")
+    assert kanban_cli._cmd_diagnostics(argparse.Namespace(task=None, severity=None, json=False)) == 0
+    text = capsys.readouterr().out
+    assert f"kanban.dispatch_profiles: {expected}" in text
+    assert kanban_cli._cmd_diagnostics(argparse.Namespace(task=None, severity=None, json=True)) == 0
+    payload = json.loads(capsys.readouterr().out)
+    assert payload == [{"task_id": None, "dispatch_profiles": payload[-1]["dispatch_profiles"], "diagnostics": []}]
+    assert payload[-1]["dispatch_profiles"].startswith(expected)

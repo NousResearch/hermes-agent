@@ -105,6 +105,46 @@ class TestGenerateSummaryTruncationGuard:
         assert "full summary via main model" in result
         assert c._last_summary_truncated_failure is False
 
+    def test_repeated_truncation_escalates_cooldown_across_turns(self):
+        """#69637: a later turn (e.g. an async delegation completion arriving after the cooldown lapsed)
+        must not re-arm a fresh flat 30s attempt. Consecutive length-stopped summaries walk the durable
+        60s -> 300s -> 900s ladder, one LLM call per turn, and the transcript is preserved every time."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+        clock = [1000.0]
+        recorded = []
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=lambda: clock[0]),
+            patch("agent.context_compressor.call_llm", return_value=_mock_response("partial...", "length")) as call,
+        ):
+            for _turn in range(4):
+                msgs = _msgs()
+                assert c.compress(msgs, current_tokens=999999) == msgs
+                cooldown = c._summary_failure_cooldown_until - clock[0]
+                recorded.append(round(cooldown))
+                clock[0] += cooldown + 1  # the next turn arrives right after the cooldown lapses
+        assert recorded == [60, 300, 900, 900]
+        assert call.call_count == 4
+        # Truncation keeps its own streak: the timeout ladder (which arms the deterministic stall
+        # fallback via _prior_timeout_failures) is untouched.
+        assert c._consecutive_timeout_failures == 0
+        assert c._consecutive_truncation_failures == 4
+
+    def test_other_transient_failures_keep_short_cooldown(self):
+        """Control: empty-content stays on the flat 30s rung and does not bump the truncation streak."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(model="test", quiet_mode=True, protect_first_n=2, protect_last_n=2)
+        clock = [1000.0]
+        with (
+            patch("agent.context_compressor.time.monotonic", side_effect=lambda: clock[0]),
+            patch("agent.context_compressor.call_llm", side_effect=RuntimeError("LLM returned empty content")),
+        ):
+            for _turn in range(2):
+                c.compress(_msgs(), current_tokens=999999)
+                assert round(c._summary_failure_cooldown_until - clock[0]) == 30
+                clock[0] += 31
+        assert c._consecutive_truncation_failures == 0
+
     def test_stop_finish_reason_still_succeeds(self):
         """Control: a normal stop-terminated summary is accepted unchanged."""
         with patch("agent.context_compressor.get_model_context_length", return_value=100000):

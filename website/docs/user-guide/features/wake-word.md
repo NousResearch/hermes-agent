@@ -9,7 +9,7 @@ description: "Hands-free 'Hey Hermes' wake word — start a voice session by spe
 The wake word turns Hermes into a hands-free assistant across the CLI, TUI, and
 desktop app: with one setting on, Hermes listens in the background for a spoken
 trigger phrase. Say it, and Hermes starts a fresh session, opens the microphone,
-captures your command via the normal [voice pipeline](/user-guide/features/voice-mode),
+captures your command via the normal [voice pipeline](./voice-mode.md),
 and answers — exactly like "Hey Siri" or "Alexa". Use `surface` to pick which
 one listens.
 
@@ -289,7 +289,7 @@ PORCUPINE_ACCESS_KEY=your-key-here
 - A working microphone and the `sounddevice` + `numpy` audio stack (shared with
   voice mode).
 - An STT provider for transcribing the spoken command — local `faster-whisper`
-  works out of the box; see [Voice Mode](/user-guide/features/voice-mode) for the
+  works out of the box; see [Voice Mode](./voice-mode.md) for the
   full provider list.
 - A TTS provider for speaking the reply (the default `edge-tts` works with no
   key). The wake flow is fully hands-free, so the toggle refuses to arm until

@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { registry } from '@/contrib/registry'
 import { $tabStripDefault, setTabStripDefault } from '@/store/tabstrip-prefs'
+import { stubResizeObserver } from '@/test/jsdom'
 
 import type { GroupNode } from '../model'
 import { $treeDragging, NEW_SESSION_DRAG, SESSION_TILE_DRAG } from '../store'
@@ -189,6 +190,54 @@ describe('TreeGroup', () => {
       expect(strip.className).toContain('bottom-0')
       expect(handles.some(handle => handle.className.includes('flex-1') && handle.style.width === '')).toBe(true)
     })
+  })
+
+  it('hides a keep-alive pane through hide/restore while a plain pane still parks', () => {
+    const disposeBrowser = registry.register({
+      area: 'panes',
+      data: { lifecycleKeepAlive: true },
+      id: 'terminal',
+      title: 'Browser',
+      render: () => <input data-live-page defaultValue="original" />
+    })
+
+    const disposePlain = registry.register({
+      area: 'panes',
+      id: 'plain',
+      title: 'Plain',
+      render: () => <input data-plain-page defaultValue="original" />
+    })
+
+    disposePane = () => {
+      disposeBrowser()
+      disposePlain()
+    }
+
+    vi.stubGlobal('CSS', { escape: (value: string) => value })
+    stubResizeObserver()
+
+    const both: GroupNode = { ...terminalGroup(false), panes: ['terminal', 'plain'] }
+
+    render(<TreeGroup node={both} parentAxis="row" />)
+    // Activate the plain tab once so it enters the hot-hidden cache too.
+    render(<TreeGroup node={{ ...both, active: 'plain' }} parentAxis="row" />)
+    render(<TreeGroup node={both} parentAxis="row" />)
+    const page = container!.querySelector<HTMLInputElement>('[data-live-page]')!
+    page.value = 'unsaved page state'
+    expect(container!.querySelector('[data-plain-page]')).not.toBeNull()
+    expect(toggle('Hide')).not.toBeNull()
+
+    render(<TreeGroup node={{ ...both, minimized: true }} parentAxis="row" />)
+    // The guest stays mounted (same node, same state) but hidden and inert;
+    // the ordinary pane parks exactly as before.
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.closest('[data-pane-hidden]')?.hasAttribute('inert')).toBe(true)
+    expect(container!.querySelector('[data-plain-page]')).toBeNull()
+
+    render(<TreeGroup node={both} parentAxis="row" />)
+    expect(container!.querySelector('[data-live-page]')).toBe(page)
+    expect(page.value).toBe('unsaved page state')
+    expect(page.closest('[data-pane-hidden]')).toBeNull()
   })
 
   it('keeps a top-edge strip inside its panel and yields native drag while moving a pane', () => {

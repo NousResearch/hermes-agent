@@ -333,7 +333,7 @@ class TestReportDatabaseJournalModes:
 
         out = capsys.readouterr().out
         assert "state.db is in WAL mode on a cross-VM filesystem" in out
-        assert "PRAGMA journal_mode=DELETE" in out
+        assert "hermes sessions set-journal-mode delete" in out
 
     def test_vulnerable_runtime_wal_db_is_exposed(self, tmp_path, capsys):
         _make_db(tmp_path / "state.db", journal_mode="WAL")
@@ -459,7 +459,7 @@ class TestConfiguredDeleteNeverApplied:
 
         out = capsys.readouterr().out
         assert "state.db is in WAL mode" in out and "despite database.journal_mode=delete" in out
-        assert "never live-downgraded" in out and "PRAGMA journal_mode=DELETE" in out
+        assert "never live-downgraded" in out and "hermes sessions set-journal-mode delete" in out
         assert "state.db: WAL journal mode" not in out
         assert ("To clear the exposure:" in out) is exposed
 

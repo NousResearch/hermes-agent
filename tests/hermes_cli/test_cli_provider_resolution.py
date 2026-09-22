@@ -363,6 +363,87 @@ def test_fallback_runtime_resolves_the_fallback_entry_model(monkeypatch, tmp_pat
     assert runtime["base_url"] == "https://opencode.ai/zen/go/v1"
 
 
+def _quota_auth_error():
+    from hermes_cli.auth import CODEX_RATE_LIMITED_CODE, AuthError
+    return AuthError(
+        "Codex provider quota exhausted (429); retry after 1839s. Credentials are still valid.",
+        provider="openai-codex",
+        code=CODEX_RATE_LIMITED_CODE,
+        relogin_required=False,
+    )
+
+
+@pytest.mark.parametrize(("exc_factory", "expected", "absent"), [
+    (_quota_auth_error, "quota exhausted", "auth failed"),
+    (lambda: __import__("hermes_cli.auth", fromlist=["AuthError"]).AuthError(
+        "no key", provider="openai-codex", code="missing_api_key"), "Primary auth failed", "quota exhausted"),
+])
+def test_fallback_runtime_labels_quota_outage_and_bad_credentials_distinctly(monkeypatch, tmp_path, exc_factory, expected, absent):
+    """A 429 at credential resolution is quota, not bad credentials (#117482); a real
+    credential failure keeps the auth-failed wording."""
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    printed = []
+    monkeypatch.setattr("cli._cprint", printed.append, raising=False)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"provider": "custom", "base_url": "http://x/v1", "api_key": "k"},
+    )
+    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: "k")
+
+    shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    shell._fallback_model = [{"provider": "custom", "model": "local-model"}]
+    runtime = shell._resolve_fallback_runtime(exc_factory())
+
+    assert runtime is not None
+    assert printed
+    assert expected in printed[-1]
+    assert absent not in printed[-1]
+
+
+def test_ensure_runtime_credentials_records_quota_vs_bad_key(monkeypatch, tmp_path):
+    """Kanban workers need this flag: a quota wall at startup is not a worker failure (#117482)."""
+    from hermes_cli.auth import AuthError
+    from hermes_cli.cli_agent_setup_mixin import CLIAgentSetupMixin
+
+    home = tmp_path / "hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    monkeypatch.setattr("cli._cprint", lambda *a, **k: None, raising=False)
+
+    def _raise_quota(**kw):
+        raise _quota_auth_error()
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise_quota)
+
+    quota_shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    quota_shell.model = "gpt-x"
+    quota_shell.requested_provider = "openai-codex"
+    quota_shell._explicit_api_key = None
+    quota_shell._explicit_base_url = None
+    quota_shell._fallback_model = []
+    quota_shell.tool_progress_mode = "off"
+    assert quota_shell._ensure_runtime_credentials() is False
+    assert quota_shell._credentials_rate_limited is True
+
+    def _raise_missing(**kw):
+        raise AuthError("no key", provider="openai-codex", code="missing_api_key")
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _raise_missing)
+    bad_shell = CLIAgentSetupMixin.__new__(CLIAgentSetupMixin)
+    bad_shell.model = "gpt-x"
+    bad_shell.requested_provider = "openai-codex"
+    bad_shell._explicit_api_key = None
+    bad_shell._explicit_base_url = None
+    bad_shell._fallback_model = []
+    bad_shell.tool_progress_mode = "off"
+    assert bad_shell._ensure_runtime_credentials() is False
+    assert bad_shell._credentials_rate_limited is False
+
+
 def test_cli_turn_routing_uses_primary_when_disabled(monkeypatch):
     cli = _import_cli()
     shell = cli.HermesCLI(model="gpt-5", compact=True, max_turns=1)
@@ -530,6 +611,58 @@ def test_codex_provider_uses_config_model(monkeypatch):
     assert "codex" in shell.model.lower()
     # LLM_MODEL env var is NOT used
     assert shell.model != "should-be-ignored"
+
+
+@pytest.mark.parametrize(
+    ("reasoning_flag", "expected_effort"),
+    [(None, "high"), ("low", "low")],
+    ids=["fallback_model_override_applies", "explicit_cli_flag_outranks"],
+)
+def test_startup_fallback_re_resolves_reasoning_for_the_fallback_model(monkeypatch, reasoning_flag, expected_effort):
+    """Startup auth fallback swaps the model, so the CLI-level reasoning_config must follow it
+    (per-model override for the fallback model, not the launch model's effort); an explicit
+    ``--reasoning`` is the user's intent for this run and survives the swap."""
+    cli = _import_cli()
+    monkeypatch.setattr(cli, "_cprint", lambda *a, **k: None)
+    monkeypatch.setitem(cli.CLI_CONFIG, "model", {"default": "primary-model", "provider": "openai-codex"})
+    monkeypatch.setitem(cli.CLI_CONFIG, "fallback_providers", [{"provider": "zai", "model": "glm-5.3-flash"}])
+    monkeypatch.setitem(cli.CLI_CONFIG, "agent", {
+        **cli.CLI_CONFIG.get("agent", {}), "reasoning_effort": "medium",
+        "reasoning_overrides": {"glm-5.3-flash": "high"}})
+
+    def _runtime_resolve(requested=None, **kwargs):
+        if requested == "openai-codex":
+            raise AuthError("quota exhausted", provider="openai-codex", code="auth_failed")
+        return {"provider": "zai", "api_mode": "chat_completions",
+                "base_url": "https://api.z.ai/api/coding/paas/v4", "api_key": "sk-zai", "source": "env"}
+
+    monkeypatch.setattr("hermes_cli.runtime_provider.resolve_runtime_provider", _runtime_resolve)
+    shell = cli.HermesCLI(compact=True, max_turns=1, reasoning=reasoning_flag)
+    assert shell.reasoning_config["effort"] == ("medium" if reasoning_flag is None else reasoning_flag)
+
+    assert shell._ensure_runtime_credentials() is True
+    assert (shell.model, shell.provider) == ("glm-5.3-flash", "zai")
+    assert shell.reasoning_config["effort"] == expected_effort
+
+
+def test_custom_entry_model_swap_re_resolves_reasoning(monkeypatch):
+    """`hermes chat --model <custom-provider-name>`: the runtime's explicit `model` replaces the
+    slug, so the CLI-level reasoning_config must follow to that model's per-model override."""
+    cli = _import_cli()
+    monkeypatch.setattr(cli, "_cprint", lambda *a, **k: None)
+    monkeypatch.setitem(cli.CLI_CONFIG, "agent", {
+        **cli.CLI_CONFIG.get("agent", {}), "reasoning_effort": "medium",
+        "reasoning_overrides": {"real-model": "high"}})
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kw: {"provider": "custom", "name": "my-lan", "model": "real-model", "api_mode": "chat_completions",
+                      "base_url": "http://10.0.0.7:11434/v1", "api_key": "sk-lan", "source": "custom"})
+    shell = cli.HermesCLI(model="my-lan", compact=True, max_turns=1)
+    assert shell.reasoning_config["effort"] == "medium"
+
+    assert shell._ensure_runtime_credentials() is True
+    assert shell.model == "real-model"
+    assert shell.reasoning_config["effort"] == "high"
 
 
 
@@ -781,5 +914,4 @@ def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():
 
     for identity in ("127.0.0.1_8080", "0.0.0.0", "10.0.0.7:11434", "", "-–-"):
         assert _ENV_VAR_NAME_RE.match(custom_endpoint_key_env(identity)), identity
-
 

@@ -43,7 +43,13 @@ import {
   setActiveSessionId,
   setSelectedStoredSessionId
 } from '@/store/session'
-import { $sessionTiles, $workingSessionIds, clearAllSessionStates, publishSessionState } from '@/store/session-states'
+import {
+  $sessionTiles,
+  $workingSessionIds,
+  clearAllSessionStates,
+  publishSessionState,
+  runtimeSessionOwner
+} from '@/store/session-states'
 import { warnIfTerminalBackendUnavailable } from '@/store/terminal-backend-warning'
 
 import { deferred } from '../../../test/deferred'
@@ -383,11 +389,13 @@ describe('default-route profile adoption', () => {
     async connectionId => {
       const base = fakeDesktop()
       const route = { connectionId, profile: 'coder' }
+
       const desktop = {
         ...base,
         getConnectionFor: vi.fn(async () => ({ ...coderConn, registryScoped: true })),
         profile: { ...base.profile, getDefault: vi.fn(async () => route) }
       }
+
       ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
       render(<Harness />)
       await flushAsync()
@@ -398,6 +406,7 @@ describe('default-route profile adoption', () => {
         expect(desktop.getConnection).toHaveBeenCalledWith('coder')
         expect(desktop.getConnectionFor).not.toHaveBeenCalled()
       }
+
       expect($connection.get()?.profile).toBe('coder')
       expect($desktopBoot.get().running).toBe(false)
     }
@@ -512,6 +521,47 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().visible).toBe(false)
     }
   )
+  it('a rejected background primary offers Settings instead of parking silently', async () => {
+    const desktop = Object.assign(fakeDesktop(), {
+      getConnectionFor: vi.fn(async () => ({
+        ...coderConn,
+        connectionId: 'local',
+        profile: 'default',
+        mode: 'local',
+        baseUrl: 'http://127.0.0.1:9191',
+        wsUrl: 'ws://127.0.0.1:9191/api/ws?token=c'
+      }))
+    })
+
+    desktop.getConnection.mockResolvedValue({
+      ...primaryConn,
+      mode: 'remote',
+      remoteKind: 'cloud',
+      authMode: 'oauth'
+    } as typeof primaryConn)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+    render(<Harness />)
+    await flushAsync()
+    let opening!: Promise<boolean>
+    act(() => {
+      opening = ensureGatewayForAgent('local', 'default')
+    })
+    await flushAsync()
+    expect(await opening).toBe(true)
+
+    desktop.getGatewayWsUrl.mockRejectedValue(Object.assign(new Error('Sign in again'), { needsOauthLogin: true }))
+    act(() => FakeWebSocket.instances[0].drop())
+    await advanceBackoff()
+
+    // The parked primary no longer retries by itself, so the user must learn
+    // about it from where they are — without the foreground being hijacked.
+    expect(isActivePrimary()).toBe(false)
+    expect($desktopBoot.get().error).toBeNull()
+    const toasts = $notifications.get().filter(entry => entry.kind === 'error')
+    expect(toasts).toHaveLength(1)
+    expect(toasts[0].action?.label).toBe('Open Gateways')
+  })
+
   it.each(['progress', 'reconnect'] as const)(
     'primary auth via %s follows the foreground, including a latched error',
     async path => {
@@ -616,7 +666,9 @@ describe('primary failure foreground isolation', () => {
       desktop.getGatewayWsUrl.mockImplementation(async conn => conn?.wsUrl ?? primaryConn.wsUrl)
       // A rejected session waits for explicit recovery, even after credentials change.
       let recovery!: Promise<void>
-      act(() => { recovery = reconnectGateway() })
+      act(() => {
+        recovery = reconnectGateway()
+      })
       await flushAsync()
       await recovery
       expect($gatewayState.get()).toBe('open')
@@ -629,6 +681,67 @@ describe('primary failure foreground isolation', () => {
       expect($desktopBoot.get().error).toBeNull()
     }
   )
+})
+
+describe('shared host backend event provenance', () => {
+  // Multiplex-only: ONE backend serves every local profile, so the primary
+  // socket carries profile B's events and no secondary closure exists to stamp
+  // them. Unstamped, runtimeSessionOwner() is blank for B and the live
+  // sessions/cron sync falls back to slow polling.
+  // A LOCAL host backend: no registry connection id, so ownership can only come
+  // from the stamp (a registry-tagged event already carries its exact owner).
+  const sharedPrimaryConn = {
+    ...primaryConn,
+    baseUrl: 'http://127.0.0.1:8899',
+    connectionId: '',
+    profile: 'beta',
+    sharedPrimary: true,
+    wsUrl: 'ws://127.0.0.1:8899/api/ws?token=t'
+  }
+
+  function deliverEvent(socket: FakeWebSocket, frame: Record<string, unknown>) {
+    ;(socket as unknown as { emit: (type: string, ev: unknown) => void }).emit('message', {
+      data: JSON.stringify({ jsonrpc: '2.0', method: 'event', params: frame })
+    })
+  }
+
+  it('stamps a shared-primary profile-B event with B, not with the boot-time profile', async () => {
+    const desktop = fakeDesktop()
+
+    desktop.getConnection.mockResolvedValue(sharedPrimaryConn)
+    desktop.getGatewayWsUrl.mockResolvedValue(sharedPrimaryConn.wsUrl)
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = desktop
+
+    render(<Harness />)
+    await flushAsync()
+
+    expect($gatewayState.get()).toBe('open')
+
+    // The window moved to profile B after boot; the socket did not.
+    act(() => {
+      $connection.set(sharedPrimaryConn as unknown as ReturnType<typeof $connection.get>)
+      $activeGatewayProfile.set('beta')
+    })
+
+    act(() => {
+      deliverEvent(FakeWebSocket.instances[0], { session_id: 'rt-B', type: 'session.info' })
+    })
+
+    expect(runtimeSessionOwner('rt-B')).toBe('beta')
+  })
+
+  it('leaves an unshared primary on its exact owner — the socket already IS its profile', async () => {
+    render(<Harness />)
+    await flushAsync()
+
+    act(() => {
+      deliverEvent(FakeWebSocket.instances[0], { session_id: 'rt-A', type: 'session.info' })
+    })
+
+    // The registry (connectionId, profile) owner, NOT a bare-profile marker:
+    // the stamp is reserved for the shared-primary topology.
+    expect(runtimeSessionOwner('rt-A')).toEqual({ connectionId: 'primary-vps', profile: 'default' })
+  })
 })
 
 describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => {
@@ -652,7 +765,9 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     await advanceBackoff()
     expect(desktop.getGatewayWsUrl).toHaveBeenCalledTimes(calls)
     desktop.getGatewayWsUrl.mockResolvedValue(primaryConn.wsUrl)
-    act(() => { connectionApplied?.() })
+    act(() => {
+      connectionApplied?.()
+    })
     await flushAsync()
     expect($gatewayState.get()).toBe('open')
     expect($desktopBoot.get().error).toBeNull()
@@ -1337,6 +1452,36 @@ describe('useGatewayBoot remote reconnect loop (real hook, fake socket)', () => 
     expect($gatewayState.get()).not.toBe('open')
     // Still retrying.
     expect(FakeWebSocket.instances.length).toBeGreaterThan(1)
+  })
+
+  it('#83134: a proxy that accepts then immediately closes every socket does not reset the backoff to attempt 0', async () => {
+    render(<Harness />)
+    await flushAsync()
+    expect($gatewayState.get()).toBe('open')
+    expect(FakeWebSocket.instances).toHaveLength(1)
+
+    // Deterministic full jitter: every delay is exactly half its ceiling, so
+    // attempt 0 costs 150ms and the ladder is 150, 300, 600, 1200, 2400, ...
+    vi.spyOn(Math, 'random').mockReturnValue(0.5)
+
+    // 12s of a proxy that ACCEPTS the upgrade and closes on the first frame:
+    // every socket opens and is dropped ~100ms later, never a stable 5s open.
+    for (let elapsed = 0; elapsed < 12_000; elapsed += 100) {
+      const latest = FakeWebSocket.instances.at(-1)
+
+      if (latest?.readyState === FakeWebSocket.OPEN) {
+        act(() => latest.drop())
+      }
+
+      await act(async () => {
+        await vi.advanceTimersByTimeAsync(100)
+      })
+    }
+
+    // Attempt 0 forever redials every 150ms (~80 sockets / 12s — the reporter's
+    // 55 opens / 12s). A climbing ladder reaches the 15s cap in ~7 dials.
+    expect(FakeWebSocket.instances.length).toBeGreaterThanOrEqual(5)
+    expect(FakeWebSocket.instances.length).toBeLessThanOrEqual(10)
   })
 
   it('FIX: a successful reconnect after a prolonged drop restores the open gateway', async () => {

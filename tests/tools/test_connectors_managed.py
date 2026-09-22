@@ -16,7 +16,6 @@ from unittest.mock import patch
 
 import pytest
 
-import tools.connectors.tool  # registers the tool
 from tools.connectors import contract as c
 from tools.connectors import live
 from tools.connectors.tool import MANAGE_CONNECTIONS_SCHEMA, manage_connections
@@ -30,43 +29,67 @@ def _clean_live():
 
 
 class GatewayFake:
-    """Scripted gateway. ``flips`` maps connector -> the list call number on which it reports connected."""
+    """Scripted gateway.
 
-    def __init__(self, connected=(), flips=None, mint_status="initiated", status_reason=None):
+    ``flips`` maps connector -> the account read on which that account first answers ``active``;
+    ``rows`` maps connector -> the status each successive read answers (the last value repeats, an
+    entry may be ``None`` for a 404 or an exception to raise). ``list_connectors`` is the reconnect
+    repair check only; the watcher reads accounts."""
+
+    def __init__(self, connected=(), flips=None, rows=None, mint_status="initiated", status_reason=None,
+                 mint_connection_id=True):
         self.connected = set(connected)
         self.flips = dict(flips or {})
+        self.rows = dict(rows or {})
         self.mint_status = mint_status
         self.status_reason = status_reason
+        self.mint_connection_id = mint_connection_id
         self.lists = 0
         self.mints = []
-        self.statuses = {}  # slug -> connectionStatus per list call (last value repeats)
+        self.reads = []  # (connection_id, timeout) in call order
+        self.slug_of = {}  # connection id -> connector slug
 
-    def list_connectors(self):
+    def list_connectors(self, *, timeout=None):
         self.lists += 1
-        for slug, on in self.flips.items():
-            if self.lists >= on:
-                self.connected.add(slug)
-        rows = []
-        for s in ("gmail", "notion"):
-            row = {"connector": s, "enabled": True, "connected": s in self.connected}
-            script = self.statuses.get(s)
-            if script:
-                row["connectionStatus"] = script[min(self.lists, len(script)) - 1]
-                row["connected"] = row["connectionStatus"] == "active"
-            rows.append(row)
-        return rows
+        return [{"connector": s, "enabled": True, "connected": s in self.connected} for s in ("gmail", "notion")]
 
-    def connections(self, connectors, *, reinitiate=False):
-        self.mints.append((tuple(connectors), reinitiate))
+    def connections(self, connectors, *, reinitiate=False, return_to=None, op=None):
+        self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "return_to": return_to, "op": op})
         results = []
         for slug in connectors:
             row = {"connector": slug, "status": self.mint_status, "reinitiated": reinitiate}
             if self.mint_status == "initiated":
                 row["connect_url"] = f"https://connect.example/{slug}/{len(self.mints)}"
+            if self.mint_connection_id and self.mint_status in ("initiated", "active"):
+                connection_id = f"ca_{slug}_{len(self.mints)}"
+                self.slug_of[connection_id] = slug
+                row["connection_id"] = connection_id
             if self.status_reason:
                 row["status_reason"] = self.status_reason
             results.append(row)
         return {"results": results, "summary": {"total": len(connectors)}}
+
+    def account_status(self, connection_id, *, timeout=None):
+        self.reads.append((connection_id, timeout))
+        slug = self.slug_of.get(connection_id, "")
+        nth = sum(1 for cid, _ in self.reads if cid == connection_id)
+        status = self._status_of(slug, nth)
+        if isinstance(status, Exception):
+            raise status
+        if status is None:
+            return None
+        return {"connectionId": connection_id, "connector": slug, "status": status,
+                "statusReason": self.status_reason or "", "label": f"{slug}_a", "active": status == "active",
+                "createdAt": "2026-09-14T10:00:00.000Z", "updatedAt": "2026-09-14T10:00:00.000Z"}
+
+    def _status_of(self, slug, nth):
+        script = self.rows.get(slug)
+        if script:
+            return script[min(nth, len(script)) - 1]
+        flip = self.flips.get(slug)
+        if flip is not None and nth >= flip:
+            return "active"
+        return "active" if slug in self.connected and not self.flips else "pending"
 
 
 def _desktop_callback(answer=None):
@@ -82,8 +105,10 @@ def _desktop_callback(answer=None):
 
 
 def _run(args, gw, *, callback=None, tick=0.0, platform="desktop"):
-    with patch("tools.connectors.run.WATCH_INTERVAL_SECONDS", tick), \
-         patch("tools.connectors.managed.session_platform", return_value=platform):
+    # Two seams read the surface: managed decides whether a card exists, the client decides whether a
+    # return target rides the mint.
+    with patch("tools.connectors.managed.WATCH_TICK_SECONDS", tick), \
+         patch("tools.connectors.gateway.client.session_platform", return_value=platform):
         return json.loads(manage_connections(
             args, client_factory=lambda: gw, connection_callback=callback, session_id="s1",
         ))
@@ -117,7 +142,7 @@ def test_desktop_connect_mints_once_emits_the_card_and_returns_outcomes_without_
     cb = _desktop_callback()
     out = _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw, callback=cb)
 
-    assert gw.mints == [(("gmail", "notion"), False)]  # one mint for every target, up front
+    assert [m["connectors"] for m in gw.mints] == [("gmail", "notion")]  # one mint for every target, up front
     (payload,) = cb.seen
     assert payload["op_id"] == out["op_id"]
     assert [t["name"] for t in payload["targets"]] == ["gmail", "notion"]
@@ -147,13 +172,19 @@ def test_watcher_transitions_on_flip_and_settles_by_deadline_when_nothing_flips(
         out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
     assert out["settled_by"] == "deadline"
     assert out["targets"][0]["state"] == "not_connected"
-    assert gw.lists >= 2  # it did poll
+    assert len(gw.reads) >= 2  # it did poll
 
 
-def test_watcher_polls_once_per_tick_for_the_whole_operation():
-    gw = GatewayFake(flips={"gmail": 3, "notion": 3})
+def test_the_watcher_reads_one_account_per_target_per_tick_and_never_the_list():
+    """The per-account route replaced the list walk: the watch loop asks for the accounts the mint
+    named and nothing else, once each per tick, and stops reading a target once it resolves."""
+    gw = GatewayFake(flips={"gmail": 3, "notion": 2})
     _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw, callback=_desktop_callback())
-    assert gw.lists == 3  # shared scan, not one per target
+    reads = [connection_id for connection_id, _ in gw.reads]
+    assert gw.lists == 0
+    assert reads.count("ca_gmail_1") == 3
+    assert reads.count("ca_notion_1") == 2  # connected on read 2; never read again
+    assert set(reads) == {"ca_gmail_1", "ca_notion_1"}
 
 
 def test_respond_from_the_card_skips_a_target_and_wakes_the_loop():
@@ -201,49 +232,13 @@ def test_reconnect_force_always_reinitiates_even_when_active():
     gw = GatewayFake(connected={"gmail"}, flips={"gmail": 1})
     with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
         _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback(), tick=0.01)
-    assert gw.mints == [(("gmail",), True)]
-
-
-def test_force_does_not_settle_connected_from_the_old_account():
-    """An account switch: the vendor keeps the old account active while the new link waits. `connected`
-    on the list is the old account until the row has read as anything else once."""
-    gw = GatewayFake(connected={"gmail"})
-    gw.statuses = {"gmail": ["active", "active", "initializing", "active"]}
-    out = _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=_desktop_callback(), tick=0.01)
-    assert out["settled_by"] == "all_resolved"
-    assert out["targets"][0]["state"] == "connected"
-    assert gw.lists == 4  # reads 1-2 were the old account; 3 was the new attempt; 4 saw it connected
-
-
-def test_force_reads_a_failed_new_attempt_as_failed_not_as_still_waiting():
-    gw = GatewayFake(connected={"gmail"})
-    gw.statuses = {"gmail": ["active", "failed"]}
-    seen = []
-
-    def cb(payload):
-        op_id["v"] = payload["op_id"]
-
-    op_id = {}
-    original = gw.list_connectors
-
-    def spy():
-        rows = original()
-        op = live.get("s1", op_id["v"]) if op_id else None
-        if op is not None:
-            seen.append(op.target("gmail").state.value)
-        return rows
-
-    gw.list_connectors = spy
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2):
-        _run({"action": "reconnect", "connectors": ["gmail"], "force": True}, gw, callback=cb, tick=0.01)
-    # Read 1 saw the old account (still initiated); the failed row on read 2 was applied, not swallowed.
-    assert "failed" in seen
+    assert [(m["connectors"], m["reinitiate"]) for m in gw.mints] == [(("gmail",), True)]
 
 
 def test_reconnect_on_a_disconnected_target_reinitiates():
     gw = GatewayFake(flips={"gmail": 2})
     _run({"action": "reconnect", "connectors": ["gmail"]}, gw, callback=_desktop_callback())
-    assert gw.mints == [(("gmail",), True)]
+    assert [(m["connectors"], m["reinitiate"]) for m in gw.mints] == [(("gmail",), True)]
 
 
 # ---------------------------------------------------------------------------
@@ -257,17 +252,17 @@ def test_off_desktop_connect_returns_links_and_does_not_block():
     assert out["status"] == "initiated"
     assert out["targets"][0]["connect_url"].startswith("https://connect.example/gmail/")
     assert "op_id" in out
-    assert gw.lists == 0  # no watcher without a card
+    assert gw.lists == 0 and gw.reads == []  # no watcher without a card
     assert live.current("s1") is None
 
 
-def test_platform_not_callback_presence_decides_the_url():
-    # The TUI-in-a-terminal has a gateway callback attached but no card; the URL must be in the result.
-    gw = GatewayFake()
+def test_callback_presence_decides_the_card_path_on_tui():
+    gw = GatewayFake(flips={"gmail": 1})
     cb = _desktop_callback()
     out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=cb, platform="tui")
-    assert out["targets"][0]["connect_url"]
-    assert cb.seen == []  # no card emitted off-desktop
+    assert len(cb.seen) == 1
+    assert out["targets"][0]["state"] == "connected"
+    assert "connect_url" not in out["targets"][0]
 
 
 # ---------------------------------------------------------------------------
@@ -303,22 +298,20 @@ def test_connected_read_on_a_failed_target_is_ignored_not_an_error():
 
 
 def test_continue_during_a_connected_read_keeps_the_settled_result():
-    """Settling while a list read is in flight must not let that read's `connected` raise into tool_error."""
+    """Settling while an account read is in flight must not let that read's `active` raise into
+    tool_error: the Continue landed first, so its frozen result stands and the read is dropped."""
     gw = GatewayFake()
     settled = threading.Event()
-    original = gw.list_connectors
+    original = gw.account_status
 
-    def slow_list():
-        rows = original()
-        if gw.lists == 2:
-            live_op = live.get("s1", op_id["v"])
-            live_op.settle(c.SettleReason.continue_)
-            settled.set()
-            gw.connected.add("gmail")
-            rows = original()
-        return rows
+    def settle_mid_read(connection_id, **kwargs):
+        row = original(connection_id, **kwargs)
+        live_op = live.get("s1", op_id["v"])
+        live_op.settle(c.SettleReason.continue_)
+        settled.set()
+        return dict(row, status="active", active=True)
 
-    gw.list_connectors = slow_list
+    gw.account_status = settle_mid_read
     op_id = {}
 
     def cb(payload):

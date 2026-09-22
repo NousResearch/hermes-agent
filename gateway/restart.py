@@ -36,6 +36,11 @@ def map_fatal_config_exit_for_launchd(returncode: int) -> int:
 # environment (e.g. ``sudo env -i``).
 EXTERNAL_GATEWAY_SUPERVISOR_ENV = "HERMES_GATEWAY_EXTERNAL_SUPERVISOR"
 
+# Re-exported by the stderr-timestamp launchd wrapper (hermes_cli/stderr_timestamp.py).
+# launchd stamps ``XPC_SERVICE_NAME`` only on the wrapper itself; the gateway grandchild
+# sees ``XPC_SERVICE_NAME=0`` and would otherwise be invisible to the drain cap.
+LAUNCHD_LABEL_ENV = "HERMES_LAUNCHD_LABEL"
+
 DEFAULT_GATEWAY_RESTART_DRAIN_TIMEOUT = float(DEFAULT_CONFIG["agent"]["restart_drain_timeout"])
 DEFAULT_GATEWAY_SIGNAL_INTERRUPT_GRACE_TIMEOUT = float(DEFAULT_CONFIG["gateway"]["signal_interrupt_grace_timeout"])
 DEFAULT_GATEWAY_POST_INTERRUPT_GRACE_TIMEOUT = 5.0
@@ -93,13 +98,22 @@ def launchd_service_label(environ: Mapping[str, str] | None = None) -> str | Non
     populate ``XPC_SERVICE_NAME``, and ``launchctl print`` reports
     ``exit timeout = 1`` for them — treating those as a budget would cap the
     drain to 0 for a gateway Ctrl+C'd in such a terminal.
+
+    When this process is a launchd grandchild (the generated plist runs the
+    stderr-timestamp wrapper as the job process), ``XPC_SERVICE_NAME`` reads
+    ``"0"`` and the wrapper's re-exported ``HERMES_LAUNCHD_LABEL`` is used.
     """
     if sys.platform != "darwin":
         return None
     env = os.environ if environ is None else environ
     label = str(env.get("XPC_SERVICE_NAME", "") or "").strip()
     if not label.startswith("ai.hermes"):
-        return None
+        # Under the generated launchd plist the gateway is a grandchild (the stderr-timestamp
+        # wrapper is the job process), so XPC_SERVICE_NAME reads "0" here; the wrapper
+        # re-exports the real job label for exactly this fallback.
+        label = str(env.get(LAUNCHD_LABEL_ENV, "") or "").strip()
+        if not label.startswith("ai.hermes"):
+            return None
     return label
 
 

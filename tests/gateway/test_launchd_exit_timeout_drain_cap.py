@@ -19,9 +19,11 @@ import pytest
 
 import gateway.restart as restart_mod
 from gateway.restart import (
+    LAUNCHD_LABEL_ENV,
     LAUNCHD_STOP_CLEANUP_RESERVE_S,
     effective_stop_drain_timeout,
     effective_stop_watchdog_delay,
+    launchd_service_label,
     read_launchd_exit_timeout_s,
     resolve_launchd_capped_drain,
 )
@@ -49,6 +51,27 @@ def test_capped_drain_fits_inside_launchd_budget_minus_reserve(monkeypatch, plat
     fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
     budget = read_launchd_exit_timeout_s(environ={"XPC_SERVICE_NAME": label}, uid=501, run=fake_run)
     assert resolve_launchd_capped_drain(180.0, budget) == expected
+
+
+def test_grandchild_resolves_label_from_wrapper_reexport(monkeypatch):
+    """Under the generated plist the gateway is a grandchild: launchd stamps XPC_SERVICE_NAME
+    only on the stderr-timestamp wrapper, the grandchild reads "0", and the wrapper re-exports
+    the job label as HERMES_LAUNCHD_LABEL so the drain cap still resolves its budget."""
+    monkeypatch.setattr(restart_mod.sys, "platform", "darwin")
+    grandchild_env = {"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: "ai.hermes.gateway"}
+
+    assert launchd_service_label(grandchild_env) == "ai.hermes.gateway"
+    # The re-export keeps the ai.hermes predicate: an app-coalition label is still not our job.
+    assert launchd_service_label({"XPC_SERVICE_NAME": "0", LAUNCHD_LABEL_ENV: "application.com.example.ide.123"}) is None
+    # No fallback at all (foreground start, or a wrapper older than the re-export) stays None.
+    assert launchd_service_label({"XPC_SERVICE_NAME": "0"}) is None
+    # A direct launchd child (no wrapper) keeps the XPC path.
+    assert launchd_service_label({"XPC_SERVICE_NAME": "ai.hermes.gateway"}) == "ai.hermes.gateway"
+
+    # End to end: the grandchild sizes its stop drain to the live ExitTimeOut.
+    fake_run = lambda *a, **k: SimpleNamespace(returncode=0, stdout="exit timeout = 60\n")  # noqa: E731
+    budget = read_launchd_exit_timeout_s(environ=grandchild_env, uid=501, run=fake_run)
+    assert resolve_launchd_capped_drain(180.0, budget) == 60.0 - LAUNCHD_STOP_CLEANUP_RESERVE_S
 
 
 def _runner(*, drain: float, launchd: float | None, by_signal: bool):

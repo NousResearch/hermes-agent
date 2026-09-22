@@ -1279,8 +1279,10 @@ class HindsightMemoryProvider(MemoryProvider):
             if not self._shutting_down.is_set():
                 self._enqueue_retain(_flush)
 
-        # 2. Drain the old session's in-flight prefetch and drop its result.
-        self._join_prefetch(3.0)
+        # 2. Legacy warm prefetch is bounded here. Opportunistic recall must not
+        # delay the turn; generation invalidation below makes its live result stale.
+        if not self._recall_async:
+            self._join_prefetch(3.0)
         with self._prefetch_lock:
             self._prefetch_result = ""
             self._prefetch_count = 0

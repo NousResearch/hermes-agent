@@ -740,13 +740,19 @@ class TestPrefetch:
         p.start_prefetch("current query", session_id="test-session", turn_number=1)
         assert first_started.wait(timeout=2.0)
         worker = p._prefetch_thread
-        real_join = worker.join
-        worker.join = lambda timeout=None: None
+        switched = threading.Event()
 
-        p.on_session_switch("test-session", reason="compression")
+        def _switch():
+            p.on_session_switch("test-session", reason="compression")
+            switched.set()
+
+        switcher = threading.Thread(target=_switch)
+        switcher.start()
+        assert switched.wait(timeout=0.5)
         p.start_prefetch("current query", session_id="test-session", turn_number=1)
         release_first.set()
-        real_join(timeout=2.0)
+        worker.join(timeout=2.0)
+        switcher.join(timeout=2.0)
 
         assert queries == ["current query", "current query"]
         assert "current query" in p.prefetch(

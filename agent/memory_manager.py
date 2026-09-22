@@ -29,6 +29,7 @@ _LEGACY_PRE_COMPRESS_API_VERSION = 1
 # shutdown_all() drain bound; workers are daemon threads so a wedged provider never
 # blocks interpreter exit.
 _SYNC_DRAIN_TIMEOUT_S = 5.0
+_START_PREFETCH_DRAIN_TIMEOUT_S = 5.0
 _EXTERNAL_PREFETCH_TIMEOUT_S = 8.0
 
 
@@ -353,6 +354,7 @@ class MemoryManager:
         self._external_prefetch_threads: Dict[str, threading.Thread] = {}
         self._external_prefetch_lock = threading.Lock()
         self._start_prefetch_threads: Dict[str, threading.Thread] = {}
+        self._start_prefetch_pending: Dict[str, Callable[[], None]] = {}
         self._start_prefetch_lock = threading.Lock()
         # Single-worker background executor for end-of-turn sync/prefetch, created lazily so
         # the builtin-only path spawns no threads; one worker serializes a provider's writes.
@@ -469,28 +471,38 @@ class MemoryManager:
             return
 
         for provider in list(self._providers):
+            operation = ctx_bound(
+                lambda current=provider: current.start_prefetch(
+                    clean_query,
+                    session_id=session_id,
+                    turn_number=turn_number,
+                )
+            )
             with self._start_prefetch_lock:
+                if self._shutting_down:
+                    return
+                self._start_prefetch_pending[provider.name] = operation
                 existing = self._start_prefetch_threads.get(provider.name)
                 if existing is not None and existing.is_alive():
-                    logger.debug(
-                        "Memory provider '%s' start_prefetch is still running; skipping this turn",
-                        provider.name,
-                    )
                     continue
 
                 def _run(current: MemoryProvider = provider) -> None:
-                    try:
-                        current.start_prefetch(
-                            clean_query,
-                            session_id=session_id,
-                            turn_number=turn_number,
-                        )
-                    except Exception:
-                        logger.warning(
-                            "Memory provider '%s' start_prefetch failed (non-fatal)",
-                            current.name,
-                            exc_info=True,
-                        )
+                    while True:
+                        with self._start_prefetch_lock:
+                            pending = self._start_prefetch_pending.pop(
+                                current.name, None
+                            )
+                            if pending is None:
+                                self._start_prefetch_threads.pop(current.name, None)
+                                return
+                        try:
+                            pending()
+                        except Exception:
+                            logger.warning(
+                                "Memory provider '%s' start_prefetch failed (non-fatal)",
+                                current.name,
+                                exc_info=True,
+                            )
 
                 thread = spawn_context_thread(
                     _run,
@@ -880,8 +892,28 @@ class MemoryManager:
     def shutdown_all(self) -> None:
         """Drain the background executor (bounded), then shut providers down in reverse order."""
         self._drain_sync_executor()
+        blocked = self._drain_start_prefetch_threads()
         self._each_provider("shutdown failed", lambda p: p.shutdown(), level=logging.WARNING,
-                            providers=self._providers[::-1])
+                            providers=[p for p in self._providers[::-1] if p.name not in blocked])
+
+    def _drain_start_prefetch_threads(self) -> set[str]:
+        """Fence new kickoffs and avoid tearing down a provider under its live callback."""
+        with self._start_prefetch_lock:
+            self._shutting_down = True
+            self._start_prefetch_pending.clear()
+            threads = dict(self._start_prefetch_threads)
+        deadline = time.monotonic() + _START_PREFETCH_DRAIN_TIMEOUT_S
+        for thread in threads.values():
+            thread.join(timeout=max(0.0, deadline - time.monotonic()))
+        blocked = {name for name, thread in threads.items() if thread.is_alive()}
+        for name in sorted(blocked):
+            logger.warning(
+                "Memory provider '%s' start_prefetch did not stop within %.1fs; "
+                "skipping concurrent provider shutdown",
+                name,
+                _START_PREFETCH_DRAIN_TIMEOUT_S,
+            )
+        return blocked
 
     @property
     def shutdown_drain_state(self) -> Dict[str, Any]:

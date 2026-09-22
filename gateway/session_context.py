@@ -10,6 +10,8 @@ from contextlib import contextmanager
 from contextvars import ContextVar
 from typing import Any, Iterator
 
+from gateway.session_identity import RoutingIdentity
+
 # "Never set here" (falls back to os.environ for CLI/cron) vs "" = explicitly cleared (no fallback).
 _UNSET: Any = object()
 
@@ -58,6 +60,7 @@ _SESSION_HISTORY_DELIVERY = ContextVar("HERMES_SESSION_HISTORY_DELIVERY", defaul
 
 _SESSION_TRANSPORT_ADAPTER = ContextVar("HERMES_SESSION_TRANSPORT_ADAPTER", default=None)
 _SESSION_TRANSPORT_LOOP = ContextVar("HERMES_SESSION_TRANSPORT_LOOP", default=None)
+_SESSION_ROUTING_IDENTITY: ContextVar[RoutingIdentity | None] = ContextVar("HERMES_SESSION_ROUTING_IDENTITY", default=None)
 
 # Cron auto-delivery vars, set per-job in run_job() so concurrent jobs don't clobber.
 _CRON_AUTO_DELIVER_PLATFORM = ContextVar("HERMES_CRON_AUTO_DELIVER_PLATFORM", default=_UNSET)
@@ -124,6 +127,7 @@ def set_session_vars(
     ui_session_id: str = "", cron_session: Any = _UNSET, parent_chat_id: str = "",
     session_history_delivery: str | None = None,
     transport_adapter: Any = None, transport_loop: Any = None,
+    routing_identity: RoutingIdentity | None = None,
 ) -> list:
     """Set all session context variables and return reset tokens.  Call
     ``clear_session_vars(tokens)`` in a ``finally``; not nestable, clearing resets every var
@@ -145,6 +149,7 @@ def set_session_vars(
     tokens.append(_SESSION_ASYNC_DELIVERY.set(bool(async_delivery)))
     tokens.append(_SESSION_HISTORY_DELIVERY.set(_UNSET if session_history_delivery is None else session_history_delivery))
     tokens.append(_SESSION_TRANSPORT_ADAPTER.set(transport_adapter))
+    tokens.append(_SESSION_ROUTING_IDENTITY.set(routing_identity))
     tokens.append(_SESSION_TRANSPORT_LOOP.set(transport_loop))
     _runtime_cwd("set_session_cwd", cwd)
     return tokens
@@ -162,6 +167,7 @@ def clear_session_vars(tokens: list) -> None:
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _SESSION_TRANSPORT_ADAPTER.set(None)
     _SESSION_TRANSPORT_LOOP.set(None)
+    _SESSION_ROUTING_IDENTITY.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -177,6 +183,7 @@ def reset_session_vars() -> None:
     _SESSION_HISTORY_DELIVERY.set(_UNSET)
     _SESSION_TRANSPORT_ADAPTER.set(None)
     _SESSION_TRANSPORT_LOOP.set(None)
+    _SESSION_ROUTING_IDENTITY.set(None)
     _runtime_cwd("clear_session_cwd")
 
 
@@ -192,6 +199,11 @@ def get_session_env(name: str, default: str = "") -> str:
 def get_session_transport() -> tuple[Any, Any]:
     """Return the live adapter and its event loop for the current gateway turn."""
     return _SESSION_TRANSPORT_ADAPTER.get(), _SESSION_TRANSPORT_LOOP.get()
+
+
+def get_session_routing_identity() -> RoutingIdentity | None:
+    """Return the canonical routing identity for the current gateway turn."""
+    return _SESSION_ROUTING_IDENTITY.get()
 
 
 # Surfaces that are not a human chat channel (gateway binds HERMES_SESSION_PLATFORM, CLI/TUI/

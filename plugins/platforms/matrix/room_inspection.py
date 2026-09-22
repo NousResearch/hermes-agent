@@ -25,6 +25,17 @@ def _content(value: Any) -> dict[str, Any]:
     return {}
 
 
+def _state_path(room_id: str, event_type: str, state_key: str = "") -> str:
+    return (
+        f"/_matrix/client/v3/rooms/{quote(room_id, safe='')}"
+        f"/state/{quote(event_type, safe='')}/{quote(state_key, safe='')}"
+    )
+
+
+def _is_missing_state(exc: Exception) -> bool:
+    return getattr(exc, "errcode", None) == "M_NOT_FOUND" or type(exc).__name__ == "MNotFound"
+
+
 async def _state_event(
     context: _InspectionContext, event_type: str, query: dict[str, str] | None = None,
 ) -> Any:
@@ -32,10 +43,7 @@ async def _state_event(
     # contents fill in mautrix defaults, which differ from the spec for
     # `invite`, and it raises when a server ignores `format=event` and
     # returns the content only.
-    path = (
-        f"/_matrix/client/v3/rooms/{quote(context.room_id, safe='')}"
-        f"/state/{quote(event_type, safe='')}/"
-    )
+    path = _state_path(context.room_id, event_type)
     return await context.request(
         lambda: context.client.api.request(Method.GET, path, query_params=query),
     )
@@ -45,7 +53,7 @@ async def _state(context: _InspectionContext, event_type: str) -> dict[str, Any]
     try:
         value = await _state_event(context, event_type)
     except Exception as exc:
-        if getattr(exc, "errcode", None) == "M_NOT_FOUND" or type(exc).__name__ == "MNotFound":
+        if _is_missing_state(exc):
             return None
         raise
     return value if isinstance(value, dict) else {}
@@ -125,10 +133,15 @@ def _user_permissions(
 
 
 async def _permissions(context: _InspectionContext) -> dict[str, Any]:
-    requester, bot = context.requester, context.owner.bot_id
     encryption = await _state(context, "m.room.encryption") or {}
     create = _RoomCreate.parse(await _state_event(context, "m.room.create", {"format": "event"}))
     power = await _state(context, "m.room.power_levels")
+    return _permission_levels(context.requester, context.owner.bot_id, power, encryption, create)
+
+
+def _permission_levels(
+    requester: str, bot: str, power: dict[str, Any] | None, encryption: dict[str, Any], create: _RoomCreate,
+) -> dict[str, Any]:
     legacy_strings = create.legacy_string_levels
     levels = power or {}
     events = levels.get("events")
@@ -161,6 +174,9 @@ async def _permissions(context: _InspectionContext) -> dict[str, Any]:
             "kick": _level(levels, "kick", 50, legacy_strings),
             "ban": _level(levels, "ban", 50, legacy_strings),
             "redact_other": _level(levels, "redact", 50, legacy_strings),
+            "send_redaction": _numeric_level(
+                events.get("m.room.redaction"), _level(levels, "events_default", 0, legacy_strings), legacy_strings,
+            ),
         },
         "bot_can_edit_pins": bot_can_edit_pins,
     }
@@ -396,22 +412,28 @@ class _PinChange:
 async def change_matrix_pin(
     adapter: Any, action: str, room_id: str, event_id: str, *, requester: str,
     interrupt_check: Callable[[], bool], before_write: Callable[[], None],
+    recheck_before_write: Callable[[], Awaitable[None]] | None = None, expected_client: Any = None,
 ) -> dict[str, Any]:
     owner = _InspectionOwner.capture(adapter)
     try:
         chat_type = await owner.access(room_id, requester)
     except _InspectionRejected as exc:
         return exc.error
+    if expected_client is not None and owner.client is not expected_client:
+        return {"error": "Matrix session or client ownership changed"}
     if action not in {"pin", "unpin"}:
         return {"error": "action must be pin or unpin"}
 
     context = _InspectionContext(adapter, owner.client, room_id, chat_type, requester, 0, owner)
     async with adapter._pin_state_lock:
-        return await _change_pin_state(_PinChange(context, action, event_id), interrupt_check, before_write)
+        return await _change_pin_state(
+            _PinChange(context, action, event_id), interrupt_check, before_write, recheck_before_write,
+        )
 
 
 async def _change_pin_state(
     change: _PinChange, interrupt_check: Callable[[], bool], before_write: Callable[[], None],
+    recheck_before_write: Callable[[], Awaitable[None]] | None = None,
 ) -> dict[str, Any]:
     context, event_id = change.context, change.event_id
     if interrupt_check():
@@ -440,6 +462,8 @@ async def _change_pin_state(
         if updated == pinned:
             return {"pinned": event_ids, "unchanged": True}
 
+        if recheck_before_write is not None:
+            await recheck_before_write()
         if interrupt_check():
             return {"error": "Matrix pin update interrupted"}
 
@@ -451,6 +475,8 @@ async def _change_pin_state(
         )
     except _InspectionRejected as exc:
         return exc.error
+    except ValueError as exc:
+        return {"error": str(exc)}
     except Exception as exc:
         errcode = getattr(exc, "errcode", None)
         if errcode == "M_FORBIDDEN":

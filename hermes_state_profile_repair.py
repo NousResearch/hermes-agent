@@ -201,7 +201,10 @@ class SessionProfileRepairMixin:
         """Insert a moved session into THIS store as *profile_name*'s. ``present`` when the id already
         exists (an earlier run copied but did not delete), else ``imported``. The parent link survives
         only when the parent is already here — a moved row must never point across stores or at a
-        row of another profile. Columns the target schema lacks are dropped, never invented."""
+        row of another profile. Columns the target schema lacks are dropped, never invented. Titles
+        are unique per store only, so a title an unrelated row here already holds gets the moved
+        row's id tail (the :meth:`import_foreign_history` convention); the resident row keeps its
+        name, since it is the one this profile's clients resolve by title."""
         session = dict(payload["session"])
         session_id = session["id"]
 
@@ -212,6 +215,10 @@ class SessionProfileRepairMixin:
             parent_id = session.get("parent_session_id")
             if parent_id and conn.execute("SELECT 1 FROM sessions WHERE id = ?", (parent_id,)).fetchone() is None:
                 session["parent_session_id"] = None
+            title = session.get("title")
+            if title is not None and conn.execute("SELECT 1 FROM sessions WHERE title = ?", (title,)).fetchone():
+                suffix = f" ({session_id[-12:]})"
+                session["title"] = title[:self.MAX_TITLE_LENGTH - len(suffix)] + suffix
             session["system_prompt_hash"] = self._store_system_prompt(conn, payload.get("system_prompt"))
             self._insert_row(conn, "sessions", session, skip=frozenset())
             for message in payload.get("messages") or []:

@@ -84,6 +84,40 @@ class TestScanSkillCommands:
 
         assert commands["/pstack:bro"]["name"] == "bro"
 
+    def test_alias_core_command_collision_fails_closed(self, tmp_path):
+        _make_skill(tmp_path, "bro")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_commands._load_skills_config", return_value={
+                "command_aliases": [{"name": "pstack:bro", "skill": "bro"}]
+            }),
+            patch(
+                "agent.skill_commands.skill_command_collision_note",
+                side_effect=lambda name: "core command" if name == "pstack:bro" else None,
+            ),
+        ):
+            commands = scan_skill_commands()
+
+        assert "/pstack:bro" not in commands
+        assert "/bro" in commands
+
+    def test_invalid_or_missing_alias_target_keeps_default_command(self, tmp_path):
+        _make_skill(tmp_path, "bro")
+        with (
+            patch("tools.skills_tool.SKILLS_DIR", tmp_path),
+            patch("agent.skill_commands._load_skills_config", return_value={
+                "command_aliases": [
+                    {"name": "not-namespaced", "skill": "bro", "hide_default": True},
+                    {"name": "pstack:missing", "skill": "missing", "hide_default": True},
+                ]
+            }),
+        ):
+            commands = scan_skill_commands()
+
+        assert "/bro" in commands
+        assert "/not-namespaced" not in commands
+        assert "/pstack:missing" not in commands
+
 
 
 

@@ -389,7 +389,7 @@ def _scan_skill_md(skill_md: Path, disabled: set, seen_names: set, commands: Dic
                          "skill_md_path": str(skill_md), "skill_dir": str(skill_md.parent)}
 
 
-def _apply_command_aliases(commands: Dict[str, Dict[str, Any]], resolve_command) -> None:
+def _apply_command_aliases(commands: Dict[str, Dict[str, Any]]) -> None:
     """Project configured skill aliases onto the native command map.
 
     Aliases are intentionally resolved after scanning: every consumer (CLI,
@@ -408,7 +408,7 @@ def _apply_command_aliases(commands: Dict[str, Dict[str, Any]], resolve_command)
         if not _SKILL_ALIAS_NAME.fullmatch(alias):
             logger.warning("Ignoring invalid skill command alias %r; aliases require a namespace separator.", alias)
             continue
-        if alias_key in commands or resolve_command(alias) is not None:
+        if alias_key in commands or skill_command_collision_note(alias) is not None:
             owner = (commands.get(alias_key) or {}).get("name") or "a core command"
             logger.warning("Ignoring skill command alias %s for %s; it is already claimed by %s.",
                            alias_key, target_key, owner)
@@ -458,7 +458,7 @@ def scan_skill_commands() -> Dict[str, Dict[str, Any]]:
                     _scan_skill_md(skill_md, disabled, seen_names, commands)
                 except Exception:
                     continue
-        _apply_command_aliases(commands, resolve_command)
+        _apply_command_aliases(commands)
     except Exception:
         pass
     # Publish map + tags as ONE step: a reader landing between bare assignments

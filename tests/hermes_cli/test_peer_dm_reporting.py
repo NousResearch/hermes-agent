@@ -41,7 +41,10 @@ def _run(monkeypatch, capsys, *, base="http://192.168.2.55:8642", raise_on_post=
 @pytest.mark.parametrize(
     ("raise_on_post", "raise_on_session", "expected", "forbidden"),
     [
-        (TimeoutError("timed out"), None, "accepted the message but its turn is still running", "Could not reach"),
+        # The ruling's fix: a bare post-accept timeout is the response-phase shape, so the
+        # replay path reports the branch's "do not resend - outcome unknown", not upstream's
+        # "accepted ... still running" (which is the queued-in-the-other-lane wording).
+        (TimeoutError("timed out"), None, "do not resend", "Could not reach"),
         (urllib.error.URLError(TimeoutError("timed out")), None, "Could not reach peer", "still running"),
         (urllib.error.URLError(ConnectionRefusedError(61, "Connection refused")), None, "Could not reach peer", "still running"),
         (OSError(51, "Network is unreachable"), None, "Could not reach peer", "still running"),
@@ -107,6 +110,6 @@ def test_the_real_urllib_stack_raises_the_signatures_the_branch_relies_on(monkey
 
     assert code == 1
     if phase == "response":
-        assert "accepted the message but its turn is still running" in err and "Do NOT resend" in err
+        assert "do not resend" in err and "outcome unknown" in err
     else:
         assert "Could not reach peer" in err and "still running" not in err

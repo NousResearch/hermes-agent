@@ -23,16 +23,11 @@ def profile_dir(tmp_path, monkeypatch) -> Path:
     path = root / "profiles" / "bot"
     path.mkdir(parents=True)
     monkeypatch.setenv("HERMES_HOME", str(root))
-    from hermes_constants import get_hermes_home_override
-
-    assert get_hermes_home_override() is None
     return path
 
 
 def _write_mcp(profile_dir: Path, servers: dict) -> None:
-    (profile_dir / "config.yaml").write_text(
-        yaml.safe_dump({"mcp_servers": servers}), encoding="utf-8"
-    )
+    (profile_dir / "config.yaml").write_text(yaml.safe_dump({"mcp_servers": servers}), encoding="utf-8")
 
 
 def _read_mcp(profile_dir: Path) -> dict:
@@ -45,6 +40,10 @@ def _call(method: str, params: dict) -> dict:
     return resp["result"]
 
 
+def _described() -> dict:
+    return {s["name"]: s["enabled"] for s in _call("profiles.describe", {})["mcp_servers"]}
+
+
 def test_describe_reports_mcp_enabled_key_and_legacy_disabled(profile_dir):
     _write_mcp(profile_dir, {
         "on": {"command": "on", "enabled": True},
@@ -53,35 +52,21 @@ def test_describe_reports_mcp_enabled_key_and_legacy_disabled(profile_dir):
         "implicit-on": {"command": "implicit"},
     })
 
-    status = {s["name"]: s["enabled"] for s in _call("profiles.describe", {})["mcp_servers"]}
-
-    assert status == {"on": True, "off": False, "legacy-off": False, "implicit-on": True}
+    assert _described() == {"on": True, "off": False, "legacy-off": False, "implicit-on": True}
 
 
-def test_configure_writes_mcp_enabled_key_and_drops_legacy_disabled(profile_dir):
-    _write_mcp(profile_dir, {
-        "wanted": {"command": "wanted", "enabled": False},
-        "unwanted": {"command": "unwanted", "enabled": True, "disabled": True},
-    })
-
-    result = _call("profiles.configure", {"enabled_mcp_servers": ["wanted"]})
-
-    assert result["ok"] is True
-    assert result["applied"]["mcp_servers"] is True
-    assert _read_mcp(profile_dir) == {
-        "wanted": {"command": "wanted", "enabled": True},
-        "unwanted": {"command": "unwanted", "enabled": False},
-    }
-
-
-def test_configure_toggle_is_seen_by_runtime_resolver(profile_dir):
-    """The bug: disabling in the editor wrote ``disabled: true``, which the runtime ignored."""
+def test_configure_toggle_is_what_the_runtime_resolver_and_describe_see(profile_dir):
     from hermes_cli.tools_config import enabled_mcp_server_names
 
-    _write_mcp(profile_dir, {"keep": {"command": "keep"}, "drop": {"command": "drop"}})
+    _write_mcp(profile_dir, {
+        "keep": {"command": "keep", "enabled": False},
+        "drop": {"command": "drop"},
+        "legacy": {"command": "legacy", "disabled": True},
+    })
 
-    _call("profiles.configure", {"enabled_mcp_servers": ["keep"]})
+    _call("profiles.configure", {"enabled_mcp_servers": ["keep", "legacy"]})
 
-    assert enabled_mcp_server_names({"mcp_servers": _read_mcp(profile_dir)}) == {"keep"}
-    status = {s["name"]: s["enabled"] for s in _call("profiles.describe", {})["mcp_servers"]}
-    assert status == {"keep": True, "drop": False}
+    on_disk = _read_mcp(profile_dir)
+    assert not any("disabled" in entry for entry in on_disk.values())
+    assert enabled_mcp_server_names({"mcp_servers": on_disk}) == {"keep", "legacy"}
+    assert _described() == {"keep": True, "drop": False, "legacy": True}

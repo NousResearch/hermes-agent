@@ -10,6 +10,7 @@ import functools
 import hashlib
 import json
 import logging
+import os
 import threading
 import time
 import urllib.error
@@ -369,6 +370,145 @@ def _create_thread(
     return json.dumps({"success": True, "thread_id": thread["id"], "name": thread.get("name")})
 
 
+_SUBISSUE_CONTEXT_LOCK = threading.Lock()
+_SUBISSUE_CONTEXT_STATE_FILE = "devteam_subissue_contexts.json"
+_THREAD_TYPES = {10, 11, 12}
+_OPERATIONAL_PARENT_TYPES = {0, 5}
+
+
+def _subissue_context_state_path() -> Path:
+    """Profile-scoped durable mapping of a DevTeam issue to its Discord thread."""
+    from hermes_constants import get_hermes_home
+    return get_hermes_home() / _SUBISSUE_CONTEXT_STATE_FILE
+
+
+def _read_subissue_contexts() -> Dict[str, Dict[str, Any]]:
+    try:
+        raw = json.loads(_subissue_context_state_path().read_text(encoding="utf-8"))
+        contexts = raw.get("contexts", {}) if isinstance(raw, dict) else {}
+        return contexts if isinstance(contexts, dict) else {}
+    except (OSError, ValueError, TypeError):
+        return {}
+
+
+def _write_subissue_contexts(contexts: Dict[str, Dict[str, Any]]) -> None:
+    path = _subissue_context_state_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        tmp.write_text(json.dumps({"version": 1, "contexts": contexts}, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        tmp.replace(path)
+    finally:
+        if tmp.exists():
+            tmp.unlink(missing_ok=True)
+
+
+def _subissue_context_key(issue_repo: str, issue_number: str) -> str:
+    return f"{issue_repo.strip().lower()}#{str(issue_number).strip()}"
+
+
+def _subissue_context_name(issue_repo: str, issue_number: str, name: str) -> str:
+    prefix = f"[{issue_repo}#{issue_number}]"
+    suffix = " ".join(name.split())
+    return f"{prefix} {suffix}"[:100].rstrip()
+
+
+def _validated_context_thread(token: str, thread_id: str, parent_id: str) -> Optional[Dict[str, Any]]:
+    """Return the retained thread only when it still belongs to the requested text parent."""
+    try:
+        thread = _discord_request("GET", f"/channels/{thread_id}", token)
+    except DiscordAPIError as exc:
+        if exc.status == 404:
+            return None
+        raise
+    if thread.get("type") not in _THREAD_TYPES or str(thread.get("parent_id") or "") != str(parent_id):
+        return None
+    return thread
+
+
+def _find_active_subissue_thread(token: str, guild_id: str, parent_id: str, name: str) -> Optional[Dict[str, Any]]:
+    """Recover a thread created before its local mapping was durably written."""
+    active = _discord_request("GET", f"/guilds/{guild_id}/threads/active", token)
+    for thread in active.get("threads", []) if isinstance(active, dict) else []:
+        if (thread.get("type") in _THREAD_TYPES and str(thread.get("parent_id") or "") == str(parent_id)
+                and thread.get("name") == name):
+            return thread
+    return None
+
+
+def _ensure_subissue_context(
+    token: str, guild_id: str, channel_id: str, issue_repo: str, issue_number: str,
+    name: str, handoff: str = "", **_kwargs: Any,
+) -> str:
+    """Create or recover one operational *text-channel thread* per GitHub sub-issue.
+
+    Discord forum posts are already threads and cannot host a nested thread. This pilot therefore
+    refuses forum/media/thread parents and stores a profile-scoped issue → thread mapping. The
+    deterministic title plus Discord's active-thread listing recovers the narrow crash window
+    between remote creation and local persistence.
+    """
+    if not name or not name.strip():
+        return tool_error("A non-empty context name is required.")
+    context_name = _subissue_context_name(issue_repo, issue_number, name)
+    key = _subissue_context_key(issue_repo, issue_number)
+    with _SUBISSUE_CONTEXT_LOCK:
+        contexts = _read_subissue_contexts()
+        existing = contexts.get(key)
+        if isinstance(existing, dict):
+            recorded_guild = str(existing.get("guild_id") or "")
+            recorded_channel = str(existing.get("channel_id") or "")
+            if recorded_guild != str(guild_id) or recorded_channel != str(channel_id):
+                return tool_error(
+                    f"Sub-issue {key} is already bound to Discord guild {recorded_guild} channel "
+                    f"{recorded_channel}; refusing a different destination.")
+        parent = _discord_request("GET", f"/channels/{channel_id}", token)
+        if parent.get("type") not in _OPERATIONAL_PARENT_TYPES:
+            return tool_error(
+                "Sub-issue contexts require a normal text or announcement channel; Discord does not support "
+                "nested threads in a forum post. Keep the epic in its forum post and use a dedicated operational channel.")
+        thread: Optional[Dict[str, Any]] = None
+        recovered = False
+        if isinstance(existing, dict):
+            thread = _validated_context_thread(token, str(existing.get("thread_id", "")), channel_id)
+            if thread is None:
+                return tool_error(
+                    f"Recorded sub-issue context {existing.get('thread_id')} is unavailable; refusing to create "
+                    f"a second context for {key}.")
+            recovered = True
+        if thread is None:
+            thread = _find_active_subissue_thread(token, guild_id, channel_id, context_name)
+            recovered = thread is not None
+        created = False
+        if thread is None:
+            thread = _discord_request(
+                "POST", f"/channels/{channel_id}/threads", token,
+                body={"name": context_name, "auto_archive_duration": 10080, "type": 11},
+            )
+            created = True
+        assert thread is not None
+        thread_id = str(thread["id"])
+        record: Dict[str, Any] = {
+            "guild_id": str(guild_id), "channel_id": str(channel_id), "thread_id": thread_id,
+            "issue_repo": issue_repo, "issue_number": str(issue_number), "name": context_name,
+        }
+        contexts[key] = record
+        _write_subissue_contexts(contexts)
+        handoff_message_id = None
+        handoff_pending = not (isinstance(existing, dict) and existing.get("handoff_message_id"))
+        if handoff.strip() and (created or handoff_pending):
+            sent = _discord_request("POST", f"/channels/{thread_id}/messages", token, body={"content": handoff})
+            handoff_message_id = str(sent.get("id", "")) or None
+            record["handoff_message_id"] = handoff_message_id
+            contexts[key] = record
+            _write_subissue_contexts(contexts)
+        return json.dumps({
+            "success": True, "created": created, "recovered": recovered, "thread_id": thread_id,
+            "channel_id": str(channel_id), "target": f"discord:{channel_id}:{thread_id}",
+            "handoff_message_id": handoff_message_id,
+        })
+
+
 def _mutation(method: str, path: str, message: str):
     """Body-less write action: ``path``/``message`` are format templates over the action kwargs."""
     def _action(token: str, **kw: Any) -> str:
@@ -453,6 +593,7 @@ _ACTION_MANIFEST = [
     ("add_reaction", _add_reaction, "(channel_id, message_id, emoji)", "add this bot's reaction to a message"),
     ("remove_own_reaction", _remove_own_reaction, "(channel_id, message_id, emoji)", "remove this bot's matching reaction from a message"),
     ("complete_demand", _complete_demand, "(channel_id, message_id, issue_repo, issue_number, epic_number)", "after GitHub verifies closure, replace ⌛ with ✅ in #demandas"),
+    ("ensure_subissue_context", _ensure_subissue_context, "(guild_id, channel_id, issue_repo, issue_number, name)", "create or recover the one dedicated operational thread for a sub-issue; optional handoff is sent until its receipt is persisted"),
     ("list_pins", _list_pins, "(channel_id)", "pinned messages in a channel"),
     ("pin_message", _pin_message, "(channel_id, message_id)", "pin a message"),
     ("unpin_message", _unpin_message, "(channel_id, message_id)", "unpin a message"),
@@ -468,7 +609,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "add_reaction", "remove_own_reaction", "complete_demand"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "ensure_subissue_context", "add_reaction", "remove_own_reaction", "complete_demand"})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -534,6 +675,7 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "emoji": {"type": "string", "description": "Unicode emoji reaction."},
     "issue_repo": {"type": "string", "description": "GitHub owner/repository for the technical issue and epic."},
     "issue_number": {"type": "string", "description": "Technical GitHub issue number."},
+    "handoff": {"type": "string", "description": "Initial handoff sent only when ensure_subissue_context creates its thread."},
     "epic_number": {"type": "string", "description": "GitHub epic issue number."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
     "name": {"type": "string", "description": "New thread name (create_thread)."},
@@ -638,7 +780,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "emoji": "", "issue_repo": "", "issue_number": "", "epic_number": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "emoji": "", "issue_repo": "", "issue_number": "", "handoff": "", "epic_number": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

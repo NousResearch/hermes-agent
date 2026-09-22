@@ -605,6 +605,12 @@ def _print_fetch_failure(c: Console, sources, identifier: str, meta=None, source
     rate_limited = any(getattr(src, "is_rate_limited", False)
                        or getattr(getattr(src, "github", None), "is_rate_limited", False)
                        for src in sources)
+    if getattr(source, "last_fetch_failure", "") == "rejected_unsafe_path":
+        c.print(f"[bold red]Error:[/] Download of '{identifier}' was rejected because its skill bundle "
+                "contains an unsafe referenced path.")
+        c.print("[dim]The skill may still exist upstream, but Hermes will not install an unsafe "
+                "bundle. Review the skill's referenced files and try again after its author fixes them.[/]\n")
+        return
     # Index hit but files gone: a stale index entry, not a user typo — name it so users stop
     # re-trying spellings (#3259). Only when no adapter was rate limited: a throttled fetch
     # also yields meta-without-bundle, and calling that "stale" would send users away from a

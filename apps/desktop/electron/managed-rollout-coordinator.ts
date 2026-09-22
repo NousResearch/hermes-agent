@@ -94,6 +94,7 @@ export type ManagedRolloutAction =
   | { kind: 'stop' }
   | { kind: 'promote'; auto?: boolean }
   | { kind: 'restart' }
+  | { kind: 'reconcile-unknown'; installId: string }
   | { kind: 'reconciled'; phase: Extract<ManagedRolloutPhase, 'paused' | 'awaiting-promotion' | 'attention-required' | 'completed' | 'completed-with-exclusions'> }
   | { kind: 'exclude'; installId: string }
 
@@ -148,10 +149,21 @@ export interface ManagedRolloutEvidenceAdapter {
   sweep: (state: ManagedRolloutState) => Promise<ManagedRolloutEvidenceProof>
 }
 
+/** Read-only observation and post-clearance recovery stay separate from apply. */
+export interface ManagedRolloutRecoveryAdapter {
+  reprobe: (authorization: ManagedRolloutAuthorization) => Promise<{
+    correlationId: string
+    outcome: 'updated' | 'already-current' | 'failed' | 'refused' | 'unverified'
+    terminal: boolean
+  }>
+  recover: (authorization: ManagedRolloutAuthorization) => Promise<{ correlationId: string; clearanceProved: boolean }>
+}
+
 export interface ManagedRolloutCoordinatorDependencies {
   journal: ManagedRolloutJournalAdapter
   service: ManagedRolloutServiceAdapter
   evidence: ManagedRolloutEvidenceAdapter
+  recovery?: ManagedRolloutRecoveryAdapter
   processGeneration?: number
 }
 
@@ -257,6 +269,16 @@ export function reduceManagedRollout(state: ManagedRolloutState, action: Managed
   if (action.kind === 'reconciled') {
     if (state.phase !== 'reconciling') return refuse(state, 'rollout-is-not-reconciling')
     next.phase = action.phase
+    return { ok: true, state: next }
+  }
+
+  if (action.kind === 'reconcile-unknown') {
+    if (!attempt) return refuse(state, 'unknown-installation')
+    if (state.phase !== 'reconciling' || !['authorized', 'observed'].includes(attempt.state)) {
+      return refuse(state, 'unknown-reconciliation-not-admissible')
+    }
+    attempt.state = 'unverified'
+    next.phase = 'attention-required'
     return { ok: true, state: next }
   }
 
@@ -468,6 +490,33 @@ export function createManagedRolloutCoordinator(
       return apply({ kind: 'terminal', installId, outcome })
     })
 
+  const reprobe = (installId: string) =>
+    admit(async () => {
+      const attempt = state.attempts[installId]
+      if (!attempt || !['authorized', 'observed', 'unverified', 'recovery-required'].includes(attempt.state)) {
+        return refuse(state, 'reprobe-not-admissible')
+      }
+      if (!deps.recovery) return refuse(state, 'recovery-adapter-unavailable')
+      const observation = await deps.recovery.reprobe(authorizationFor(attempt))
+      if (observation.correlationId !== attempt.correlationId) return refuse(state, 'reprobe-correlation-mismatch')
+      if (!observation.terminal) return { ok: true, state: cloneState(state) }
+      return apply({ kind: 'terminal', installId, outcome: observation.outcome })
+    })
+
+  const recover = (installId: string) =>
+    admit(async () => {
+      const attempt = state.attempts[installId]
+      if (!attempt || !['unverified', 'recovery-required'].includes(attempt.state)) {
+        return refuse(state, 'recovery-not-admissible')
+      }
+      if (!deps.recovery) return refuse(state, 'recovery-adapter-unavailable')
+      const result = await deps.recovery.recover(authorizationFor(attempt))
+      if (result.correlationId !== attempt.correlationId || !result.clearanceProved) {
+        return refuse(state, 'recovery-clearance-not-proved')
+      }
+      return { ok: true, state: cloneState(state) }
+    })
+
   return {
     get snapshot() {
       return cloneState(state)
@@ -477,6 +526,8 @@ export function createManagedRolloutCoordinator(
     command,
     promote,
     terminal,
+    reprobe,
+    recover,
     reduce: apply
   }
 }

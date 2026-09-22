@@ -238,6 +238,8 @@ export function reconcilePersistedLiveTurn(
     localStart >= 0 ? previous.slice(0, localStart + 1) : previous
   )
 
+  const turnStart = result.length
+
   let pairedLocal = localStart >= 0
   let unpairedLocal: ChatMessage[] = []
 
@@ -302,7 +304,21 @@ export function reconcilePersistedLiveTurn(
   result.push(...unpairedLocal)
 
   if (projection.queued?.user) {
-    result.push({ id: `user-queued-${projection.session_id}`, role: 'user', parts: [textPart(projection.queued.user)] })
+    const id = `user-queued-${projection.session_id}`
+
+    const queuedIndex = result.findIndex(
+      (message, index) => index >= turnStart && message.role === 'user' && message.id === id
+    )
+
+    const parts = [textPart(projection.queued.user)]
+
+    // The anchored turn has one next-turn queue slot. Refresh its projection
+    // in place; equal correction/optimistic user text is a different occurrence.
+    if (queuedIndex >= 0) {
+      result[queuedIndex] = { ...result[queuedIndex], parts }
+    } else {
+      result.push({ id, role: 'user', parts })
+    }
   }
 
   return result

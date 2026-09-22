@@ -206,7 +206,7 @@ it.each([
         send('tool.start', { name: 'read_file', tool_id: `call-${index}`, args: {} })
         send('tool.complete', { name: 'read_file', tool_id: `call-${index}`, result: 'fixture' })
       })
-      send('message.delta', { text: `\n\n${race === 'snapshot-ahead' ? tail.slice(0, 10) : tail}` })
+      send('message.delta', { text: `\n\n${race === 'snapshot-ahead' ? 'The res' : tail}` })
       await act(async () => {
         await vi.advanceTimersByTimeAsync(150)
       })
@@ -274,6 +274,25 @@ it.each([
     expect(
       rows.flatMap(row => row.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
     ).toEqual(comments.map((_, index) => `call-${index}`))
+
+    if (race !== 'missing-ids') {
+      // Activation feeds its previous projection back into the warm cache.
+      // Replaying an unchanged snapshot must not create another occurrence.
+      for (let resume = 0; resume < 2; resume++) {
+        await act(async () => {
+          await result.current.actions.resumeSession(storedId, true)
+        })
+        const repeatedRows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+
+        expect(repeatedRows.filter(row => row.role === 'assistant').map(chatMessageText)).toEqual(
+          rows.filter(row => row.role === 'assistant').map(chatMessageText)
+        )
+        expect(
+          repeatedRows.flatMap(row => row.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
+        ).toEqual(comments.map((_, index) => `call-${index}`))
+        expect(new Set(repeatedRows.map(row => row.id)).size).toBe(repeatedRows.length)
+      }
+    }
   }
 )
 
@@ -342,3 +361,90 @@ it.each(['snapshot-ahead', 'history-ahead', 'unpersisted-before-correction'] as 
     }
   }
 )
+
+it.each([prompt, 'Inspect the next file'])(
+  'projects the accepted next-turn queue once across cold and repeated warm resume (%s)',
+  async queued => {
+    const durable = history([commentary])
+
+    const snapshot: SessionResumeResult = {
+      session_id: runtimeId,
+      resumed: storedId,
+      messages: [],
+      message_count: 0,
+      running: true,
+      inflight: { user: prompt, assistant: `${commentary}\n\n${tail}`, streaming: true },
+      queued: { user: queued }
+    }
+
+    vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: durable })
+
+    const { result } = mount(snapshot)
+
+    for (let resume = 0; resume < 3; resume++) {
+      if (resume === 2) {
+        // Later text-only arrivals extend the same backend queue slot.
+        snapshot.queued!.user = `${queued}\n\nThen inspect the README`
+      }
+
+      await act(async () => {
+        await result.current.actions.resumeSession(storedId, true)
+      })
+      const rows = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!.messages
+
+      expect(rows.filter(row => row.role === 'user').map(chatMessageText)).toEqual([prompt, snapshot.queued!.user])
+      expect(new Set(rows.map(row => row.id)).size).toBe(rows.length)
+      expect(
+        rows.flatMap(row => row.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
+      ).toEqual(['call-0'])
+    }
+  }
+)
+
+it('settles a retained idle error once across repeated resume and a changed error snapshot', async () => {
+  const partial = 'The partial result'
+
+  const snapshot: SessionResumeResult = {
+    session_id: runtimeId,
+    resumed: storedId,
+    messages: [],
+    message_count: 0,
+    running: false,
+    inflight: {
+      user: prompt,
+      assistant: partial,
+      streaming: false,
+      status: 'error',
+      recoverable: true,
+      error: 'Connection reset',
+      error_surface: { layer: 'streaming', code: 'stream_drop', retryable: true }
+    }
+  }
+
+  vi.mocked(getLatestSessionMessages).mockResolvedValue({ session_id: storedId, messages: [user] })
+
+  const { result } = mount(snapshot)
+
+  for (let resume = 0; resume < 3; resume++) {
+    if (resume === 2) {
+      snapshot.inflight!.error = 'Upstream timed out'
+      snapshot.inflight!.error_surface = { layer: 'provider', code: 'timeout', retryable: true }
+    }
+
+    await act(async () => {
+      await result.current.actions.resumeSession(storedId, true)
+    })
+    const state = result.current.cache.sessionStateByRuntimeIdRef.current.get(runtimeId)!
+
+    expect(state.messages.filter(row => row.role === 'assistant').map(chatMessageText)).toEqual([partial])
+    expect(state.messages.filter(row => row.error)).toHaveLength(1)
+    expect(state.messages.at(-1)).toMatchObject({
+      error: snapshot.inflight!.error,
+      errorSurface: snapshot.inflight!.error_surface,
+      pending: false
+    })
+    expect(new Set(state.messages.map(row => row.id)).size).toBe(state.messages.length)
+    expect(state.busy).toBe(false)
+    expect(state.awaitingResponse).toBe(false)
+  }
+})

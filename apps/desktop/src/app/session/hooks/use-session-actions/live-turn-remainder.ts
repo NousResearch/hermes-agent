@@ -1,4 +1,4 @@
-import { assistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
+import { appendAssistantTextPart, type ChatMessage, chatMessageText } from '@/lib/chat-messages'
 
 /** Whitespace normalization is for comparison only; cuts always address the original text. */
 function comparable(text: string): { text: string; ends: number[] } {
@@ -20,23 +20,28 @@ function comparable(text: string): { text: string; ends: number[] } {
 }
 
 function textSpans(messages: ChatMessage[]) {
-  let text = ''
+  const spans: string[] = []
 
   for (const message of messages) {
+    let text = ''
+
     for (const part of message.parts) {
-      if (part.type !== 'text' || !part.text.trim()) {
-        continue
+      if (part.type === 'text') {
+        text += part.text
+      } else if (text) {
+        spans.push(text)
+        text = ''
       }
+    }
 
-      if (text) {
-        text += '\n\n'
-      }
-
-      text += part.text
+    if (text) {
+      spans.push(text)
     }
   }
 
-  return { text }
+  // Adjacent chunks are one text occurrence, even if an earlier activation
+  // split them. Only a message/tool/channel boundary inserts a separator.
+  return { text: spans.filter(text => text.trim()).join('\n\n') }
 }
 
 function hasContent(message: ChatMessage): boolean {
@@ -55,32 +60,57 @@ export function mergeLiveAssistantRun(projected: ChatMessage[], cached: ChatMess
     return local
   }
 
-  const live = comparable(textSpans(local).text).text
-  const remoteSpans = textSpans(projected)
-  const remote = comparable(remoteSpans.text)
   const terminal = projected.at(-1)!
 
   if (terminal.error) {
-    return [...local, terminal]
+    // A previous activation may already have appended this retained failure
+    // beside a distinct local response. Reconcile that occurrence, not the run.
+    const replayIndex = local.findIndex(message => message.id === terminal.id)
+
+    if (replayIndex >= 0 && local.length > 1) {
+      return [
+        ...local.slice(0, replayIndex),
+        ...mergeLiveAssistantRun(projected, [local[replayIndex]]),
+        ...local.slice(replayIndex + 1)
+      ]
+    }
+
+    if (local.some(message => message.error && message.error !== terminal.error && message.id !== terminal.id)) {
+      return [...local, ...projected]
+    }
   }
 
+  const live = comparable(textSpans(local).text).text
+  const remoteSpans = textSpans(projected)
+  const remote = comparable(remoteSpans.text)
+
+  const settled = (message: ChatMessage): ChatMessage => ({
+    ...message,
+    pending: terminal.pending === true,
+    interim: terminal.interim,
+    ...(terminal.error ? { error: terminal.error, errorSurface: terminal.errorSurface ?? message.errorSurface } : {})
+  })
+
   if (!remote.text || live.startsWith(remote.text)) {
-    return local.map((message, index) =>
-      index === local.length - 1 ? { ...message, pending: terminal.pending === true } : message
-    )
+    return local.map((message, index) => (index === local.length - 1 ? settled(message) : message))
   }
 
   if (remote.text.startsWith(live)) {
-    const suffix = live ? remoteSpans.text.slice(remote.ends[live.length - 1]) : remoteSpans.text
+    let suffix = live ? remoteSpans.text.slice(remote.ends[live.length - 1]) : remoteSpans.text
     const last = local.at(-1)!
+    const lastPart = last.parts.at(-1)
+
+    // This is the same text occurrence, not another paragraph. Keeping a
+    // mid-word suffix in its own part invents a boundary on the next resume.
+    if (lastPart?.type === 'text' && /\s$/.test(lastPart.text)) {
+      suffix = suffix.trimStart()
+    }
 
     return [
       ...local.slice(0, -1),
       {
-        ...last,
-        pending: terminal.pending === true,
-        interim: terminal.interim,
-        parts: [...last.parts, assistantTextPart(suffix)]
+        ...settled(last),
+        parts: appendAssistantTextPart(last.parts, suffix)
       }
     ]
   }

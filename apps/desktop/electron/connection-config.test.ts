@@ -588,6 +588,24 @@ test('pathWithProfileScope keeps an explicit profile query and no-ops on empty p
   assert.equal(pathWithProfileScope('/api/cron/jobs', null), '/api/cron/jobs')
 })
 
+test('local registry curator run names its profile on a multiplex backend', () => {
+  for (const profile of ['default', 'research']) {
+    assert.equal(
+      pathForRegistryBackendRequest('/api/curator/run', profile, { mode: 'local' }, 'POST'),
+      `/api/curator/run?profile=${profile}`
+    )
+  }
+
+  assert.equal(
+    pathForRegistryBackendRequest('/api/files/upload', 'research', { mode: 'local' }, 'POST'),
+    '/api/files/upload'
+  )
+  assert.equal(
+    pathForRegistryBackendRequest('/api/curator/run', 'research', { remoteProfile: 'research' }, 'POST'),
+    '/api/curator/run'
+  )
+})
+
 test('pathForRegistryBackendRequest uses the resolved registry backend scope', () => {
   assert.equal(
     pathForRegistryBackendRequest('/api/fs/read-data-url?path=%2Fsrv%2Fimage.png', 'research', {

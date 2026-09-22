@@ -17190,7 +17190,7 @@ async function dispatchRegistryApiRequest(
         ensureRegistryBackend(registryConnectionId, routeProfile, '', { spawnPriority })
       )
 
-  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection)
+  const requestPath = pathForRegistryBackendRequest(request.path, requestProfile, connection, request?.method)
 
   const response = await fetchJsonForBackend(connection, requestPath, {
     method: request?.method,

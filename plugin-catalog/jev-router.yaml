@@ -1,6 +1,6 @@
 name: jev-router
 repo: https://github.com/AlphaPerseii3000/jev-router
-sha: 6c7fd6153bcd931de2a01a07dd83259a0f65aa76
+sha: 64cf362c25fc02383295c63290c1f7d87306ddb6
 description: Per-turn model and reasoning-effort routing decided by TypeSafe Jev, which rewrites the outgoing Ollama:Cloud provider request itself via the llm_request middleware. Ollama:Cloud only — no other provider is routed, and every failure path leaves the request byte-identical to a plugin-disabled run.
 maintainer: AlphaPerseii3000
 tier: community

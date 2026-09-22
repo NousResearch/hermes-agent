@@ -702,7 +702,10 @@ def _setup_browser_login(cfg: dict, hermes_host: dict, write_path: Path) -> bool
 
 def _setup_cloud_auth(cfg: dict, hermes_host: dict, write_path: Path) -> bool:
     """Cloud auth: OAuth (browser), device code, or API key. Returns False on abort."""
+    # OAuth endpoint resolution reloads the configuration from disk. Persist
+    # the switch before it can see a stale local endpoint and select localhost.
     cfg.pop("baseUrl", None)  # cloud uses SDK default
+    _write_config(cfg, write_path)
     from plugins.memory.honcho.oauth import OAuthCredential, is_oauth_access_token
     existing_oauth = OAuthCredential.from_host_block(hermes_host)
     device_available = _device_login_available()

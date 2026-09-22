@@ -45,6 +45,41 @@ class TestResolveApiKey:
         assert honcho_cli._resolve_api_key({"baseUrl": "https://honcho.example.com"}) == "local"
 
 
+class TestCloudSetupEndpoints:
+    def test_cloud_login_resolves_endpoints_after_stale_local_url_is_saved(self, monkeypatch, tmp_path):
+        """Cloud setup must not let endpoint resolution reread a stale local baseUrl."""
+        import plugins.memory.honcho.cli as honcho_cli
+        from plugins.memory.honcho import oauth_flow
+        from plugins.memory.honcho.oauth import OAuthCredential
+
+        config_path = tmp_path / "honcho.json"
+        config_path.write_text(json.dumps({"baseUrl": "http://localhost:8000"}))
+        cfg = {"baseUrl": "http://localhost:8000"}
+        resolved = {}
+
+        def from_global_config(cls, host=None):
+            on_disk = json.loads(config_path.read_text())
+            return SimpleNamespace(environment="production", base_url=on_disk.get("baseUrl"))
+
+        def authorize_via_loopback(**kwargs):
+            resolved["endpoints"] = oauth_flow.resolve_endpoints()
+            return OAuthCredential(
+                access_token="hch-at-test", refresh_token="hch-rt-test", expires_at=9_999_999_999,
+                client_id="hermes-agent", token_endpoint=resolved["endpoints"].token_url,
+            )
+
+        monkeypatch.setattr(honcho_cli, "_device_login_available", lambda: False)
+        monkeypatch.setattr(honcho_cli, "_headless", lambda: (False, True))
+        monkeypatch.setattr(honcho_cli, "_prompt", lambda *args, **kwargs: "oauth")
+        monkeypatch.setattr(oauth_flow.HonchoClientConfig, "from_global_config", classmethod(from_global_config))
+        monkeypatch.setattr(oauth_flow, "authorize_via_loopback", authorize_via_loopback)
+
+        assert honcho_cli._setup_cloud_auth(cfg, {}, config_path) is True
+        assert "baseUrl" not in json.loads(config_path.read_text())
+        assert resolved["endpoints"].authorize_url == "https://app.honcho.dev/authorize"
+        assert resolved["endpoints"].token_url == "https://api.honcho.dev/oauth/token"
+
+
 class TestCmdSetupLocalJwt:
     """Local-deployment setup must allow configuring a JWT for AUTH_JWT_SECRET-backed Honcho servers."""
 

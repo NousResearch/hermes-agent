@@ -103,6 +103,31 @@ def test_local_provider_model_uses_safe_default_cap(kanban_with_profiles, global
     ]
 
 
+def test_priority_runtime_local_cap_allows_two_local_workers(kanban_with_profiles):
+    kb = kanban_with_profiles
+    with kb.connect_closing() as conn:
+        kb.create_board(slug="default", name="Test")
+        task_ids = [
+            _create_overridden(
+                kb, conn, f"local-{index}", provider="ollama-launch", model="qwen3.6:27b"
+            )
+            for index in range(3)
+        ]
+
+        result = kb.dispatch_once(
+            conn,
+            spawn_fn=lambda *_args, **_kwargs: os.getpid(),
+            dry_run=True,
+            max_in_progress_per_model=8,
+            local_model_cap=2,
+        )
+
+    assert [task_id for task_id, _who, _workspace in result.spawned] == task_ids[:2]
+    assert result.skipped_per_model_capped == [
+        (task_ids[2], "ollama-launch", "qwen3.6:27b", 2)
+    ]
+
+
 def test_per_model_override_tightens_below_the_global_cap(kanban_with_profiles):
     """live incident, 2026-08-28: a global max_in_progress_per_model that
     suits remote providers (no real concurrency limit) is unsafe for a

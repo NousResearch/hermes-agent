@@ -87,6 +87,36 @@ def test_dm_unknown_peer_and_missing_key(monkeypatch):
     assert peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark", message="hi", json=False)) == 1
 
 
+def test_resolve_bare_target_uses_registered_peer_key(monkeypatch):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": "http://x"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: "peer-key")
+
+    assert peer_cmd._resolve_peer_target("spark") == (
+        "spark", None, {"url": "http://x"}, "peer-key"
+    )
+
+
+def test_resolve_named_target_uses_only_its_profile_api_key(monkeypatch):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": "http://x"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: pytest.fail("default peer key must not be read"))
+    monkeypatch.setattr(peer_cmd, "_profile_api_server_key", lambda profile: "research-key")
+
+    assert peer_cmd._resolve_peer_target("spark/research") == (
+        "spark", "research", {"url": "http://x"}, "research-key"
+    )
+
+
+def test_resolve_named_target_fails_closed_without_profile_api_key(monkeypatch, capsys):
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": "http://x"}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: pytest.fail("default peer key must not be read"))
+    monkeypatch.setattr(peer_cmd, "_profile_api_server_key", lambda profile: "")
+
+    rc = peer_cmd.cmd_peer(SimpleNamespace(peer_action="dm", target="spark/research", message="hi", json=False))
+
+    assert rc == 1
+    assert "research" in capsys.readouterr().err
+
+
 # ── live HTTP dm flow (real loopback server, fake peer gateway) ──────────────
 
 
@@ -529,6 +559,29 @@ def test_stop_requests_exact_async_run(monkeypatch, capsys, fake_peer_server):
     payload = json.loads(capsys.readouterr().out)
     assert payload["run_id"] == "run_1"
     assert payload["status"] == "stopping"
+
+
+@pytest.mark.parametrize("action", ["dm", "run", "status", "stop"])
+def test_named_profile_requests_use_profile_api_key(monkeypatch, capsys, fake_peer_server, action):
+    _FakePeer.sessions = ["bc_existing"]
+    monkeypatch.setattr(peer_cmd, "_load_peers", lambda: {"spark": {"url": fake_peer_server}})
+    monkeypatch.setattr(peer_cmd, "_peer_secret", lambda name: pytest.fail("default peer key must not be read"))
+    monkeypatch.setattr(peer_cmd, "_profile_api_server_key", lambda profile: "research-key")
+    # This loopback gateway implements the unprefixed handlers only; URL
+    # composition is covered separately, so keep this exercise focused on
+    # credential selection for every request path.
+    monkeypatch.setattr(peer_cmd, "_base_url", lambda peer, profile: fake_peer_server)
+    args = {"peer_action": action, "target": "spark/research", "json": True}
+    if action in {"dm", "run"}:
+        args["message"] = "ping"
+    if action == "run":
+        args["idempotency_key"] = "profile-key-test"
+    if action in {"status", "stop"}:
+        args["run_id"] = "run_1"
+
+    assert peer_cmd.cmd_peer(SimpleNamespace(**args)) == 0
+    assert _FakePeer.auth_seen
+    assert all(value == "Bearer research-key" for value in _FakePeer.auth_seen)
 
 
 # ── cross-origin redirect must not carry the peer's Bearer key ──────────────

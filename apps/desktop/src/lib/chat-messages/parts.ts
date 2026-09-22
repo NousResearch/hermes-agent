@@ -206,41 +206,61 @@ export function collectUnspokenTurnSpeech(
   return { id, pending, text: parts.join('\n\n') }
 }
 
-const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
+export const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
-/**
- * Drop earlier text parts that a later text part repeats verbatim (after
- * whitespace normalization). Providers that continue a turn after a tool
- * call sometimes re-send the previous assistant text as the next message's
- * prefix (tool_calls row, then a stop row with identical prose) — the turn
- * merge then holds the same paragraph twice and everything in it renders
- * twice, most visibly ::preview frames. The LAST occurrence is the
- * authoritative one; keep it.
- */
-export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
-  const lastByText = new Map<string, number>()
+type TextPart = Extract<ChatMessagePart, { type: 'text' }>
+const isTextPart = (part: ChatMessagePart): part is TextPart => part.type === 'text'
+
+/** The same physical row delivered twice is one occurrence; keep its last copy. */
+function dedupeRepeatedRowText(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const occurrence = (part: TextPart) => `${part.sourceRowId}:${normalizeWs(part.text)}`
+  const lastByOccurrence = new Map<string, number>()
 
   parts.forEach((part, index) => {
-    if (part.type === 'text') {
-      const key = normalizeWs(part.text)
-
-      if (key) {
-        lastByText.set(key, index)
-      }
+    if (part.type === 'text' && part.sourceRowId !== undefined) {
+      lastByOccurrence.set(occurrence(part), index)
     }
   })
 
-  const dropped = parts.filter((part, index) => {
-    if (part.type !== 'text') {
-      return true
-    }
+  const kept = parts.filter(
+    (part, index) =>
+      part.type !== 'text' || part.sourceRowId === undefined || lastByOccurrence.get(occurrence(part)) === index
+  )
 
-    const key = normalizeWs(part.text)
+  return kept.length === parts.length ? parts : kept
+}
 
-    return !key || lastByText.get(key) === index
-  })
+/**
+ * Collapse duplicate deliveries of the same text without touching authored
+ * repeats. Providers that continue a turn after a tool call sometimes re-send
+ * the previous assistant text verbatim as the stop row (tool_calls row, then a
+ * stop row with identical prose) — the turn merge then holds the same
+ * paragraph twice and everything in it renders twice, most visibly ::preview
+ * frames. Only that shape folds across rows: the bubble's final text (no tool
+ * call after it) equal to the text directly before it across a tool call.
+ * Equal commentary in earlier tool rounds is authored twice and must hydrate
+ * in step with the live stream.
+ */
+export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const rowDeduped = dedupeRepeatedRowText(parts)
+  const texts = rowDeduped.flatMap((part, index) => (isTextPart(part) ? [{ index, part }] : []))
+  const [previous, last] = texts.slice(-2)
 
-  return dropped.length === parts.length ? parts : dropped
+  if (!last || !previous || rowDeduped.slice(last.index + 1).some(part => part.type === 'tool-call')) {
+    return rowDeduped
+  }
+
+  const key = normalizeWs(last.part.text)
+
+  if (
+    !key ||
+    key !== normalizeWs(previous.part.text) ||
+    !rowDeduped.slice(previous.index + 1, last.index).some(part => part.type === 'tool-call')
+  ) {
+    return rowDeduped
+  }
+
+  return rowDeduped.filter((_, index) => index !== previous.index)
 }
 
 /**

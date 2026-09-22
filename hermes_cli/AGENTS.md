@@ -87,6 +87,14 @@ Do not add a surface-specific goal parser. ACP has no goal command or goal loop 
   set/get/unset <NAME>` route any bare name registered in `OPTIONAL_ENV_VARS` / `_EXTRA_ENV_KEYS`
   (or carrying a `setup_hidden_env` platform suffix) to `.env` via `config_env_routing.py` — the
   file the platform setup flows write — never to the top level of config.yaml.
+- **One writer.** Every write of a `config.yaml` (main or profile) goes through
+  `hermes_cli.config.atomic_config_write` (→ `utils.atomic_roundtrip_yaml_save`, ruamel
+  round-trip merge): comments, key order, quoting and blank lines survive, absent keys are
+  deleted, and the fail-closed unreadable-file guard runs first. `save_config`, `config set/unset`,
+  migrations, plugin bookkeeping, gateway/TUI RPCs and auth resets all reach it; never call
+  `atomic_yaml_write` / `yaml.dump` / `yaml.safe_dump` on a config path — `scripts/check_config_yaml_writers.py`
+  (CI lint) rejects it, and `tests/hermes_cli/test_config_yaml_comment_preservation.py` guards each
+  path (#92554). The commented example blocks are appended only when the file is created.
 - **Three loaders — know which you're in:** `load_cli_config()` (CLI, `cli.py`); `load_config()`
   (`hermes tools/setup`, most subcommands, `hermes_cli/config.py`, merges `DEFAULT_CONFIG`);
   `hermes_cli/config_effective.py::load_user_config_effective()` (gateway runtime via

@@ -9,10 +9,12 @@ projection: every frame carries the full target snapshot, and the renderer never
 
 from __future__ import annotations
 
+from typing import Literal
+
 from pydantic import Field
 
 from .base import Params, Payload, Result, WireEnum
-from .common import ProfileParams
+from .common import ConnectorOwner, ProfileParams
 from .registry import event, method
 
 
@@ -38,7 +40,6 @@ class ConnectionTargetState(WireEnum):
     skipped = "skipped"
     failed = "failed"
     expired = "expired"
-    unavailable = "unavailable"
     not_connected = "not_connected"
 
 
@@ -57,7 +58,6 @@ class ConnectionSettleReason(WireEnum):
     continue_ = "continue"
     deadline = "deadline"
     interrupt = "interrupt"
-    unavailable = "unavailable"
 
 
 class ConnectionTargetEnvField(Payload):
@@ -127,6 +127,7 @@ class ConnectionUpdatePayload(ConnectionOperationStatus, Payload):
     """``methods_connectors._connection_update``: one target transition (``target``/``from``/``to``/
     ``actor``) or the settlement (none of those), with the full snapshot."""
 
+    owner: ConnectorOwner
     target: str | None = None
     from_: ConnectionTargetState | None = Field(default=None, alias="from")  # ``from`` is a keyword
     to: ConnectionTargetState | None = None
@@ -138,16 +139,16 @@ event("connection.update", ConnectionUpdatePayload,
 
 
 class ConnectionOperationParams(ProfileParams):
-    session_id: str
+    owner: ConnectorOwner
     op_id: str
 
 
 method("connectors.operation.status", params=ConnectionOperationParams, result=ConnectionOperationStatus,
-       doc="The current snapshot of one open operation on an owned session.")
+       doc="The current snapshot of one open session or account operation.")
 
 
 class ConnectionWakeResult(Result):
-    status: str
+    status: Literal["ok"]
 
 
 method("connectors.operation.wake", params=ConnectionOperationParams, result=ConnectionWakeResult,
@@ -184,7 +185,7 @@ class ConnectionRespondParams(ConnectionOperationParams):
 
 
 class ConnectionRespondResult(Result):
-    status: str
+    status: Literal["ok"]
     settled: bool
 
 

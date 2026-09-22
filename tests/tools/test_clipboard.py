@@ -17,6 +17,7 @@ from unittest.mock import patch, MagicMock, mock_open
 
 import pytest
 
+from hermes_platform.host import runtime as host_runtime
 from hermes_cli.clipboard import (
     save_clipboard_image,
     has_clipboard_image,
@@ -173,18 +174,14 @@ class TestMacosClipboardFileUrl:
 
 class TestIsWsl:
     def setup_method(self):
-        # _is_wsl is hermes_constants.is_wsl; reset the function's own module
-        # globals so this stays stable even if hermes_constants was imported
-        # through a different module object earlier in a large xdist run.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
+        # Reset the cache in the module that owns _is_wsl.
+        host_runtime._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
     def teardown_method(self):
         # Reset again after the test so we don't leak a cached value
         # (True/False) into whichever test the xdist worker runs next.
-        import hermes_constants
-        hermes_constants._wsl_detected = None
+        host_runtime._wsl_detected = None
         _is_wsl.__globals__["_wsl_detected"] = None
 
     @pytest.mark.parametrize("content, expected", [
@@ -343,8 +340,7 @@ class TestLinuxSave:
     """Test that _linux_save dispatches correctly to WSL → Wayland → X11."""
 
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
     def test_wsl_tried_first(self, tmp_path):
         dest = tmp_path / "out.png"
@@ -458,8 +454,7 @@ class TestConvertToPng:
 
 class TestHasClipboardImage:
     def setup_method(self):
-        import hermes_cli.clipboard as cb
-        cb._wsl_detected = None
+        host_runtime._wsl_detected = None
 
     @pytest.mark.macos_only
     def test_macos_dispatch(self):

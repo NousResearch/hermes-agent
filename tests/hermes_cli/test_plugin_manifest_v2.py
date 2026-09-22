@@ -94,6 +94,7 @@ class TestV2Parsing:
                 "license": "MIT",
                 "homepage": "https://example.com/modern",
                 "tags": ["gateway", "demo"],
+                "provides_middleware": ["reasoning_effort"],
                 "requires_plugins": [
                     {"id": "other", "version_range": ">=1.0,<2"},
                     "bare-dep",
@@ -113,6 +114,7 @@ class TestV2Parsing:
         assert m.license == "MIT"
         assert m.homepage == "https://example.com/modern"
         assert m.tags == ["gateway", "demo"]
+        assert m.provides_middleware == ["reasoning_effort"]
         assert m.requires_plugins == [
             {"id": "other", "version_range": ">=1.0,<2"},
             {"id": "bare-dep", "version_range": None},

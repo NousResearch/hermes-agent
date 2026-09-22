@@ -624,6 +624,39 @@ class TestDisplayDedupe:
         assert _row_ids(db, sid, include_compacted=True, limit=2, offset=0) == original_ids[:2]
         assert _row_ids(db, sid, include_compacted=True, latest=True, limit=2, offset=2) == original_ids[:2]
 
+    def test_paging_does_not_lose_identities_when_nulls_arrive_after_probe(self, db, monkeypatch):
+        """A writer can null two orders after the old probe but before paging.
+
+        The `_read_all` seam is the real page-query boundary, so this is a
+        deterministic TOCTOU regression rather than a scheduling/sleep test.
+        The former probe+fast-path implementation grouped the two newly-NULL
+        rows together; durable-identity paging keeps every logical message.
+        """
+        sid = "null-order-toctou"
+        db.create_session(sid, source="cli")
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
+        ])
+        expected = _row_ids(db, sid)
+        original_read_all = db._read_all
+        mutated = False
+
+        def mutate_before_page(sql, params):
+            nonlocal mutated
+            if not mutated and "WITH page AS" in sql:
+                mutated = True
+                db._execute_write(lambda conn: conn.execute(
+                    "UPDATE messages SET display_order = NULL "
+                    "WHERE session_id = ? AND content IN (?, ?)", (sid, "q1", "q2")))
+            return original_read_all(sql, params)
+
+        monkeypatch.setattr(db, "_read_all", mutate_before_page)
+        assert _row_ids(db, sid, include_compacted=True) == expected
+        assert mutated
+
     def test_distinct_tool_calls_with_same_content_are_not_merged(self, db):
         """Two real tool messages that happen to share role/content/timestamp
         must stay separate: the dedupe key includes the tool fields, so only

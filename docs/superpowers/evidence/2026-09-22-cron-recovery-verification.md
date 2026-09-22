@@ -97,3 +97,48 @@ The final `hermes cron doctor` reported 14 issues across 11 jobs. The live issue
 ## Remaining acceptance boundary
 
 Task 6 cannot be fully accepted until a valid dedicated `mrkillbobbot` fine-grained token is installed through the Hermes secret boundary and both PR-feedback jobs produce new durable `completed` runs. After that, rerun `hermes github-pr-feedback doctor` and `hermes cron doctor`, then decide which resolved incidents are obsolete from the new receipts.
+
+## Review round 1: cleanup script restoration
+
+Review found that `~/.hermes/scripts/worktree-cleanup.py` was byte-identical to
+`library-vault-catalog.py`, only 31 lines long, and ignored
+`HERMES_WORKTREE_CLEANUP_SCOPE`. The incorrect files shared SHA-256
+`01d8bddff999da39ebb84b3be365ffdca9e12ed7a6dd0061b1d6cf97872ea058`.
+
+The cleanup script was restored from the preserved pre-rebind implementation at
+`~/.hermes/path-repair-backups/20260910-pre-lunabot-rebind/scripts/worktree-cleanup.py`.
+That 337-line implementation retains the 48-hour activity buffer, dirty-worktree and
+open-file guards, captured-work verification, bounded removal count, and per-scope logs.
+Its sole path repair changed the retired Hermes checkout to the canonical
+`/Users/mikedemott/Hermes-agent` checkout. The restored live script has SHA-256
+`76d71a9c765d1de71109656010736c3accbe05f1d853f4f45640f8b8b24aa7d4` and is no
+longer identical to the library catalog script.
+
+Validation receipts:
+
+- Python byte-compilation passed.
+- A non-executing scope probe resolved `lunabot` to `/Users/mikedemott/LunaBot` and
+  `worktree-cleanup-lunabot-log.jsonl`.
+- A non-executing scope probe resolved `hermes-agent` to
+  `/Users/mikedemott/Hermes-agent` and `worktree-cleanup-hermes-agent-log.jsonl`.
+- The first LunaBot direct attempt, run `f013e2f3c7444213a6c1a461d9ac14c3`, failed on a
+  transient read-only SQLite open at `08:29:35`. A retry proceeded through the full guarded
+  scan and completed.
+
+Authoritative successful replacement runs:
+
+| Job | Durable run | Result | Started (America/Los_Angeles) |
+|---|---|---|---|
+| LunaBot worktree cleanup `a0f646ee7160` | `42a440f356a3442580a5a7a4d2427307` | completed | `2026-09-22T08:30:43.706584-07:00` |
+| Hermes-agent worktree cleanup `35f6826b9d32` | `9b1d7b31072c4036bd9e95b4a4c15be5` | completed | `2026-09-22T08:29:43.688481-07:00` |
+| Incremental library Vault catalogue `2047820efb33` | `c75e41d2db3e4b64a2f2544d2d08339b` | completed | `2026-09-22T08:30:00.901175-07:00` |
+
+The LunaBot cleanup inspected 380 registered worktrees, removed 51 worktrees whose guards
+passed, freed 23,489,996,527 bytes, skipped 40 uncaptured worktrees, and skipped 271 for
+other safety reasons. The Hermes cleanup inspected 29 registered worktrees, removed one
+guard-approved worktree, freed 4,027,248,008 bytes, and skipped 14 for safety reasons.
+
+The follow-up `hermes cron doctor` dropped from 14 issues across 11 jobs to 9 issues across
+9 jobs. It no longer reports failed last runs for either cleanup job or the library catalog;
+the remaining cleanup findings are timing warnings. No incident acknowledgement command was
+run.

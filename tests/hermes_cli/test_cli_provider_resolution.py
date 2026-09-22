@@ -935,6 +935,92 @@ def test_save_custom_provider_updates_unnamed_legacy_endpoint(monkeypatch):
     }]
 
 
+def test_save_custom_provider_updates_unique_named_entry_for_anonymous_save(monkeypatch):
+    """A legacy anonymous update keeps working when its URL names one row."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    config = {"custom_providers": [{
+        "name": "OpenCode Zen (personal)", "base_url": "https://opencode.ai/zen/v1/",
+    }]}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider("https://opencode.ai/zen/v1", model="gpt-5.4")
+
+    assert config["custom_providers"] == [{
+        "name": "OpenCode Zen (personal)", "base_url": "https://opencode.ai/zen/v1/", "model": "gpt-5.4",
+    }]
+
+
+def test_save_custom_provider_named_save_claims_nameless_legacy_entry(monkeypatch):
+    """A named scope claims its same-URL legacy row instead of duplicating it."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    config = {"custom_providers": [{"base_url": "https://opencode.ai/zen/v1"}]}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider("https://opencode.ai/zen/v1/", name="OpenCode Zen (personal)", model="gpt-5.4")
+
+    assert config["custom_providers"] == [{
+        "name": "OpenCode Zen (personal)", "base_url": "https://opencode.ai/zen/v1", "model": "gpt-5.4",
+    }]
+
+
+def test_save_custom_provider_named_scopes_claim_then_append_distinct_rows(monkeypatch):
+    """A second named scope must not reclaim the row already claimed by the first."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    config = {"custom_providers": [{"base_url": "https://opencode.ai/zen/v1"}]}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider("https://opencode.ai/zen/v1", name="OpenCode Zen (personal)", model="personal")
+    _save_custom_provider("https://opencode.ai/zen/v1", name="OpenCode Zen (work)", model="work")
+
+    assert [(entry["name"], entry["model"]) for entry in config["custom_providers"]] == [
+        ("OpenCode Zen (personal)", "personal"),
+        ("OpenCode Zen (work)", "work"),
+    ]
+
+
+def test_save_custom_provider_prefers_exact_named_row_over_prior_nameless_row(monkeypatch):
+    """Named saves must never use list order to steal an earlier legacy row."""
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    config = {"custom_providers": [
+        {"base_url": "https://opencode.ai/zen/v1", "model": "legacy"},
+        {"name": "OpenCode Zen (personal)", "base_url": "https://opencode.ai/zen/v1", "model": "old-personal"},
+    ]}
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _save_custom_provider("https://opencode.ai/zen/v1", name="OpenCode Zen (personal)", model="new-personal")
+
+    assert [entry.get("model") for entry in config["custom_providers"]] == ["legacy", "new-personal"]
+    assert "name" not in config["custom_providers"][0]
+
+
+def test_save_custom_provider_anonymous_save_rejects_ambiguous_named_url(monkeypatch):
+    """Anonymous updates must fail closed rather than mutate a named scope by order."""
+    from copy import deepcopy
+
+    from hermes_cli.main_provider_setup import _save_custom_provider
+
+    config = {"custom_providers": [
+        {"name": "OpenCode Zen (personal)", "base_url": "https://opencode.ai/zen/v1", "model": "personal"},
+        {"name": "OpenCode Zen (work)", "base_url": "https://opencode.ai/zen/v1", "model": "work"},
+    ]}
+    before = deepcopy(config)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    with pytest.raises(ValueError, match="without a scope name"):
+        _save_custom_provider("https://opencode.ai/zen/v1", model="gpt-5.4")
+
+    assert config == before
+
+
 
 
 def test_custom_endpoint_key_env_is_a_valid_posix_name_for_ip_endpoints():

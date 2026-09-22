@@ -1844,6 +1844,43 @@ def test_save_discovered_models_preserves_dict_form(monkeypatch):
     )
 
 
+def test_model_flow_named_custom_updates_its_named_scope(monkeypatch):
+    """A named custom flow updates its own row, not a same-URL work scope."""
+    from hermes_cli.model_setup_flows_custom import _model_flow_named_custom
+
+    config = {
+        "model": {},
+        "custom_providers": [
+            {
+                "name": "OpenCode Zen (personal)",
+                "base_url": "https://opencode.ai/zen/v1",
+                "model": "old-personal-model",
+            },
+            {
+                "name": "OpenCode Zen (work)",
+                "base_url": "https://opencode.ai/zen/v1",
+                "model": "work-model",
+            },
+        ],
+    }
+    monkeypatch.setattr("hermes_cli.models.fetch_api_models", lambda *args, **kwargs: ["updated-model"])
+    monkeypatch.setattr("hermes_cli.curses_ui.curses_radiolist", lambda *args, **kwargs: 0)
+    monkeypatch.setattr("hermes_cli.auth._save_model_choice", lambda *args, **kwargs: None)
+    monkeypatch.setattr("hermes_cli.auth.deactivate_provider", lambda: None)
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: config)
+    monkeypatch.setattr("hermes_cli.config.save_config", lambda cfg: None)
+
+    _model_flow_named_custom({}, {
+        "name": "OpenCode Zen (personal)",
+        "base_url": "https://opencode.ai/zen/v1",
+        "api_key": "personal-key",
+    })
+
+    assert [entry["model"] for entry in config["custom_providers"]] == [
+        "updated-model", "work-model",
+    ]
+
+
 def test_model_flow_named_custom_persists_discovered_models(monkeypatch):
     """The ``hermes model`` named-custom-provider flow persists the discovered
     catalog back to the entry's ``models:`` list.

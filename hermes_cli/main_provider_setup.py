@@ -485,19 +485,39 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
     providers = cfg.get("custom_providers") or []
     if not isinstance(providers, list):
         providers = []
-    requested_name = name
-    name = name or _auto_provider_name(base_url)
-    for entry in providers:
-        if not (
-            isinstance(entry, dict)
-            and entry.get("base_url", "").rstrip("/") == base_url.rstrip("/")
-            and (
-                entry.get("name", "") == name
-                or (requested_name is None and not entry.get("name", ""))
+    requested_name = str(name or "").strip()
+    normalized_base_url = str(base_url or "").rstrip("/")
+    url_matches = [
+        entry for entry in providers
+        if isinstance(entry, dict) and str(entry.get("base_url", "") or "").rstrip("/") == normalized_base_url
+    ]
+    entry = None
+    if requested_name:
+        entry = next(
+            (candidate for candidate in url_matches if str(candidate.get("name", "") or "").strip() == requested_name),
+            None,
+        )
+        if entry is None:
+            entry = next(
+                (candidate for candidate in url_matches if not str(candidate.get("name", "") or "").strip()),
+                None,
             )
-        ):
-            continue
+    elif len(url_matches) == 1:
+        entry = url_matches[0]
+    elif len(url_matches) > 1 and any(str(candidate.get("name", "") or "").strip() for candidate in url_matches):
+        raise ValueError(
+            f"Cannot save a custom provider for {normalized_base_url!r} without a scope name: "
+            "multiple entries share that URL and at least one is named."
+        )
+    elif url_matches:
+        # Preserve legacy behavior for multiple fully nameless rows.
+        entry = url_matches[0]
+
+    if entry is not None:
         changed = False
+        if requested_name and not str(entry.get("name", "") or "").strip():
+            entry["name"] = requested_name
+            changed = True
         if model and entry.get("model") != model:
             entry["model"] = model
             changed = True
@@ -520,6 +540,7 @@ def _save_custom_provider(base_url, api_key="", model="", context_length=None, n
             save_config(cfg)
         return  # already saved, updated if needed
 
+    name = requested_name or _auto_provider_name(base_url)
     entry = {"name": name, "base_url": base_url}
     if key_env:
         entry["key_env"] = key_env

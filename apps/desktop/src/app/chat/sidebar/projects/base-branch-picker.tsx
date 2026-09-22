@@ -43,33 +43,36 @@ export function BaseBranchPicker({
     setLoading(true)
 
     try {
-      const list = await listBaseBranches(repoPath)
-      setBranches(list)
-
-      // Default to the remote default (origin/HEAD). Fall back to the local
-      // default branch (main/master) when no remote exists. The value is
-      // always a concrete branch — never undefined.
-      const defaultBranch = list.find(b => b.isDefault)
-
-      if (defaultBranch) {
-        onValueChange(defaultBranch.name)
-      } else {
-        onValueChange(list[0]?.name ?? '')
-      }
+      setBranches(await listBaseBranches(repoPath))
     } catch {
       setBranches([])
     } finally {
       setLoading(false)
     }
-  }, [repoPath, onValueChange])
+  }, [repoPath])
 
   // Load on mount so the default branch fills in before the user opens the
   // popover — otherwise the button reads "branch off " with nothing after it.
+  // Once per repo. An empty list is a real answer (a folder git cannot list,
+  // an unborn HEAD, a backend without the endpoint), so it must not start
+  // another load: that re-ran git after every round trip while the dialog was
+  // open.
   useEffect(() => {
-    if (branches.length === 0 && !loading) {
-      void load()
+    void load()
+  }, [load])
+
+  // Default to the remote default (origin/HEAD). Fall back to the local
+  // default branch (main/master) when no remote exists. Only an empty value
+  // is filled: a base the caller chose ("Branch off from <current>") stands.
+  // This runs in the mounted picker, not in load(), so a list that lands after
+  // the dialog moved to another project cannot set that project's base.
+  const fallback = (branches.find(b => b.isDefault) ?? branches[0])?.name
+
+  useEffect(() => {
+    if (!value && fallback) {
+      onValueChange(fallback)
     }
-  }, [branches.length, loading, load])
+  }, [fallback, onValueChange, value])
 
   // Pin the current session's branch to the top, keep the rest in git's
   // most-recently-committed order.

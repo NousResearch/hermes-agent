@@ -42,11 +42,16 @@ vi.mock('@/store/gateway', async original => ({
   retainGatewayForAgent: vi.fn(async () => () => undefined)
 }))
 
+// Routed session.create dials are user gestures (send / "New session"), so the
+// hook tags them foreground (#105104); the two undefineds are timeout/signal.
+const FOREGROUND_CREATE_DIAL = [undefined, undefined, { spawnPriority: 'foreground' }] as const
+
 function mountActions() {
   const ref = <T,>(current: T) => ({ current })
   const requestGateway = vi.fn(async () => ({ session_id: 'ambient', stored_session_id: 'ambient-stored' }) as never)
   const navigate = vi.fn()
   const state = createClientSessionState()
+
   const result = renderHook(() =>
     useSessionActions({
       activeSessionId: 'existing-runtime',
@@ -67,7 +72,23 @@ function mountActions() {
       updateSessionState: () => state
     })
   )
+
   return { ...result, navigate, requestGateway }
+}
+
+function mountSlashCommand(startFreshSessionDraft: () => void) {
+  return renderHook(() =>
+    useSlashCommand({
+      activeSessionIdRef: { current: 'existing-runtime' },
+      busyRef: { current: false },
+      selectedStoredSessionIdRef: { current: null },
+      startFreshSessionDraft,
+      requestGateway: vi.fn(async () => ({})),
+      copy: {},
+      getRoutedStoredSessionId: () => null,
+      getRuntimeIdForStoredSession: () => null
+    } as never)
+  )
 }
 
 beforeEach(() => {
@@ -116,6 +137,45 @@ afterEach(() => {
 })
 
 describe('generic new session default routing', () => {
+  it.each(
+    [
+      { name: 'primary window control', query: '/' },
+      { name: 'peer inherited legacy route', query: '/?peer=1&profile=boot-profile&connectionId=' },
+      { name: 'peer inherited local', query: '/?peer=1&profile=other&connectionId=local' },
+      { name: 'peer inherited another remote', query: '/?peer=1&profile=other&connectionId=original-remote' }
+    ].flatMap(source => ['draft', 'slash', 'tile'].map(action => ({ ...source, action })))
+  )('preserves a later device selection for $action: $name', async ({ query, action }) => {
+    // beforeEach establishes the state after selecting `previous`/`other`.
+    // There is no saved app default; launch hints must not repin the draft.
+    window.history.replaceState(null, '', query)
+    const selected = { connectionId: 'previous', profile: 'other' }
+    const { result } = mountActions()
+    expect(resolveNewChatOwnerRoute()).toEqual(selected)
+
+    if (action === 'tile') {
+      await act(() => result.current.openNewSessionTile('right'))
+    } else {
+      if (action === 'slash') {
+        const slash = mountSlashCommand(result.current.startFreshSessionDraft)
+
+        await act(() => slash.result.current('/new'))
+      } else {
+        act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
+      }
+
+      await act(() => result.current.createBackendSessionForSend())
+    }
+
+    expect(requestGatewayForAgent).toHaveBeenCalledWith(
+      selected.connectionId,
+      selected.profile,
+      'session.create',
+      expect.objectContaining({ profile: selected.profile }),
+      ...FOREGROUND_CREATE_DIAL
+    )
+    expect(getSessionOwnerHint('created-stored')).toEqual(selected)
+  })
+
   it.each(['draft', 'tile'])('keeps a legacy default on the profile-only creation path for a %s', async action => {
     const { result, requestGateway } = mountActions()
     await act(() => setDefaultProfile({ connectionId: null, profile: 'personal' }))
@@ -136,7 +196,7 @@ describe('generic new session default routing', () => {
   })
 
   it('keeps a legacy profile peer separate from the app default and the active source', async () => {
-    window.history.replaceState(null, '', '/?peer=1&profile=peer-agent')
+    window.history.replaceState(null, '', '/?peer=1&profile=peer-agent&profileWindow=1')
     const { result, requestGateway } = mountActions()
     await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
     act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
@@ -164,27 +224,21 @@ describe('generic new session default routing', () => {
     applyConfiguredDefaultProjectDir('')
   })
 
-  it('routes /new to the saved default', async () => {
-    const { result } = mountActions()
-    const slash = renderHook(() =>
-      useSlashCommand({
-        activeSessionIdRef: { current: 'existing-runtime' },
-        busyRef: { current: false },
-        selectedStoredSessionIdRef: { current: null },
-        startFreshSessionDraft: result.current.startFreshSessionDraft,
-        requestGateway: vi.fn(async () => ({})),
-        copy: {},
-        getRoutedStoredSessionId: () => null,
-        getRuntimeIdForStoredSession: () => null
-      } as never)
-    )
-    await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
-    await act(() => slash.result.current('/new'))
-    expect($newChatRoute.get()).toEqual({ connectionId: 'lab', profile: 'research' })
-  })
+  it.each(['/', '/?peer=1&profile=opener&connectionId=opener-host'])(
+    'routes /new to the saved default in %s',
+    async query => {
+      window.history.replaceState(null, '', query)
+      const { result } = mountActions()
+      const slash = mountSlashCommand(result.current.startFreshSessionDraft)
+
+      await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
+      await act(() => slash.result.current('/new'))
+      expect($newChatRoute.get()).toEqual({ connectionId: 'lab', profile: 'research' })
+    }
+  )
 
   it('prefers a profile peer window over the app default after switching away', async () => {
-    window.history.replaceState(null, '', '/?peer=1&profile=peer-agent&connectionId=peer-host')
+    window.history.replaceState(null, '', '/?peer=1&profile=peer-agent&connectionId=peer-host&profileWindow=1')
     const { result } = mountActions()
     await act(() => setDefaultProfile({ connectionId: 'lab', profile: 'research' }))
     act(() => result.current.selectSidebarItem({ action: 'new-session' } as never))
@@ -193,7 +247,8 @@ describe('generic new session default routing', () => {
       'peer-host',
       'peer-agent',
       'session.create',
-      expect.objectContaining({ profile: 'peer-agent' })
+      expect.objectContaining({ profile: 'peer-agent' }),
+      ...FOREGROUND_CREATE_DIAL
     )
   })
 
@@ -216,7 +271,8 @@ describe('generic new session default routing', () => {
         connectionId,
         profile,
         'session.create',
-        expect.objectContaining({ profile })
+        expect.objectContaining({ profile }),
+        ...FOREGROUND_CREATE_DIAL
       )
       expect(getSessionOwnerHint('created-stored')).toEqual({ connectionId, profile })
     }
@@ -239,7 +295,8 @@ describe('generic new session default routing', () => {
       expected.connectionId,
       expected.profile,
       'session.create',
-      expect.objectContaining({ profile: expected.profile })
+      expect.objectContaining({ profile: expected.profile }),
+      ...FOREGROUND_CREATE_DIAL
     )
     expect(getSessionOwnerHint('created-stored')).toEqual(expected)
     expect($sessions.get().find(row => row.id === 'created-stored')).toMatchObject({

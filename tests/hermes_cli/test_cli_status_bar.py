@@ -265,6 +265,42 @@ class TestCLIUsageReport:
         assert "Cache write tokens:" not in output
 
 
+class TestCLIUsageNoAgentAccountLimits:
+    """#42904: `/usage` without a live agent (TUI/Desktop slash-worker) still renders account limits."""
+
+    def _no_agent_cli(self, monkeypatch, snapshot):
+        from agent.account_usage import AccountUsageSnapshot, AccountUsageWindow
+        cli_obj = _make_cli()
+        cli_obj.provider, cli_obj.base_url, cli_obj.api_key = "openai-codex", None, None
+        cli_obj._print_nous_credits_block = lambda: False
+        seen = {}
+
+        def _fetch(provider, **kwargs):
+            seen["provider"] = provider
+            if snapshot is None:
+                return None
+            return AccountUsageSnapshot(
+                provider=provider, source="usage_api", fetched_at=datetime.now(), plan="Pro",
+                windows=(AccountUsageWindow(label="Weekly", used_percent=1.0),),
+            )
+        monkeypatch.setattr("agent.account_usage.fetch_account_usage", _fetch)
+        return cli_obj, seen
+
+    def test_no_agent_prints_codex_account_limits(self, capsys, monkeypatch):
+        cli_obj, seen = self._no_agent_cli(monkeypatch, snapshot=True)
+        cli_obj._show_usage()
+        out = capsys.readouterr().out
+        assert seen["provider"] == "openai-codex"
+        assert "Account limits" in out and "Weekly: 99% remaining (1% used)" in out
+        assert "No active agent" not in out
+
+    def test_no_agent_keeps_fallback_message_when_limits_unavailable(self, capsys, monkeypatch):
+        cli_obj, _ = self._no_agent_cli(monkeypatch, snapshot=None)
+        cli_obj._show_usage()
+        out = capsys.readouterr().out
+        assert "No active agent" in out and "Account limits" not in out
+
+
 class TestStatusBarWidthSource:
     """Ensure status bar fragments don't overflow the terminal width."""
 

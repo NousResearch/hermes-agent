@@ -134,9 +134,9 @@ export const GeneratedImage: FC<{ aspectRatio?: string; result?: unknown }> = ({
         )}
         {src && (
           <button
+            aria-label={copy.openImage}
             className="absolute inset-0 block size-full cursor-zoom-in"
             onClick={() => setLightboxOpen(true)}
-            title={copy.openImage}
             type="button"
           >
             <img

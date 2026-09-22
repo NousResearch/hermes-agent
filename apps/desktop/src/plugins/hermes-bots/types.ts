@@ -46,9 +46,13 @@ export interface CanonicalSession {
 }
 
 export interface SessionPreview {
+  /** Stored session id — what `host.openSession` takes. */
+  id?: string
   /** Unix seconds, not milliseconds. */
   last_active?: number
+  message_count?: number
   preview?: string
+  title?: string
 }
 
 /** Per-bot presentation state, persisted in the profile's `ui_meta`. */
@@ -59,6 +63,11 @@ export interface BotMeta {
    *  the assignment rides the same profile.yaml sync every other bot setting
    *  already uses — so sections follow the profile to another machine. */
   sectionId?: null | string
+  /** The section's display name, written beside `sectionId` on every filing.
+   *  Section RECORDS live in the creating desktop's plugin storage; carrying
+   *  the name with the membership lets another desktop on the same backend
+   *  rebuild a section it never created instead of drawing a flat list. */
+  sectionName?: null | string
   color?: string
   /** Set when the user has customized the avatar, so defaults stop applying. */
   custom?: boolean
@@ -89,6 +98,10 @@ export interface RosterRow {
   ghost?: boolean
   handle?: string
   has_avatar?: boolean
+  /** The connection's backend identity (/api/status `install_id`) when the
+   *  roster source has seen it — stable across Desktops, unlike `connectionId`
+   *  / `connectionLabel`, which are THIS Desktop's names for the connection. */
+  installId?: string
   last_session?: SessionPreview | null
   remoteSource?: boolean
   route?: ProfileRoute
@@ -100,6 +113,11 @@ export interface RosterRow {
   /** Nullable: the gateway sends `null` for a profile with no configured role,
    *  and the create form threads its own optional title through the same shape. */
   title?: null | string
+  /** Canonical ids this profile was previously known by (`hermes profile
+   *  rename` records them in profile.yaml; the gateway surfaces them on
+   *  profiles.list). Lets group chats re-link persisted member descriptors
+   *  after a rename (#110200). */
+  previous_names?: string[]
   ui_meta?: Record<string, unknown> & { 'hermes-bots'?: BotMeta }
   /** Compare-and-swap revisions, per ui_meta key. */
   ui_meta_revisions?: Record<string, number>
@@ -115,7 +133,9 @@ export type GroupMember = Pick<
   | 'display_name'
   | 'ghost'
   | 'handle'
+  | 'installId'
   | 'name'
+  | 'previous_names'
   | 'remoteSource'
   | 'route'
   | 'sourceMissing'
@@ -137,8 +157,14 @@ export interface Attachment {
 export interface GroupMessageAuthor {
   kind: 'member' | 'user'
   name: string
-  /** Connection label, present when the speaker lives on another machine. */
+  /** Connection label (`connectionLabel || connectionId`) — this Desktop's
+   *  name for the speaker's connection; display-only. */
   source?: string
+  /** The speaker's gateway identity (/api/status `install_id`): the same
+   *  token on every Desktop, so a mirrored entry passes the self test whatever
+   *  the reader labelled that connection. Absent when the source never
+   *  reported one. */
+  gateway?: string
 }
 
 export interface GroupMessage {
@@ -150,6 +176,8 @@ export interface GroupMessage {
   text: string
   /** Messages predating threading carry the sentinel thread `'legacy'`. */
   thread?: string
+  /** Set on the ui_meta projection when `text` was cut to the sync budget. */
+  truncated?: boolean
 }
 
 export interface GroupHold {
@@ -158,8 +186,14 @@ export interface GroupHold {
 }
 
 export interface GroupChat {
+  /** Whether user text may create sticky member holds. Defaults to true for
+   *  rooms written by older builds; the room settings switch can disable it. */
+  holdDetection?: boolean
   /** Bumped to abandon in-flight member turns from a previous round. */
   epoch?: number
+  /** Room-entry ids consumed while a member was held, replayed into that
+   *  member's next visible turn. Keyed by the durable member key. */
+  heldMessages?: Record<string, string[]>
   holds?: Record<string, GroupHold>
   image?: null | string
   log: GroupMessage[]
@@ -172,14 +206,28 @@ export interface GroupChat {
    *  `{ name }`, and the sweep re-validates the route before trusting one. */
   sessionOwners?: Record<string, Partial<RosterRow>>
   sessions?: Record<string, string | true>
-  stranded?: Record<string, number | { before: number; thread?: string }>
+  /** A member turn this Desktop is not (or no longer) polling: the message-count baseline to
+   *  harvest its late reply from. `turn` names the poll that owns it while that poll runs. */
+  stranded?: Record<string, number | { before: number; thread?: string; turn?: string }>
+  /** #93813: how far each member's external-write reconcile sweep has read
+   *  into that member's per-group session transcript (absolute row index of
+   *  the last mirrored row + 1). Persisted so external posts aren't rescanned
+   *  (or re-mirrored) after a window restart. */
+  externalCursors?: Record<string, number>
   syncRevision?: number
   /** Left behind when a room is disbanded, so sync can't resurrect it. */
   tombstone?: boolean
   /** Local display order, deliberately excluded from the gateway mirror. */
   rosterOrder?: number
-  /** Read when ordering rooms; no write site in the plugin today. */
+  /** "Pin to top" on the room row (`group-pin.ts`); the outer band of the room order. */
   pinned?: boolean
+  /** Which user-made sidebar section this group chat is filed under
+   *  (`user-sections.ts`). Like a bot's `sectionId` it is membership on the
+   *  item, but a group's only durable identity is its room record, so the
+   *  field rides the room's plugin-storage persistence — local, like the
+   *  section list itself, and deliberately absent from the bounded gateway
+   *  sync projection, which carries conversations, not sidebar layout. */
+  sectionId?: null | string
   /** How far each `<thread>::<member>` has read into `log`. Required: unlike
    *  the gateway-sourced shapes above, a room record is plugin-owned — every
    *  writer (hydrate, server-sync merge, updateGroupChat, room reset) seeds
@@ -241,6 +289,10 @@ export interface GroupActivityEvent {
   kind: GroupActivityKind
   member?: string
   preview?: string
+  /** Failure cause: the gateway's typed `data.reason`, the normalized
+   *  `slot_wait_timeout`, or the error's redacted first line (#117366);
+   *  absent on non-failures. */
+  reason?: string
 }
 
 /**
@@ -281,6 +333,8 @@ export interface GatewaySource {
   connectionId: string
   count?: number
   error?: null | string
+  /** Backend identity (/api/status `install_id`) when the enumeration saw it. */
+  installId?: string
   kind?: string
   label?: string
   reachable?: boolean

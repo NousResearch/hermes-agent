@@ -851,6 +851,58 @@ class TestDelegationCredentialResolution(unittest.TestCase):
         self.assertIsNone(creds["api_mode"])
         self.assertIsNone(creds["model"])
 
+    @patch("hermes_cli.model_switch.resolve_startup_model_route")
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_direct_alias_resolves_before_delegation_provider(self, mock_runtime, mock_alias):
+        """A self-contained direct alias must not reach a child provider literally."""
+        mock_alias.return_value = types.SimpleNamespace(
+            model="gpt-5.6-sol",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+            api_key="",
+        )
+        mock_runtime.return_value = {
+            "provider": "openai-codex",
+            "base_url": "https://chatgpt.com/backend-api/codex",
+            "api_key": "codex-key",
+            "api_mode": "codex_responses",
+        }
+
+        creds = _resolve_delegation_credentials(
+            {"model": "lab-deep"}, _make_mock_parent()
+        )
+
+        self.assertEqual(creds["model"], "gpt-5.6-sol")
+        self.assertEqual(creds["provider"], "openai-codex")
+        mock_alias.assert_called_once_with("lab-deep", explicit_provider="")
+        mock_runtime.assert_called_once_with(requested="openai-codex", target_model="gpt-5.6-sol")
+
+    @patch("hermes_cli.model_switch.resolve_startup_model_route")
+    @patch("hermes_cli.runtime_provider.resolve_runtime_provider")
+    def test_explicit_delegation_endpoint_and_key_override_alias_route(self, mock_runtime, mock_alias):
+        """Caller-specified endpoint credentials remain authoritative over an alias."""
+        mock_alias.return_value = types.SimpleNamespace(
+            model="provider/real-model",
+            provider="openrouter",
+            base_url="https://alias.example/v1",
+            api_key="alias-key",
+        )
+        mock_runtime.return_value = {
+            "provider": "openrouter",
+            "request_overrides": {},
+        }
+
+        creds = _resolve_delegation_credentials({
+            "model": "lab-deep",
+            "base_url": "https://explicit.example/v1",
+            "api_key": "explicit-key",
+        }, _make_mock_parent())
+
+        self.assertEqual(creds["model"], "provider/real-model")
+        self.assertEqual(creds["base_url"], "https://explicit.example/v1")
+        self.assertEqual(creds["api_key"], "explicit-key")
+        mock_alias.assert_called_once_with("lab-deep", explicit_provider="")
+
     def test_direct_endpoint_uses_configured_base_url_and_api_key(self):
         parent = _make_mock_parent(depth=0)
         cfg = {

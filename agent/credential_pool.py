@@ -469,15 +469,28 @@ def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) 
     if entry.last_status != STATUS_EXHAUSTED:
         return None
     reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
-    if reset_at is not None:
-        return reset_at
-    if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(
+    cooldown_until = (
+        entry.last_status_at + _exhausted_ttl(
             entry.last_error_code,
             sole_credential=sole_credential,
             failure_reason=entry.failure_reason,
         )
-    return None
+        if entry.last_status_at
+        else None
+    )
+    if reset_at is not None:
+        # A subscription-period 429 can supply a reset timestamp weeks away.
+        # With no sibling to rotate to, preserve the short transient retry
+        # window; confirmed billing remains locked until its provider reset.
+        if (
+            sole_credential
+            and entry.last_error_code != 402
+            and entry.failure_reason != FAILURE_REASON_BILLING
+            and cooldown_until is not None
+        ):
+            return min(reset_at, cooldown_until)
+        return reset_at
+    return cooldown_until
 
 
 # --- Custom (OpenAI-compatible) endpoint pool keys ---

@@ -26,6 +26,7 @@ def _entry(
     cred_id: str = "cred-1",
     priority: int = 0,
     failure_reason: str | None = None,
+    reset_at: float | None = None,
 ) -> dict:
     entry = {
         "id": cred_id,
@@ -41,6 +42,8 @@ def _entry(
     }
     if failure_reason is not None:
         entry["failure_reason"] = failure_reason
+    if reset_at is not None:
+        entry["last_error_reset_at"] = reset_at
     return entry
 
 
@@ -68,6 +71,54 @@ def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch
     assert entry is not None
     assert entry.id == "cred-1"
     assert entry.last_status == "ok"
+
+
+def test_sole_credential_429_caps_distant_reset_at_to_short_cooldown(tmp_path, monkeypatch):
+    """A subscription-period reset must not override a sole key's transient TTL."""
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(429, age_seconds=90, reset_at=time.time() + 15 * 24 * 60 * 60)],
+    )
+
+    entry = pool.select()
+
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
+def test_sole_credential_billing_429_keeps_provider_reset(tmp_path, monkeypatch):
+    """A confirmed billing limit must retain its provider-supplied reset."""
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(
+                429,
+                age_seconds=90,
+                failure_reason="billing",
+                reset_at=time.time() + 15 * 24 * 60 * 60,
+            )
+        ],
+    )
+
+    assert pool.has_available() is False
+
+
+def test_multi_key_429_keeps_provider_reset(tmp_path, monkeypatch):
+    """A pool with alternatives continues to honour the 429 reset timestamp."""
+    reset_at = time.time() + 15 * 24 * 60 * 60
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(429, age_seconds=90, cred_id="cred-1", reset_at=reset_at),
+            _entry(429, age_seconds=90, cred_id="cred-2", reset_at=reset_at),
+        ],
+    )
+
+    assert pool.has_available() is False
 
 
 def test_sole_credential_403_recovers_after_short_cooldown(tmp_path, monkeypatch):

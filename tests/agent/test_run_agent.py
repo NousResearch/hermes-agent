@@ -51,6 +51,26 @@ def test_is_destructive_command_treats_cp_as_mutating():
     assert _is_destructive_command("cp .env.local .env") is True
 
 
+def test_tool_hook_ids_include_gateway_session_key():
+    from agent.inline_tool_executors import tool_hook_ids
+
+    agent = SimpleNamespace(
+        session_id="rotated-session",
+        _gateway_session_key="agent:default:discord:dm:fixture",
+        _current_turn_id="turn-1",
+        _current_api_request_id="request-1",
+    )
+
+    assert tool_hook_ids(agent, "task-1", "tool-1") == {
+        "task_id": "task-1",
+        "session_id": "rotated-session",
+        "tool_call_id": "tool-1",
+        "turn_id": "turn-1",
+        "api_request_id": "request-1",
+        "gateway_session_key": "agent:default:discord:dm:fixture",
+    }
+
+
 
 
 
@@ -2152,6 +2172,7 @@ class TestConcurrentToolExecution:
 
     def test_invoke_tool_dispatches_to_handle_function_call(self, agent):
         """_invoke_tool should route regular tools through handle_function_call."""
+        agent._gateway_session_key = "agent:default:discord:dm:fixture"
         with patch("model_tools.handle_function_call", return_value="result") as mock_hfc:
             result = agent._invoke_tool("web_search", {"q": "test"}, "task-1")
             mock_hfc.assert_called_once_with(
@@ -2160,6 +2181,7 @@ class TestConcurrentToolExecution:
                 session_id=agent.session_id,
                 turn_id="",
                 api_request_id="",
+                gateway_session_key="agent:default:discord:dm:fixture",
                 enabled_tools=list(agent.valid_tool_names),
                 skip_pre_tool_call_hook=True,
                 skip_tool_request_middleware=True,

@@ -110,7 +110,7 @@ export function lastErrorSummary(lastError: string | null | undefined): string {
   let text = (lastError ?? '').trim()
 
   // Wrappers can nest (marker, then emoji, then exception class); peel until stable.
-  for (let previous = ''; previous !== text; ) {
+  for (let previous = ''; previous !== text;) {
     previous = text
     text = text.replace(ERROR_MARKER_RE, '').replace(ERROR_EMOJI_RE, '').replace(ERROR_PREFIX_RE, '').trimStart()
   }

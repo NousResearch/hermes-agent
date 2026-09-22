@@ -87,7 +87,6 @@ export function ConnectorRow({ action, connector, cue, mark, markLabel }: Connec
           ) : null}
         </span>
       </div>
-
     </div>
   )
 }

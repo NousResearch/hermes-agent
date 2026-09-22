@@ -361,7 +361,7 @@ class TestCmdInstall:
 
     @patch("hermes_cli.plugins_cmd._display_after_install")
     @patch("hermes_cli.plugins_cmd.shutil.move")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.plugins_cmd.rmtree_readonly")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
     @patch("hermes_cli.plugins_cmd._read_manifest")
     @patch("hermes_cli.plugins_cmd.subprocess.run")
@@ -449,7 +449,7 @@ class TestCmdRemove:
 
     @patch("hermes_cli.plugins_cmd._sanitize_plugin_name")
     @patch("hermes_cli.plugins_cmd._plugins_dir")
-    @patch("hermes_cli.plugins_cmd.shutil.rmtree")
+    @patch("hermes_cli.plugins_cmd.rmtree_readonly")
     def test_remove_deletes_plugin(self, mock_rmtree, mock_plugins_dir, mock_sanitize):
         from hermes_cli.plugins_cmd import cmd_remove
 
@@ -478,6 +478,22 @@ class TestCmdRemove:
             cmd_remove("nonexistent-plugin")
 
         assert exc_info.value.code == 1
+
+    def test_remove_plugin_core_deletes_read_only_git_tree(self, tmp_path):
+        """Git leaves loose objects read-only: removal must clear that, not abort (#117179)."""
+        from hermes_cli.plugins_cmd import _remove_plugin_core
+
+        target = tmp_path / "plugins" / "demo"
+        obj_dir = target / ".git" / "objects" / "4b"
+        obj_dir.mkdir(parents=True)
+        obj = obj_dir / "825dc642cb6eb9a060e54bf8d69288fbee4904"
+        obj.write_text("blob", encoding="utf-8")
+        obj.chmod(0o444)
+        obj_dir.chmod(0o555)
+
+        _remove_plugin_core(target)
+
+        assert not target.exists()
 
 
 # ── cmd_list tests ─────────────────────────────────────────────────────────

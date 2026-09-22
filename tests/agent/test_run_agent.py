@@ -1535,10 +1535,16 @@ class TestBuildAssistantMessage:
         agent.context_compressor.note_native_compaction_checkpoint = MagicMock()
         self._enable_native_compaction(agent)
 
+        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+
+        history = [{"role": "user", "content": "before compaction"}]
+        set_usage_anchor(agent, capture_usage_anchor(255_000, 100, history), turn_base=True)
         result = agent._build_assistant_message(msg, "stop")
 
         assert result["codex_reasoning_items"] == [checkpoint]
         agent.context_compressor.note_native_compaction_checkpoint.assert_called_once_with()
+        assert agent._usage_anchor is None
+        assert agent._turn_base_usage_anchor is None
 
     def test_native_checkpoint_remains_compatible_with_plugin_context_engine(self, agent):
         checkpoint = {

@@ -22,7 +22,7 @@ BOOTSTRAP_KEYS = frozenset(('HERMES_AUTH_JSON_BOOTSTRAP', 'HERMES_GATEWAY_BOOTST
 def write_managed(path: Path, values: dict[str, str], uid: int, gid: int) -> None:
     if any(p.is_symlink() for p in (path, *path.parents)):
         raise ValueError('Unsafe managed environment path')
-    existing = path.read_text() if path.exists() else ''
+    existing = path.read_text(encoding='utf-8') if path.exists() else ''
     blocks = re.findall(re.escape(BEGIN) + r'(.*?)' + re.escape(END), existing, flags=re.S)
     prior = set(re.findall(r'^([A-Za-z_][A-Za-z0-9_]*)=', ''.join(blocks), flags=re.M))
     existing = re.sub(re.escape(BEGIN) + r'.*?' + re.escape(END), '', existing, flags=re.S)

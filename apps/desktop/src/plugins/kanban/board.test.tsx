@@ -24,7 +24,9 @@ describe('card action menu', () => {
     // them anywhere else — done→review would 409, and blocking out of
     // todo/review/done/triage would too.
     for (const action of CARD_ACTIONS) {
-      if (action.key !== 'block' && action.key !== 'requestReview') continue
+      if (action.key !== 'block' && action.key !== 'requestReview') {
+        continue
+      }
 
       for (const status of ['todo', 'review', 'done', 'triage', 'archived', 'blocked']) {
         expect(action.when(status as KanbanTask['status']), `${action.key} on ${status}`).toBe(false)

@@ -33,6 +33,8 @@ _TURN_ERROR_CODE_COPY: dict[str, tuple[str, str]] = {
     "format_error": ("The model provider rejected the request format", "Try /retry; if it persists, switch with /model."),
     "ssl_cert_verification": ("The connection to the model provider could not be verified (TLS)",
                               "Check the endpoint's certificate, then /retry."),
+    "code_skew_detected": ("Backend restart required after code update",
+                           "Restart Hermes Desktop or the gateway service to load updated code."),
 }
 
 _TURN_ERROR_LAYER_COPY: dict[str, tuple[str, str]] = {
@@ -112,3 +114,19 @@ AGENT_MISSING_FOR_TURN = (
 def resume_failed_message(exc: Any) -> str:
     return (f"Could not reopen that session (its transcript could not be read). Details: {exc}. "
             "Start a new session (/new), or pick another from /sessions.")
+
+
+def code_skew_restart_message(boot_rev: str, disk_rev: str) -> str:
+    import os
+
+    hint = (
+        "restart the Desktop-owned backend to load the new code "
+        "(use Restart backend in Hermes Desktop, or quit and reopen the app)"
+        if os.environ.get("HERMES_SERVE_HEADLESS") == "1"
+        else "restart this Hermes process to load the new code"
+    )
+    return (
+        f"This process is running code from {boot_rev} but the checkout on disk is now {disk_rev}. "
+        f"Starting an assistant turn would risk a stale-module crash — {hint}."
+    )
+

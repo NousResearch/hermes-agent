@@ -41,7 +41,7 @@ from tui_gateway.contracts import registry as _contracts
 # User-facing copy shared with the split method modules (they close over this namespace).
 from tui_gateway.user_messages import (  # noqa: F401
     AGENT_BUILD_ABANDONED, AGENT_MISSING_FOR_TURN, AGENT_STILL_STARTING, agent_init_failed_message, busy_message,
-    resume_failed_message, turn_error_text)
+    code_skew_restart_message, resume_failed_message, turn_error_text)
 from tui_gateway.transport import (FanoutTransport, StdioTransport, Transport, bind_transport,
                                    current_transport, reset_transport)
 
@@ -1096,6 +1096,17 @@ def _start_agent_build(sid: str, session: dict) -> None:
         notify_registered, scopes, session_db = False, None, None
         profile_home = current.get("profile_home")
         try:
+            try:
+                from gateway.code_skew import detect_code_skew
+                skew = detect_code_skew()
+            except Exception:
+                skew = None
+            if skew:
+                boot_rev, disk_rev = skew
+                msg = code_skew_restart_message(boot_rev, disk_rev)
+                current["agent_error"] = msg
+                _emit("error", sid, {"message": msg, "code": "code_skew_restart_required"})
+                return
             if not _await_resume_history(sid, current):
                 # Replaced mid-build: the finally still sets ``agent_ready`` with ``agent`` None, so record
                 # why — a turn admitted against this record refuses with the real reason (#111531).

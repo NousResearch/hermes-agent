@@ -598,6 +598,15 @@ set and the run owns that task) — `delegate_task` children and cron jobs run i
 the worker inherit the variable but are never nudged, since they have no board tools —
 and can be disabled with `HERMES_KANBAN_STOP_NUDGE=0`.
 
+The nudge orders a terminal call, so it is only issued when such a call can actually
+land: the task must resolve on the worker's board **and** `HERMES_KANBAN_RUN_ID` must be
+that card's current run. `HERMES_KANBAN_TASK` alone is not worker identity — a phantom or
+stale id (no run id, or no row on the board) is left alone instead of being ordered to
+call tools that the run-ownership guard refuses, and the gate's log line names only the
+card it validated. The ids are compared verbatim, exactly as the board tools compare
+them: a padded `HERMES_KANBAN_TASK` (`"  t_abc  "`) is refused by every lifecycle call
+and so is never nudged about either.
+
 **Dispatcher-side recovery:** If the nudges are exhausted or the worker crashes
 before reaching the nudge, the dispatcher gives the violation a **bounded retry**
 (up to `_PROTOCOL_VIOLATION_FAILURE_LIMIT` consecutive violations, default 3)

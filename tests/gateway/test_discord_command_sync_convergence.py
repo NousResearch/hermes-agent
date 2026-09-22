@@ -6,6 +6,7 @@ default installation context and reports ``nsfw``/``guild_only``/``default_membe
 only on the model attributes, never inside ``to_dict()``.
 """
 
+import asyncio
 import sys
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, MagicMock
@@ -191,5 +192,48 @@ async def test_a_run_that_cannot_fit_its_mutations_reports_them(monkeypatch):
     summary = await adapter._safe_sync_slash_commands()
 
     assert summary["updated"] == 0
-    assert summary.get("deferred") == 1
+    assert summary.get("deferred_mutations") == 1
     adapter._client.http.edit_global_command.assert_not_awaited()
+
+
+@pytest.mark.asyncio
+async def test_a_run_that_runs_out_of_budget_stops_and_reports_the_boundary(monkeypatch):
+    """The budget stops the run between mutations, and ``deferred_mutations`` says what it counted.
+
+    The budget check runs before the pacing pause of the mutation it gates, so a run of three
+    changed commands with a budget of one and a half paced mutations applies two and reports the
+    third as a refused opportunity — the count is mutation opportunities, not commands left behind
+    (a recreate here is a single upsert, so a stopped run never leaves a command half-applied).
+    """
+    import plugins.platforms.discord.adapter as adapter_module
+
+    adapter = _adapter(
+        [
+            _desired("help", "New help text"),
+            _desired("status", "New status text"),
+            _desired("model", "New model text"),
+        ],
+        [
+            _ExistingCommand(60, "help", "Old help text", integration_types=[0]),
+            _ExistingCommand(61, "status", "Old status text", integration_types=[0]),
+            _ExistingCommand(62, "model", "Old model text", integration_types=[0]),
+        ],
+    )
+    interval = 1.0
+    monkeypatch.setattr(adapter_module, "_DISCORD_COMMAND_SYNC_MUTATION_INTERVAL_SECONDS", interval)
+    monkeypatch.setattr(adapter, "_command_sync_budget_seconds", lambda: interval * 1.5)
+
+    async def _pace() -> None:
+        # The real pacing pause (``_adapter`` stubs it out): the budget check adds the interval to
+        # "now", so the third mutation is refused once the pace of the second one has elapsed.
+        await asyncio.sleep(interval)
+
+    monkeypatch.setattr(adapter, "_sleep_between_command_sync_mutations", _pace)
+
+    summary = await adapter._safe_sync_slash_commands()
+
+    assert adapter._client.http.edit_global_command.await_count == 2
+    assert summary["updated"] == 2
+    assert summary["total"] == 3
+    assert summary["deferred_mutations"] == 1
+    assert summary["failed"] == 0

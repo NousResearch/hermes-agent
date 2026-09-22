@@ -2153,14 +2153,16 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             finally:
                 if has_ratelimit_timeout:
                     http.max_ratelimit_timeout = previous_ratelimit_timeout
-            if summary["failed"] or summary["deferred"]:
+            if summary["failed"] or summary["deferred_mutations"]:
                 logger.warning(
                     "[%s] Slash command sync did not finish: unchanged=%d updated=%d recreated=%d "
-                    "created=%d deleted=%d failed=%d deferred=%d (budget %.0fs, %d registered "
-                    "command(s)); failed mutations are logged above and the rest resumes on the "
-                    "next connect",
+                    "created=%d deleted=%d failed=%d deferred_mutations=%d (budget %.0fs, %d registered "
+                    "command(s)); deferred_mutations counts mutation opportunities the budget could not "
+                    "fit — one per refused call, not a count of commands left — failed mutations are "
+                    "logged above and the rest resumes on the next connect",
                     self.name, summary["unchanged"], summary["updated"], summary["recreated"],
-                    summary["created"], summary["deleted"], summary["failed"], summary["deferred"],
+                    summary["created"], summary["deleted"], summary["failed"],
+                    summary["deferred_mutations"],
                     self._command_sync_budget_seconds(), summary["total"],
                 )
                 return
@@ -2886,10 +2888,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         the budget cannot fit another one, so a slow or rate-limited connect reports what it did
         instead of being cancelled mid-flight with nothing to show. Each mutation is a single
         idempotent call, so a stopped run has no half-applied state to lose.
+
+        ``deferred_mutations`` in the returned summary counts refused **mutation opportunities** —
+        one per ``mutate`` call the budget could not fit — not the commands still to reconcile: the
+        same command counts again on the next connect. That is the semantics an operator reading the
+        warning line (or a caller reading this summary) may rely on.
         """
         summary = {
             "total": 0, "unchanged": 0, "updated": 0, "recreated": 0, "created": 0,
-            "deleted": 0, "failed": 0, "deferred": 0,
+            "deleted": 0, "failed": 0, "deferred_mutations": 0,
         }
         if not self._client:
             return summary
@@ -2919,10 +2926,12 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         async def mutate(call, *args, name: str = "") -> bool:
             """Apply one paced mutation, returning ``False`` when it was not applied: the budget can
             no longer fit it, or Discord refused this one command. Neither aborts the run — one bad
-            command must not throw away the mutations already applied."""
+            command must not throw away the mutations already applied. One call is one mutation
+            opportunity: a refusal is counted once in ``deferred_mutations``, never as a count of
+            commands or of HTTP requests the operation would have needed."""
             nonlocal mutation_count
             if loop.time() + interval >= deadline:
-                summary["deferred"] += 1
+                summary["deferred_mutations"] += 1
                 return False
             if mutation_count:
                 await self._sleep_between_command_sync_mutations()

@@ -565,6 +565,39 @@ class TestPluginLoading:
 
         assert "hermes_plugins.ns_plugin" in sys.modules
 
+    def test_enabled_dashboard_only_plugin_loads_without_warning(self, tmp_path, monkeypatch, caplog):
+        """plugin.yaml + dashboard/manifest.json with no __init__.py is a documented dashboard-only layout;
+        enabling it (required to mount its plugin_api.py) must not log a "No __init__.py" load failure."""
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = _make_plugin_dir(plugins_dir, "dash_only")
+        (plugin_dir / "__init__.py").unlink()
+        (plugin_dir / "dashboard").mkdir()
+        (plugin_dir / "dashboard" / "manifest.json").write_text(
+            json.dumps({"name": "dash_only", "api": "plugin_api.py"}), encoding="utf-8")
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
+
+        assert "Failed to load plugin" not in caplog.text
+        loaded = mgr._plugins["dash_only"]
+        assert loaded.enabled and loaded.error is None
+        assert "hermes_plugins.dash_only" not in sys.modules
+
+    def test_enabled_plugin_without_init_or_dashboard_still_warns(self, tmp_path, monkeypatch, caplog):
+        plugins_dir = tmp_path / "hermes_test" / "plugins"
+        plugin_dir = _make_plugin_dir(plugins_dir, "no_init")
+        (plugin_dir / "__init__.py").unlink()
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "hermes_test"))
+
+        mgr = PluginManager()
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            mgr.discover_and_load()
+
+        assert "No __init__.py" in caplog.text
+        assert not mgr._plugins["no_init"].enabled
+
     def test_user_memory_plugin_auto_coerced_to_exclusive(self, tmp_path, monkeypatch):
         """User-installed memory plugins must NOT be loaded by the general
         PluginManager — they belong to plugins/memory discovery.

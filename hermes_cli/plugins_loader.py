@@ -444,6 +444,16 @@ class PluginLoaderMixin:
             logger.warning("Plugin '%s' not loaded: %s", manifest.name, reason)
             self._plugins[plugin_key] = loaded
             return
+        # A dashboard-only plugin (plugin.yaml + dashboard/manifest.json, no __init__.py) is a supported
+        # layout: its UI/API load in the dashboard process, which requires ``plugins.enabled``. There is
+        # no CLI/gateway module to import, so don't report the enable as a load failure.
+        if manifest.source in {"user", "project", "bundled"} and manifest.path:
+            plugin_dir = Path(manifest.path)
+            if not (plugin_dir / "__init__.py").exists() and (plugin_dir / "dashboard" / "manifest.json").exists():
+                logger.debug("Plugin '%s' is dashboard-only; no Python module to load", plugin_key)
+                loaded.enabled = True
+                self._plugins[plugin_key] = loaded
+                return
         registration_start = len(self._registration_order)
         module_name = self._policy_module_name(manifest)
         self._track_tool_override_policy(manifest, module_name)

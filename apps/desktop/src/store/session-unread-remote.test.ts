@@ -14,7 +14,13 @@ vi.mock('@/hermes', () => ({
 
 import { $sessions } from '@/store/session'
 
-import { $unreadWriteGuard, clearUnreadOnOpen, markSessionUnread, watchUnreadWriteGuard } from './session-unread-remote'
+import {
+  $unreadWriteGuard,
+  acknowledgeSessionRead,
+  clearUnreadOnOpen,
+  markSessionUnread,
+  watchUnreadWriteGuard
+} from './session-unread-remote'
 
 const row = (id: string, extra: Partial<SessionInfo> = {}): SessionInfo =>
   ({ id, message_count: 1, source: 'cli', started_at: 0, title: id, ...extra }) as SessionInfo
@@ -82,6 +88,25 @@ describe('clearUnreadOnOpen', () => {
     patch.mockImplementationOnce(() => Promise.reject(new Error('offline')))
 
     await expect(clearUnreadOnOpen('a')).resolves.toBeUndefined()
+  })
+})
+
+describe('acknowledgeSessionRead', () => {
+  it('PATCHes the owning profile even when the loaded row already looks read', async () => {
+    $sessions.set([row('a', { profile: 'p2', unread: false })])
+
+    await acknowledgeSessionRead('a')
+
+    expect(patch).toHaveBeenCalledWith('a', false, 'p2')
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
+  })
+
+  it('is best-effort when the shared read acknowledgement fails', async () => {
+    $sessions.set([row('a', { unread: false })])
+    patch.mockImplementationOnce(() => Promise.reject(new Error('offline')))
+
+    await expect(acknowledgeSessionRead('a')).resolves.toBeUndefined()
+    expect($sessions.get().find(s => s.id === 'a')?.unread).toBe(false)
   })
 })
 

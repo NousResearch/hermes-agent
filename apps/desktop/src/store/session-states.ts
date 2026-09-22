@@ -68,6 +68,7 @@ import {
   type SessionProfileRoute
 } from './session-request-router'
 import { ackStoredSessionId, markSessionUnreadFinished } from './session-unread'
+import { acknowledgeSessionRead } from './session-unread-remote'
 import { migrateTranscriptTailsForProfile } from './transcript-tail-cache'
 import { isBrowserWindow, isSecondaryWindow } from './windows'
 
@@ -481,8 +482,13 @@ function handleTransition(previous: ClientSessionState | null, next: ClientSessi
 /** Mark a completed turn unread unless the user is already looking at it. */
 function lightUnreadCompletion(storedId: string) {
   // FOCUSED, not selected: a session finishing in the tile the user is
-  // watching is already seen, and a tile is never the primary selection.
+  // watching is already seen, and a tile is never the primary selection. The
+  // backend still observed a new completion, so advance its shared watermark
+  // even when our cached row already says read; otherwise another surface sees
+  // this visible completion as unread until the user reopens the session.
   if (storedId === $focusedStoredSessionId.get()) {
+    void acknowledgeSessionRead(storedId)
+
     return
   }
 

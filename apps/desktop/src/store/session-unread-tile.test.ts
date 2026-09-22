@@ -1,4 +1,16 @@
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import type { SessionInfo } from '@/types/hermes'
+
+const patchUnread = vi.fn<(id: string, unread: boolean, profile?: null | string) => Promise<{ ok: boolean }>>(() =>
+  Promise.resolve({ ok: true })
+)
+
+vi.mock('@/hermes', () => ({
+  setApiRequestProfile: () => {},
+  setSessionUnreadRemote: (id: string, unread: boolean, profile?: null | string) =>
+    patchUnread(id, unread, profile)
+}))
 
 import * as model from '@/components/pane-shell/tree/model'
 // Cold transforms belong to collection, not the first unread assertion's budget.
@@ -22,6 +34,9 @@ describe('completed-unread dot follows the focused session', () => {
     while (disposers.length > 0) {
       disposers.pop()?.()
     }
+
+    patchUnread.mockClear()
+    session.$sessions.set([])
   })
 
   async function setup() {
@@ -79,10 +94,22 @@ describe('completed-unread dot follows the focused session', () => {
   it('never marks a tile that finishes while it is the focused one', async () => {
     const { finishTurn, session, tree } = await setup()
 
+    session.$sessions.set([
+      {
+        id: 'tiled',
+        message_count: 1,
+        profile: 'work',
+        source: 'cli',
+        started_at: 0,
+        title: 'Tiled',
+        unread: false
+      } as SessionInfo
+    ])
     tree.noteActiveTreeGroup('grp-tile')
     finishTurn('tiled')
 
     expect(session.$unreadFinishedSessionIds.get()).toEqual([])
+    await vi.waitFor(() => expect(patchUnread).toHaveBeenCalledWith('tiled', false, 'work'))
   })
 
   it('marks the primary session when a tile has focus', async () => {

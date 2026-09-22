@@ -60,7 +60,7 @@ export function CatalogInstallTool(props: ToolCallMessagePartProps) {
   }
 
   return (
-    <div className={cn(SHELL_CLASS, 'my-1.5 flex items-center gap-2')} data-slot="connector-card">
+    <div className={cn(SHELL_CLASS, 'my-1.5 flex max-w-lg items-center gap-2')} data-slot="connector-card">
       <Loader2 aria-hidden className="size-4 animate-spin text-(--ui-text-tertiary) motion-reduce:animate-none" />
       <span className="text-(--ui-text-tertiary)">{t.assistant.catalogInstall.preparing}</span>
     </div>
@@ -175,6 +175,7 @@ export function CatalogRow({ request, target }: CatalogRowProps) {
       <CatalogAdvancedDialog
         entry={catalog}
         fields={target.requiredEnv}
+        kind={target.kind}
         onCancel={() => setAdvancedOpen(false)}
         onInstall={env => {
           setAdvancedOpen(false)

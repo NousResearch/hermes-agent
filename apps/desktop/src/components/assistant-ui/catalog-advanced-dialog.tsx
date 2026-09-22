@@ -25,6 +25,8 @@ import { $profiles, normalizeProfileKey, profileLabel } from '@/store/profile'
 interface CatalogAdvancedDialogProps {
   entry: CatalogEntry
   fields: SetupField[]
+  /** A skill has no agent/desktop halves, no enable step and no commit pin; it keeps profile and force. */
+  kind: 'plugin' | 'skill'
   onCancel: () => void
   /** The `connection.respond` env map (CATALOG-ROW-CONTRACT.md): every value a string. */
   onInstall: (env: Record<string, string>) => void
@@ -52,7 +54,7 @@ export function CatalogAdvancedDialog(props: CatalogAdvancedDialogProps) {
   )
 }
 
-function CatalogAdvancedForm({ entry, fields, onCancel, onInstall }: CatalogAdvancedDialogProps) {
+function CatalogAdvancedForm({ entry, fields, kind, onCancel, onInstall }: CatalogAdvancedDialogProps) {
   const { t } = useI18n()
   const m = t.settings.plugins.installModal
   const copy = t.assistant.catalogInstall
@@ -76,16 +78,37 @@ function CatalogAdvancedForm({ entry, fields, onCancel, onInstall }: CatalogAdva
   const profileOptions = known ? profiles : [...profiles, { name: targetProfile }]
   const filesUrl = pluginFilesUrl(entry)
 
+  const plugin = kind === 'plugin'
+
   const install = () =>
-    onInstall({
-      ...credentials,
-      agent_half: flag(agentHalf),
-      ...(entry.hasDesktopHalf ? { desktop_half: flag(desktopHalf) } : {}),
-      enable: flag(enable),
-      force: flag(force),
-      ...(pinTrimmed ? { ref: pinTrimmed } : {}),
-      target_profile: targetProfile
-    })
+    onInstall(
+      plugin
+        ? {
+            ...credentials,
+            agent_half: flag(agentHalf),
+            ...(entry.hasDesktopHalf ? { desktop_half: flag(desktopHalf) } : {}),
+            enable: flag(enable),
+            force: flag(force),
+            ...(pinTrimmed ? { ref: pinTrimmed } : {}),
+            target_profile: targetProfile
+          }
+        : { ...credentials, force: flag(force), target_profile: targetProfile }
+    )
+
+  const profileSelect = (
+    <Select disabled={!agentHalf} onValueChange={setTargetProfile} value={targetProfile}>
+      <SelectTrigger aria-label={m.profileLabel} className="w-full">
+        <SelectValue />
+      </SelectTrigger>
+      <SelectContent>
+        {profileOptions.map(profile => (
+          <SelectItem key={profile.name} value={normalizeProfileKey(profile.name)}>
+            {profileLabel(profile)}
+          </SelectItem>
+        ))}
+      </SelectContent>
+    </Select>
+  )
 
   return (
     <DialogContent className="w-[min(32rem,calc(100vw-2rem))]" data-slot="catalog-advanced">
@@ -95,62 +118,62 @@ function CatalogAdvancedForm({ entry, fields, onCancel, onInstall }: CatalogAdva
       </DialogHeader>
 
       <div className="grid max-h-[60vh] gap-4 overflow-y-auto">
-        <Section title={m.includesHeading}>
-          <div className="grid gap-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-            <label className="flex items-start gap-3">
-              <Checkbox checked={agentHalf} onCheckedChange={value => setAgentHalf(value === true)} />
-              <span className="font-medium text-foreground">{m.agentLabel}</span>
-            </label>
-            <label className="grid gap-1 pl-7">
-              <span className={cn(CAPTION, 'text-foreground')}>{m.profileLabel}</span>
-              <Select disabled={!agentHalf} onValueChange={setTargetProfile} value={targetProfile}>
-                <SelectTrigger aria-label={m.profileLabel} className="w-full">
-                  <SelectValue />
-                </SelectTrigger>
-                <SelectContent>
-                  {profileOptions.map(profile => (
-                    <SelectItem key={profile.name} value={normalizeProfileKey(profile.name)}>
-                      {profileLabel(profile)}
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
-            </label>
-          </div>
-          {entry.hasDesktopHalf ? (
-            <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
-              <Checkbox checked={desktopHalf} onCheckedChange={value => setDesktopHalf(value === true)} />
-              <span className="font-medium text-foreground">{m.desktopLabel}</span>
-            </label>
-          ) : null}
-          {nothingSelected ? <p className={cn(CAPTION, 'text-destructive')}>{m.selectComponent}</p> : null}
-        </Section>
+        {plugin ? (
+          <Section title={m.includesHeading}>
+            <div className="grid gap-2 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+              <label className="flex items-start gap-3">
+                <Checkbox checked={agentHalf} onCheckedChange={value => setAgentHalf(value === true)} />
+                <span className="font-medium text-foreground">{m.agentLabel}</span>
+              </label>
+              <label className="grid gap-1 pl-7">
+                <span className={cn(CAPTION, 'text-foreground')}>{m.profileLabel}</span>
+                {profileSelect}
+              </label>
+            </div>
+            {entry.hasDesktopHalf ? (
+              <label className="flex items-start gap-3 rounded-lg border border-(--ui-stroke-tertiary) px-3 py-2">
+                <Checkbox checked={desktopHalf} onCheckedChange={value => setDesktopHalf(value === true)} />
+                <span className="font-medium text-foreground">{m.desktopLabel}</span>
+              </label>
+            ) : null}
+            {nothingSelected ? <p className={cn(CAPTION, 'text-destructive')}>{m.selectComponent}</p> : null}
+          </Section>
+        ) : (
+          <label className="grid gap-1">
+            <span className={cn(CAPTION, 'text-foreground')}>{m.profileLabel}</span>
+            {profileSelect}
+          </label>
+        )}
 
         <div className="grid gap-3">
-          <label className="flex items-center justify-between gap-3">
-            <span className={cn(CAPTION, 'text-foreground')}>{m.enableAgent}</span>
-            <Switch checked={enable} disabled={!agentHalf} onCheckedChange={setEnable} />
-          </label>
+          {plugin ? (
+            <label className="flex items-center justify-between gap-3">
+              <span className={cn(CAPTION, 'text-foreground')}>{m.enableAgent}</span>
+              <Switch checked={enable} disabled={!agentHalf} onCheckedChange={setEnable} />
+            </label>
+          ) : null}
           <label className="flex items-center justify-between gap-3">
             <span className={cn(CAPTION, 'text-foreground')}>{m.forceReinstall}</span>
             <Switch checked={force} onCheckedChange={setForce} />
           </label>
-          <label className="grid gap-1">
-            <span className={cn(CAPTION, 'text-foreground')}>{m.pinToCommit}</span>
-            <Input
-              aria-invalid={pinInvalid || undefined}
-              aria-label={m.pinToCommit}
-              className="font-mono"
-              disabled={!agentHalf}
-              onChange={event => setPin(event.target.value)}
-              placeholder={m.pinToCommitPlaceholder}
-              spellCheck={false}
-              value={pin}
-            />
-            <span className={cn(CAPTION, pinInvalid ? 'text-destructive' : 'text-(--ui-text-tertiary)')}>
-              {pinInvalid ? m.pinToCommitInvalid : m.pinToCommitHint}
-            </span>
-          </label>
+          {plugin ? (
+            <label className="grid gap-1">
+              <span className={cn(CAPTION, 'text-foreground')}>{m.pinToCommit}</span>
+              <Input
+                aria-invalid={pinInvalid || undefined}
+                aria-label={m.pinToCommit}
+                className="font-mono"
+                disabled={!agentHalf}
+                onChange={event => setPin(event.target.value)}
+                placeholder={m.pinToCommitPlaceholder}
+                spellCheck={false}
+                value={pin}
+              />
+              <span className={cn(CAPTION, pinInvalid ? 'text-destructive' : 'text-(--ui-text-tertiary)')}>
+                {pinInvalid ? m.pinToCommitInvalid : m.pinToCommitHint}
+              </span>
+            </label>
+          ) : null}
         </div>
 
         {entry.repo ? (

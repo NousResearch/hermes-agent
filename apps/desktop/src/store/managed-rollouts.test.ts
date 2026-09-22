@@ -1,0 +1,85 @@
+import { afterEach, describe, expect, it, vi } from 'vitest'
+
+import {
+  $managedRollouts,
+  _resetManagedRolloutsForTests,
+  _setManagedRolloutsBridgeForTests,
+  pollManagedRollouts,
+  sendManagedRolloutCommand,
+  startManagedRolloutPolling,
+  stopManagedRolloutPolling
+} from './managed-rollouts'
+
+afterEach(() => {
+  _resetManagedRolloutsForTests()
+  vi.useRealTimers()
+})
+
+const snapshot = (revision: number) => ({ revision, rolloutId: 'r1', phase: 'running', data: {} })
+
+describe('managed rollout renderer store', () => {
+  it('initializes only through the modern managed-rollouts endpoint', async () => {
+    const read = vi.fn().mockResolvedValue({ revision: 1, snapshot: snapshot(1) })
+    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+
+    await pollManagedRollouts()
+
+    expect(read).toHaveBeenCalledWith(null)
+    expect($managedRollouts.get()).toMatchObject({ status: 'ready', revision: 1 })
+  })
+
+  it('polls by revision and does not replace state with an older response', async () => {
+    const read = vi.fn()
+      .mockResolvedValueOnce({ revision: 3, snapshot: snapshot(3) })
+      .mockResolvedValueOnce({ revision: 2, snapshot: snapshot(2) })
+    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+
+    await pollManagedRollouts()
+    await pollManagedRollouts()
+
+    expect(read).toHaveBeenLastCalledWith(3)
+    expect($managedRollouts.get().revision).toBe(3)
+  })
+
+  it('reconciles a terminal null response without clearing the last snapshot', async () => {
+    const read = vi.fn()
+      .mockResolvedValueOnce({ revision: 4, snapshot: snapshot(4) })
+      .mockResolvedValueOnce({ revision: 4, snapshot: null })
+    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+
+    await pollManagedRollouts()
+    await pollManagedRollouts()
+
+    expect($managedRollouts.get()).toMatchObject({ status: 'ready', revision: 4, snapshot: snapshot(4) })
+  })
+
+  it('coalesces overlapping command retries and cleans polling on stop', async () => {
+    let resolve!: (value: unknown) => void
+    const pending = new Promise(resolvePromise => { resolve = resolvePromise })
+    const command = vi.fn().mockReturnValue(pending)
+    const read = vi.fn().mockResolvedValue({ revision: 1, snapshot: snapshot(1) })
+    _setManagedRolloutsBridgeForTests({ read, command })
+
+    const first = sendManagedRolloutCommand({ requestId: 'r1', action: 'pause' })
+    const second = sendManagedRolloutCommand({ requestId: 'r1', action: 'pause' })
+    expect(command).toHaveBeenCalledTimes(1)
+    resolve({ accepted: true })
+    await Promise.all([first, second])
+
+    vi.useFakeTimers()
+    const stop = startManagedRolloutPolling()
+    stop()
+    stopManagedRolloutPolling()
+    await vi.runOnlyPendingTimersAsync()
+    expect(command).toHaveBeenCalledTimes(1)
+  })
+
+  it('rejects a different in-flight action instead of coalescing it', async () => {
+    const command = vi.fn().mockReturnValue(new Promise(() => undefined))
+    _setManagedRolloutsBridgeForTests({ read: vi.fn(), command })
+
+    void sendManagedRolloutCommand({ requestId: 'r1', action: 'pause' })
+    await expect(sendManagedRolloutCommand({ requestId: 'r2', action: 'stop' })).rejects.toThrow('command-conflict')
+    expect(command).toHaveBeenCalledTimes(1)
+  })
+})

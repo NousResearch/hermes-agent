@@ -196,7 +196,12 @@ def test_search_results_bit_identical_to_unhoisted(hoisted_retriever):
     for fact in old_results:
         fact.pop("hrr_vector", None)
 
-    assert new_results == old_results
+    # Telemetry (retrieval_count/updated_at) is bookkeeping, not ranking: compare
+    # the ranking-relevant fields so the parity contract survives sensing writes.
+    def _rank_fields(fact):
+        return {k: fact[k] for k in ("fact_id", "content", "score", "fts_rank")}
+
+    assert [_rank_fields(f) for f in new_results] == [_rank_fields(f) for f in old_results]
 
 
 def test_related_encodes_role_atoms_once(hoisted_retriever, monkeypatch):

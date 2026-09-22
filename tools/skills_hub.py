@@ -84,6 +84,8 @@ def __getattr__(name: str):
 
 _REDIRECT_STATUS_CODES = {301, 302, 303, 307, 308}
 _MAX_SKILL_FETCH_REDIRECTS = 5
+# Default per-request timeout every one-shot hub GET used before pooling existed.
+_DEFAULT_HTTP_TIMEOUT = 20
 
 # An inspect resolves metadata and then the preview bundle through the same
 # source adapter. Keeping this context local to that operation lets httpx reuse
@@ -99,7 +101,7 @@ def skills_hub_http_session() -> Iterator[None]:
     if _skills_hub_http_client.get() is not None:
         yield
         return
-    with create_ssrf_safe_client(follow_redirects=False) as client:
+    with create_ssrf_safe_client(timeout=_DEFAULT_HTTP_TIMEOUT, follow_redirects=False) as client:
         token = _skills_hub_http_client.set(client)
         try:
             yield
@@ -115,7 +117,7 @@ def _skills_hub_http_get(url: str, **kwargs: Any) -> httpx.Response:
     return httpx.get(url, **kwargs)
 
 
-def _ssrf_safe_http_get(url: str, *, timeout: int = 20,
+def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
                         headers: Optional[Dict[str, str]] = None) -> httpx.Response:
     """Fetch one URL with connect-time SSRF validation and no automatic redirects."""
     client = _skills_hub_http_client.get()

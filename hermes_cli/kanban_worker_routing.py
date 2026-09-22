@@ -190,7 +190,17 @@ def route_orchestrator_task(conn, row, *, dry_run: bool, result) -> Optional[str
     from hermes_cli import kanban_db as kb
     from hermes_cli.kanban_repair_routing import repair_profile_for_task
 
-    profile = repair_profile_for_task(row["title"], row["body"])
+    # Some older dispatcher callers provide a compact row without task prose;
+    # resolve the authoritative title/body by id before classifying ownership.
+    try:
+        title, body = row["title"], row["body"]
+    except (IndexError, KeyError):
+        detail = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ?", (row["id"],)
+        ).fetchone()
+        title = detail["title"] if detail else ""
+        body = detail["body"] if detail else ""
+    profile = repair_profile_for_task(title, body)
     if profile is None:
         if not dry_run:
             with kb.write_txn(conn):

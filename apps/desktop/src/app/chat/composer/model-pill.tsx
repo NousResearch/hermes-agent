@@ -1,8 +1,10 @@
 import { useStore } from '@nanostores/react'
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
+import { useTourMarker } from '@/app/chat/tour-marker'
 import { ModelMenuCloseContext } from '@/app/shell/model-menu-panel'
+import { isElementInHiddenPane } from '@/components/pane-shell/pane-visibility'
 import { Button } from '@/components/ui/button'
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu'
 import { GlyphSpinner } from '@/components/ui/glyph-spinner'
@@ -10,16 +12,20 @@ import { releaseTypingFocus } from '@/components/ui/keyboard-first'
 import { Tip } from '@/components/ui/tooltip'
 import { useI18n } from '@/i18n'
 import { ChevronDown } from '@/lib/icons'
-import { formatModelStatusLabel } from '@/lib/model-status-label'
+import { formatModelPillLabel, providerDisplayName } from '@/lib/model-status-label'
 import { cn } from '@/lib/utils'
-import { $currentModelSource, $defaultReasoningEffort, setModelPickerOpen } from '@/store/session'
+import { $currentModelSource, setModelPickerOpen } from '@/store/session'
 
 import { onComposerModelMenuRequest } from './focus'
+import { RICH_INPUT_SLOT } from './rich-editor'
 import { useComposerScope } from './scope'
 import type { ChatBarState } from './types'
 
+// `shrink` (not `shrink-0`) with a truncating label: the pill is the one
+// control in the row that can give width back continuously, so it absorbs the
+// squeeze between collapse stages instead of pushing Send past the edge.
 const PILL = cn(
-  'h-(--composer-control-size) max-w-40 shrink-0 gap-1 rounded-md px-2 text-xs font-normal',
+  'h-(--composer-control-size) min-w-0 max-w-40 shrink gap-1 rounded-md px-2 text-xs font-normal',
   'text-(--ui-text-tertiary) hover:bg-(--chrome-action-hover) hover:text-foreground'
 )
 
@@ -41,6 +47,8 @@ export function ModelPill({
   model: ChatBarState['model']
 }) {
   const copy = useI18n().t.shell.statusbar
+  // Two return branches below, one handle: only ever one of them mounts.
+  const tourMarker = useTourMarker('model-pill')
   const view = useSessionView()
   // Prefer the chat-bar snapshot (already view-scoped by ChatView); fall back
   // to the live SessionView atoms so a mid-flight session.info still paints.
@@ -49,11 +57,10 @@ export function ModelPill({
   const currentModel = model.model || viewModel
   const currentProvider = model.provider || viewProvider
   const fastMode = useStore(view.$fast)
-  const reasoningEffort = useStore(view.$reasoningEffort)
   const modelSource = useStore($currentModelSource)
-  const defaultEffort = useStore($defaultReasoningEffort)
   const runtimeId = useStore(view.$runtimeId)
   const [open, setOpen] = useState(false)
+  const restoreSelection = useRef<(() => void) | null>(null)
   const scope = useComposerScope()
   const hasLiveMenu = Boolean(model.modelMenuContent)
 
@@ -69,6 +76,34 @@ export function ModelPill({
         }
 
         if (hasLiveMenu) {
+          const editor = document.activeElement
+          const selection = window.getSelection()
+
+          if (
+            editor instanceof HTMLElement &&
+            editor.dataset.slot === RICH_INPUT_SLOT &&
+            selection?.anchorNode &&
+            selection.focusNode &&
+            editor.contains(selection.anchorNode) &&
+            editor.contains(selection.focusNode)
+          ) {
+            const { anchorNode, anchorOffset, focusNode, focusOffset } = selection
+
+            restoreSelection.current = () => {
+              if (
+                !editor.isConnected ||
+                isElementInHiddenPane(editor) ||
+                !editor.contains(anchorNode) ||
+                !editor.contains(focusNode)
+              ) {
+                return
+              }
+
+              editor.focus({ preventScroll: true })
+              window.getSelection()?.setBaseAndExtent(anchorNode, anchorOffset, focusNode, focusOffset)
+            }
+          }
+
           setOpen(prev => !prev)
         } else {
           setModelPickerOpen(true)
@@ -94,9 +129,7 @@ export function ModelPill({
   ) : (
     <>
       {currentModel.trim() ? (
-        <span className="truncate">
-          {formatModelStatusLabel(currentModel, { defaultEffort, fastMode, reasoningEffort })}
-        </span>
+        <span className="truncate">{formatModelPillLabel(currentModel, { fastMode })}</span>
       ) : (
         <GlyphSpinner className="opacity-50" spinner="braille" />
       )}
@@ -122,7 +155,7 @@ export function ModelPill({
     : PILL
 
   const baseTitle = currentProvider
-    ? copy.modelTitle(currentProvider, currentModel || copy.modelNone)
+    ? copy.modelTitle(providerDisplayName(currentProvider), currentModel || copy.modelNone)
     : copy.switchModel
 
   const title = pinnedOverride ? `${baseTitle} — ${copy.modelPinned}` : baseTitle
@@ -133,6 +166,7 @@ export function ModelPill({
         <Button
           aria-label={copy.openModelPicker}
           className={pillClass}
+          data-tour={tourMarker}
           disabled={disabled}
           onClick={() => setModelPickerOpen(true)}
           type="button"
@@ -159,12 +193,34 @@ export function ModelPill({
     <DropdownMenu onOpenChange={setMenuOpen} open={open}>
       <Tip label={title} side="top">
         <DropdownMenuTrigger asChild>
-          <Button aria-label={title} className={pillClass} disabled={disabled} type="button" variant="ghost">
+          <Button
+            aria-label={title}
+            className={pillClass}
+            data-tour={tourMarker}
+            disabled={disabled}
+            type="button"
+            variant="ghost"
+          >
             {label}
           </Button>
         </DropdownMenuTrigger>
       </Tip>
-      <DropdownMenuContent align="end" className="w-64 p-0" side="top" sideOffset={8}>
+      <DropdownMenuContent
+        align="end"
+        className="w-64 p-0"
+        onCloseAutoFocus={event => {
+          if (restoreSelection.current) {
+            event.preventDefault()
+            restoreSelection.current()
+            restoreSelection.current = null
+          }
+        }}
+        onInteractOutside={() => {
+          restoreSelection.current = null
+        }}
+        side="top"
+        sideOffset={8}
+      >
         <ModelMenuCloseContext.Provider value={() => setMenuOpen(false)}>
           {model.modelMenuContent}
         </ModelMenuCloseContext.Provider>

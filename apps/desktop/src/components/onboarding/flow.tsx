@@ -19,6 +19,8 @@ import {
   recheckExternalSignin,
   setOnboardingCode,
   setOnboardingModel,
+  startManualOnboarding,
+  startProviderOAuth,
   submitOnboardingCode
 } from '@/store/onboarding'
 
@@ -56,16 +58,33 @@ export function FlowPanel({
   }
 
   if (flow.status === 'error') {
+    // Recovery in the order a stuck user needs it: retry the same provider
+    // (when we know which one failed), fall back to a pasted API key, or go
+    // back to the provider list. Raw error text stays behind Details.
+    const failedProvider = flow.provider
+
     return (
       <div className="grid gap-3">
         <div className="flex items-center gap-1.5 text-sm text-destructive">
           <ErrorIcon className="shrink-0" size="0.875rem" />
           <span>{flow.message || t.onboarding.signInFailed}</span>
         </div>
-        <div className="flex justify-end">
-          <Button onClick={cancelOnboardingFlow} variant="outline">
+        {flow.detail ? (
+          <details className="text-xs text-muted-foreground">
+            <summary className="cursor-pointer select-none">{t.onboarding.errorDetails}</summary>
+            <pre className="mt-1 whitespace-pre-wrap wrap-break-word font-mono text-[0.6875rem]">{flow.detail}</pre>
+          </details>
+        ) : null}
+        <div className="flex flex-wrap justify-end gap-2">
+          <Button onClick={cancelOnboardingFlow} variant="text">
             {t.onboarding.pickDifferentProvider}
           </Button>
+          <Button onClick={() => startManualOnboarding(null, ctx.profile)} variant="outline">
+            {t.onboarding.useApiKeyInstead}
+          </Button>
+          {failedProvider ? (
+            <Button onClick={() => void startProviderOAuth(failedProvider, ctx)}>{t.onboarding.tryAgain}</Button>
+          ) : null}
         </div>
       </div>
     )
@@ -82,7 +101,7 @@ export function FlowPanel({
         <Input
           autoFocus
           onChange={e => setOnboardingCode(e.target.value)}
-          onKeyDown={e => e.key === 'Enter' && void submitOnboardingCode(ctx)}
+          onKeyDown={e => e.key === 'Enter' && !e.nativeEvent.isComposing && void submitOnboardingCode(ctx)}
           placeholder={t.onboarding.pasteAuthCode}
           value={flow.code}
         />
@@ -146,7 +165,7 @@ function Step({ children, title }: { children: React.ReactNode; title: string })
 // Device-code display: OTP-style — each character in its own readonly cell.
 // The whole row is the copy button (no side button, no checkmark); on copy the
 // cells flash emerald for feedback. Dashes render as quiet separators.
-function DeviceCode({ code, copied, onCopy }: { code: string; copied: boolean; onCopy: () => void }) {
+export function DeviceCode({ code, copied, onCopy }: { code: string; copied: boolean; onCopy: () => void }) {
   const { t } = useI18n()
 
   return (
@@ -319,8 +338,17 @@ function ConfirmingModelPanel({
         currentModel={flow.currentModel}
         currentProvider={flow.providerSlug}
         onOpenChange={setPickerOpen}
-        onSelect={({ model }) => {
-          void setOnboardingModel(model)
+        onSelect={({ model, provider }) => {
+          // The picker lists models from every configured provider, not just
+          // the one the user just signed in with. Persist the assignment
+          // against the provider that actually serves the picked model (and
+          // sync the card label to it) — otherwise a foreign model gets
+          // paired with the sign-in provider and chat errors out.
+          const picked = options.data?.providers?.find(
+            p => String(p.slug).toLowerCase() === String(provider).toLowerCase()
+          )
+
+          void setOnboardingModel(model, provider, picked?.name)
           setPickerOpen(false)
         }}
         open={pickerOpen}

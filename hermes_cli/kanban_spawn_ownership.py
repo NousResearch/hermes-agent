@@ -12,8 +12,9 @@ def pending_runs(conn, task_id=None):
         t.worker_pid AS task_pid, t.worker_started_at AS task_fingerprint,
         t.claim_lock AS task_lock
         FROM task_runs r JOIN tasks t ON t.id=r.task_id
-        WHERE r.spawn_state IS NOT NULL AND r.spawn_state NOT IN ('returned','settled')
-        AND (r.spawn_state != 'receipted' OR r.ended_at IS NOT NULL)
+        WHERE ((r.spawn_state IS NOT NULL AND r.spawn_state NOT IN ('returned','settled')
+          AND (r.spawn_state != 'receipted' OR r.ended_at IS NOT NULL))
+          OR (r.execution_scope IS NOT NULL AND json_extract(r.execution_scope,'$.state') IS NOT 'settled'))
         AND (? IS NULL OR r.task_id=?)''', (task_id, task_id)).fetchall()
 
 
@@ -86,18 +87,27 @@ def record_receipt(conn, task_id, run_id, claim_lock, pid, fingerprint):
 def cleanup_verified(conn, task_id, run_id, pid, fingerprint):
     """Record verified process exit before a reaper clears the identity columns."""
     from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_execution_scope as scopes
+    if scopes.read(conn, run_id) is not None and not scopes.settled(conn, run_id):
+        return False
     conn.execute("""UPDATE task_runs SET spawn_state='settled'
         WHERE id=? AND task_id=? AND worker_pid IS ? AND worker_started_at IS ?
         AND spawn_state IS NOT NULL""", (run_id, task_id, pid, fingerprint))
     kb._append_event(conn, task_id, 'spawn_cleanup_verified', {
         'pid': pid, 'fingerprint': fingerprint, 'observed_at': int(time.time())}, run_id=run_id)
+    return True
 
 
 def reconcile(conn, task_id):
     """Only original process identity on the owning host can prove an exit."""
     from hermes_cli import kanban_db as kb, kanban_db_dispatch as dispatch
+    from hermes_cli import kanban_execution_scope as scopes
     with kb.write_txn(conn, allow_nested=True):
         for row in pending_runs(conn, task_id):
+            if row['execution_scope'] is not None:
+                if scopes.settled(conn, row['id']):
+                    cleanup_verified(conn, task_id, row['id'], row['worker_pid'], row['worker_started_at'])
+                continue
             if (not row['worker_pid'] or row['worker_started_at'] is None
                     or not str(row['claim_lock'] or '').startswith(kb._host_prefix())):
                 continue

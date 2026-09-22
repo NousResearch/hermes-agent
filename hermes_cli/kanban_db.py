@@ -1010,6 +1010,7 @@ CREATE TABLE IF NOT EXISTS task_runs (
     -- Authoritative launch ownership, independent of prunable audit events.
     -- NULL = legacy/unattempted; attempted | uncertain | receipted | returned | settled.
     spawn_state         TEXT,
+    execution_scope     TEXT,
     max_runtime_seconds INTEGER,
     last_heartbeat_at   INTEGER,
     started_at          INTEGER NOT NULL,
@@ -2414,6 +2415,11 @@ def release_stale_claims(
     for row in stale:
         from hermes_cli.kanban_spawn_ownership import pending
         if pending(conn, row["id"]):
+            hb = row["last_heartbeat_at"]
+            if ((hb is not None and now-int(hb) > DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS)
+                    or not _worker_alive(row['worker_pid'], row['worker_started_at'])):
+                from hermes_cli.kanban_execution_scope import request_task_stop
+                request_task_stop(conn, row['id'])
             continue
         host_local = (row["claim_lock"] or "").startswith(host_prefix)
         hb = row["last_heartbeat_at"]
@@ -2539,6 +2545,8 @@ def reclaim_task(
         return False
     from hermes_cli.kanban_spawn_ownership import pending
     if pending(conn, task_id):
+        from hermes_cli.kanban_execution_scope import request_task_stop
+        request_task_stop(conn, task_id)
         return False
     prev_lock = row["claim_lock"]
     termination = _terminate_reclaimed_worker(

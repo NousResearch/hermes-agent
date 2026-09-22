@@ -1227,6 +1227,34 @@ needed — each profile gateway simply delivers through its own adapters.
 
 A task is a logical unit of work; a **run** is one attempt to execute it. When the dispatcher claims a ready task it creates a row in `task_runs` and points `tasks.current_run_id` at it. When that attempt ends — completed, blocked, crashed, timed out, spawn-failed, reclaimed — the run row closes with an `outcome` and the task's pointer clears. A task that's been attempted three times has three `task_runs` rows.
 
+On Linux, the built-in dispatcher launches each native worker through a child
+supervisor. Completing a task and releasing its execution capacity are separate:
+the supervisor retains detached and orphaned descendants, stops remaining children
+when the worker exits, and records cleanup only after the kernel reports that all
+children have been reaped. Clearing inherited environment variables or starting a
+new session does not escape this local descendant ownership.
+
+The run's `max_runtime_seconds` becomes a fixed deadline before launch. Startup
+delays count against it, and editing the task's limit or renewing its claim does
+not extend an existing execution. At the cutoff, or on a reclaim request, the
+supervisor stops its children and escalates after a short cleanup grace period.
+A reclaim may therefore initially report that ownership is still held; retry
+after cleanup completes. Cleanup receipts survive event-log pruning and restart.
+
+The cleanup supervisor and model worker have distinct process identities. The
+supervisor records the worker's PID and start fingerprint before releasing its
+launch gate; that identity survives exec and authenticates provider-failure
+reports. Reclaim retains billing/authentication stop decisions and transient
+failure accounting even after dispatcher restart. Descendants cannot report as
+the original worker merely by inheriting its task environment.
+
+If the supervisor is killed before writing its receipt, ownership stays unresolved
+even if the original worker PID has disappeared. Neither lease expiry nor a scan
+that finds no worker is sufficient to clear that state. Legacy runs, custom spawn
+callbacks and other operating systems retain their existing root-process behavior;
+they do not provide this stronger execution-cleanup receipt. The receipt covers
+local descendants, not work submitted to another host or an external service.
+
 Why two tables instead of just mutating the task: you need **full attempt history** for real-world postmortems ("the second reviewer attempt got to approve, the third merged"), and you need a clean place to hang per-attempt metadata — which files changed, which tests ran, which findings a reviewer noted. Those are run facts, not task facts.
 
 Runs are also where **structured handoff** lives. When a worker completes a task (via `kanban_complete(...)`) it can pass:

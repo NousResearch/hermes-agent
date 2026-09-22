@@ -214,6 +214,27 @@ test('Windows probe validates Hermes and Python topology before selection', asyn
   assert.ok(pythonCheck < output)
 })
 
+test('Windows probe reads only the remote user HERMES_HOME, never an inherited SSH environment value', async () => {
+  let script = ''
+
+  await probeWindowsRemote(
+    sshWith(async command => {
+      script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+
+      return JSON.stringify({
+        os: 'Windows',
+        arch: 'AMD64',
+        hermesHome: 'C:\\Users\\remote\\AppData\\Local\\hermes',
+        hermesPath: 'C:\\Users\\remote\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\hermes.exe',
+        python: 'C:\\Users\\remote\\AppData\\Local\\hermes\\hermes-agent\\venv\\Scripts\\python.exe'
+      })
+    })
+  )
+
+  assert.match(script, /GetEnvironmentVariable\("HERMES_HOME",\s*"User"\)/)
+  assert.doesNotMatch(script, /\$hermesHome=\$env:HERMES_HOME/)
+})
+
 test('platform detection preserves POSIX and falls back to Windows PowerShell', async () => {
   assert.deepEqual(await detectRemotePlatform(sshWith(async () => 'Linux\nx86_64\n')), { os: 'Linux', arch: 'x86_64' })
   const calls: string[] = []

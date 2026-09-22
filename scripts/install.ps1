@@ -3346,13 +3346,14 @@ function Set-PathVariable {
         Write-Info "PATH already configured"
     }
     
-    # Set HERMES_HOME so the Python code finds config/data in the right place.
-    # Only needed on Windows where we install to %LOCALAPPDATA%\hermes instead
-    # of the Unix default ~/.hermes
+    # Do not persist HERMES_HOME in the user environment. SSH can forward a
+    # local user's environment to a remote Windows probe, where that client
+    # path is unsafe and cannot identify the remote installation. The current
+    # installer process still needs the value below while it completes.
     $currentHermesHome = [Environment]::GetEnvironmentVariable("HERMES_HOME", "User")
-    if (-not $currentHermesHome -or $currentHermesHome -ne $HermesHome) {
-        [Environment]::SetEnvironmentVariable("HERMES_HOME", $HermesHome, "User")
-        Write-Success "Set HERMES_HOME=$HermesHome"
+    if ($currentHermesHome) {
+        [Environment]::SetEnvironmentVariable("HERMES_HOME", $null, "User")
+        Write-Info "Removed user-level HERMES_HOME; Hermes uses the install default."
     }
     $env:HERMES_HOME = $HermesHome
     

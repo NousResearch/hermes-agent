@@ -35,7 +35,10 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
     '}',
     `$explicit=${explicit}`,
     'if($explicit){Assert-NoReparse $explicit $false;$explicitPython=[IO.Path]::Combine([IO.Path]::GetDirectoryName($explicit), "python.exe");Assert-NoReparse $explicitPython $false}',
-    '$hermesHome=$env:HERMES_HOME',
+    // SSH may forward the Desktop client's environment. Read the remote
+    // account's persisted setting instead, so a local HERMES_HOME can never
+    // select or fail validation of a remote installation.
+    '$hermesHome=[Environment]::GetEnvironmentVariable("HERMES_HOME", "User")',
     'if(-not $hermesHome){$hermesHome=Join-Path $env:LOCALAPPDATA "hermes"}',
     'Assert-NoReparse $hermesHome $true',
     '$candidate=[IO.Path]::Combine($hermesHome, "hermes-agent\\venv\\Scripts\\hermes.exe")',

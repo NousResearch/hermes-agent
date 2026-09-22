@@ -787,8 +787,31 @@ export function useMessageStream({
             } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
-          } else if (finalText) {
-            nextMessages = [...prev, newAssistantFromCompletion()]
+          } else {
+            // Nothing streamed after the boundary and no `message.start` since
+            // the seal: a completion whose text IS the sealed pre-boundary reply
+            // is that reply's own completion (a redirect rejected after the row
+            // was painted, or a steer the model absorbed without new output),
+            // not a second occurrence. Anything else respects the boundary.
+            const sealedIndex =
+              !streamId && interimBoundaryPending && finalText
+                ? prev.findLastIndex(
+                    (message, index) =>
+                      index < lastUserIndex &&
+                      message.role === 'assistant' &&
+                      !message.hidden &&
+                      message.interim === true &&
+                      chatMessageText(message).trim() === finalText
+                  )
+                : -1
+
+            if (sealedIndex >= 0) {
+              nextMessages = prev.map((message, messageIndex) =>
+                messageIndex === sealedIndex ? completeMessage(message) : message
+              )
+            } else if (finalText) {
+              nextMessages = [...prev, newAssistantFromCompletion()]
+            }
           }
         }
 

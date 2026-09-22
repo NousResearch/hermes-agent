@@ -170,7 +170,6 @@ it.each([false, true].flatMap(previousFailure => [ANSWER, ''].map(reply => ({ pr
 )
 
 it.each([
-  { before: 'Answer', after: 'Answer' },
   { before: 'Answer', after: 'Answer with details' },
   { before: 'Answer with details', after: 'Answer' },
   { before: 'Answer', after: 'Rewritten reply', previewed: true },
@@ -218,6 +217,30 @@ it.each([
   await h.send('message.complete', { text: fixture.after, response_previewed: fixture.previewed })
   expect(h.state().messages.map(message => message.id)).toEqual(ids)
   expect(timeline($messages.get())).toEqual(expected)
+  h.dispose()
+})
+
+// A completion whose text IS the sealed pre-redirect reply, with nothing
+// streamed since, is that reply's own completion (rejected redirect race, or a
+// steer the model absorbed without new output): it settles the seal and the
+// correction stays the tail — see steer-arrival-order.test.tsx for the
+// streaming-side tripwire.
+it('settles an equal no-delta completion onto the sealed pre-redirect reply', async () => {
+  const h = mount()
+  await h.submit()
+  await h.send('message.start')
+  await h.send('message.delta', { text: 'Answer' })
+  await h.send('message.interim', { text: 'Answer', already_streamed: true })
+  await flush()
+  await h.redirect()
+  await h.send('message.complete', { text: 'Answer' })
+
+  expect(timeline(h.state().messages)).toEqual([
+    ['user', 'Give the answer.'],
+    ['assistant', 'Answer'],
+    ['user', 'Revise the answer.']
+  ])
+  expect(h.state().messages[1].interim).toBeFalsy()
   h.dispose()
 })
 

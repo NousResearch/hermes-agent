@@ -4271,13 +4271,16 @@ def task_age(task: Task) -> dict:
 
 # --- Retention + garbage collection ---
 
+# Shared by both gc sweeps: a negative window puts the cutoff in the future, so
+# "older than cutoff" matches every row / file instead of none.
+_NEGATIVE_RETENTION_MSG = "older_than_seconds must be >= 0, got {!r}: a negative retention selects everything."
+
+
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
     """Prune old done/archived events, retaining decomposition identity until task deletion."""
     older_than_seconds = int(older_than_seconds)
     if older_than_seconds < 0:
-        raise ValueError(
-            f"older_than_seconds must be >= 0, got {older_than_seconds!r}: a negative "
-            "retention builds a future cutoff that matches every event row.")
+        raise ValueError(_NEGATIVE_RETENTION_MSG.format(older_than_seconds))
     cutoff = int(time.time()) - int(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
@@ -4291,9 +4294,7 @@ def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[
     """Delete worker log files older than the cutoff on one board; returns the count."""
     older_than_seconds = int(older_than_seconds)
     if older_than_seconds < 0:
-        raise ValueError(
-            f"older_than_seconds must be >= 0, got {older_than_seconds!r}: a negative "
-            "retention builds a future cutoff that matches every worker log.")
+        raise ValueError(_NEGATIVE_RETENTION_MSG.format(older_than_seconds))
     log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0

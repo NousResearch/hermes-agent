@@ -30,8 +30,8 @@ import type {
   KanbanProfile,
   KanbanProject,
   KanbanTask,
-  KanbanTaskDetail,
   FleetStatusResponse,
+  KanbanTaskDetail,
   OrchestrationSettings,
   TaskEstimate,
   WorkerLog

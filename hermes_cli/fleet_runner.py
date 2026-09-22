@@ -145,4 +145,4 @@ class FleetRunner:
 
     @staticmethod
     def _execute(argv: list[str]):
-        return subprocess.run(argv, check=False, capture_output=True, text=True)
+        return subprocess.run(argv, check=False, capture_output=True, text=True, encoding='utf-8', errors='replace')

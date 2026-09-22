@@ -1,7 +1,7 @@
 import { Button, cn, Codicon, useQuery } from '@hermes/plugin-sdk'
 import { useMemo } from 'react'
 
-import { FLEET_STATUS_KEY, fetchFleetStatus } from './api'
+import { fetchFleetStatus, FLEET_STATUS_KEY } from './api'
 import type { FleetRunnerStatus, FleetStatusResponse, FleetTaskStatus } from './types'
 
 interface FleetNode {
@@ -22,7 +22,7 @@ function groupNodes(runners: FleetRunnerStatus[]): FleetNode[] {
   const nodes = new Map<string, FleetNode>()
 
   for (const runner of runners) {
-    if (!PRODUCTION_NODE_IDS.has(runner.node_id)) continue
+    if (!PRODUCTION_NODE_IDS.has(runner.node_id)) { continue }
 
     const existing = nodes.get(runner.node_id) ?? {
       activeLoad: 0,

@@ -1,5 +1,7 @@
 """Tests for hermes_cli.copilot_auth — Copilot token validation and resolution."""
 
+import json
+
 import pytest
 from unittest.mock import patch
 
@@ -69,6 +71,34 @@ class TestResolveToken:
             token, source = resolve_copilot_token()
         assert token == ""
         assert source == ""
+        mock_cli.assert_not_called()
+
+    def test_suppressed_sources_do_not_borrow_gh_cli(self, tmp_path, monkeypatch):
+        """``hermes auth remove copilot`` must stop every caller from borrowing ``gh auth token``.
+
+        The credential pool already skips a fully suppressed Copilot. Status and
+        other callers go through ``resolve_copilot_token``, which used to ignore
+        that list, report Copilot as logged in, and attempt the token exchange.
+        """
+        from hermes_cli.copilot_auth import COPILOT_ENV_VARS, resolve_copilot_token
+
+        home = tmp_path / "hermes"
+        home.mkdir()
+        (home / "auth.json").write_text(json.dumps({
+            "version": 1,
+            "providers": {},
+            "credential_pool": {},
+            "suppressed_sources": {
+                "copilot": ["gh_cli", *[f"env:{name}" for name in COPILOT_ENV_VARS]],
+            },
+        }))
+        monkeypatch.setenv("HERMES_HOME", str(home))
+        monkeypatch.delenv("COPILOT_GITHUB_TOKEN", raising=False)
+        monkeypatch.delenv("GH_TOKEN", raising=False)
+        monkeypatch.delenv("GITHUB_TOKEN", raising=False)
+        with patch("hermes_cli.copilot_auth._try_gh_cli_token") as mock_cli:
+            token, source = resolve_copilot_token()
+        assert (token, source) == ("", "")
         mock_cli.assert_not_called()
 
     def test_all_env_vars_invalid_skips_gh_cli_fallback(self, monkeypatch):

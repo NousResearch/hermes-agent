@@ -1251,6 +1251,104 @@ describe('preserveLocalPendingTurnMessages', () => {
       'assistant-stream-later'
     )
   })
+  // 2026-09-21 "last messages disappeared": settled interim commentary rows
+  // sit past the fresh page's assistant count when the stored page is shorter
+  // than the local window (empty assistant rows dropped in conversion, tail
+  // page cut before the commit). Ordinal pairing then misses, the three-way
+  // text checks find no committed twin, and the row is APPENDED AFTER
+  // committed history newer than it — the stale commentary became the
+  // transcript's end and buried the real tail (session ILO3_MacOS_app:
+  // seven 16:30–16:35 stream rows appended under the 16:41 committed reply).
+  // Stale by TIME, not by text: any committed row newer than the local row
+  // proves the page advanced past it, so the local copy must not append.
+  it('does not append a settled stream row the committed history has advanced past', () => {
+    const next = [
+      msg('1-user-stored', 'user', 'что запускать?', { rowId: 132374, timestamp: 1789997695 }),
+      msg('2-assistant-stored', 'assistant', 'Вторая попытка дала тот же 403…', {
+        rowId: 132394,
+        timestamp: 1789998075 // 16:41 committed reply — the real tail
+      })
+    ]
+
+    // Local window: the 16:41 row plus two settled interim rows (16:12, 16:35)
+    // whose stored twins text pairing cannot see in this short page.
+    const previous = [
+      ...next,
+      msg('assistant-stream-1789996299257-86', 'assistant', 'RED подтверждён. Добавляю cookie в транспорт:', {
+        pending: false,
+        timestamp: 1789996361 // 16:12
+      }),
+      msg('assistant-stream-1789997718820-105', 'assistant', 'Готово. Теперь по Spotlight их всего два:', {
+        pending: false,
+        timestamp: 1789997740 // 16:35:40 — older than the committed 16:41 row
+      })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  // Same guard, boundary case: a settled row newer than everything in the
+  // authoritative page is the finished turn the backend has NOT committed
+  // (reopen racing the commit) — it must still survive, not be dropped.
+  it('keeps a settled stream row newer than the whole committed page', () => {
+    const next = [
+      msg('1-user-stored', 'user', 'question', { rowId: 1, timestamp: 1000 }),
+      msg('2-assistant-stored', 'assistant', 'old answer', { rowId: 2, timestamp: 2000 })
+    ]
+
+    const finishedReply = msg('assistant-stream-live', 'assistant', 'the finished reply', {
+      pending: false,
+      timestamp: 3000
+    })
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, finishedReply]).map(m => m.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      'assistant-stream-live'
+    ])
+  })
+
+  // 2026-09-21 Router+VLESS: two optimistic user rows (23:33, 23:34) were
+  // re-appended AFTER the committed 23:41 reply after a network drop, burying
+  // the live tail ("last messages disappeared"). Their own turns ARE in the
+  // committed page (matched by an OLDER row, which the latest-only text guard
+  // cannot see); the page has advanced past the sends, so they must not append.
+  it('does not append optimistic user rows the committed history has advanced past', () => {
+    const next = [
+      msg('1-user-stored', 'user', 'какой тв бокс?', { rowId: 135915, timestamp: 1790022829 }),
+      msg('2-assistant-stored', 'assistant', 'ТВ-бокс — это не новый…', { rowId: 135920, timestamp: 1790022840 }),
+      msg('3-assistant-stored', 'assistant', 'Жду твоего хода — застряли на авторизации ADB.', {
+        rowId: 135964,
+        timestamp: 1790023314 // 23:41 committed reply — the real tail
+      })
+    ]
+
+    const previous = [
+      ...next,
+      msg('user-1790022826180-iqz7xd', 'user', 'какой тв бокс?'),
+      msg('user-1790022878881-gm7mfw', 'user', 'на телефоне почему то адрес 10.10.14.1')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
+  // Boundary: an optimistic send newer than every committed row is the live
+  // un-acked message (send racing the refresh, the case #5f97bb0fa7 protects)
+  // — it must survive the time guard.
+  it('keeps an optimistic user row newer than the whole committed page', () => {
+    const next = [
+      msg('1-user-stored', 'user', 'question', { rowId: 1, timestamp: 1000 }),
+      msg('2-assistant-stored', 'assistant', 'answer', { rowId: 2, timestamp: 2000 })
+    ]
+
+    const unacked = msg('user-3000000-ab12cd', 'user', 'the message I just sent')
+
+    expect(preserveLocalPendingTurnMessages(next, [...next, unacked]).map(m => m.id)).toEqual([
+      '1-user-stored',
+      '2-assistant-stored',
+      'user-3000000-ab12cd'
+    ])
+  })
 
   // The whole point of replacing rather than appending: one reply on screen,
   // and the committed history around the live turn untouched.

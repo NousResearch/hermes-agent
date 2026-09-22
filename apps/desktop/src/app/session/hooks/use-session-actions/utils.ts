@@ -709,6 +709,34 @@ export function preserveLocalPendingTurnMessages(
       continue
     }
 
+    // Same class as the settled assistant rows below: an un-acked optimistic
+    // user row is a send whose commit this window never observed. When the
+    // committed page already carries rows NEWER than the send, the gateway has
+    // moved past it — the send either landed long ago (its twin text-matched an
+    // OLDER committed row, which the latest-only guard above cannot see) or died
+    // with a dropped connection (ENETDOWN). Re-appending it buries the live tail
+    // under stale prompts (2026-09-21 Router+VLESS: two 23:33–23:34 prompts
+    // appended after the 23:41 reply, "last messages disappeared"). The send
+    // time is embedded in the composer's `user-<ms>-<rand>` id; parse it from
+    // there so no schema change is needed. A row whose id carries no parseable
+    // timestamp is kept (conservative).
+    if (isOptimisticUser) {
+      const sentAtMs = Number(/^user-(\d+)-/.exec(message.id)?.[1] ?? Number.NaN)
+
+      const historyAdvancedPastSend =
+        Number.isFinite(sentAtMs) &&
+        nextMessages.some(
+          candidate =>
+            candidate.rowId !== undefined &&
+            typeof candidate.timestamp === 'number' &&
+            candidate.timestamp > sentAtMs / 1000 + 300
+        )
+
+      if (historyAdvancedPastSend) {
+        continue
+      }
+    }
+
     const authoritative = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
 
     // A settled stream row (`pending: false` after message.complete) whose reply
@@ -809,6 +837,41 @@ export function preserveLocalPendingTurnMessages(
       durableFoldCoversLiveResponse(nextMessages, message)
     ) {
       continue
+    }
+
+    // A SETTLED local stream row (`pending !== true`) is a renderer-local
+    // copy of a reply the durable transcript either carries under a
+    // committed id or has already advanced PAST. Text pairing above misses
+    // when the stored twin differs beyond leading whitespace or rides a
+    // reference/media line; the row then fell through to `preserved.push`
+    // and was appended AFTER committed history newer than itself — old
+    // interim commentary resurfacing as the transcript's end, burying the
+    // real tail (the "last messages disappeared" reports of 2026-09-21:
+    // a settled 16:35 commentary appended under a 16:41 committed reply).
+    // The row is stale by TIME, not by text: if the authoritative page
+    // carries any committed row newer than this one, the page has moved
+    // past it and the local copy must not be appended. A page that ends
+    // BEFORE the row (reconnect fallback racing the commit) appends as
+    // before — nothing in `next` is newer than the row, so its reply would
+    // otherwise be lost (#70209 companion case, kept by the test above).
+    if (isPendingAssistant && message.pending !== true) {
+      const localTimestamp = typeof message.timestamp === 'number' ? message.timestamp : null
+
+      const historyAdvancedPastRow =
+        localTimestamp !== null &&
+        nextMessages.some(
+          candidate =>
+            candidate.rowId !== undefined &&
+            typeof candidate.timestamp === 'number' &&
+            // Slack absorbs renderer/backend clock drift: stream rows stamp
+            // Date.now()/1000 locally, committed rows carry the backend's
+            // epoch write time.
+            candidate.timestamp > localTimestamp + 300
+        )
+
+      if (historyAdvancedPastRow) {
+        continue
+      }
     }
 
     preserved.push(message)

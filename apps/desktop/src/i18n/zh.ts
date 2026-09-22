@@ -1578,7 +1578,8 @@ export const zh = defineLocale({
       deepLinkErrorConfig: '链接中的配置不是有效的 base64 编码 JSON。',
       deepLinkErrorShape: '配置必须是包含字符串 `url` 或 `command` 字段的 JSON 对象。',
       deepLinkErrorUrl: '仅允许 http:// 和 https:// 服务器地址。',
-      deepLinkErrorTooLarge: '配置负载超过 32KB 上限。',},
+      deepLinkErrorTooLarge: '配置负载超过 32KB 上限。'
+    },
     model: {
       loading: '正在加载模型配置...',
       appliesDesc: '应用于新会话。可在输入框的模型选择器中临时切换当前对话。',

@@ -1220,7 +1220,8 @@ export const ja = defineLocale({
       deepLinkErrorShape:
         '設定は文字列の `url` または `command` フィールドを持つ JSON オブジェクトである必要があります。',
       deepLinkErrorUrl: 'サーバー URL は http:// と https:// のみ許可されます。',
-      deepLinkErrorTooLarge: '設定ペイロードが 32KB の上限を超えています。',},
+      deepLinkErrorTooLarge: '設定ペイロードが 32KB の上限を超えています。'
+    },
     model: {
       loading: 'モデル設定を読み込み中...',
       appliesDesc:

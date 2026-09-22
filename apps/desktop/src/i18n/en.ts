@@ -1623,7 +1623,8 @@ export const en: Translations = {
       deepLinkErrorConfig: 'The link\u2019s config is not valid base64-encoded JSON.',
       deepLinkErrorShape: 'The config must be a JSON object with a string `url` or `command` field.',
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
-      deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.',},
+      deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.'
+    },
     model: {
       loading: 'Loading model configuration...',
       appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',

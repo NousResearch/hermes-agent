@@ -1238,7 +1238,8 @@ export const zhHant = defineLocale({
       deepLinkErrorConfig: '連結中的設定不是有效的 base64 編碼 JSON。',
       deepLinkErrorShape: '設定必須是包含字串 `url` 或 `command` 欄位的 JSON 物件。',
       deepLinkErrorUrl: '僅允許 http:// 和 https:// 伺服器網址。',
-      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。',},
+      deepLinkErrorTooLarge: '設定內容超過 32KB 上限。'
+    },
     model: {
       loading: '正在載入模型設定...',
       appliesDesc: '套用至新工作階段。可在輸入框的模型選擇器中臨時切換目前對話。',

@@ -1416,7 +1416,8 @@ export const ru = defineLocale({
       deepLinkErrorConfig: 'Конфигурация в ссылке не является корректным JSON в base64.',
       deepLinkErrorShape: 'Конфигурация должна быть JSON-объектом со строковым полем `url` или `command`.',
       deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
-      deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.',},
+      deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
+    },
     model: {
       loading: 'Загрузка конфигурации модели…',
       appliesDesc:

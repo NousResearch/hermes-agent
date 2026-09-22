@@ -410,10 +410,14 @@ def served_profile_child_env(
 
 
 def _is_routed_home(target_home: "str | Path") -> bool:
-    """True when ``target_home`` is not the process's own (launch) home."""
-    from hermes_constants import get_process_hermes_home
+    """True when ``target_home`` is not the process's own (launch) home.
+
+    Same launch-home identity as ``agent.secret_scope.serves_routed_profile()``: under a host that
+    mirrors the served profile into ``HERMES_HOME``, the live env var names the served home and the
+    launch residue would never be stripped from that profile's child env."""
+    from hermes_constants import get_routing_process_hermes_home
     try:
-        return Path(target_home).resolve() != get_process_hermes_home().resolve()
+        return Path(target_home).resolve() != get_routing_process_hermes_home().resolve()
     except OSError:
         return True
 

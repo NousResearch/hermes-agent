@@ -165,6 +165,35 @@ def get_process_hermes_home() -> Path:
     return _expand_hermes_home(val) if val else _get_platform_default_hermes_home()
 
 
+# Host-pinned identity of the profile this process serves as its own (None: follow HERMES_HOME).
+_PINNED_PROCESS_HERMES_HOME: str | None = None
+
+
+def pin_process_hermes_home(path: str | Path | None) -> None:
+    """Pin the home this process serves as its own profile, for "is this task routed?" decisions.
+
+    An embedding host that serves several profiles and mirrors the active turn's profile into
+    ``os.environ["HERMES_HOME"]`` for legacy readers (Hermes WebUI) otherwise makes every turn's own
+    profile look like the launch profile: ``agent.secret_scope.serves_routed_profile()`` turns
+    False and that turn's MCP connections fall back to bare, cross-profile names; the sibling
+    launch-home checks (``secret_scope._is_process_home``, ``tools.environments.local._is_routed_home``,
+    ``hermes_cli.env_loader._process_hermes_home``) misjudge the same way. ``None`` clears the pin.
+
+    Process-global on purpose: it names the process's own identity, not a per-task value. It is NOT
+    folded into :func:`get_process_hermes_home`: :func:`get_hermes_home` falls back to that for
+    tasks carrying no override, and the host's mirror exists precisely so those readers see the
+    served profile. Hosts that never mutate ``HERMES_HOME`` need not call this (no-op).
+    """
+    global _PINNED_PROCESS_HERMES_HOME
+    _PINNED_PROCESS_HERMES_HOME = None if path is None else str(path)
+
+
+def get_routing_process_hermes_home() -> Path:
+    """Launch home for routed-profile decisions: the pinned home, else :func:`get_process_hermes_home`."""
+    pinned = _PINNED_PROCESS_HERMES_HOME
+    return _expand_hermes_home(pinned) if pinned else get_process_hermes_home()
+
+
 # Hermes-managed runtime downloads at the root of a home (GGUF models, llama.cpp runtimes,
 # managed Node): re-downloadable on demand and routinely tens to hundreds of GB. Shared by
 # ``hermes backup`` (excludes them) and ``profile create --clone-all`` (skips them from the

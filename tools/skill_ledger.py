@@ -332,8 +332,8 @@ def compact_ledger() -> Tuple[int, int, int]:
 def gc_blobs() -> Tuple[int, int]:
     """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
     write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
-    (#107539). Malformed ledger lines abort the sweep (nothing deleted) — an unreadable entry
-    may still hold references."""
+    (#107539). Malformed ledger lines, or an unreadable/undecodable ledger, abort the sweep
+    (blobs are kept) — an entry we cannot read may still hold references."""
     blobs = blobs_dir()
     if not blobs.is_dir():
         return 0, 0

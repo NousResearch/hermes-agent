@@ -1289,6 +1289,25 @@ def is_task_registered() -> bool:
     return code == 0
 
 
+def task_launcher_supervises() -> bool:
+    """True when the installed Scheduled-Task launcher actually supervises the gateway child.
+
+    Registration alone is not proof of supervision (#91097): the pre-#91099 gateway VBS
+    detaches (``sh.Run ..., 0, False``), so Task Scheduler sees the launcher exit 0 and
+    can never observe a later watchdog exit 75. Only the synchronous contract — wait on
+    the child and propagate its exit code (``exitCode = sh.Run(..., 0, True)`` +
+    ``WScript.Quit exitCode``, the #91099 form) — lets ``RestartOnFailure`` fire.
+    Fail-open (True) when the installed launcher cannot be inspected: a missing or
+    unreadable file is not evidence about an otherwise working install.
+    """
+    try:
+        content = get_task_script_path().with_suffix(".vbs").read_text(encoding="utf-8")
+    except Exception:
+        return True
+    lowered = content.lower()
+    return "wscript.quit exitcode" in lowered and ", 0, true" in lowered
+
+
 def is_startup_entry_installed() -> bool:
     return get_startup_entry_path().exists() or _legacy_startup_entry_path().exists()
 

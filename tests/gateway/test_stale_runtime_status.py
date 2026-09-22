@@ -210,18 +210,59 @@ class TestCronStatusTickerFreshness:
         assert "will NOT fire" in out
 
 
+class TestTaskLauncherSupervisionContract:
+    """The installed task VBS must wait on the child and propagate its exit code
+    (#91099) before registration counts as supervision (#91097)."""
+
+    def _launcher_result(self, monkeypatch, tmp_path, vbs_text=None):
+        import hermes_cli.gateway_windows as gw
+
+        cmd_path = tmp_path / "Hermes_Gateway.cmd"
+        cmd_path.write_text("rem placeholder", encoding="utf-8")
+        if vbs_text is not None:
+            cmd_path.with_suffix(".vbs").write_text(vbs_text, encoding="utf-8")
+        monkeypatch.setattr(gw, "get_task_script_path", lambda: cmd_path)
+        return gw.task_launcher_supervises()
+
+    def _current_template_vbs(self):
+        import hermes_cli.gateway_windows as gw
+        from pathlib import Path
+
+        orig = gw._resolve_detached_python
+        gw._resolve_detached_python = lambda exe: (r"C:\venv\Scripts\python.exe", Path(r"C:\venv"), [])
+        try:
+            return gw._build_gateway_vbs_script(
+                r"C:\venv\Scripts\python.exe", r"C:\work", r"C:\h", "--profile work")
+        finally:
+            gw._resolve_detached_python = orig
+
+    def test_current_template_detaches(self, monkeypatch, tmp_path):
+        assert self._launcher_result(monkeypatch, tmp_path, self._current_template_vbs()) is False
+
+    def test_synchronous_launcher_supervises(self, monkeypatch, tmp_path):
+        vbs = ('Option Explicit\r\n'
+               'Dim sh, exitCode\r\n'
+               'Set sh = CreateObject("WScript.Shell")\r\n'
+               'exitCode = sh.Run("C:\\venv\\Scripts\\python.exe -m hermes_cli.main gateway run", 0, True)\r\n'
+               'WScript.Quit exitCode\r\n')
+        assert self._launcher_result(monkeypatch, tmp_path, vbs) is True
+
+    def test_missing_launcher_fails_open(self, monkeypatch, tmp_path):
+        assert self._launcher_result(monkeypatch, tmp_path, None) is True
+
+
 class TestWatchdogNoSupervisor:
-    def test_exit_without_supervisor_leaves_forensics(self, monkeypatch):
+    def _fake_windows(self, monkeypatch, registered, supervises):
         import types
 
+        fake_windows = types.ModuleType("hermes_cli.gateway_windows")
+        fake_windows.is_task_registered = lambda: registered
+        fake_windows.task_launcher_supervises = lambda: supervises
+        monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", fake_windows)
+
+    def _quiet_exit(self, monkeypatch):
         import gateway.lifecycle_ledger as ledger
         import gateway.status as status_mod
-        from gateway import shutdown_watchdog as wd
-
-        monkeypatch.setattr(sys, "platform", "win32")
-        fake_windows = types.ModuleType("hermes_cli.gateway_windows")
-        fake_windows.is_task_registered = lambda: False
-        monkeypatch.setitem(sys.modules, "hermes_cli.gateway_windows", fake_windows)
 
         calls: dict = {}
         monkeypatch.setattr(ledger, "mark_exited",
@@ -230,12 +271,47 @@ class TestWatchdogNoSupervisor:
                             lambda *a, **k: calls.setdefault("exit_diag", (a, k)))
         monkeypatch.setattr(status_mod, "write_runtime_status",
                             lambda *a, **k: calls.setdefault("runtime", (a, k)))
+        return calls
+
+    def test_exit_without_supervisor_leaves_forensics(self, monkeypatch):
+        from gateway import shutdown_watchdog as wd
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        self._fake_windows(monkeypatch, registered=False, supervises=False)
+        calls = self._quiet_exit(monkeypatch)
 
         assert wd._restart_supervisor_present() is False
         wd._mark_exited_quietly(75, "loop_liveness_watchdog")
 
         record = calls["exit_diag"][0][0]
         assert record["tag"] == "gateway.watchdog_exit_no_supervisor"
+        assert calls["runtime"][1]["gateway_state"] == "degraded"
+
+    def test_registered_but_detaching_launcher_leaves_forensics(self, monkeypatch):
+        """#91097: a registered task whose VBS detaches is not a supervisor."""
+        from gateway import shutdown_watchdog as wd
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        self._fake_windows(monkeypatch, registered=True, supervises=False)
+        calls = self._quiet_exit(monkeypatch)
+
+        assert wd._restart_supervisor_present() is False
+        wd._mark_exited_quietly(75, "loop_liveness_watchdog")
+
+        assert calls["exit_diag"][0][0]["tag"] == "gateway.watchdog_exit_no_supervisor"
+
+    def test_registered_supervising_launcher_is_quiet(self, monkeypatch):
+        """#91099 contract: task + synchronous launcher really supervises."""
+        from gateway import shutdown_watchdog as wd
+
+        monkeypatch.setattr(sys, "platform", "win32")
+        self._fake_windows(monkeypatch, registered=True, supervises=True)
+        calls = self._quiet_exit(monkeypatch)
+
+        assert wd._restart_supervisor_present() is True
+        wd._mark_exited_quietly(75, "loop_liveness_watchdog")
+
+        assert "exit_diag" not in calls
         assert calls["runtime"][1]["gateway_state"] == "degraded"
 
     def test_supervised_platform_assumes_supervisor(self, monkeypatch):

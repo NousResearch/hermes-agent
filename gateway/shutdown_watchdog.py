@@ -171,7 +171,7 @@ def _mark_exited_quietly(exit_code: int, reason: str) -> None:
             _append_exit_diag(
                 {"ts": _now_iso(), "tag": "gateway.watchdog_exit_no_supervisor",
                  "exit_code": exit_code, "exit_reason": reason, "pid": os.getpid(),
-                 "hint": "no Scheduled Task / service supervisor; login item only starts at login"},
+                 "hint": "no supervising Scheduled Task / service supervisor; login item only starts at login"},
                 None)
     with contextlib.suppress(Exception):
         from gateway.status import write_runtime_status
@@ -185,14 +185,18 @@ def _mark_exited_quietly(exit_code: int, reason: str) -> None:
 def _restart_supervisor_present() -> bool:
     """True when something will restart the gateway after a supervisor-exit code.
 
-    systemd/launchd/service managers always supervise; on Windows only a registered
-    Scheduled Task counts — a Startup-folder login item launches at login but never
-    restarts a dead process. Never raises (fail-open: assume supervised)."""
+    systemd/launchd/service managers always supervise; on Windows a registered
+    Scheduled Task counts only when its installed launcher actually supervises the
+    gateway child (waits on it and propagates its exit code, the #91099 contract).
+    Registration alone is not proof: the pre-#91099 VBS detaches, so Task Scheduler
+    never observes a watchdog exit 75 (#91097). A Startup-folder login item launches
+    at login but never restarts a dead process. Never raises (fail-open: assume
+    supervised)."""
     try:
         if sys.platform != "win32":
             return True
-        from hermes_cli.gateway_windows import is_task_registered
-        return bool(is_task_registered())
+        from hermes_cli.gateway_windows import is_task_registered, task_launcher_supervises
+        return bool(is_task_registered()) and bool(task_launcher_supervises())
     except Exception:
         return True
 

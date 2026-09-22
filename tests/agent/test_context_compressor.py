@@ -3393,8 +3393,8 @@ class TestSummaryPromptBounding:
         assert shown == sorted(set(shown))
         assert shown[-1] == 19 and shown[0] == 0
         assert coverage["sampled_record_count"] == len(shown)
-        # At least one initial gap was closed: fewer markers than the 7 the 8 slices started with.
-        assert sampled.count("chars elided") < 7
+        # At least one initial gap was closed: fewer markers than the n-1 the n slices started with.
+        assert sampled.count("chars elided") < ContextCompressor._SAMPLED_INPUT_SLICES - 1
         for a, b in zip(shown, shown[1:]):
             if b == a + 1:
                 assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)

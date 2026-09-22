@@ -17,19 +17,10 @@ import pytest
 from tools import bot_mode_probe
 
 
-@pytest.fixture(autouse=True)
-def _fresh_cache():
-    bot_mode_probe._reset_cache_for_tests()
-    yield
-    bot_mode_probe._reset_cache_for_tests()
-
-
 @pytest.fixture
 def home(tmp_path):
     h = tmp_path / ".hermes"
-    (h / "profiles" / "researcher").mkdir(parents=True)
-    (h / "profiles" / "researcher" / "profile.yaml").write_text(
-        "ui_meta:\n  hermes-bots:\n    managed: true\n", encoding="utf-8")
+    h.mkdir()
     return h
 
 

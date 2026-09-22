@@ -1824,9 +1824,16 @@ def _resolve_context_length(agent, _agent_cfg, base_url):
     if _config_context_length is None and _custom_providers:
         with suppress(Exception):
             from hermes_cli.config import get_custom_provider_context_length
-            _cp_ctx_resolved = get_custom_provider_context_length(
-                model=agent.model, base_url=agent.base_url, custom_providers=_custom_providers
-            )
+            _requested_provider = getattr(agent, "requested_provider", None)
+            _context_kwargs = {
+                "model": agent.model,
+                "base_url": agent.base_url,
+                "custom_providers": _custom_providers,
+            }
+            if str(getattr(agent, "provider", "") or "").strip().lower() == "custom" and _requested_provider:
+                _context_kwargs["provider"] = getattr(agent, "provider", None)
+                _context_kwargs["requested_provider"] = _requested_provider
+            _cp_ctx_resolved = get_custom_provider_context_length(**_context_kwargs)
             if _cp_ctx_resolved:
                 _config_context_length = int(_cp_ctx_resolved)
         if _config_context_length is None:

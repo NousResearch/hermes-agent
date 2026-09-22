@@ -529,13 +529,20 @@ def get_custom_provider_context_length(
     model: str,
     base_url: str,
     custom_providers: Optional[List[Dict[str, Any]]] = None,
-    config: Optional[Dict[str, Any]] = None) -> Optional[int]:
+    config: Optional[Dict[str, Any]] = None,
+    provider: Optional[str] = None,
+    requested_provider: Optional[str] = None) -> Optional[int]:
     """Per-model ``context_length`` override from a route-matching entry, or ``None``.
+
+    When multiple configured providers share one endpoint and model id, ``provider`` selects the
+    matching identity. Identity-less legacy entries remain a fallback; omitting ``provider`` keeps
+    the historical first-route-match behaviour.
 
     Before this helper existed, the lookup was duplicated in ``run_agent.py``'s startup path only; every
     other path (notably ``/model`` switch) fell back to the 128K default. See #15779.
     """
     from hermes_cli.config import get_compatible_custom_providers, load_config_readonly
+    from hermes_cli.providers import custom_provider_aliases
     if not model or not base_url:
         return None
     if custom_providers is None:
@@ -556,14 +563,32 @@ def get_custom_provider_context_length(
             return None
         return ctx if ctx > 0 else None
 
-    for model_cfg in _route_model_cfgs(model, base_url, custom_providers, config):
+    route_entries = list(_entries_for_route(base_url, custom_providers, config))
+    provider_identity = str(requested_provider or provider or "").strip().lower()
+    if provider_identity and provider_identity != "custom":
+        identified = [
+            entry for entry in route_entries
+            if provider_identity in custom_provider_aliases(
+                str(entry.get("name") or ""), str(entry.get("provider_key") or ""))
+        ]
+        identityless = [
+            entry for entry in route_entries
+            if not custom_provider_aliases(
+                str(entry.get("name") or ""), str(entry.get("provider_key") or ""))
+        ]
+        route_entries = identified or identityless
+
+    for entry in route_entries:
+        model_cfg = _route_model_cfg(entry, model)
+        if model_cfg is None:
+            continue
         ctx = _positive_int(model_cfg.get("context_length"))
         if ctx is not None:
             return ctx
     # Entry-level ``context_length`` (a documented key) backs every model the entry serves when no
     # per-model override exists; without it the /model switch re-derivation fell to the hardcoded
     # catalog while a cold start honoured the same setting via model.context_length (#98387).
-    for entry in _entries_for_route(base_url, custom_providers, config):
+    for entry in route_entries:
         ctx = _positive_int(entry.get("context_length"))
         if ctx is not None:
             return ctx

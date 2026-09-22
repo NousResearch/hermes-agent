@@ -667,7 +667,7 @@ class GatewayTurnMixin:
             model="anthropic/claude-sonnet-4.6", threshold_pct=0.85, compression_enabled=True,
             hard_msg_limit=5000, timeout_seconds=30.0, total_ceiling_seconds=600.0,
             max_turn_hold_seconds=10.0, failure_cooldown_seconds=300.0, config_context_length=None,
-            provider=None, base_url=None, api_key=None, data={},
+            provider=None, requested_provider=None, base_url=None, api_key=None, data={},
         )
         try:
             hs.data = _load_gateway_config()
@@ -681,6 +681,7 @@ class GatewayTurnMixin:
                     user_config=hs.data if isinstance(hs.data, dict) else None,
                 )
                 hs.provider = _hyg_runtime.get("provider") or hs.provider
+                hs.requested_provider = _hyg_runtime.get("requested_provider") or hs.requested_provider or hs.provider
                 hs.base_url = _hyg_runtime.get("base_url") or hs.base_url
                 hs.api_key = _hyg_runtime.get("api_key") or hs.api_key
 
@@ -709,9 +710,15 @@ class GatewayTurnMixin:
                         _hyg_custom_providers = hs.data.get("custom_providers")
                         if not isinstance(_hyg_custom_providers, list):
                             _hyg_custom_providers = []
-                    _hyg_custom_ctx = _gw_gccl(
-                        model=hs.model, base_url=hs.base_url, custom_providers=_hyg_custom_providers,
-                    )
+                    _context_kwargs = {
+                        "model": hs.model,
+                        "base_url": hs.base_url,
+                        "custom_providers": _hyg_custom_providers,
+                    }
+                    if str(hs.provider or "").strip().lower() == "custom" and hs.requested_provider:
+                        _context_kwargs["provider"] = hs.provider
+                        _context_kwargs["requested_provider"] = hs.requested_provider
+                    _hyg_custom_ctx = _gw_gccl(**_context_kwargs)
                     if _hyg_custom_ctx:
                         hs.config_context_length = int(_hyg_custom_ctx)
         except Exception:
@@ -722,10 +729,15 @@ class GatewayTurnMixin:
         """Decide whether hygiene compression fires this turn (token/message thresholds, DB-backed
         failure cooldown, in-flight compression)."""
         from agent.model_metadata import estimate_messages_tokens_rough, get_model_context_length_async
-        _hyg_context_length = await get_model_context_length_async(
-            hs.model, base_url=hs.base_url or "", api_key=hs.api_key or "",
-            config_context_length=hs.config_context_length, provider=hs.provider or "",
-        )
+        _context_kwargs = {
+            "base_url": hs.base_url or "",
+            "api_key": hs.api_key or "",
+            "config_context_length": hs.config_context_length,
+            "provider": hs.provider or "",
+        }
+        if str(hs.provider or "").strip().lower() == "custom" and hs.requested_provider:
+            _context_kwargs["requested_provider"] = hs.requested_provider
+        _hyg_context_length = await get_model_context_length_async(hs.model, **_context_kwargs)
         _compress_token_threshold = int(_hyg_context_length * hs.threshold_pct)
         _warn_token_threshold = int(_hyg_context_length * 0.95)
         _msg_count = len(history)

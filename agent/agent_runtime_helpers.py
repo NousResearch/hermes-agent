@@ -2140,9 +2140,16 @@ def _resolve_switch_context_length(agent, snapshot):
         # construction, where the pin outranks custom_providers metadata (#116467).
         intent = config_context_length_for_runtime(agent, switch_cfg)
         if intent is None:
-            intent = get_custom_provider_context_length(
-                model=agent.model, base_url=agent.base_url, custom_providers=custom_providers
-            )
+            _requested_provider = getattr(agent, "requested_provider", None)
+            _context_kwargs = {
+                "model": agent.model,
+                "base_url": agent.base_url,
+                "custom_providers": custom_providers,
+            }
+            if str(getattr(agent, "provider", "") or "").strip().lower() == "custom" and _requested_provider:
+                _context_kwargs["provider"] = getattr(agent, "provider", None)
+                _context_kwargs["requested_provider"] = _requested_provider
+            intent = get_custom_provider_context_length(**_context_kwargs)
     except Exception:
         intent = None
     from agent.agent_init import set_config_context_length

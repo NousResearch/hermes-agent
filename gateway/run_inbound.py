@@ -1649,14 +1649,25 @@ class GatewayInboundMixin:
             with suppress(Exception):
                 from hermes_cli.config import get_custom_provider_context_length
 
-                _msg_config_ctx = get_custom_provider_context_length(
-                    model=_msg_model, base_url=_msg_base_url, custom_providers=_msg_custom_providers,
-                ) or _msg_config_ctx
-        return await get_model_context_length_async(
-            _msg_model, base_url=_msg_base_url, api_key=_msg_runtime.get("api_key") or "",
-            config_context_length=_msg_config_ctx, provider=_msg_runtime.get("provider") or "",
-            custom_providers=_msg_custom_providers,
-        )
+                _context_kwargs = {
+                    "model": _msg_model,
+                    "base_url": _msg_base_url,
+                    "custom_providers": _msg_custom_providers,
+                }
+                if str(_msg_runtime.get("provider") or "").strip().lower() == "custom" and _msg_runtime.get("requested_provider"):
+                    _context_kwargs["provider"] = _msg_runtime.get("provider")
+                    _context_kwargs["requested_provider"] = _msg_runtime["requested_provider"]
+                _msg_config_ctx = get_custom_provider_context_length(**_context_kwargs) or _msg_config_ctx
+        _context_kwargs = {
+            "base_url": _msg_base_url,
+            "api_key": _msg_runtime.get("api_key") or "",
+            "config_context_length": _msg_config_ctx,
+            "provider": _msg_runtime.get("provider") or "",
+            "custom_providers": _msg_custom_providers,
+        }
+        if str(_msg_runtime.get("provider") or "").strip().lower() == "custom" and _msg_runtime.get("requested_provider"):
+            _context_kwargs["requested_provider"] = _msg_runtime["requested_provider"]
+        return await get_model_context_length_async(_msg_model, **_context_kwargs)
 
     async def _expand_inbound_context_references(
         self, source: SessionSource, session_key: str, message_text: str

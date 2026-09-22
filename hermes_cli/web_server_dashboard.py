@@ -156,12 +156,19 @@ def mount_spa(application: FastAPI):
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
         initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
+        # This backend's OWN profile name (empty when it cannot be named unambiguously). The SPA
+        # falls back to it when neither the URL nor --open-profile names one, so requests carry an
+        # explicit scope from the first paint: destructive routes 400 on an unnamed profile as soon
+        # as the host serves more than one, and the switcher shows the same profile it writes.
+        from hermes_cli.web_server_profiles import serving_profile_name as _serving_profile_name
+        serving_profile_js = json.dumps(_serving_profile_name()).replace("</", "<\\/")
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
+            f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"
             f"</script>"
         )
         if prefix:

@@ -120,14 +120,25 @@ describe('routing', () => {
     const { rounds } = await loadRoom()
 
     const local: GroupMember = { name: 'reviewer' }
-    const remote: GroupMember = { connectionId: 'mini', handle: 'reviewer-mini', name: 'reviewer', remoteSource: true, sourceScoped: true }
+
+    const remote: GroupMember = {
+      connectionId: 'mini',
+      handle: 'reviewer-mini',
+      name: 'reviewer',
+      remoteSource: true,
+      sourceScoped: true
+    }
+
     const members = [local, remote]
 
     for (const member of members) {
       const tag = rounds.groupReplyMentionTag(member, members)
       const parsed = rounds.parseGroupChatMentions(`@${tag} `, members)
 
-      expect([tag, [...parsed.mentioned]]).toEqual([member.remoteSource ? 'reviewer-mini' : 'reviewer-local', [member.remoteSource ? 'mini::reviewer' : 'reviewer']])
+      expect([tag, [...parsed.mentioned]]).toEqual([
+        member.remoteSource ? 'reviewer-mini' : 'reviewer-local',
+        [member.remoteSource ? 'mini::reviewer' : 'reviewer']
+      ])
     }
 
     // Unambiguous members keep the friendly tag the autocomplete inserts.
@@ -251,7 +262,12 @@ describe('routing', () => {
     expect(formatGroupChatLine(reply as GroupMessage, local)).toContain('(you)')
     // The same entry seen by the other machine's `default` is somebody else.
     expect(
-      formatGroupChatLine(reply as GroupMessage, { connectionId: 'mbp', connectionLabel: 'MBP', name: 'default', remoteSource: true })
+      formatGroupChatLine(reply as GroupMessage, {
+        connectionId: 'mbp',
+        connectionLabel: 'MBP',
+        name: 'default',
+        remoteSource: true
+      })
     ).not.toContain('(you)')
   })
 
@@ -260,7 +276,14 @@ describe('routing', () => {
   it('matches self on the gateway install_id when Desktops label the connection differently', async () => {
     const room = await loadRoom({ turn: () => 'Central here.' })
     const { formatGroupChatLine } = await import('./group-round-prompt')
-    const local: GroupMember = { connectionId: 'central', connectionLabel: 'Central', installId: 'gw-1', name: 'default', title: '' }
+
+    const local: GroupMember = {
+      connectionId: 'central',
+      connectionLabel: 'Central',
+      installId: 'gw-1',
+      name: 'default',
+      title: ''
+    }
 
     room.rounds.sendToGroupChat('Core', [local], '@hermes status?')
     await settle(room, 'Core')
@@ -270,11 +293,23 @@ describe('routing', () => {
     expect(reply.from).toEqual({ kind: 'member', name: 'default', source: 'Central', gateway: 'gw-1' })
     // The other Desktop's view of the SAME gateway under its own label.
     expect(
-      formatGroupChatLine(reply, { connectionId: 'c9', connectionLabel: 'Studio', installId: 'gw-1', name: 'default', remoteSource: true })
+      formatGroupChatLine(reply, {
+        connectionId: 'c9',
+        connectionLabel: 'Studio',
+        installId: 'gw-1',
+        name: 'default',
+        remoteSource: true
+      })
     ).toContain('(you)')
     // …and a different gateway that happens to share the label is not self.
     expect(
-      formatGroupChatLine(reply, { connectionId: 'c2', connectionLabel: 'Central', installId: 'gw-2', name: 'default', remoteSource: true })
+      formatGroupChatLine(reply, {
+        connectionId: 'c2',
+        connectionLabel: 'Central',
+        installId: 'gw-2',
+        name: 'default',
+        remoteSource: true
+      })
     ).not.toContain('(you)')
   })
 })
@@ -359,22 +394,32 @@ describe('round lifecycle', () => {
   })
 
   it('does not retry ambiguous member admission in later rounds or continuations', async () => {
-    const room = await loadRoom({ turn: ({ profile }) => {
-      if (profile === 'builder') { throw new Error('Ambiguous admission failure') }
+    const room = await loadRoom({
+      turn: ({ profile }) => {
+        if (profile === 'builder') {
+          throw new Error('Ambiguous admission failure')
+        }
 
-      return '@builder please investigate'
-    } })
+        return '@builder please investigate'
+      }
+    })
 
     room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research start')
     await settle(room, 'Failure')
     expect(room.gateway.calls.filter(call => call.profile === 'builder')).toHaveLength(1)
-    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(false)
+    expect(Object.keys(room.chat.$groupChats.get().Failure.watermarks).some(key => key.endsWith('::builder'))).toBe(
+      false
+    )
   })
 
   it('does not retry an ambiguous submit from prequeued same-thread or cross-thread sends', async () => {
     let reject!: (error: Error) => void
-    const held = new Promise<string>((_resolve, fail) => { reject = fail })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+
+    const held = new Promise<string>((_resolve, fail) => {
+      reject = fail
+    })
+
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? held : '(pass)') })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Failure', members, 'first')!
     await drain(() => room.gateway.calls.length < 1)
@@ -394,7 +439,11 @@ describe('round lifecycle', () => {
 
   it('attributes a queued drive failure to the thread whose harvest failed', async () => {
     let finish!: (reply: string) => void
-    const held = new Promise<string>(resolve => { finish = resolve })
+
+    const held = new Promise<string>(resolve => {
+      finish = resolve
+    })
+
     const room = await loadRoom({ turn: () => held })
     const first = room.rounds.sendToGroupChat('Failure', MEMBERS.slice(0, 2), '@research first')!
     await drain(() => room.gateway.calls.length < 1)
@@ -411,7 +460,8 @@ describe('round lifecycle', () => {
     }
 
     room.chat.updateGroupChat('Failure', state => ({
-      ...state, stranded: { builder: { before: 0, thread: first } }
+      ...state,
+      stranded: { builder: { before: 0, thread: first } }
     }))
     finish('(pass)')
     await drain(() => !room.activity.currentGroupActivity('Failure').some(event => event.kind === 'failed'))
@@ -486,8 +536,12 @@ describe('round lifecycle', () => {
 describe('per-member delta', () => {
   it('retained-log trimming cannot acknowledge messages appended during inference', async () => {
     let release!: (reply: string) => void
-    const held = new Promise<string>(resolve => { release = resolve })
-    const room = await loadRoom({ turn: ({ n }) => n === 1 ? held : '(pass)' })
+
+    const held = new Promise<string>(resolve => {
+      release = resolve
+    })
+
+    const room = await loadRoom({ turn: ({ n }) => (n === 1 ? held : '(pass)') })
     const members = [MEMBERS[0]]
     const thread = room.rounds.sendToGroupChat('Trim', members, 'delivered')!
     await drain(() => room.gateway.calls.length < 1)
@@ -1078,7 +1132,11 @@ describe('member holds (#93129)', () => {
   it('treats a stop word far from every mention as prose, not a directive', async () => {
     const { rounds } = await loadRoom()
 
-    for (const text of ['@impl go, das ist halt ein Test', '@impl mach mal Pause', 'stop the presses, @impl what do you think?']) {
+    for (const text of [
+      '@impl go, das ist halt ein Test',
+      '@impl mach mal Pause',
+      'stop the presses, @impl what do you think?'
+    ]) {
       const action = rounds.classifyGroupHoldDirective(text, ['conn::impl'], false)
 
       expect([...action.hold]).toEqual([])
@@ -1087,7 +1145,9 @@ describe('member holds (#93129)', () => {
     }
 
     // Keys are roster keys, not handles: proximity must still hold on the raw @token.
-    expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual(['conn::impl'])
+    expect([...rounds.classifyGroupHoldDirective('@impl please halt', ['conn::impl'], false).hold]).toEqual([
+      'conn::impl'
+    ])
   })
 
   // #117040: proximity is measured on what the user directs at the room, not
@@ -1134,7 +1194,12 @@ describe('member holds (#93129)', () => {
   it('never releases the addressed member on a distant genuine stop', async () => {
     const { rounds } = await loadRoom()
 
-    for (const text of ['@impl please just stop now', 'hey @impl could you stop', '@impl, I need you to stop', '@impl you can stop']) {
+    for (const text of [
+      '@impl please just stop now',
+      'hey @impl could you stop',
+      '@impl, I need you to stop',
+      '@impl you can stop'
+    ]) {
       const action = rounds.classifyGroupHoldDirective(text, ['c1::impl'], false)
 
       expect([...action.release]).toEqual([])
@@ -1150,8 +1215,12 @@ describe('member holds (#93129)', () => {
     const { rounds } = await loadRoom()
     const held = { docs: { at: 2 }, impl: { at: 1 } }
 
-    expect(rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all tell me a joke each', {})).toEqual({})
-    expect(rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all stop', { at: 5 }, ['impl', 'docs'])).not.toEqual({})
+    expect(
+      rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all tell me a joke each', {})
+    ).toEqual({})
+    expect(
+      rounds.applyGroupHoldDirective(held, { everyone: true, mentioned: [] }, '@all stop', { at: 5 }, ['impl', 'docs'])
+    ).not.toEqual({})
     // An unaddressed message still leaves the holds alone.
     expect(rounds.applyGroupHoldDirective(held, { everyone: false, mentioned: [] }, 'anyone there?', {})).toBe(held)
   })
@@ -1422,9 +1491,11 @@ describe('stopGroupThread (#91868/#94569)', () => {
 
   it('cancels an in-flight completion after Stop when sticky holds are disabled', async () => {
     let finish!: (reply: string) => void
+
     const pendingReply = new Promise<string>(resolve => {
       finish = resolve
     })
+
     const room = await loadRoom({ turn: () => pendingReply })
     const member = [{ name: 'helper', title: '' }]
 

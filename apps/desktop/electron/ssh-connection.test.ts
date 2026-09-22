@@ -1074,24 +1074,27 @@ test('stopTunnelChild waits for process exit', async () => {
   assert.equal(stopped, true)
 })
 
-test.skipIf(process.platform === 'win32')('withRemoteTimeout runs a healthy probe under a zsh login shell (#111949)', async t => {
-  // SSH runs the remote command through the account's login shell. In
-  // non-interactive zsh, a bare `set -m` is fatal, so the wrapper must still
-  // run a healthy probe rather than reporting the remote as unsupported.
-  const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
+test.skipIf(process.platform === 'win32')(
+  'withRemoteTimeout runs a healthy probe under a zsh login shell (#111949)',
+  async t => {
+    // SSH runs the remote command through the account's login shell. In
+    // non-interactive zsh, a bare `set -m` is fatal, so the wrapper must still
+    // run a healthy probe rather than reporting the remote as unsupported.
+    const zsh = await execFileAsync('sh', ['-c', 'command -v zsh || true']).then(r => r.stdout.trim())
 
-  // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
-  // skip, not a pass, or a wrapper regression stays green unnoticed.
-  if (!zsh) {
-    t.skip('zsh not installed')
+    // CI installs zsh (js-tests.yml); locally a missing zsh must show as a
+    // skip, not a pass, or a wrapper regression stays green unnoticed.
+    if (!zsh) {
+      t.skip('zsh not installed')
 
-    return
+      return
+    }
+
+    const { stdout: zshStdout } = await execFileAsync(zsh, ['-fc', withRemoteTimeout('echo zsh-ok', 5)])
+
+    assert.equal(zshStdout, 'zsh-ok\n')
   }
-
-  const { stdout: zshStdout } = await execFileAsync(zsh, ['-fc', withRemoteTimeout('echo zsh-ok', 5)])
-
-  assert.equal(zshStdout, 'zsh-ok\n')
-})
+)
 
 test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#110478)', async () => {
   if (process.platform === 'win32') {
@@ -1158,7 +1161,10 @@ test('withRemoteTimeout kills a hung probe remotely instead of orphaning it (#11
 
     assert.ok(err2 && err2.code !== 0, 'hung launcher must exit non-zero')
 
-    const { stdout: grandStrays } = await execFileAsync('sh', ['-c', `ps -eo args | grep "[s]leep ${grandSecs}$" || true`])
+    const { stdout: grandStrays } = await execFileAsync('sh', [
+      '-c',
+      `ps -eo args | grep "[s]leep ${grandSecs}$" || true`
+    ])
 
     assert.equal(grandStrays.trim(), '', 'watchdog killed the launcher’s grandchild too')
   }

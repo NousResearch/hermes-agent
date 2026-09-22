@@ -535,7 +535,7 @@ async def test_request_restart_skips_wait_for_cron_run_past_inflight_allowance(m
     assert sched.try_register_running_job("hung-delivery-job")
     try:
         with sched._running_lock:
-            sched._running_since["hung-delivery-job"] = time.time() - 702 * 60
+            sched._running_since[sched._inflight_key("hung-delivery-job")] = time.time() - 702 * 60
         assert runner._wedged_agent_count() == 1 and runner._awaitable_work_count() == 0
         cron_units = [u for u in runner._describe_active_work() if u["kind"] == "cron"]
         assert cron_units[0]["job_id"] == "hung-delivery-job" and cron_units[0]["wedged"] is True
@@ -558,10 +558,10 @@ def test_wedged_cron_allowance_honours_young_runs_and_job_interval(monkeypatch, 
     try:
         assert runner._wedged_agent_count() == 0 and runner._awaitable_work_count() == 1
         with sched._running_lock:
-            sched._running_since["six-hourly-job"] = time.time() - 11 * 3600  # past the 30m floor, inside 2 * 6h
+            sched._running_since[sched._inflight_key("six-hourly-job")] = time.time() - 11 * 3600  # past the 30m floor, inside 2 * 6h
         assert runner._wedged_agent_count() == 0
         with sched._running_lock:
-            sched._running_since["six-hourly-job"] = time.time() - 13 * 3600
+            sched._running_since[sched._inflight_key("six-hourly-job")] = time.time() - 13 * 3600
         assert runner._wedged_agent_count() == 1 and runner._awaitable_work_count() == 0
     finally:
         sched.release_running_job("six-hourly-job")
@@ -583,7 +583,7 @@ def test_wedged_cron_check_parses_jobs_once_per_run(monkeypatch, tmp_path):
             assert sched.get_wedged_job_ids() == frozenset()
         assert len(loads) == 1
         with sched._running_lock:
-            sched._running_since["job-b"] = time.time() - 13 * 3600
+            sched._running_since[sched._inflight_key("job-b")] = time.time() - 13 * 3600
         assert sched.get_wedged_job_ids() == frozenset({"job-b"})
         assert len(loads) == 1
     finally:

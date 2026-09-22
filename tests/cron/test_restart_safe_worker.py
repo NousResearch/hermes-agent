@@ -446,7 +446,7 @@ def test_launch_external_worker_honors_ack_within_adoption_grace(
     assert scheduler._launch_external_cron_worker(job) is True
     # The acknowledged path records the worker pid; the ownership-uncertain
     # timeout path never does.
-    assert scheduler._running_worker_pids == {"job-cold": 4321}
+    assert scheduler._running_worker_pids == {scheduler._inflight_key("job-cold"): 4321}
 
 
 def test_worker_dying_before_ack_names_its_stderr_cause(tmp_path, monkeypatch):
@@ -717,15 +717,15 @@ def test_shutdown_does_not_interrupt_restart_safe_waiter():
     import cron.scheduler as scheduler
 
     job_id = "external-waiter"
-    scheduler._running_job_ids.add(job_id)
-    scheduler._restart_safe_waiter_job_ids.add(job_id)
+    scheduler._running_job_ids.add(scheduler._inflight_key(job_id))
+    scheduler._restart_safe_waiter_job_ids.add(scheduler._inflight_key(job_id))
     try:
         assert scheduler.mark_running_jobs_interrupted("gateway restart") == []
-        assert job_id not in scheduler._interrupted_job_ids
+        assert scheduler._inflight_key(job_id) not in scheduler._interrupted_job_ids
     finally:
-        scheduler._restart_safe_waiter_job_ids.discard(job_id)
-        scheduler._running_job_ids.discard(job_id)
-        scheduler._interrupted_job_ids.discard(job_id)
+        scheduler._restart_safe_waiter_job_ids.discard(scheduler._inflight_key(job_id))
+        scheduler._running_job_ids.discard(scheduler._inflight_key(job_id))
+        scheduler._interrupted_job_ids.discard(scheduler._inflight_key(job_id))
 
 
 def test_worker_delivery_queue_is_keyed_by_the_delivering_jobs_own_execution(

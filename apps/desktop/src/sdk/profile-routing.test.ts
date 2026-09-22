@@ -118,6 +118,7 @@ vi.mock('@/store/gateway', async () => {
       params,
       profile
     })),
+    retainGatewayForAgent: vi.fn(async () => vi.fn()),
     retireLocalProfileGateways: vi.fn()
   }
 })
@@ -138,6 +139,7 @@ const {
   openGatewayForProfile,
   requestGatewayForAgent,
   requestGatewayForProfile,
+  retainGatewayForAgent,
   retireLocalProfileGateways
 } = await import('@/store/gateway')
 
@@ -569,6 +571,21 @@ describe('connection-aware plugin host APIs', () => {
     await host.requestProfile('legacy-worker', 'session.list', {}, undefined, { spawnPriority: 'foreground' })
 
     expect(requestGatewayForProfile).toHaveBeenCalledWith('legacy-worker', 'session.list', {}, undefined, undefined, {
+      spawnPriority: 'foreground'
+    })
+  })
+
+  it('forwards foreground intent when a plugin retains a profile route', async () => {
+    const route = {
+      connectionId: 'source-a',
+      mode: 'remote' as const,
+      profile: 'remote-worker',
+      targetProfile: 'backend-worker'
+    }
+
+    await host.retainProfile(route, { spawnPriority: 'foreground' })
+
+    expect(retainGatewayForAgent).toHaveBeenCalledWith('source-a', 'remote-worker', {
       spawnPriority: 'foreground'
     })
   })

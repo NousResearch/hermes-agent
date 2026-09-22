@@ -89,7 +89,7 @@ def _cu_doctor(args) -> None:
 
 def _cu_perms_status(args) -> None:
     import json as _json
-    from tools.computer_use.permissions import computer_use_status
+    from tools.computer_use.permissions import TCC_FIELDS, computer_use_status, stale_tcc_grant_hint
     st = computer_use_status()
     if bool(getattr(args, "json", False)):
         print(_json.dumps(st, indent=2, sort_keys=True))
@@ -107,6 +107,8 @@ def _cu_perms_status(args) -> None:
         print(f"  {glyph(st['screen_recording'])} Screen Recording")
         if not st["ready"]:
             print("  Grant: hermes computer-use permissions grant")
+            if hint := stale_tcc_grant_hint(*(f for f in TCC_FIELDS if st[f] is False)):
+                print(f"  {hint}")
     else:  # no TCC model — readiness is driver health
         print(f"  {glyph(st['ready'])} driver health (no permission toggles on {st['platform']})")
     for c in st["checks"]:

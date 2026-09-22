@@ -165,6 +165,34 @@ def test_a_standalone_owner_is_the_per_profile_topology_not_a_refusal(tmp_path, 
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
 
 
+def test_replace_does_not_target_another_profiles_standalone_gateway(tmp_path, monkeypatch, owner_pid):
+    """A persisted service ``--replace`` must not turn a valid per-profile fleet into a restart loop.
+
+    The other profile cannot satisfy our start, but ownership protection correctly prevents us from
+    signalling it. Degrade to the same side-by-side START used without ``--replace``.
+    """
+    owner_home = tmp_path / "root" / "profiles" / "youtube-studio"
+    our_home = tmp_path / "root"
+    _publish(owner_pid, owner_home, ("youtube-studio",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["youtube-studio"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: our_home)
+    monkeypatch.setattr(
+        "gateway.control_socket.rescan_gateway_profiles",
+        lambda home, timeout=8.0: {
+            "multiplex": False,
+            "served_profiles": ["youtube-studio"],
+        },
+    )
+    monkeypatch.setattr(
+        gateway_run,
+        "_start_gateway_replace_existing_instance",
+        lambda *a, **k: pytest.fail("another profile's gateway must not be signalled"),
+    )
+
+    assert host_attach.decide(our_home, replace=True).outcome == host_attach.START
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=True)) is None
+
+
 def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatch, owner_pid):
     """``gateway run --replace`` against a live owner must REACH it — the branch was dead code."""
     owner_home = tmp_path / "root"

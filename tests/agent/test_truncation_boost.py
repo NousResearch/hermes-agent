@@ -19,6 +19,8 @@ class _StubTrunc:
         self._is_stub = is_stub
         self.action = None
         self.result = None
+        self.effective_task_id = "task-1"
+        self.messages = []
 
     @property
     def is_stub(self):
@@ -26,6 +28,11 @@ class _StubTrunc:
 
     def done(self, action, result=None):
         self.action, self.result = action, result
+        return self
+
+    def end_turn(self, final_response, *args, **kwargs):
+        self.action = "return"
+        self.result = {"final_response": final_response}
         return self
 
 
@@ -99,3 +106,32 @@ def test_retry_honours_user_max_tokens_as_base():
     st = _StubTrunc(agent, retries=0, is_stub=False)
     _retry_truncated_tool_call(st, {})
     assert agent._ephemeral_max_output_tokens == 65536  # 32768 * 2
+
+
+def test_retry_stops_when_cap_cannot_grow():
+    """Retry 1 goes out; once the computed cap stops growing (request already
+    carried the ceiling), no further retry is issued — same semantics as
+    upstream PR #110386."""
+    agent = _mock_agent(provider="openrouter")  # no hard limit: ceiling = requested
+    agent.max_tokens = 65536
+    agent._requested_output_cap_from_api_kwargs.return_value = 65536
+
+    st1 = _StubTrunc(agent, retries=0, is_stub=False)
+    _retry_truncated_tool_call(st1, {})
+    assert st1.action == "continue"  # first retry always goes out
+    assert agent._ephemeral_max_output_tokens == 65536
+
+    st2 = _StubTrunc(agent, retries=1, is_stub=False)
+    _retry_truncated_tool_call(st2, {})
+    assert st2.action == "return"  # refused and ended: no re-issue at the same ceiling
+
+
+def test_retry_stub_keeps_retrying():
+    """Network stubs keep their retry budget regardless of cap growth."""
+    agent = _mock_agent(provider="openrouter")
+    agent.max_tokens = 65536
+    agent._requested_output_cap_from_api_kwargs.return_value = 65536
+
+    st2 = _StubTrunc(agent, retries=1, is_stub=True)
+    _retry_truncated_tool_call(st2, {})
+    assert st2.action == "continue"

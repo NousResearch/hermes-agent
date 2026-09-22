@@ -367,9 +367,19 @@ def _retry_truncated_tool_call(st: _Trunc, api_kwargs: Any) -> TruncationVerdict
         _tc_boost = _tc_base * (2 ** n)
         if _tc_requested_cap is not None:
             _tc_boost = max(_tc_boost, _tc_requested_cap)
-        _tc_ceiling = _truncation_boost_ceiling(agent, _tc_requested_cap)
-        agent._ephemeral_max_output_tokens = min(_tc_boost, _tc_ceiling)
-        return st.done("continue")  # don't append the broken response
+        _tc_cap = min(_tc_boost, _truncation_boost_ceiling(agent, _tc_requested_cap))
+        # The first retry always goes out — the truncation may not be cap-driven
+        # (a network stub keeps its own retry budget). From there on, a cap that
+        # cannot grow means re-issuing the identical request at the ceiling it just
+        # failed at: refuse instead of spending the remaining retries. Same
+        # semantics as upstream PR #110386 (issue #110126 layer 3).
+        if st.is_stub or n == 1 or _tc_cap > (_tc_requested_cap or 0):
+            agent._ephemeral_max_output_tokens = _tc_cap
+            return st.done("continue")  # don't append the broken response
+        if _tc_requested_cap:
+            agent._buffer_vprint(
+                f"⚠️  Output cap is already {_tc_requested_cap:,} tokens — a retry cannot raise it."
+            )
     agent._flush_status_buffer()
     if st.is_stub:
         agent._vprint(

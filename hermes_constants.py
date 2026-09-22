@@ -1058,7 +1058,7 @@ def get_managed_system(home: str | Path | None = None) -> str | None:
     An unreadable or empty marker still counts as managed (the legacy NixOS shape).
 
     ``home`` names the home whose marker file is read, for callers that already resolved it
-    (:func:`apply_secure_dir_policy` at boot, before ``--profile`` re-homes the process).
+    (:func:`get_scratch_dir` at boot, before ``--profile`` re-homes the process).
     Defaults to the effective home."""
     marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
     managed_marker = (Path(home) if home is not None else get_hermes_home()) / ".managed"
@@ -1123,7 +1123,7 @@ def _chown_to_hermes_uid(path) -> None:
         pass
 
 
-def apply_secure_dir_policy(path, home: str | Path | None = None) -> None:
+def apply_secure_dir_policy(path, *, home: str | Path | None = None) -> None:
     """Apply the canonical Hermes home-directory permission policy to *path*.
 
     Owner-only ``0700`` by default, but the operator's explicit and managed sharing choices
@@ -1133,8 +1133,9 @@ def apply_secure_dir_policy(path, home: str | Path | None = None) -> None:
     ``HERMES_HOME_MODE`` (e.g. ``0701``, ``2770``) overrides the mode. ``HERMES_UID`` /
     ``HERMES_GID`` ownership is applied when those env vars are set (#34107).
 
-    ``home`` is the home the managed-mode marker is read from, for callers that already
-    resolved it; without it the effective home is consulted.
+    ``home`` (keyword-only: both arguments are path-likes) names the home whose managed-mode
+    marker is read, for callers that already resolved it; without it the effective home is
+    consulted.
 
     Import-safe twin of ``hermes_cli.config._secure_dir`` (which delegates here), so callers
     outside the CLI package — like :func:`get_scratch_dir` — share one policy implementation.

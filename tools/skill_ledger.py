@@ -305,7 +305,8 @@ def compact_ledger() -> Tuple[int, int, int]:
     try:
         raw = path.read_bytes()
         text = raw.decode("utf-8")
-    except (OSError, UnicodeError):
+    except (OSError, UnicodeError) as exc:
+        logger.warning("skill_ledger: ledger unreadable (%s); compaction skipped", exc)
         return 0, 0, 0
     out, kept = [], 0
     for line in text.splitlines():

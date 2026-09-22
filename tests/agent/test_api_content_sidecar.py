@@ -627,6 +627,117 @@ class TestWireInvariant:
         replayed = _user_messages(_chat_requests(handler)[0])[0]["content"]
         assert replayed == history[0]["content"]
 
+    def test_multimodal_turn_displays_only_the_users_part(self, wire_env):
+        """The context part is model-facing: every display projection shows the user's own
+        content, while the stored row and the replay keep the part (the #118911 trade-off)."""
+        make_agent, handler, db, sid = wire_env
+        from run_agent import AIAgent
+        from agent.compaction_display import project_compaction_message_for_display
+        from hermes_state_timeline import get_session_timeline
+        from tui_gateway.server import _history_to_messages
+
+        make_agent().run_conversation("hello please", conversation_history=[], task_id="t0")
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            make_agent().run_conversation([{"type": "text", "text": "what is this"}, image],
+                                          conversation_history=db.get_messages_as_conversation(sid),
+                                          task_id="t1")
+
+        stored = [m for m in db.get_messages(sid) if m["role"] == "user"]
+        assert "PLUGIN-CTX" in stored[1]["content"]  # replay view unchanged
+        shown = [project_compaction_message_for_display(m)["content"] for m in stored]
+        assert shown == ["hello please", "what is this\n[screenshot]"]
+
+        # Resume path (sanitized load) and the prompt timeline show the same.
+        resumed = [m["text"] for m in _history_to_messages(db.get_messages_as_conversation(sid))
+                   if m.get("role") == "user"]
+        assert resumed == ["hello please", "what is this\n[screenshot]"]
+        previews = [e["preview"] for e in get_session_timeline(db, sid)["entries"]]
+        assert all("PLUGIN-CTX" not in p for p in previews)
+
+    def test_rest_transcript_sets_display_content_for_the_multimodal_turn(self, wire_env):
+        pytest.importorskip("fastapi")
+        make_agent, handler, db, sid = wire_env
+        from run_agent import AIAgent
+        from hermes_cli.web_routers.sessions import _project_for_display
+
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        with patch.object(AIAgent, "_model_supports_vision", return_value=True):
+            make_agent().run_conversation([{"type": "text", "text": "what is this"}, image],
+                                          conversation_history=[], task_id="t1")
+
+        user = [m for m in _project_for_display(db.get_messages(sid)) if m["role"] == "user"][0]
+        assert user["display_content"] == "what is this\n[screenshot]"
+        assert "PLUGIN-CTX" in user["content"]  # physical content kept for inspection/export
+
+
+class TestUserViewWithoutInjectedContext:
+    """The display projection only drops what it can verify is injected."""
+
+    @staticmethod
+    def _turn(content, **meta):
+        return {"role": "user", "content": content,
+                "display_metadata": {"injected_context": meta} if meta else None}
+
+    def test_record_captures_only_the_first_injection(self):
+        from agent.compaction_display import record_user_view_before_injection
+
+        msg = {"role": "user", "content": [{"type": "text", "text": "hi"}]}
+        record_user_view_before_injection(msg)
+        msg["content"].append({"type": "text", "text": "NOTE"})
+        record_user_view_before_injection(msg)
+        assert msg["display_metadata"]["injected_context"] == {"text": "hi", "parts": 1}
+
+    def test_trailing_whitespace_in_the_users_text_still_matches(self):
+        from agent.compaction_display import record_user_view_before_injection, user_view_without_injected_context
+        from agent.session_persistence import _durable_content
+
+        msg = {"role": "user", "content": [{"type": "text", "text": "  hi  "}]}
+        record_user_view_before_injection(msg)
+        msg["content"].append({"type": "text", "text": "CTX"})
+        raw = {**msg, "content": _durable_content(msg["content"])}  # REST: stored as written
+        loaded = {**msg, "content": raw["content"].strip()}          # resume: outer ends stripped
+        assert user_view_without_injected_context(raw) == "hi  "
+        assert user_view_without_injected_context(loaded) == "hi  "
+
+    def test_record_keeps_existing_metadata_and_ignores_string_turns(self):
+        from agent.compaction_display import record_user_view_before_injection
+
+        shared = {"title_preview": "t"}
+        msg = {"role": "user", "content": [{"type": "text", "text": "hi"}], "display_metadata": shared}
+        record_user_view_before_injection(msg)
+        assert msg["display_metadata"]["title_preview"] == "t" and "injected_context" not in shared
+        plain = {"role": "user", "content": "hi"}
+        record_user_view_before_injection(plain)
+        assert "display_metadata" not in plain
+
+    def test_raw_parts_and_text_projection(self):
+        from agent.compaction_display import user_view_without_injected_context as view
+
+        parts = [{"type": "text", "text": "hi"}, {"type": "image_url", "image_url": {"url": "u"}}]
+        raw = self._turn([*parts, {"type": "text", "text": "CTX"}], text="hi\n[screenshot]", parts=2)
+        assert view(raw) == parts
+        projected = self._turn("hi\n[screenshot]\n<memory-context>m</memory-context>\n\nCTX",
+                               text="hi\n[screenshot]", parts=2)
+        assert view(projected) == "hi\n[screenshot]"
+        sanitized = self._turn("hi\n[screenshot]\n\n\nCTX", text="hi\n[screenshot]", parts=2)
+        assert view(sanitized) == "hi\n[screenshot]"
+
+    @pytest.mark.parametrize("message", [
+        {"role": "user", "content": "hi\n[screenshot]\nCTX"},  # no record
+        {"role": "assistant", "content": "hi\nCTX", "display_metadata": {"injected_context": {"text": "hi"}}},
+        {"role": "user", "content": "rewritten entirely", "display_metadata": {"injected_context": {"text": "hi"}}},
+        {"role": "user", "content": "hi", "display_metadata": {"injected_context": {"text": "hi"}}},  # nothing injected
+        {"role": "user", "content": "hint of CTX", "display_metadata": {"injected_context": {"text": "hi"}}},
+        {"role": "user", "content": [{"type": "text", "text": "hi"}, {"type": "image_url", "image_url": {}}],
+         "display_metadata": {"injected_context": {"parts": 1}}},  # tail is not text: not injected
+    ])
+    def test_unverifiable_rows_are_shown_unchanged(self, message):
+        from agent.compaction_display import project_compaction_message_for_display, user_view_without_injected_context
+
+        assert user_view_without_injected_context(message) is None
+        assert project_compaction_message_for_display(message)["content"] == message["content"]
+
 
 # ---------------------------------------------------------------------------
 # Review fixes: re-anchoring, MoA, in-place compaction backfill, override
@@ -1095,6 +1206,28 @@ class TestSessionRowExistsBeforePreflightCompaction:
             # Reload: the durable row carries the same parts the model saw.
             reloaded = [m for m in db.get_messages_as_conversation(sid) if m["role"] == "user"]
             assert reloaded[-1]["content"] == live
+        finally:
+            db.close()
+
+    def test_in_place_compaction_backfills_the_display_view(self, tmp_path):
+        """The backfill that pushes the context part into the pre-written row must carry the
+        display view with it, or that row shows the injected context as the user's words."""
+        from agent.compaction_display import project_compaction_message_for_display
+
+        db = SessionDB(db_path=tmp_path / "state.db")
+        sid = "sess-inplace-mm-display"
+        image = {"type": "image_url", "image_url": {"url": "data:image/png;base64,AAAA"}}
+        turn = [{"type": "text", "text": "what is this"}, image]
+        try:
+            agent, _seen = self._make_agent(db, sid, in_place=True, current_user_content=list(turn))
+            with patch("hermes_cli.plugins.invoke_hook", return_value=[{"context": "PLUGIN-CTX"}]):
+                _build(
+                    agent, user_message=list(turn), conversation_history=self._oversized_history(),
+                    summarize_user_message_for_log=lambda _m: "[image]",
+                )
+            row = [m for m in db.get_messages(sid) if m["role"] == "user" and m.get("active")][-1]
+            assert "PLUGIN-CTX" in str(row["content"])  # replay view unchanged
+            assert project_compaction_message_for_display(row)["content"] == turn
         finally:
             db.close()
 

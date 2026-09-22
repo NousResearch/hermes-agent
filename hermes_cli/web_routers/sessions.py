@@ -538,13 +538,19 @@ def _with_tool_call_labels(message: dict) -> dict:
 
 
 def _project_for_display(messages: list) -> list:
-    from agent.compaction_display import project_compaction_message_for_display
+    from agent.compaction_display import (
+        project_compaction_message_for_display, user_view_without_injected_context)
     from agent.context_compressor import is_compaction_summary_message
 
     projected_messages = []
     for message in messages:
         message = _with_tool_call_labels(message)
         if not is_compaction_summary_message(message):
+            # A multimodal user turn keeps its injected context in ``content`` for replay (#71998);
+            # the Desktop renders ``display_content``, so the bubble shows only what the user sent.
+            user_view = user_view_without_injected_context(message)
+            if user_view is not None:
+                message = {**message, "display_content": user_view}
             projected_messages.append(message)
             continue
         display_view = project_compaction_message_for_display(message)

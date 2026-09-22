@@ -17,10 +17,12 @@ _SYNTHETIC_PROMPT = re.compile(
 )
 
 
-def _prompt_preview(db, content, display_kind, summary):
+def _prompt_preview(db, content, display_kind, summary, display_metadata=None):
     message = project_compaction_message_for_display({
         "role": "user", "content": db._decode_content(content),
         "display_kind": display_kind, "_compressed_summary": bool(summary),
+        # The injected-context view (#71998): a preview shows the user's ask, not recalled memory.
+        "display_metadata": db._decode_display_metadata(display_metadata),
     })
     if message is None or user_originated_turn_view(message) is None:
         return ""
@@ -92,8 +94,8 @@ def _register_functions(db, conn):
         return db._encode_content(live.get("content")) if handoff is not None and live is not None else content
 
     conn.create_function("timeline_identity_content", 2, identity_content, deterministic=True)
-    conn.create_function("timeline_preview", 3,
-                         lambda content, kind, summary: _prompt_preview(db, content, kind, summary),
+    conn.create_function("timeline_preview", 4,
+                         lambda content, kind, summary, meta: _prompt_preview(db, content, kind, summary, meta),
                          deterministic=True)
 
 
@@ -106,7 +108,7 @@ def get_session_messages_around(db, session_id, row_id, *, limit=120):
     with _snapshot(db) as conn:
         _register_functions(db, conn)
         anchor = conn.execute(
-            "SELECT content, display_kind, _compressed_summary FROM messages "
+            "SELECT content, display_kind, _compressed_summary, display_metadata FROM messages "
             "WHERE session_id = ? AND id = ? AND role = 'user' AND (active = 1 OR compacted = 1)",
             (session_id, row_id),
         ).fetchone()
@@ -144,7 +146,7 @@ def get_session_timeline(db, session_id, *, limit=500, after_row_id=0):
         sql = _display_rows_sql(conn, session_id, users_only=True) + """,
             prompts AS MATERIALIZED (
                 SELECT row_id, sort_id, m.timestamp,
-                       timeline_preview(m.content, m.display_kind, m._compressed_summary) AS preview
+                       timeline_preview(m.content, m.display_kind, m._compressed_summary, m.display_metadata) AS preview
                 FROM display_rows JOIN messages m ON m.id = row_id
             ), eligible AS MATERIALIZED (SELECT * FROM prompts WHERE preview <> '')
         """

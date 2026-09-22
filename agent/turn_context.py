@@ -819,6 +819,8 @@ def _merge_gateway_notes(
         else None
     )
     if isinstance(_gw_turn_content, list):
+        from agent.compaction_display import record_user_view_before_injection
+        record_user_view_before_injection(messages[current_turn_user_idx])
         append_notes_to_multimodal_content(_gw_turn_content, _turn_notes)
         return plugin_user_context
     return (
@@ -943,6 +945,10 @@ def _append_multimodal_context(
     ``_row_id``-under-lock protocol as the string sidecar backfill; the row keeps its writer's
     shape (compaction inserted the raw parts, a flush the text projection)."""
     _mm_ctx = compose_multimodal_context_part(ext_prefetch_cache, plugin_user_context)
+    if _mm_ctx and isinstance(turn_user_msg.get("content"), list):
+        # Display projections show the user their own part; the appended context stays model-facing.
+        from agent.compaction_display import record_user_view_before_injection
+        record_user_view_before_injection(turn_user_msg)
     if not append_notes_to_multimodal_content(turn_user_msg.get("content"), _mm_ctx):
         return
     from agent.session_persistence import _durable_content, _persist_lock
@@ -955,7 +961,8 @@ def _append_multimodal_context(
         _in_place_compacted = preflight_compressed and bool(getattr(agent, "_last_compaction_in_place", False))
         content = turn_user_msg["content"] if _in_place_compacted else _durable_content(turn_user_msg["content"])
         try:
-            _db.set_user_message_content(agent.session_id, _row_id, content)
+            _db.set_user_message_content(
+                agent.session_id, _row_id, content, display_metadata=turn_user_msg.get("display_metadata"))
         except Exception:
             logger.warning("multimodal context backfill failed for session=%s", agent.session_id or "none", exc_info=True)
 

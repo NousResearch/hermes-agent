@@ -11,7 +11,7 @@ import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
-from tools.mcp_tool_common import _core, _parse_boolish
+from tools.mcp_tool_common import _exc_str, _core, _parse_boolish, _sanitize_error
 from tools import mcp_tool_config as _config
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_lifecycle as _lifecycle
@@ -145,7 +145,8 @@ async def _connect_server(name: str, config: dict) -> _core.MCPServerTask:
             try:
                 await server.shutdown()
             except Exception as shutdown_exc:  # noqa: BLE001 -- best-effort reap, don't mask the real error
-                logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name, shutdown_exc)
+                logger.debug("MCP server '%s' shutdown during orphan-reap failed: %s", name,
+                             _sanitize_error(_exc_str(shutdown_exc), _config._mcp_redaction_values(config)))
         raise
     finally:
         if scope_token is not None:
@@ -179,7 +180,8 @@ def _request_lazy_reconnect(server_name: str, server: _core.MCPServerTask) -> bo
     try:
         return bool(_loop._run_on_mcp_loop(_await_ready, timeout=_core._RECYCLED_RECONNECT_TIMEOUT))
     except Exception as exc:
-        logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed: %s", server_name, exc)
+        logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed: %s", server_name,
+                       _sanitize_error(_exc_str(exc), getattr(server, "_redaction_values", ())))
         return False
 
 
@@ -192,9 +194,9 @@ def _resolve_server_lazy(name: str, config: dict) -> bool:
     return _parse_boolish(config.get("lazy", False), default=False)
 
 
-def _note_connect_failure(name: str, exc: BaseException) -> str:
+def _note_connect_failure(name: str, exc: BaseException, redaction_values=()) -> str:
     """Record a failed connect (under ``_lock``): error text for status, cooldown stamp."""
-    message = _errors._format_connect_error(exc)
+    message = _errors._format_connect_error(exc, redaction_values)
     with _core._lock:
         key = _server_key(name)
         _core._server_connecting.discard(key)
@@ -245,7 +247,9 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         _loop._run_on_mcp_loop(lambda: _discover_and_register_server(server_name, config),
                                timeout=float(connect_timeout) + 30.0)
     except BaseException as exc:
-        logger.warning("Lazy MCP connect failed for '%s': %s", server_name, _note_connect_failure(server_name, exc))
+        values = _config._mcp_redaction_values(config)
+        logger.warning("Lazy MCP connect failed for '%s': %s", server_name,
+                       _note_connect_failure(server_name, exc, values))
         return False
     _note_connect_success(server_name)
     with _core._lock:
@@ -260,7 +264,7 @@ def _ensure_lazy_server_connected(server_name: str) -> bool:
         for tool_name in phantom_names:
             _registration._deregister_mcp_tool_all_scopes(key, tool_name)
         logger.info("MCP server '%s': deregistered %d phantom cached tool(s) not served live (stale schema-cache "
-                    "fingerprint %s): %s", server_name, len(phantom_names), stale_fingerprint, ", ".join(phantom_names))
+                    "fingerprint %s)", server_name, len(phantom_names), stale_fingerprint)
     return server is not None and server.session is not None
 
 
@@ -313,8 +317,9 @@ async def _discover_and_register_server(name: str, config: dict) -> List[str]:
     _adopt_server(name, server)
     registered_names = _registration._register_server_tools(name, server, config)
     server._registered_tool_names = list(registered_names)
-    logger.info("MCP server '%s' (%s): registered %d tool(s): %s", name,
-                "HTTP" if "url" in config else "stdio", len(registered_names), ", ".join(registered_names))
+    # Registry names are normalized (potentially changing credential bytes).
+    logger.info("MCP server '%s' (%s): registered %d tool(s)", name,
+                "HTTP" if "url" in config else "stdio", len(registered_names))
     return registered_names
 
 
@@ -381,7 +386,8 @@ def _register_lazy_from_cache(new_servers: Dict[str, dict]) -> Tuple[Dict[str, d
         try:
             names = _registration._register_from_cache_sync(name, cfg, entry)
         except Exception as exc:
-            logger.warning("Failed lazy MCP registration for '%s': %s", name, exc)
+            logger.warning("Failed lazy MCP registration for '%s': %s", name,
+                           _sanitize_error(_exc_str(exc), _config._mcp_redaction_values(cfg)))
             with _core._lock:
                 _core._server_connecting.add(_server_key(name))
             continue
@@ -414,7 +420,10 @@ async def _discover_all(new_servers: Dict[str, dict]) -> None:
     for name, result in zip(new_servers, results):
         if isinstance(result, BaseException):
             command = new_servers.get(name, {}).get("command")
-            message = _note_connect_failure(name, result)
+            redaction_values = _config._mcp_redaction_values(new_servers[name])
+            message = _note_connect_failure(name, result, redaction_values)
+            if command:
+                command = _sanitize_error(str(command), redaction_values)
             logger.warning("Failed to connect to MCP server '%s'%s: %s",
                            name, f" (command={command})" if command else "", message)
         else:
@@ -768,7 +777,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
         outcomes = await asyncio.gather(*coros, return_exceptions=True)
         for name, outcome in zip(enabled, outcomes):
             if isinstance(outcome, Exception):
-                logger.debug("Probe: failed to connect to '%s': %s", name, outcome)
+                logger.debug("Probe: failed to connect to '%s': %s", name,
+                             _sanitize_error(_exc_str(outcome), _config._mcp_redaction_values(enabled[name])))
                 continue
             probed_servers.append(outcome)
             result[name] = [(t.name, getattr(t, "description", "") or "") for t in outcome._tools]
@@ -777,7 +787,8 @@ def probe_mcp_server_tools() -> Dict[str, List[tuple]]:
     try:
         _loop._run_on_mcp_loop(_probe_all, timeout=120)
     except Exception as exc:
-        logger.debug("MCP probe failed: %s", exc)
+        values = tuple(value for cfg in enabled.values() for value in _config._mcp_redaction_values(cfg))
+        logger.debug("MCP probe failed: %s", _sanitize_error(_exc_str(exc), values))
     finally:
         _lifecycle._stop_mcp_loop_if_idle()
     return result

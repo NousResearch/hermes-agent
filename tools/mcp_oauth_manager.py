@@ -70,7 +70,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
         return self.context.storage if isinstance(self.context.storage, HermesTokenStorage) else None
 
     def _log_nonfatal(self, what: str, exc: BaseException) -> None:
-        logger.debug("MCP OAuth '%s': %s failed (non-fatal): %s", self._hermes_server_name, what, exc)
+        logger.debug("MCP OAuth '%s': %s failed (non-fatal, %s)", self._hermes_server_name, what, type(exc).__name__)
 
     async def _initialize(self) -> None:
         """Load stored state, seed ``token_expiry_time``, restore/prefetch metadata. The SDK's
@@ -117,7 +117,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             try:
                 return await client.send(stamp_default_user_agent(create_oauth_metadata_request(url)))
             except httpx.HTTPError as exc:
-                logger.debug("MCP OAuth '%s': %s discovery to %s failed: %s", self._hermes_server_name, label, url, exc)
+                logger.debug("MCP OAuth '%s': %s discovery failed (%s)", self._hermes_server_name, label, type(exc).__name__)
                 return None
         async with httpx.AsyncClient(timeout=10.0) as client:
             # PRM discovery to learn the authorization_server URL.
@@ -142,8 +142,7 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
                     storage = self._hermes_storage()  # persist now so a later cold-load skips discovery
                     if storage is not None:
                         storage.save_oauth_metadata(asm)
-                    logger.debug("MCP OAuth '%s': pre-flight ASM discovered token_endpoint=%s",
-                                 self._hermes_server_name, asm.token_endpoint)
+                    logger.debug("MCP OAuth '%s': pre-flight ASM discovered token endpoint", self._hermes_server_name)
                     break
 
     def _persist_oauth_metadata_if_changed(self) -> None:
@@ -192,9 +191,9 @@ class HermesMCPOAuthProvider(HermesProviderMixin, *_SDK_BASES):
             # back into the same refusal (`hermes mcp login` clears the marker).
             cimd_url = getattr(self.context, "client_metadata_url", None)
             if cimd_url and getattr(self.context.client_info, "client_id", None) == cimd_url:
-                logger.warning("MCP OAuth '%s': authorization server rejected our Client ID Metadata Document (%s) "
+                logger.warning("MCP OAuth '%s': authorization server rejected our Client ID Metadata Document "
                                "with invalid_client — falling back to dynamic client registration.",
-                               self._hermes_server_name, cimd_url)
+                               self._hermes_server_name)
                 self.context.client_metadata_url = None
                 if storage is not None:
                     storage.mark_cimd_rejected()
@@ -286,7 +285,8 @@ class MCPOAuthManager:
         with self._entries_lock:
             entry = self._entries.get(key)
             if entry is not None and entry.server_url != server_url:
-                logger.info("MCP OAuth '%s': URL changed from %s to %s, discarding cache", server_name, entry.server_url, server_url)
+                # Both generations may contain credentials; neither URL is needed here.
+                logger.info("MCP OAuth '%s': URL changed; discarding cache", server_name)
                 entry = None
             if entry is None:
                 entry = self._entries[key] = _ProviderEntry(server_url=server_url, oauth_config=oauth_config)
@@ -372,7 +372,7 @@ class MCPOAuthManager:
                 except Exception:  # no context / not callable / probe failed
                     can_refresh = False
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning("MCP OAuth '%s': 401 handler failed: %s", server_name, exc)
+            logger.warning("MCP OAuth '%s': 401 handler failed (%s)", server_name, type(exc).__name__)
             can_refresh = False
         finally:
             entry.pending_401.pop(key, None)
@@ -397,7 +397,7 @@ class MCPOAuthManager:
         try:
             return await pending
         except Exception as exc:  # pragma: no cover — defensive
-            logger.warning("MCP OAuth '%s': awaiting 401 handler failed: %s", server_name, exc)
+            logger.warning("MCP OAuth '%s': awaiting 401 handler failed (%s)", server_name, type(exc).__name__)
             return False
 
 

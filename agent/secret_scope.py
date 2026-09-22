@@ -249,14 +249,18 @@ def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
             _ENV_FILE_CACHE.pop(str(env_path), None)
 
 
-def _decode_env_bytes(raw: bytes) -> str:
+def _decode_env_bytes(raw: bytes, *, strict: bool = False) -> str:
     """BOM stripped; invalid UTF-8 falls back to latin-1 exactly as
-    ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``."""
+    ``env_loader._load_dotenv_with_fallback`` installs it into ``os.environ``.
+    ``strict=True`` re-raises UnicodeDecodeError instead — MCP env_file reads must
+    not silently latin-1 a mangled secret into scope."""
     if raw.startswith(codecs.BOM_UTF8):
         raw = raw[len(codecs.BOM_UTF8):]
     try:
         return raw.decode("utf-8")
     except UnicodeDecodeError:
+        if strict:
+            raise
         return raw.decode("latin-1")
 
 
@@ -276,13 +280,15 @@ def _parse_env_text(text: str) -> Dict[str, str]:
     return secrets
 
 
-def load_env_file(env_path: Path) -> Dict[str, str]:
+def load_env_file(env_path: Path, *, strict: bool = False) -> Dict[str, str]:
     """THE ``.env`` tokenizer: every reader (profile scope, ``hermes_cli.config.load_env``, the dashboard
     scrub, skill secret capture, managed .env, setup prompts) parses through here so no two boundaries
     disagree on which keys/values a file defines. Dict only — never touches ``os.environ``. ``export``
     prefix, ``#`` comments, quote escapes reversed; a BOM is stripped so it doesn't prefix the first key.
     Invalid UTF-8 decodes as latin-1, exactly like ``env_loader._load_dotenv_with_fallback`` installs it
-    into ``os.environ``. Absent/unreadable → ``{}``.
+    into ``os.environ``. Absent/unreadable → ``{}``, unless ``strict=True`` lets read/decode failures
+    propagate for caller-owned safe warnings (an MCP env_file read must not silently latin-1 a mangled
+    secret into scope).
 
     Memoised per path on the open descriptor's stat identity (see the cache comment above). Always
     returns a fresh dict: callers mutate what they get back (``build_profile_secret_scope`` layers
@@ -294,7 +300,8 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
             fingerprint = file_signature(os.fstat(handle.fileno()))
             with _ENV_FILE_CACHE_LOCK:
                 cached = _ENV_FILE_CACHE.get(key)
-                if cached is not None and cached[0] == fingerprint:
+                # Tolerant entries may contain latin-1: strict callers must validate the bytes.
+                if not strict and cached is not None and cached[0] == fingerprint:
                     _ENV_FILE_CACHE.move_to_end(key)
                     return dict(cached[1])
             raw = handle.read()
@@ -302,11 +309,13 @@ def load_env_file(env_path: Path) -> Dict[str, str]:
             # stored under the pre-write fingerprint.
             settled = file_signature(os.fstat(handle.fileno())) == fingerprint
     except OSError:
+        if strict:
+            raise
         # Gone or unreadable: drop any entry so a stale map cannot outlive the file.
         invalidate_env_file_cache(env_path)
         return {}
 
-    secrets = _parse_env_text(_decode_env_bytes(raw))
+    secrets = _parse_env_text(_decode_env_bytes(raw, strict=strict))
     if settled:
         with _ENV_FILE_CACHE_LOCK:
             _ENV_FILE_CACHE[key] = (fingerprint, dict(secrets))

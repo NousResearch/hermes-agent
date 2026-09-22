@@ -8,7 +8,7 @@ import logging
 import time
 from dataclasses import dataclass
 from typing import Optional
-from tools.mcp_tool_common import _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
+from tools.mcp_tool_common import _exc_str, _sanitize_error, _core, _get_lifecycle_seconds, _jittered, _resolve_tool_timeout
 from tools import mcp_tool_errors as _errors
 from tools import mcp_tool_registration as _registration
 from tools import mcp_tool_sampling as _sampling
@@ -137,7 +137,7 @@ class MCPServerRunMixin:
                     except Exception as exc:
                         root = _errors._unwrap_exception_group(exc)
                         logger.warning("MCP server '%s' keepalive failed, triggering reconnect (state: connected → "
-                                       "degraded): %s: %s", self.name, type(root).__name__, root)
+                                       "degraded): %s: %s", self.name, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
                         self.mark_suspect(f"keepalive failed: {type(root).__name__}: {root}")
                         self._reconnect_event.set()
                         break
@@ -259,6 +259,8 @@ class MCPServerRunMixin:
         must not start (bad remote URL / non-MCP endpoint: fail fast with ``_error`` set and
         ``_ready`` fired instead of burning the reconnect ladder inside the SDK's httpx layer)."""
         self._config = config
+        from tools.mcp_tool_config import _mcp_redaction_values
+        self._redaction_values = _mcp_redaction_values(config)
         self.tool_timeout = _resolve_tool_timeout(config)
         self._auth_type = (config.get("auth") or "").lower().strip()
         self._idle_timeout_seconds = _get_lifecycle_seconds(config, "idle_timeout_seconds")
@@ -266,13 +268,14 @@ class MCPServerRunMixin:
         # The _MCP_*_TYPES flags are False until the lazy SDK import runs.
         _core._ensure_mcp_sdk()
         sampling_config = config.get("sampling", {})
-        self._sampling = (_sampling.SamplingHandler(self.name, sampling_config)
+        self._sampling = (_sampling.SamplingHandler(self.name, sampling_config, self._redaction_values)
                           if sampling_config.get("enabled", True) and _core._MCP_SAMPLING_TYPES else None)
         # elicitation/create lets a server ask for structured input mid-call; the handler
         # routes it through Hermes' approval system.
         elicitation_config = config.get("elicitation", {})
         self._elicitation = (_sampling.ElicitationHandler(self.name, elicitation_config,
-                                                       call_context=lambda: self._pending_call_context)
+                                                       call_context=lambda: self._pending_call_context,
+                                                       redaction_values=self._redaction_values)
                              if elicitation_config.get("enabled", True) and _core._MCP_ELICITATION_TYPES else None)
         if "url" in config and "command" in config:
             logger.warning("MCP server '%s' has both 'url' and 'command' in config. Using HTTP transport "
@@ -294,7 +297,7 @@ class MCPServerRunMixin:
                     client_cert=_errors._resolve_client_cert(self.name, config),
                     strict_redirect_headers=bool(config.get("strict_redirect_headers")))
         except (_errors.InvalidMcpUrlError, _errors.NonMcpEndpointError) as exc:
-            logger.warning("%s", exc)
+            logger.warning("%s", _sanitize_error(_exc_str(exc), self._redaction_values))
             self._publish_error(exc)  # fail fast and non-retryably
             return False
         return True
@@ -433,7 +436,7 @@ class MCPServerRunMixin:
         failure_class = _errors._classify_mcp_failure(root)
         if self._is_recycled_stdio():
             logger.warning("MCP server '%s': lazy reconnect after stdio recycle failed, marking unavailable "
-                           "while retrying: %s: %s", self.name, type(root).__name__, root)
+                           "while retrying: %s: %s", self.name, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
             self._recycled_reason = None
         # Initial-connect ladder (a startup blip must not kill the server); gated on
         # _ever_connected, not _ready (which clears every reconnect cycle).
@@ -447,7 +450,7 @@ class MCPServerRunMixin:
             return await self._on_initial_connect_error(exc, root, failure_class, budget)
         if self._shutdown_event.is_set():
             logger.debug("MCP server '%s' disconnected during shutdown: %s: %s",
-                         self.name, type(root).__name__, root)
+                         self.name, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
             return False
         if failure_class == "permanent":
             return await self._on_permanent_error(root, budget)
@@ -456,11 +459,11 @@ class MCPServerRunMixin:
             self._log_park(
                 "MCP server '%s' failed after %d reconnection attempts, parking; will self-probe every %ds "
                 "until it recovers (state: degraded → parked): %s: %s",
-                self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
+                self.name, _core._MAX_RECONNECT_RETRIES, _core._PARKED_RETRY_INTERVAL, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
             return await self._park_and_rearm("from parked state", budget)
         logger.debug("MCP server '%s' connection lost (attempt %d/%d), reconnecting in %.0fs: %s: %s",
                      self.name, self._reconnect_retries, _core._MAX_RECONNECT_RETRIES, budget.backoff,
-                     type(root).__name__, root)
+                     type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
         await self._backoff_sleep(budget)
         return not self._shutdown_event.is_set()
 
@@ -473,19 +476,19 @@ class MCPServerRunMixin:
                       f"`hermes mcp login {self.name}`" if _errors._is_auth_error(root)
                       else "connection with a permanent error, parking without retries")
             self._log_park("MCP server '%s' failed initial %s (state: connecting → parked): %s: %s",
-                           self.name, detail, type(root).__name__, root)
+                           self.name, detail, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
             return await self._park_initial_failure(exc, "after permanent initial failure", budget)
         budget.initial_retries += 1
         if budget.initial_retries > _core._MAX_INITIAL_CONNECT_RETRIES:
             self._log_park(
                 "MCP server '%s' failed initial connection after %d attempts, parking until a reconnect is "
                 "requested (state: connecting → parked): %s: %s",
-                self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, root)
+                self.name, _core._MAX_INITIAL_CONNECT_RETRIES, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
             return await self._park_initial_failure(exc, "after initial connection failures", budget)
         logger.debug(
             "MCP server '%s' initial connection failed (attempt %d/%d), retrying in %.0fs: %s: %s",
             self.name, budget.initial_retries, _core._MAX_INITIAL_CONNECT_RETRIES, budget.backoff,
-            type(root).__name__, root)
+            type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
         await self._backoff_sleep(budget)
         if self._shutdown_event.is_set():
             self._publish_error(exc)
@@ -500,14 +503,14 @@ class MCPServerRunMixin:
             logger.warning(
                 "MCP server '%s': auth error on a previously healthy session — marking suspect and forcing "
                 "one reconnect instead of parking (state: connected → suspect): %s: %s",
-                self.name, type(root).__name__, root)
+                self.name, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
             self._reconnect_retries, budget.backoff = 0, 1.0
             await asyncio.sleep(_jittered(1.0))
             return not self._shutdown_event.is_set()
         # Deterministic failure on a working server: park now.
         self._log_park(
             "MCP server '%s' hit a permanent error, parking without retries; will self-probe every %ds "
-            "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, root)
+            "(state: connected → parked): %s: %s", self.name, _core._PARKED_RETRY_INTERVAL, type(root).__name__, _sanitize_error(_exc_str(root), self._redaction_values))
         return await self._park_and_rearm("from parked state (permanent error)", budget)
 
     async def start(self, config: dict):

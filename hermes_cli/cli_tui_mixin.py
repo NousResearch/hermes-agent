@@ -1848,7 +1848,20 @@ class CLITuiMixin:
         tick), or the newline count jumped by 4+ (terminals that feed characters individually
         but batch newlines; Alt+Enter adds 1 newline per event so never trips it).
         """
+        if getattr(self, "_tui_surrogate_repair_active", False):
+            return
         self._tui_last_text_change = time.monotonic()
+        from agent.message_sanitization import _combine_surrogate_pairs
+        raw_text = buf.text
+        paired_text = _combine_surrogate_pairs(raw_text)
+        if paired_text != raw_text:
+            old_cursor = buf.cursor_position
+            self._tui_surrogate_repair_active = True
+            try:
+                buf.text = paired_text
+                buf.cursor_position = len(_combine_surrogate_pairs(raw_text[:old_cursor]))
+            finally:
+                self._tui_surrogate_repair_active = False
         from cli import _strip_leaked_bracketed_paste_wrappers, _strip_leaked_terminal_responses_with_meta
         text = _strip_leaked_bracketed_paste_wrappers(buf.text)
         text, _had_mouse_reports = _strip_leaked_terminal_responses_with_meta(text)

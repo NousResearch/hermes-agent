@@ -27,6 +27,15 @@ _SURROGATE_RE = re.compile(r'[\ud800-\udfff]')
 _MESSAGE_CORE_KEYS = frozenset({"content", "name", "tool_calls", "role"})
 
 
+def _combine_surrogate_pairs(text: str) -> str:
+    """Combine complete UTF-16 pairs while preserving an incomplete input code unit."""
+    if not _SURROGATE_RE.search(text):
+        return text
+    return text.encode("utf-16-le", errors="surrogatepass").decode(
+        "utf-16-le", errors="surrogatepass"
+    )
+
+
 def _sanitize_surrogates(text: str) -> str:
     """Combine valid UTF-16 surrogate pairs and replace unpaired code units with U+FFFD."""
     if text.isascii() or not _SURROGATE_RE.search(text):
@@ -444,7 +453,8 @@ def _looks_like_corrupt_image_rejection(error_body: str) -> bool:
 
 __all__ = [
     "_SURROGATE_RE", "close_interrupted_tool_sequence",
-    "_sanitize_surrogates", "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
+    "_combine_surrogate_pairs", "_sanitize_surrogates",
+    "_sanitize_structure_surrogates", "_sanitize_messages_surrogates",
     "coerce_tool_name",
     "_escape_invalid_chars_in_json_strings", "_repair_tool_call_arguments",
     "_strip_non_ascii", "_sanitize_messages_non_ascii", "_sanitize_tools_non_ascii",

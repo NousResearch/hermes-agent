@@ -30,3 +30,45 @@ def test_enter_repairs_utf16_surrogate_pair_before_history_write(tmp_path):
     expected = "brain works in parallel 😂"
     assert cli._pending_input.get_nowait() == expected
     assert list(history.load_history_strings()) == [expected]
+
+
+def test_text_change_combines_surrogate_pair_before_the_prompt_renders():
+    buffer = Buffer()
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._tui_prev_text_len = 0
+    cli._tui_prev_newline_count = 0
+    cli._tui_paste_just_collapsed = False
+    cli._skip_paste_collapse = False
+    cli._tui_paste_over_threshold = lambda text, line_count, threshold_key: False
+    cli._recover_terminal_input_modes = lambda **_kwargs: None
+    buffer.on_text_changed += cli._tui_on_text_changed
+
+    # Win32 can deliver an astral character as two separate UTF-16 input events.
+    # Preserve the incomplete high surrogate, then combine it as soon as the low
+    # surrogate arrives so prompt_toolkit renders the emoji before Enter.
+    buffer.text = "brain works in parallel \ud83d"
+    buffer.cursor_position = len(buffer.text)
+    assert buffer.text.endswith("\ud83d")
+    buffer.insert_text("\ude02")
+
+    assert buffer.text == "brain works in parallel 😂"
+    assert buffer.cursor_position == len(buffer.text)
+
+
+def test_live_surrogate_repair_keeps_fallback_paste_collapse():
+    buffer = Buffer()
+    cli = HermesCLI.__new__(HermesCLI)
+    cli._tui_prev_text_len = 0
+    cli._tui_prev_newline_count = 0
+    cli._tui_paste_just_collapsed = False
+    cli._skip_paste_collapse = False
+    cli._tui_paste_over_threshold = lambda text, line_count, threshold_key: True
+    cli._tui_collapse_paste = (
+        lambda text, line_count, fallback: f"<collapsed fallback={fallback} len={len(text)}>"
+    )
+    cli._recover_terminal_input_modes = lambda **_kwargs: None
+    buffer.on_text_changed += cli._tui_on_text_changed
+
+    buffer.text = "x" * 100 + "\ud83d\ude02"
+
+    assert buffer.text == "<collapsed fallback=True len=101>"

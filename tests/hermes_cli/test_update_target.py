@@ -1,7 +1,10 @@
 """Behavioral tests for strict pinned update intent parsing."""
 
 import argparse
+import json
+import subprocess
 from itertools import combinations
+from pathlib import Path
 from unittest.mock import Mock
 
 import pytest
@@ -350,3 +353,187 @@ def test_complete_intent_preserves_remainders_values_and_last_option_wins(
     assert args.branch == "--rev"  # A value, not an abbreviated pinned flag.
     assert remainder == suffix
     collaborator.assert_not_called()
+
+
+def test_pinned_intent_dispatches_to_exact_apply_path_without_legacy_prepare(monkeypatch):
+    """Pinned mode has a separate Git admission seam; legacy preparation stays untouched."""
+    from types import SimpleNamespace
+
+    from hermes_cli import update_cmd
+
+    request = TargetRequest(REVISION, INSTALL_ID, CURRENT_SHA)
+    called = {}
+    monkeypatch.setattr(
+        update_cmd,
+        "_cmd_pinned_update_impl",
+        lambda args, gateway_mode: called.update(args=args, gateway_mode=gateway_mode),
+        raising=False,
+    )
+    monkeypatch.setattr(
+        update_cmd,
+        "_resolve_update_options",
+        lambda *_a, **_k: (_ for _ in ()).throw(
+            AssertionError("legacy update preparation must not run for pinned intent")
+        ),
+    )
+
+    args = SimpleNamespace(target_request=request, post_swap=None, gateway=False)
+    update_cmd._cmd_update_impl(args, gateway_mode=False)
+
+    assert called["args"] is args
+    assert called["gateway_mode"] is False
+
+
+# T3 behavioral fixtures use local Git only: no SSH, installation, or network.
+def _git(cwd: Path, *args: str, check: bool = True) -> subprocess.CompletedProcess:
+    result = subprocess.run(
+        ["git", *args], cwd=cwd, capture_output=True, text=True,
+        encoding="utf-8", errors="replace",
+    )
+    if check and result.returncode:
+        raise AssertionError(f"git {' '.join(args)} failed: {result.stderr}")
+    return result
+
+
+def _git_fixture(tmp_path: Path) -> dict[str, object]:
+    source = tmp_path / "source"
+    bare = tmp_path / "origin.git"
+    _git(tmp_path, "init", "--bare", str(bare))
+    _git(tmp_path, "init", "-b", "main", str(source))
+    _git(source, "config", "user.name", "fixture")
+    _git(source, "config", "user.email", "fixture@example.test")
+    (source / ".gitignore").write_text("install_id\n", encoding="utf-8")
+    (source / "hermes_cli").mkdir()
+    (source / "hermes_cli" / "update_rollout_protocol.json").write_text(
+        json.dumps({"protocol": 1}) + "\n", encoding="utf-8"
+    )
+    (source / "payload.txt").write_text("A\n", encoding="utf-8")
+    _git(source, "add", ".")
+    _git(source, "commit", "-m", "A")
+    commit_a = _git(source, "rev-parse", "HEAD").stdout.strip()
+    _git(source, "remote", "add", "origin", str(bare))
+    _git(source, "push", "-u", "origin", "main")
+    install = tmp_path / "install"
+    _git(tmp_path, "clone", str(bare), str(install))
+    _git(install, "config", "user.name", "fixture")
+    _git(install, "config", "user.email", "fixture@example.test")
+    (install / "install_id").write_text("1" * 32 + "\n", encoding="utf-8")
+    return {"source": source, "bare": bare, "install": install, "a": commit_a}
+
+
+def _commit_source(fixture: dict[str, object], text: str, message: str) -> str:
+    source = fixture["source"]
+    assert isinstance(source, Path)
+    (source / "payload.txt").write_text(text, encoding="utf-8")
+    _git(source, "add", "payload.txt")
+    _git(source, "commit", "-m", message)
+    return _git(source, "rev-parse", "HEAD").stdout.strip()
+
+
+def test_pinned_apply_lands_reviewed_b_when_origin_moves_to_c(tmp_path):
+    from hermes_cli.update_target import apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    source = fixture["source"]
+    assert isinstance(source, Path)
+    _git(source, "push", "origin", "main")
+    commit_c = _commit_source(fixture, "C\n", "C")
+    _git(source, "push", "origin", "main")
+
+    install = fixture["install"]
+    assert isinstance(install, Path)
+    result = apply_pinned_target(
+        install, TargetRequest(commit_b, "1" * 32, str(fixture["a"]))
+    )
+
+    assert result.target_sha == commit_b
+    assert result.prior_sha == str(fixture["a"])
+    assert result.target_sha != commit_c
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == commit_b
+    assert (install / "payload.txt").read_text(encoding="utf-8") == "B\n"
+    assert _git(install, "remote").stdout.strip() == "origin"
+
+
+def test_pinned_apply_refuses_dirty_tree_before_movement(tmp_path):
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    source = fixture["source"]
+    assert isinstance(source, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+    install = fixture["install"]
+    assert isinstance(install, Path)
+    (install / "payload.txt").write_text("local edit\n", encoding="utf-8")
+
+    with pytest.raises(PinnedTargetRefused, match="dirty-checkout"):
+        apply_pinned_target(install, TargetRequest(commit_b, "1" * 32, str(fixture["a"])))
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
+    assert (install / "payload.txt").read_text(encoding="utf-8") == "local edit\n"
+
+
+def test_pinned_apply_refuses_current_sha_identity_and_branch_admission(tmp_path):
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    source = fixture["source"]
+    assert isinstance(source, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+    install = fixture["install"]
+    assert isinstance(install, Path)
+
+    with pytest.raises(PinnedTargetRefused, match="current-sha-mismatch"):
+        apply_pinned_target(install, TargetRequest(commit_b, "1" * 32, "f" * 40))
+    with pytest.raises(PinnedTargetRefused, match="branch-not-admitted"):
+        apply_pinned_target(
+            install, TargetRequest(commit_b, "1" * 32, str(fixture["a"])), branch="release"
+        )
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
+
+
+def test_pinned_apply_checks_protocol_before_moving_code(tmp_path):
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    source = fixture["source"]
+    assert isinstance(source, Path)
+    (source / "hermes_cli" / "update_rollout_protocol.json").unlink()
+    _git(source, "add", "-u")
+    _git(source, "commit", "-m", "pre-protocol target")
+    incompatible = _git(source, "rev-parse", "HEAD").stdout.strip()
+    _git(source, "push", "origin", "main")
+    install = fixture["install"]
+    assert isinstance(install, Path)
+
+    with pytest.raises(PinnedTargetRefused, match="incompatible-target"):
+        apply_pinned_target(
+            install, TargetRequest(incompatible, "1" * 32, str(fixture["a"]))
+        )
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
+    assert (install / "hermes_cli" / "update_rollout_protocol.json").is_file()
+
+
+def test_pinned_apply_refuses_target_removed_from_authorized_origin(tmp_path):
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    source = fixture["source"]
+    bare = fixture["bare"]
+    assert isinstance(source, Path) and isinstance(bare, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+    install = fixture["install"]
+    assert isinstance(install, Path)
+    # Preserve the reviewed object locally, then remove it from the only
+    # authorized origin branch before the apply fetch.
+    _git(install, "fetch", "origin", "main")
+    # Remove B from the only authorized origin branch before the install fetches.
+    _git(bare, "update-ref", "refs/heads/main", str(fixture["a"]))
+
+    with pytest.raises(PinnedTargetRefused, match="target-not-reachable"):
+        apply_pinned_target(
+            install, TargetRequest(commit_b, "1" * 32, str(fixture["a"]))
+        )
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])

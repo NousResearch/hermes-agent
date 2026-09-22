@@ -13,6 +13,12 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
 
+from hermes_cli.update_target import (
+    PinnedApplyResult, PinnedTargetRefused, TargetAdmissionError, TargetRequest,
+    apply_pinned_target, build_update_intent, current_branch, validate_update_intent,
+    validate_target_request, verify_pinned_post_swap,
+)
+
 logger = logging.getLogger("hermes_cli.update_cmd")  # log-record parity with the origin module
 
 _ORPHAN_RESCUE_REFS_TO_KEEP = 10

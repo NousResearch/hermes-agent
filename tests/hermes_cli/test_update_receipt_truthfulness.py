@@ -285,3 +285,84 @@ class TestRefusalIsNotFailure:
         assert payload["steps"][0]["name"] == "windows_preflight"
         assert payload["steps"][0]["ok"] is False
         assert payload["outcome"] == "refused"
+
+
+class TestPinnedIntentTruthfulness:
+    """T4: correlation and exact post-swap evidence gate the receipt."""
+
+    _INTENT = {
+        "target": "a" * 40,
+        "install_id": "0" * 32,
+        "correlation_id": "r" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+
+    def test_dependency_failure_cannot_be_rewritten_as_success(self, receipt_home):
+        ur.begin_update_receipt(intent=self._INTENT)
+        ur.record_failure("dependency-failure: pip")
+        path = ur.finalize_update_receipt("success")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "failed"
+        assert payload["update_intent"] == self._INTENT
+        assert payload["requested_sha"] == self._INTENT["target"]
+        assert payload["prior_sha"] == self._INTENT["prior_sha"]
+        assert payload["correlation_id"] == self._INTENT["correlation_id"]
+
+    def test_post_swap_identity_is_correlated_to_requested_target(self, receipt_home):
+        ur.begin_update_receipt(intent=self._INTENT)
+        ur.record_pinned_post_swap(
+            post_sha=self._INTENT["target"],
+            post_install_id=self._INTENT["install_id"],
+            verified=True,
+        )
+        path = ur.finalize_update_receipt("success")
+
+        payload = json.loads(path.read_text(encoding="utf-8"))
+        assert payload["outcome"] == "success"
+        assert payload["post_sha"] == payload["requested_sha"]
+        assert payload["post_install_id"] == payload["install_id"]
+        assert payload["correlation_id"] == self._INTENT["correlation_id"]
+
+
+
+def test_pinned_intent_is_correlated_and_immutable_through_resume(receipt_home):
+    intent = {
+        "target": "a" * 40,
+        "install_id": "0123456789abcdef0123456789abcdef",
+        "correlation_id": "c" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+    ur.begin_update_receipt(intent=intent)
+    detached = ur.detach_update_receipt()
+    intent["target"] = "d" * 40
+    ur.resume_update_receipt(detached)
+    path = ur.finalize_update_receipt("success")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+
+    assert payload["update_intent"]["target"] == "a" * 40
+    assert payload["requested_sha"] == "a" * 40
+    assert payload["pre_sha"] == "b" * 40
+    assert payload["correlation_id"] == "c" * 32
+
+
+@pytest.mark.parametrize("reason", ["refusal", "dependency", "restart", "import"])
+def test_recorded_pinned_failure_cannot_be_reported_success(receipt_home, reason):
+    intent = {
+        "target": "a" * 40,
+        "install_id": "0123456789abcdef0123456789abcdef",
+        "correlation_id": "d" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+    ur.begin_update_receipt(intent=intent)
+    if reason == "refusal":
+        ur.record_refusal("target refused")
+    else:
+        ur.record_failure(reason + " failure")
+
+    path = ur.finalize_update_receipt("success")
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    assert payload["outcome"] == ("refused" if reason == "refusal" else "failed")

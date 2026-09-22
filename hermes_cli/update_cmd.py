@@ -13,8 +13,10 @@ import shutil  # noqa: F401  (tests patch update_cmd.shutil.*; split modules res
 import subprocess
 import sys
 import time as _time
+import uuid
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
 
 from hermes_cli.config import get_hermes_home  # noqa: F401  (re-exported; patched via update_cmd)
 from hermes_cli import update_handoff as _update_handoff
@@ -97,7 +99,8 @@ from hermes_cli.update_cmd_git import (  # noqa: F401
     _normalize_managed_eol, _portable_git_candidates, _print_fetch_failure,
     _print_parked_branch_kept_notice, _print_parked_branch_skip_warning,
     _prune_orphan_rescue_refs, _should_skip_upstream_prompt, _sync_fork_with_upstream,
-    _sync_with_upstream_if_needed)
+    _sync_with_upstream_if_needed, apply_pinned_target, TargetAdmissionError,
+    TargetRequest, current_branch, verify_pinned_post_swap)
 from hermes_cli.update_cmd_maint import (  # noqa: F401
     _PRE_UPDATE_SNAPSHOT_KEEP, _PRE_UPDATE_SNAPSHOT_MAX_FILE_SIZE,
     _clear_stale_sqlite_sidecars,
@@ -1209,10 +1212,10 @@ def _current_branch_name(git_cmd, *, check: bool = False) -> str:
 
 def _handle_update_called_process_error(
     e, args, gateway_mode: bool, had_desktop_app_before_update: bool,
-    _windows_gateway_resume=None) -> None:
-    """Git/installer failure: ZIP-fallback when safe, else report and ``sys.exit(1)``."""
+    _windows_gateway_resume=None, *, pinned: bool = False) -> None:
+    """Git/installer failure: legacy ZIP fallback, never on the pinned path."""
     stage = _format_update_failure_stage(e)
-    if _should_zip_fallback_on_update_error(e):
+    if not pinned and _should_zip_fallback_on_update_error(e):
         print(f"⚠ {stage}: {e}")
         print("→ Falling back to ZIP download...")
         print()
@@ -1237,7 +1240,12 @@ def _handle_update_called_process_error(
             print(f"✗ {stage}.")
             print(f"  Details: {e}")
             _print_called_process_error_tail(e)
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure("pinned-" + stage if pinned else stage)
         _finalize_receipt("failed", 'Update receipt finalize failed: %s')
+        if gateway_mode:
+            _write_gateway_update_exit_code(False)
         sys.exit(1)
 
 
@@ -1351,19 +1359,34 @@ def _post_swap_argv_tail(args) -> list[str]:
     branch = getattr(args, "branch", None)
     if branch:
         tail += ["--branch", str(branch)]
+    request = getattr(args, "target_request", None)
+    if request is not None:
+        tail += [
+            "--revision", request.revision,
+            "--expected-install-id", request.install_id,
+            "--expected-current-sha", request.current_sha,
+        ]
     return tail
+
+
+def _pinned_intent(request, *, branch: str, correlation_id: str) -> dict[str, str]:
+    return {
+        "target": request.revision,
+        "install_id": request.install_id,
+        "correlation_id": correlation_id,
+        "prior_sha": request.current_sha,
+        "branch": branch,
+    }
 
 
 def _post_swap_payload(
     *, swap: str, branch: str, opts, gateway_mode: bool, had_desktop_app_before_update: bool,
     pre_pull_sha=None, is_fork: bool = False, pre_update_snapshot_id=None, _pre_update_plan=None,
-    _windows_gateway_resume=None) -> dict:
-    """Everything the post-swap tail needs that only the pre-swap process could observe: the
-    open receipt (detached here — the child resumes it), the pre-update fleet plan, the
-    pre-update version and active features, the Windows pause token. Flags cross as argv."""
+    _windows_gateway_resume=None, target_request=None, correlation_id: str | None = None) -> dict:
+    """Everything the post-swap tail needs, including immutable pinned intent."""
     from hermes_cli.update_receipt import detach_update_receipt
 
-    return {
+    payload = {
         "swap": swap, "branch": branch, "pre_pull_sha": pre_pull_sha, "is_fork": bool(is_fork),
         "gateway_mode": bool(gateway_mode),
         "had_desktop_app_before_update": bool(had_desktop_app_before_update),
@@ -1373,11 +1396,22 @@ def _post_swap_payload(
         "active_tool_dependencies": opts.active_tool_dependencies,
         "plan": _pre_update_plan.to_dict() if _pre_update_plan is not None else None,
         "windows_gateway_resume": _windows_gateway_resume,
-        # {profile: snapshot_id} from the pre-update backup; the post-migration safety nets for
-        # sibling profiles read it (update_cmd_config._LAST_SIBLING_SNAPSHOTS).
         "sibling_snapshots": dict(_sibling_snapshots_module()._LAST_SIBLING_SNAPSHOTS),
-        "receipt": detach_update_receipt(),
     }
+    if target_request is not None:
+        if correlation_id is None:
+            raise ValueError("pinned handoff requires correlation_id")
+        intent = _pinned_intent(target_request, branch=branch, correlation_id=correlation_id)
+        payload.update({
+            "pinned_intent": intent,
+            "target_intent": intent,
+            "requested_sha": target_request.revision,
+            "install_id": target_request.install_id,
+            "correlation_id": correlation_id,
+            "prior_sha": target_request.current_sha,
+        })
+    payload["receipt"] = detach_update_receipt()
+    return payload
 
 
 def _sibling_snapshots_module():
@@ -1385,6 +1419,59 @@ def _sibling_snapshots_module():
     # attribute at call time, never this module's import-time copy of the empty dict.
     import hermes_cli.update_cmd_config as _cfg
     return _cfg
+
+
+def _cmd_pinned_update_impl(args, gateway_mode: bool):
+    """Apply one admitted target, then hand its immutable intent to the new tree."""
+    from hermes_cli.update_receipt import (
+        begin_update_receipt, finalize_update_receipt, record_failure, record_step,
+    )
+
+    request = args.target_request
+    correlation_id = uuid.uuid4().hex
+    requested_branch = getattr(args, "branch", None)
+    receipt_branch = requested_branch or current_branch(_m().PROJECT_ROOT) or "main"
+    begin_update_receipt(intent={
+        "target": request.revision,
+        "install_id": request.install_id,
+        "correlation_id": correlation_id,
+        "prior_sha": request.current_sha,
+        "branch": receipt_branch,
+    })
+    try:
+        result = apply_pinned_target(
+            _m().PROJECT_ROOT, request, branch=requested_branch
+        )
+    except TargetAdmissionError as exc:
+        record_step("pinned_admission", False, exc.reason)
+        record_failure(exc.reason)
+        finalize_update_receipt("refused", stop_reason=exc.reason)
+        if gateway_mode:
+            _write_gateway_update_exit_code(False)
+        print(f"✗ Pinned update refused: {exc}")
+        raise SystemExit(2)
+
+    intent = _pinned_intent(request, branch=result.branch, correlation_id=correlation_id)
+    with suppress(Exception):
+        from hermes_cli.update_receipt import _current
+        if _current is not None:
+            _current.set_intent(intent)
+    record_step("pinned_apply", True, f"post_sha={result.target_sha}")
+    # Do not run legacy branch/stash/backup preparation in the pinned parent.
+    # The post-swap child resolves its own tail options from the immutable argv
+    # and payload after it imports the target tree.
+    opts = SimpleNamespace(
+        pre_update_version=None,
+        active_lazy_features=None,
+        active_tool_dependencies=None,
+    )
+    _hand_off_post_swap(
+        args, swap="pinned-git", branch=result.branch, pre_pull_sha=result.prior_sha,
+        is_fork=False, opts=opts, gateway_mode=gateway_mode,
+        had_desktop_app_before_update=False, pre_update_snapshot_id=None,
+        _pre_update_plan=None, _windows_gateway_resume=None,
+        target_request=request, correlation_id=correlation_id,
+    )
 
 
 def _hand_off_post_swap(args, **payload_kwargs) -> None:
@@ -1396,23 +1483,47 @@ def _hand_off_post_swap(args, **payload_kwargs) -> None:
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _post_swap_payload(**payload_kwargs)
-    code = _update_handoff.continue_update_in_fresh_interpreter(
-        payload, argv_tail=_post_swap_argv_tail(args))
-    token = payload_kwargs.get("_windows_gateway_resume")
-    if token and code is not None:
-        # The child got its own copy (serialized before this flip) and owns the resume; every
-        # parent-side hook (atexit, the ZIP path's ``finally``) reads this flag and stays out
-        # of the way. When no child ran, the parent still resumes what it paused.
-        token["resume_needed"] = False
-    if code is None:
-        # No child ran: take the receipt back so this failure is recorded, and leave the
-        # install breadcrumb so the next launch finishes the dependency sync (new code, old deps).
-        if payload["receipt"]:
+    try:
+        code = _update_handoff.continue_update_in_fresh_interpreter(
+            payload, argv_tail=_post_swap_argv_tail(args))
+    except Exception as exc:
+        if payload.get("receipt"):
             resume_update_receipt(payload["receipt"])
-        _record_update_step("post_swap_handoff", False, "child interpreter could not start")
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure(f"post-swap-handoff-failure: {type(exc).__name__}")
         _m()._write_update_incomplete_marker()
         if payload_kwargs.get("gateway_mode"):
             _write_gateway_update_exit_code(False)
+        _finalize_receipt("failed", 'Update receipt finalize (handoff) failed: %s')
+        raise SystemExit(1) from exc
+    token = payload_kwargs.get("_windows_gateway_resume")
+    pinned = bool(payload.get("pinned_intent"))
+    detached = bool(payload.get("_handoff_detached"))
+    if token and code is not None:
+        token["resume_needed"] = False
+    handoff_path = Path(payload.get("_handoff_path", "")) if payload.get("_handoff_path") else None
+    child_did_not_consume = bool(handoff_path and handoff_path.exists())
+    if code is None or (pinned and code != 0 and child_did_not_consume):
+        if payload["receipt"]:
+            resume_update_receipt(payload["receipt"])
+        _record_update_step("post_swap_handoff", False, "child interpreter could not start")
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure("post-swap-import-failure" if code not in (None, 0) else "post-swap-start-failure")
+        _m()._write_update_incomplete_marker()
+        if payload_kwargs.get("gateway_mode"):
+            _write_gateway_update_exit_code(False)
+        if pinned:
+            _finalize_receipt("failed", 'Update receipt finalize (pinned handoff) failed: %s')
+        code = 1
+    elif pinned and code == 0 and child_did_not_consume and not detached:
+        if payload["receipt"]:
+            resume_update_receipt(payload["receipt"])
+        with suppress(Exception):
+            from hermes_cli.update_receipt import record_failure
+            record_failure("post-swap-child-did-not-consume-handoff")
+        _finalize_receipt("failed", 'Update receipt finalize (pinned handoff) failed: %s')
         code = 1
     sys.exit(code)
 
@@ -1423,6 +1534,19 @@ def _run_post_swap_phase(args, gateway_mode: bool) -> None:
     from hermes_cli.update_receipt import resume_update_receipt
 
     payload = _update_handoff.read_handoff(args.post_swap)
+    forwarded = getattr(args, "target_request", None)
+    pinned_intent = payload.get("pinned_intent")
+    if pinned_intent is not None and forwarded is not None:
+        if {
+            "target": forwarded.revision,
+            "install_id": forwarded.install_id,
+            "prior_sha": forwarded.current_sha,
+        } != {
+            "target": pinned_intent["target"],
+            "install_id": pinned_intent["install_id"],
+            "prior_sha": pinned_intent["prior_sha"],
+        }:
+            raise ValueError("post-swap argv intent mismatch")
     with suppress(OSError):
         Path(args.post_swap).unlink()
     if payload.get("receipt"):
@@ -1452,6 +1576,25 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
         active_tool_dependencies=payload.get("active_tool_dependencies"))
     had_desktop_app_before_update = bool(payload.get("had_desktop_app_before_update"))
     desktop_dir = _m().PROJECT_ROOT / "apps" / "desktop"
+    pinned_intent = payload.get("pinned_intent")
+    pinned = isinstance(pinned_intent, dict)
+    if pinned:
+        from hermes_cli.update_receipt import record_failure, record_pinned_post_swap
+        try:
+            pinned_request = TargetRequest(
+                pinned_intent["target"], pinned_intent["install_id"], pinned_intent["prior_sha"]
+            )
+            proof = verify_pinned_post_swap(_m().PROJECT_ROOT, pinned_request)
+        except (KeyError, TargetAdmissionError) as exc:
+            record_failure("post-swap-identity-failure")
+            _finalize_receipt("failed", 'Update receipt finalize (post-swap identity) failed: %s')
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+            print(f"✗ Pinned post-swap verification refused: {exc}")
+            raise SystemExit(1)
+        record_pinned_post_swap(
+            post_sha=proof["post_sha"], post_install_id=proof["post_install_id"], verified=True
+        )
 
     try:
         if payload.get("swap") == "zip":
@@ -1471,35 +1614,64 @@ def _execute_post_swap(payload: dict, args, gateway_mode: bool) -> None:
             is_fork=bool(payload.get("is_fork")), desktop_dir=desktop_dir,
             had_desktop_app_before_update=had_desktop_app_before_update,
             pre_update_snapshot_id=payload.get("pre_update_snapshot_id"),
-            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume)
+            _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
+            pinned=pinned)
     except _shim_quarantine_error_type() as e:
         _refuse_update_for_contended_shims(e)
     except subprocess.CalledProcessError as e:
         _handle_update_called_process_error(
             e, args, gateway_mode, had_desktop_app_before_update,
-            _windows_gateway_resume=_windows_gateway_resume)
+            _windows_gateway_resume=_windows_gateway_resume, pinned=pinned)
+    except Exception as exc:
+        if pinned:
+            from hermes_cli.update_receipt import record_failure
+            record_failure(f"post-swap-failure: {type(exc).__name__}")
+            _finalize_receipt("failed", 'Update receipt finalize (post-swap failure) failed: %s')
+            if gateway_mode:
+                _write_gateway_update_exit_code(False)
+        raise
 
 
 def _finish_pulled_update(
     git_cmd, branch, pre_pull_sha, opts, *, gateway_mode, is_fork, desktop_dir,
     had_desktop_app_before_update, pre_update_snapshot_id, _pre_update_plan,
-    _windows_gateway_resume) -> None:
+    _windows_gateway_resume, pinned: bool = False) -> None:
     """Post-swap tail (git path): sync Python/Node/web/Desktop, maintenance, fleet restart."""
-    if is_fork and branch == "main":
-        _m()._sync_with_upstream_if_needed(
-            git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
+    from hermes_cli.update_receipt import record_failure
 
-    # .[all], falling back to base + extras individually so one broken extra doesn't strip
-    # the rest; the ownership preflight refuses first on foreign-owned (sudo-pip) venv files.
-    _sync_python_dependencies_after_pull(
-        git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
-        active_tool_dependencies=opts.active_tool_dependencies,
-        _windows_gateway_resume=_windows_gateway_resume)
+    try:
+        if is_fork and branch == "main":
+            _m()._sync_with_upstream_if_needed(
+                git_cmd, _m().PROJECT_ROOT, assume_yes=opts.assume_yes, input_fn=opts.gw_input_fn)
+
+        # .[all], falling back to base + extras individually so one broken extra doesn't strip
+        # the rest; the ownership preflight refuses first on foreign-owned (sudo-pip) venv files.
+        _sync_python_dependencies_after_pull(
+            git_cmd, branch, pre_pull_sha, active_lazy_features=opts.active_lazy_features,
+            active_tool_dependencies=opts.active_tool_dependencies,
+            _windows_gateway_resume=_windows_gateway_resume)
+    except Exception as exc:
+        record_failure(f"dependency-failure: {type(exc).__name__}")
+        raise
+
+    # The dependency helper historically warns on a failed critical import. A pinned run must
+    # not turn that warning into a success receipt, so perform the already-defined probe as a
+    # terminal gate after the sync and before Node/UI work.
+    if pinned:
+        import_ok, failing_module, import_error = _validate_critical_modules_import(_m().PROJECT_ROOT)
+        if not import_ok:
+            detail = f"{failing_module}: {import_error}" if failing_module else "critical import probe failed"
+            record_failure(f"import-failure: {detail}")
+            raise RuntimeError(detail)
 
     node_failures = _update_node_dependencies()
+    if node_failures:
+        record_failure("dependency-failure: node dependencies")
     _m()._build_web_ui(_m().PROJECT_ROOT / "web")
     desktop_build_ok = _rebuild_desktop_after_update(
         desktop_dir, had_desktop_app_before_update=had_desktop_app_before_update)
+    if not desktop_build_ok:
+        record_failure("import-failure: desktop build")
 
     print()
     print(f"✓ Code updated!{_branch_head_suffix(git_cmd, _m().PROJECT_ROOT)}")
@@ -1510,6 +1682,8 @@ def _finish_pulled_update(
         had_desktop_app_before_update=had_desktop_app_before_update,
         node_failures=node_failures, desktop_build_ok=desktop_build_ok,
         pre_update_version=opts.pre_update_version)
+    if not update_complete:
+        record_failure("dependency-failure: post-update maintenance")
 
     # Exit code *before* the restart: under --gateway this process lives in the gateway's
     # systemd cgroup and the systemctl-restart fallback SIGKILLs it (KillMode=mixed), so
@@ -1541,6 +1715,8 @@ def _finish_pulled_update(
 
     _restart = _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode)
     _resume_windows_gateways_and_merge_outcome(_restart, _windows_gateway_resume, gateway_mode)
+    if _restart.incomplete or _restart.failed_or_stale_units or _restart.phase_errors:
+        record_failure("restart-failure")
     _verify_fleet_after_update(
         _restart, _pre_update_plan=_pre_update_plan, _windows_gateway_resume=_windows_gateway_resume,
         node_failures=node_failures, update_complete=update_complete)
@@ -1550,6 +1726,10 @@ def _cmd_update_impl(args, gateway_mode: bool):
     """Body of ``cmd_update`` — kept separate so the wrapper can always restore stdio even on
     ``sys.exit``. Self-lock deferral deliberately does NOT run here (pre-fetch it stranded users
     on the OLD checkout in an exit-2 loop); it runs right before the dependency sync."""
+    # Pinned intent is a separate bounded path. It must not enter the legacy
+    # branch/stash/ZIP preparation before exact admission.
+    if getattr(args, "target_request", None) is not None and not getattr(args, "post_swap", None):
+        return _cmd_pinned_update_impl(args, gateway_mode)
     opts = _resolve_update_options(args, gateway_mode)
     gw_input_fn, assume_yes = opts.gw_input_fn, opts.assume_yes
 

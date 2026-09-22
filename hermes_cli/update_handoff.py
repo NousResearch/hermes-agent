@@ -19,6 +19,7 @@ code inside a pre-pull interpreter any more, so there is no stale-symbol class l
 from __future__ import annotations
 
 import json
+from copy import deepcopy
 import logging
 import os
 import subprocess
@@ -57,22 +58,58 @@ def _json_default(value: Any):
     raise TypeError(f"not JSON serializable: {type(value).__name__}")
 
 
-def write_handoff(payload: dict[str, Any]) -> Path:
-    """Persist the post-swap payload under HERMES_HOME; returns its path."""
+def _validated_pinned_payload(payload: dict[str, Any], *, intent: dict[str, Any] | None = None) -> dict[str, Any]:
+    """Copy and validate the T4 identity before it can cross the process boundary."""
+    if not isinstance(payload, dict):
+        raise TypeError("post-swap hand-off must be an object")
+    body = deepcopy(payload)
+    candidate = intent if intent is not None else body.get("pinned_intent")
+    if candidate is None:
+        return body
+    from hermes_cli.update_target import validate_update_intent
+
+    frozen = validate_update_intent(candidate)
+    receipt = body.get("receipt")
+    if isinstance(receipt, dict):
+        receipt_intent = receipt.get("update_intent")
+        if receipt_intent is not None and validate_update_intent(receipt_intent) != frozen:
+            raise ValueError("handoff receipt intent mismatch")
+        receipt["update_intent"] = deepcopy(frozen)
+    if "target_intent" in body and body["target_intent"] != frozen:
+        raise ValueError("handoff target intent mismatch")
+    redundant = {
+        "requested_sha": frozen["target"],
+        "install_id": frozen["install_id"],
+        "correlation_id": frozen["correlation_id"],
+        "prior_sha": frozen["prior_sha"],
+    }
+    for key, expected in redundant.items():
+        if key in body and body[key] != expected:
+            raise ValueError(f"handoff {key} mismatch")
+    body["target_intent"] = deepcopy(frozen)
+    body["pinned_intent"] = deepcopy(frozen)
+    return body
+
+
+def write_handoff(payload: dict[str, Any], *, intent: dict[str, Any] | None = None) -> Path:
+    """Persist a detached copy of the post-swap payload under HERMES_HOME."""
     from hermes_constants import get_hermes_home
 
+    body = _validated_pinned_payload(payload, intent=intent)
     directory = get_hermes_home() / "logs" / "update_receipts"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"post_swap_{os.getpid()}.json"
-    path.write_text(json.dumps(payload, indent=2, default=_json_default), encoding="utf-8")
+    temporary = path.with_suffix(path.suffix + ".tmp")
+    temporary.write_text(json.dumps(body, indent=2, default=_json_default), encoding="utf-8")
+    temporary.replace(path)
     return path
 
 
 def read_handoff(path: str | Path) -> dict[str, Any]:
-    payload = json.loads(Path(path).read_text(encoding="utf-8"))
-    if not isinstance(payload, dict):
+    body = json.loads(Path(path).read_text(encoding="utf-8"))
+    if not isinstance(body, dict):
         raise ValueError(f"post-swap hand-off {path} is not a JSON object")
-    return payload
+    return _validated_pinned_payload(body)
 
 
 def is_post_swap_child() -> bool:
@@ -199,6 +236,10 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
     kill-on-interrupt, which would cut it off mid-cleanup.
     """
     handoff_path = write_handoff(payload)
+    # Keep the path in the in-memory envelope so the parent can distinguish a
+    # child that imported and consumed the receipt from one that never imported.
+    payload["_handoff_path"] = str(handoff_path)
+    payload["_handoff_detached"] = False
     cmd = post_swap_command(handoff_path, argv_tail)
     env = post_swap_child_env()
     logger.debug("Post-swap hand-off → %s", subprocess.list2cmdline(cmd))
@@ -214,10 +255,11 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
         print("→ Windows: hermes.exe cannot replace itself while it runs; the update")
         print("  continues under the venv Python. The code update is already applied and")
         print("  this shell returns right away; the install finishes below.")
+        payload["_handoff_detached"] = True
         return 0
 
     try:
-        child = subprocess.Popen(cmd, env=env, stdin=sys.stdin)
+        child = subprocess.Popen(cmd, env=env, stdin=subprocess.DEVNULL)
     except OSError as exc:
         _print_manual_continuation(cmd, exc)
         return None

@@ -2299,22 +2299,10 @@ def _merge_managed_overlay(expanded: Dict[str, Any]) -> Tuple[Dict[str, Any], An
 
 
 def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
-    # Lock-free fast path for cache hits.
-    #
-    # A cache hit costs ~0.024ms, but it used to sit behind `_CONFIG_LOCK` —
-    # which `save_config()` holds across an atomic YAML write. Measured: the
-    # same cached read takes 10010ms when another thread holds the lock. On a
-    # gateway this lands on the event loop, because the per-message hook path
-    # (`invoke_hook` -> `_resolve_hook_callback_timeout`) reads config, so one
-    # background config write stalls every inbound message for the duration.
-    #
-    # The lock never protected the cache dict itself: CPython dict get/setitem
-    # are atomic under the GIL, and the cached tuple is replaced wholesale
-    # rather than mutated in place, so a reader sees either the complete old
-    # tuple or the complete new one. The lock's real job is serializing the
-    # rebuild (parse + merge + expand) and the writers. Worst case on a race
-    # is a redundant rebuild, which the locked path below re-checks and
-    # collapses.
+    # Lock-free fast path for cache hits — same publication contract as `_read_raw_config_impl`
+    # above (whole-tuple replace, `_CONFIG_LOCK` only serializes rebuilds and writers). A hit costs
+    # ~0.024ms; behind a lock held by `save_config()` the same read measured 10010ms, and on a
+    # gateway that stalls every inbound message's hook path. A lost race falls through to the lock.
     try:
         config_path = get_config_path()
         path_key = str(config_path)

@@ -1134,11 +1134,11 @@ del _name, _method
 # Keyed by the scope-resolved config path (like `_LOAD_CONFIG_CACHE`) so multiplexed profiles do not
 # evict each other. Each value is ONE `(sig, value)` tuple stored with a single dict item assignment
 # (atomic under the GIL), so a lock-free reader can never observe a new sig paired with an old value.
-_HOOK_TIMEOUT_CACHE: Dict[str, Tuple[Any, Optional[float]]] = {}
+_HOOK_TIMEOUT_CACHE: Dict[str, Tuple[Any, float]] = {}
 
 
 def _reset_hook_callback_timeout_cache() -> None:
-    """Drop the memoized hook-callback timeouts. For tests and config reloads."""
+    """Drop the memoized hook-callback timeouts (test-only; production relies on the sig check)."""
     _HOOK_TIMEOUT_CACHE.clear()
 
 
@@ -1161,7 +1161,7 @@ def _resolve_hook_callback_timeout() -> float:
         path_key, sig = "", None
 
     cached = _HOOK_TIMEOUT_CACHE.get(path_key)  # one read of the published tuple
-    if cached is not None and sig is not None and cached[0] == sig and isinstance(cached[1], float):
+    if cached is not None and sig is not None and cached[0] == sig:
         return cached[1]
 
     resolved = _resolve_hook_callback_timeout_uncached()

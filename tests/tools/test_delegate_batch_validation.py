@@ -182,5 +182,45 @@ class TestValidBatchStillRuns(unittest.TestCase):
         self.assertNotIn("error", result)
 
 
+class TestUnknownTaskFieldsRejected(unittest.TestCase):
+    """Undeclared per-task fields must fail loudly, not silently no-op.
+
+    Red on the silent-swallow behavior: a per-task `model` pin was accepted and the
+    child simply ran on the inherited/config model with zero signal."""
+
+    def _completed(self, idx):
+        return {"task_index": idx, "status": "completed", "summary": "ok",
+                "api_calls": 1, "duration_seconds": 1.0, "_child_role": None}
+
+    def test_task_level_model_pin_rejected_with_pointer(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [self._completed(0)]
+            result = _call([{"goal": GOOD_A, "model": "openrouter/some-cheap-model"}])
+        self.assertIn("error", result)
+        self.assertIn("'model'", result["error"])
+        self.assertIn("no per-task model/provider override", result["error"])
+        mock_run.assert_not_called()  # validation rejects before any child spawns
+
+    def test_unknown_field_without_special_hint_still_rejected(self):
+        with patch("tools.delegate_tool._run_single_child") as mock_run:
+            mock_run.side_effect = [self._completed(0)]
+            result = _call([{"goal": GOOD_A, "temprature": 0.1}])
+        self.assertIn("error", result)
+        self.assertIn("'temprature'", result["error"])
+        mock_run.assert_not_called()
+
+    def test_declared_and_legacy_fields_accepted(self):
+        from tools.delegate_tool_tasks import _normalize_task_list
+
+        task_list, error = _normalize_task_list(
+            None, None, [{
+                "goal": GOOD_A, "context": "ctx", "role": "worker",
+                "output_schema": {"type": "object"}, "images": [], "group": "g1",
+            }], None, "orchestrator", 6,
+        )
+        self.assertIsNone(error)
+        self.assertEqual(len(task_list), 1)
+
+
 if __name__ == "__main__":
     unittest.main()

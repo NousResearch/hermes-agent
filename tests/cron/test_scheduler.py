@@ -1251,7 +1251,9 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True, error
         assert error is None
-        assert requested == ["xai-oauth", "xai"]
+        # First two calls are the execution path: primary attempted, then first fallback.
+        # Subsequent calls are locality-classification probes inside scheduled_model_fallback_chain.
+        assert requested[:2] == ["xai-oauth", "xai"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "xai"
         assert kwargs["model"] == "grok-4.5"
@@ -1305,7 +1307,9 @@ class TestRunJobConfigEnvVarExpansion:
 
         assert success is True
         assert error is None
-        assert requested == ["openai-codex", "openrouter"]
+        # First two calls are the execution path: primary attempted, then first successful fallback.
+        # Subsequent calls are locality-classification probes inside scheduled_model_fallback_chain.
+        assert requested[:2] == ["openai-codex", "openrouter"]
         kwargs = mock_agent_cls.call_args.kwargs
         assert kwargs["provider"] == "openrouter"
         assert kwargs["model"] == "z-ai/glm-5.2"

@@ -235,8 +235,8 @@ Installed runtime receipts:
 - cleanup script SHA-256: `d09bcc7d45423a67644085de15ac24b0dd71383e4d42c841ef8ec6c9980f7491`
 - LunaBot wrapper SHA-256: `2407a24f800bef142bae68b1dca1303b44c0e5a7f5962edd4d213016ecd77bc5`
 - Hermes Agent wrapper SHA-256: `130c88c9cf5d1be5fa7ae5a4aa94988939b2efed3f8d327ae854053b1fa704c9`
-- valid nested and inline YAML probe: protected both `/tmp/governed-source` and
-  `/tmp/governed-repository`
+- valid nested and inline YAML probe: protected both `/tmp/governed-source` and  # no-tmp: ok — historical test evidence recording actual /tmp paths used during live probing
+  `/tmp/governed-repository`  # no-tmp: ok — historical test evidence recording actual /tmp paths used during live probing
 - malformed YAML probe: terminated with the PyYAML parse error
 - wrong-shape path probe: terminated with `source_worktree must be a non-empty path string`
 - live config probe: both restored conversation and deployment checkouts remain protected

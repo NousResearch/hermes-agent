@@ -233,6 +233,15 @@ def make_antigravity_event_bridge(agent: Any, *, on_protocol_error: Optional[Cal
             except Exception:
                 logger.debug("Antigravity %s callback raised", attr, exc_info=True)
 
+    def touch_activity(desc: str) -> None:
+        # The transport renews its own NDJSON idle timeout per event, but the global turn-liveness
+        # watchdog (agent/turn_liveness.py) only samples agent._last_activity_ts/_last_activity_desc,
+        # which are stamped exclusively by agent._touch_activity. Without this, a turn that keeps
+        # receiving substantive agy events looks stalled to the watchdog and gets force-aborted
+        # (see tests/agent/test_antigravity_event_projector.py regression). `guarded` already makes
+        # a raising callback best-effort, so a broken activity hook can never drop the event.
+        guarded("_touch_activity", desc)
+
     def on_event(event: dict, projected: Optional[ProjectionResult] = None) -> None:
         if projected is None:
             projected = projector.feed(event)
@@ -244,20 +253,25 @@ def make_antigravity_event_bridge(agent: Any, *, on_protocol_error: Optional[Cal
                     logger.debug("Antigravity protocol-error callback raised", exc_info=True)
             return
         if projected.assistant_delta:
+            touch_activity("receiving Antigravity assistant response")
             guarded("_fire_stream_delta", projected.assistant_delta)
         if projected.system_progress:
+            touch_activity("receiving Antigravity progress update")
             guarded("_fire_reasoning_delta", projected.system_progress)
         tool = projected.tool_event
         if tool is None:
             if projected.final_text and getattr(agent, "show_commentary", True):
+                touch_activity("receiving Antigravity final response")
                 guarded("_emit_interim_assistant_message", {"role": "assistant", "content": projected.final_text})
             return
         status, call_id, name, args = tool["status"], tool["id"], tool["name"], tool["args"]
         if status == "ACTIVE":
+            touch_activity(f"Antigravity tool running: {name}")
             active[call_id] = (name, args, time.monotonic())
             guarded("tool_progress_callback", "tool.started", name, None, args, tool_call_id=call_id)
             guarded("tool_start_callback", call_id, name, args)
         else:
+            touch_activity(f"Antigravity tool completed: {name}")
             prior = active.pop(call_id, None)
             duration = time.monotonic() - prior[2] if prior else None
             guarded("tool_progress_callback", "tool.completed", name, None, None, duration=duration,

@@ -3,7 +3,7 @@ import logging
 from types import SimpleNamespace
 from unittest.mock import patch
 
-from agent.conversation_compression import compress_context
+from agent.conversation_compression import _emit_compression_attempt_telemetry, compress_context
 from agent.context_compressor import ContextCompressor
 
 
@@ -198,3 +198,33 @@ def test_aux_call_telemetry_records_content_free_phase_timings():
         "commit_ms": 11,
     }
     assert "TOPSECRET_TRANSCRIPT_TEXT" not in json.dumps(payload)
+
+
+def test_attempt_emission_uses_the_populated_active_telemetry_snapshot(caplog):
+    """A boundary may retain a prior last snapshot while the live attempt is updated."""
+    with patch("agent.context_compressor.get_model_context_length", return_value=100_000):
+        compressor = ContextCompressor(
+            model="test/main-model",
+            provider="test-provider",
+            threshold_percent=0.50,
+            quiet_mode=True,
+            config_context_length=100_000,
+        )
+    agent = _Agent(compressor)
+    stale = compressor._begin_compression_telemetry(current_tokens=75_000)
+    active = dict(stale)
+    active["middle_window_tokens"] = 42
+    active["aux_prompt_tokens"] = 84
+    compressor._active_compression_telemetry = active
+
+    with caplog.at_level(logging.INFO, logger="agent.conversation_compression"):
+        _emit_compression_attempt_telemetry(
+            agent,
+            started_at=0.0,
+            commit_status="committed",
+            split_status="in_place_committed",
+        )
+
+    payload = _extract_telemetry(caplog)
+    assert payload["middle_window_tokens"] == 42
+    assert payload["aux_prompt_tokens"] == 84

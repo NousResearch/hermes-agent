@@ -1444,12 +1444,21 @@ def _emit_compression_attempt_telemetry(
     """Emit one content-free JSON log line for a compression attempt."""
     with _swallow('failed to emit compression attempt telemetry: %s'):
         compressor = agent.context_compressor
-        telemetry = getattr(compressor, "_last_compression_telemetry", None)
+        active_telemetry = getattr(compressor, "_active_compression_telemetry", None)
+        last_telemetry = getattr(compressor, "_last_compression_telemetry", None)
+        attempt_id = getattr(agent, "_compression_attempt_id", "")
+        telemetry = next(
+            (
+                candidate for candidate in (active_telemetry, last_telemetry)
+                if isinstance(candidate, dict) and candidate.get("attempt_id") == attempt_id
+            ),
+            active_telemetry if isinstance(active_telemetry, dict) else last_telemetry,
+        )
         if not isinstance(telemetry, dict):
             telemetry = {}
         payload = dict(telemetry)
         payload.setdefault("event", "compression_attempt")
-        payload.setdefault("attempt_id", getattr(agent, "_compression_attempt_id", "") or uuid.uuid4().hex)
+        payload.setdefault("attempt_id", attempt_id or uuid.uuid4().hex)
         payload.setdefault("session_id", getattr(agent, "session_id", "") or "")
         payload.update(
             total_duration_ms=int((time.monotonic() - started_at) * 1000), commit_status=commit_status,

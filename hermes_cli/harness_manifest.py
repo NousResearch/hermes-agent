@@ -43,6 +43,8 @@ _TUNABLE_ROOTS = frozenset({
     "streaming", "timezone", "tool_loop_guardrails", "tool_output", "tts",
     "vision", "voice", "wake_word",
 })
+_SECRET_PATH_PARTS = frozenset({"api_key", "password", "secret", "token", "credential", "credentials"})
+_SECRET_PATH_SUFFIXES = ("_api_key", "_password", "_secret", "_token", "_credential", "_credentials")
 
 # Bounds are contracts only where the runtime already has a meaningful bounded
 # domain. Other numeric entries remain typed but unbounded.
@@ -103,6 +105,11 @@ def harness_registry() -> Dict[str, Dict[str, Any]]:
     registry: Dict[str, Dict[str, Any]] = {}
     for path, default in _walk_defaults(DEFAULT_CONFIG):
         if path.partition(".")[0] not in _TUNABLE_ROOTS:
+            continue
+        if any(
+            part.lower() in _SECRET_PATH_PARTS or part.lower().endswith(_SECRET_PATH_SUFFIXES)
+            for part in path.split(".")
+        ):
             continue
         minimum, maximum = _BOUNDS.get(path, (None, None))
         registry[path] = {

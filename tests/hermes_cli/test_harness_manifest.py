@@ -55,6 +55,8 @@ def test_ordered_typed_overlays_are_effective_fingerprinted_and_reversible(tmp_p
 
     with pytest.raises(HarnessError, match="not a tunable harness option"):
         set_overlay("unsafe", "approvals.mode", "off", "Widen permissions")
+    with pytest.raises(HarnessError, match="not a tunable harness option"):
+        set_overlay("secret", "auxiliary.vision.api_key", "not-a-real-key", "Store a credential")
     with pytest.raises(HarnessError, match="expects number"):
         parse_value("compression.threshold", "not-a-number")
     with pytest.raises(HarnessError, match=">= 0.0"):

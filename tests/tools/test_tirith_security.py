@@ -2,6 +2,7 @@
 
 import io
 import json
+import logging
 import os
 import subprocess
 import tarfile
@@ -326,7 +327,8 @@ class TestUnsupportedPlatform:
              patch("tools.tirith_security.subprocess.run") as mock_run, \
              patch("tools.tirith_security._resolve_tirith_path") as mock_resolve:
             result = check_command_security("rm -rf /")
-            assert result == {"action": "allow", "findings": [], "summary": ""}
+            assert result == {"action": "allow", "findings": [], "summary": "",
+                              "scanner_state": "unavailable"}
             mock_run.assert_not_called()
             mock_resolve.assert_not_called()
 
@@ -743,7 +745,7 @@ class TestEmojiVariationSelectorSuppression:
         # SMP emoji, Dingbats/Misc Symbols, and BMP singletons outside those blocks (ℹ ▶).
         result = check_command_security('ls "🗞️ Journal/" "✅️ Projects/" "ℹ️ Info/" "▶️ Media/"')
 
-        assert result == {"action": "allow", "findings": [], "summary": ""}
+        assert result == {"action": "allow", "findings": [], "summary": "", "scanner_state": "ran"}
 
     @pytest.mark.parametrize("command, findings", [
         ("printf 'a️'", _VS),            # VS16 after a letter
@@ -808,3 +810,493 @@ class TestMkdtempOSErrorNoSpace:
             _install_tirith(log_failures=False)
         after = set(glob.glob("/tmp/tirith-install-*"))
         assert after - before == set()
+
+
+# ---------------------------------------------------------------------------
+# Candidate header probe (INS1-564 / REQ-INS1-SAAS-066 AC-1, AC-2, AC-3, AC-5)
+#
+# Nothing is built, downloaded or installed here: the acceptance probe reads the
+# candidate's own header, so a header is the whole fixture.
+# ---------------------------------------------------------------------------
+
+_ELF_MACHINE_X86_64 = 62
+_ELF_MACHINE_AARCH64 = 183
+_MACHO_CPUTYPE_X86_64 = 0x01000007
+_MACHO_CPUTYPE_AARCH64 = 0x0100000C
+
+
+def _elf_bytes(machine: int, *, length: int = 64) -> bytes:
+    """An ELF64 little-endian header declaring ``machine`` at ``e_machine`` (offset 18)."""
+    head = bytearray(b"\x7fELF" + bytes([2, 1, 1, 0]) + bytes(8) + b"\x00\x00")
+    head[18:20] = machine.to_bytes(2, "little")
+    return bytes(head[:length]).ljust(length, b"\x00")
+
+
+def _macho_bytes(cputype: int, *, length: int = 32) -> bytes:
+    """A 64-bit little-endian Mach-O header — the measured foreign file's first octets, ``cf fa ed fe`` —
+    declaring ``cputype`` at offset 4."""
+    head = bytearray(b"\xcf\xfa\xed\xfe")
+    head += cputype.to_bytes(4, "little") + (2).to_bytes(4, "little") + (0).to_bytes(4, "little")
+    head += bytes(16)
+    return bytes(head[:length]).ljust(length, b"\x00")
+
+
+def _native_header() -> bytes:
+    """A header declaring *this* process's architecture, in the format this OS loads."""
+    target = _tirith_mod._detect_target()
+    assert target, "the positive control needs a platform tirith ships a build for"
+    arch, platform_slot = target.split("-", 1)
+    if platform_slot == "apple-darwin":
+        return _macho_bytes(_MACHO_CPUTYPE_AARCH64 if arch == "aarch64" else _MACHO_CPUTYPE_X86_64)
+    return _elf_bytes(_ELF_MACHINE_AARCH64 if arch == "aarch64" else _ELF_MACHINE_X86_64)
+
+
+def _write_candidate(directory, payload: bytes, name: str = "tirith") -> str:
+    """A candidate carrying the execute bit at ``directory/name``."""
+    path = os.path.join(str(directory), name)
+    with open(path, "wb") as handle:
+        handle.write(payload)
+    os.chmod(path, 0o755)
+    return path
+
+
+def _pin_process(monkeypatch, system: str, machine: str) -> None:
+    """Pin the process identity the probe compares the header against — the note measured a Mach-O
+    inside linux/arm64. Only the identity is pinned: the header read stays real file I/O."""
+    monkeypatch.setattr(_tirith_mod.platform, "system", lambda: system)
+    monkeypatch.setattr(_tirith_mod.platform, "machine", lambda: machine)
+
+
+def _refusal_lines(caplog) -> list:
+    return [rec.message for rec in caplog.records if "scanner_unrunnable" in rec.message]
+
+
+@pytest.fixture
+def warned_fresh():
+    """The once-per-class channel is process-wide: clear it so a case measures its own line."""
+    _tirith_mod._warned_messages.clear()
+    yield
+    _tirith_mod._warned_messages.clear()
+
+
+@pytest.fixture
+def slots(tmp_path, monkeypatch):
+    """Two empty slots — `PATH` and `$HERMES_HOME/bin/tirith` — that a case fills with fixtures, on a
+    cold resolved state and a fresh once-per-class channel."""
+    _tirith_mod._warned_messages.clear()
+    _tirith_mod._resolved_path = None
+    home_bin = tmp_path / "home-bin"
+    home_bin.mkdir()
+    monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(home_bin))
+    monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+    yield home_bin
+    _tirith_mod._warned_messages.clear()
+
+
+class TestCandidateHeaderProbe:
+    """A candidate is a scanner only when the file it names is a binary this process can execute:
+    `_is_executable()`'s two facts stay necessary and become insufficient on their own."""
+
+    def test_macho_under_a_linux_process_is_refused(self, slots, caplog, monkeypatch):
+        """The measured case: a Mach-O at the fallback slot inside linux/arm64, reported as installed."""
+        _pin_process(monkeypatch, "Linux", "arm64")
+        candidate = _write_candidate(slots, _macho_bytes(_MACHO_CPUTYPE_AARCH64))
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            assert _tirith_mod._find_local_tirith() is None
+            found, may_install = _tirith_mod._resolve_locally("tirith", warn_missing=False)
+
+        assert found is None                        # never the resolved path
+        assert may_install is True                  # what is reached instead is the install path
+        assert _tirith_mod._cached_path() is None    # and it is never cached
+        (line,) = _refusal_lines(caplog)
+        assert candidate in line
+        assert "mach-o/aarch64" in line and "aarch64-unknown-linux-gnu" in line
+
+    def test_an_elf_for_another_machine_is_refused(self, slots, caplog, monkeypatch):
+        """A valid foreign-architecture ELF for a different machine is refused: the check is about
+        runnability, not about the file's name."""
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        candidate = _write_candidate(slots, _elf_bytes(_ELF_MACHINE_X86_64))
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            found, _ = _tirith_mod._resolve_locally("tirith", warn_missing=False)
+
+        assert found is None
+        (line,) = _refusal_lines(caplog)
+        assert candidate in line
+        assert "elf/x86_64" in line and "aarch64-unknown-linux-gnu" in line
+
+    @pytest.mark.parametrize("payload", [
+        _elf_bytes(_ELF_MACHINE_AARCH64, length=8),       # an ELF cut before e_machine
+        _macho_bytes(_MACHO_CPUTYPE_AARCH64, length=8),   # a Mach-O cut before cputype
+    ])
+    def test_a_file_shorter_than_its_own_header_is_refused(self, slots, caplog, monkeypatch, payload):
+        """A truncated download is a refusal, not a crash."""
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        candidate = _write_candidate(slots, payload)
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            found, _ = _tirith_mod._resolve_locally("tirith", warn_missing=False)
+
+        assert found is None
+        (line,) = _refusal_lines(caplog)
+        assert candidate in line
+        assert "truncated" in line and "aarch64-unknown-linux-gnu" in line
+
+    def test_a_binary_of_this_architecture_is_accepted(self, slots):
+        """Positive control — the check can pass: the resolution returns the path and the install path
+        is not entered."""
+        candidate = _write_candidate(slots, _native_header())
+
+        with patch("tools.tirith_security._install_tirith") as install:
+            assert _tirith_mod._find_local_tirith() == candidate
+            found, may_install = _tirith_mod._resolve_locally("tirith", warn_missing=False)
+
+        assert found == candidate and may_install is False
+        assert _tirith_mod._cached_path() == candidate
+        install.assert_not_called()
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_a_binary_of_this_architecture_scans_and_says_ran(self, mock_cfg, mock_run, slots):
+        """The gate is a gate, not a ban: a valid build at a slot is scanned and returns its verdict."""
+        candidate = _write_candidate(slots, _native_header())
+        mock_cfg.return_value = _CFG
+        mock_run.return_value = _mock_run(0, _json_stdout(summary="clean"))
+
+        result = check_command_security("echo hi")
+
+        assert result == {"action": "allow", "findings": [], "summary": "clean",
+                          "scanner_state": "ran"}
+        assert mock_run.call_args[0][0][0] == candidate
+
+    def test_a_candidate_with_no_binary_header_keeps_the_existing_rule(self, slots, caplog, monkeypatch):
+        """A file the probe has no format to read (missing, unreadable, not a binary) keeps the module's
+        existing state: the new refusal class is not invented over it (Beh 5)."""
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        candidate = _write_candidate(slots, b"#!/bin/sh\nexit 0\n")
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            assert _tirith_mod._find_local_tirith() == candidate
+
+        assert _refusal_lines(caplog) == []
+
+    def test_a_big_endian_macho_header_is_refused_too(self, slots, caplog, monkeypatch):
+        """The magic carries the file's byte order: `feedfacf` is read big-endian, not as this host's."""
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        candidate = _write_candidate(
+            slots, b"\xfe\xed\xfa\xcf" + _MACHO_CPUTYPE_AARCH64.to_bytes(4, "big") + bytes(24))
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            found, _ = _tirith_mod._resolve_locally("tirith", warn_missing=False)
+
+        assert found is None
+        (line,) = _refusal_lines(caplog)
+        assert candidate in line and "mach-o/aarch64" in line
+
+    def test_the_header_is_read_in_the_byte_order_the_file_declares(self):
+        """`e_machine` follows `EI_DATA` and a Mach-O's `cputype` its magic — never this host's order."""
+        big_endian_elf = (b"\x7fELF" + bytes([2, 2, 1, 0]) + bytes(8) + b"\x00\x00"
+                          + _ELF_MACHINE_AARCH64.to_bytes(2, "big") + bytes(44))
+        big_endian_macho = (b"\xfe\xed\xfa\xcf" + _MACHO_CPUTYPE_AARCH64.to_bytes(4, "big")
+                            + bytes(24))
+
+        assert _tirith_mod._read_elf_header(big_endian_elf)["declared"] == "elf/aarch64"
+        assert _tirith_mod._read_macho_header(big_endian_macho, True, True)["declared"] == "mach-o/aarch64"
+
+    def test_a_foreign_explicit_path_is_refused_as_not_found(self, tmp_path, monkeypatch):
+        """The authoritative explicit path is a candidate too: a binary this process cannot run is never
+        the resolved scanner."""
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        candidate = _write_candidate(tmp_path, _macho_bytes(_MACHO_CPUTYPE_AARCH64), name="custom-tirith")
+        _tirith_mod._resolved_path = None
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+
+        assert _tirith_mod._resolve_locally(candidate, warn_missing=False) == (None, False)
+        assert _tirith_mod._cached_path() is None
+
+
+class TestRefusedSlotFallsThrough:
+    """A refused candidate is *not found*: the order the resolution already has is unchanged (Beh 2)."""
+
+    def test_a_refused_path_hit_lets_the_next_slot_answer(self, tmp_path, monkeypatch):
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        on_path = _write_candidate(tmp_path, _macho_bytes(_MACHO_CPUTYPE_AARCH64), name="path-tirith")
+        home_bin = tmp_path / "home-bin"
+        home_bin.mkdir()
+        valid = _write_candidate(home_bin, _elf_bytes(_ELF_MACHINE_AARCH64))
+        monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(home_bin))
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: on_path)
+
+        assert _tirith_mod._find_local_tirith() == valid
+
+    def test_both_slots_refused_reach_the_install_path(self, tmp_path, monkeypatch, warned_fresh):
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        home_bin = tmp_path / "home-bin"
+        home_bin.mkdir()
+        _write_candidate(home_bin, _macho_bytes(_MACHO_CPUTYPE_AARCH64))
+        monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(home_bin))
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+        _tirith_mod._resolved_path = None
+
+        with patch("tools.tirith_security._install_tirith",
+                   return_value=("/auto/tirith", "")) as install:
+            resolved = _tirith_mod._resolve_tirith_path("tirith")
+
+        assert resolved == "/auto/tirith"
+        install.assert_called_once()
+        assert _tirith_mod._cached_path() == "/auto/tirith"
+        del warned_fresh  # the fixture only orders the once-per-class reset
+
+
+class TestCachedPathValidation:
+    """A cached path is re-validated on the same rule (AC-3): replaced or truncated, it is not found
+    instead of being handed back for the rest of the process."""
+
+    @pytest.mark.parametrize("payload", [
+        _macho_bytes(_MACHO_CPUTYPE_AARCH64),            # the pair is refilled with a foreign binary
+        _elf_bytes(_ELF_MACHINE_AARCH64, length=8),      # the file is truncated in place
+    ])
+    def test_a_cached_path_that_stopped_passing_is_not_returned(self, tmp_path, monkeypatch,
+                                                                warned_fresh, payload):
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        cached = _write_candidate(tmp_path, _elf_bytes(_ELF_MACHINE_AARCH64))
+        _tirith_mod._resolved_path = cached
+        home_bin = tmp_path / "home-bin"
+        home_bin.mkdir()
+        monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(home_bin))
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+        with open(cached, "wb") as handle:
+            handle.write(payload)
+        os.chmod(cached, 0o755)
+
+        with patch("tools.tirith_security._install_tirith",
+                   return_value=("/auto/tirith", "")) as install:
+            resolved = _tirith_mod._resolve_tirith_path("tirith")
+
+        assert resolved == "/auto/tirith"          # the refused path is not what answers
+        assert _tirith_mod._cached_path() == "/auto/tirith"
+        install.assert_called_once()
+        del warned_fresh
+
+    def test_ensure_installed_drops_a_cached_path_that_no_longer_passes(self, tmp_path, monkeypatch):
+        """The boot path treats it as not found too, and asks the slots again."""
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        cached = _write_candidate(tmp_path, _elf_bytes(_ELF_MACHINE_AARCH64))
+        _tirith_mod._resolved_path = cached
+        with open(cached, "wb") as handle:
+            handle.write(_macho_bytes(_MACHO_CPUTYPE_AARCH64))
+        os.chmod(cached, 0o755)
+        home_bin = tmp_path / "home-bin"
+        home_bin.mkdir()
+        monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(home_bin))
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+
+        with patch("tools.tirith_security._load_security_config", return_value=_CFG), \
+             patch("tools.tirith_security.threading.Thread") as MockThread:
+            mock_thread = MagicMock()
+            mock_thread.is_alive.return_value = False
+            MockThread.return_value = mock_thread
+            assert ensure_installed(log_failures=False) is None
+
+        MockThread.assert_called_once()
+        assert _tirith_mod._cached_path() is None
+
+
+class TestRefusalIsTypedOnTheWayIn:
+    """The refusal is produced where the resolution refuses, before any command is guarded (Beh 3)."""
+
+    def test_the_boot_call_with_log_failures_false_still_names_the_refusal(self, slots, caplog, monkeypatch):
+        """`unsupported_platform` keeps its silence; this class may not be swallowed by the boot call."""
+        _pin_process(monkeypatch, "Linux", "arm64")
+        candidate = _write_candidate(slots, _macho_bytes(_MACHO_CPUTYPE_AARCH64))
+
+        with patch("tools.tirith_security._load_security_config", return_value=_CFG), \
+             patch("tools.tirith_security.threading.Thread") as MockThread, \
+             caplog.at_level("WARNING", logger="tools.tirith_security"):
+            mock_thread = MagicMock()
+            mock_thread.is_alive.return_value = False
+            MockThread.return_value = mock_thread
+            assert ensure_installed(log_failures=False) is None
+
+        (line,) = _refusal_lines(caplog)
+        assert candidate in line
+        assert "mach-o/aarch64" in line and "aarch64-unknown-linux-gnu" in line
+        MockThread.assert_called_once()  # the install path is reached instead of the refused file
+
+    def test_the_refusal_is_named_once_per_refused_path(self, slots, caplog, monkeypatch):
+        """A slot a mount keeps refilling with the same foreign file does not repeat the line."""
+        _pin_process(monkeypatch, "Linux", "aarch64")
+        _write_candidate(slots, _macho_bytes(_MACHO_CPUTYPE_AARCH64))
+
+        with caplog.at_level("WARNING", logger="tools.tirith_security"):
+            for _ in range(5):
+                _tirith_mod._find_local_tirith()
+
+        assert len(_refusal_lines(caplog)) == 1
+
+    def test_a_platform_with_no_build_stays_silent(self, slots, caplog, monkeypatch):
+        """Nothing of this class is emitted where tirith has no build at all (AC-6)."""
+        monkeypatch.setattr(_tirith_mod.platform, "system", lambda: "Windows")
+        _write_candidate(slots, _macho_bytes(_MACHO_CPUTYPE_AARCH64))
+
+        with patch("tools.tirith_security._load_security_config", return_value=_CFG), \
+             caplog.at_level("WARNING", logger="tools.tirith_security"):
+            assert ensure_installed(log_failures=False) is None
+
+        assert _refusal_lines(caplog) == []
+
+
+# ---------------------------------------------------------------------------
+# The guard never fails open in silence (INS1-565 / REQ-INS1-SAAS-066 AC-4)
+# ---------------------------------------------------------------------------
+
+
+class TestScannerStateMarker:
+    """Every verdict says whether a scan produced it — `ran`, or why no scan ran."""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_the_breaker_allow_keeps_its_summary_verbatim_and_carries_disabled(self, mock_cfg,
+                                                                              mock_run, warned_fresh):
+        mock_cfg.return_value = _CFG
+        _open_breaker(age_s=1)
+
+        first = check_command_security("echo hi")
+        second = check_command_security("echo hi")
+
+        assert first["summary"] == "tirith disabled (circuit breaker)"
+        assert first["scanner_state"] == "disabled"
+        assert second["scanner_state"] == "disabled"  # present on the first call and it stays
+        mock_run.assert_not_called()
+        del warned_fresh
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_an_allow_without_a_scan_is_distinguishable_by_the_value_alone(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        mock_run.return_value = _mock_run(0, _json_stdout(summary="clean"))
+        scanned = check_command_security("echo hi")
+
+        with patch("tools.tirith_security._resolve_tirith_path", return_value=None):
+            unscanned = check_command_security("echo hi")
+
+        assert scanned["scanner_state"] == "ran"
+        assert unscanned["action"] == "allow" and unscanned["scanner_state"] == "unavailable"
+        assert unscanned != scanned  # no prose needs to be interpreted
+
+    @pytest.mark.parametrize("returncode, action", [(0, "allow"), (1, "block"), (2, "warn")])
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_a_completed_scan_is_unchanged_apart_from_the_marker(self, mock_cfg, mock_run,
+                                                                 returncode, action):
+        mock_cfg.return_value = _CFG
+        mock_run.return_value = _mock_run(returncode, _json_stdout(summary="scan summary"))
+
+        result = check_command_security("echo hi")
+
+        assert result["action"] == action
+        assert result["summary"] == "scan summary"
+        assert result["findings"] == []
+        assert result["scanner_state"] == "ran"
+        assert set(result) == {"action", "findings", "summary", "scanner_state"}
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_a_spawn_failure_carries_unavailable(self, mock_cfg, mock_run):
+        mock_cfg.return_value = _CFG
+        mock_run.side_effect = OSError(8, "Exec format error")
+
+        assert check_command_security("echo hi")["scanner_state"] == "unavailable"
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_fail_closed_still_blocks_and_says_why(self, mock_cfg, mock_run):
+        """The policy still decides allow versus block; the marker only says no scan ran."""
+        mock_cfg.return_value = {**_CFG, "tirith_fail_open": False}
+        mock_run.side_effect = OSError(8, "Exec format error")
+
+        result = check_command_security("echo hi")
+
+        assert result["action"] == "block"
+        assert result["scanner_state"] == "unavailable"
+
+    @patch("tools.tirith_security._load_security_config")
+    def test_the_configured_off_switch_carries_disabled(self, mock_cfg):
+        mock_cfg.return_value = {**_CFG, "tirith_enabled": False}
+
+        assert check_command_security("rm -rf /") == {"action": "allow", "findings": [],
+                                                      "summary": "", "scanner_state": "disabled"}
+
+
+class TestTurnLogNamesTheScannerState:
+    """A state observable only by reading a `summary` string is a FAIL of AC-4."""
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_the_unavailable_state_is_named_once(self, mock_cfg, mock_run, caplog, warned_fresh):
+        mock_cfg.return_value = _CFG
+        mock_run.side_effect = FileNotFoundError("[Errno 2] No such file: '/opt/tirith'")
+
+        with patch("tools.tirith_security._resolve_tirith_path", return_value="/opt/tirith"), \
+             caplog.at_level("WARNING", logger="tools.tirith_security"):
+            for _ in range(_tirith_mod._CRASH_LIMIT):
+                assert check_command_security("echo hi")["scanner_state"] == "unavailable"
+
+        named = [rec.message for rec in caplog.records if "scanner_state=unavailable" in rec.message]
+        assert len(named) == 1
+        del warned_fresh
+
+    @patch("tools.tirith_security.subprocess.run")
+    @patch("tools.tirith_security._load_security_config")
+    def test_entry_into_and_exit_from_disabled_are_named(self, mock_cfg, mock_run, caplog, warned_fresh):
+        mock_cfg.return_value = _CFG
+        mock_run.side_effect = OSError(8, "Exec format error")
+
+        with patch("tools.tirith_security._resolve_tirith_path", return_value="/opt/tirith"), \
+             caplog.at_level(logging.INFO, logger="tools.tirith_security"):
+            for _ in range(_tirith_mod._CRASH_LIMIT):
+                check_command_security("echo hi")
+            disabled = check_command_security("echo hi")
+            # the retry window has elapsed: the half-open probe runs for real and a completed scan closes
+            _tirith_mod._circuit_open_at = time.monotonic() - _tirith_mod._CIRCUIT_RETRY_S - 1
+            mock_run.side_effect = None
+            mock_run.return_value = _mock_run(0, _json_stdout())
+            recovered = check_command_security("echo hi")
+
+        assert disabled["scanner_state"] == "disabled"
+        assert recovered["scanner_state"] == "ran"
+        text = "\n".join(rec.message for rec in caplog.records)
+        assert "circuit breaker opened after 3 consecutive failures" in text
+        assert "scanner_state=disabled" in text
+        assert "circuit breaker half-open: probing after" in text
+        assert "circuit breaker closed after successful probe" in text
+        del warned_fresh
+
+    def test_the_refusal_and_the_state_ride_the_same_turn_log(self, tmp_path, monkeypatch,
+                                                              caplog, warned_fresh):
+        """Nobody needs an `Exec format error` to learn either: a refused candidate is named on the way
+        in, and the verdict that follows says no scan ran."""
+        _pin_process(monkeypatch, "Linux", "arm64")
+        home_bin = tmp_path / "home-bin"
+        home_bin.mkdir()
+        candidate = _write_candidate(home_bin, _macho_bytes(_MACHO_CPUTYPE_AARCH64))
+        monkeypatch.setattr(_tirith_mod, "_hermes_bin_dir", lambda: str(home_bin))
+        monkeypatch.setattr(_tirith_mod.shutil, "which", lambda _name: None)
+        _tirith_mod._resolved_path = None
+
+        with patch("tools.tirith_security._load_security_config", return_value=_CFG), \
+             patch("tools.tirith_security._install_tirith", return_value=(None, "download_failed")), \
+             patch("tools.tirith_security._mark_install_failed"), \
+             patch("tools.tirith_security.subprocess.run") as mock_run, \
+             caplog.at_level("WARNING", logger="tools.tirith_security"):
+            mock_run.side_effect = OSError(8, "Exec format error")
+            result = check_command_security("ls -la /tmp")
+
+        assert result["scanner_state"] == "unavailable"
+        text = "\n".join(rec.message for rec in caplog.records)
+        assert "scanner_unrunnable" in text and candidate in text
+        assert "scanner_state=unavailable" in text
+        del warned_fresh
+

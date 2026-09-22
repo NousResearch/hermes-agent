@@ -4,7 +4,13 @@ The exit code is the verdict source of truth (0 allow, 1 block, 2 warn); JSON st
 enriches findings. Operational failures (spawn error, timeout, unknown exit) respect
 ``fail_open``; programming errors propagate. Auto-install: a missing tirith is downloaded from
 GitHub releases to $HERMES_HOME/bin/tirith in a background thread -- SHA-256 always verified,
-cosign provenance when cosign is on PATH."""
+cosign provenance when cosign is on PATH.
+
+A candidate is a resolved scanner only when its header declares a format *this* process can execute
+(ELF ``e_machine``, Mach-O magic + ``cputype``); a refused candidate is not found, so the next slot
+and the install path are reached exactly as when a slot is empty. Every verdict the guard returns
+carries ``scanner_state`` (``ran`` / ``unavailable`` / ``disabled``), so an allow that was never
+scanned is a value a reader can test rather than prose to interpret."""
 
 import hashlib
 import json
@@ -112,6 +118,26 @@ def _warn_once(key: str, message: str, *args) -> None:
     logger.warning(message, *args)
 
 
+# The scanner's state, carried on every result the guard returns: `ran` = a scan completed and produced
+# the verdict; `unavailable` = no scanner was usable, so nothing was scanned; `disabled` = the scanner
+# is switched off by config, or the circuit breaker is open. The state is a value, never prose only.
+_SCANNER_STATE_RAN = "ran"
+_SCANNER_STATE_UNAVAILABLE = "unavailable"
+_SCANNER_STATE_DISABLED = "disabled"
+# One line per state for the turn's log: a state a reader can only find by interpreting a `summary`
+# string is exactly what must not happen.
+_SCANNER_STATE_DETAIL = {
+    _SCANNER_STATE_UNAVAILABLE: "no scan ran — the scanner was not usable",
+    _SCANNER_STATE_DISABLED: "no scan runs while the scanner is switched off",
+}
+
+
+def _note_scanner_state(state: str) -> None:
+    """Name the scanner's state once per class on the turn's log (REQ-INS1-SAAS-066 Beh 4)."""
+    if state in _SCANNER_STATE_DETAIL:
+        _warn_once(f"scanner_state:{state}", "tirith scanner_state=%s: %s", state, _SCANNER_STATE_DETAIL[state])
+
+
 def _cached_path() -> str | None:
     """The path resolved on a previous call, or None if unresolved (None) / failed (_INSTALL_FAILED)."""
     if get_hermes_home_override() is not None:
@@ -136,6 +162,17 @@ def _set_resolved(path: str) -> None:
 def _set_failed(reason: str) -> None:
     global _resolved_path, _install_failure_reason
     _resolved_path, _install_failure_reason = _INSTALL_FAILED, reason
+
+
+def _forget_resolved() -> None:
+    """Drop the cached resolution (and the failure tag) so the slots are asked again. Used when a cached
+    path stops passing the resolution's own rule: it is not found from then on, not handed back."""
+    global _resolved_path, _install_failure_reason
+    if get_hermes_home_override() is not None:
+        _resolved_path_by_home.pop(hermes_home_key(), None)
+    else:
+        _resolved_path = None
+    _install_failure_reason = ""
 
 
 # --- Disk failure marker ---
@@ -360,13 +397,155 @@ def _install_tirith(*, log_failures: bool = True) -> tuple[str | None, str]:
 
 # --- Path resolution ---
 def _is_executable(path: str) -> bool:
+    """The cheap half of the acceptance rule: the file exists and the mode carries an execute bit.
+    Necessary and — since REQ-INS1-SAAS-066 Beh 1 — insufficient on its own; `_runnable_candidate()`
+    adds the fact the rule was missing."""
     return os.path.isfile(path) and os.access(path, os.X_OK)
 
 
+# --- Candidate architecture probe ---
+# A candidate is a scanner only when the file it names is a binary *this* process can execute: the
+# header is read (ELF `e_machine`, Mach-O `cputype`) and compared with the architecture of the running
+# process through the mapping this module already owns (`_detect_target()`).
+_ELF_MAGIC = b"\x7fELF"
+_ELF_HEADER_LENGTHS = {1: 52, 2: 64}  # EI_CLASS 1 = 32-bit / 2 = 64-bit: the header the file claims
+_ELF_MACHINES = {3: "x86", 40: "arm", 62: "x86_64", 183: "aarch64", 243: "riscv64"}  # e_machine
+# Mach-O magic -> 64-bit header (a Mach-O header is 28 bytes, or 32 with the 64-bit magic). The measured
+# foreign file's first octets were ``cffaedfe``: a little-endian 64-bit Mach-O.
+_MACHO_MAGICS = {b"\xfe\xed\xfa\xce": False, b"\xce\xfa\xed\xfe": False,
+                 b"\xfe\xed\xfa\xcf": True, b"\xcf\xfa\xed\xfe": True}
+_MACHO_BIG_ENDIAN = frozenset({b"\xfe\xed\xfa\xce", b"\xfe\xed\xfa\xcf"})  # fields big-endian
+_MACHO_CPUTYPES = {0x00000007: "x86", 0x0000000C: "arm", 0x01000007: "x86_64", 0x0100000C: "aarch64"}
+# A format only runs on the platform that carries it: an ELF is a Linux/Android binary, a Mach-O a
+# macOS one. The platform half of `_detect_target()` says which of the two is this process's own.
+_FORMAT_PLATFORMS = {"elf": "unknown-linux-gnu", "mach-o": "apple-darwin"}
+_HEADER_PROBE_BYTES = 64  # the longest header the probe reads (an ELF64 header)
+
+
+def _read_elf_header(head: bytes) -> dict:
+    """The format an ELF header declares: `e_machine` at the ELF header's own offset (18), read in the
+    byte order `EI_DATA` declares. A file shorter than the header it claims is a refusal, not a crash."""
+    declared_len = _ELF_HEADER_LENGTHS.get(head[4] if len(head) > 4 else 0, _ELF_HEADER_LENGTHS[2])
+    if len(head) < declared_len:
+        return {"format": "elf", "arch": None, "truncated": True,
+                "declared": f"elf/unknown (header truncated: {len(head)} of {declared_len} bytes)"}
+    raw_machine = bytes(head[18:20])
+    if head[5] == 2:  # EI_DATA: 2 = the file's fields are big-endian
+        machine = int.from_bytes(raw_machine, "big")
+    else:
+        machine = int.from_bytes(raw_machine, "little")
+    arch = _ELF_MACHINES.get(machine)
+    return {"format": "elf", "arch": arch, "truncated": False,
+            "declared": f"elf/{arch or f'e_machine={machine}'}"}
+
+
+def _read_macho_header(head: bytes, is64: bool, big_endian: bool) -> dict:
+    """The format a Mach-O header declares: `cputype` at offset 4, in the file's own byte order. A file
+    shorter than the header it claims is a refusal, not a crash."""
+    declared_len = 32 if is64 else 28
+    if len(head) < declared_len:
+        return {"format": "mach-o", "arch": None, "truncated": True,
+                "declared": f"mach-o/unknown (header truncated: {len(head)} of {declared_len} bytes)"}
+    raw_cputype = bytes(head[4:8])
+    if big_endian:
+        cputype = int.from_bytes(raw_cputype, "big")
+    else:
+        cputype = int.from_bytes(raw_cputype, "little")
+    arch = _MACHO_CPUTYPES.get(cputype)
+    return {"format": "mach-o", "arch": arch, "truncated": False,
+            "declared": f"mach-o/{arch or f'cputype=0x{cputype:08x}'}"}
+
+
+def _read_candidate_header(path: str) -> dict | None:
+    """What the file's own header declares -> ``{"format", "arch", "truncated", "declared"}``, or None
+    when there is no header to read (a missing, unreadable or non-binary file). Those keep the module's
+    existing states, unchanged (Beh 5) — the probe only refuses what it can read and cannot run."""
+    try:
+        with open(path, "rb") as handle:
+            head = handle.read(_HEADER_PROBE_BYTES)
+    except OSError:
+        return None
+    if head.startswith(_ELF_MAGIC):
+        return _read_elf_header(head)
+    for magic, is64 in _MACHO_MAGICS.items():
+        if head.startswith(magic):
+            return _read_macho_header(head, is64, magic in _MACHO_BIG_ENDIAN)
+    return None
+
+
+def _header_runs_here(header: dict) -> bool:
+    """True when the declared format and the declared architecture are this process's own (Beh 1). A
+    process whose architecture the mapping does not name has nothing to compare against: it does not
+    refuse (the module already answers `unsupported_platform` for it elsewhere)."""
+    target = _detect_target()
+    if not target:
+        return True
+    arch, platform_slot = target.split("-", 1)
+    return arch == header["arch"] and platform_slot == _FORMAT_PLATFORMS.get(header["format"])
+
+
+def _process_architecture() -> str:
+    """This process's architecture, as the module's own mapping names it (the refusal names both sides)."""
+    return _detect_target() or f"{platform.system()}/{platform.machine()}"
+
+
+def _report_unrunnable(path: str, header: dict) -> None:
+    """The typed refusal, produced **where the resolution refuses** — before any command is guarded —
+    once per refused path through the module's own once-per-class channel. It names the path, the format
+    and architecture found, and the architecture of this process, and it is not swallowed by a boot call
+    made with ``log_failures=False`` (Beh 3): that flag only quiets the install path's own lines."""
+    _warn_once(f"scanner_unrunnable:{path}",
+               "tirith scanner_unrunnable: path=%s found=%s process=%s — candidate refused, "
+               "treated as not found", path, header["declared"], _process_architecture())
+
+
+def _candidate_refusal(path: str) -> dict | None:
+    """The header a candidate declares when this process cannot run it, else None (Beh 1)."""
+    if (header := _read_candidate_header(path)) is None or _header_runs_here(header):
+        return None
+    return header
+
+
+def _runnable_candidate(path: str) -> bool:
+    """The resolution's acceptance rule: the file is executable **and** its header declares a binary
+    this process can run. A refused candidate is reported typed and is not found, so the next slot is
+    asked and the install path is reached exactly as when a slot were empty (Beh 1, Beh 2)."""
+    if not _is_executable(path):
+        return False
+    if (header := _candidate_refusal(path)) is None:
+        return True
+    _report_unrunnable(path, header)
+    return False
+
+
+def _first_runnable(candidates) -> str | None:
+    """The first candidate the resolution may accept: the slots answer in the order they are given, and
+    a candidate the probe refuses simply does not answer (Beh 2)."""
+    for candidate in candidates:
+        if candidate and _runnable_candidate(candidate):
+            return candidate
+    return None
+
+
+def _cached_resolved_path() -> str | None:
+    """The cached path, re-validated on the same rule as any other candidate (Beh 2). A path that is
+    gone keeps the module's existing state, unchanged; a path that is *there* and no longer passes the
+    rule (replaced by a mount, truncated, a foreign binary, its execute bit lost) is reported and
+    dropped — not found for the rest of the process instead of being handed back."""
+    cached = _cached_path()
+    if cached is None or not os.path.isfile(cached):
+        return cached
+    if _runnable_candidate(cached):
+        return cached
+    _forget_resolved()
+    return None
+
+
 def _find_local_tirith() -> str | None:
-    """Cheap local lookup for the default "tirith": PATH, then $HERMES_HOME/bin."""
+    """Cheap local lookup for the default "tirith": PATH, then $HERMES_HOME/bin — in that order, and
+    only for a candidate whose header declares a binary this process can run (Beh 1, Beh 2)."""
     hermes_bin = os.path.join(_hermes_bin_dir(), "tirith")
-    return shutil.which("tirith") or (hermes_bin if _is_executable(hermes_bin) else None)
+    return _first_runnable((shutil.which("tirith"), hermes_bin))
 
 
 def _resolve_locally(configured_path: str, *, warn_missing: bool) -> tuple[str | None, bool]:
@@ -375,9 +554,10 @@ def _resolve_locally(configured_path: str, *, warn_missing: bool) -> tuple[str |
     failure), True = the disk marker / install step may proceed."""
     global _resolved_path, _install_failure_reason
     expanded = os.path.expanduser(configured_path)
-    # An explicit (non-"tirith") path is authoritative: never auto-download a replacement.
+    # An explicit (non-"tirith") path is authoritative: never auto-download a replacement. It is still a
+    # candidate, so it passes the same rule as any other — a refused one is not found (Beh 1, Beh 2).
     if configured_path != "tirith":
-        if found := (expanded if _is_executable(expanded) else shutil.which(expanded)):
+        if found := _first_runnable((expanded, shutil.which(expanded))):
             _store_resolved(found)
             return found, False
         if warn_missing:
@@ -413,9 +593,10 @@ def _record_install_result(installed: str | None, reason: str) -> str | None:
 
 def _resolve_tirith_path(configured_path: str) -> str:
     """Resolve the tirith path, auto-installing synchronously if needed (default "tirith": PATH →
-    $HERMES_HOME/bin/tirith → install; failures cached in-process and on disk for 24h). On a miss
-    the expanded configured path is returned so the spawn fails open via the dedupe'd OSError."""
-    if cached := _cached_path():
+    $HERMES_HOME/bin/tirith → install; failures cached in-process and on disk for 24h). The cached path
+    is re-validated on the resolution's own rule before it answers (Beh 2). On a miss the expanded
+    configured path is returned so the spawn fails open via the dedupe'd OSError."""
+    if cached := _cached_resolved_path():
         return cached
     expanded = os.path.expanduser(configured_path)
     # No tirith build for this platform: cache the verdict; the spawn fails open once, then
@@ -450,12 +631,16 @@ def _background_install(*, log_failures: bool = True):
 
 def ensure_installed(*, log_failures: bool = True):
     """Resolved path if available now, else None after kicking off a daemon-thread download (local
-    checks are synchronous; the download never blocks startup). Safe to call repeatedly."""
+    checks are synchronous; the download never blocks startup). Safe to call repeatedly. The cached path
+    is re-validated on the resolution's own rule: a scanner that stopped being runnable is not handed
+    back but looked for again (Beh 2), and a refusal is reported even on the boot call made with
+    ``log_failures=False`` (Beh 3)."""
     global _install_thread
     cfg = _load_security_config()
     if not cfg["tirith_enabled"]:
         return None
-    if cached := _cached_path():
+    cached = _cached_resolved_path()
+    if cached is not None:
         return cached if _is_executable(cached) else None
     # No tirith build here (e.g. Windows): stay silent -- no PATH probe, no download thread,
     # no disk marker. Pattern-matching guards still run.
@@ -495,12 +680,23 @@ _EMOJI_PRESENTATION_BASE_RANGES = (
     (0x303D, 0x303D), (0x3297, 0x3297), (0x3299, 0x3299), (0x1F000, 0x1FAFF))
 
 
-def _verdict(action: str, summary: str = "", findings: list | None = None) -> dict:
-    return {"action": action, "findings": [] if findings is None else findings, "summary": summary}
+def _verdict(action: str, summary: str = "", findings: list | None = None, *,
+             scanner_state: str = _SCANNER_STATE_RAN) -> dict:
+    """The guard's result. ``scanner_state`` says what produced the verdict — ``ran`` for a completed
+    scan, or the reason no scan ran (``unavailable`` / ``disabled``) — so an allow that was never
+    scanned is a value a reader can test rather than prose to interpret (Beh 4)."""
+    return {"action": action, "findings": [] if findings is None else findings,
+            "summary": summary, "scanner_state": scanner_state}
 
 
 def _fail(fail_open: bool, open_summary: str, closed_summary: str) -> dict:
-    return _verdict("allow", open_summary) if fail_open else _verdict("block", closed_summary)
+    """No scan ran: the configured fail-open / fail-closed policy still decides allow versus block, and
+    the verdict now carries the state that says why it was produced (Beh 4). The state is named once in
+    the turn's log — no silent fail-open."""
+    _note_scanner_state(_SCANNER_STATE_UNAVAILABLE)
+    if fail_open:
+        return _verdict("allow", open_summary, scanner_state=_SCANNER_STATE_UNAVAILABLE)
+    return _verdict("block", closed_summary, scanner_state=_SCANNER_STATE_UNAVAILABLE)
 
 
 def _crash(fail_open: bool, open_summary: str, closed_summary: str) -> dict:
@@ -510,12 +706,15 @@ def _crash(fail_open: bool, open_summary: str, closed_summary: str) -> dict:
 
 
 def check_command_security(command: str) -> dict:
-    """Run the tirith scan on a command -> ``{"action": allow|warn|block, "findings", "summary"}``.
-    Exit code determines the action; JSON enriches. Spawn failures/timeouts respect fail_open."""
+    """Run the tirith scan on a command -> ``{"action": allow|warn|block, "findings", "summary",
+    "scanner_state"}``. Exit code determines the action; JSON enriches. Spawn failures/timeouts respect
+    ``fail_open``, and every verdict returned without a completed scan carries that state in
+    ``scanner_state`` (Beh 4)."""
     global _crash_count, _circuit_open, _circuit_open_at
     cfg = _load_security_config()
     if not cfg["tirith_enabled"]:
-        return _verdict("allow")
+        _note_scanner_state(_SCANNER_STATE_DISABLED)
+        return _verdict("allow", scanner_state=_SCANNER_STATE_DISABLED)
     # Circuit breaker: if tirith has crashed _CRASH_LIMIT times in a row, stop trying and fail open (issue
     # #41400). After _CIRCUIT_RETRY_S the breaker half-opens: exactly one caller claims the probe slot —
     # claiming re-arms _circuit_open_at under _breaker_lock, so concurrent callers see a fresh TTL and stay
@@ -523,13 +722,23 @@ def check_command_security(command: str) -> dict:
     if _circuit_open:
         with _breaker_lock:
             if _circuit_open and time.monotonic() - _circuit_open_at < _CIRCUIT_RETRY_S:
-                return _verdict("allow", "tirith disabled (circuit breaker)")
-            if _circuit_open:  # TTL expired: claim the single-flight probe slot for this window
-                _circuit_open_at = time.monotonic()
-                logger.info("tirith circuit breaker half-open: probing after %ds", _CIRCUIT_RETRY_S)
-    # No binary for this platform, ever: skip the resolver so we never spawn.
+                held_open = True
+            else:
+                held_open = False
+                if _circuit_open:  # TTL expired: claim the single-flight probe slot for this window
+                    _circuit_open_at = time.monotonic()
+                    logger.info("tirith circuit breaker half-open: probing after %ds", _CIRCUIT_RETRY_S)
+        if held_open:
+            # The summary the breaker has always returned, kept verbatim — the state rides beside it,
+            # so an allow that was never scanned is testable, not prose (Beh 4).
+            _note_scanner_state(_SCANNER_STATE_DISABLED)
+            return _verdict("allow", "tirith disabled (circuit breaker)",
+                            scanner_state=_SCANNER_STATE_DISABLED)
+    # No binary for this platform, ever: skip the resolver so we never spawn. Silent in the log
+    # (`unsupported_platform`), and the verdict says why it carries no scan (Beh 4, Beh 8).
     if not is_platform_supported():
-        return _verdict("allow")
+        return _verdict("allow", scanner_state=_SCANNER_STATE_UNAVAILABLE)
+
     tirith_path = _resolve_tirith_path(cfg["tirith_path"])
     timeout, fail_open = cfg["tirith_timeout"], cfg["tirith_fail_open"]
     if tirith_path is None:

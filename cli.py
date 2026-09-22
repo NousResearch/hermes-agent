@@ -4235,143 +4235,6 @@ def _route_single_query_images(cli, query, effective_query, single_query_images,
         return _text_fallback()
 
 
-def _enforce_kanban_routing_receipt(cli) -> bool:
-    """Worker-side guided-routing enforcement (design §4 step 7, §12): a managed
-    Kanban task carries ``HERMES_KANBAN_ROUTING_RECEIPT`` — the receipted
-    decision the dispatcher resolved and persisted at claim time. This is the
-    LAST checkpoint before the worker's first real inference call: it loads
-    that exact receipt and validates the agent's actually-constructed
-    provider/model/reasoning against it, raising (and refusing to proceed)
-    on any divergence — a code path that silently substituted a different
-    route than the one the dispatcher/policy actually authorized never
-    reaches the model. A non-managed task (no receipt id in the env) is a
-    complete no-op: True, unchanged behavior.
-
-    Ownership contract (design §12): before ANY of that, this worker must
-    prove it still holds the LIVE claim on the task/run it was spawned
-    under — a stale or reclaimed attempt (superseded ``current_run_id``,
-    e.g. this process's TTL expired and a fresh dispatcher tick reclaimed
-    and respawned the task) must be rejected here, before the receipt check
-    and before the first inference call, never after. Checked against the
-    real board via a real connection — never mocked away.
-    """
-    receipt_id = os.environ.get("HERMES_KANBAN_ROUTING_RECEIPT", "").strip()
-    if not receipt_id:
-        return True
-    task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
-    raw_run_id = os.environ.get("HERMES_KANBAN_RUN_ID", "").strip()
-    worker_run_id = _int_or(raw_run_id, None) if raw_run_id else None
-    if task_id and worker_run_id is not None:
-        from hermes_cli import kanban_db as _kb
-        from hermes_cli import kanban_db_connect as _kbc
-
-        try:
-            with _kbc.connect_closing() as _conn:
-                live_run_id = _kb._current_run_id(_conn, task_id)
-        except Exception:
-            logger.error(
-                "guided-routing enforcement: could not verify live claim for "
-                "task=%s run=%s; refusing to proceed without proof of ownership",
-                task_id, worker_run_id,
-            )
-            return False
-        if live_run_id != worker_run_id:
-            logger.error(
-                "guided-routing enforcement blocked this Kanban worker: stale/"
-                "reclaimed claim (task=%s spawned under run=%s, task's current "
-                "run is now %s) — refusing to send any request under a "
-                "superseded claim",
-                task_id, worker_run_id, live_run_id,
-            )
-            return False
-    from agent.model_selection_types import RoutingBlocked
-    from agent.managed_route_runtime import enforce_worker_route
-    from hermes_constants import get_hermes_home
-
-    # Authoritative origin: the profile whose model_routing.db actually holds
-    # this receipt (design §12: "workers receive a scoped immutable snapshot
-    # and decision bound to origin"). A dispatcher assigning a task to a
-    # DIFFERENT profile's worker sets HERMES_KANBAN_ROUTING_ORIGIN_HOME
-    # explicitly; this worker's own current-profile HERMES_HOME must never be
-    # substituted for it — an unrelated receipt id that happens to exist in
-    # this worker's own default store must not authorize this launch.
-    origin_home = os.environ.get("HERMES_KANBAN_ROUTING_ORIGIN_HOME", "").strip()
-    routing_home = origin_home or get_hermes_home()
-
-    agent = cli.agent
-    # NOTE: agent.provider is canonicalized transport family (e.g. "custom" for
-    # every named custom_providers entry); agent.requested_provider preserves the
-    # actually-resolved provider identity (e.g. "custom-fake") the receipt was
-    # written against. Comparing agent.provider here made every custom-provider
-    # worker mismatch its own correctly-selected route (RED, discovered via a
-    # real CLI subprocess launch — see test_kanban_worker_cli_route_enforcement_integration.py).
-    actual_provider = (getattr(agent, "requested_provider", "") or agent.provider or "").strip()
-    try:
-        from hermes_cli.kanban_worker_routing import register_managed_worker
-
-        register_managed_worker(routing_home, receipt_id, task_id, worker_run_id)
-        enforce_worker_route(
-            routing_home, receipt_id,
-            actual_provider=actual_provider,
-            actual_model=(agent.model or "").strip(),
-            actual_endpoint=(getattr(agent, "base_url", None) or None),
-            actual_reasoning=requested_effort_for_kanban_guard(cli),
-        )
-    except RoutingBlocked as exc:
-        logger.error("guided-routing enforcement blocked this Kanban worker: %s", exc)
-        return False
-    _disable_inherited_fallback_for_managed_run(agent, receipt_id)
-    # Stash what the per-request guard needs to re-validate every SUBSEQUENT
-    # request in this same managed turn (design §12: "best-effort revocation
-    # generation check before each subsequent managed request") — the loop
-    # itself has no notion of receipts/origin homes, so the exact values this
-    # startup check just proved are carried on the agent for
-    # ``agent/managed_route_guard.py::enforce_managed_route_per_request`` to
-    # reuse without re-deriving them (and without importing cli.py).
-    agent._managed_routing_receipt_id = receipt_id
-    agent._managed_routing_home = routing_home
-    return True
-
-
-def _disable_inherited_fallback_for_managed_run(agent, receipt_id: str) -> None:
-    """Design §5: \"Disable inherited model fallback chains for these runs.\"
-
-    ``_init_agent`` always wires ``fallback_model=self._fallback_model`` from the
-    CLI's OWN process-level config (``get_fallback_chain(CLI_CONFIG)``) regardless
-    of whether this turn is a managed Kanban attempt — that inherited chain is a
-    profile-wide default, never something the routing policy approved for THIS
-    receipted route. A managed worker whose real provider call fails must end the
-    attempt (existing claim/retry/re-route lifecycle picks a new receipted route),
-    never silently fail over to an unapproved inherited provider/model — the exact
-    escape this guard exists to close. Cleared here, immediately after enforcement
-    passes and strictly before the first real inference call, so this receipted
-    turn can never reach ``agent._try_activate_fallback`` with a live chain.
-    Managed same-route transient retries are unaffected (design §5's existing
-    bounded retry-on-transport-error policy is separate from the fallback CHAIN
-    this clears; retries stay 'same exact route').
-    """
-    if not getattr(agent, "_fallback_chain", None):
-        return
-    logger.info(
-        "guided-routing: managed task (receipt=%s) — clearing inherited fallback "
-        "chain (%d entries) so a provider failure ends this attempt instead of "
-        "silently escaping to an unapproved route",
-        receipt_id, len(agent._fallback_chain),
-    )
-    agent._fallback_chain = []
-    agent._fallback_index = 0
-    agent._fallback_model = None
-
-
-def requested_effort_for_kanban_guard(cli) -> Optional[str]:
-    """The reasoning effort actually wired into this turn's request, in the
-    same vocabulary ``resolve_task_route`` receipted (see
-    ``agent.reasoning_effort.requested_effort``)."""
-    from agent.reasoning_effort import requested_effort
-
-    return requested_effort(getattr(cli, "reasoning_config", None))
-
-
 def _collect_kanban_task_images(single_query_images):
     """Kanban workers: image paths/URLs in the task body join the first turn's attachments."""
     single_query_image_urls: list[str] = []
@@ -4650,6 +4513,8 @@ def _run_single_query_mode(cli, query, image, quiet, oneshot, stream_json: bool 
                     runtime_override=turn_route["runtime"],
                     request_overrides=turn_route.get("request_overrides"),
                 ):
+                    from hermes_cli.kanban_worker_routing import _enforce_kanban_routing_receipt
+
                     if not _enforce_kanban_routing_receipt(cli):
                         if emitter is not None:
                             emitter.emit_result(

@@ -455,7 +455,7 @@ def test_nested_managed_delegation_cannot_omit_role_to_demote(routed_home, monke
     monkeypatch.setenv("HERMES_KANBAN_ROUTING_ORIGIN_HOME", hermes_home)
     monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
     monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
-    import cli as cli_module
+    from hermes_cli import kanban_worker_routing as cli_module
 
     cli = type("ManagedWorkerCLI", (), {"agent": parent, "reasoning_config": "medium"})()
     monkeypatch.setattr(

@@ -76,7 +76,7 @@ def _persist_receipt(routing_home):
 def test_bootstrap_binds_receipt_and_registers_before_inference(routing_home, monkeypatch, mismatch):
     import os
     from types import SimpleNamespace
-    import cli
+    from hermes_cli import kanban_worker_routing as cli
     from agent.model_selection import select
     from agent.model_selection_store import activate_policy, persist_receipt, publish_policy
     from hermes_cli import kanban_db as kb

@@ -1,6 +1,6 @@
 """Common per-request managed-route guard (design §5, §12).
 
-``_enforce_kanban_routing_receipt`` in ``cli.py`` proves the guard ONCE, before
+``_enforce_kanban_routing_receipt`` in ``hermes_cli/kanban_worker_routing.py`` proves the guard ONCE, before
 the turn's first inference call. That leaves every LATER request in the same
 managed turn (tool-loop iterations, same-turn continuations) unchecked: a
 policy revoked mid-turn, or a code path that swaps the agent's client/model

@@ -75,7 +75,7 @@ def test_worker_rejects_stale_claim_before_receipt_check(monkeypatch, tmp_path):
     process B) reclaims + replaces the run. A's enforcement call must fail
     closed with ZERO calls into enforce_worker_route — the receipt/model
     check never even runs for a superseded claim."""
-    import cli as cli_mod
+    from hermes_cli import kanban_worker_routing as cli_mod
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
 
@@ -130,7 +130,7 @@ def test_worker_rejects_stale_claim_before_receipt_check(monkeypatch, tmp_path):
 
 def test_live_claim_without_linked_receipt_cannot_authorize_worker(monkeypatch, tmp_path):
     """A live run alone is insufficient without its canonical linked receipt."""
-    import cli as cli_mod
+    from hermes_cli import kanban_worker_routing as cli_mod
     from hermes_cli import kanban_db as kb
 
     home = tmp_path / ".hermes"

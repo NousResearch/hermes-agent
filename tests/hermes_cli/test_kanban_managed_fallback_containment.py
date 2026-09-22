@@ -88,7 +88,7 @@ class _FakeAgent:
 
 
 def test_matched_route_with_inherited_fallback_chain_is_cleared(routing_home):
-    from cli import _disable_inherited_fallback_for_managed_run
+    from hermes_cli.kanban_worker_routing import _disable_inherited_fallback_for_managed_run
     from agent.managed_route_runtime import enforce_worker_route
 
     receipt_id = _persist_receipt(routing_home)
@@ -132,7 +132,7 @@ def test_unmanaged_agent_fallback_chain_is_never_touched(routing_home):
 
 
 def test_empty_fallback_chain_is_a_harmless_noop(routing_home):
-    from cli import _disable_inherited_fallback_for_managed_run
+    from hermes_cli.kanban_worker_routing import _disable_inherited_fallback_for_managed_run
 
     agent = _FakeAgent(
         provider="openai", model="gpt-5", base_url="https://api.openai.com/v1",
@@ -151,7 +151,7 @@ def test_enforcement_success_path_calls_containment_before_returning_true(routin
     mode, it is what makes success actually safe."""
     import os
 
-    import cli as cli_module
+    from hermes_cli import kanban_worker_routing as cli_module
 
     from agent.model_selection import select
     from agent.model_selection_store import activate_policy, persist_receipt, publish_policy

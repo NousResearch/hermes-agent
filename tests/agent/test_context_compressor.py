@@ -3380,6 +3380,27 @@ class TestSummaryPromptBounding:
         ]
         assert max(per_slice) <= sum(per_slice) / len(per_slice) + 1, per_slice
 
+    def test_lean_sampling_extension_closes_gaps_without_stray_markers(self):
+        """When the extension pass fully closes the gap between two slices, the neighbours become
+        one run joined by the record separator — no zero-width elision marker, no missing
+        separator — and the coverage telemetry still counts each shown record once."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:02d} " + ("x" * 8500) for i in range(20)]
+        assert sum(map(len, records)) > cap  # sampling engages, with headroom > one gap
+        sampled, coverage = ContextCompressor._sample_summary_records(records)
+        assert len(sampled) <= cap
+        shown = [int(i) for i in re.findall(r"record-(\d\d) x", sampled)]
+        assert shown == sorted(set(shown))
+        assert shown[-1] == 19 and shown[0] == 0
+        assert coverage["sampled_record_count"] == len(shown)
+        # At least one initial gap was closed: fewer markers than the 7 the 8 slices started with.
+        assert sampled.count("chars elided") < 7
+        for a, b in zip(shown, shown[1:]):
+            if b == a + 1:
+                assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)
+            else:
+                assert f"{records[a]}\n\n...[records {a + 2:,}-{b:,}:" in sampled, (a, b)
+
     def test_iterative_update_path_is_bounded(self):
         """The iterative prompt (previous summary + new turns) must be bounded
         too — a pathological rehydrated handoff must not blow up the prompt."""

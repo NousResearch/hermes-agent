@@ -97,7 +97,9 @@ def parse_v4a_patch(patch_content: str) -> Tuple[List[PatchOperation], Optional[
             if current_op:
                 _flush_hunk()
                 hint_match = _HINT_RE.match(line)
-                current_hunk = Hunk(context_hint=hint_match.group(1) if hint_match else None)
+                # Codex writes the anchor open-ended (``@@ class Foo:``, no closing ``@@``).
+                hint = hint_match.group(1) if hint_match else line[2:].strip()
+                current_hunk = Hunk(context_hint=hint or None)
         elif current_op and line:
             if current_hunk is None:
                 current_hunk = Hunk()

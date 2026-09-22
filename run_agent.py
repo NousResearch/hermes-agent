@@ -186,9 +186,15 @@ def _positive_int(value: Any) -> Optional[int]:
 
 
 def _review_should_defer(agent: Any, task_cfg: Optional[Dict[str, Any]]) -> bool:
-    """True when an automatic background review targets the managed local runtime under ``defer: auto``."""
-    from agent.review_idle_queue import defer_mode, review_targets_managed_local
-    return defer_mode(task_cfg) == "auto" and review_targets_managed_local(agent, task_cfg)
+    """True when an automatic background review should wait for machine idle: the managed local
+    runtime under ``defer: auto`` (pre-existing), or any loopback endpoint the operator marked
+    single-stream (``providers.<id>.max_in_flight_requests == 1`` — e.g. a custom Tabby serve a
+    review would otherwise contend with the next live turn for, and lose via hard interrupt)."""
+    from agent.review_idle_queue import defer_mode, review_targets_local_single_stream, review_targets_managed_local
+
+    if defer_mode(task_cfg) != "auto":
+        return False
+    return review_targets_managed_local(agent, task_cfg) or review_targets_local_single_stream(agent, task_cfg)
 
 
 def _review_queue_key(agent: Any) -> str:

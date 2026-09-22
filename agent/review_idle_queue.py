@@ -58,6 +58,67 @@ def review_targets_managed_local(agent: Any, task_cfg: Optional[Dict[str, Any]])
         return False
 
 
+_LOOPBACK_HOSTS = frozenset({"127.0.0.1", "localhost", "::1"})
+
+
+def _provider_max_in_flight(provider_id: Optional[str], want_hostname: str) -> Optional[int]:
+    """``providers.<id>.max_in_flight_requests`` for the block matching ``provider_id`` or, failing
+    that, the review runtime's base-URL hostname. ``None`` when unset/unreadable — unlimited is the
+    fail-open default, so only an explicit ``1`` ever newly defers anyone."""
+    try:
+        from hermes_cli.config import load_config_readonly
+
+        config = load_config_readonly()
+    except Exception:
+        return None
+    try:
+        from utils import base_url_hostname
+
+        providers = config.get("providers", {}) if isinstance(config, dict) else {}
+        if not isinstance(providers, dict):
+            return None
+        for pid, block in providers.items():
+            if not isinstance(block, dict):
+                continue
+            if provider_id and pid == provider_id:
+                pass
+            elif want_hostname and base_url_hostname(str(block.get("base_url") or "")) == want_hostname:
+                pass
+            else:
+                continue
+            try:
+                value = int(block.get("max_in_flight_requests"))  # type: ignore[arg-type]
+            except (TypeError, ValueError):
+                return None
+            return value if value > 0 else None
+    except Exception:  # noqa: BLE001
+        return None
+    return None
+
+
+def review_targets_local_single_stream(agent: Any, task_cfg: Optional[Dict[str, Any]]) -> bool:
+    """True when the review fork would decode on a loopback endpoint the operator marked
+    single-stream (``providers.<id>.max_in_flight_requests == 1``).
+
+    Companion to :func:`review_targets_managed_local` for custom local serves (e.g. Tabby on
+    :8290) the supervisor does not manage: an immediately-spawned review contends with the next
+    live turn for the only slot, loses via hard interrupt, and burns a full re-prefill per kill
+    (2026-09-22 incident: 12 kills). Deferring to the idle queue costs nothing — a review replays
+    the whole conversation, so delay is never loss. Any failure reads False (immediate spawn is
+    the pre-existing default); hosted endpoints always read False (they queue server-side)."""
+    try:
+        from agent.background_review import _resolve_review_runtime
+        from utils import base_url_hostname
+
+        runtime = _resolve_review_runtime(agent, task_cfg)
+        hostname = base_url_hostname(runtime.get("base_url") or "")
+        if hostname not in _LOOPBACK_HOSTS:
+            return False
+        return _provider_max_in_flight(runtime.get("provider"), hostname) == 1
+    except Exception:  # noqa: BLE001
+        return False
+
+
 @dataclass(slots=True)
 class _PendingReview:
     agent: Any

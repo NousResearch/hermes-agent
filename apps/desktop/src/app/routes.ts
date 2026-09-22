@@ -164,9 +164,9 @@ export function hidesFixedTitlebarClusters(view: AppView): boolean {
 }
 
 /** The pathname of a router target. Every classifier below reasons about a
- *  PATH, but callers navigate to full targets (`/capabilities?tab=mcp`), and an
- *  unstripped query reaches the session-id parser — `/capabilities?tab=mcp` reads as
- *  the session `skills?tab=mcp`, so Capabilities classifies as a chat.
+ *  PATH, but callers navigate to full targets (`/capabilities?tab=connectors`), and an
+ *  unstripped query reaches the session-id parser — `/capabilities?tab=connectors` reads
+ *  as the session `skills?tab=connectors`, so Capabilities classifies as a chat.
  *  `sessionRoute` percent-encodes ids, so `?`/`#` can only start a query or a
  *  hash. */
 export function routePathname(to: string): string {

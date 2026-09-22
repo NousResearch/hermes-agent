@@ -395,7 +395,9 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
 
     if (message.role === 'assistant' && Array.isArray(message.tool_calls)) {
       parts.push(
-        ...message.tool_calls.map((call, callIndex) => toolPartFromStoredCall(call, callIndex, message.timestamp))
+        ...message.tool_calls.map((call, callIndex) =>
+          toolPartFromStoredCall(call, callIndex, message.timestamp, message.tool_call_labels)
+        )
       )
     }
 

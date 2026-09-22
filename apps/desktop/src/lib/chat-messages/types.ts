@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock } from '@hermes/shared'
+import { type BillingBlock, type ToolLabel } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -82,6 +82,7 @@ export type GatewayEventPayload = {
   arguments?: unknown
   context?: string
   input?: unknown
+  labels?: ToolLabel[]
   preview?: string
   result?: unknown
   summary?: string

@@ -104,6 +104,13 @@ def test_list_entries_is_silent_when_the_ledger_is_merely_missing(ledger_home, c
     assert not [r for r in caplog.records if r.levelno >= logging.WARNING]
 
 
+def _age_past_gc_grace(blob: Path) -> None:
+    """An unreferenced blob younger than the grace window may belong to an in-flight capture."""
+    from tools import skill_ledger
+    aged = blob.stat().st_mtime - 2 * skill_ledger._BLOB_GC_GRACE_SECS
+    os.utime(blob, (aged, aged))
+
+
 def test_gc_blobs_removes_only_unreferenced(ledger_home):
     """The blob store was write-only (#107539): after compaction, blobs no entry references are
     deleted; every referenced blob survives so any entry can still roll back."""
@@ -113,6 +120,7 @@ def test_gc_blobs_removes_only_unreferenced(ledger_home):
     skill_ledger.append_entry("create", "s", before=[], after=kept, actor="agent")
     orphan = skill_ledger._store_blob(b"never referenced by any entry")
     assert (skill_ledger.blobs_dir() / orphan).exists()
+    _age_past_gc_grace(skill_ledger.blobs_dir() / orphan)
 
     deleted, freed = skill_ledger.gc_blobs()
     assert (deleted, freed) == (1, len(b"never referenced by any entry"))
@@ -122,7 +130,7 @@ def test_gc_blobs_removes_only_unreferenced(ledger_home):
     # A malformed line might hold references we cannot read: the sweep refuses rather than guesses.
     with open(skill_ledger.ledger_path(), "a", encoding="utf-8") as fh:
         fh.write("{broken\n")
-    skill_ledger._store_blob(b"orphan two")
+    _age_past_gc_grace(skill_ledger.blobs_dir() / skill_ledger._store_blob(b"orphan two"))
     assert skill_ledger.gc_blobs() == (0, 0)
 
 

@@ -5,7 +5,6 @@ log-based tests and operators see one backend logger."""
 from __future__ import annotations
 
 import base64
-import contextlib
 import logging
 import os
 import re
@@ -239,12 +238,8 @@ class _CaptureMixin:
         """
         args: Dict[str, Any] = {"pid": self._active_pid, "window_id": self._active_window_id,
                                 "session": self._session_id}
-        capped = 0
-        with contextlib.suppress(Exception):  # lazy import: cua_backend imports this module at import time
-            from tools.computer_use import cua_backend as _cb
-            capped = _cb._cua_configured_ax_max_elements()
-        self._ax_max_elements_sent = capped
-        if capped:
+        from tools.computer_use import cua_backend as _cb  # lazy: cua_backend imports this module at import time
+        if capped := _cb._cua_configured_ax_max_elements():
             args["max_elements"] = capped
         return args
 
@@ -319,7 +314,7 @@ class _CaptureMixin:
         png_bytes_len, width, height = _png_metrics(png_b64, 0, 0) if png_b64 else (0, 0, 0)
         return CaptureResult(mode=mode, width=width, height=height, png_b64=png_b64, elements=elements, app=app_name,
                              window_title=window_title, png_bytes_len=png_bytes_len, image_mime_type=image_mime_type,
-                             ax_max_elements=0 if mode == "vision" else getattr(self, "_ax_max_elements_sent", 0))
+                             ax_max_elements=0 if mode == "vision" else self._gws_args().get("max_elements", 0))
 
     def _capture_full_screen(self, mode: str) -> CaptureResult:
         """Composited PrtScn-style grab via `get_desktop_state` (the shell window would only show wallpaper + icons).

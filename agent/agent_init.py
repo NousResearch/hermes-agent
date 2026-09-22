@@ -2422,6 +2422,12 @@ def init_agent(
     except Exception:
         _agent_cfg = {}
 
+    # Freeze the harness identity into durable session metadata. Existing sessions keep their
+    # original identity and cached prompt/tool prefix; overlay changes affect only new sessions.
+    with suppress(Exception):
+        from hermes_cli.harness_manifest import harness_identity
+        agent._session_init_model_config["harness"] = harness_identity(_agent_cfg)
+
     _apply_display_config(agent, _agent_cfg, platform)
     _init_memory(agent, _agent_cfg, skip_memory, platform)
     _apply_agent_section(agent, _agent_cfg)

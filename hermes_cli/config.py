@@ -2235,8 +2235,9 @@ def apply_terminal_config_to_env(
 
 def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, int, int]], Optional[Tuple[int, ...]]]:
     """Return ``(user_sig, cache_sig)`` for ``_LOAD_CONFIG_CACHE``.
-    The managed config file's signature is folded in ((0, 0, 0, 0) = none) so editing it invalidates
-    the merged result. ``cache_sig`` is None only when neither file exists (nothing to cache on)."""
+    The managed config and harness manifest signatures are folded into one four-int layer signature
+    ((0, 0, 0, 0) = none) so editing either invalidates the merged result without changing the
+    cache tuple layout. ``cache_sig`` is None only when no input layer exists."""
     try:
         st = config_path.stat()
         user_sig: Optional[Tuple[int, int, int, int]] = file_signature(st)
@@ -2248,9 +2249,14 @@ def _load_config_cache_sig(config_path: Path) -> Tuple[Optional[Tuple[int, int, 
         managed_sig = file_signature(mst) if mst else (0, 0, 0, 0)
     except OSError:
         managed_sig = (0, 0, 0, 0)
-    if user_sig is None and managed_sig == (0, 0, 0, 0):
+    from hermes_cli.harness_manifest import manifest_signature
+    harness_sig = manifest_signature(config_path.parent)
+    # Keep the historic four-int cache layout while avoiding ``x ^ x == 0`` when two files happen
+    # to share metadata. The multiplier makes the ordered pair significant.
+    layer_sig = tuple(((a * 1_000_003) ^ b) & ((1 << 63) - 1) for a, b in zip(managed_sig, harness_sig))
+    if user_sig is None and layer_sig == (0, 0, 0, 0):
         return None, None
-    return user_sig, (*(user_sig or (0, 0, 0, 0)), *managed_sig)
+    return user_sig, (*(user_sig or (0, 0, 0, 0)), *layer_sig)
 
 
 def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: Exception) -> Optional[Dict[str, Any]]:
@@ -2274,6 +2280,8 @@ def _last_known_good_fallback(config_path: Path, path_key: str, cache_sig, exc: 
         if raw_good is not None:
             normalized = _canonicalize_config(_deep_merge(copy.deepcopy(DEFAULT_CONFIG), raw_good))
             expanded_good: Dict[str, Any] = _expand_env_vars(normalized)  # type: ignore[assignment]
+            from hermes_cli.harness_manifest import apply_harness_overlays
+            expanded_good = apply_harness_overlays(expanded_good, home=config_path.parent)
             lkg, _ = _merge_managed_overlay(expanded_good)
             fallback = "last-known-good-backup"
     _warn_config_parse_failure(
@@ -2378,7 +2386,10 @@ def _load_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
                     return copy.deepcopy(lkg_copy) if want_deepcopy else lkg_copy
 
         normalized = _canonicalize_config(config)
-        expanded, managed_config = _merge_managed_overlay(_expand_env_vars(normalized))
+        expanded = _expand_env_vars(normalized)
+        from hermes_cli.harness_manifest import apply_harness_overlays
+        expanded = apply_harness_overlays(expanded, home=config_path.parent)
+        expanded, managed_config = _merge_managed_overlay(expanded)
         _LAST_EXPANDED_CONFIG_BY_PATH[path_key] = copy.deepcopy(expanded)
         if cache_sig is not None:
             # The cache stores its own deepcopy so load_config() callers can mutate freely while

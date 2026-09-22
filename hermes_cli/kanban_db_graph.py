@@ -44,6 +44,8 @@ def initial_task_state(
             tenant = next((rows[pid]["tenant"] for pid in parents if rows[pid]["tenant"]), None)
     if initial_status == "blocked":
         return "blocked", tenant
+    if initial_status == "todo":
+        return "todo", tenant
     if triage:
         return "triage", tenant
     if any(row["status"] not in ("done", "archived") for row in rows.values()):

@@ -178,7 +178,7 @@ def _validate_pr_task_assignee_authority(
 # --- Constants ---
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_INITIAL_STATUSES = {"running", "blocked", "todo"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
@@ -1536,7 +1536,8 @@ def create_task(
     """Create a task (optionally under ``parents``); returns its id.
 
     Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
-    forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
+    forces ``triage``; explicit ``initial_status`` can stage as ``todo`` or
+    ``blocked`` before dispatch.
     ``idempotency_key``: an existing non-archived task with the key is returned
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the

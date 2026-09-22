@@ -84,10 +84,16 @@ export function handleDesktopBridgeEvent(ctx: GatewayEventContext): boolean {
     // react_to_message tool. Already persisted — this only paints it now
     // instead of at the next resume. Fresh ChatMessage object per change:
     // the runtime repository caches normalized ThreadMessages in a WeakMap
-    // keyed by ChatMessage identity.
+    // keyed by ChatMessage identity. Active session only (same gate as
+    // tip.show/pane.reveal): $messages is the visible transcript and the
+    // reaction overlay is keyed by bare row id, so a background session's
+    // event would stamp its row id and reactions onto this session's
+    // optimistic bubble, or onto a coincidental same-rowid message from a
+    // different profile's DB. The owning session paints it from the
+    // persisted write on its next load.
     const reactedRowId = payload?.row_id
 
-    if (typeof reactedRowId === 'number') {
+    if (isActiveEvent && typeof reactedRowId === 'number') {
       const nextReactions = Array.isArray(payload?.reactions) ? payload.reactions : []
       const reactedRole = payload?.role === 'assistant' ? 'assistant' : 'user'
 

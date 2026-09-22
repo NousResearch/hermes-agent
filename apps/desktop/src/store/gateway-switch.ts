@@ -8,6 +8,7 @@ import { invalidateCronJobsRequests, setCronJobs } from '@/store/cron'
 import { resetSessionsLimit } from '@/store/layout'
 import { resetLiveSync } from '@/store/live-sync'
 import { invalidateProfileListFetches } from '@/store/profile'
+import { clearLiveReactionOverlays } from '@/store/reactions-local'
 import {
   $unreadFinishedSessionIds,
   setActiveSessionId,
@@ -232,6 +233,14 @@ export function wipeSessionListsForGatewaySwitch(): void {
   // Transient on purpose: the per-backend memory of the old gateway stays.
   setCurrentCwdTransient('')
   setCurrentBranch('')
+
+  // Reaction overlays describe the outgoing backend's messages: $agentReactions
+  // is keyed by bare DB row id (per-database, so the next backend's row ids name
+  // different messages) and $localReactions by renderer ids the next transcript
+  // regenerates. The profile-swap boundary is covered by the subscribe inside
+  // reactions-local; a connection switch can keep the profile name, so it needs
+  // this explicit wipe.
+  clearLiveReactionOverlays()
 
   // Artifacts are keyed by sessions on the previous backend, so both the
   // registry and any rail tab pointing into it go with them.

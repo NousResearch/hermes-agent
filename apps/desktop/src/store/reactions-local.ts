@@ -1,5 +1,6 @@
 import { atom } from 'nanostores'
 
+import { $activeGatewayProfile } from '@/store/profile'
 import { applyReaction } from '@/store/reactions'
 import type { MessageReaction } from '@/types/hermes'
 
@@ -32,6 +33,39 @@ export function recordAgentReaction(rowId: number, reactions: MessageReaction[])
     [rowId]: reactions.filter(reaction => reaction.author === 'agent')
   })
 }
+
+/**
+ * Drop both overlays, called when the row-id space they describe changes.
+ *
+ * $agentReactions is keyed by bare DB row id and row ids are per-database, so
+ * after a profile swap or a gateway switch every entry could stamp onto a
+ * DIFFERENT message that happens to share the row id in the new backend's
+ * state.db. $localReactions is keyed by renderer message id, which is
+ * regenerated when the transcript reloads; both maps describe messages that
+ * no longer exist, so they go together.
+ *
+ * Two boundaries: the $activeGatewayProfile subscribe below covers the
+ * profile swap (same backend, different home/DB); wipeSessionListsForGatewaySwitch
+ * calls this for the connection switch, where the profile name can stay the
+ * same while the backend (and its row ids) changes. A same-backend reconnect
+ * keeps the entries: the DB is unchanged and the overlay is still true.
+ */
+export function clearLiveReactionOverlays(): void {
+  $agentReactions.set({})
+  $localReactions.set({})
+}
+
+// Guard on a real change: a same-value set (reconnect re-asserts the profile)
+// notifies listeners too, and wiping live overlays mid-turn would drop the
+// reactions it exists to survive.
+let reactionOverlayScope = $activeGatewayProfile.get()
+
+$activeGatewayProfile.subscribe(value => {
+  if (value !== reactionOverlayScope) {
+    reactionOverlayScope = value
+    clearLiveReactionOverlays()
+  }
+})
 
 /**
  * Merge the durable reaction list with anything this window knows live.

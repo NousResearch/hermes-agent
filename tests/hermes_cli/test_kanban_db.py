@@ -276,6 +276,62 @@ def test_stale_claim_reclaim_without_spawn_counts_toward_breaker(kanban_home):
         assert kinds[-2:] == ["reclaimed", "gave_up"]
 
 
+def test_fresh_claim_does_not_inherit_stale_heartbeat(kanban_home, monkeypatch):
+    """A fresh claim must not inherit the previous run's ``last_heartbeat_at``
+    (#119155): the claim itself is observable progress, so it seeds the
+    heartbeat. Otherwise a re-dispatched task that sat unclaimed for over
+    ``DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS`` is judged wedged the moment
+    its claim TTL lapses — the live-PID extend branch is skipped and a healthy
+    worker gets reclaimed and SIGTERM'd while a duplicate spawns beside it."""
+    # Tests that nuke ``sys.modules`` can leave this module's ``kb`` stale;
+    # patch and call through one and the same module object.
+    monkeypatch.setattr(kb, "_pid_alive", lambda _pid: True)
+
+    with kbc.connect() as conn:
+        t = kb.create_task(conn, title="re-dispatched", assignee="a")
+        host = kb._claimer_id().split(":", 1)[0]
+        # Previous run finished hours ago; its final heartbeat is far beyond
+        # the max-stale window and nothing has refreshed it since.
+        stale_hb = int(time.time()) - (
+            kb.DEFAULT_CLAIM_HEARTBEAT_MAX_STALE_SECONDS + 3600
+        )
+        conn.execute(
+            "UPDATE tasks SET last_heartbeat_at = ? WHERE id = ?",
+            (stale_hb, t),
+        )
+
+        before = int(time.time())
+        kb.claim_task(conn, t, claimer=f"{host}:worker")
+        row = conn.execute(
+            "SELECT status, last_heartbeat_at FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "running"
+        # The claim seeded the heartbeat: no inherited stale value survives.
+        assert row["last_heartbeat_at"] is not None
+        assert row["last_heartbeat_at"] >= before
+
+        # Once the claim TTL lapses, a live worker with the seeded heartbeat
+        # keeps its claim (extend), it is not reclaimed as wedged.
+        # A legacy fingerprint-less row keeps the bare-existence answer, so
+        # the mocked ``_pid_alive`` decides liveness here.
+        conn.execute(
+            "UPDATE tasks SET worker_pid = ?, worker_started_at = NULL WHERE id = ?",
+            (12345, t),
+        )
+        conn.execute(
+            "UPDATE tasks SET claim_expires = ? WHERE id = ?",
+            (int(time.time()) - 3600, t),
+        )
+        assert kb.release_stale_claims(conn, signal_fn=lambda _p, _s: None) == 0
+        row = conn.execute(
+            "SELECT status, consecutive_failures FROM tasks WHERE id = ?",
+            (t,),
+        ).fetchone()
+        assert row["status"] == "running"
+        assert row["consecutive_failures"] == 0
+
+
 def test_stale_claim_extend_live_worker_does_not_count_failure(
     kanban_home, monkeypatch,
 ):

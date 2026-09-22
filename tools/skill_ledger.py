@@ -338,8 +338,9 @@ def gc_blobs() -> Tuple[int, int]:
     referenced: set = set()
     try:
         lines = ledger_path().read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
+    except (OSError, UnicodeError):
+        # An unavailable ledger is not evidence that its blobs are unreferenced.
+        return 0, 0
     for line in lines:
         if not line.strip():
             continue

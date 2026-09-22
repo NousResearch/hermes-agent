@@ -643,4 +643,79 @@ import {
   console.log('  ✓ nested envelopes: quote text resolves through both layers');
 }
 
+// -- quoted document not in the media cache falls back to a CDN fetch -----
+{
+  // The original PDF arrived before this bridge process started (restart,
+  // reboot) or was evicted from the bounded cache, so lookupQuotedMedia
+  // misses. The quoted stub still carries mediaKey/directPath, so the bridge
+  // downloads it and delivers the reply as if the file were attached.
+  const dir = mkdtempSync(path.join(tmpdir(), 'wa-quoted-'));
+  let downloaded = null;
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'reply-doc', remoteJid: '120363000000000000@g.us', participant: '15550001111@s.whatsapp.net', fromMe: false },
+      pushName: 'Tester',
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: '@bot create this job',
+          contextInfo: {
+            stanzaId: 'original-doc-1',
+            participant: '15550002222@s.whatsapp.net',
+            remoteJid: '120363000000000000@g.us',
+            quotedMessage: {
+              documentMessage: { fileName: 'paperwork.pdf', mimetype: 'application/pdf', mediaKey: 'a2V5', directPath: '/v/t62/x' },
+            },
+          },
+        },
+      },
+    },
+    chatId: '120363000000000000@g.us',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: [],
+    cacheDirs: { document: dir },
+    downloadMedia: async (source) => { downloaded = source; return Buffer.from('%PDF-1.4'); },
+    lookupQuotedMedia: () => null,
+  });
+
+  assert.equal(downloaded?.key?.id, 'original-doc-1');
+  assert.equal(downloaded?.key?.remoteJid, '120363000000000000@g.us');
+  assert.equal(downloaded?.message?.documentMessage?.fileName, 'paperwork.pdf');
+  assert.equal(event.hasMedia, true);
+  assert.equal(event.mediaType, 'document');
+  assert.equal(event.mime, 'application/pdf');
+  assert.equal(event.fileName, 'paperwork.pdf');
+  assert.equal(event.mediaUrls.length, 1);
+  assert.equal(event.body, '@bot create this job');
+  console.log('  ✓ quoted document outside the cache is fetched and attached');
+}
+
+// -- thumbnail-only stub with no download info is left to the cache path --
+{
+  let calls = 0;
+  const event = await extractBridgeEvent({
+    msg: {
+      key: { id: 'reply-stub', remoteJid: '15551234567@s.whatsapp.net', fromMe: false },
+      messageTimestamp: 123,
+      message: {
+        extendedTextMessage: {
+          text: 'what is this?',
+          contextInfo: { stanzaId: 'original-image-9', participant: '15550002222@s.whatsapp.net', quotedMessage: { imageMessage: {} } },
+        },
+      },
+    },
+    chatId: '15551234567@s.whatsapp.net',
+    senderId: '15550001111@s.whatsapp.net',
+    senderNumber: '15550001111',
+    botIds: [],
+    downloadMedia: async () => { calls++; return Buffer.from(''); },
+    lookupQuotedMedia: () => null,
+  });
+  assert.equal(calls, 0);
+  assert.equal(event.hasMedia, false);
+  assert.equal(event.body, 'what is this?');
+  console.log('  ✓ quoted stub without mediaKey/directPath does not trigger a fetch');
+}
+
 console.log('\n✅ All WhatsApp native bridge helper tests passed.');

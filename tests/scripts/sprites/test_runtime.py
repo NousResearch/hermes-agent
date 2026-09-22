@@ -1,9 +1,9 @@
 from unittest.mock import Mock
+import pytest
 
-from scripts.sprites import runtime
-
-
+@pytest.mark.linux_only
 def test_cold_stopped_service_waits_until_explicit_start(monkeypatch):
+    from scripts.sprites import runtime
     marker = Mock()
     marker.exists.side_effect = [True, True, False]
     monkeypatch.setattr(runtime, 'Path', lambda path: marker)

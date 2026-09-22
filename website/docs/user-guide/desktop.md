@@ -513,6 +513,15 @@ hot-reloads every save. Manage installed plugins live in **Capabilities → Plug
 See [Desktop Plugin SDK](../developer-guide/desktop-plugin-sdk.md) for the full
 reference. (This is separate from the [web dashboard plugin system](./features/extending-the-dashboard.md).)
 
+A desktop plugin is **not sandboxed**: it runs inside the app with the app's own
+authority (gateway RPC, the native bridge, other plugins' storage). Only load
+files you wrote or reviewed; for catalog installs the protection is the
+[catalog trust model](./features/plugin-catalog.md#trust-model) (human-reviewed,
+SHA-pinned) plus an import allowlist — not isolation. A plugin whose
+`register()` throws is rolled back and shown as **Failed** with the error on its
+row; **⌘K → Reload desktop plugins** re-reads every installed `plugin.js`,
+including one an installer replaced in place.
+
 **Capabilities → Plugins** is the one place for everything that extends
 Hermes: **one row per plugin**, with two switch columns.
 
@@ -533,7 +542,10 @@ Hermes: **one row per plugin**, with two switch columns.
   profile selector lives in this column's header because it governs only
   this column; with a single profile there is no selector at all.
   Repo-bundled built-ins (platform adapters, provider plugins) are not
-  listed: they ship enabled and are configured from their own surfaces.
+  listed: they ship enabled and are configured from their own surfaces. The
+  exceptions are the bundled lifecycle plugins with no surface of their own
+  (`disk-cleanup`, `security-guidance`), which appear here so they can be
+  toggled like any other agent plugin.
 - A half the plugin does not ship shows a dash. A desktop half whose agent
   half is **not** installed in the selected profile shows **Install here**,
   which pre-fills the install dialog from the package's origin (catalog entry

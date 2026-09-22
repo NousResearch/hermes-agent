@@ -74,7 +74,13 @@ and loaded through `skills_list` plus `skill_view`. MCP commands are passed as
 one executable token with a separate argument list, never through a shell.
 Use `skills_list` to discover the full qualified skill name. Portable skill
 namespaces have the deterministic form `agent-plugin-<slug>-<hash>`, derived
-from the discovered plugin key so sanitized names cannot collide.
+from the discovered plugin key so sanitized names cannot collide. A portable
+package's MCP servers keep the names their `mcp.json` gives them, the same rule
+as a user's own `mcp_servers` block, so the model-facing `mcp__<server>__<tool>`
+name keeps the tool verb inside the 64-character provider cap. A duplicate server
+name is a load-time conflict: a `config.yaml` server wins over a package, and the
+first-loaded package wins over the next; the loser is skipped with a warning
+naming both.
 
 Hermes validates `plugin.json`, Agent Skills frontmatter, fixed component
 locations, `mcp.json`, resolved paths, and symlink containment locally. It does
@@ -302,7 +308,7 @@ this Hermes understands still loads with a warning.
 | `requires_plugins` | list | Inter-plugin dependencies: `- id: other-plugin` with optional `version_range: ">=1.0,<2"`. **Advisory**: a missing dependency logs a clear warning but the plugin still loads — probe at runtime with `ctx.has_plugin("other-plugin")`. Load **order** honors these edges: when A requires B, B's `register()` runs before A's (topological sort, alphabetical tiebreak; cycles warn and fall back to alphabetical order). |
 | `python_dependencies` | list of str | PEP 508 requirements (e.g. `"requests>=2.0,<3"`). Installed into Hermes' venv on `hermes plugins install` / `enable` and **re-applied after every `hermes update`** (see [Python dependencies](#python-dependencies)). A `pyproject.toml` beside `plugin.yaml` with `[project].dependencies` is the equivalent, preferred form. |
 | `python_runtime` | str | `external` — the plugin manages its own interpreter/venv (sidecar pattern); Hermes installs nothing and leaves any `pyproject.toml` alone. |
-| `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases). |
+| `config_schema` | mapping | JSON-schema-ish description of keys under `plugins.entries.<id>.settings`: `api_url: {type: str, default: "", description: "...", required: false}`. Validated at load; mismatches log actionable warnings naming the key and expected type — never load failures. Types: `str`, `int`, `float`, `bool`, `list`, `dict` (plus JSON-schema aliases) and `secret`. Also drives the settings form in the Desktop Plugins tab — see [Settings form in the Desktop](#settings-form-in-the-desktop). |
 | `license` | str | SPDX-style license id (e.g. `MIT`). |
 | `homepage` | str | Project URL. |
 | `tags` | list of str | Free-form discovery tags (e.g. `[gateway, telegram]`). |
@@ -520,7 +526,9 @@ def unit_convert(args: dict, **kwargs) -> str:
 1. **Signature:** `def my_handler(args: dict, **kwargs) -> str`
 2. **Return:** Always a JSON string. Success and errors alike.
 3. **Never raise:** Catch all exceptions, return error JSON instead.
-4. **Accept `**kwargs`:** Hermes may pass additional context in the future.
+4. **Accept `**kwargs`:** Hermes injects context keywords (`task_id`, `session_id`, `user_task`,
+   `parent_agent`, ...) and only forwards the ones your signature names, so `def handler(args)`
+   works; `**kwargs` is how you opt into the full, additively growing context.
 
 ## Step 5: Write the registration
 
@@ -618,6 +626,41 @@ Windows-safe namespace. Malformed existing state is reported and preserved.
 Config and state have different owners: settings are user-visible behavior in
 `config.yaml`, while state is plugin-owned runtime data under
 `<HERMES_HOME>/plugin-data/`. Neither API exposes another plugin's namespace.
+
+### Settings form in the Desktop
+
+Every key you declare in the manifest's `config_schema` renders as a field in the
+Desktop app's **Capabilities → Plugins** tab (the gear on the plugin's row). No
+Desktop code is needed: the backend's `plugins.manage list` returns the schema
+plus each key's current value, and saving writes through the same writer as
+`ctx.set_config()`, so `plugins.entries.<id>.settings.<key>` is what your plugin
+reads back. The form is table-driven by `type`:
+
+| Manifest `type` | Field | Extra keys |
+|---|---|---|
+| `str` (default) | text input | `choices: [a, b]` (or `enum:`) turns it into a dropdown |
+| `int`, `float` | number input | |
+| `bool` | switch | |
+| `list`, `dict` | JSON editor | |
+| `secret` | masked input | `env: MY_PLUGIN_TOKEN` — the `.env` variable it is stored under (default `<PLUGIN_ID>_<KEY>` upper-snaked) |
+
+Every entry also accepts `label` (shown instead of the key), `description`
+(help text under the field), `default` and `required`.
+
+```yaml
+config_schema:
+  api_url: {type: str, default: "https://api.example.com", label: "API URL", description: "Service endpoint"}
+  retries: {type: int, default: 3}
+  mode: {type: str, choices: [fast, careful], default: fast}
+  api_key: {type: secret, env: MY_PLUGIN_API_KEY, description: "Personal access token"}
+```
+
+**Secrets never touch `config.yaml`.** A `secret` field carries only the `.env`
+name and whether a value is set; the Desktop stores the value through the same
+credential route as provider API keys (`PUT /api/env`), and your plugin reads it
+with `os.environ.get("MY_PLUGIN_API_KEY")` — exactly like a `requires_env` entry.
+The `plugins.manage settings` action refuses secret keys and any value whose type
+or `choices` disagree with the schema.
 
 ## Step 6: Test it
 
@@ -987,6 +1030,8 @@ Each hook is documented in full on the **[Event Hooks reference](../../user-guid
 | `pre_api_request` | Before each raw provider API request (several per turn when the model calls tools) | `session_id: str, model: str, provider: str, base_url: str, api_mode: str, api_call_count: int, message_count: int, tool_count: int, approx_input_tokens: int, max_tokens: int, request: dict` | ignored |
 | `post_api_request` | After each raw provider API request returns | `pre_api_request` fields plus `api_duration: float, finish_reason: str, response_model: str \| None, usage: dict, response: dict, assistant_content_chars: int, assistant_tool_call_count: int` | ignored |
 | `api_request_error` | A provider API call raised | correlation fields plus `status_code: int \| None, retry_count: int \| None, max_retries: int \| None, retryable: bool \| None, reason: str \| None, error: dict, request: dict` | ignored |
+| `pre_auxiliary_call` | Before each provider attempt of an auxiliary LLM call (titling, compression, MoA, vision, approval, ...); not a `pre_api_request` | `aux_task: str` plus the `pre_api_request` fields (`session_id`/`task_id`/`turn_id` are the parent turn's or empty, `api_request_id: str`, `retry_count: int`, `streaming: bool`, `request: dict`) | ignored |
+| `post_auxiliary_call` | After that attempt returns or raises | `pre_auxiliary_call` fields plus `api_duration: float, finish_reason, response_model, usage: dict \| None, response: dict \| None, error: str \| None, error_type: str \| None` | ignored |
 | [`on_session_start`](../../user-guide/features/hooks.md#on_session_start) | New session created (first turn only) | `session_id: str, model: str, platform: str` | ignored |
 | [`on_session_end`](../../user-guide/features/hooks.md#on_session_end) | End of every `run_conversation` call + CLI exit | `session_id: str, completed: bool, interrupted: bool, model: str, platform: str` | ignored |
 | [`on_session_finalize`](../../user-guide/features/hooks.md#on_session_finalize) | CLI/gateway tears down an active session | `session_id: str \| None, platform: str` | ignored |
@@ -1638,7 +1683,7 @@ Hermes connects to each server at startup, lists its tools, and registers them a
 
 ### Gateway event hooks — fire on lifecycle events
 
-Drop a manifest + handler into `~/.hermes/hooks/<name>/`:
+Drop a manifest + handler into `~/.hermes/hooks/<name>/`. Unlike plugins there is no `plugins.enabled` step: the gateway imports every valid hook directory at startup, so placing the files **is** the opt-in ([trust model](../../user-guide/features/hooks.md#gateway-hook-trust)):
 
 ```yaml
 # ~/.hermes/hooks/long-task-alert/HOOK.yaml
@@ -1780,11 +1825,11 @@ def handler(args, **kwargs):
 
 **Missing `**kwargs` in handler signature:**
 ```python
-# Wrong — will break if Hermes passes extra context
+# Works — the dispatcher only forwards the context keywords a signature names
 def handler(args):
     ...
 
-# Right
+# Better — receives every injected context field (task_id, session_id, parent_agent, ...)
 def handler(args, **kwargs):
     ...
 ```

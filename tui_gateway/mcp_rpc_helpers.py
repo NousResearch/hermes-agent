@@ -6,15 +6,30 @@ bodies in methods_tools resolve it.
 
 from __future__ import annotations
 
-from typing import Any, Dict
+from typing import Any, Dict, Mapping
 
 
-def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
-    """Serialize one server's config for a UI (no secret values).
+def server_configs_with_sources(config_servers: Mapping[str, dict]) -> tuple[Dict[str, dict], Dict[str, str | None]]:
+    servers = {name: dict(cfg) for name, cfg in config_servers.items() if isinstance(cfg, dict)}
+    plugins: Dict[str, str | None] = {name: None for name in servers}
+    try:
+        from hermes_cli.plugins import discover_plugins, get_plugin_manager
+        from tools.mcp_tool_config import _filter_suspicious_mcp_servers
 
-    Mirrors web_server._mcp_server_summary plus ``oauth_tokens_present`` so a UI can
-    tell an OAuth server that still needs authentication from one already authenticated.
-    """
+        discover_plugins()
+        manager = get_plugin_manager()
+        portable = _filter_suspicious_mcp_servers(manager.get_portable_mcp_servers())
+        owners = manager.get_portable_mcp_server_plugins()
+        for name, cfg in portable.items():
+            if name not in servers:
+                servers[name] = dict(cfg)
+                plugins[name] = owners.get(name)
+    except Exception:
+        pass
+    return servers, plugins
+
+
+def summarize_server(name: str, cfg: dict, plugin: str | None = None) -> Dict[str, Any]:
     from hermes_cli.mcp_config import _oauth_tokens_present
 
     cfg = cfg if isinstance(cfg, dict) else {}
@@ -33,7 +48,9 @@ def summarize_server(name: str, cfg: dict) -> Dict[str, Any]:
         "auth": auth,
         "oauth_tokens_present": _oauth_tokens_present(name) if auth == "oauth" else None,
         "enabled": cfg.get("enabled", True) is not False,
-        "tools": cfg.get("tools")}
+        "tools": cfg.get("tools"),
+        "source": "plugin" if plugin is not None else "config",
+        "plugin": plugin}
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

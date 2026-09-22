@@ -94,7 +94,7 @@ def test_gc_blobs_removes_only_unreferenced(ledger_home):
     assert skill_ledger.gc_blobs() == (0, 0)
 
 
-@pytest.mark.parametrize("failure", ["unreadable", "missing", "invalid-encoding"])
+@pytest.mark.parametrize("failure", ["unreadable", "missing", "invalid-encoding", "malformed-json"])
 def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, monkeypatch, caplog, failure):
     from tools import skill_ledger
 
@@ -119,6 +119,8 @@ def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, mon
             patch.setattr(Path, "read_text", read_text)
         elif failure == "missing":
             ledger.unlink()
+        elif failure == "malformed-json":
+            ledger.write_bytes(saved + b"{broken\n")
         else:
             ledger.write_bytes(b"\xff")
         assert skill_ledger.gc_blobs() == (0, 0)

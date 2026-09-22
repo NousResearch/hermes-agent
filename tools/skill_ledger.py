@@ -349,6 +349,7 @@ def gc_blobs() -> Tuple[int, int]:
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
+            logger.warning("skill_ledger: malformed ledger line; blob GC skipped")
             return 0, 0
         for item in (row.get("before") or []) + (row.get("after") or []):
             referenced.add(str(item.get("sha256", "")))

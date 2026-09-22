@@ -409,10 +409,12 @@ def _shared_tool_record(entry: CatalogEntry) -> Dict[str, Any]:
 
 
 def _available_source_summary(catalog: List[CatalogEntry]) -> List[Dict[str, Any]]:
-    """Deterministic ``[{name, tool_count}]`` of connected sources (attached to empty query
-    groups so a lexical miss is not read as a missing capability)."""
+    """Deterministic summaries of connected and declared unavailable sources."""
+    from tools.tool_search_catalog import hidden_declared_sources
+
     counts = Counter(_listing_group_label(entry.source_name) for entry in catalog)
-    return [{"name": name, "tool_count": counts[name]} for name in sorted(counts)]
+    rows = [{"name": name, "tool_count": counts[name]} for name in sorted(counts)]
+    return sorted(rows + hidden_declared_sources(), key=lambda row: row["name"])
 
 
 def _string_list_arg(args: Dict[str, Any], key: str, *, dedupe: bool, max_items: int,
@@ -454,7 +456,7 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
             queries, connector_search=connector_search)
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
-    available_sources = _available_source_summary(catalog) if catalog else []
+    available_sources = _available_source_summary(catalog)
     for position, query in enumerate(queries):
         corpus = catalog + remote_entries[position]
         hits = search_catalog(corpus, query, limit=limit)
@@ -462,7 +464,7 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
             tools_map.setdefault(h.name, _shared_tool_record(h))
         matches = [h.name for h in hits]
         group: Dict[str, Any] = {"query": query, "matches": matches}
-        if not matches and catalog:
+        if not matches and available_sources:
             group["available_sources"] = available_sources
             group["hint"] = (
                 "This query returned no lexical matches, but the sources above "

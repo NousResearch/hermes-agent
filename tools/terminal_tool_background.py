@@ -147,6 +147,7 @@ def spawn_background_process(
     completion_output_chars: int = 0,
     pty_disabled_reason: Optional[str],
     continuation: Optional[dict] = None,
+    heartbeat_seconds: int = 0,
 ) -> str:
     """Spawn *command* as a tracked background process and return the JSON result.
 
@@ -210,6 +211,12 @@ def spawn_background_process(
             if is_delegated_child_context():
                 result_data["notify_on_complete"] = False
                 result_data["subagent_note"] = _SUBAGENT_NOTIFY_NOTE
+            elif heartbeat_seconds:
+                # Heartbeats ride the same delivery path as the completion notice, so they are
+                # only armed where that notice can actually reach the agent.
+                result_data["heartbeat_seconds"] = process_registry.arm_heartbeat(proc_session, heartbeat_seconds)
+        elif heartbeat_seconds:
+            result_data["heartbeat_ignored"] = "heartbeat needs notify=true delivery, which this session cannot receive"
         if watch_patterns:
             proc_session.watch_patterns = list(watch_patterns)
             result_data["watch_patterns"] = proc_session.watch_patterns

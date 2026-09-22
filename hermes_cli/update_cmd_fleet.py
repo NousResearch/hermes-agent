@@ -7,6 +7,7 @@ imported lazily inside each function (no import cycle; test patches stay effecti
 
 import json
 import logging
+import re
 from contextlib import suppress
 import os
 import subprocess
@@ -46,23 +47,25 @@ def _write_gateway_update_exit_code(ok: bool) -> None:
 
 
 def _fleet_restart_pending_marker_path() -> Path:
-    """HERMES_HOME breadcrumb for a pull that has not yet restarted the fleet."""
+    """LEGACY per-``HERMES_HOME`` breadcrumb. Read-compat only — nothing writes it any more.
+
+    One host runs one multiplexing gateway, so the pull→restart obligation is host-scoped
+    (``hermes_cli/update_host_obligation.py``). An obligation armed by the old per-profile code
+    is still read and cleared here so an in-flight update is discharged after the upgrade.
+    """
     from hermes_cli.update_cmd import get_hermes_home
     return get_hermes_home() / _FLEET_RESTART_PENDING_NAME
 
 
-def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: list[dict] | None = None) -> None:
-    """Drop the pull→restart obligation breadcrumb. Never raises."""
-    if runtimes == []:
-        # An explicit empty inventory owes no restart (e.g. Desktop-hosted `serve` with no
-        # gateway services). Arming the marker here leaves a breadcrumb nothing can discharge:
-        # a no-gateway host would then fail every later ``hermes update`` (#115311).
-        return
-    from hermes_cli.update_cmd import _m
+def _write_legacy_fleet_restart_pending_marker(
+    *, expected_sha: str = "", runtimes: list[dict] | None = None
+) -> bool:
+    """Arm the LEGACY per-``HERMES_HOME`` marker. True when written. Never raises.
+
+    Fallback only: ``$HERMES_HOME`` is writable by construction (the updater already writes its
+    receipts there), so it still carries the obligation when the host state dir cannot.
+    """
     path = _fleet_restart_pending_marker_path()
-    if _m()._pytest_owns_live_checkout(path.parent):
-        logger.debug("Skipping fleet-restart-pending marker under pytest (live checkout)")
-        return
     try:
         lines = [f"started={_time.time()}", f"pid={os.getpid()}"]
         if expected_sha:
@@ -70,14 +73,100 @@ def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: lis
         if runtimes is not None:
             lines.append("inventory=" + json.dumps({"version": 1, "runtimes": runtimes}))
         path.write_text("\n".join(lines) + "\n", encoding="utf-8")
+        return True
     except OSError as exc:
-        logger.debug("Could not write fleet-restart-pending marker: %s", exc)
+        logger.debug("Could not write legacy fleet-restart-pending marker: %s", exc)
+        return False
+
+
+def _write_fleet_restart_pending_marker(*, expected_sha: str = "", runtimes: list[dict] | None = None) -> None:
+    """Arm the HOST pull→restart obligation. Never raises.
+
+    An unwritable host state dir (``HERMES_GATEWAY_LOCK_DIR`` on a read-only mount, a container
+    UID that does not own ``$HOME``) must never disarm the obligation: an update interrupted
+    after this point would then leave stale code running with no warning and no catch-up restart
+    (#117275). The legacy per-home marker — which every reader here still honours — carries it
+    instead, and a host that can write neither says so out loud.
+    """
+    if runtimes == []:
+        # An explicit empty inventory owes no restart (e.g. Desktop-hosted `serve` with no
+        # gateway services). Arming the marker here leaves a breadcrumb nothing can discharge:
+        # a no-gateway host would then fail every later ``hermes update`` (#115311).
+        return
+    from hermes_cli.update_cmd import _m
+    from hermes_cli.update_host_obligation import host_obligation_path, write_host_obligation
+    if _m()._pytest_owns_live_checkout(_fleet_restart_pending_marker_path().parent):
+        logger.debug("Skipping fleet-restart-pending obligation under pytest (live checkout)")
+        return
+    if write_host_obligation(
+            expected_sha=expected_sha, runtimes=runtimes, profile=_current_profile_name()):
+        return
+    if _write_legacy_fleet_restart_pending_marker(expected_sha=expected_sha, runtimes=runtimes):
+        logger.warning(
+            "Host update-restart obligation (%s) is unwritable; armed the per-home marker %s instead.",
+            host_obligation_path(), _fleet_restart_pending_marker_path())
+        return
+    logger.error(
+        "Could not arm the update-restart obligation in %s or %s; an interrupted update will not warn.",
+        host_obligation_path(), _fleet_restart_pending_marker_path())
+    print(
+        "  ⚠ Could not record the pending gateway-restart obligation (state dir not writable) — "
+        "restart gateways with `hermes gateway restart` if this update is interrupted.",
+        file=sys.stderr,
+    )
+
+
+def _current_profile_name() -> str:
+    """Profile whose CLI armed the obligation (diagnostics only — the record is host-scoped)."""
+    try:
+        from hermes_cli.profiles import get_active_profile_name
+        return get_active_profile_name() or "default"
+    except Exception:
+        return ""
 
 
 def _clear_fleet_restart_pending_marker() -> None:
-    """Remove the pull→restart obligation breadcrumb. Never raises."""
+    """Discharge the obligation for the whole host (legacy per-home marker included). Never raises."""
     from hermes_cli.update_cmd import _m
+    from hermes_cli.update_host_obligation import clear_host_obligation
+    clear_host_obligation()
     _m()._clear_marker_file(_fleet_restart_pending_marker_path(), label="fleet-restart-pending")
+
+
+def _fleet_restart_obligation_armed() -> bool:
+    """True when this HOST owes a fleet restart — from any profile's CLI."""
+    from hermes_cli.update_host_obligation import host_obligation_present
+    if host_obligation_present():
+        return True
+    with suppress(OSError):
+        return _fleet_restart_pending_marker_path().is_file()
+    return False
+
+
+def _obligation_fields() -> dict[str, str] | None:
+    """Armed obligation as ``key=value`` fields: HOST record first, then the legacy marker.
+
+    ``None`` means nothing armed OR a malformed record; both must leave the obligation standing.
+    """
+    from hermes_cli.update_host_obligation import host_obligation_present, obligation_fields
+    fields = obligation_fields()
+    if fields is not None:
+        return fields
+    if host_obligation_present():
+        # The record exists but its terms are unknown (corrupt, or a NEWER CLI's version). An
+        # unrelated legacy marker's inventory cannot discharge terms nobody can read: fail closed.
+        return None
+    try:
+        text = _fleet_restart_pending_marker_path().read_text(encoding="utf-8")
+    except (OSError, UnicodeError):
+        return None
+    legacy: dict[str, str] = {}
+    for line in text.splitlines():
+        key, sep, value = line.partition("=")
+        if not sep or key in legacy:
+            return None
+        legacy[key] = value
+    return legacy
 
 
 def _current_checkout_sha() -> str | None:
@@ -154,6 +243,12 @@ def _receipt_reports_stale_runtime(receipt: dict, expected_sha: str | None = Non
 
 
 _SUPERVISED_SERVE_BACKENDS = frozenset({"manual-serve", "desktop", "systemd", "launchd", "windows-service", "service"})
+# Backends whose supervisor restarts the process without any updater bookkeeping. ``manual-serve``
+# is excluded: it owes a durable handoff (``defer_manual_serve``) before it stops counting.
+# ``systemd``/``windows-service``/``service`` mirror ``_SUPERVISED_SERVE_BACKENDS`` for parity only —
+# the inventory writer classifies a serve/dashboard row as exactly launchd, desktop or manual-serve
+# (``update_inventory._collect_ledger_runtimes``); those three are set for gateway rows alone.
+_SUPERVISOR_OWNED_SERVE_BACKENDS = _SUPERVISED_SERVE_BACKENDS - {"manual-serve"}
 
 
 def _receipt_owed_gateways(receipt: dict, pending_manual: list[dict]) -> set[tuple[str, str]] | None:
@@ -240,16 +335,23 @@ def _marker_only_restart_obsolete() -> bool:
     current on the checkout — there is no recorded owed set, so the fleet running the code on disk
     is the whole of the evidence the marker's warning can be about, even after HEAD moved past
     ``expected_sha`` by an out-of-band pull.
+
+    A serve/dashboard row whose supervisor owns the restart (Desktop backend, systemd/launchd
+    unit, Windows service) is outside the gateway matrix's evidence, not evidence against it —
+    the same boundary ``_receipt_owed_gateways`` draws for receipts (#115090) and the restart
+    phase draws for the Desktop backend (#111494). Counting it made the warning permanently
+    undischargeable on every host that runs a dashboard. A manual-serve row still needs its
+    durable handoff (``defer_manual_serve``), and an unclassified backend stays fail-closed.
+    Discharging here strands nobody: the same row is still accounted at update time by
+    ``update_inventory.report_unaccounted_runtimes``, which prints it and exits 1 when the restart
+    phase never touched it — this marker only stops re-warning about it on every later startup.
     """
     from hermes_cli.update_serve_obligations import defer_manual_serve
 
     try:
-        fields = {}
-        for line in _fleet_restart_pending_marker_path().read_text(encoding="utf-8").splitlines():
-            key, value = line.split("=", 1)
-            if key in fields:
-                return False
-            fields[key] = value
+        fields = _obligation_fields()
+        if fields is None:
+            return False
         expected_sha = fields.get("expected_sha", "").strip()
         inventory = json.loads(fields.get("inventory", "null"))
         owed: set[tuple[str, str]] | None = None
@@ -263,7 +365,10 @@ def _marker_only_restart_obsolete() -> bool:
             for runtime in runtimes:
                 if not isinstance(runtime, dict):
                     return False
-                if runtime.get("kind") in ("serve", "dashboard") and defer_manual_serve(runtime):
+                if runtime.get("kind") in ("serve", "dashboard") and (
+                    defer_manual_serve(runtime)
+                    or runtime.get("supervisor") in _SUPERVISOR_OWNED_SERVE_BACKENDS
+                ):
                     continue
                 if runtime.get("kind") != "gateway":
                     return False
@@ -334,10 +439,9 @@ def _pending_fleet_restart_needed(*, receipt: dict | None = None, pending_manual
         receipt = read_latest_receipt() or {}
     if pending_manual is None:
         pending_manual = retain_receipt_manual_serves(receipt)
-    # A marker owns its inventory; latest.json can belong to an older update.
-    with suppress(OSError):
-        if _fleet_restart_pending_marker_path().is_file():
-            return not _marker_only_restart_obsolete()
+    # The HOST obligation owns its inventory; latest.json can belong to an older update.
+    if _fleet_restart_obligation_armed():
+        return not _marker_only_restart_obsolete()
     owed = _receipt_owed_gateways(receipt, pending_manual)
     if not _receipt_reports_stale_runtime(receipt):
         return False
@@ -354,10 +458,9 @@ def _update_owes_fleet_restart(*, receipt: dict | None = None, pending_manual: l
         receipt = read_latest_receipt() or {}
     if pending_manual is None:
         pending_manual = retain_receipt_manual_serves(receipt)
-    # A completed older receipt cannot discharge an independent marker's inventory.
-    with suppress(OSError):
-        if _fleet_restart_pending_marker_path().is_file():
-            return not _marker_only_restart_obsolete()
+    # A completed older receipt cannot discharge an independent host obligation's inventory.
+    if _fleet_restart_obligation_armed():
+        return not _marker_only_restart_obsolete()
     owed = _receipt_owed_gateways(receipt, pending_manual)
     if not _receipt_reports_stale_runtime(receipt):
         return False
@@ -420,28 +523,73 @@ def _needs_sudo(scope: str) -> bool:
     )
 
 
+def _unit_main_pid(scope_cmd: list, svc_name: str) -> int:
+    """Live ``MainPID`` of a unit; ``0`` when inactive, unprivileged or unreadable.
+
+    Property reads need no manage-units privileges, and an unreadable PID is never collapsed:
+    identity that cannot be proved keeps its own restart.
+    """
+    try:
+        result = _systemctl(list(scope_cmd) + ["show", svc_name, "--property=MainPID", "--value"], timeout=10)
+    except (OSError, subprocess.TimeoutExpired):
+        return 0
+    if getattr(result, "returncode", 1) != 0:
+        return 0
+    try:
+        return int((getattr(result, "stdout", "") or "").strip() or 0)
+    except ValueError:
+        return 0
+
+
 def _restart_systemd_gateway_units_best_effort(failed: list, listings) -> None:
-    """Best-effort ``systemctl restart`` of every hermes-gateway/serve unit."""
+    """Restart every hermes-gateway/serve unit ONCE PER LIVE HOST PROCESS.
+
+    One host runs one multiplexing gateway, so leftover per-profile units
+    (``hermes-gateway-<profile>.service``) all point at the SAME live ``MainPID``; restarting
+    each in turn restarts the host gateway N times — a self-inflicted N-fold outage triggered
+    by one update. Units that share a live main PID are collapsed to one representative and the
+    others are named as LEGACY units to migrate, never silently dropped.
+    """
+    from hermes_cli.update_host_obligation import collapse_units_to_host_processes
+
     answered = set()
+    targets: dict[str, tuple[str, list, str]] = {}  # "<scope>/<unit>" -> (scope, scope_cmd, unit)
     for scope, scope_cmd, result in listings:
         answered.add(scope)
         if result.returncode != 0:
             failed.append(f"systemd-{scope} (listing failed)")
             continue
-
-        def process_unit(svc_name: str, _scope=scope, _cmd=scope_cmd) -> None:
-            manage_cmd = list(_cmd) + ["--no-ask-password"]
-            if _needs_sudo(_scope):
-                manage_cmd = ["sudo", "-n"] + manage_cmd
-            result = _systemctl_reset_and_restart(manage_cmd, svc_name, scope_cmd=_cmd)
-            if result.returncode != 0 or not _wait_for_service_active(_cmd, svc_name):
-                failed.append(svc_name)
-
         _for_each_systemd_gateway_unit(
             result.stdout,
-            process_unit=process_unit,
+            process_unit=lambda svc_name, _scope=scope, _cmd=scope_cmd: targets.setdefault(
+                f"{_scope}/{svc_name}", (_scope, _cmd, svc_name)),
             on_unit_timeout=lambda svc_name, exc: failed.append(svc_name),
         )
+
+    keys = list(targets)
+    covered: dict[str, str] = {}
+    if len(keys) > 1:
+        # Only worth a `systemctl show` round when several units could be one process.
+        keys, covered = collapse_units_to_host_processes(
+            keys, lambda key: _unit_main_pid(targets[key][1], targets[key][2]))
+    for unit_key, owner_key in covered.items():
+        print(
+            f"  • {unit_key} is a legacy per-profile unit sharing one host gateway process with "
+            f"{owner_key}; restarting it again would restart that process twice. Fold the units "
+            "together with: hermes gateway migrate"
+        )
+
+    for key in keys:
+        scope, scope_cmd, svc_name = targets[key]
+        manage_cmd = list(scope_cmd) + ["--no-ask-password"]
+        if _needs_sudo(scope):
+            manage_cmd = ["sudo", "-n"] + manage_cmd
+        try:
+            result = _systemctl_reset_and_restart(manage_cmd, svc_name, scope_cmd=scope_cmd)
+            if result.returncode != 0 or not _wait_for_service_active(scope_cmd, svc_name):
+                failed.append(svc_name)
+        except subprocess.TimeoutExpired:
+            failed.append(svc_name)
     # A timeout or missing executable is not an empty scope.
     failed.extend(f"systemd-{scope} (listing unavailable)" for scope, _ in _SYSTEMD_SCOPES if scope not in answered)
 
@@ -466,14 +614,46 @@ def _live_fleet_current_rows() -> list[dict] | None:
     return None
 
 
+def _restart_identity_sha() -> str:
+    """The SHA a completed host restart is stamped with; ``""`` when nothing names the code.
+
+    ``_current_checkout_sha()`` is ``None`` on every non-git install (zip, pip, Docker), and an
+    empty stamp can never match, so the per-host restart-once guard would be inert exactly on the
+    installs it exists for: each profile's ``hermes update`` would re-kill the one shared
+    multiplexer. The obligation's own ``expected_sha`` — else the receipt's post-update identity —
+    names the same pulled code.
+    """
+    sha = _current_checkout_sha()
+    if sha:
+        return str(sha)
+    sha = ((_obligation_fields() or {}).get("expected_sha") or "").strip()
+    if sha:
+        return sha
+    with suppress(Exception):
+        from hermes_cli.update_receipt import read_latest_receipt
+        post_update = (read_latest_receipt() or {}).get("post_update")
+        if isinstance(post_update, dict):
+            return str(post_update.get("sha") or "")
+    return ""
+
+
 def _run_pending_fleet_restart() -> bool:
     """Catch-up restart for gateways left on pre-update code. Never raises.
 
     True when all discovered targets recovered (or none exist); False if incomplete.
 
+    Idempotent per HOST: one process multiplexes every profile, so the second profile's
+    ``hermes update`` must attach to the first one's restart instead of killing the shared
+    gateway again (the obligation record carries the proof).
+
     See #95294.
     """
     from hermes_cli.update_cmd import _m
+    from hermes_cli.update_host_obligation import host_restart_already_completed, mark_host_restart_completed
+    checkout_sha = _restart_identity_sha()
+    if host_restart_already_completed(checkout_sha):
+        print("  ✓ This host's gateway was already restarted for this update — not restarting it again.")
+        return True
     print("→ Restarting gateways left on pre-update code...")
     # Warn if legacy Hermes gateway unit files are still installed. When both hermes.service (from a
     # pre-rename install) and the current hermes-gateway.service are enabled, they SIGTERM-fight for the
@@ -540,6 +720,9 @@ def _run_pending_fleet_restart() -> bool:
         if failed:
             _warn_incomplete_gateway_fleet_restart(failed)
             return False
+        # Stamp the HOST obligation so every other profile's CLI knows this update's restart
+        # already happened; without it each profile re-kills the one shared multiplexer.
+        mark_host_restart_completed(checkout_sha or "")
         print("  ✓ Pending fleet restart completed.")
         return True
     except Exception as exc:
@@ -781,11 +964,17 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     """
     from hermes_cli.gateway import (
         get_launchd_label, get_launchd_plist_path, launchd_restart, wait_for_launchd_gateway_supervision,
+        _launchctl_supervised_pid,
     )
     current_label = get_launchd_label()
+    old_pid = None
     try:
         if not get_launchd_plist_path().exists():
             return [], []  # not a launchd install — nothing to do or warn
+        # Snapshot BEFORE the restart: "supervising some pid" was true before too, so only a pid that
+        # actually changed distinguishes a restart from a no-op (the sibling loop's contract). Read-only
+        # and verification-only — the restart itself is never gated on `launchctl list` (#74973).
+        old_pid = _launchctl_supervised_pid(current_label) if supervision_verify else None
         try:
             launchd_restart()
         except subprocess.CalledProcessError as e:
@@ -816,10 +1005,10 @@ def _restart_launchd_gateway_after_update(*, supervision_verify: bool = True) ->
     # domain locate fails on macOS-26 per-user domains.
     # launchd_restart() returning is only "restart REQUESTED" — the self-restart branch hands work to the
     # running gateway, a plist reload to a detached helper; both asynchronous. See #88848.
-    if wait_for_launchd_gateway_supervision(label=current_label):
+    if wait_for_launchd_gateway_supervision(label=current_label, old_pid=old_pid):
         return [current_label], []
     print(
-        f"  ✗ {current_label} restarted but launchd is not supervising it.\n"
+        f"  ✗ {current_label} restarted but launchd is not supervising a new process for it.\n"
         "    Check logs, then: hermes gateway restart"
     )
     return [], [current_label]
@@ -1099,6 +1288,42 @@ def _resolve_manage_cmd(cache: dict, scope_: str, scope_cmd_: list, svc_name_: s
     return cmd
 
 
+def _repair_unit_without_fatal_exit_park(svc_name: str, scope: str) -> None:
+    """A unit whose restart policy predates ``RestartPreventExitStatus=78`` crash-loops on the PERMANENT
+    exit: a ``Restart=on-failure`` system unit restarted ~180x on a host-attach refusal while the
+    regenerated user units parked (#118282). The gateway rewrites its USER unit at boot; a SYSTEM unit
+    lives in /etc, so rewrite it here when we are root, else name the repair."""
+    from hermes_cli.gateway import (
+        _SYSTEM_UNIT_DIR, GATEWAY_FATAL_CONFIG_EXIT_CODE, get_service_name,
+        refresh_systemd_unit_if_needed, user_systemd_unit_dir,
+    )
+    system = scope == "system"
+    unit_path = (_SYSTEM_UNIT_DIR if system else user_systemd_unit_dir()) / f"{svc_name}.service"
+    try:
+        parked = re.search(rf"^RestartPreventExitStatus=.*\b{GATEWAY_FATAL_CONFIG_EXIT_CODE}\b", unit_path.read_text(encoding="utf-8"), re.M)
+    except OSError:
+        return
+    if parked:
+        return
+    if system and not _needs_sudo(scope) and svc_name == get_service_name():
+        # The refresh adopts the unit's HERMES_HOME into os.environ (sudo strips it); the rest of the
+        # update keeps running for the invoking profile.
+        launch_home = os.environ.get("HERMES_HOME")
+        try:
+            refresh_systemd_unit_if_needed(system=True)
+        finally:
+            if launch_home is None:
+                os.environ.pop("HERMES_HOME", None)
+            else:
+                os.environ["HERMES_HOME"] = launch_home
+        return
+    print(
+        f"  ⚠ {svc_name} lacks RestartPreventExitStatus={GATEWAY_FATAL_CONFIG_EXIT_CODE}: a permanent refusal "
+        f"(exit {GATEWAY_FATAL_CONFIG_EXIT_CODE}) would crash-loop it instead of parking.\n"
+        f"    Repair: {'sudo ' if system else ''}hermes gateway install{' --system' if system else ''}"
+    )
+
+
 def _restart_one_systemd_gateway_unit(
     svc_name: str, *, scope: str, scope_cmd: list, drain_budget: float, _manage_cmd_cache: dict,
     restarted_services: list, failed_or_stale_units: list,
@@ -1110,6 +1335,7 @@ def _restart_one_systemd_gateway_unit(
     check = _systemctl(scope_cmd + ["is-active", svc_name], timeout=5)
     if check.stdout.strip() != "active":
         return
+    _repair_unit_without_fatal_exit_park(svc_name, scope)
 
     # None ⇒ no non-interactive privilege path; avoid manage-units verbs
     # entirely or polkit prompts inside the captured subprocess.
@@ -1475,6 +1701,15 @@ def _recover_after_restart_phase_abort(
     out.record_receipt(phase_error=str(e), fresh_recovery=_recovery_result)
 
 
+def _gateway_drain_budget() -> float:
+    """Seconds a drain-first (SIGUSR1) restart may wait for a gateway to exit; 45s floor."""
+    try:
+        from hermes_cli.gateway import _get_restart_exit_wait_budget
+        return max(float(_get_restart_exit_wait_budget()), 45.0)
+    except Exception:
+        return 45.0
+
+
 def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
     """Restart every running gateway (systemd, launchd, manual) onto the pulled code.
 
@@ -1516,11 +1751,7 @@ def _restart_gateway_fleet_after_update(_pre_update_plan, gateway_mode: bool):
         # Drain budget covers ``restart_after_turn_timeout`` and stop()'s
         # ``restart_drain_timeout`` so a gateway waiting on a turn isn't hard-killed;
         # units without SIGUSR1 wiring just time out into ``systemctl restart``.
-        try:
-            from hermes_cli.gateway import _get_restart_exit_wait_budget
-            _drain_budget = max(float(_get_restart_exit_wait_budget()), 45.0)
-        except Exception:
-            _drain_budget = 45.0
+        _drain_budget = _gateway_drain_budget()
 
         # Snapshot before any stop/drain so an empty survivor probe reads as "stopped
         # and never came back", not "nothing was running"; None fails closed.
@@ -1700,6 +1931,10 @@ def _verify_fleet_after_update(restart, *, _pre_update_plan, _windows_gateway_re
         _fleet_snapshot = _collect_fleet_snapshot(restart, _fleet_rows_expected)
         if print_fleet_version_matrix(_fleet_snapshot):
             restart.incomplete = True
+            # A proven-stale survivor must not keep running (its ticker yields every tick and
+            # nothing else restarts it, #117275): hand it to the drain-first restart path.
+            from hermes_cli.update_cmd_stale_survivors import signal_stale_fleet_survivors
+            signal_stale_fleet_survivors(_fleet_snapshot, restart, _gateway_drain_budget())
         elif not _fleet_snapshot and _fleet_rows_expected:
             # collect_fleet_versions() swallows every failure, so zero rows with
             # expected runtimes is indistinguishable from health — fail (partial, exit 1).

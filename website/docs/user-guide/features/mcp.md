@@ -57,10 +57,33 @@ Hermes ships a curated catalog of MCP servers that Nous staff has reviewed
 and merged. They're disabled by default — install only what you actually
 want.
 
-In the desktop app you can also ask: "add the Linear MCP". The agent calls
-`manage_connections` with an `mcp: true` target, an approval card appears in
-the chat, and Install writes the same config the CLI would. On the CLI and in
-messaging apps the agent relays the commands below instead.
+You can also ask in chat: "add the Linear MCP". The agent calls
+`manage_connections` with an `mcp: true` target and a setup card appears. The
+card works the same way in the desktop app (a dialog), the terminal UI
+(`hermes --tui`, a callout above the composer) and the classic CLI (a panel):
+
+1. **Fields.** If the entry declares setup values, the card shows all of them
+   at once. A plain value is prefilled with its default. A secret is masked.
+   Nothing is saved while you type.
+2. **Connect or Cancel.** Cancel skips that one server; other servers in the
+   same request continue.
+3. **Authorization.** For an OAuth entry the card shows the authorization link.
+   Hermes never opens the browser by itself: click **Open in browser** on the
+   desktop, or press Enter in the terminal. Over SSH the card tells you how to
+   reach the callback port or paste the redirected URL.
+4. **Save.** Hermes saves the server configuration, the tokens and your setup
+   values together, once the server has accepted the new token and the first
+   connection has returned. If the server rejects the token, or you cancel
+   before that point, nothing from the attempt is kept, your earlier
+   configuration and tokens stay as they were, and a failed form reopens with
+   what you typed. A server that is already authorized connects with its saved
+   tokens; Hermes asks you to authorize again only when they no longer work.
+5. **Tools.** Hermes then lists the server's tools and registers them. The
+   agent can call them in the same turn. If authorization worked and the tool
+   list failed, the card says "Authorized. Tools unavailable." and the agent can
+   run discovery again later without asking you to authorize again.
+
+In messaging apps there is no card; the agent relays the commands below.
 
 ```bash
 hermes mcp                   # interactive picker (default)
@@ -714,6 +737,19 @@ That keeps the tool list clean.
 ### Discovery time
 
 Hermes discovers MCP servers at startup and registers their tools into the normal tool registry.
+
+Servers are connected at most **4 at a time** per discovery pass (startup, `/reload-mcp`, config
+watcher). Every stdio server spawns its own child-process tree, so an unbounded pass with many servers
+used to launch them all in the same instant — a CPU/RAM spike and, on multi-profile fleets, a burst of
+simultaneous provider calls. Tune it in `config.yaml`:
+
+```yaml
+mcp:
+  discovery_concurrency: 4   # max simultaneous server connects; 0 = unlimited
+```
+
+A pass with more servers than the cap runs in waves; each wave keeps the usual 120 s budget (whole
+pass capped at 300 s), so a slow fleet finishes later rather than timing out.
 
 ### Lazy start
 

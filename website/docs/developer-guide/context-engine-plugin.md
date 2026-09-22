@@ -191,7 +191,7 @@ Engine tools are injected into the agent's tool list at startup and dispatched a
 
 ### Via directory (recommended)
 
-Place your engine in `plugins/context_engine/<name>/`. The `__init__.py` must export a `ContextEngine` subclass. The discovery system finds and instantiates it automatically.
+Place your engine in `plugins/context_engine/<name>/` (bundled) or `~/.hermes/plugins/<name>/` (user-installed; `$HERMES_HOME/plugins/<name>/`). The `__init__.py` must export a `ContextEngine` subclass or a `register(ctx)` that calls `ctx.register_context_engine(...)`. Setting `context.engine: <name>` is the activation — a user-installed engine does not need a `plugins.enabled` entry. Bundled names win on collision.
 
 ### Via general plugin system
 

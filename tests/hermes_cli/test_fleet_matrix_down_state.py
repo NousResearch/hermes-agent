@@ -38,6 +38,17 @@ def _verify_self_as_gateway(monkeypatch):
     monkeypatch.setattr("gateway.status.live_gateway_pid_for_home", lambda h: os.getpid())
 
 
+def _gateway_launch_argv() -> list:
+    """argv a real gateway stamps (write_runtime_status): its own in-checkout
+    module path first, so code-root resolution never falls back to probing this
+    pytest process's shared-venv interpreter (#118659)."""
+    return [
+        str(Path(__file__).resolve().parents[2] / "hermes_cli" / "main.py"),
+        "gateway",
+        "run",
+    ]
+
+
 _DEAD_PID = 999999899  # never a live pid
 
 
@@ -117,6 +128,7 @@ def test_matching_start_time_is_still_live(monkeypatch, tmp_path):
             "gateway_state": "running",
             "code_sha": "HEADSHA",
             "kind": "hermes-gateway",
+            "argv": _gateway_launch_argv(),
         },
     )
     fleet = ur.collect_fleet_versions(pre_restart_pids=[pid])
@@ -131,7 +143,7 @@ def test_live_gateway_rows_unchanged(monkeypatch, tmp_path):
         monkeypatch,
         tmp_path,
         {"pid": os.getpid(), "gateway_state": "running", "code_sha": "HEADSHA",
-         "kind": "hermes-gateway"},
+         "kind": "hermes-gateway", "argv": _gateway_launch_argv()},
     )
     fleet = ur.collect_fleet_versions(pre_restart_pids=[os.getpid()])
     assert len(fleet) == 1

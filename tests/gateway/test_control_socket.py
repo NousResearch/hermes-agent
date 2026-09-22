@@ -363,12 +363,22 @@ def test_collect_fleet_versions_falls_back_to_state_file(tmp_path: Path, monkeyp
     monkeypatch.setattr(
         "gateway.control_socket.identify_gateway", lambda h, **kw: None
     )
+    # A real gateway record also stamps argv (write_runtime_status), whose
+    # first entry is the in-checkout module path — that is what
+    # _gateway_code_root resolves first, so classification cannot fall back to
+    # probing this pytest process's interpreter, which lives in a shared venv
+    # inside a different checkout (#118659).
     (home / "gateway_state.json").write_text(
         json.dumps(
             {
                 "pid": os.getpid(),  # a live pid so _pid_exists passes
                 "code_sha": "OLDSHA",
                 "kind": "hermes-gateway",
+                "argv": [
+                    str(Path(__file__).resolve().parents[2] / "hermes_cli" / "main.py"),
+                    "gateway",
+                    "run",
+                ],
             }
         )
     )

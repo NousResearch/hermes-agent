@@ -1729,6 +1729,10 @@ profile's `HERMES_HOME`. `tool_name` and `tool_input` are `null` for non-tool ev
 {"action": "modify", "args": {"new_string": "fixed content"}}         // Hermes-canonical
 {"decision": "modify", "tool_input": {"new_string": "fixed content"}} // Claude-Code style
 
+// Escalate a pre_tool_call to the human-approval gate (Hermes-only; `message` and `rule_key`
+// are optional). Claude-Code's `{"decision": "approve"}` means auto-allow and is NOT mapped here:
+{"action": "approve", "message": "Why approval is required", "rule_key": "optional:scope"}
+
 // Inject context for pre_llm_call:
 {"context": "Today is Friday, 2026-04-17"}
 

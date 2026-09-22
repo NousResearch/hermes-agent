@@ -617,7 +617,7 @@ class GitHubClient:
                 "--limit",
                 str(MAX_DISCOVERED_PULL_REQUESTS),
                 "--json",
-                "number,state,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
+                "number,state,isDraft,headRepository,author,headRefName,headRefOid,baseRefName,baseRefOid,updatedAt,labels",
             ]
         )
 
@@ -1672,6 +1672,9 @@ def _pull_request(
         ):
             raise TypeError("labels must be a list of named objects")
         number = _positive_number(row["number"])
+        is_draft = row["draft"]
+        if not isinstance(is_draft, bool):
+            raise TypeError("draft must be a boolean")
         base_repository = _validated_repository(base["repo"]["full_name"])
         head_repository = _validated_repository(head["repo"]["full_name"])
         head_sha = _validated_sha(head["sha"])
@@ -1691,6 +1694,7 @@ def _pull_request(
             labels=tuple(label["name"] for label in raw_labels),
             base_branch=base["ref"],
             base_sha=base_sha,
+            is_draft=is_draft,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise GitHubClientError(
@@ -1706,6 +1710,9 @@ def _listed_pull_request(base_repository: str, row: dict[str, Any]) -> PullReque
             for label in raw_labels
         ):
             raise TypeError("labels must be a list of named objects")
+        is_draft = row["isDraft"]
+        if not isinstance(is_draft, bool):
+            raise TypeError("isDraft must be a boolean")
         return PullRequest(
             number=row["number"],
             state=row["state"],
@@ -1718,6 +1725,7 @@ def _listed_pull_request(base_repository: str, row: dict[str, Any]) -> PullReque
             base_branch=row["baseRefName"],
             base_sha=row["baseRefOid"],
             updated_at=_timestamp(row["updatedAt"]),
+            is_draft=is_draft,
         )
     except (KeyError, TypeError, ValueError) as error:
         raise GitHubClientError(

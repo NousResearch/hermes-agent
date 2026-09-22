@@ -203,6 +203,7 @@ class PullRequest:
     base_branch: str | None = None
     base_sha: str | None = None
     updated_at: datetime | None = None
+    is_draft: bool = False
 
     def __post_init__(self) -> None:
         if (

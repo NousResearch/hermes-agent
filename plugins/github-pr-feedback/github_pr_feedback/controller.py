@@ -1219,6 +1219,13 @@ class ScanController:
         pending_prs = getattr(self._ledger, "pending_prs", None)
         if not callable(archive_task) or not callable(pending_prs):
             return
+        configured_boards = [self._policy.board or ""]
+        configured_boards.extend(
+            board.strip()
+            for board in os.environ.get("HERMES_KANBAN_RECONCILE_BOARDS", "").split(",")
+            if board.strip()
+        )
+        boards = tuple(dict.fromkeys(board for board in configured_boards if board))
         open_numbers = {pr.number for pr in open_pull_requests}
         for pr_number in pending_prs(repository):
             if pr_number in open_numbers:
@@ -1226,9 +1233,15 @@ class ScanController:
             for binding in self._ledger.pending_task_bindings_for_pr(
                 repository, pr_number
             ):
-                try:
-                    archive_task(self._policy.board or "", binding.task_id)
-                except RuntimeError:
+                archived = False
+                for board in boards:
+                    try:
+                        archive_task(board, binding.task_id)
+                    except RuntimeError:
+                        continue
+                    archived = True
+                    break
+                if not archived:
                     continue
                 self._ledger.supersede_stale_dispatch(
                     binding.receipt,

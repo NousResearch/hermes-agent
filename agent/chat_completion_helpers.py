@@ -2864,6 +2864,9 @@ class _StreamingCall(StreamingWaitMonitor):
                 diag["first_chunk_at"] = self.last_chunk_time["t"]
             # Delta-length estimate: ~3x cheaper than repr() per chunk.
             diag["bytes"] = int(diag.get("bytes", 0)) + _estimate_chunk_bytes(chunk)
+            # Relays re-roll the serving provider per request and report it only in the chunk body,
+            # so attribute a drop to the downstream that served it, not to the aggregator (#90216).
+            self.agent._stream_diag_note_serving_provider(diag, chunk)
 
     # ── chat_completions wire ───────────────────────────────────────────
 
@@ -3745,6 +3748,10 @@ class _StreamingCall(StreamingWaitMonitor):
         # Propagate first-chunk timing for the ``post_api_request`` hook.
         if isinstance(self.clients.diag, dict) and self.clients.diag.get("first_chunk_at"):
             self.agent._last_api_first_chunk_at = float(self.clients.diag["first_chunk_at"])
+        # Same per-attempt stash for the downstream that actually served the stream: relays re-roll it
+        # per request, and plugins auditing route compliance cannot get it from anywhere else (#90216).
+        if isinstance(self.clients.diag, dict) and self.clients.diag.get("serving_provider"):
+            self.agent._last_serving_provider = str(self.clients.diag["serving_provider"])
         return self.result["response"]
 
 

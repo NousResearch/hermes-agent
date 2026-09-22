@@ -509,6 +509,7 @@ class AIAgent(
         return {"messages": stripped_messages, "items": stripped_items}
 
     _stream_diag_init = _forward_static("agent.stream_diag", "stream_diag_init")
+    _stream_diag_note_serving_provider = _forward_static("agent.stream_diag", "stream_diag_note_serving_provider")
     _stream_diag_capture_response = _forward("agent.stream_diag", "stream_diag_capture_response")
     _flatten_exception_chain = _forward_static("agent.stream_diag", "flatten_exception_chain")
 

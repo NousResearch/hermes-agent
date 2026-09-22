@@ -24,7 +24,35 @@ STREAM_DIAG_HEADERS = (
 
 def stream_diag_init() -> Dict[str, Any]:
     """Fresh per-attempt diagnostic dict; mutated in place by the streaming functions and read by the retry block."""
-    return {"started_at": time.time(), "first_chunk_at": None, "chunks": 0, "bytes": 0, "headers": {}, "http_status": None}
+    return {
+        "started_at": time.time(), "first_chunk_at": None, "chunks": 0, "bytes": 0,
+        "headers": {}, "http_status": None, "serving_provider": None,
+    }
+
+
+def stream_diag_note_serving_provider(diag: Dict[str, Any], chunk: Any) -> None:
+    """Record which downstream provider actually served this attempt, from a delta chunk body.
+
+    On OpenRouter-style relays the provider is re-rolled per request and reported only inside the
+    chunk JSON (``"provider": "Novita"``) — those responses carry no ``x-openrouter-provider``
+    header, just ``cf-ray`` / ``server: cloudflare``, so the header snapshot cannot attribute a
+    mid-stream drop to a downstream. First non-empty value wins: the attempt was served by whatever
+    produced its first chunk, and later chunks must not overwrite that. Best-effort, never raises.
+    """
+    if not isinstance(diag, dict) or diag.get("serving_provider"):
+        return
+    try:
+        value = getattr(chunk, "provider", None)
+        if value is None:  # unknown top-level fields land in pydantic model_extra on the OpenAI SDK
+            extra = getattr(chunk, "model_extra", None)
+            if isinstance(extra, dict):
+                value = extra.get("provider")
+        if value is None and isinstance(chunk, dict):
+            value = chunk.get("provider")
+        if isinstance(value, str) and value.strip():
+            diag["serving_provider"] = value.strip()[:64]  # keep log lines bounded
+    except Exception:
+        pass
 
 
 def stream_diag_capture_response(agent: Any, diag: Dict[str, Any], http_response: Any) -> None:
@@ -71,10 +99,11 @@ def flatten_exception_chain(error: BaseException) -> str:
 
 
 def _diag_fields(diag: Optional[Dict[str, Any]]) -> tuple:
-    """(http_status, bytes, chunks, elapsed, ttfb, upstream) for the retry log line; ``-`` when unknown."""
+    """(http_status, bytes, chunks, elapsed, ttfb, serving_provider, upstream) for the retry log line;
+    ``-`` when unknown."""
     _bytes = _chunks = 0
     _elapsed = 0.0
-    _ttfb = _headers_repr = _http_status = "-"
+    _ttfb = _headers_repr = _http_status = _serving_provider = "-"
     if isinstance(diag, dict):
         try:
             _now = time.time()
@@ -90,9 +119,11 @@ def _diag_fields(diag: Optional[Dict[str, Any]]) -> tuple:
                 _headers_repr = " ".join(f"{k}={v}" for k, v in headers.items())
             if diag.get("http_status") is not None:
                 _http_status = str(diag.get("http_status"))
+            if diag.get("serving_provider"):
+                _serving_provider = str(diag["serving_provider"])
         except Exception:
             pass
-    return _http_status, _bytes, _chunks, _elapsed, _ttfb, _headers_repr
+    return _http_status, _bytes, _chunks, _elapsed, _ttfb, _serving_provider, _headers_repr
 
 
 def log_stream_retry(
@@ -101,7 +132,11 @@ def log_stream_retry(
 ) -> None:
     """Structured WARNING to ``agent.log`` for a transient stream drop + retry, always logged regardless of
     UI verbosity. With *diag*, also records upstream headers, HTTP status, bytes/chunks, elapsed and TTFB on
-    the dying attempt — enough to tell "one CF edge / downstream provider" from "random across runs"."""
+    the dying attempt — enough to tell "one CF edge / downstream provider" from "random across runs".
+
+    The ``serving_provider`` field names the downstream that actually served the attempt (relays re-roll it
+    per request and report it only in the chunk body), so a drop can be attributed to a provider even when
+    the response carried no ``x-openrouter-provider`` header."""
     try:
         try:
             _summary = agent._summarize_api_error(error)
@@ -116,7 +151,8 @@ def log_stream_retry(
 
         logger.warning(
             "Stream %s on attempt %s/%s — retrying. subagent_id=%s depth=%s provider=%s base_url=%s "
-            "error_type=%s error=%s chain=%s http_status=%s bytes=%d chunks=%d elapsed=%.2fs ttfb=%s upstream=[%s]",
+            "error_type=%s error=%s chain=%s http_status=%s bytes=%d chunks=%d elapsed=%.2fs ttfb=%s "
+            "serving_provider=%s upstream=[%s]",
             kind, attempt, max_attempts,
             getattr(agent, "_subagent_id", None) or "-", getattr(agent, "_delegate_depth", 0),
             agent.provider or "-", agent.base_url or "-",
@@ -217,6 +253,7 @@ __all__ = [
     "connect_exhausted_notice",
     "buffer_connect_exhausted_notice",
     "stream_diag_init",
+    "stream_diag_note_serving_provider",
     "stream_diag_capture_response",
     "flatten_exception_chain",
     "log_stream_retry",

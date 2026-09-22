@@ -1,6 +1,6 @@
 name: protean-ordaprompt
 repo: https://github.com/aska-digital/protean-ordaprompt
-sha: 2873312cc4a013481f7badc2241937055e57bb22
+sha: 91463db17f91f1997ef2d085f7b6de6bf6dc3b88
 description: "Fail-closed three-band classifier router for OrdaPilot request routing (topic + session utility): stdlib-only package, explicit CLI, offline eval harness over 400 synthetic fixtures. Disclosure — no network and no telemetry by default; the optional OpenRouter backend is disabled by policy and, when explicitly enabled, transports hashes and labels only; the automatic band stays locked until calibration unlock criteria pass on real feedback data."
 maintainer: aska-digital
 tier: community

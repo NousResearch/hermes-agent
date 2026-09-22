@@ -3316,146 +3316,53 @@ class TestDoubleCompactionSummaryRole:
 
 class TestSummaryPromptBounding:
 
+    _ELISION_MARKER = re.compile(r"\n*\.\.\.\[[^\]]*elided[^\n]*\.\.\.\n*")
+
     def test_lean_sampling_keeps_record_boundaries(self):
-        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
-        records = [f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(1200)]
-        sampled = ContextCompressor._sample_summary_records(records)
-        assert len(sampled) <= cap
-        for record in sampled.split("\n\n"):
-            if record.startswith("["):
-                assert record.endswith("x" * 1200)
-
-    def test_lean_sampling_covers_multiple_regions(self):
-        records = [f"[USER]: record-{i:04d} " + ("x" * 40) for i in range(8000)]
-        sampled = ContextCompressor._sample_summary_records(records)
-        assert "record-0000" in sampled
-        assert "record-4000" in sampled
-        assert "record-7999" in sampled
-
-    def test_lean_sampling_preserves_oversized_last_record(self):
-        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
-        records = [f"[USER]: record-{i:04d}" for i in range(100)]
-        records.append("[USER]: newest-record-anchor " + ("z" * (cap + 5000)))
-        sampled = ContextCompressor._sample_summary_records(records)
-        assert len(sampled) <= cap
-        assert "newest-record-anchor" in sampled
-        assert "...[record truncated:" in sampled
-
-    def test_lean_sampling_oversized_middle_record_does_not_evict_tail(self):
-        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
-        records = [f"[USER]: record-{i:04d}" for i in range(50)]
-        records.append("[TOOL RESULT oversized-mid]: " + ("y" * (cap + 5000)))
-        records.extend([f"[USER]: record-{i:04d}" for i in range(51, 100)])
-        records.append("[USER]: newest-tail-record")
-        sampled = ContextCompressor._sample_summary_records(records)
-        assert len(sampled) <= cap
-        assert "newest-tail-record" in sampled
-        assert "oversized-mid" in sampled
-        assert "...[record truncated:" in sampled
-
-    def test_lean_sampling_preserves_multiparagraph_records_from_producer(self):
-        """Messages with internal blank lines must be sampled as whole records, not split into pseudo-records."""
-        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        """Lean sampling must elide whole serialized records: no section between elision markers
+        may start mid-record, and every retained record must be complete — including records
+        whose body contains blank lines, which are not record delimiters."""
         compressor = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=2,
-            protect_last_n=2,
-            quiet_mode=True,
-            tail_mode="lean",
+            model="test/model", threshold_percent=0.85, protect_first_n=2, protect_last_n=2,
+            quiet_mode=True, tail_mode="lean",
         )
-        # Create messages with multiple paragraphs separated by \n\n, aggregate exceeding cap
-        messages = [
-            {
-                "role": "user" if i % 2 == 0 else "tool",
-                "tool_call_id": f"call_{i:04d}" if i % 2 != 0 else None,
-                "content": f"record-{i:04d} paragraph 1\n\nparagraph 2 filler " + ("x" * 600),
-            }
-            for i in range(500)
-        ]
-        messages.append({
-            "role": "user",
-            "content": "newest-user-msg para1\n\nnewest-user-msg para2 anchor",
-        })
-
-        records = compressor._serialize_records_for_summary(messages)
-        sampled = compressor._sample_summary_records(records)
-
-        assert len(sampled) <= cap
-        # Every retained section between omission markers must start at an actual message boundary
-        sections = [s.strip() for s in re.split(r"\n*\.\.\.\[[\d,]+ chars elided[^\n]*\.\.\.\n*", sampled) if s.strip()]
-        for section in sections:
-            assert section.startswith(("[USER]:", "[TOOL RESULT", "[ASSISTANT]:", "[SYSTEM]:")), (
-                f"Retained record slice did not start at message boundary: {section[:40]!r}"
-            )
-
-        # The newest message must preserve its role label AND both paragraphs together
-        assert "[USER]: newest-user-msg para1\n\nnewest-user-msg para2 anchor" in sampled
-
-    def test_lean_sampling_newest_message_ending_in_blank_lines_anchors_record(self):
-        """A newest message ending in blank lines must not produce an empty pseudo-record as tail anchor."""
-        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
-        compressor = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=2,
-            protect_last_n=2,
-            quiet_mode=True,
-            tail_mode="lean",
-        )
-        messages = [
-            {"role": "user", "content": f"turn-{i:04d} " + ("y" * 600)}
-            for i in range(400)
-        ]
-        messages.append({
-            "role": "user",
-            "content": "final prompt with trailing blank lines\n\n\n\n",
-        })
-
-        records = compressor._serialize_records_for_summary(messages)
-        sampled = compressor._sample_summary_records(records)
-
-        assert len(sampled) <= cap
-        assert "final prompt with trailing blank lines" in sampled
-        assert not sampled.rstrip().endswith("]...")
-
-    def test_lean_sampling_omission_markers_account_separators_exactly(self):
-        """Omission markers must account for record separators at gap boundaries without undercounting."""
-        records = [f"[USER]: r{i:03d} " + ("z" * 10000) for i in range(30)]
-        sampled = ContextCompressor._sample_summary_records(records)
-        assert len(sampled) <= ContextCompressor._SUMMARY_INPUT_MAX_CHARS
-        assert "chars elided" in sampled
-
-    def test_generate_summary_lean_samples_structural_records(self):
-        """_generate_summary in lean mode must feed complete multi-paragraph records to summarizer prompt."""
-        compressor = ContextCompressor(
-            model="test/model",
-            threshold_percent=0.85,
-            protect_first_n=2,
-            protect_last_n=2,
-            quiet_mode=True,
-            tail_mode="lean",
-        )
-        messages = [
-            {"role": "user", "content": f"msg-{i:04d} part1\n\npart2 " + ("w" * 500)}
-            for i in range(400)
-        ]
-        messages.append({
-            "role": "user",
-            "content": "newest action item para1\n\nnewest action item para2",
-        })
+        body = "para1\n\npara2 " + ("x" * 1200)
+        messages = [{"role": "user", "content": f"record-{i:04d} {body}"} for i in range(1200)]
         resp = MagicMock()
         resp.choices = [MagicMock()]
         resp.choices[0].message = MagicMock()
         resp.choices[0].message.content = "## Historical Task Snapshot\nDone."
-
         with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
-            summary = compressor._generate_summary(messages)
-
-        assert summary is not None
+            assert compressor._generate_summary(messages) is not None
         assert mock_call.call_count == 1
         prompt = mock_call.call_args.kwargs["messages"][0]["content"]
-        assert "[USER]: newest action item para1\n\nnewest action item para2" in prompt
+        assert "chars elided" in prompt
+
+        transcript = prompt[prompt.index("[USER]: record-"):]
+        sections = [sec for sec in self._ELISION_MARKER.split(transcript) if "record-" in sec]
+        assert sections
+        for section in sections:
+            assert section.startswith("[USER]: record-"), section[:60]
+        whole = re.findall(r"\[USER\]: record-\d{4} " + re.escape(body) + r"(?=\n\n|\n*$)", transcript)
+        assert len(whole) == transcript.count("[USER]: record-") > 8
+        # Newest record anchors the tail and both ends of the history are represented.
+        assert whole[-1].startswith("[USER]: record-1199 ")
+        assert whole[0].startswith("[USER]: record-0000 ")
+
+    def test_lean_sampling_oversized_middle_record_does_not_evict_tail(self):
+        """A record larger than one region's share is bounded inside itself, not allowed to consume
+        the other regions or push the newest record out of the prompt."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(400)]
+        records.append("[TOOL RESULT oversized-mid]: " + ("y" * (cap // 2)))
+        records.extend(f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(401, 800))
+        records.append("[USER]: newest-tail-record")
+        sampled = ContextCompressor._sample_summary_records(records)
+        assert len(sampled) <= cap
+        assert sampled.rstrip().endswith("[USER]: newest-tail-record")
+        assert "[TOOL RESULT oversized-mid]: yyyy" in sampled
+        assert sampled.count("y" * 1000) < (cap // 2) // 1000
+        assert sampled.count("[USER]: record-") > 8
 
     def test_iterative_update_path_is_bounded(self):
         """The iterative prompt (previous summary + new turns) must be bounded

@@ -197,7 +197,9 @@ export function useSessionLifecycle(opts: UseSessionLifecycleOptions) {
         const snapshot = await rpc<SessionHistorySnapshot>('session.history', { session_id: followed.runtimeId })
         const current = followedSessionRef.current
 
-        if (disposed || !snapshot || current?.runtimeId !== followed.runtimeId || getUiState().sid !== followed.runtimeId) {
+        const latestUi = getUiState()
+
+        if (disposed || !snapshot || latestUi.busy || current?.runtimeId !== followed.runtimeId || latestUi.sid !== followed.runtimeId) {
           return
         }
 

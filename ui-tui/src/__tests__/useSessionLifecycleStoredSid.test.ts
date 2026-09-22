@@ -6,7 +6,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { turnController } from '../app/turnController.js'
 import { resetTurnState } from '../app/turnStore.js'
-import { getUiState, resetUiState } from '../app/uiStore.js'
+import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import { useSessionLifecycle } from '../app/useSessionLifecycle.js'
 
 /** Mount the real hook and hand its API to the test once the first commit is done. */
@@ -137,6 +137,61 @@ describe('useSessionLifecycle durable session id', () => {
       { role: 'user', text: 'before' },
       { role: 'assistant', text: 'arrived elsewhere' }
     ])
+
+    mounted.unmount()
+    intervalSpy.mockRestore()
+  })
+
+  it('keeps a local turn visible when a follow request resolves after the UI becomes busy', async () => {
+    let followTick: null | (() => void) = null
+    let resolveHistory: null | ((snapshot: { count: number; messages: unknown[] }) => void) = null
+
+    const intervalSpy = vi.spyOn(globalThis, 'setInterval').mockImplementation((handler, timeout) => {
+      if (timeout === 2000) {
+        followTick = handler as () => void
+      }
+
+      return 1 as unknown as ReturnType<typeof setInterval>
+    })
+    const history = new Promise<{ count: number; messages: unknown[] }>(resolve => {
+      resolveHistory = resolve
+    })
+    const request = vi.fn(async () => ({
+      info: { cwd: '/tmp/w', model: 'test', skills: {}, tools: {} },
+      message_count: 1,
+      messages: [{ role: 'user', text: 'before' }],
+      resumed: 'durable-key-123',
+      running: false,
+      session_id: 'runtime-42',
+      status: 'idle'
+    }))
+    const rpc = vi.fn(async (method: string) => {
+      if (method === 'setup.status') {
+        return { provider_configured: true }
+      }
+
+      return method === 'session.history' ? history : null
+    })
+    const mounted = mountLifecycle(request, rpc)
+
+    await vi.waitFor(() => expect(mounted.api()).toBeTruthy())
+    mounted.api().resumeById('durable-key-123')
+    await vi.waitFor(() => expect(getUiState().sid).toBe('runtime-42'))
+    mounted.setHistoryItems.mockClear()
+
+    followTick!()
+    await vi.waitFor(() => expect(rpc).toHaveBeenCalledWith('session.history', { session_id: 'runtime-42' }))
+    patchUiState({ busy: true })
+    resolveHistory!({
+      count: 2,
+      messages: [
+        { role: 'user', text: 'before' },
+        { role: 'assistant', text: 'stale follower snapshot' }
+      ]
+    })
+    await history
+
+    expect(mounted.setHistoryItems).not.toHaveBeenCalled()
 
     mounted.unmount()
     intervalSpy.mockRestore()

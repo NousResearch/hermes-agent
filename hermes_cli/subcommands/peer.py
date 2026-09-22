@@ -255,12 +255,11 @@ def _is_read_timeout(exc: BaseException) -> bool:
     ``URLError``, but the one this lane hit fires mid-body: a synchronous peer
     turn can run for minutes, so the read timeout surfaces from ``resp.read()``
     as a bare ``socket.timeout`` — which *is* ``TimeoutError`` on Python 3.10+.
-    Both shapes mean the same thing: the request was sent, the answer was lost.
+    ONLY that bare shape means the request reached the peer and the answer was lost.
+    A ``URLError`` with a timeout reason is a connect/send failure: the request never
+    landed, a resend is safe, and it must take the "could not reach peer" path instead.
     """
-    if isinstance(exc, (TimeoutError, socket.timeout)):
-        return True
-    return (isinstance(exc, urllib.error.URLError)
-            and isinstance(getattr(exc, "reason", None), (TimeoutError, socket.timeout)))
+    return isinstance(exc, (TimeoutError, socket.timeout))
 
 
 class _DeliveryOutcomeUnknown(Exception):

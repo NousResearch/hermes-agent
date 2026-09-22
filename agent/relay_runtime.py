@@ -147,11 +147,52 @@ def _same_handle(a: Any, b: Any) -> bool:
 
 
 # Process-wide plugin-configuration result shared by every currently hosted profile.
-_RelayPluginConfigurationState = Enum("_RelayPluginConfigurationState", "UNINITIALIZED ACTIVE FOREIGN FAILED")
+_RelayPluginConfigurationState = Enum(
+    "_RelayPluginConfigurationState", "UNINITIALIZED DISABLED ACTIVE FOREIGN FAILED"
+)
 
 
 class _RelayPluginConfigurationLoadError(RuntimeError):
     """An explicitly selected Relay plugin configuration could not be loaded."""
+
+
+def _activation_requires_managed_execution(activation: Any) -> bool:
+    """Return whether Relay activated any static or dynamic plugin behavior.
+
+    Relay owns the report contract. An unfamiliar report stays fail-safe by
+    retaining Hermes managed execution instead of silently bypassing plugins.
+    """
+
+    def keep_enabled() -> bool:
+        logger.warning(
+            "Hermes could not determine whether the Relay activation is empty; keeping managed execution enabled"
+        )
+        return True
+
+    try:
+        report = getattr(activation, "report", None)
+    except Exception:
+        return keep_enabled()
+    if not isinstance(report, dict):
+        return keep_enabled()
+    resolved = report.get("resolved_config")
+    dynamic_plugins = report.get("dynamic_plugins")
+    if not isinstance(resolved, dict) or not isinstance(dynamic_plugins, list):
+        return keep_enabled()
+    components = resolved.get("components")
+    if not isinstance(components, list):
+        return keep_enabled()
+    if components:
+        return True
+    for plugin in dynamic_plugins:
+        if not isinstance(plugin, dict) or "selected" not in plugin:
+            return keep_enabled()
+        selected = plugin["selected"]
+        if not isinstance(selected, bool):
+            return keep_enabled()
+        if selected:
+            return True
+    return False
 
 
 @dataclass
@@ -242,7 +283,8 @@ class _ProcessRelayPluginConfiguration:
 
     def _activate(self, relay: Any) -> _RelayPluginConfigurationState:
         try:
-            self._initialize(relay)
+            if not self._initialize(relay):
+                return _RelayPluginConfigurationState.DISABLED
         except Exception as exc:
             self._activation = None
             if _is_relay_host_conflict(exc):
@@ -265,14 +307,16 @@ class _ProcessRelayPluginConfiguration:
             return _RelayPluginConfigurationState.FAILED
         return None
 
-    def _initialize(self, relay: Any) -> None:
-        """Initialize Relay with its ambient or explicitly selected configuration."""
+    def _initialize(self, relay: Any) -> bool:
+        """Initialize Relay and report whether the resolved configuration needs managed execution."""
         config_path = _configured_plugin_inputs()
         # An explicit file replaces Relay's user file; its system file always remains above either source.
         activation = _resolve_plugin_awaitable(relay.plugin.initialize({}, additional_plugins_toml=config_path))
         if activation is None:
             raise RuntimeError("NeMo Relay plugin initialization returned no activation handle")
         self._activation = activation
+        self._relay = relay
+        return _activation_requires_managed_execution(activation)
 
     def release(self, owner: Any) -> None:
         """Release one host and clear Relay after the final host exits."""

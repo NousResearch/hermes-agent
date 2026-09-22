@@ -20,6 +20,17 @@ HOST_CONFLICT = RuntimeError(
     "plugin initialization"
 )
 
+EMPTY_ACTIVATION_REPORT = {
+    "config": {"diagnostics": []},
+    "config_paths": [],
+    "dynamic_plugins": [],
+    "resolved_config": {"components": []},
+}
+ACTIVE_ACTIVATION_REPORT = {
+    **EMPTY_ACTIVATION_REPORT,
+    "resolved_config": {"components": [{"kind": "observability", "enabled": True}]},
+}
+
 
 class _FakeRelay:
     def __init__(
@@ -27,10 +38,12 @@ class _FakeRelay:
         *,
         initialize_error: Exception | None = None,
         activation_close_error: Exception | None = None,
+        activation_report: Any = ACTIVE_ACTIVATION_REPORT,
     ) -> None:
         self.events: list[tuple[Any, ...]] = []
         self.initialize_error = initialize_error
         self.activation_close_error = activation_close_error
+        self.activation_report = activation_report
         self.initialized_from: list[str | None] = []
         self.ScopeType = SimpleNamespace(Agent="agent")
         self.plugin = SimpleNamespace(initialize=self._initialize_plugins)
@@ -58,8 +71,10 @@ class _FakeRelay:
         relay = self
 
         class _Activation:
-            report = {"config": {"diagnostics": []}, "dynamic_plugins": []}
             is_active = True
+
+            def __init__(self) -> None:
+                self.report = relay.activation_report
 
             async def close(self) -> None:
                 relay.events.append(("plugin.activation.close",))
@@ -151,9 +166,44 @@ def _reset_runtime():
 @pytest.fixture
 def explicit_static_config(tmp_path, monkeypatch):
     config = tmp_path / "plugins.toml"
-    config.write_text("", encoding="utf-8")
+    config.write_text(
+        "version = 1\n\n"
+        "[[components]]\n"
+        'kind = "observability"\n'
+        "enabled = true\n\n"
+        "[components.config]\n"
+        "version = 4\n",
+        encoding="utf-8",
+    )
     monkeypatch.setenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, str(config))
     return config
+
+
+@pytest.mark.parametrize(
+    ("report", "expected"),
+    [
+        (EMPTY_ACTIVATION_REPORT, False),
+        (ACTIVE_ACTIVATION_REPORT, True),
+        (
+            {
+                **EMPTY_ACTIVATION_REPORT,
+                "dynamic_plugins": [{"id": "selected", "selected": True}],
+            },
+            True,
+        ),
+        (
+            {
+                **EMPTY_ACTIVATION_REPORT,
+                "dynamic_plugins": [{"id": "disabled", "selected": False}],
+            },
+            False,
+        ),
+        ({"config": {"diagnostics": []}}, True),
+    ],
+)
+def test_activation_report_controls_managed_execution(report, expected):
+    activation = SimpleNamespace(report=report)
+    assert relay_runtime._activation_requires_managed_execution(activation) is expected
 
 
 def test_unset_config_uses_relay_discovery(monkeypatch):
@@ -171,6 +221,28 @@ def test_unset_config_uses_relay_discovery(monkeypatch):
         host.ensure_session({"session_id": "session"})
         assert relay.events[0] == ("plugin.initialize", {})
         assert relay.events[1][0:2] == ("scope.push", relay_runtime.SESSION_SCOPE)
+    finally:
+        host.shutdown()
+
+    assert relay.events[-2:] == [
+        ("subscribers.flush_async",),
+        ("plugin.activation.close",),
+    ]
+
+
+def test_empty_ambient_discovery_does_not_enable_managed_execution(monkeypatch):
+    monkeypatch.delenv(relay_runtime.RELAY_PLUGINS_CONFIG_ENV, raising=False)
+    relay = _FakeRelay(activation_report=EMPTY_ACTIVATION_REPORT)
+    host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
+
+    try:
+        assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.DISABLED
+        )
+        assert relay.initialized_from == [None]
+        assert relay.events == [("plugin.initialize", {})]
     finally:
         host.shutdown()
 
@@ -988,7 +1060,11 @@ def test_real_binding_discovers_user_and_ignores_project_config(
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert host.managed_execution_enabled()
+        assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.DISABLED
+        )
         report = relay_runtime._PLUGIN_CONFIGURATION._activation.report
         config_paths = set(report["config_paths"])
         assert str(user_config) in config_paths
@@ -1030,7 +1106,11 @@ def test_real_binding_explicit_config_replaces_user_and_ignores_project(
 
     host = relay_runtime.RelayRuntime(relay=relay, profile_key="profile")
     try:
-        assert host.managed_execution_enabled()
+        assert not host.managed_execution_enabled()
+        assert (
+            host._plugin_configuration_state
+            is relay_runtime._RelayPluginConfigurationState.DISABLED
+        )
         report = relay_runtime._PLUGIN_CONFIGURATION._activation.report
         config_paths = set(report["config_paths"])
         assert str(selected_config) in config_paths

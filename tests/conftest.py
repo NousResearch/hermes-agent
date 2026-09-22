@@ -495,9 +495,10 @@ _HERMES_BEHAVIORAL_VARS = frozenset({
 def _hermetic_environment(tmp_path, monkeypatch):
     """Blank out all credential/behavioral env vars so local and CI match.
 
-    Also redirects HERMES_HOME and XDG_CONFIG_HOME to per-test tempdirs so
-    code under test cannot read the developer's Hermes or Relay configuration,
-    and pins TZ/LANG so datetime/locale-sensitive tests are deterministic.
+    Also redirects HERMES_HOME to a per-test tempdir so code that reads
+    ``~/.hermes/*`` cannot touch the real one, selects an empty Relay user
+    configuration, and pins TZ/LANG so datetime/locale-sensitive tests are
+    deterministic.
     """
     # 1. Blank every credential-shaped env var that's currently set.
     for name in list(os.environ.keys()):
@@ -542,9 +543,12 @@ def _hermetic_environment(tmp_path, monkeypatch):
     if not HOST_LOCK_DIR_AT_CONFTEST_IMPORT:
         monkeypatch.delenv("XDG_STATE_HOME", raising=False)
         monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "gateway-locks"))
-    fake_xdg_config_home = tmp_path / "xdg_config"
-    fake_xdg_config_home.mkdir()
-    monkeypatch.setenv("XDG_CONFIG_HOME", str(fake_xdg_config_home))
+    # Relay 0.9 normally discovers the user's XDG plugins.toml. Select an empty
+    # per-test user file instead so tests cannot activate a developer's plugins,
+    # without changing XDG_CONFIG_HOME for unrelated Hermes code under test.
+    relay_plugins = tmp_path / "relay-plugins.toml"
+    relay_plugins.write_text("version = 1\n", encoding="utf-8")
+    monkeypatch.setenv("HERMES_NEMO_RELAY_PLUGINS_TOML", str(relay_plugins))
     # Keep the subprocess-surviving isolation marker pointed at THIS test's
     # home (#82770): children spawned by the test inherit it by default, so
     # hermes_state's live-DB guard stays armed in them even when the test

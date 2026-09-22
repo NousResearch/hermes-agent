@@ -1193,6 +1193,72 @@ def test_scheduled_cloud_route_skips_moa_with_auto_selected_local_route(tmp_path
     ) == [cloud]
 
 
+def test_scheduled_cloud_route_skips_effective_scoped_and_auto_local_fallbacks(tmp_path, monkeypatch):
+    """Ordinary fallbacks are classified from scoped runtime routes, not catalog URLs."""
+    import yaml
+
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler_provider import _profile_cron_scope, scheduled_model_fallback_chain
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    (profile / ".env").write_text("NVIDIA_BASE_URL=http://192.168.1.20:8080/v1\n")
+    nvidia = {"provider": "nvidia", "model": "nvidia/test-model"}
+    auto = {"provider": "auto", "model": "local-test-model"}
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "model": {
+            "provider": "auto",
+            "default": "local-test-model",
+            "base_url": "http://127.0.0.1:11434/v1",
+        },
+        "fallback_providers": [nvidia, auto, cloud],
+    }
+    (profile / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    try:
+        with _profile_cron_scope(profile):
+            assert scheduled_model_fallback_chain(
+                {"id": "cloud-only", "provider": "nous"}, cfg,
+            ) == [cloud]
+    finally:
+        set_multiplex_active(False)
+
+
+def test_cron_agent_runtime_auth_recovery_receives_cloud_only_chain(monkeypatch):
+    """A primary that later returns 401/403 cannot recover through a local AIAgent fallback."""
+    import cron.scheduler as scheduler
+
+    local = {
+        "provider": "llamacpp",
+        "model": "local-test-model",
+        "base_url": "http://127.0.0.1:8080/v1",
+    }
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    jc = _job_config(model="nvidia/test-model", fallback_providers=(local, cloud))
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_job_runtime",
+        lambda *_args: ({
+            "provider": "nvidia",
+            "requested_provider": "nvidia",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+        }, "nvidia/test-model"),
+    )
+    monkeypatch.setattr(scheduler, "_load_credential_pool", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_init_cron_mcp_tools", lambda *_args: None)
+
+    setup = scheduler._resolve_cron_agent_setup(
+        {"id": "runtime-auth", "provider": "nvidia"},
+        "runtime-auth",
+        "runtime-auth",
+        jc,
+    )
+
+    assert setup.fallback_model == [cloud]
+
+
 def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     """Hot-serve: with a callable ``profile_homes`` the ticker re-reads the served set every cycle,
     so a profile created after the multiplexer started gets its jobs fired without a restart."""

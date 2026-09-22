@@ -189,12 +189,54 @@ def _scheduled_model_route_is_local(
             cfg.get("providers"),
             get_compatible_custom_providers(cfg),
         )
-        url = str(resolved.base_url or "").strip() if resolved is not None else ""
+        if resolved is not None:
+            from agent.secret_scope import get_secret_str
+
+            override = (
+                get_secret_str(resolved.base_url_env_var, "").strip()
+                if resolved.base_url_env_var else ""
+            )
+            url = override or str(resolved.base_url or "").strip()
     if not url:
         return False
     from agent.model_metadata import is_local_endpoint
 
     return is_local_endpoint(url)
+
+
+def _scheduled_fallback_route_is_local(entry: dict, cfg: dict) -> bool:
+    """Classify a fallback from the effective runtime route used for execution."""
+    provider = entry.get("provider")
+    model = entry.get("model")
+    if _scheduled_model_route_is_local(
+        provider, entry.get("base_url"), model=model, cfg=cfg,
+    ):
+        return True
+    if str(provider or "").strip().lower() == "moa":
+        # MoA's runtime endpoint is the virtual ``moa://local`` URI.  Its actual routes were
+        # already classified by _scheduled_model_route_is_local above.
+        return False
+    try:
+        from hermes_cli.fallback_config import resolve_entry_api_key
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        kwargs = {"requested": provider, "target_model": model}
+        if entry.get("base_url"):
+            kwargs["explicit_base_url"] = entry["base_url"]
+        api_key = resolve_entry_api_key(entry)
+        if api_key:
+            kwargs["explicit_api_key"] = api_key
+        runtime = resolve_runtime_provider(**kwargs)
+    except Exception:
+        # Resolution errors stay in the chain so the normal fallback machinery reports/skips them;
+        # absence of a runtime is not evidence that the route is machine-local.
+        return False
+    return _scheduled_model_route_is_local(
+        runtime.get("provider") or provider,
+        runtime.get("base_url"),
+        model=model,
+        cfg=cfg,
+    )
 
 
 def scheduled_model_fallback_chain(job: dict, cfg: dict) -> list[dict]:
@@ -213,9 +255,7 @@ def scheduled_model_fallback_chain(job: dict, cfg: dict) -> list[dict]:
         return chain
     return [
         entry for entry in chain
-        if not _scheduled_model_route_is_local(
-            entry.get("provider"), entry.get("base_url"), model=entry.get("model"), cfg=cfg,
-        )
+        if not _scheduled_fallback_route_is_local(entry, cfg)
     ]
 
 

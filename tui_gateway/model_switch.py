@@ -178,11 +178,29 @@ def _switch_request(raw_input: str, parsed_flags, persist_override) -> tuple[str
     return model_input, explicit_provider, one_turn, persist_override, getattr(f, "reasoning_effort", "") or ""
 
 
-def _current_model_runtime(agent, explicit_provider: str) -> tuple:
-    """(provider, model, base_url, api_key) to switch from: live agent, else configured runtime."""
+def _current_model_runtime(agent, explicit_provider: str, session: dict | None = None) -> tuple:
+    """(provider, model, base_url, api_key) to switch from: live agent, else a stored per-session
+    model_override (slash_worker mode), else the configured runtime."""
     if agent:
         return tuple(
             getattr(agent, k, "") or "" for k in ("provider", "model", "base_url", "api_key"))
+    if isinstance(session, dict) and isinstance(session.get("model_override"), dict) \
+            and not session.get("profile_home"):
+        # When there is no in-process agent (slash_worker mode) and no
+        # profile config of its own, honour the per-session model_override
+        # that a prior /model switch or Desktop --provider already stored.
+        # Without this, the switch falls through to _resolve_model() which
+        # reads the global profile default, ignoring the session's choice
+        # (#57570). Sessions with a profile_home resolve from the profile
+        # runtime instead (config.set recovery path); their agent rebuild
+        # already honors the override via _resolve_agent_model_runtime.
+        _mo = session["model_override"]
+        return (
+            str(_mo.get("provider", "") or ""),
+            str(_mo.get("model", "") or ""),
+            str(_mo.get("base_url", "") or ""),
+            _mo.get("api_key", ""),
+        )
     current_model = _resolve_model()
     if explicit_provider:
         return explicit_provider.strip(), current_model, "", ""
@@ -232,7 +250,7 @@ def _expensive_model_confirm(result, current_base_url: str, current_api_key, age
 
 
 def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: str, snapshot):
-    """Swap the live agent in place, then restart/persist/mark/announce; a failed swap aborts."""
+    """Swap the live agent in place, then persist/mark/announce; a failed swap aborts."""
     try:
         agent.switch_model(
             new_model=result.new_model, new_provider=result.target_provider, api_key=result.api_key,
@@ -248,7 +266,6 @@ def _commit_agent_switch(sid: str, session: dict, agent, result, current_model: 
         logger.warning("In-place model switch failed for TUI agent: %s", exc)
         raise ValueError(f"Model switch to {result.new_model} failed ({exc}); "
                          f"staying on {getattr(agent, 'model', current_model)}.") from exc
-    _restart_slash_worker(sid, session)
     _persist_live_session_runtime(session)
     _persist_live_session_system_prompt(session)
     _append_model_switch_marker(session, model=result.new_model, provider=result.target_provider)
@@ -270,7 +287,7 @@ def _apply_model_switch(
     if one_turn and not agent:
         raise ValueError("/model --once requires a live session")
     current_provider, current_model, current_base_url, current_api_key = _current_model_runtime(
-        agent, explicit_provider)
+        agent, explicit_provider, session)
     # User-defined providers let switch_model resolve named custom endpoints
     # (e.g. "ollama-launch") and validate against saved model lists.
     user_provs = custom_provs = cfg = None
@@ -325,6 +342,13 @@ def _apply_model_switch(
         persist_model_selection(result)
     if reasoning_effort:
         _apply_switch_reasoning(sid, session, agent, reasoning_effort, persist_global=persist_global, one_turn=one_turn)
+    # Restart the slash worker (if any) so it picks up the new model/provider.
+    # When there's no in-process agent (slash_worker mode — agent is None), the
+    # actual agent lives in the worker subprocess and must be rebuilt via its
+    # session_key + updated model_override / config to reflect the switch.
+    # When agent is present, the in-place swap already updated it above; this
+    # call creates a fresh worker that will read the new model on next commands.
+    _restart_slash_worker(sid, session)
     return {
         "value": result.new_model, "warning": result.warning_message or "",
         "confirm_required": False,

@@ -340,6 +340,19 @@ Use HTTP servers when:
 
 HTTP and SSE servers honor the standard proxy settings: `HTTPS_PROXY` / `HTTP_PROXY` / `ALL_PROXY` (a `socks://` alias is normalized to `socks5://`), then the OS proxy (Windows registry, macOS system settings), with `NO_PROXY` hosts — including CIDR ranges and `*.example.com` patterns — connecting directly.
 
+### Streamable HTTP vs SSE
+
+A bare `url:` entry connects with the Streamable HTTP transport (POST-first). Servers that expose only the older SSE transport — commonly endpoints whose URLs end in `/sse`, where the POST handshake is answered with `405 Method Not Allowed` — declare it explicitly:
+
+```yaml
+mcp_servers:
+  serena:
+    url: "http://localhost:9121/sse"
+    transport: sse
+```
+
+Pinning `transport: sse` skips the failed Streamable HTTP attempt at every startup. Without the key, Hermes still recovers: an initial connect that Streamable HTTP rejects with a 400-family status (such as `405`) or an opaque SDK internal error is retried over SSE, and the result is latched for the rest of the session so reconnects skip the doomed attempt. The startup log announces the fallback and recommends pinning the key in `config.yaml`. The fallback only runs on the initial connect — never mid-session after a proven connection, and never on a timeout, which signals a network problem rather than a transport mismatch. If both transports fail, the error reports both attempts and repeats the suggestion to pin `transport: sse` for SSE-only servers.
+
 ### OAuth-authenticated HTTP servers
 
 Most hosted MCP servers (Cloudflare, Linear, Sentry, Atlassian, Asana, Figma, Stripe, …) require OAuth 2.1 instead of a static bearer token. Set `auth: oauth` and Hermes handles discovery, client identification, PKCE, token exchange, refresh, and step-up auth via the MCP Python SDK.

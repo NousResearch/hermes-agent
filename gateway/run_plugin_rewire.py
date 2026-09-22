@@ -82,9 +82,10 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
     """Control-socket ``reload-plugins``: force re-discovery under the requested home's scope so a plugin
     installed/enabled by another process (CLI, Desktop, ``plugins.manage``) loads now; the loaded event
     then re-wires that profile's adapters. Only the gateway home and served profile homes are accepted.
-    Answer: ``{"reloaded", "home", "plugins", "activations", "adapters_rewired"}``. Runs on the socket executor thread
-    (discovery is blocking); the count is read on the loop AFTER the re-wire callback (FIFO), so a
-    truthful "active now" reaches the caller."""
+    Answer: ``{"reloaded", "home", "plugins", "activations", "adapters_rewired", "callbacks_rewire_status"}``. Runs on the socket executor thread
+    (discovery is blocking); the count is read on the loop AFTER the re-wire callback (FIFO). A timeout
+    or failure leaves the discovery data intact but reports callback activation as unknown, rather than
+    claiming the callbacks are live."""
 
     def _handler(params: Optional[dict] = None) -> dict:
         from hermes_constants import get_hermes_home, hermes_home_key
@@ -109,12 +110,15 @@ def reload_plugins_verb(runner: Any, loop: asyncio.AbstractEventLoop) -> Callabl
             discover_plugins(force=True)
             manager = get_plugin_manager()
             names, activations = sorted(manager._plugins), activation_summaries(manager)
+        callbacks_rewire_status = "active"
         try:
             rewired = asyncio.run_coroutine_threadsafe(_count_adapters(runner, profile_name), loop).result(timeout=5.0)
         except Exception:
             rewired = None
-        return {"reloaded": True, "home": str(requested), "plugins": names, "activations": activations,
-                "adapters_rewired": rewired}
+            callbacks_rewire_status = "unknown"
+        return {"reloaded": callbacks_rewire_status == "active", "home": str(requested),
+                "plugins": names, "activations": activations, "adapters_rewired": rewired,
+                "callbacks_rewire_status": callbacks_rewire_status}
 
     return _handler
 

@@ -21,7 +21,7 @@ from unittest.mock import MagicMock, patch
 import pytest
 
 from gateway.config import PlatformConfig, Platform
-from gateway.run_plugin_rewire import GatewayPluginRewireMixin
+from gateway.run_plugin_rewire import GatewayPluginRewireMixin, reload_plugins_verb
 from hermes_cli.plugins import PluginContext, PluginManager, PluginManifest, discover_plugins, get_plugin_manager
 from plugins.platforms.telegram.adapter import TelegramAdapter
 
@@ -145,3 +145,48 @@ def test_runner_rewires_live_adapters_on_the_loop_when_plugins_load():
         return runner.adapters[Platform.TELEGRAM].rewire_plugin_handlers.call_count
 
     assert asyncio.run(scenario()) == 1
+
+
+def _reload_receipt(*, completion_error=None):
+    """Run the control-socket receipt with a deterministic loop-completion outcome."""
+    home = Path(os.environ["HERMES_HOME"])
+    manager = MagicMock(_plugins={})
+    activation = {
+        "name": "late_cmd", "key": "late_cmd",
+        "activated_now": {"callbacks": ["telegram"]},
+        "deferred": {"tools": ["late_tool"]},
+    }
+
+    def submit(coro, _loop):
+        coro.close()  # The mock replaces the loop, so it must consume the coroutine itself.
+        future = MagicMock()
+        if completion_error:
+            future.result.side_effect = completion_error
+        else:
+            future.result.return_value = 1
+        return future
+
+    with patch("hermes_constants.get_hermes_home", return_value=home), \
+         patch("hermes_cli.plugins.discover_plugins"), \
+         patch("hermes_cli.plugins.get_plugin_manager", return_value=manager), \
+         patch("hermes_cli.plugins_activation.activation_summaries", return_value=[activation]), \
+         patch("gateway.run_plugin_rewire.asyncio.run_coroutine_threadsafe", side_effect=submit):
+        return reload_plugins_verb(MagicMock(), MagicMock())()
+
+
+def test_reload_receipt_does_not_claim_callbacks_active_when_rewire_times_out():
+    receipt = _reload_receipt(completion_error=TimeoutError())
+
+    assert receipt["reloaded"] is False
+    assert receipt["callbacks_rewire_status"] == "unknown"
+    assert receipt["adapters_rewired"] is None
+    assert receipt["activations"][0]["activated_now"]["callbacks"] == ["telegram"]
+    assert receipt["activations"][0]["deferred"] == {"tools": ["late_tool"]}
+
+
+def test_reload_receipt_marks_callbacks_active_after_rewire_completes():
+    receipt = _reload_receipt()
+
+    assert receipt["reloaded"] is True
+    assert receipt["callbacks_rewire_status"] == "active"
+    assert receipt["adapters_rewired"] == 1

@@ -229,6 +229,7 @@ class PluginContext:
         self.manifest = manifest
         self._manager = manager
         self._llm: Any = None  # lazy; tests preseed it (see ``llm``)
+        self._decision: Any = None  # lazy; provider-neutral bounded decisions
 
     @property
     def plugin_id(self) -> str:
@@ -391,6 +392,18 @@ class PluginContext:
             from agent.plugin_llm import PluginLlm
             self._llm = PluginLlm(plugin_id=self.plugin_id)
         return self._llm
+
+    @property
+    def decision(self) -> Any:
+        """Host-owned bounded-decision facade scoped to this plugin and profile.
+
+        The facade receives only state explicitly supplied by the caller and never adds a model-visible
+        tool or modifies the main conversation prompt.
+        """
+        if self._decision is None:
+            from agent.decision_runtime import DecisionRuntime
+            self._decision = DecisionRuntime(plugin_id=self.plugin_id, scope=self._manager.scope_key)
+        return self._decision
 
     @cached_property
     def subagent_lifecycle(self) -> Any:
@@ -1031,6 +1044,11 @@ class PluginContext:
 # the displaced entry. Rows: (method, kind, registry module, base-class module:attr, label, docstring,
 # options). ``normalize``: ``strip`` (default), ``lower`` (strip+lowercase) or ``None`` (raw name).
 _SCOPED_PROVIDER_REGISTRARS: Tuple[Tuple[str, str, str, str, str, str, Dict[str, Any]], ...] = (
+    ("register_decision_provider", "decision_provider", "agent.decision_registry",
+     "agent.decision_provider:DecisionProvider", "decision provider",
+     "Register an :class:`agent.decision_provider.DecisionProvider`; trusted plugin code invokes it "
+     "through :attr:`PluginContext.decision` without adding an agent-visible tool.",
+     {"normalize": "lower"}),
     ("register_image_gen_provider", "image_gen_provider", "agent.image_gen_registry",
      "agent.image_gen_provider:ImageGenProvider", "image_gen provider",
      "Register an :class:`agent.image_gen_provider.ImageGenProvider`; "

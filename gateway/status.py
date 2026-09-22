@@ -1196,6 +1196,39 @@ def runtime_status_pid_is_live(record: Optional[dict[str, Any]]) -> bool:
     return _live_pid_from_record(record) is not None
 
 
+def runtime_status_hosts_live_gateway(
+    record: Optional[dict[str, Any]], *, expected_home: Optional[Path] = None
+) -> Optional[int]:
+    """Presentational host PID when a NON-``gateway run`` process is carrying the loop (#116416).
+
+    Some deployments run the messaging loop in-process inside a wrapper (a ``hermes dashboard``
+    process with embedded gateway duties): its command line never satisfies the strict
+    ``looks_like_gateway_runtime_command_line`` identity, so every lifecycle surface reports the
+    gateway stopped while messaging is live. Here the evidence that matters is writer liveness:
+    the snapshot is FRESH (inside the stale TTL — only its writer re-stamps ``updated_at``) and its
+    PID survives the start-time reuse guard, so some live process is actively hosting the loop.
+
+    Returns that PID for status DISPLAY only. Lifecycle actions (stop/kill/restart/takeover) must
+    NOT act on it: they keep the strict command-line identity so a wrapper process hosting other
+    duties is never signalled. A SIGKILLed gateway's recycled PID cannot impersonate this: the
+    start-time guard rejects it, and its orphaned snapshot goes stale within the TTL anyway."""
+    payload = record if isinstance(record, dict) else {}
+    if payload.get("gateway_state") in {None, "stopped", "startup_failed"}:
+        return None
+    if runtime_status_is_stale(payload):
+        return None
+    pid = _live_pid_from_record(payload)
+    if pid is None:
+        return None
+    if expected_home is not None:
+        record_home = payload.get("hermes_home")
+        if record_home and not _same_hermes_home(str(record_home), expected_home):
+            return None
+    elif not _pid_record_belongs_to_current_profile(payload):
+        return None
+    return pid
+
+
 def parse_active_agents(raw: Any) -> int:
     """Coerce ``active_agents`` to a non-negative int; shared by writer and both HTTP readers."""
     try:

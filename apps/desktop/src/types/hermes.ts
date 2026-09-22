@@ -1327,6 +1327,10 @@ export interface StatusResponse {
   gateway_state: string | null
   gateway_updated_at: string | null
   hermes_home: string
+  /** Display-only: PID of the live non-`gateway run` host (e.g. a dashboard process) carrying
+   *  the messaging loop in-process when no lifecycle-manageable gateway exists. Never a stop /
+   *  restart / drain target — `gateway_running` remains the action signal. */
+  hosted_pid?: number | null
   latest_config_version: number
   release_date: string
   version: string

@@ -200,6 +200,11 @@ Web Dashboard 暴露了一个供前端使用的 REST API。你也可以直接调
 
 返回 agent 版本、gateway 状态、平台状态和活跃会话数。
 
+两个 PID 字段契约不同：`gateway_pid` 是可生命周期管理的 `gateway run` 进程（stop/restart/drain
+的作用对象）；`hosted_pid` 仅用于展示——当 `gateway_running` 为 `false` 但新鲜心跳快照证明消息
+循环正由某个非 `gateway run` 宿主进程（如 dashboard 进程）进程内承载时，该字段报告此宿主进程。
+行动信号始终是 `gateway_running`，而非任一 PID。
+
 ### GET /api/sessions
 
 返回最近 20 个会话的元数据（模型、token 数、时间戳、预览）。

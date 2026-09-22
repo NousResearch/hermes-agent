@@ -5026,12 +5026,27 @@ def _cmd_status(args):
             print()
             _print_lines(*_STATUS_RUNNING_HINTS[_status_host_kind()])
         else:
-            print("✗ Gateway is not running")
-            _print_runtime_health()
-            print()
-            print("To start:")
-            print("  hermes gateway run      # Run in foreground")
-            _print_lines(*_STATUS_STOPPED_HINTS[_status_host_kind()])
+            # Display-only host trust (#116416): a fresh-heartbeat runtime record whose PID
+            # survives the reuse guard means a live NON-``gateway run`` process is carrying
+            # the loop (e.g. embedded in-process inside a dashboard/wrapper deployment).
+            # Report it instead of "not running" — a false "down" nudges operators into
+            # starting a second gateway that fights the live one for sessions/tokens.
+            # stop/restart keep the strict process identity and never act on it.
+            from gateway.status import read_runtime_status, runtime_status_hosts_live_gateway
+            hosted_pid = runtime_status_hosts_live_gateway(read_runtime_status())
+            if hosted_pid is not None:
+                print(f"✓ Gateway messaging loop is live — hosted in-process by PID {hosted_pid}")
+                print("  (not a standalone `hermes gateway run` process; gateway stop/restart do not manage it)")
+                _print_runtime_health()
+                _print_multiplex_standalone_reason()
+                _print_served_ingress_urls()
+            else:
+                print("✗ Gateway is not running")
+                _print_runtime_health()
+                print()
+                print("To start:")
+                print("  hermes gateway run      # Run in foreground")
+                _print_lines(*_STATUS_STOPPED_HINTS[_status_host_kind()])
 
     _print_duplicate_credential_warnings()
     _print_other_profiles_gateway_status()

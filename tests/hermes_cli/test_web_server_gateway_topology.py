@@ -526,10 +526,11 @@ class TestStatusEndpointTopology:
             assert data["profiles"] == ["default", "coder"]
             assert data["gateway_mode"] == "multiplex"
             # But the per-gateway detail (host ports = recon) stays gated,
-            # alongside hermes_home / gateway_pid.
+            # alongside hermes_home / gateway_pid / hosted_pid.
             assert "gateways" not in data
             assert "hermes_home" not in data
             assert "gateway_pid" not in data
+            assert "hosted_pid" not in data
         finally:
             monkeypatch.setattr(
                 web_server.app.state, "auth_required", False, raising=False

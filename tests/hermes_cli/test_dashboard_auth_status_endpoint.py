@@ -74,7 +74,7 @@ def test_status_reports_auth_required_in_gated_mode(gated_client):
 # (it is in ``PUBLIC_API_PATHS``), so on a network-exposed bind it must not
 # leak that detail to anonymous callers.
 _HOST_DETAIL_FIELDS = frozenset({
-    "hermes_home", "config_path", "env_path", "gateway_pid",
+    "hermes_home", "config_path", "env_path", "gateway_pid", "hosted_pid",
     "gateway_health_url",
 })
 

@@ -375,6 +375,90 @@ class TestGatewayRuntimeStatus:
                 == 139
             ), cmdline
 
+    def _hosted_record(self, **overrides):
+        from datetime import datetime, timezone
+
+        record = {
+            "pid": 4242,
+            "kind": "hermes-gateway",
+            "argv": ["hermes", "dashboard", "--host", "127.0.0.1", "--no-open"],
+            "start_time": 1000,
+            "gateway_state": "running",
+            # Fresh by construction: only the writer re-stamps this.
+            "updated_at": datetime.now(timezone.utc).isoformat(),
+            "platforms": {"telegram": {"state": "connected"}},
+        }
+        record.update(overrides)
+        return record
+
+    def test_hosts_live_gateway_trusts_fresh_heartbeat_over_argv(self, monkeypatch):
+        """#116416: a wrapper process (dashboard etc.) carrying the loop in-process has no
+        ``gateway run`` argv, but its fresh heartbeat + live PID prove the loop is served."""
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "hermes dashboard --host 127.0.0.1 --no-open",
+        )
+
+        assert status.runtime_status_hosts_live_gateway(self._hosted_record()) == 4242
+
+    def test_hosts_live_gateway_rejects_stale_record(self, monkeypatch):
+        """A SIGKILLed gateway's orphaned snapshot is history once past the TTL, whatever its
+        recorded PID now hosts."""
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+
+        assert status.runtime_status_hosts_live_gateway(
+            self._hosted_record(updated_at="2020-01-01T00:00:00+00:00")
+        ) is None
+
+    def test_hosts_live_gateway_rejects_terminal_states(self, monkeypatch):
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+
+        assert status.runtime_status_hosts_live_gateway(
+            self._hosted_record(gateway_state="stopped")) is None
+        assert status.runtime_status_hosts_live_gateway(
+            self._hosted_record(gateway_state="startup_failed")) is None
+        assert status.runtime_status_hosts_live_gateway(
+            self._hosted_record(gateway_state=None)) is None
+
+    def test_hosts_live_gateway_rejects_dead_and_recycled_pid(self, monkeypatch):
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: False)
+        assert status.runtime_status_hosts_live_gateway(self._hosted_record()) is None
+
+        # PID recycled onto a different process: start-time guard refuses it.
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 2000)
+        assert status.runtime_status_hosts_live_gateway(self._hosted_record()) is None
+
+    def test_hosts_live_gateway_scopes_to_expected_home(self, monkeypatch):
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+
+        coder_home = Path("/opt/data/profiles/coder")
+        assert status.runtime_status_hosts_live_gateway(
+            self._hosted_record(hermes_home=str(coder_home)), expected_home=coder_home
+        ) == 4242
+        # Another profile's host must not lend its liveness to this scope.
+        assert status.runtime_status_hosts_live_gateway(
+            self._hosted_record(hermes_home="/opt/data/profiles/other"),
+            expected_home=coder_home,
+        ) is None
+
+    def test_hosts_live_gateway_strict_ladder_unchanged_for_wrapper_cmdline(self, monkeypatch):
+        """The display-only trust must NOT widen lifecycle identity: the strict runtime-PID
+        probe still refuses a non-``gateway run`` host (stop/restart keep their safety)."""
+        monkeypatch.setattr(status, "_pid_exists", lambda pid: True)
+        monkeypatch.setattr(status, "_get_process_start_time", lambda pid: 1000)
+        monkeypatch.setattr(
+            status, "_read_process_cmdline",
+            lambda pid: "hermes dashboard --host 127.0.0.1 --no-open",
+        )
+
+        assert status.get_runtime_status_running_pid(self._hosted_record()) is None
+
 
     def test_command_line_belongs_to_profile_normalizes_separators(self):
         """A Windows argv renders HERMES_HOME with backslashes while the

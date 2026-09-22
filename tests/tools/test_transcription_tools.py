@@ -1300,7 +1300,9 @@ class TestCafConversion:
         """_convert_caf_to_wav uses ffmpeg when available."""
         caf_path = tmp_path / "voice.caf"
         caf_path.write_bytes(b"caff\x00" * 20)
-        wav_path = str(tmp_path / "voice.wav")
+        work_dir = tmp_path / "converted"
+        work_dir.mkdir()
+        wav_path = str(work_dir / "voice.wav")
 
         def fake_run(cmd, **kwargs):
             Path(wav_path).write_bytes(b"RIFF\x00\x00\x00\x00")
@@ -1313,7 +1315,7 @@ class TestCafConversion:
         monkeypatch.setattr(subprocess, "run", fake_run)
 
         from tools.transcription_tools import _convert_caf_to_wav
-        result = _convert_caf_to_wav(str(caf_path))
+        result = _convert_caf_to_wav(str(caf_path), str(work_dir))
         assert result == wav_path
         assert Path(result).exists()
 
@@ -1349,7 +1351,7 @@ class TestTranscribeCredentialReadGuard:
         from agent.file_safety import get_read_block_error
 
         env_file = tmp_path / ".env"
-        env_file.write_text("OPENAI_API_KEY=sk-secret\n")
+        env_file.write_text("OPENAI_API_KEY=sk-secret\n", encoding="utf-8")
 
         expected = get_read_block_error(str(env_file))
         assert expected, "test setup: a .env file should be read-blocked"

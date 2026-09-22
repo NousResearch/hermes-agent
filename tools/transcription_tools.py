@@ -15,7 +15,9 @@ import shutil
 import threading
 import time
 import importlib.util as _ilu
+from contextlib import ExitStack
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from typing import Optional, Dict, Any
 
 from utils import is_truthy_value
@@ -408,27 +410,24 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
-    if not _is_local_stt_provider(provider, stt_config):
-        error = _validate_audio_file_size(Path(file_path))
-        if error:
-            return error
-        # Convert CAF (iMessage voice notes) to WAV for cloud STT providers.
-        if Path(file_path).suffix.lower() == ".caf":
-            file_path = _convert_caf_to_wav(file_path)
-            if not file_path:
-                return _error_result("CAF audio could not be converted to WAV.")
-    # Best-effort pre-upload silence trim for built-in cloud providers.
-    trim_cleanup_dir: Optional[str] = None
-    if provider in CLOUD_STT_PROVIDERS:
-        trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
-        if trimmed:
-            file_path = trimmed
-            trim_cleanup_dir = os.path.dirname(trimmed)
-    try:
+    with ExitStack() as cleanup:
+        if not _is_local_stt_provider(provider, stt_config):
+            error = _validate_audio_file_size(Path(file_path))
+            if error:
+                return error
+            # Never overwrite a neighboring WAV or leave converted voice notes behind.
+            if Path(file_path).suffix.lower() == ".caf":
+                work_dir = cleanup.enter_context(TemporaryDirectory(prefix="hermes-caf-"))
+                file_path = _convert_caf_to_wav(file_path, work_dir)
+                if not file_path:
+                    return _error_result("CAF audio could not be converted to WAV.")
+        # Best-effort pre-upload silence trim for built-in cloud providers.
+        if provider in CLOUD_STT_PROVIDERS:
+            trimmed = _trim_silence_for_cloud_stt(file_path, stt_config)
+            if trimmed:
+                file_path = trimmed
+                cleanup.callback(shutil.rmtree, os.path.dirname(trimmed), ignore_errors=True)
         return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
-    finally:
-        if trim_cleanup_dir:
-            shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
 
 
 # Built-in provider -> (stt section, config key, default, treat-empty-as-missing). "local_command"

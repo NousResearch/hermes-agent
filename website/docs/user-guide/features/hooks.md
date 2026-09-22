@@ -1520,6 +1520,8 @@ Applies to every tool. For terminal-only rewriting see `transform_terminal_outpu
 
 Fires inside the `terminal` tool after foreground process capture has already been bounded by the environment, and before the final output limit. It lets plugins replace the captured stdout/stderr; the replacement is still subject to the final output limit.
 
+It also fires for background-process output on its way to the model or the chat: the `process_manage` `poll` / `wait` / `log` / `kill` results (and `list` previews) and the completion, heartbeat and watch-pattern notifications. There `returncode` is `None` while the process is still running and `env_type` is an empty string (the environment is not recorded per process). In both cases the hook runs *before* secret redaction, so a replacement that still carries a credential is masked.
+
 **Callback signature:**
 
 ```python

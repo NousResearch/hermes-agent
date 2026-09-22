@@ -25,7 +25,7 @@ from typing import TYPE_CHECKING, Any, Callable, Dict, List, Mapping, Optional, 
 from hermes_constants import get_hermes_home, reset_hermes_home_override, set_hermes_home_override
 from registration_lifecycle import replacement_coordinator
 from hermes_cli.plugins_discovery import ENTRY_POINTS_GROUP, _select_entry_point_group
-from hermes_cli.plugins_manifest import PluginManifest, manifest_key, validate_config_schema
+from hermes_cli.plugins_manifest import PluginManifest, manifest_key, portable_mcp_server_name, validate_config_schema
 from hermes_cli.plugins_state import _plugin_settings_entry
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -528,9 +528,10 @@ class PluginLoaderMixin:
             registered: list[str] = []
             try:
                 for server_name, config in package.mcp_servers.items():
-                    internal_name = f"{manifest.skill_namespace}__{server_name}"
+                    internal_name = portable_mcp_server_name(lookup_key, server_name)
                     if internal_name in self._portable_mcp_servers:
-                        logger.warning("Agent Plugin '%s' MCP server collision: %s", lookup_key, internal_name)
+                        logger.warning("Agent Plugin '%s' MCP server '%s' skipped: name already taken by plugin '%s'; rename one server",
+                                       lookup_key, internal_name, self._portable_mcp_server_plugins.get(internal_name, "?"))
                         continue
                     self._portable_mcp_servers[internal_name] = dict(config)
                     self._portable_mcp_server_plugins[internal_name] = lookup_key

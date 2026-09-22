@@ -59,10 +59,25 @@ def _plugins_debug() -> bool:
 
 def _portable_skill_namespace(key: str) -> str:
     """Return a readable, collision-resistant namespace for a portable plugin."""
-    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
-    slug = slug.strip("-_") or "plugin"
+    slug = _portable_slug(key)
     digest = hashlib.sha256(key.encode("utf-8")).hexdigest()[:8]
     return f"agent-plugin-{slug}-{digest}"
+
+
+def _portable_slug(key: str) -> str:
+    slug = "".join(ch if ch.isascii() and (ch.isalnum() or ch in "_-") else "-" for ch in key.lower())
+    return slug.strip("-_") or "plugin"
+
+
+def portable_mcp_server_name(key: str, server: str) -> str:
+    """Internal name of a portable plugin's MCP server: ``<plugin>__<server>``, or just ``<plugin>`` when the
+    two slugs match (the one-server package). No ``agent-plugin-`` prefix and no digest: those keep plugin-data
+    and skill names collision-free without coordination, but here they cost ~40 chars of every tool name, and
+    ``mcp__<server>__<tool>`` is capped at 64 by providers, so the tool verb was being hash-clamped away.
+    Server names only need to be unique among loaded portable servers, and the loader refuses a clash."""
+    plugin = _portable_slug(key)
+    server_slug = _portable_slug(server)
+    return plugin if plugin == server_slug else f"{plugin}__{server_slug}"
 
 
 def _display_author(value: object) -> str:

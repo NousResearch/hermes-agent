@@ -1480,13 +1480,13 @@ def _plugin_server_rows(plugin_dir: Path | None, key: str, *, portable: bool) ->
     declared = namespace.get("servers", {})
     if not isinstance(declared, dict):
         return []
-    server_namespace = _tools_mod("hermes_cli.plugins_manifest")._portable_skill_namespace(key)
+    server_name_for = _tools_mod("hermes_cli.plugins_manifest").portable_mcp_server_name
     liveness = _tools_mod("tools.mcp_liveness")
     core = _tools_mod("tools.mcp_tool_common")._core
     resolve_key = _tools_mod("tools.mcp_tool_scope")._resolve_server_key
     rows = []
     for name in sorted(declared):
-        internal_name = f"{server_namespace}__{name}"
+        internal_name = server_name_for(key, name)
         connection_key = resolve_key(internal_name)
         server = core._servers.get(connection_key)
         connected = server is not None and (server.session is not None or server._is_recycled_stdio())

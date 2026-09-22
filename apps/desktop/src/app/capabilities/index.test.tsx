@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 import { QueryClientProvider } from '@tanstack/react-query'
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, waitFor, within } from '@testing-library/react'
 import { MemoryRouter } from 'react-router'
 import type * as ReactRouterDom from 'react-router'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -8,6 +8,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type * as HermesApi from '@/hermes'
 import { queryClient } from '@/lib/query-client'
 import type * as HubActions from '@/store/hub-actions'
+
+import { parseCatalog } from './catalog/catalog-data'
+import { $catalogCardView } from './catalog/store'
 
 const getSkills = vi.fn()
 const getToolsets = vi.fn()
@@ -97,6 +100,7 @@ async function renderSkills() {
 }
 
 beforeEach(() => {
+  $catalogCardView.set(true)
   getSkills.mockResolvedValue([])
   getToolsets.mockResolvedValue([toolset()])
   setToolsetEnabled.mockResolvedValue({ ok: true, name: 'web', enabled: false })
@@ -261,65 +265,74 @@ describe('CapabilitiesView toolset management', { timeout: 60_000 }, () => {
     expect(await screen.findByText(/Deep research steps/)).toBeTruthy()
   })
 
-  it('hub picker refuses to reinstall an already-installed skill', async () => {
-    const { notify } = await import('@/store/notifications')
-    const { EmbeddedHubPicker } = await import('./skills/embedded-hub-picker')
-
-    render(<EmbeddedHubPicker installedNames={new Set(['web-research'])} profile={null} />)
-
-    // The picker is expanded by default — the hub iframe is live on mount.
-    expect(document.querySelector('iframe')).toBeTruthy()
-
-    await act(async () => {
-      window.dispatchEvent(
-        new MessageEvent('message', {
-          data: { type: 'hermes-skill-pick', name: 'web-research', identifier: 'web-research' },
-          origin: 'https://hermes-agent.nousresearch.com'
-        })
-      )
-    })
-
-    // Refused with an informational toast, no install action spawned.
-    await waitFor(() =>
-      expect(vi.mocked(notify)).toHaveBeenCalledWith(
-        expect.objectContaining({ title: expect.stringContaining('web-research') })
-      )
+  it('keeps installed skills disabled in Browse and installs new cards into the pinned remote profile', async () => {
+    const { installHubSkill } = await import('@/store/hub-actions')
+    getSkills.mockResolvedValue([
+      { name: 'web-research', description: 'Research', enabled: true, category: 'research' }
+    ])
+    queryClient.setQueryData(
+      ['public-catalog', 'skills'],
+      parseCatalog('skills', [
+        { name: 'web-research', source: 'official', identifier: 'official/research/web-research' },
+        { name: 'gif-search', source: 'official', identifier: 'official/gifs/gif-search' }
+      ])
     )
+
+    render(
+      <QueryClientProvider client={queryClient}>
+        <MemoryRouter>
+          <CapabilitiesView embedded fixedConnection="homelab" fixedProfile="inbox-bot" />
+        </MemoryRouter>
+      </QueryClientProvider>
+    )
+
+    await screen.findByRole('switch', { name: 'web-research' })
+    const search = screen.getByRole('textbox', { name: 'Search skills' })
+    fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+    const installed = (await screen.findByRole('button', { name: 'web-research' })).closest('article')!
+    expect(within(installed).getByRole<HTMLButtonElement>('button', { name: 'Installed' }).disabled).toBe(true)
+    const available = screen.getByRole('button', { name: 'gif-search' }).closest('article')!
+    fireEvent.click(within(available).getByRole('button', { name: 'Install' }))
+    await waitFor(() =>
+      expect(installHubSkill).toHaveBeenCalledExactlyOnceWith('official/gifs/gif-search', {
+        connectionId: 'homelab',
+        profile: 'inbox-bot'
+      })
+    )
+    expect(screen.getByRole('textbox', { name: 'Search skills' })).toBe(search)
+    expect(document.querySelector('iframe')).toBeNull()
   })
 
-  it('mounts the hub iframe lazily and keeps it (hidden) across tab switches', async () => {
-    // On a non-Skills tab the docs-site iframe must not exist at all — an
-    // eagerly mounted hub is exactly the Capabilities lag bug.
-    await renderSkills() // ?tab=toolsets
-    await screen.findByRole('switch', { name: 'Turn Web Search toolset off' })
-    expect(document.querySelector('iframe')).toBeNull()
-    cleanup()
+  it('defers catalog requests until Browse and keeps one search input across management and browsing', async () => {
+    const fetch = vi.fn().mockResolvedValue({
+      ok: true,
+      json: async () => [{ name: 'example', source: 'official', identifier: 'official/example' }]
+    })
+    vi.stubGlobal('fetch', fetch)
 
-    // Embedded mode drives tabs through local state (the route hooks are
-    // mocked here), starting on Skills: the picker mounts with the tab.
-    await act(async () => {
+    try {
       render(
         <QueryClientProvider client={queryClient}>
-          <MemoryRouter initialEntries={['/capabilities']}>
-            <CapabilitiesView embedded />
+          <MemoryRouter>
+            <CapabilitiesView embedded fixedProfile="default" />
           </MemoryRouter>
         </QueryClientProvider>
       )
-    })
-
-    const iframe = document.querySelector('iframe')
-    expect(iframe).toBeTruthy()
-    expect(iframe!.closest('section')!.classList.contains('hidden')).toBe(false)
-
-    // Switch to Tools → the iframe STAYS mounted (no docs-site reload on the
-    // next visit) but its section is fully hidden, so nothing from the hub
-    // can paint over the toolsets UI.
-    await act(async () => {
-      fireEvent.click(screen.getByRole('button', { name: /Tools/ }))
-    })
-    const kept = document.querySelector('iframe')
-    expect(kept).toBeTruthy()
-    expect(kept!.closest('section')!.classList.contains('hidden')).toBe(true)
+      await screen.findByText('No skills found')
+      const search = screen.getByRole('textbox', { name: 'Search skills' })
+      expect(fetch).not.toHaveBeenCalled()
+      fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+      await screen.findByRole('button', { name: 'example' })
+      expect(fetch).toHaveBeenCalledTimes(1)
+      fireEvent.click(screen.getByRole('button', { name: 'Installed' }))
+      fireEvent.click(screen.getByRole('button', { name: 'Browse' }))
+      await screen.findByRole('button', { name: 'example' })
+      expect(fetch).toHaveBeenCalledTimes(1)
+      expect(screen.getByRole('textbox', { name: 'Search skills' })).toBe(search)
+      expect(document.querySelector('iframe')).toBeNull()
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 
   it('shows a vision explainer that deep-links to Settings → Models', async () => {

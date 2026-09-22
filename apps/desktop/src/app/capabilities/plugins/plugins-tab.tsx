@@ -1,16 +1,9 @@
 import { useStore } from '@nanostores/react'
-import {
-  memo,
-  type ReactNode,
-  type PointerEvent as ReactPointerEvent,
-  useEffect,
-  useMemo,
-  useRef,
-  useState
-} from 'react'
+import { memo, type ReactNode, useCallback, useEffect, useMemo, useState } from 'react'
 
 import { setEnvVar } from '@/api/config'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
+import { PageLoader } from '@/components/page-loader'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
 import { Switch } from '@/components/ui/switch'
@@ -21,7 +14,6 @@ import type { ProfileScope } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { triggerHaptic } from '@/lib/haptics'
 import { FolderOpen, Loader2, Monitor, Package, RefreshCw, Trash2 } from '@/lib/icons'
-import { CATALOG_ORIGIN, CATALOG_PICKER_URL } from '@/lib/plugin-catalog'
 import { cn } from '@/lib/utils'
 import {
   $agentPluginBusy,
@@ -41,7 +33,6 @@ import {
 } from '@/store/agent-plugins'
 import { confirm } from '@/store/confirm'
 import { notify, notifyError } from '@/store/notifications'
-import { $paneHeightOverride, setPaneHeightOverride } from '@/store/panes'
 import { openCatalogPluginInstall } from '@/store/plugin-catalog-install'
 import { openPluginInstallRequest } from '@/store/plugin-install-request'
 import { $connection } from '@/store/session'
@@ -49,39 +40,12 @@ import { $connection } from '@/store/session'
 import { PanelEmpty } from '../../overlays/panel'
 import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
+import type { CapabilityView } from '../catalog/capability-tabs'
+import { CatalogBrowser } from '../catalog/catalog-browser'
+import { type CatalogEntry, parseCatalog } from '../catalog/catalog-data'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
 import { PluginSettingsForm } from './plugin-settings-form'
-
-// The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
-// the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
-// hides the docs chrome and adds "+ Add to this Agent" per card, which posts
-//   { type: 'hermes-plugin-pick', name, repo, sha, subdir, tier, installCmd }
-// to the parent window. We validate the origin and open the shared
-// dual-target install modal (agent half → catalog-pinned install into the
-// scoped profile; desktop half → this app), so unified packages install both
-// halves in one flow. URLs live in `@/lib/plugin-catalog` so the
-// `hermes://plugin/install?catalog=` deep link resolves against the same feed.
-
-// Catalog viewport: persisted through the shared pane store, dragged from the
-// section's TOP edge ("pull the catalog up"), clamped so neither the catalog
-// nor the plugin list above can vanish. Same contract as EmbeddedHubPicker.
-const CATALOG_PANE_ID = 'capabilities-plugin-catalog'
-const CATALOG_DEFAULT_PX = 380
-const CATALOG_MIN_PX = 120
-const CATALOG_MAX_VH = 0.75
-const CATALOG_COLLAPSED_PX = 4
-const CATALOG_LIST_RESERVED_PX = 176
-
-interface PluginPickMessage {
-  installCmd?: string
-  name?: string
-  repo?: string
-  sha?: string
-  subdir?: string
-  tier?: string
-  type?: string
-}
 
 /** Deep-link anchor for a package row (`/capabilities?tab=plugins&plugin=<key>`).
  *  Accepts the agent key, the agent name, or the desktop record id. */
@@ -211,15 +175,11 @@ function ProvenancePill({ pkg }: { pkg: PluginPackage }) {
   return null
 }
 
-/** Column widths shared by the header and every row so the two control
- *  columns line up down the page like a table. */
-const HALF_COL = 'flex w-36 shrink-0 items-center gap-1.5'
-
-/** One control cell; `label` is the accessible name for screen readers only
- *  (the visible column label lives once, in the header). */
-function HalfCell({ label, children }: { label: string; children: ReactNode }) {
+/** Controls for one installed plugin half in the detail pane. */
+function HalfCell({ label, labelContent, children }: { label: string; labelContent?: ReactNode; children: ReactNode }) {
   return (
-    <div aria-label={label} className={HALF_COL} role="cell">
+    <div aria-label={label} className="flex w-full items-center gap-3" role="cell">
+      <span className="min-w-0 flex-1 text-xs text-(--ui-text-tertiary)">{labelContent ?? label}</span>
       {children}
     </div>
   )
@@ -238,6 +198,7 @@ function PackageRow({
   scope,
   profile,
   scopeLabel,
+  scopeSelector,
   busy,
   request,
   onAgentToggle,
@@ -249,6 +210,7 @@ function PackageRow({
   scope: null | string
   profile: ProfileScope
   scopeLabel: string
+  scopeSelector?: ReactNode
   busy: boolean
   request: GatewayRequest
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
@@ -284,15 +246,12 @@ function PackageRow({
   return (
     <>
       <div
-        className={cn(
-          'flex items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2.5',
-          !settingsOpen && 'last:border-b-0'
-        )}
+        className="flex flex-col gap-5"
         data-testid={`plugin-row-${pkg.key}`}
         id={pluginElementId(agent?.key ?? agent?.name ?? desktop?.id ?? pkg.key)}
         role="row"
       >
-        <div className="flex min-w-0 flex-1 items-start gap-2" role="cell">
+        <div className="flex w-full min-w-0 flex-1 items-start gap-2" role="cell">
           <div className="min-w-0 flex-1">
             <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
               <span>{pkg.name}</span>
@@ -415,7 +374,7 @@ function PackageRow({
           )}
         </HalfCell>
 
-        <HalfCell label={p.halfAgentIn(scopeLabel)}>
+        <HalfCell label={p.halfAgentIn(scopeLabel)} labelContent={scopeSelector}>
           {agent ? (
             <>
               {agent.update_available && (
@@ -465,7 +424,7 @@ function PackageRow({
         </HalfCell>
       </div>
       {hasSettings && settingsOpen && agent?.key && (
-        <div className="border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary,transparent) px-3 py-3 last:border-b-0">
+        <div className="mt-5">
           <PluginSettingsForm
             disabled={busy}
             fields={settingsFields}
@@ -493,25 +452,67 @@ function PackageRow({
   )
 }
 
-/** THE plugins surface: one row per package. Each row shows its Desktop half
- *  (this app — the same for every profile, gateway, or machine) and its Agent
- *  half (the selected profile's backend). Discovery sits underneath: the live
- *  catalog picker plus Install from Git for anything not in the catalog. */
+export function PluginActions({ profile }: { profile: ProfileScope }) {
+  const { t } = useI18n()
+  const d = t.settings.plugins
+  const { requestGateway } = useGatewayRequest()
+  const scope = profileParam(profile)
+
+  return (
+    <>
+      <Button
+        className="underline"
+        onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
+        size="xs"
+        variant="text"
+      >
+        {d.installModal.installFromGit}
+      </Button>
+      <Tip label={d.openFolder}>
+        <Button aria-label={d.openFolder} onClick={() => void revealPluginsDir()} size="icon-xs" variant="ghost">
+          <FolderOpen />
+        </Button>
+      </Tip>
+      <Tip label={d.rescan}>
+        <Button
+          aria-label={d.rescan}
+          onClick={() => {
+            triggerHaptic('selection')
+            void rescanAll(requestGateway, scope)
+          }}
+          size="icon-xs"
+          variant="ghost"
+        >
+          <RefreshCw />
+        </Button>
+      </Tip>
+    </>
+  )
+}
+
+/** Installed packages retain both halves' controls in the native detail pane.
+ *  Browse shares the Skills catalog; navigation and search belong to the shell. */
 export const PluginsTab = memo(function PluginsTab({
   profile,
   scopeSelector,
-  scopeLabel
+  scopeLabel,
+  view = 'installed',
+  query = '',
+  onQueryChange,
+  onViewChange
 }: {
   profile: ProfileScope
-  /** The Capabilities profile selector; rendered in the Agent column header so
-   *  it visibly governs only that column. */
+  query?: string
+  onQueryChange?: (value: string) => void
+  view?: CapabilityView
+  onViewChange?: (view: CapabilityView) => void
+  /** The profile selector governs only the Agent half, not the app-level Desktop half. */
   scopeSelector?: ReactNode
-  /** Display name of the selected profile for the Agent column label. */
+  /** Display name of the selected profile for the Agent half label. */
   scopeLabel?: string
 }) {
   const { t } = useI18n()
   const p = t.skills.plugins
-  const d = t.settings.plugins
   const { requestGateway } = useGatewayRequest()
 
   const desktopRecords = useStore($pluginRecords)
@@ -532,168 +533,94 @@ export const PluginsTab = memo(function PluginsTab({
     [agentRows, desktopRecords]
   )
 
-  useDeepLinkHighlight({ param: 'plugin', ready: () => true, elementId: pluginElementId })
+  const [selectedEntryId, setSelectedEntryId] = useState<string | null>(null)
 
-  // Catalog picker viewport (persisted height, collapse toggle, top-edge sash).
-  const heightOverride = useStore($paneHeightOverride(CATALOG_PANE_ID))
-  const height = heightOverride ?? CATALOG_DEFAULT_PX
-  const open = height > CATALOG_COLLAPSED_PX
-  const [pickerMounted, setPickerMounted] = useState(open)
-  const [dragging, setDragging] = useState(false)
-  const sectionRef = useRef<HTMLElement>(null)
+  const packageForTarget = useCallback(
+    (target: string) =>
+      packages.find(pkg => [pkg.key, pkg.agent?.key, pkg.agent?.name, pkg.desktop?.id].includes(target)),
+    [packages]
+  )
 
-  if (open && !pickerMounted) {
-    setPickerMounted(true)
-  }
+  useDeepLinkHighlight({
+    param: 'plugin',
+    ready: target => Boolean(packageForTarget(target)),
+    elementId: target => {
+      const pkg = packageForTarget(target)
 
-  const startDrag = (event: ReactPointerEvent<HTMLDivElement>) => {
-    if (event.button !== 0) {
-      return
-    }
+      return pluginElementId(pkg?.agent?.key ?? pkg?.agent?.name ?? pkg?.desktop?.id ?? target)
+    },
+    onResolve: useCallback(
+      (target: string) => {
+        const pkg = packageForTarget(target)
 
-    event.preventDefault()
-    const startY = event.clientY
-    const startHeight = height
-    const column = sectionRef.current?.parentElement
-    const columnMax = column ? column.clientHeight - CATALOG_LIST_RESERVED_PX : Number.POSITIVE_INFINITY
-    const max = Math.max(CATALOG_MIN_PX, Math.round(Math.min(window.innerHeight * CATALOG_MAX_VH, columnMax)))
-    setDragging(true)
-
-    const onMove = (move: globalThis.PointerEvent) => {
-      setPaneHeightOverride(
-        CATALOG_PANE_ID,
-        Math.round(Math.min(max, Math.max(CATALOG_MIN_PX, startHeight + (startY - move.clientY))))
-      )
-    }
-
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove)
-      setDragging(false)
-    }
-
-    window.addEventListener('pointermove', onMove)
-    window.addEventListener('pointerup', onUp, { once: true })
-  }
-
-  useEffect(() => {
-    if (!open) {
-      return undefined
-    }
-
-    const onMessage = (event: MessageEvent) => {
-      if (event.origin !== CATALOG_ORIGIN) {
-        return
-      }
-
-      const data = event.data as null | PluginPickMessage
-
-      if (!data || data.type !== 'hermes-plugin-pick' || !data.name || !data.repo) {
-        return
-      }
-
-      // Already-installed short-circuit + the dialog itself live in the shared
-      // helper so a catalog deep link behaves identically to this pick.
-      openCatalogPluginInstall(
-        {
-          name: String(data.name),
-          repo: String(data.repo),
-          sha: data.sha ? String(data.sha) : undefined,
-          subdir: data.subdir ? String(data.subdir) : undefined
-        },
-        scope
-      )
-    }
-
-    window.addEventListener('message', onMessage)
-
-    return () => window.removeEventListener('message', onMessage)
-  }, [open, p, scope])
+        if (pkg) {
+          onViewChange?.('installed')
+          onQueryChange?.('')
+          setSelectedEntryId(`installed:${pkg.key}`)
+        }
+      },
+      [onQueryChange, onViewChange, packageForTarget]
+    )
+  })
 
   const agentBusy = (row: AgentPluginRow) => busyKey === (row.key ?? row.name) || busyKey === row.name
 
+  const installedEntries = useMemo(
+    () =>
+      parseCatalog(
+        'plugins',
+        packages.map(pkg => ({
+          name: pkg.name,
+          identifier: pkg.key,
+          description: pkg.description,
+          category: pkg.kind === 'desktop' ? 'desktop' : 'general',
+          tier: pkg.agent?.catalog_tier ?? pkg.agent?.source ?? pkg.desktop?.kind ?? '',
+          repo: pkg.desktop?.packageOrigin?.repo ?? '',
+          sha: pkg.agent?.installed_sha ?? pkg.desktop?.packageOrigin?.sha ?? '',
+          version: pkg.agent?.version ?? ''
+        }))
+      ).map(entry => ({ ...entry, id: `installed:${entry.identifier}` })),
+    [packages]
+  )
+
+  const packageById = useMemo(() => new Map(packages.map(pkg => [`installed:${pkg.key}`, pkg])), [packages])
+
+  const isInstalled = (entry: CatalogEntry) =>
+    packageById.has(entry.id) ||
+    agentRows.some(row => (row.catalog_name === entry.name || row.name === entry.name) && !row.update_available)
+
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="min-h-32 flex-1 overflow-y-auto">
-        {/* Header: what the two columns mean, and the controls that act on
-            the whole page (install, folder, rescan). */}
-        <div className="flex flex-wrap items-start justify-between gap-3 px-3 pt-3 pb-2">
-          <p className="min-w-0 flex-1 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {p.pageBlurb}
-          </p>
-          <div className="flex shrink-0 items-center gap-1">
-            <Button
-              onClick={() => openPluginInstallRequest({ profile: scope, repo: '' })}
-              size="sm"
-              type="button"
-              variant="secondary"
-            >
-              {d.installModal.installFromGit}
+      {view === 'installed' && status === 'error' ? (
+        <PanelEmpty
+          action={
+            <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
+              {t.skills.refresh}
             </Button>
-            <Tip label={d.openFolder}>
-              <Button
-                aria-label={d.openFolder}
-                onClick={() => void revealPluginsDir()}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <FolderOpen className="size-3.5" />
-              </Button>
-            </Tip>
-            <Tip label={d.rescan}>
-              <Button
-                aria-label={d.rescan}
-                onClick={() => {
-                  triggerHaptic('selection')
-                  void rescanAll(requestGateway, scope)
-                }}
-                size="icon"
-                type="button"
-                variant="ghost"
-              >
-                <RefreshCw className="size-3.5" />
-              </Button>
-            </Tip>
-          </div>
-        </div>
+          }
+          description={error ?? undefined}
+          icon="error"
+          title={p.loadFailed}
+        />
+      ) : view === 'installed' && status === 'loading' && packages.length === 0 ? (
+        <PageLoader label={t.skills.loading} />
+      ) : (
+        <CatalogBrowser
+          installedEntries={installedEntries}
+          isInstalled={isInstalled}
+          kind="plugins"
+          onInstall={entry => openCatalogPluginInstall(entry, scope)}
+          onQueryChange={onQueryChange}
+          onSelectEntry={view === 'installed' ? setSelectedEntryId : undefined}
+          query={query}
+          renderInstalledDetail={entry => {
+            const pkg = packageById.get(entry.id)
 
-        {status === 'error' ? (
-          <PanelEmpty
-            action={
-              <Button onClick={() => void loadAgentPlugins(requestGateway, scope)} size="sm">
-                {t.skills.refresh}
-              </Button>
+            if (!pkg) {
+              return null
             }
-            description={error ?? undefined}
-            icon="error"
-            title={p.loadFailed}
-          />
-        ) : packages.length === 0 && status === 'ready' ? (
-          <p className="px-3 py-3 text-[length:var(--conversation-caption-font-size)] text-(--ui-text-tertiary)">
-            {p.emptyAll} {p.emptyHint}
-          </p>
-        ) : (
-          <div className="flex flex-col" role="table">
-            {/* Column header: the visible labels for the two control columns,
-                aligned with the cells below. The profile selector sits INSIDE
-                the Agent header so it visibly governs only that column. */}
-            <div
-              className="flex items-center gap-3 border-y border-(--ui-stroke-tertiary) bg-(--ui-bg-quinary) px-3 py-1.5 text-[0.68rem] text-(--ui-text-tertiary)"
-              role="row"
-            >
-              <div className="min-w-0 flex-1" role="columnheader" />
-              <div className={HALF_COL} role="columnheader">
-                <Monitor aria-hidden className="size-3.5 shrink-0" />
-                <Tip label={p.halfDesktopHint}>
-                  <span className="font-medium">{p.halfDesktop}</span>
-                </Tip>
-              </div>
-              <div className={HALF_COL} role="columnheader">
-                <Package aria-hidden className="size-3.5 shrink-0" />
-                {scopeSelector ?? <span className="truncate font-medium">{p.halfAgentIn(label)}</span>}
-              </div>
-            </div>
-            {packages.map(pkg => (
+
+            return (
               <PackageRow
                 busy={pkg.agent ? agentBusy(pkg.agent) : false}
                 key={pkg.key}
@@ -777,71 +704,14 @@ export const PluginsTab = memo(function PluginsTab({
                 request={requestGateway}
                 scope={scope}
                 scopeLabel={label}
+                scopeSelector={scopeSelector}
               />
-            ))}
-          </div>
-        )}
-      </div>
-
-      <section
-        className="relative flex min-h-9 flex-col overflow-hidden border-t border-(--ui-stroke-secondary)"
-        ref={sectionRef}
-      >
-        <div
-          className="group/catsash absolute inset-x-0 top-0 z-10 h-1 -translate-y-1/2 cursor-row-resize"
-          data-testid="plugin-catalog-sash"
-          onDoubleClick={() => setPaneHeightOverride(CATALOG_PANE_ID, undefined)}
-          onPointerDown={startDrag}
-        >
-          <div
-            className={cn(
-              'absolute inset-x-0 top-1/2 h-px -translate-y-1/2 transition-colors',
-              dragging ? 'bg-(--ui-stroke-secondary)' : 'group-hover/catsash:bg-(--ui-stroke-secondary)'
-            )}
-          />
-        </div>
-        <div className="flex shrink-0 items-center justify-between px-3 py-1.5">
-          <span className="text-[0.62rem] font-medium tracking-wide uppercase text-(--ui-text-quaternary)">
-            {p.catalogTitle}
-          </span>
-          <Button onClick={() => setPaneHeightOverride(CATALOG_PANE_ID, open ? 0 : undefined)} size="xs" variant="text">
-            {open ? p.catalogHide : p.catalogBrowse}
-          </Button>
-        </div>
-        {pickerMounted && (
-          <div className={cn('flex min-h-0 flex-col gap-1 px-3 pb-2', !open && 'hidden')}>
-            <div
-              style={{
-                border: '1px solid var(--ui-stroke-secondary)',
-                borderRadius: 8,
-                flex: `0 1 ${height}px`,
-                maxWidth: '100%',
-                minHeight: 0,
-                minWidth: 320,
-                overflow: 'hidden',
-                position: 'relative',
-                width: '100%'
-              }}
-            >
-              <iframe
-                sandbox="allow-scripts allow-same-origin"
-                src={CATALOG_PICKER_URL}
-                style={{
-                  background: 'transparent',
-                  border: 'none',
-                  height: '133.34%',
-                  pointerEvents: dragging ? 'none' : 'auto',
-                  transform: 'scale(0.75)',
-                  transformOrigin: 'top left',
-                  width: '133.34%'
-                }}
-                title={p.catalogTitle}
-              />
-            </div>
-            <p className="shrink-0 px-1 text-[0.65rem] leading-4 text-(--ui-text-quaternary)">{p.catalogHint}</p>
-          </div>
-        )}
-      </section>
+            )
+          }}
+          selectedEntryId={view === 'installed' ? selectedEntryId : undefined}
+          view={view}
+        />
+      )}
     </div>
   )
 })

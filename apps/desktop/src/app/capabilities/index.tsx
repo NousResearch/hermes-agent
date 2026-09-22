@@ -16,10 +16,12 @@ import { PanelEmpty } from '../overlays/panel'
 import { PageSearchShell } from '../page-search-shell'
 import type { SetStatusbarItemGroup } from '../shell/statusbar-controls'
 
+import { CapabilityTabs, type CapabilityView } from './catalog/capability-tabs'
+import { SkillCatalog } from './catalog/skill-catalog'
+import { UpdateSkillsButton } from './catalog/update-skills-button'
 import { ConnectorsTab } from './connectors/connectors-tab'
-import { PluginsTab } from './plugins/plugins-tab'
+import { PluginActions, PluginsTab } from './plugins/plugins-tab'
 import { CapabilityScopeSelector, useCapabilityScope } from './scope-selector'
-import { EmbeddedHubPicker } from './skills/embedded-hub-picker'
 import { SKILLS_QUERY_KEY, skillSearchTerms, useSkillsQuery } from './skills/skills-data'
 import { SkillsTab } from './skills/skills-tab'
 import { refreshToolCalls } from './toolsets/tool-calls'
@@ -71,13 +73,8 @@ export function CapabilitiesView({
   const gateway = useStoreSelector($gateway, g => (mode === 'connectors' ? g : null))
 
   const [query, setQuery] = useState('')
-
-  // Keep the docs iframe alive after the first Skills visit.
-  const [hubMounted, setHubMounted] = useState(mode === 'skills')
-
-  if (mode === 'skills' && !hubMounted) {
-    setHubMounted(true)
-  }
+  const [skillsView, setSkillsView] = useState<CapabilityView>('installed')
+  const [pluginsView, setPluginsView] = useState<CapabilityView>('installed')
 
   const scope = useCapabilityScope({ fixedConnection, fixedProfile })
 
@@ -116,7 +113,7 @@ export function CapabilitiesView({
   }, [mode, skills, t, toolsets])
 
   // MCP and Plugins load independently of the installed Skills/Tools lists.
-  const gated = mode === 'toolsets' || mode === 'skills'
+  const gated = mode === 'toolsets' || (mode === 'skills' && skillsView === 'installed')
   const pending = gated && !(skills && toolsets)
 
   const loadGate = !pending ? null : skillsFailed || toolsetsFailed ? (
@@ -145,25 +142,37 @@ export function CapabilitiesView({
         profile={scope.profile}
       />
     ),
-    // Agent plugins for the scoped profile (selector in the section header),
-    // app-level desktop plugins, and the docs catalog picker underneath.
+    // Agent plugins for the scoped profile and app-level desktop plugins.
     plugins: () => (
       <PluginsTab
         key={`plugins-${scope.key}`}
-        profile={scope.profile}
-        scopeLabel={scope.label}
-        scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
-      />
-    ),
-    skills: () => (
-      <SkillsTab
-        key={`skills-${scope.key}`}
-        onRefresh={() => void refreshCapabilities()}
+        onQueryChange={setQuery}
+        onViewChange={setPluginsView}
         profile={scope.profile}
         query={query}
-        skills={skills ?? []}
+        scopeLabel={scope.label}
+        scopeSelector={scope.options.length > 1 ? <CapabilityScopeSelector compact scope={scope} /> : undefined}
+        view={pluginsView}
       />
     ),
+    skills: () =>
+      skillsView === 'browse' ? (
+        <SkillCatalog
+          installedNames={installedSkillNames}
+          key={`catalog-${scope.key}`}
+          onQueryChange={setQuery}
+          profile={scope.profile}
+          query={query}
+        />
+      ) : (
+        <SkillsTab
+          key={`skills-${scope.key}`}
+          onRefresh={() => void refreshCapabilities()}
+          profile={scope.profile}
+          query={query}
+          skills={skills ?? []}
+        />
+      ),
     toolsets: () => (
       <ToolsetsTab key={`toolsets-${scope.key}`} profile={scope.profile} query={query} toolsets={toolsets ?? []} />
     )
@@ -175,10 +184,16 @@ export function CapabilitiesView({
       activeTab={mode}
       onSearchChange={setQuery}
       onTabChange={id => setMode(id as CapabilityMode)}
-      // The Connectors directory owns its search field; plugins has its own list.
-      searchHidden={mode === 'connectors' || mode === 'plugins'}
+      // The Connectors directory owns its search field.
+      searchHidden={mode === 'connectors'}
       searchHints={searchHints}
-      searchPlaceholder={mode === 'skills' ? t.skills.searchSkills : t.skills.searchToolsets}
+      searchPlaceholder={
+        mode === 'plugins'
+          ? t.catalog.searchPlugins
+          : mode === 'skills'
+            ? t.catalog.searchSkills
+            : t.skills.searchToolsets
+      }
       searchValue={query}
       tabs={[
         { id: 'skills', label: t.skills.tabSkills, meta: skills?.length ?? null },
@@ -189,18 +204,20 @@ export function CapabilitiesView({
     >
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
-        <div className="flex min-h-0 flex-1 flex-col">
-          <div className={mode === 'skills' ? 'min-h-40 flex-1 overflow-hidden' : 'min-h-0 flex-1'}>
-            {loadGate ?? tabContent[mode]()}
-          </div>
-          {hubMounted && (
-            <EmbeddedHubPicker
-              hidden={mode !== 'skills'}
-              installedNames={installedSkillNames}
-              profile={scope.profile}
-            />
-          )}
-        </div>
+        {(mode === 'skills' || mode === 'plugins') && (
+          <CapabilityTabs
+            actions={
+              mode === 'skills' ? (
+                <UpdateSkillsButton profile={scope.profile} />
+              ) : (
+                <PluginActions profile={scope.profile} />
+              )
+            }
+            onChange={mode === 'skills' ? setSkillsView : setPluginsView}
+            value={mode === 'skills' ? skillsView : pluginsView}
+          />
+        )}
+        <div className="flex min-h-0 flex-1 flex-col">{loadGate ?? tabContent[mode]()}</div>
       </div>
     </PageSearchShell>
   )

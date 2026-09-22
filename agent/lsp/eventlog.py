@@ -6,24 +6,29 @@ skipped, repeat "no project root" / "server unavailable"); INFO for once-per-ses
 transitions (first ``active for <root>``, first ``no project root`` per file) and every
 diagnostic event; WARNING for action-required failures (first ``server unavailable`` per
 (server_id, binary), every timeout / unexpected error).  Dedup uses module-level sets bounded
-by the distinct pairs touched in one process — a bounded LRU would re-fire suppressed lines.
+by the distinct pairs touched in one process, each capped at ``_ANNOUNCE_CAP`` keys: past it the
+bucket resets and the first-seen line re-fires once, so per-file keys can't grow for the life of
+a gateway process (#62950).
 """
 from __future__ import annotations
 
 import logging
 import os
 import threading
-from typing import List, Tuple
+from typing import List, Optional, Tuple
 
 # Dedicated logger name so the documented grep recipe survives any
 # ``logging.getLogger(__name__)`` rename of internal modules.
 event_log = logging.getLogger("hermes.lint.lsp")
 
 _announce_lock = threading.Lock()
+_ANNOUNCE_CAP = 512
 _announced_active: set = set()        # keys: (server_id, workspace_root)
 _announced_unavailable: set = set()   # keys: (server_id, binary_path_or_name)
 _announced_no_root: set = set()       # keys: (server_id, file_path)
-_ALL_BUCKETS = (_announced_active, _announced_unavailable, _announced_no_root)
+_announced_skipped: set = set()       # keys: (server_id, workspace_root)
+_announced_excluded: set = set()      # keys: (server_id, workspace_root)
+_ALL_BUCKETS = (_announced_active, _announced_unavailable, _announced_no_root, _announced_skipped, _announced_excluded)
 
 
 def _short_path(file_path: str) -> str:
@@ -32,7 +37,9 @@ def _short_path(file_path: str) -> str:
         return file_path
     try:
         rel = os.path.relpath(file_path)
-    except ValueError:
+    except (ValueError, OSError):
+        # Different drive (ValueError) or the process cwd was removed (OSError from getcwd):
+        # a log-line shortener must never turn a delivered diagnostic into a swallowed error.
         return file_path
     return file_path if rel.startswith(".." + os.sep) or rel == ".." else rel
 
@@ -45,6 +52,8 @@ def _emit_once(bucket: set, key: Tuple, server_id: str, level: int, first: str, 
     """Log *first* at *level* the first time *key* is seen, *repeat* at DEBUG thereafter."""
     with _announce_lock:
         is_first = key not in bucket
+        if is_first and len(bucket) >= _ANNOUNCE_CAP:
+            bucket.clear()
         bucket.add(key)
     _emit(server_id, level if is_first else logging.DEBUG, first if is_first else repeat)
 
@@ -104,6 +113,26 @@ def log_spawn_failed(server_id: str, workspace_root: str, exc: BaseException) ->
     _emit(server_id, logging.WARNING, f"spawn/initialize failed for {workspace_root}: {type(exc).__name__}: {exc}")
 
 
+def log_skipped_broken(server_id: str, workspace_root: str, file_path: str, retry_in: Optional[float] = None) -> None:
+    """A request was skipped because ``(server_id, root)`` is marked broken.  INFO once per root, then DEBUG:
+    at default log levels a skipped file and a clean file otherwise look identical (``log_clean`` is DEBUG).
+    ``retry_in`` (seconds, from ``lsp.broken_retry_seconds``) names when the pair gets another try."""
+    until = f"retry in {retry_in:.0f}s" if retry_in is not None else "no diagnostics for this root until restart"
+    _emit_once(_announced_skipped, (server_id, workspace_root), server_id, logging.INFO,
+               f"skipping {_short_path(file_path)}: {workspace_root} marked broken after an earlier failure ({until})",
+               f"skipping {_short_path(file_path)}: {workspace_root} marked broken")
+
+
+def log_root_excluded(server_id: str, workspace_root: str, file_path: str, *, invalid: bool = False) -> None:
+    """``workspace_root`` matches ``lsp.exclude_roots`` (or the key is malformed and every root is skipped).
+    INFO once per root — a deliberate gate must still be visible, or an excluded file looks like a clean one —
+    DEBUG thereafter."""
+    why = "lsp.exclude_roots is not a list (fix the key)" if invalid else "matches lsp.exclude_roots"
+    _emit_once(_announced_excluded, (server_id, workspace_root), server_id, logging.INFO,
+               f"skipping {_short_path(file_path)}: {workspace_root} {why}",
+               f"skipping {_short_path(file_path)}: {workspace_root} excluded")
+
+
 def log_reaped(keys: List[Tuple[str, str]], idle_timeout: float) -> None:
     """Idle clients were reaped.  INFO, one line per sweep.
 
@@ -116,6 +145,15 @@ def log_reaped(keys: List[Tuple[str, str]], idle_timeout: float) -> None:
     _emit("reaper", logging.INFO, f"reaped {len(keys)} idle client(s) after {idle_timeout:.0f}s: {summary}")
 
 
+def log_released(keys: List[Tuple[str, str]], reason: str) -> None:
+    """Clients were shut down because their workspace went away (worktree released or root deleted).
+    INFO, one line per event; forgets the ``log_active`` announcement like :func:`log_reaped`."""
+    with _announce_lock:
+        _announced_active.difference_update(keys)
+    summary = ", ".join(f"{sid} ({root})" for sid, root in keys)
+    _emit("reaper", logging.INFO, f"released {len(keys)} client(s) ({reason}): {summary}")
+
+
 def reset_announce_caches() -> None:
     """Test-only: clear the dedup caches.  Production code never calls this."""
     with _announce_lock:
@@ -125,7 +163,7 @@ def reset_announce_caches() -> None:
 
 __all__ = [
     "event_log", "log_clean", "log_disabled", "log_active", "log_diagnostics", "log_no_project_root",
-    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_reaped",
+    "log_server_unavailable", "log_timeout", "log_server_error", "log_spawn_failed", "log_skipped_broken", "log_root_excluded", "log_reaped",
     "reset_announce_caches",
 ]
 

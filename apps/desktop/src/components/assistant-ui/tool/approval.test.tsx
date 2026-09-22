@@ -106,6 +106,71 @@ describe('PendingApprovalStack', () => {
     expect($approvalRequest.get()).toBeNull()
   })
 
+  it('hands focus back to the surface the user was in before clicking Run', async () => {
+    mockGateway()
+    liveApproval()
+    setRequest('computer_use type', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+
+    // The agent's preceding computer_use click left focus in the terminal pane.
+    const terminal = document.createElement('textarea')
+    const pane = document.createElement('div')
+    pane.dataset.terminal = ''
+    pane.append(terminal)
+    document.body.append(pane)
+    terminal.focus()
+
+    try {
+      render(<PendingApprovalStack />)
+      const run = screen.getByRole('button', { name: /Run/ })
+
+      // Chromium moves focus onto the pressed button before `click` fires.
+      fireEvent.pointerDown(run)
+      run.focus()
+      fireEvent.click(run)
+
+      await waitFor(() => {
+        expect(hasOpenServerRequest('srq-approval')).toBe(false)
+      })
+      await waitFor(() => {
+        expect(document.activeElement).toBe(terminal)
+      })
+    } finally {
+      pane.remove()
+    }
+  })
+
+  it('leaves focus alone when the user moved on before the approval settled', async () => {
+    mockGateway()
+    liveApproval()
+    setRequest('computer_use type', undefined, { requestId: 'apr-1', serverRequestId: 'srq-approval' })
+
+    const terminal = document.createElement('textarea')
+    const elsewhere = document.createElement('input')
+    document.body.append(terminal, elsewhere)
+    terminal.focus()
+
+    try {
+      render(<PendingApprovalStack />)
+      const run = screen.getByRole('button', { name: /Run/ })
+
+      fireEvent.pointerDown(run)
+      run.focus()
+      fireEvent.click(run)
+      elsewhere.focus()
+
+      await waitFor(() => {
+        expect(hasOpenServerRequest('srq-approval')).toBe(false)
+      })
+      await act(async () => {
+        await Promise.resolve()
+      })
+      expect(document.activeElement).toBe(elsewhere)
+    } finally {
+      terminal.remove()
+      elsewhere.remove()
+    }
+  })
+
   it('falls back to the approval.respond RPC when no live server request is registered', async () => {
     // A prompt restored from `approval.pending` (no socket carried the frame):
     // the queue-level RPC is the only way to answer it.

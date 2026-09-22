@@ -1,6 +1,8 @@
 import type { GatewayWsUrlResult } from '@hermes/shared'
 import type { TranslucencyState } from '@hermes/shared/translucency'
 
+import type { ScreenshotApi } from '../electron/command-screenshot-types'
+import type { HudModifierApi } from '../electron/hud-modifier-types'
 import type { HermesNotification } from '../electron/notification-types'
 import type { PoolLimits } from '../electron/pool-limits'
 
@@ -51,8 +53,10 @@ declare global {
       // remote cache was dropped.
       revalidateConnection: () => Promise<{ ok: boolean; rebuilt: boolean }>
       // Keepalive: mark a pool profile backend as recently used so the idle
-      // reaper spares it while its chat is active.
-      touchBackend: (profile?: string | null) => Promise<{ ok: boolean }>
+      // reaper spares it while its chat is active. `activeTurn` reports whether
+      // a prompt turn leases the backend (early skip for cooperative
+      // retirement; the backend probe is the proof).
+      touchBackend: (profile?: string | null, options?: { activeTurn?: boolean }) => Promise<{ ok: boolean }>
       // Pool sizing (Settings → Advanced): device-local, live-applied by the
       // main process. get resolves the limits currently in force; set applies
       // (and persists) new ones, evicting/reaping to converge immediately.
@@ -90,6 +94,14 @@ declare global {
       // reply). Resolves true for the first window to claim a key, false for
       // peers — so N open windows don't all fire the same cue.
       claimAmbientCue: (key: string) => Promise<boolean>
+      // Renderer-drawn min/max/close for WSLg (`custom` true there only), sent
+      // over hermes:window-control; Electron/OS chrome owns them elsewhere.
+      windowControls: {
+        custom: boolean
+        minimize: () => void
+        toggleMaximize: () => void
+        close: () => void
+      }
       wakeIndicator?: {
         getState: () => Promise<WakeIndicatorState>
         setState: (state: WakeIndicatorState) => void
@@ -167,6 +179,9 @@ declare global {
         onCursor: (callback: (point: { x: number; y: number } | null) => void) => () => void
         onGameOverlay: (callback: (state: { active: boolean; app: string }) => void) => () => void
       }
+      // macOS native screenshot gesture; absent on other platforms.
+      screenshot?: ScreenshotApi
+      hudModifier?: HudModifierApi
       // Quick Entry: a global-hotkey mini composer window. Main owns the OS
       // shortcut registration + the persisted preference (it must restore the
       // shortcut on a cold launch without the renderer visiting Settings), so
@@ -365,6 +380,11 @@ declare global {
       skipIntro?: boolean
       setTranslucency?: (payload: TranslucencyState) => void
       setKeepAwake?: (on: boolean) => void
+      minimizeToTray?: {
+        get: () => Promise<{ enabled: boolean; available: boolean }>
+        set: (on: boolean) => Promise<{ enabled: boolean; available: boolean }>
+        onChanged: (callback: (status: { enabled: boolean; available: boolean }) => void) => () => void
+      }
       setDisableF12?: (blocked: boolean) => void
       setPreviewShortcutActive?: (active: boolean) => void
       openExternal: (url: string) => Promise<void>
@@ -478,10 +498,6 @@ declare global {
           // number — for badging a list of sessions in one request instead of
           // one `pr view` per checkout.
           prList: (repoPath: string, branches: string[], numbers?: number[]) => Promise<HermesRepoPullRequests>
-          // A pasted PR review/issue comment URL resolved to its structured
-          // context (author, body, file + line anchor, diff hunk). Null when
-          // gh can't answer — the paste stays a plain URL.
-          fetchPrComment: (repoPath: string, url: string) => Promise<HermesPrComment | null>
           createPr: (repoPath: string) => Promise<{ url: string }>
         }
         // Repo-first discovery: scan bounded roots for git repos (depth-capped).
@@ -534,6 +550,9 @@ declare global {
         repo?: string
         force?: boolean
       }) => Promise<{ ok: boolean; pluginName?: string; path?: string; error?: string }>
+      /** Delete a STANDALONE desktop plugin folder (`<desktop-plugins root>/<name>`);
+       *  Electron re-checks containment and refuses unified-package halves. */
+      removeDesktopPlugin?: (payload: { name: string }) => Promise<{ ok: boolean; path?: string; error?: string }>
       onWindowStateChanged?: (callback: (payload: HermesWindowState) => void) => () => void
       onFocusSession?: (callback: (sessionId: string) => void) => () => void
       onNotificationAction?: (callback: (payload: { actionId: string; sessionId?: string }) => void) => () => void
@@ -543,6 +562,9 @@ declare global {
       ) => () => void
       onPreviewFileChanged: (callback: (payload: HermesPreviewFileChanged) => void) => () => void
       onBackendExit: (callback: (payload: BackendExit) => void) => () => void
+      // Cooperative pool retirement: main is stopping the pooled backend under
+      // `poolKey` for a foreground open. The renderer parks that scope.
+      onPoolBackendRetiring?: (callback: (payload: { poolKey: string }) => void) => () => void
       // Soft gateway-mode apply: primary backend was torn down without a window
       // reload. Wipe session lists (skeletons) and re-dial.
       onConnectionApplied?: (callback: () => void) => () => void
@@ -809,8 +831,10 @@ export interface DesktopPluginProfileRoute {
 
 export interface HermesConnection {
   baseUrl: string
+  customWindowControls?: boolean
   darwinMajor?: number
   isFullscreen: boolean
+  isMaximized?: boolean
   // The live, RESOLVED connection mode. Only ever 'local' or 'remote' — a
   // 'cloud' saved-config entry resolves to a 'remote' connection under the hood
   // (cloud-auto-discovery Q3/Q6), so this never carries 'cloud'.
@@ -858,8 +882,10 @@ export interface HermesActiveWork {
 }
 
 export interface HermesWindowState {
+  customWindowControls?: boolean
   darwinMajor?: number
   isFullscreen: boolean
+  isMaximized?: boolean
   isMinimized?: boolean
   isVisible?: boolean
   nativeOverlayWidth: number
@@ -897,8 +923,9 @@ export interface DesktopConnectionConfig {
   // stored as plain text on disk (with an explicit opt-in).
   secureTokenStorage: boolean
   // Whether the currently-persisted remote token is stored with encoding
-  // 'plain' (i.e. plain text on disk in connection.json), which happens when
-  // the user opted in on a machine without secure storage.
+  // 'plain' AND this machine cannot secure it (plain text on disk in
+  // connection.json on a keyring-less machine). Stays false while keychain
+  // encryption is opted out — plain text is the chosen mode there.
   remoteTokenPlainText: boolean
   remoteUrl: string
   // For a 'cloud' connection: the persisted Hermes Cloud org (slug or id) the
@@ -1145,9 +1172,8 @@ export interface DesktopOauthLogoutResult {
 export interface DesktopCloudStatus {
   // The portal base URL the desktop talks to (default or env-overridden).
   portalBaseUrl: string
-  // Whether the OAuth partition holds a live Nous portal (Privy) session — the
-  // portal authenticates via Privy, so this reflects the privy-token cookie, NOT
-  // the hermes gateway session cookies. See cookiesHavePrivySession.
+  // Whether the OAuth partition holds portal access or renewal credentials
+  // (Privy or NAS). Discovery validates them with the portal.
   signedIn: boolean
 }
 
@@ -1457,21 +1483,6 @@ export interface HermesRepoPullRequests {
   prs: HermesBranchPullRequest[]
 }
 
-// A PR review/issue comment resolved from a pasted GitHub URL — the composer's
-// review-comment attachment context. `path`/`line`/`diffHunk` are empty for
-// conversation-tab (issue) comments; `line` is null when the comment is
-// outdated and only `original_line` remained.
-export interface HermesPrComment {
-  author: string
-  body: string
-  diffHunk: string
-  kind: 'issue' | 'review'
-  line: null | number
-  path: string
-  prNumber: number
-  startLine: null | number
-  url: string
-}
 // gh availability/auth + the current branch's PR — drives the review pane's PR
 // button (disabled when gh isn't ready, "Open PR" vs "Create PR" otherwise).
 export interface HermesReviewShipInfo {

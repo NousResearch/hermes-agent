@@ -14,6 +14,7 @@ import { type CSSProperties, lazy, type ReactNode, Suspense, useCallback, useEff
 import { useLocation, useNavigate } from 'react-router'
 
 import { graftRefreshedTailOntoBackfill } from '@/app/chat/transcript-backfill'
+import { preserveLocalPendingTurnMessages } from '@/app/session/hooks/use-session-actions/utils'
 import { formatRefValue } from '@/components/assistant-ui/directive-text'
 import { BootFailureOverlay } from '@/components/boot-failure-overlay'
 import { ConfirmHost } from '@/components/confirm-host'
@@ -107,7 +108,7 @@ import { useKeybinds } from '../hooks/use-keybinds'
 import { useHudHandoff } from '../hud/handoff'
 import { ModelPickerOverlay } from '../model-picker-overlay'
 import { ModelVisibilityOverlay } from '../model-visibility-overlay'
-import { mainChatOccupied, openSession } from '../open-session'
+import { mainChatOccupied, openSession, openSessionFromPicker } from '../open-session'
 import { PetGenerateOverlay } from '../pet-generate/pet-generate-overlay'
 import { FileActionDialogs } from '../right-sidebar/file-actions'
 import { RemoteFolderPicker } from '../right-sidebar/files/remote-picker'
@@ -142,12 +143,14 @@ import { PluginInstallModal } from '../settings/plugin-install-modal'
 import { useOverlayRouting } from '../shell/hooks/use-overlay-routing'
 import { useWindowControlsOverlayWidth } from '../shell/hooks/use-window-controls-overlay-width'
 import {
+  TITLEBAR_CHROME_CHANGED_EVENT,
   titlebarControlsPosition,
   titlebarControlsYNudge,
   titlebarToolsRightCss,
   titlebarToolsWidthCss
 } from '../shell/titlebar'
 import { TitlebarControls } from '../shell/titlebar-controls'
+import { WslgWindowControls } from '../shell/wslg-window-controls'
 import { UpdatesOverlay } from '../updates-overlay'
 
 import { ContribWiringContext } from './context'
@@ -250,9 +253,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         return
       }
 
-      void window.hermesDesktop?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get())).catch(err =>
-        notifyError(err, translateNow('notifications.errors.restartHermesFailed'))
-      )
+      void window.hermesDesktop
+        ?.recycleBackend?.(normalizeProfileKey($activeGatewayProfile.get()))
+        .catch(err => notifyError(err, translateNow('notifications.errors.restartHermesFailed')))
     }
   }, [backendRestartRequest])
 
@@ -498,9 +501,16 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             state => ({
               ...state,
               // Post-turn rehydrate reads only the newest tail page — graft it
-              // onto any backfilled older pages instead of dropping them.
+              // onto any backfilled older pages instead of dropping them, and
+              // keep any un-acked optimistic `user-*` row, which lives nowhere
+              // else (a reconnect-triggered rehydrate would otherwise lose a
+              // message the user then has to retype). Same composition order
+              // as reconcileAuthoritativeChatMessages.
               messages: preserveLocalAssistantErrors(
-                graftRefreshedTailOntoBackfill(messages, state.messages),
+                preserveLocalPendingTurnMessages(
+                  graftRefreshedTailOntoBackfill(messages, state.messages),
+                  state.messages
+                ),
                 state.messages
               )
             }),
@@ -1122,7 +1132,6 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     onArchiveSession: sessionId => void archiveSession(sessionId),
     onAttachDroppedItems: composer.attachDroppedItems,
     onAttachImageBlob: composer.attachImageBlob,
-    onAttachPrCommentUrl: composer.attachPrCommentUrl,
     onAttachPastedText: composer.attachPastedText,
     onBranchInNewChat: messageId => void branchInNewChat(messageId),
     onBranchSession: sessionId => void branchStoredSession(sessionId),
@@ -1272,6 +1281,9 @@ export function ContribWiring({ children }: { children: ReactNode }) {
   }
 
   const titlebarToolsRight = titlebarToolsRightCss(nativeOverlayWidth, titlebarChrome)
+  // WSLg: Electron's native overlay drifts its hit-region under RAIL, so the
+  // renderer paints its own min/max/close (main decides via customWindowControls).
+  const customWindowControls = connection?.customWindowControls ?? window.hermesDesktop?.windowControls?.custom ?? false
   const appActionsSide = useStore($titlebarAppActionsSide)
   const paneToolCount = rightTitlebarTools.filter(tool => !tool.hidden).length
   const leftExtraCount = leftTitlebarTools.filter(tool => !tool.hidden).length
@@ -1282,6 +1294,11 @@ export function ContribWiring({ children }: { children: ReactNode }) {
     paneToolCount > 0 ? `calc(${systemToolsWidth} + ${titlebarToolsWidthCss(paneToolCount)})` : systemToolsWidth
 
   const leftToolsWidth = titlebarToolsWidthCss(clusters.left)
+
+  // Native caption reservations can translate chrome without resizing it.
+  useEffect(() => {
+    window.dispatchEvent(new CustomEvent(TITLEBAR_CHROME_CHANGED_EVENT))
+  }, [controlsPos.left, controlsPos.top, titlebarToolsRight])
 
   return (
     <ContribWiringContext.Provider value={api}>
@@ -1307,6 +1324,12 @@ export function ContribWiring({ children }: { children: ReactNode }) {
             leftTools={leftTitlebarTools}
             onOpenSettings={() => navigate(SETTINGS_ROUTE)}
             tools={rightTitlebarTools}
+          />
+        )}
+        {!isHudWindow() && customWindowControls && (
+          <WslgWindowControls
+            isFullscreen={Boolean(connection?.isFullscreen)}
+            isMaximized={Boolean(connection?.isMaximized)}
           />
         )}
         {children}
@@ -1346,7 +1369,7 @@ export function ContribWiring({ children }: { children: ReactNode }) {
         profile={activeGatewayProfile}
         requestGateway={requestGateway}
       />
-      <SessionPickerOverlay onResume={sessionId => openSession(sessionId, navigate)} />
+      <SessionPickerOverlay onResume={sessionId => openSessionFromPicker(sessionId, navigate)} />
       <ModelVisibilityOverlay
         gateway={gateway || undefined}
         onOpenProviders={openProviderSettings}

@@ -153,11 +153,22 @@ def mount_spa(application: FastAPI):
         chat_js = "true" if _DASHBOARD_EMBEDDED_CHAT_ENABLED else "false"
         gated = bool(getattr(app.state, "auth_required", False))
         token_js = "" if gated else f'window.__HERMES_SESSION_TOKEN__="{_server()._SESSION_TOKEN}";'
+        # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
+        # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
+        initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
+        # This backend's OWN profile name (empty when it cannot be named unambiguously). The SPA
+        # falls back to it when neither the URL nor --open-profile names one, so requests carry an
+        # explicit scope from the first paint: destructive routes 400 on an unnamed profile as soon
+        # as the host serves more than one, and the switcher shows the same profile it writes.
+        from hermes_cli.web_server_profiles import serving_profile_name as _serving_profile_name
+        serving_profile_js = json.dumps(_serving_profile_name()).replace("</", "<\\/")
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
+            f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
+            f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"
             f"</script>"
         )
         if prefix:
@@ -675,6 +686,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
         _read_manifest as _read_plugin_manifest_at,
     )
     from hermes_cli.plugins_cmd_catalog import removed_annotation
+    from hermes_cli.plugin_catalog import resolved_removed_entries
 
     dashboard_list = _get_dashboard_plugins()
     dash_by_name = {str(p["name"]): p for p in dashboard_list}
@@ -683,6 +695,10 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     hidden_plugins: list = cfg_get(load_config(), "dashboard", "hidden_plugins", default=[]) or []
     plugins_root_resolved = (get_hermes_home() / "plugins").resolve()
     rows: List[Dict[str, Any]] = []
+
+    # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
+    # fetch per installed plugin when the catalog host is slow or unreachable.
+    removed_entries = resolved_removed_entries()
 
     for name, version, description, source, dir_str, key in _discover_all_plugins():
         # Both the path-derived key (nested category plugins) and the bare manifest name
@@ -716,7 +732,7 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
             "auth_required": auth_required,
             "auth_command": auth_command,
             "user_hidden": name in hidden_plugins,
-            "removed_reason": removed_annotation(name, dir_str),
+            "removed_reason": removed_annotation(name, dir_str, removed_entries),
         })
 
     agent_names = {r["name"] for r in rows}

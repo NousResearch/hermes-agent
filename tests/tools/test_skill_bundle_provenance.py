@@ -134,15 +134,23 @@ def test_same_dir_linked_siblings_are_fetched(served_repo, monkeypatch):
     assert "README.md" not in bundle.files
 
 
-def test_same_dir_traversal_link_is_rejected(monkeypatch):
-    source = UrlSource()
-    skill = (
-        "---\nname: bad\ndescription: bad\n---\n"
-        "[bad](./../outside-secret.md)\n"
-    )
-    monkeypatch.setattr(source, "_fetch_text", lambda _url: skill)
+def test_same_dir_link_outside_skill_dir_is_skipped_not_fatal(served_repo, monkeypatch):
+    """A repo-relative link above the skill directory is prose, not a bundle path (#115171).
 
-    assert source.fetch("https://example.com/bad/SKILL.md") is None
+    Nothing is fetched for it, so it must not reject the bundle: the skill installs with
+    SKILL.md and its real siblings, and the outside link is simply left dangling.
+    """
+    repo, url = served_repo
+    (repo / "DEFS.md").write_text("defs\n")
+    (repo / "SKILL.md").write_text(SKILL_MD + "[registry](../../tools/REGISTRY.md) and [defs](./DEFS.md)\n")
+    monkeypatch.setattr("tools.skills_hub.is_safe_url", lambda _url: True)
+    monkeypatch.setattr("tools.skills_hub.check_website_access", lambda _url: None)
+
+    bundle = UrlSource().fetch(url)
+
+    assert bundle is not None
+    assert "DEFS.md" in bundle.files
+    assert not any(".." in name for name in bundle.files)
 
 
 def test_same_dir_link_without_extension_is_ignored(monkeypatch):

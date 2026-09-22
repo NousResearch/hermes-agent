@@ -3,6 +3,7 @@ Split out of ``hermes_cli/doctor.py``, which re-exports every name so ``hermes_c
 
 from __future__ import annotations
 
+import os
 import subprocess
 from pathlib import Path
 from hermes_cli.doctor_report import (
@@ -47,10 +48,24 @@ def _bits(*pairs) -> list:
     return [fmt() for value, fmt in pairs if value is not None]
 
 
-def _render_state_db_stats(stats: dict, holders=None) -> list:
+def host_gateway_note() -> str:
+    """``" (the host gateway (PID 42) serving profiles default, coder)"`` when one gateway process
+    owns this host, else ``""``. Multiplex-only: the state.db holder and WAL lines used to imply a
+    gateway per profile; the truth is one shared process serving N profiles, and stopping it stops
+    every one of them."""
+    try:
+        from gateway.host_topology import host_gateway_topology
+        topology = host_gateway_topology()
+    except Exception:
+        return ""
+    return f" ({topology.describe()})" if topology is not None else ""
+
+
+def _render_state_db_stats(stats: dict, holders=None, host_note: str = "") -> list:
     """Turn a collect_state_db_stats() dict into ``(kind, text, detail)`` rows, kind 'info' / 'warn'.
 
     Pure formatting — no I/O — so it is unit-testable without the doctor CLI. Tolerates None in every field.
+    ``host_note`` names the shared host gateway among the holders (see :func:`host_gateway_note`).
     """
     lines: list = []
     stats = stats or {}
@@ -67,7 +82,7 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
         (stats.get("messages"), lambda: f"{stats['messages']:,} messages"),
         (stats.get("sessions"), lambda: f"{stats['sessions']:,} sessions"),
         (stats.get("journal_mode") or None, lambda: f"journal_mode={stats['journal_mode']}"),
-        (holders, lambda: f"{holders} process(es) holding the DB open"),
+        (holders, lambda: f"{holders} process(es) holding the DB open{host_note}"),
     )
     if row_bits:
         lines.append(("info", ", ".join(row_bits), ""))
@@ -81,12 +96,12 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
         if deferral.get("futile"):
             lines.append(("warn", f"state.db FTS repair is blocked by the same holder(s) PID(s) {pids} for "
                           f"{deferral.get('holders_attempts') or '?'} consecutive deferral(s); waiting is futile",
-                          "(stop ONLY the listed process(es) — the gateway keeps running and its own retry "
-                          "rebuilds within a minute of the holder leaving)"))
+                          "(stop ONLY the listed process(es) — the host gateway keeps running and its own "
+                          "retry rebuilds within a minute of the holder leaving)"))
         else:
             lines.append(("warn", f"state.db FTS repair is blocked after {deferral.get('attempts') or '?'} deferral(s) "
                           f"by PID(s) {pids}",
-                          "(stop the listed processes; the gateway's own retry then rebuilds, or run "
+                          "(stop the listed processes; the host gateway's own retry then rebuilds, or run "
                           "'hermes sessions optimize-storage' with every holder stopped)"))
     # Oversized DB: suggest auto_prune, plus the offline optimize-storage pass when the FTS rebuild is
     # pending OR the DB predates the current trigram layout (fts_storage_version < FTS_STORAGE_VERSION).
@@ -95,7 +110,7 @@ def _render_state_db_stats(stats: dict, holders=None) -> list:
         stale_trigram = (fts is not None and fts.get("messages_fts_trigram")
                          and (stats.get("fts_storage_version") or 0) < FTS_STORAGE_VERSION)
         if stats.get("fts_rebuild_pending") or stale_trigram:
-            detail += "; run 'hermes sessions optimize-storage' offline (with the gateway stopped) to compact FTS storage"
+            detail += "; run 'hermes sessions optimize-storage' offline (with the host gateway stopped) to compact FTS storage"
         lines.append(("warn", f"state.db is large ({_human_bytes(logical)})", f"({detail})"))
     # WAL runaway is deliberately NOT warned here: _state_db_wal already warns above 50 MB and offers --fix.
     return lines
@@ -118,6 +133,7 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
     for subdir_name in ["cron", "sessions", "logs", "skills"] + (["memories"] if memory_on else []):
         ensure_dir(f, should_fix, hermes_home / subdir_name, f"{_DHH}/{subdir_name}/ exists",
                    f"Created {_DHH}/{subdir_name}/", f"{_DHH}/{subdir_name}/ not found")
+    _check_scratch_dir(hermes_home, _DHH)
     # SOUL.md persona file
     soul_path = hermes_home / "SOUL.md"
     if soul_path.exists():
@@ -147,6 +163,49 @@ def _check_directory_structure(should_fix: bool, f: Finding) -> None:
             check_ok(f"{fname} exists ({len((memories_dir / fname).read_text(encoding='utf-8').strip())} chars)")
         else:
             check_info(f"{fname} not created yet (will be created when the agent first writes a memory)")
+
+
+# Cache-root entries at least this big that no pruner covers get a doctor warning.
+_UNPRUNED_CACHE_WARN_BYTES = 1 << 30
+_PRUNED_CACHE_DIRS = frozenset({"scratch", "terminal"})
+
+
+def unpruned_cache_hogs(hermes_home: Path, min_bytes: int = _UNPRUNED_CACHE_WARN_BYTES) -> list[tuple[str, int]]:
+    """``(name, bytes)`` for ``cache/`` entries outside the pruned dirs that exceed *min_bytes*.
+
+    Finished campaign trees parked at the cache root sat for weeks (95 GB on one host)
+    because only ``scratch/`` and ``terminal/`` are reaped; doctor is where that shows."""
+    from hermes_constants import scratch_dir_usage_bytes
+
+    cache = hermes_home / "cache"
+    hogs: list[tuple[str, int]] = []
+    try:
+        entries = [e for e in cache.iterdir() if e.is_dir() and not e.is_symlink() and e.name not in _PRUNED_CACHE_DIRS]
+    except OSError:
+        return hogs
+    for entry in entries:
+        size = scratch_dir_usage_bytes(entry)
+        if size >= min_bytes:
+            hogs.append((entry.name, size))
+    return sorted(hogs, key=lambda item: -item[1])
+
+
+def _check_scratch_dir(hermes_home: Path, _DHH: str) -> None:
+    """Report the scratch dir (TMPDIR target) and its size; a user-set TMPDIR elsewhere is shown, not judged."""
+    from hermes_constants import (
+        SCRATCH_DIR_MARKER_ENV, SCRATCH_MAX_IDLE_HOURS, get_scratch_dir, scratch_dir_usage_bytes)
+    scratch = get_scratch_dir(hermes_home, prune=False)
+    size = _human_bytes(scratch_dir_usage_bytes(scratch))
+    check_ok(f"{_DHH}/cache/scratch/ is the scratch dir (TMPDIR; {size}, entries pruned after {SCRATCH_MAX_IDLE_HOURS}h idle)")
+    for name, nbytes in unpruned_cache_hogs(hermes_home):
+        check_warn(
+            f"{_DHH}/cache/{name}/ is {_human_bytes(nbytes)} and outside every pruner "
+            f"(only cache/scratch/ and cache/terminal/ are reaped) — move task files under "
+            f"cache/scratch/<task>/ or delete it"
+        )
+    tmpdir = os.environ.get("TMPDIR", "")
+    if tmpdir and tmpdir != os.environ.get(SCRATCH_DIR_MARKER_ENV, ""):
+        check_info(f"TMPDIR={tmpdir} is set by you or the OS, so Hermes leaves it alone")
 
 
 def _session_count(state_db_path: Path):
@@ -280,7 +339,8 @@ def _state_db_stats(issues: list, state_db_path: Path) -> None:
     the gateway; any failure degrades to one info line rather than failing doctor."""
     with warn_on_error("state.db stats unavailable ({e})", "", report=lambda t, _d: check_info(t)):
         from hermes_state_dbfile import collect_state_db_stats, count_db_holders
-        rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path))
+        rows = _render_state_db_stats(collect_state_db_stats(state_db_path), holders=count_db_holders(state_db_path),
+                                      host_note=host_gateway_note())
         for _kind, _text, _detail in rows:
             if _kind != "warn":
                 check_info(_text + (f" {_detail}" if _detail else ""))
@@ -330,11 +390,34 @@ def _state_db_wal(f: Finding, should_fix: bool, state_db_path: Path) -> None:
             check_info(f"WAL file is {size // (1024*1024)} MB (normal for active sessions)")
 
 
+def _retired_wal_holders(f: Finding, state_db_path: Path, _DHH: str) -> bool:
+    """Name the processes holding a retired -wal/-shm generation (#110054). Every SessionDB open is
+    refused while they live, and the current inode has no holders, so the plain holder count says
+    "0 holding the DB open" beside a green state.db line — the opposite of the truth."""
+    from hermes_constants import profile_cli_selector
+    from hermes_state_dbfile import iter_deleted_sqlite_sidecar_holders
+    from hermes_state_holders import describe_holder_pid
+    pids = list(dict.fromkeys(pid for pid, _ in iter_deleted_sqlite_sidecar_holders(state_db_path)))
+    if not pids:
+        return False
+    rendered = ", ".join(describe_holder_pid(pid) for pid in pids)
+    check_warn(f"{_DHH}/state.db: {len(pids)} process(es) still hold a retired WAL generation ({rendered})",
+               "(every new session refuses to open until they exit; health/stats probes skipped)")
+    f.issues.append(f"state.db retired WAL generation held by {rendered}{host_gateway_note()} — stop the host "
+                    f"gateway, dashboard and cron writers among them ('hermes {profile_cli_selector()}gateway "
+                    "stop' stops the ONE host process serving every profile, quit the Desktop app), do not "
+                    "delete the WAL yourself, then rerun 'hermes doctor'")
+    return True
+
+
 @doctor_check()
 def _check_state_db(should_fix: bool, f: Finding) -> None:
     """state.db session count, FTS write health, schema repair, stats snapshot, WAL size."""
     from hermes_cli.doctor import HERMES_HOME, _DHH
     state_db_path = HERMES_HOME / "state.db"
+    # A read-only connect on the new generation is itself another opener, so nothing below may run.
+    if _retired_wal_holders(f, state_db_path, _DHH):
+        return
     if state_db_path.exists():
         _state_db_health(f, should_fix, state_db_path, _DHH)
         _state_db_stats(f.issues, state_db_path)
@@ -383,7 +466,7 @@ def _check_skills_hub(should_fix: bool, f: Finding) -> None:
             check_warn(f"{q_count} skill(s) in quarantine", "(pending review)")
     from hermes_cli.config import get_env_value
     if get_env_value("GITHUB_TOKEN") or get_env_value("GH_TOKEN"):
-        check_ok("GitHub token configured (authenticated API access)")
+        check_ok("GitHub token configured", "(validity checked under API Connectivity)")
     else:
         check_bool(_gh_authenticated(), ("GitHub authenticated via gh CLI", "(full API access — no GITHUB_TOKEN needed)"),
                    ("No GITHUB_TOKEN", f"(60 req/hr rate limit — set in {_DHH}/.env for better rates)"))
@@ -489,3 +572,9 @@ def _check_profiles(should_fix: bool, f: Finding) -> None:
                 _m = _re.search(r"hermes -p (\S+)", wrapper.read_text(encoding="utf-8"))
                 if _m and not profile_exists(_m.group(1)):
                     check_warn(f"Orphan alias: {wrapper.name} → profile '{_m.group(1)}' no longer exists")
+    # Same helper as the multiplex migration preflight, so doctor names the duplicates that make
+    # `hermes gateway migrate --multiplex` refuse (and made pre-multiplex standalone gateways race).
+    from hermes_cli.gateway_migrate import duplicate_credential_findings
+    for line in duplicate_credential_findings():
+        check_warn("Duplicate platform credential across profiles", f"({line})")
+        f.manual_issues.append(line)

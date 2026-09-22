@@ -48,6 +48,7 @@ _INVENTORY_TABLES = (*_CANONICAL_TABLES, "state_meta", *_TOPIC_TABLES, *_AUXILIA
 _GENERATED_META_KEYS = frozenset({
     "fts_storage_version", "fts_optimize_available", "fts_rebuild_high_water", "fts_rebuild_progress",
     "fts_cjk_stale", "fts_cjk_rebuild_high_water", "fts_cjk_rebuild_progress", "telegram_dm_topic_schema_version",
+    "fts_tool_full_content_high_water",  # retired marker; never copied into a recovered store
 })
 _SIDECAR_SUFFIXES = ("", "-wal", "-shm", "-journal")
 _MINIMUM_SPACE_HEADROOM = 256 * 1024 * 1024
@@ -907,15 +908,40 @@ def _verify_recovered_database(
     return verification
 
 
+def _sanitize_session_model_config(destination: sqlite3.Connection) -> int:
+    """Rewrite unparseable ``sessions.model_config`` blobs to ``'{}'``; returns the row count.
+
+    ``integrity_check`` validates b-tree structure, never column *contents*: a row whose
+    JSON was truncated by the damage verifies clean, and the recovered store then raises
+    ``OperationalError: malformed JSON`` the first time ``reopen_session`` rewrites the
+    reset-child markers with ``json_set`` (``hermes_state_sessions.py::reopen_session``) —
+    i.e. on the first resume of a parent session. Read paths are already guarded
+    (``_sql_json_extract`` wraps every extract in ``CASE WHEN json_valid``), so this is
+    about the write path. The blob is unrecoverable either way, so neutralise it at the
+    copy boundary both lanes pass through rather than shipping a store that breaks on
+    the first resume.
+    """
+    if "model_config" not in _table_columns(destination, "sessions"):
+        return 0
+    with _immediate_transaction(destination):
+        return _reconcile(
+            destination, "sessions",
+            "model_config IS NOT NULL AND json_valid(model_config) = 0",
+            "UPDATE sessions SET model_config = '{}'",
+        )
+
+
 def _finalize_derived_metadata(destination: sqlite3.Connection) -> dict[str, Any]:
-    """Stamp only metadata that the newly created destination actually owns."""
+    """Sanitize copied JSON columns and stamp metadata the new destination actually owns."""
+    model_config_reset = _sanitize_session_model_config(destination)
     fts_tables = {
         str(row[0])
         for row in destination.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name IN ('messages_fts', 'messages_fts_trigram')"
         ).fetchall()
     }
-    result: dict[str, Any] = {"fts_tables": sorted(fts_tables), "finalized": False}
+    result: dict[str, Any] = {
+        "fts_tables": sorted(fts_tables), "finalized": False, "model_config_reset": model_config_reset}
     if fts_tables != {"messages_fts", "messages_fts_trigram"}:
         result["error"] = "fresh destination is missing required FTS tables"
         return result

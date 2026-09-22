@@ -380,7 +380,7 @@ class TestOutcomeBookkeeping:
         """deliver=origin (unresolvable) + failure_deliver=explicit target:
         the notice IS delivered — outcome must say so, not 'not_configured'."""
         alerted = []
-        monkeypatch.setattr(s, "_mark_incident_alerted", alerted.append)
+        monkeypatch.setattr(s, "_mark_incident_alerted", lambda incident_id, execution_id=None: alerted.append(incident_id))
         monkeypatch.setattr(
             s, "_upsert_incident_for_failure", lambda *_a, **_kw: (False, "inc-b1")
         )

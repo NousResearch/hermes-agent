@@ -10,7 +10,10 @@ from __future__ import annotations
 
 import json
 import os
+import subprocess
 from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
@@ -144,6 +147,246 @@ def test_complete_happy_path(worker_env):
         assert run.metadata == {"files": 2}
     finally:
         conn.close()
+
+
+def _git(repo: Path, *args: str) -> str:
+    result = subprocess.run(
+        ["git", "-C", str(repo), *args],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    return result.stdout.strip()
+
+
+def _repository_worker(worker_env: str, tmp_path: Path, *, changed: bool) -> tuple[Path, str, str]:
+    """Attach the worker card to a real clean Git branch with pushed refs."""
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from hermes_cli import kanban_db_workspace as kbw
+
+    repo = tmp_path / "repo"
+    remote = tmp_path / "remote.git"
+    repo.mkdir()
+    subprocess.run(["git", "init", "--bare", str(remote)], check=True, capture_output=True)
+    _git(repo.parent, "init", "-b", "main", str(repo))
+    _git(repo, "config", "user.email", "worker@example.com")
+    _git(repo, "config", "user.name", "Kanban Worker")
+    (repo / "tracked.txt").write_text("base\n", encoding="utf-8")
+    _git(repo, "add", "tracked.txt")
+    _git(repo, "commit", "-m", "base")
+    _git(repo, "remote", "add", "origin", str(remote))
+    _git(repo, "push", "-u", "origin", "main")
+    branch = "codex/kanban-receipt"
+    _git(repo, "checkout", "-b", branch)
+    base_sha = _git(repo, "rev-parse", "HEAD")
+    _git(
+        repo, "config", f"branch.{branch}.hermes-kanban-base-ref",
+        "refs/remotes/origin/main",
+    )
+    _git(repo, "config", f"branch.{branch}.hermes-kanban-base-sha", base_sha)
+    if changed:
+        (repo / "tracked.txt").write_text("base\nchange\n", encoding="utf-8")
+        _git(repo, "add", "tracked.txt")
+        _git(repo, "commit", "-m", "change")
+        _git(repo, "push", "-u", "origin", branch)
+    # Preserve the locally proven remote-tracking refs while giving the receipt
+    # validator the canonical repository identity it must match.
+    _git(repo, "remote", "set-url", "origin", "https://github.com/mrkillbob/hermes-agent.git")
+    head = _git(repo, "rev-parse", "HEAD")
+    with kbc.connect() as conn:
+        with kb.write_txn(conn):
+            conn.execute(
+                "UPDATE tasks SET workspace_kind='worktree', workspace_path=?, branch_name=? WHERE id=?",
+                (str(repo), branch, worker_env),
+            )
+        kbw.set_worktree_base(conn, worker_env, repo, branch)
+    return repo, branch, head
+
+
+class _ReceiptGitHubClient:
+    def __init__(self, pull_request=None, *, error: RuntimeError | None = None) -> None:
+        self.pull_request = pull_request
+        self.error = error
+        self.calls: list[tuple[str, int]] = []
+
+    def get_pull_request(self, repository: str, number: int):
+        self.calls.append((repository, number))
+        if self.error is not None:
+            raise self.error
+        return self.pull_request
+
+
+def _receipt_pull(*, head_sha: str, head_branch: str, base_branch: str = "main"):
+    return SimpleNamespace(
+        number=123,
+        state="OPEN",
+        base_repository="mrkillbob/hermes-agent",
+        head_repository="mrkillbob/hermes-agent",
+        head_ref_name=head_branch,
+        head_sha=head_sha,
+        base_branch=base_branch,
+    )
+
+
+def test_complete_rejects_repository_change_without_pr_receipt(worker_env, tmp_path):
+    """A committed and pushed worktree cannot disappear behind a prose-only handoff."""
+    _repo, branch, head = _repository_worker(worker_env, tmp_path, changed=True)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({
+        "summary": "implemented the repository change",
+        "metadata": {
+            "repository_changes": True,
+            "commit_sha": head,
+            "pushed_branch": branch,
+            "repository": "mrkillbob/hermes-agent",
+            "base_branch": "main",
+        },
+    }))
+
+    assert "pr_url" in out["error"]
+    assert "still in-flight" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_complete_accepts_exact_repository_pr_receipt(worker_env, tmp_path):
+    """A clean worktree may complete when its pushed head and PR receipt agree."""
+    _repo, branch, head = _repository_worker(worker_env, tmp_path, changed=True)
+    from tools import kanban_tools as kt
+
+    github = _ReceiptGitHubClient(
+        _receipt_pull(head_sha=head, head_branch=branch),
+    )
+    out = json.loads(kt._handle_complete({
+        "summary": "implemented and published the repository change",
+        "metadata": {
+            "repository_changes": True,
+            "commit_sha": head,
+            "pushed_branch": branch,
+            "repository": "mrkillbob/hermes-agent",
+            "base_branch": "main",
+            "pr_url": "https://github.com/mrkillbob/hermes-agent/pull/123",
+        },
+    }, github_client=github))
+
+    assert out["ok"] is True, out
+    assert github.calls == [("mrkillbob/hermes-agent", 123)]
+
+
+@pytest.mark.parametrize(
+    ("pull_overrides", "expected_error"),
+    (
+        ({"head_sha": "f" * 40}, "head SHA"),
+        ({"head_branch": "codex/different-head"}, "head branch"),
+        ({"base_branch": "stable"}, "base branch"),
+    ),
+)
+def test_complete_rejects_pr_identity_mismatch(
+    worker_env, tmp_path, pull_overrides, expected_error,
+):
+    """The URL is evidence only when GitHub binds it to the exact receipt."""
+    _repo, branch, head = _repository_worker(worker_env, tmp_path, changed=True)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    pull_fields = {"head_sha": head, "head_branch": branch, "base_branch": "main"}
+    pull_fields.update(pull_overrides)
+    github = _ReceiptGitHubClient(_receipt_pull(**pull_fields))
+    out = json.loads(kt._handle_complete({
+        "summary": "published a mismatched pull request",
+        "metadata": {
+            "repository_changes": True,
+            "commit_sha": head,
+            "pushed_branch": branch,
+            "repository": "mrkillbob/hermes-agent",
+            "base_branch": "main",
+            "pr_url": "https://github.com/mrkillbob/hermes-agent/pull/123",
+        },
+    }, github_client=github))
+
+    assert expected_error in out["error"]
+    assert "still in-flight" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_complete_rejects_nonexistent_pull_request(worker_env, tmp_path):
+    """A syntactically valid URL cannot stand in for a GitHub pull request."""
+    _repo, branch, head = _repository_worker(worker_env, tmp_path, changed=True)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    github = _ReceiptGitHubClient(error=RuntimeError("HTTP 404"))
+    out = json.loads(kt._handle_complete({
+        "summary": "claimed a pull request that does not exist",
+        "metadata": {
+            "repository_changes": True,
+            "commit_sha": head,
+            "pushed_branch": branch,
+            "repository": "mrkillbob/hermes-agent",
+            "base_branch": "main",
+            "pr_url": "https://github.com/mrkillbob/hermes-agent/pull/123",
+        },
+    }, github_client=github))
+
+    assert "could not verify pr_url" in out["error"]
+    assert "still in-flight" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_complete_accepts_explicit_no_repository_changes(worker_env, tmp_path):
+    """Read-only worktree tasks need an explicit no-change receipt, not a PR."""
+    _repo, _branch, _head = _repository_worker(worker_env, tmp_path, changed=False)
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({
+        "summary": "read-only diagnostic complete",
+        "metadata": {"repository_changes": False},
+    }))
+
+    assert out["ok"] is True, out
+
+
+def test_complete_rejects_no_change_receipt_when_branch_is_ahead(worker_env, tmp_path):
+    """A clean commit beyond the assigned base must use the changed-work receipt."""
+    repo, branch, head = _repository_worker(worker_env, tmp_path, changed=True)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    # The worker owns its checkout and can rewrite local Git config. The
+    # completion decision must remain bound to the control-plane assignment.
+    _git(repo, "config", f"branch.{branch}.hermes-kanban-base-sha", head)
+    out = json.loads(kt._handle_complete({
+        "summary": "incorrectly declared no repository change",
+        "metadata": {"repository_changes": False},
+    }))
+
+    assert "assigned base" in out["error"]
+    assert "still in-flight" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
+
+
+def test_complete_rejects_worktree_without_change_declaration(worker_env, tmp_path):
+    """A clean diagnostic worktree still states explicitly that it changed no repository files."""
+    _repo, _branch, _head = _repository_worker(worker_env, tmp_path, changed=False)
+    from hermes_cli import kanban_db as kb
+    from hermes_cli import kanban_db_connect as kbc
+    from tools import kanban_tools as kt
+
+    out = json.loads(kt._handle_complete({"summary": "read-only diagnostic complete"}))
+
+    assert "repository_changes" in out["error"]
+    with kbc.connect() as conn:
+        assert kb.get_task(conn, worker_env).status == "running"
 
 
 def test_complete_retry_with_empty_created_cards_succeeds(worker_env):

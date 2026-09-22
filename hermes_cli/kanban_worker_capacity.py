@@ -69,6 +69,10 @@ class WorkerCapacity:
             # local-lane cap (normally 2). Without that runtime signal keep
             # the historical single-worker safety default.
             limits.append(self.local_model_cap if self.local_model_cap is not None else 1)
+            if "devstral" in route[1].lower():
+                # Devstral is the memory-heavy local route. Keep it to one
+                # worker even when a broader local lane cap is configured.
+                limits.append(1)
         return min((value for value in limits if value is not None), default=None)
 
     def allows(self, row, assignee, result):

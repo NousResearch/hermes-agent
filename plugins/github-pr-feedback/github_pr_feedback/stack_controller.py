@@ -6,11 +6,11 @@ from dataclasses import replace
 from datetime import UTC, datetime
 from pathlib import Path
 
-from hermes_cli.github_identity import GitHubAutomationIdentity, GitHubIdentityError
+from .github_identity import GitHubAutomationIdentity, GitHubIdentityError
 
 from .git_stack import GitStackRunner
 from .github_client import GitHubClient, GitHubClientError
-from .policy import PluginPolicy, codex_review_trigger_comment
+from .policy import PluginPolicy
 from .stack import StackEntry, StackManifest, StackStore
 
 try:
@@ -117,11 +117,6 @@ class StackController:
                     runner.merge_base_into_branch(entry.branch, manifest.base_branch)
                     runner.push_branch(entry.branch)
                     head = runner.branch_head(entry.branch)
-                    self.github.post_issue_comment(
-                        repository,
-                        entry.pr_number or 0,
-                        codex_review_trigger_comment(head),
-                    )
                     self.github.update_pull_request_base(
                         repository,
                         entry.pr_number or 0,

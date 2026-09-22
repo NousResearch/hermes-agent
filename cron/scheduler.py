@@ -1633,9 +1633,15 @@ def _resolve_job_runtime(job: dict, job_id: str, jc: _CronJobConfig) -> tuple[di
         logger.warning(
             "Job '%s': primary provider resolve failed (%s: %s), trying fallback",
             job_id, "auth" if is_auth else "transient network", resolve_exc)
-        for entry in get_fallback_chain(jc.cfg):
-            if not isinstance(entry, dict):
-                continue
+        from cron.scheduler_provider import scheduled_model_fallback_chain
+        fallback_chain = scheduled_model_fallback_chain(job, jc.cfg)
+        skipped_local = len(get_fallback_chain(jc.cfg)) - len(fallback_chain)
+        if skipped_local:
+            logger.info(
+                "Job '%s': skipped %d local scheduled fallback route(s); pin a local provider "
+                "on the job to authorize them",
+                job_id, skipped_local)
+        for entry in fallback_chain:
             fb_provider = str(entry.get("provider") or "").strip()
             fb_model = str(entry.get("model") or "").strip()
             if not fb_provider or not fb_model:
@@ -2273,7 +2279,8 @@ def _resolve_cron_agent_setup(job: dict, job_id: str, job_name: str, jc) -> _Cro
     setup.reasoning_config = _resolve_job_reasoning_config(
         job, _cfg if isinstance(_cfg, dict) else {}, str(setup.model)
     )
-    setup.fallback_model = get_fallback_chain(_cfg) or None
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+    setup.fallback_model = scheduled_model_fallback_chain(job, _cfg) or None
     setup.credential_pool = _load_credential_pool(setup.runtime, job_id)
     # MCP servers must be registered before AIAgent is constructed.
     _init_cron_mcp_tools(job_id)

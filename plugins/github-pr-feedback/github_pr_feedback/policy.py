@@ -45,12 +45,9 @@ def hermes_attribution_line(assignee: str, *, action: str) -> str:
     return f"{HERMES_ATTRIBUTION_PREFIX} {action} ({assignee})"
 
 
-# Codex's GitHub App only re-reviews on PR-opened, marked-ready, or an
-# explicit "@codex review" mention -- never on an ordinary push. Every path
-# that pushes a new commit to an already-open PR (a worker's repair push, or
-# the deterministic base-refresh merge-forward) must mention this after
-# pushing, or the merge maintainer's codex_review_pending gate would wait
-# forever for a re-review nothing ever asks for.
+# Codex review is managed by the repository's configured review process. Hermes
+# must not post duplicate "@codex review" requests after a worker push; the
+# merge gate observes the canonical Codex review summary independently.
 CODEX_REVIEW_TRIGGER = "@codex review"
 _CODEX_REVIEW_TRIGGER_MARKER = "hermes-codex-review-trigger:v1"
 
@@ -206,6 +203,7 @@ class PullRequest:
     base_branch: str | None = None
     base_sha: str | None = None
     updated_at: datetime | None = None
+    is_draft: bool = False
 
     def __post_init__(self) -> None:
         if (

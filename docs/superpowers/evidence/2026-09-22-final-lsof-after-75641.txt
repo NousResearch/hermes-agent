@@ -1,0 +1,2 @@
+$ lsof final after stopping PID 75641
+[empty: no Hermes state.db/WAL/SHM handles]

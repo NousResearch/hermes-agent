@@ -11,7 +11,7 @@ import subprocess
 import os
 import sys
 from collections import Counter
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field, replace
 from datetime import UTC, datetime, timedelta
@@ -182,6 +182,8 @@ class KanbanClient(Protocol):
     def task_status(self, board: str, task_id: str) -> str | None: ...
 
     def task_details(self, board: str, task_id: str) -> Mapping[str, object] | None: ...
+
+    def archive_task(self, board: str, task_id: str) -> None: ...
 
 
 @dataclass(frozen=True, slots=True)
@@ -1203,6 +1205,50 @@ class ScanController:
         self._claim_lease = claim_lease
         self._label_batches: list[tuple[str, RepositoryTarget, tuple[PullRequest, ...]]] = []
 
+    def _reconcile_closed_pr_tasks(
+        self, repository: str, open_pull_requests: Sequence[PullRequest]
+    ) -> None:
+        """Retire dispatch cards whose PR is no longer open.
+
+        GitHub feedback scans only create work for open PRs, but a card may
+        remain running after its PR is merged or closed. Reconcile those
+        bindings before admitting new work so stale workers cannot consume
+        capacity or be retried forever.
+        """
+        archive_task = getattr(self._kanban, "archive_task", None)
+        pending_prs = getattr(self._ledger, "pending_prs", None)
+        if not callable(archive_task) or not callable(pending_prs):
+            return
+        configured_boards = [self._policy.board or ""]
+        configured_boards.extend(
+            board.strip()
+            for board in os.environ.get("HERMES_KANBAN_RECONCILE_BOARDS", "").split(",")
+            if board.strip()
+        )
+        boards = tuple(dict.fromkeys(board for board in configured_boards if board))
+        open_numbers = {pr.number for pr in open_pull_requests}
+        for pr_number in pending_prs(repository):
+            if pr_number in open_numbers:
+                continue
+            for binding in self._ledger.pending_task_bindings_for_pr(
+                repository, pr_number
+            ):
+                archived = False
+                for board in boards:
+                    try:
+                        archive_task(board, binding.task_id)
+                    except RuntimeError:
+                        continue
+                    archived = True
+                    break
+                if not archived:
+                    continue
+                self._ledger.supersede_stale_dispatch(
+                    binding.receipt,
+                    task_id=binding.task_id,
+                    reason="PR is merged or closed; stale dispatch archived",
+                )
+
     def scan(self, *, apply_labels: bool = True) -> ScanResult:
         skipped: Counter[str] = Counter()
         created = 0
@@ -1242,6 +1288,7 @@ class ScanController:
             except Exception:  # noqa: BLE001 - an adapter failure must not admit work.
                 skipped["github_error"] += 1
                 continue
+            self._reconcile_closed_pr_tasks(repository, pull_requests)
             from .pr_ordering import order_pull_requests
 
             pull_requests = order_pull_requests(pull_requests)
@@ -1499,7 +1546,9 @@ class ScanController:
                     self._policy.local_ci_audit is not None
                     and self._policy.local_ci_audit.applies_to(repository)
                 ):
-                    if base_refresh_pending:
+                    if pull_request.is_draft:
+                        skipped["local_ci_draft_pr"] += 1
+                    elif base_refresh_pending:
                         pass
                     elif feedback_pending:
                         skipped["feedback_pending"] += 1
@@ -1712,6 +1761,8 @@ class ScanController:
         audit_policy = self._policy.local_ci_audit
         if audit_policy is None or not audit_policy.applies_to(current.base_repository):
             return "local_ci_disabled"
+        if current.is_draft:
+            return "draft_pr"
         try:
             if not audit_policy.required_for_open_prs:
                 checks = (
@@ -1818,6 +1869,8 @@ class ScanController:
         admission = self._policy.admit_pull_request(current)
         if not admission.admitted or admission.target is None:
             return admission.reason or "not_admitted"
+        if current.is_draft:
+            return "draft_pr"
         if current.head_sha.casefold() != audit.identity.head_sha:
             return "head_changed"
         if current.base_sha is None or current.base_sha.casefold() != audit.identity.base_sha:
@@ -1914,6 +1967,8 @@ class ScanController:
         audit_policy = self._policy.local_ci_audit
         if audit_policy is None:
             return "local_ci_disabled"
+        if current is not None and current.is_draft:
+            return "draft_pr"
         if current is None:
             try:
                 current = self._github.get_pull_request(
@@ -1924,6 +1979,8 @@ class ScanController:
         admission = self._policy.admit_pull_request(current)
         if not admission.admitted or admission.target is None:
             return admission.reason or "not_admitted"
+        if current.is_draft:
+            return "draft_pr"
         if current.head_sha != listed.head_sha:
             return "head_changed"
         from .ci_admission import local_ci_admission_blocker
@@ -2183,6 +2240,8 @@ class ScanController:
             return "invalid_feedback_timestamp"
         if _is_non_actionable_review_container(feedback):
             return "non_actionable_review_container"
+        if _is_advisory_lgtm_report(feedback):
+            return "advisory_lgtm_report"
         if _is_codex_review_summary_tracker(feedback):
             return "codex_review_summary_tracker"
         if is_codex_review_request(feedback.body):
@@ -2720,6 +2779,29 @@ def _is_non_actionable_review_container(feedback: Feedback) -> bool:
     )
 
 
+def _is_advisory_lgtm_report(feedback: Feedback) -> bool:
+    """Skip reference-only AI review summaries that request no PR changes."""
+
+    if feedback.kind not in {"issue_comment", "review_comment", "review"}:
+        return False
+    body = " ".join(feedback.body.casefold().split())
+    return (
+        "automated review for reference; please use your judgment" in body
+        and re.search(r"\bverdict\s*:\s*lgtm\b", body) is not None
+        and "non-blocking:" in body
+        and not any(
+            marker in body
+            for marker in (
+                "changes requested",
+                "action required",
+                "blocking finding",
+                "must be fixed",
+                "needs to be fixed",
+            )
+        )
+    )
+
+
 _CODEX_REVIEW_SUMMARY_MARKER = "codex-pull-request-review-summary"
 
 
@@ -2778,7 +2860,7 @@ def _required_local_ci_backlog_count(
     admitted = tuple(
         pull
         for pull in pull_requests
-        if policy.admit_pull_request(pull).admitted
+        if policy.admit_pull_request(pull).admitted and not pull.is_draft
     )
     if not admitted:
         return 0
@@ -2842,7 +2924,7 @@ def _select_local_ci_candidates(
 
     backlog: list[tuple[PullRequest, int, datetime, int]] = []
     for pull in pull_requests:
-        if not policy.admit_pull_request(pull).admitted:
+        if pull.is_draft or not policy.admit_pull_request(pull).admitted:
             continue
         if _has_current_passed_ci_receipt(ledger, target, pull):
             continue
@@ -3418,11 +3500,12 @@ def _local_ci_task(
         idempotency_key=f"{_receipt_idempotency_key(receipt)}:supervised-v4",
         evidence=evidence,
         evidence_heading="Canonical PR audit receipt (JSON)",
-        # The ledger binding is finalized before an opted-in card is promoted.
-        initial_status="blocked",
+        # Todo is non-dispatchable while the exact-head ledger binding is
+        # finalized; auto-dispatch promotes only after that binding succeeds.
+        initial_status="todo",
         max_retries=3,
         # Auto-dispatch promotes the card after the ledger binding; otherwise
-        # the audit remains blocked for explicit operator dispatch.
+        # the audit remains in todo for explicit operator dispatch.
         # A deterministic required lane may run for an hour. Its durable
         # exact-head CI lease prevents duplicate restarts while the real
         # supervisor PID is alive; give the full lane sequence an 8h envelope.

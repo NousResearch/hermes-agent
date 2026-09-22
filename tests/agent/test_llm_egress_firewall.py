@@ -1851,19 +1851,25 @@ def test_content_free_violation_locations_never_return_keys_or_values():
     private_path = "/Users/private/repository/file.py"
     encoded = base64.b64encode(b"encoded private detail").decode("ascii")
     result = content_free_violation_locations(
-        {"private-key-name": [{"content-key": private_path}], "metadata-key": encoded}
+        {
+            "private-key-name": [{"content-key": private_path}],
+            "metadata-key": encoded,
+            "credential": "token=secret-value-123456789",
+        }
     )
     rendered = repr(result)
     assert result == (
         ("$.map[0].key", ("base64_payload",)),
         ("$.map[0].value.sequence[0].map[0].value", ("private_absolute_path",)),
         ("$.map[1].value", ("base64_payload",)),
+        ("$.map[2].value", ("secret_detected",)),
     )
     assert "private-key-name" not in rendered
     assert "content-key" not in rendered
     assert "metadata-key" not in rendered
     assert private_path not in rendered
     assert encoded not in rendered
+    assert "secret-value-123456789" not in rendered
 
 
 def test_scanner_error_fails_closed(monkeypatch, tmp_path):

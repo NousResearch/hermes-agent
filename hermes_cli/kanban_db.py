@@ -178,7 +178,7 @@ def _validate_pr_task_assignee_authority(
 # --- Constants ---
 
 VALID_STATUSES = {"triage", "todo", "scheduled", "ready", "running", "blocked", "review", "done", "archived"}
-VALID_INITIAL_STATUSES = {"running", "blocked"}
+VALID_INITIAL_STATUSES = {"running", "blocked", "todo"}
 
 # Typed block reasons (routing in ``_route_block``); ``None`` = legacy un-typed.
 VALID_BLOCK_KINDS = {"dependency", "needs_input", "capability", "transient"}
@@ -878,6 +878,8 @@ class Task:
     claim_expires: Optional[int]
     tenant: Optional[str]
     branch_name: Optional[str] = None
+    workspace_base_ref: Optional[str] = None
+    workspace_base_sha: Optional[str] = None
     project_id: Optional[str] = None
     result: Optional[str] = None
     idempotency_key: Optional[str] = None
@@ -914,6 +916,7 @@ class Task:
         text_columns = {
             "id", "title", "body", "assignee", "status", "created_by", "workspace_kind",
             "workspace_path", "claim_lock", "branch_name", "project_id", "tenant", "result",
+            "workspace_base_ref", "workspace_base_sha",
             "idempotency_key", "workflow_template_id", "current_step_key", "session_id",
             "completion_contract", "model_override", "provider_override", "reasoning_effort", "block_kind",
         }
@@ -948,7 +951,8 @@ _TASK_REQUIRED_COLUMNS = (
 )
 # Later-added columns read as NULL when absent from the row.
 _TASK_OPTIONAL_COLUMNS = (
-    "branch_name", "project_id", "tenant", "result", "idempotency_key", "worker_pid",
+    "branch_name", "workspace_base_ref", "workspace_base_sha", "project_id", "tenant",
+    "result", "idempotency_key", "worker_pid",
     "max_runtime_seconds", "last_heartbeat_at", "current_run_id", "workflow_template_id",
     "current_step_key", "max_retries", "completion_contract",
 )
@@ -1069,6 +1073,10 @@ CREATE TABLE IF NOT EXISTS tasks (
     workspace_kind       TEXT NOT NULL DEFAULT 'scratch',
     workspace_path       TEXT,
     branch_name          TEXT,
+    -- Immutable worktree starting point recorded by the dispatcher. Completion
+    -- reads these control-plane fields rather than worker-writable Git config.
+    workspace_base_ref   TEXT,
+    workspace_base_sha   TEXT,
     -- Optional link to a first-class Project (hermes_cli/projects_db). When set,
     -- the task's worktree is anchored under the project's primary repo with a
     -- deterministic branch name instead of a random wt/<task-id> fallback.
@@ -1528,7 +1536,8 @@ def create_task(
     """Create a task (optionally under ``parents``); returns its id.
 
     Status: ``ready`` unless a parent is not ``done`` (``todo``); ``triage=True``
-    forces ``triage``; ``initial_status="blocked"`` parks it for human ops.
+    forces ``triage``; explicit ``initial_status`` can stage as ``todo`` or
+    ``blocked`` before dispatch.
     ``idempotency_key``: an existing non-archived task with the key is returned
     instead of a duplicate. ``max_runtime_seconds``: cap before the dispatcher
     SIGTERMs and re-queues. ``model_override``/``provider_override`` pin the
@@ -3282,6 +3291,8 @@ def complete_task(
     force: bool = False,
     fire_lifecycle_hook: bool = True,
     board: Optional[str] = None,
+    repository_github_client=None,
+    repository_git_runner=None,
 ) -> bool:
     """``running|ready|blocked|review -> done``; records ``result``.
 
@@ -3296,12 +3307,25 @@ def complete_task(
     # Cheap pre-check; re-checked inside the txn to close the parent-reopen race.
     if not _parents_satisfied(conn, task_id):
         return False
-    from hermes_cli.kanban_completion_policy import enforce_completion_policies
+    from hermes_cli.kanban_completion_policy import (
+        enforce_completion_policies,
+        enforce_repository_handoff,
+    )
     from hermes_cli.kanban_pr_acceptance_store import prepare_acceptance, record_acceptance
 
     task = get_task(conn, task_id)
     if task is None:
         return False
+
+    # This is the shared mutation boundary used by tools, the CLI, and internal
+    # callers. Keep repository receipt enforcement here so no supported surface
+    # can mark a managed worktree done by bypassing the tool handler.
+    enforce_repository_handoff(
+        task=task,
+        metadata=metadata,
+        github_client=repository_github_client,
+        git_runner=repository_git_runner,
+    )
     
     # Live-claim guard: if task is running with a live worker, require expected_run_id or force
     if task.status == "running" and task.worker_pid is not None:
@@ -4874,7 +4898,10 @@ def build_worker_context(conn: sqlite3.Connection, task_id: str) -> str:
         "## Completion contract",
         "Before your worker exits, call kanban_complete with a factual result, or call "
         "kanban_block only for a concrete unresolved prerequisite. A no-op or unavailable-evidence "
-        "outcome is still a completion when the task permits it; never exit with only conversational text.",
+        "outcome is still a completion when the task permits it; never exit with only conversational text. "
+        "For an assigned Git worktree, a read-only/no-change handoff must set "
+        "metadata.repository_changes=false. A repository-changing handoff must set it true and provide "
+        "commit_sha, pushed_branch, repository, base_branch, and pr_url after the clean exact head is pushed.",
         "",
     ])
     _ctx_attachments(lines, list_attachments(conn, task_id))

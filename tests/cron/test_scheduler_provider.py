@@ -662,6 +662,60 @@ def test_multiplex_ticker_ticks_each_profile_once(tmp_path, monkeypatch):
         f"Expected >= {len(profile_homes)} tick calls, got {len(tick_count)}"
 
 
+def test_multiplex_profile_gate_owns_startup_and_preserves_aba_scope(tmp_path, monkeypatch):
+    """A fallback ticker never claims startup ownership for a gated home, while the
+    homes it owns stay correctly scoped across successive A -> B -> A ticks."""
+    from cron.scheduler_provider import InProcessCronScheduler
+    from hermes_constants import get_hermes_home
+
+    home_a = tmp_path / "a"
+    home_b = tmp_path / "b"
+    independently_owned = tmp_path / "own-gateway"
+    for home in (home_a, home_b, independently_owned):
+        (home / "cron").mkdir(parents=True)
+
+    provider = InProcessCronScheduler()
+    stop = threading.Event()
+    recovered: list[str] = []
+    ticked: list[str] = []
+
+    def _recover():
+        recovered.append(str(get_hermes_home()))
+        return 0
+
+    def _tick(*args, **kwargs):
+        ticked.append(str(get_hermes_home()))
+        if len(ticked) == 3:
+            stop.set()
+        return 0
+
+    monkeypatch.setattr(provider, "recover_interrupted", _recover)
+    with patch("cron.scheduler.tick", side_effect=_tick):
+        thread = threading.Thread(
+            target=provider.start,
+            args=(stop,),
+            kwargs={
+                "interval": 0,
+                "profile_homes": [
+                    ("a", home_a),
+                    ("b", home_b),
+                    ("own-gateway", independently_owned),
+                ],
+                "profile_gate": lambda name, home: name != "own-gateway",
+            },
+            daemon=True,
+        )
+        thread.start()
+        thread.join(timeout=5)
+        stop.set()
+        thread.join(timeout=5)
+
+    assert not thread.is_alive()
+    assert recovered == [str(home_a), str(home_b)]
+    assert ticked[:3] == [str(home_a), str(home_b), str(home_a)]
+    assert not (independently_owned / "cron" / "ticker_heartbeat").exists()
+
+
 def test_multiplex_ticker_skips_deleted_profile_from_startup_snapshot(tmp_path):
     """A stale profile_homes entry must not recreate a deleted profile."""
     import cron.jobs as jobs
@@ -914,6 +968,295 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     assert recovery_homes == [str(failing_home), str(healthy_home)]
     # The failing profile stays in rotation: its ledger may still hold jobs.
     assert set(tick_homes) == {str(failing_home), str(healthy_home)}
+
+
+# ── Scheduled model-provider routing ─────────────────────────────────────────────────
+
+
+def _scheduled_route_fixture(tmp_path, monkeypatch):
+    """Installation root + credentialless profile served by the multiplex ticker."""
+    from agent.secret_scope import set_multiplex_active
+
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "worker"
+    (profile / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n")
+    (root / ".env").write_text("NVIDIA_API_KEY=nvapi-shared-test\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-auth"))
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    set_multiplex_active(True)
+    return root, profile
+
+
+def _job_config(*, model="upstage/solar-pro4:free", fallback_providers=()):
+    from cron.scheduler import _CronJobConfig
+
+    cfg = {"fallback_providers": list(fallback_providers)}
+    return _CronJobConfig(
+        cfg=cfg,
+        model=model,
+        model_cfg={"provider": "nous"},
+        cron_default_provider="",
+    )
+
+
+def test_scheduled_primary_uses_shared_cloud_provider_credential(tmp_path, monkeypatch):
+    """A named profile's cron primary resolves from the authorized root provider store."""
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler import _resolve_job_runtime
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    try:
+        with _profile_cron_scope(profile):
+            runtime, model = _resolve_job_runtime(
+                {"id": "cloud-primary", "provider": "nim", "model": "nvidia/test-model"},
+                "cloud-primary",
+                _job_config(model="nvidia/test-model"),
+            )
+    finally:
+        set_multiplex_active(False)
+
+    assert model == "nvidia/test-model"
+    assert runtime["provider"] == "nvidia"
+    assert runtime["api_key"] == "nvapi-shared-test"
+
+
+def test_scheduled_nous_auth_failure_uses_shared_cloud_fallback(tmp_path, monkeypatch):
+    """Missing profile-local Nous OAuth routes to an authorized shared cloud key."""
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler import _resolve_job_runtime
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    fallback = {"provider": "nim", "model": "nvidia/nemotron-test"}
+    try:
+        with _profile_cron_scope(profile):
+            runtime, model = _resolve_job_runtime(
+                {"id": "auth-fallback", "provider": "nous"},
+                "auth-fallback",
+                _job_config(fallback_providers=(fallback,)),
+            )
+    finally:
+        set_multiplex_active(False)
+
+    assert model == "nvidia/nemotron-test"
+    assert runtime["provider"] == "nvidia"
+    assert runtime["api_key"] == "nvapi-shared-test"
+
+
+def test_scheduled_cloud_route_skips_local_fallback(tmp_path, monkeypatch):
+    """An unpinned/local-unspecified job never diverts orchestration onto loopback."""
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler import _resolve_job_runtime
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    local = {
+        "provider": "llamacpp",
+        "model": "local-test-model",
+        "base_url": "http://127.0.0.1:8080/v1",
+    }
+    cloud = {"provider": "nim", "model": "nvidia/nemotron-test"}
+    try:
+        with _profile_cron_scope(profile):
+            runtime, model = _resolve_job_runtime(
+                {"id": "cloud-only", "provider": "nous"},
+                "cloud-only",
+                _job_config(fallback_providers=(local, cloud)),
+            )
+    finally:
+        set_multiplex_active(False)
+
+    assert model == "nvidia/nemotron-test"
+    assert runtime["provider"] == "nvidia"
+    assert runtime["base_url"].startswith("https://")
+
+
+def test_scheduled_cloud_route_skips_named_custom_provider_with_lan_endpoint():
+    """A custom-provider alias cannot hide a machine-local endpoint from cron filtering."""
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+
+    local = {"provider": "office-models", "model": "local-test-model"}
+    cloud = {"provider": "nim", "model": "nvidia/nemotron-test"}
+    cfg = {
+        "providers": {
+            "lan-gateway": {
+                "name": "Office Models",
+                "base_url": "http://192.168.1.20:8080/v1",
+            },
+        },
+        "fallback_providers": [local, cloud],
+    }
+
+    assert scheduled_model_fallback_chain(
+        {"id": "cloud-only", "provider": "nous"}, cfg,
+    ) == [cloud]
+
+
+def test_scheduled_cloud_route_keeps_cloud_backed_moa_fallback():
+    """MoA's virtual URI does not make a cloud-backed preset a local model route."""
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+
+    moa = {"provider": "moa", "model": "cloud-review"}
+    cloud = {"provider": "nim", "model": "nvidia/nemotron-test"}
+    cfg = {
+        "moa": {
+            "default_preset": "cloud-review",
+            "presets": {
+                "cloud-review": {
+                    "reference_models": [
+                        {"provider": "openrouter", "model": "anthropic/claude-sonnet-4"},
+                        {"provider": "xai", "model": "grok-4-fast"},
+                    ],
+                    "aggregator": {"provider": "openai-codex", "model": "gpt-5.5"},
+                },
+            },
+        },
+        "fallback_providers": [moa, cloud],
+    }
+
+    assert scheduled_model_fallback_chain(
+        {"id": "cloud-only", "provider": "nous"}, cfg,
+    ) == [moa, cloud]
+
+
+def test_scheduled_cloud_route_skips_moa_with_scoped_lan_override(tmp_path, monkeypatch):
+    """MoA classification honors the same scoped provider URL override as slot execution."""
+    import agent.moa_loop as moa_loop
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    (profile / ".env").write_text("NVIDIA_BASE_URL=http://192.168.1.20:8080/v1\n")
+    moa_loop._runtime_cache.clear()
+    moa = {"provider": "moa", "model": "scoped-lan"}
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "moa": {
+            "default_preset": "scoped-lan",
+            "presets": {
+                "scoped-lan": {
+                    "reference_models": [{"provider": "nvidia", "model": "nvidia/test-model"}],
+                    "aggregator": {"provider": "openrouter", "model": "openai/gpt-5.5"},
+                },
+            },
+        },
+        "fallback_providers": [moa, cloud],
+    }
+
+    try:
+        with _profile_cron_scope(profile):
+            assert scheduled_model_fallback_chain(
+                {"id": "cloud-only", "provider": "nous"}, cfg,
+            ) == [cloud]
+    finally:
+        set_multiplex_active(False)
+
+
+def test_scheduled_cloud_route_skips_moa_with_auto_selected_local_route(tmp_path, monkeypatch):
+    """A MoA auto slot inherits the effective local main route before cron classifies it."""
+    import yaml
+
+    import agent.moa_loop as moa_loop
+    from cron.scheduler_provider import scheduled_model_fallback_chain
+
+    home = tmp_path / ".hermes"
+    home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    moa_loop._runtime_cache.clear()
+    moa = {"provider": "moa", "model": "auto-local"}
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "model": {
+            "provider": "auto",
+            "default": "local-test-model",
+            "base_url": "http://127.0.0.1:11434/v1",
+        },
+        "moa": {
+            "default_preset": "auto-local",
+            "presets": {
+                "auto-local": {
+                    "reference_models": [{"provider": "auto", "model": "local-test-model"}],
+                    "aggregator": {"provider": "openrouter", "model": "openai/gpt-5.5"},
+                },
+            },
+        },
+        "fallback_providers": [moa, cloud],
+    }
+    (home / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    assert scheduled_model_fallback_chain(
+        {"id": "cloud-only", "provider": "nous"}, cfg,
+    ) == [cloud]
+
+
+def test_scheduled_cloud_route_skips_effective_scoped_and_auto_local_fallbacks(tmp_path, monkeypatch):
+    """Ordinary fallbacks are classified from scoped runtime routes, not catalog URLs."""
+    import yaml
+
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler_provider import _profile_cron_scope, scheduled_model_fallback_chain
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    (profile / ".env").write_text("NVIDIA_BASE_URL=http://192.168.1.20:8080/v1\n")
+    nvidia = {"provider": "nvidia", "model": "nvidia/test-model"}
+    auto = {"provider": "auto", "model": "local-test-model"}
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    cfg = {
+        "model": {
+            "provider": "auto",
+            "default": "local-test-model",
+            "base_url": "http://127.0.0.1:11434/v1",
+        },
+        "fallback_providers": [nvidia, auto, cloud],
+    }
+    (profile / "config.yaml").write_text(yaml.safe_dump(cfg))
+
+    try:
+        with _profile_cron_scope(profile):
+            assert scheduled_model_fallback_chain(
+                {"id": "cloud-only", "provider": "nous"}, cfg,
+            ) == [cloud]
+    finally:
+        set_multiplex_active(False)
+
+
+def test_cron_agent_runtime_auth_recovery_receives_cloud_only_chain(monkeypatch):
+    """A primary that later returns 401/403 cannot recover through a local AIAgent fallback."""
+    import cron.scheduler as scheduler
+
+    local = {
+        "provider": "llamacpp",
+        "model": "local-test-model",
+        "base_url": "http://127.0.0.1:8080/v1",
+    }
+    cloud = {"provider": "openrouter", "model": "openai/gpt-5.5"}
+    jc = _job_config(model="nvidia/test-model", fallback_providers=(local, cloud))
+    monkeypatch.setattr(
+        scheduler,
+        "_resolve_job_runtime",
+        lambda *_args: ({
+            "provider": "nvidia",
+            "requested_provider": "nvidia",
+            "base_url": "https://integrate.api.nvidia.com/v1",
+            "api_key": "test-key",
+            "api_mode": "chat_completions",
+        }, "nvidia/test-model"),
+    )
+    monkeypatch.setattr(scheduler, "_load_credential_pool", lambda *_args: None)
+    monkeypatch.setattr(scheduler, "_init_cron_mcp_tools", lambda *_args: None)
+
+    setup = scheduler._resolve_cron_agent_setup(
+        {"id": "runtime-auth", "provider": "nvidia"},
+        "runtime-auth",
+        "runtime-auth",
+        jc,
+    )
+
+    assert setup.fallback_model == [cloud]
 
 
 def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):

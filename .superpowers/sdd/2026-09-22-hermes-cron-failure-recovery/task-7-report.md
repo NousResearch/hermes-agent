@@ -1,0 +1,132 @@
+# Task 7 report — PR handoff enforcement and Hermes worktree audit
+
+## Outcome
+
+Implemented a fail-closed terminal receipt for dispatcher-managed Git worktrees:
+
+- every worktree completion declares `metadata.repository_changes` as a Boolean;
+- `false` is accepted only while the assigned Git checkout is clean;
+- `true` requires `commit_sha`, `pushed_branch`, `repository`, `base_branch`, and `pr_url`;
+- changed receipts are checked against the live 40-character HEAD, assigned/current branch, a same-head remote-tracking ref, the matching GitHub remote repository, and an ancestor remote base branch;
+- rejection happens before `complete_task`, so the card remains in flight and the workspace is preserved;
+- scratch tasks and non-worktree directories retain their prior completion behavior.
+
+Worker context and the `kanban_complete` schema now describe the same receipt shape.
+
+## Invariant coverage
+
+Added tool-level behavior tests for:
+
+1. committed/pushed work without a PR URL is rejected and remains running;
+2. a clean exact-head pushed branch with a matching PR receipt is accepted;
+3. an explicit read-only/no-change receipt is accepted without a PR;
+4. a worktree completion with no change declaration is rejected;
+5. worker context states both the no-change and repository-change forms.
+
+The tests use a real temporary Git repository and bare remote. No Git behavior is mocked.
+
+## Read-only worktree and Kanban audit
+
+Evidence is in `docs/superpowers/evidence/2026-09-22-hermes-worktree-pr-audit.md`.
+
+- Direct GitHub identity: `mrkillbob`.
+- Registered Hermes Agent worktrees audited: 28.
+- Dirty worktrees were preserved; no reset, clean, stash, commit, push, or branch rewrite was performed in them.
+- Clean historical heads were covered by merged PRs #108–#124 or, for the superseded engineering-memory branch, had the same stable patch-id as the fork-base commit merged by PR #122.
+- PR #125 already covers the only current open registered Hermes sync head.
+- The exact unassociated heads were active/dirty WIP rather than qualifying completed changes.
+- The current Kanban board had one active Hermes worktree card (`t_92e44484`), already blocked with its ephemeral path removed. Recent worktree cards were diagnostic/no-change and cleaned up. Scratch cards that named changed files had no committed Git receipt.
+- No qualifying completed change required a new PR. No PR was opened and no Kanban task or receipt was mutated.
+
+## Verification
+
+Red evidence was observed before implementation:
+
+- `test_complete_rejects_repository_change_without_pr_receipt` failed because the task completed instead of returning an error.
+- `test_complete_rejects_worktree_without_change_declaration` failed for the same reason.
+- the worker-context guidance assertion failed before the guidance changed.
+
+Green focused command:
+
+```text
+scripts/run_tests.sh tests/tools/test_kanban_tools.py tests/hermes_cli/test_kanban_core_functionality.py \
+  -k 'repository_change_without_pr_receipt or exact_repository_pr_receipt or explicit_no_repository_changes or worktree_without_change_declaration or worker_context_requires_terminal_kanban_receipt'
+```
+
+Result: **5 passed, 0 failed**.
+
+Full affected files:
+
+```text
+scripts/run_tests.sh tests/tools/test_kanban_tools.py tests/hermes_cli/test_kanban_core_functionality.py
+```
+
+Result: **76 passed, 1 failed, 1 skipped**. All 47 tests in `tests/tools/test_kanban_tools.py` passed. The sole failure was the pre-existing, independently reproducible `tests/hermes_cli/test_kanban_core_functionality.py::test_protocol_violation_budget_not_consumed_by_other_failures`: it expected a third protocol violation to block, but the task remained ready. A fresh isolated rerun reproduced that failure. Task 7 does not alter the protocol-violation budget or dispatcher failure handling, so it was recorded rather than expanded into this repair.
+
+Additional checks:
+
+- `git diff --check`: pass.
+- `python3 -m py_compile` for every changed Python source/test file: pass.
+
+## Preserved unrelated state
+
+The pre-existing modification to `task-5-report.md` was not edited or staged as part of Task 7.
+
+## Review round 1 — exact PR identity and no-change ancestry
+
+Two fail-closed gaps were repaired after review:
+
+- changed-work completion now resolves the declared PR number through the bundled `GitHubClient` created by `GitHubClient.for_automation_identity`; this verifies the dedicated Hermes GitHub viewer before reading the canonical PR;
+- the canonical PR must be open in the declared base repository, with the exact receipt head branch, head SHA, and base branch;
+- missing or malformed GitHub data, including a nonexistent PR, leaves the task in flight;
+- the worktree allocator records the assigned base ref and immutable base SHA, and the dispatcher copies them into control-plane task fields before spawning the worker;
+- a `repository_changes=false` receipt now requires the clean worktree HEAD to equal that assigned base SHA, so a clean committed branch cannot bypass the PR receipt.
+
+The completion helper accepts injected Git and GitHub clients for invariant tests. Production calls use the subprocess Git inspector and the existing bot identity client. No-change validation reads the dispatcher-owned task fields rather than worker-writable Git configuration.
+
+Added regressions:
+
+1. PR head SHA mismatch is rejected;
+2. PR head branch mismatch is rejected;
+3. PR base branch mismatch is rejected;
+4. a syntactically valid but nonexistent PR URL is rejected;
+5. `repository_changes=false` is rejected when the clean branch is ahead of its assigned base;
+6. the exact canonical PR identity remains accepted.
+
+Red evidence: the five rejection scenarios completed successfully before the policy change, and the happy path never called the injected GitHub client. Focused green result after the change: **7 passed, 0 failed**.
+
+Affected-file verification:
+
+```text
+scripts/run_tests.sh tests/tools/test_kanban_tools.py \
+  tests/hermes_cli/test_kanban_worktree_isolation.py \
+  tests/hermes_cli/test_kanban_worktree_teardown.py \
+  tests/hermes_cli/test_kanban_worktree_unicode_path.py
+```
+
+Result: **69 passed, 2 failed**. All 52 Kanban tool tests, both worktree-isolation tests, and all 14 worktree-teardown tests passed. The two macOS Unicode-path tests failed during their own repository setup because the isolated runner had no Git author identity (`fatal: empty ident name`), before reaching changed production code. The remaining Unicode-path test passed.
+
+After moving the assigned base into dispatcher-owned task columns, an expanded schema run produced **146 passed, 4 failed, 2 skipped** across the full Kanban tool, worktree isolation, worktree teardown, and Kanban database files. The full tool and worktree files stayed green; 78 Kanban database tests passed. The four failures are in the separate provider-crash terminal-blocking behavior (`test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane[ready]` and three provider egress/thinking variants), where current branch behavior leaves those tasks ready. They do not exercise worktree allocation, base persistence, or repository completion receipts.
+
+No GitHub write was made or attempted in this review round.
+
+## Final review — CLI completion boundary
+
+The repository receipt policy now runs inside `kanban_db.complete_task`, the shared state mutation boundary used by the model tool, `hermes kanban complete`, and internal callers. The tool passes its injected GitHub/Git test clients into this boundary and preserves its retry guidance. The CLI catches `CompletionPolicyError`, prints the exact receipt rejection, returns nonzero, and leaves the task in flight.
+
+Added a real CLI regression using a temporary Git repository and Kanban database. Before the fix, `hermes kanban complete --metadata '{"repository_changes":false}'` returned success and moved a clean ahead branch to done. After the fix, it returns 1, reports the assigned-base mismatch, and keeps the task ready.
+
+Receipt-aware worktree lifecycle tests now provide explicit no-change metadata for clean base worktrees. Dirty worktree completion asserts the shared boundary rejects the transition and preserves both the running task and dirty checkout.
+
+Focused verification:
+
+```text
+scripts/run_tests.sh \
+  tests/hermes_cli/test_kanban_completion_receipt_cli.py \
+  tests/tools/test_kanban_tools.py \
+  tests/hermes_cli/test_kanban_worktree_teardown.py \
+  tests/hermes_cli/test_kanban_complete_live_claim_guard.py \
+  tests/hermes_cli/test_kanban_empty_completion.py
+```
+
+Result: **76 passed, 0 failed**. No GitHub write was made or attempted.

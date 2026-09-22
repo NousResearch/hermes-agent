@@ -92,22 +92,171 @@ def _existing_profile_homes(profile_homes: list) -> list:
     return [entry for entry in profile_homes if Path(_profile_entry(entry)[1]).is_dir()]
 
 
+def _owned_profile_homes(profile_homes, profile_gate=None) -> list[tuple]:
+    """Return existing homes this ticker owns for the current cycle.
+
+    The ownership gate applies before startup recovery as well as ordinary ticks. Otherwise a
+    fallback ticker that correctly stands down in its loop still writes a competing heartbeat and
+    recovers executions in a home owned by a live gateway during startup.
+    """
+    homes = [_profile_entry(entry) for entry in _existing_profile_homes(profile_homes)]
+    if profile_gate is None:
+        return homes
+    return [(name, home) for name, home in homes if profile_gate(name, home)]
+
+
 @contextlib.contextmanager
 def _profile_cron_scope(home):
-    """Scope the calling thread to one profile's home + cron store for the block."""
+    """Scope one ticker operation to a profile's home, secrets, terminal policy, and store."""
+    from agent.secret_scope import (
+        build_profile_secret_scope, reset_secret_scope, set_secret_scope)
     from cron.jobs import use_cron_store
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     # Record per-profile heartbeat after each tick cycle. Distinguish a COMPLETED cycle (``_tick_error``
     # unset) — where each profile's beat reflects its own outcome, so a yielding profile does not darken
     # healthy siblings — from an aborted one (exception), where no profile completed and all beats are
     # unsuccessful (#32612).
     home_token = set_hermes_home_override(str(home))
+    secret_token = None
     try:
-        with use_cron_store(home):
-            yield
+        hydrate_profile_secret_sources(Path(home))
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(home)))
+        with install_and_reset_profile_terminal_scope(Path(home)):
+            with use_cron_store(home):
+                yield
     finally:
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
+
+
+_LOCAL_SCHEDULED_MODEL_PROVIDERS = frozenset({
+    "local", "ollama", "ollama-launch", "llamacpp", "llama.cpp", "llama-cpp", "lmstudio",
+    "vllm",
+})
+
+
+def _scheduled_moa_preset_uses_local_route(model: Any, cfg: dict) -> bool:
+    """Whether any enabled route inside a MoA preset resolves to a local endpoint."""
+    from agent.errors import MoAPresetNotFoundError
+    from agent.moa_loop import _slot_runtime
+    from hermes_cli.moa_config import resolve_moa_preset
+
+    try:
+        preset = resolve_moa_preset(cfg.get("moa") or {}, str(model or "").strip() or None)
+    except MoAPresetNotFoundError:
+        # An unknown preset will fail through normal provider resolution.  The virtual MoA URI
+        # alone is not evidence that the preset runs on this machine.
+        return False
+    routes = [
+        entry for entry in preset.get("reference_models", [])
+        if isinstance(entry, dict) and entry.get("enabled", True)
+    ]
+    aggregator = preset.get("aggregator")
+    if isinstance(aggregator, dict):
+        routes.append(aggregator)
+    for route in routes:
+        runtime = _slot_runtime(route)
+        if _scheduled_model_route_is_local(
+            runtime.get("provider") or route.get("provider"),
+            runtime.get("base_url"),
+            model=runtime.get("model") or route.get("model"),
+            cfg=cfg,
+        ):
+            return True
+    return False
+
+
+def _scheduled_model_route_is_local(
+    provider: Any, base_url: Any = None, *, model: Any = None, cfg: dict | None = None,
+) -> bool:
+    """Whether a scheduled model route is explicitly machine/local-network bound."""
+    provider_name = str(provider or "").strip().lower()
+    if provider_name in _LOCAL_SCHEDULED_MODEL_PROVIDERS:
+        return True
+    url = str(base_url or "").strip()
+    if provider_name == "moa" and (not url or url.lower() == "moa://local"):
+        return _scheduled_moa_preset_uses_local_route(model, cfg) if cfg is not None else False
+    if not url and provider_name and cfg is not None:
+        from hermes_cli.config_providers import get_compatible_custom_providers
+        from hermes_cli.providers import resolve_provider_full
+
+        resolved = resolve_provider_full(
+            provider_name,
+            cfg.get("providers"),
+            get_compatible_custom_providers(cfg),
+        )
+        if resolved is not None:
+            from agent.secret_scope import get_secret_str
+
+            override = (
+                get_secret_str(resolved.base_url_env_var, "").strip()
+                if resolved.base_url_env_var else ""
+            )
+            url = override or str(resolved.base_url or "").strip()
+    if not url:
+        return False
+    from agent.model_metadata import is_local_endpoint
+
+    return is_local_endpoint(url)
+
+
+def _scheduled_fallback_route_is_local(entry: dict, cfg: dict) -> bool:
+    """Classify a fallback from the effective runtime route used for execution."""
+    provider = entry.get("provider")
+    model = entry.get("model")
+    if _scheduled_model_route_is_local(
+        provider, entry.get("base_url"), model=model, cfg=cfg,
+    ):
+        return True
+    if str(provider or "").strip().lower() == "moa":
+        # MoA's runtime endpoint is the virtual ``moa://local`` URI.  Its actual routes were
+        # already classified by _scheduled_model_route_is_local above.
+        return False
+    try:
+        from hermes_cli.fallback_config import resolve_entry_api_key
+        from hermes_cli.runtime_provider import resolve_runtime_provider
+
+        kwargs = {"requested": provider, "target_model": model}
+        if entry.get("base_url"):
+            kwargs["explicit_base_url"] = entry["base_url"]
+        api_key = resolve_entry_api_key(entry)
+        if api_key:
+            kwargs["explicit_api_key"] = api_key
+        runtime = resolve_runtime_provider(**kwargs)
+    except Exception:
+        # Resolution errors stay in the chain so the normal fallback machinery reports/skips them;
+        # absence of a runtime is not evidence that the route is machine-local.
+        return False
+    return _scheduled_model_route_is_local(
+        runtime.get("provider") or provider,
+        runtime.get("base_url"),
+        model=model,
+        cfg=cfg,
+    )
+
+
+def scheduled_model_fallback_chain(job: dict, cfg: dict) -> list[dict]:
+    """Cloud-first fallback chain for unattended scheduled orchestration.
+
+    A per-job local provider or loopback base URL is explicit authority to use local routes.  All
+    other scheduled jobs skip local fallback entries: a cloud credential failure must not silently
+    move durable orchestration onto a workstation model that may be offline or capacity constrained.
+    """
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    chain = [entry for entry in get_fallback_chain(cfg) if isinstance(entry, dict)]
+    if _scheduled_model_route_is_local(
+        job.get("provider"), job.get("base_url"), model=job.get("model"), cfg=cfg,
+    ):
+        return chain
+    return [
+        entry for entry in chain
+        if not _scheduled_fallback_route_is_local(entry, cfg)
+    ]
 
 
 class CronScheduler(ABC):
@@ -516,7 +665,11 @@ class InProcessCronScheduler(CronScheduler):
         )
         from cron.jobs import clear_ticker_error, record_ticker_error, record_ticker_heartbeat
 
-        initial_homes = _existing_profile_homes(profile_homes)
+        try:
+            initial_homes = _owned_profile_homes(profile_homes, profile_gate)
+        except BaseException as e:
+            logger.error("Cron profile enumeration error during startup: %s", e, exc_info=True)
+            initial_homes = []
         logger.info(
             "Multiplex cron scheduler started for %d profile(s): %s%s",
             len(initial_homes),
@@ -569,10 +722,7 @@ class InProcessCronScheduler(CronScheduler):
             # tick the ungated set — the exact stand-down the Desktop gate exists for (#100489).
             cycle_homes: list = []
             try:
-                enumerated = [_profile_entry(e) for e in _existing_profile_homes(profile_homes)]
-                if profile_gate is not None:
-                    enumerated = [(name, home) for name, home in enumerated if profile_gate(name, home)]
-                cycle_homes = enumerated
+                cycle_homes = _owned_profile_homes(profile_homes, profile_gate)
             except BaseException as e:
                 logger.error("Cron profile enumeration error: %s", e, exc_info=True)
                 _tick_error = f"{type(e).__name__}: {e}"

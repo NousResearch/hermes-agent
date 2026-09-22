@@ -55,8 +55,6 @@ from .policy import (
     FeedbackReceipt,
     PluginPolicy,
     ReleaseMaintenancePolicy,
-    codex_review_trigger_comment,
-    codex_review_trigger_requested,
     hermes_attribution_line,
     load_policy,
 )
@@ -139,6 +137,7 @@ def _factual_reply_is_missing(
     *,
     resolved_head_sha: str,
     owner_login: str | None = None,
+    accepted_logins: frozenset[str] = frozenset(),
 ) -> bool:
     """Whether no comment yet carries this exact completion's required receipt marker.
 
@@ -167,7 +166,11 @@ def _factual_reply_is_missing(
             continue
         if owner_login is not None:
             reviewer_login = getattr(item.reviewer, "login", None) or ""
-            if reviewer_login.casefold() != owner_login.casefold():
+            allowed_logins = {
+                owner_login.casefold(),
+                *(login.casefold() for login in accepted_logins),
+            }
+            if reviewer_login.casefold() not in allowed_logins:
                 continue
         if not pr_repair_attribution_required(receipt.repository):
             return False
@@ -179,37 +182,9 @@ def _factual_reply_is_missing(
 def _retrigger_codex_review(
     github: GitHubClient, repository: str, pr_number: int, resolved_head_sha: str
 ) -> str:
-    """Request an exact-head review once and expose connector authorization failures."""
-
-    try:
-        feedback = github.list_feedback(repository, pr_number)
-    except GitHubClientError:
-        return "unavailable"
-    if _codex_reviewed_head(feedback, resolved_head_sha):
-        return "already_current"
-    requests = [
-        item for item in feedback
-        if codex_review_trigger_requested(item.body, resolved_head_sha)
-    ]
-    if requests:
-        latest_request = max(item.created_at for item in requests)
-        if any(
-            item.reviewer.login.casefold() == "chatgpt-codex-connector[bot]"
-            and item.created_at >= latest_request
-            and "create a codex account and connect to github" in item.body.casefold()
-            for item in feedback
-        ):
-            return "authorization_required"
-        return "already_requested"
-    try:
-        github.post_issue_comment(
-            repository,
-            pr_number,
-            codex_review_trigger_comment(resolved_head_sha),
-        )
-    except GitHubClientError:
-        return "unavailable"
-    return "triggered"
+    """Leave review scheduling to the repository's configured Codex process."""
+    del github, repository, pr_number, resolved_head_sha
+    return "automatic_review_configured"
 
 
 @dataclass(frozen=True, slots=True)
@@ -503,6 +478,13 @@ class KanbanSubprocessClient:
             raise RuntimeError("Kanban task lookup failed")
         return status.strip()
 
+    def archive_task(self, board: str, task_id: str) -> None:
+        result = self._runner.run(
+            ["hermes", "kanban", "--board", board, "archive", task_id]
+        )
+        if result.returncode != 0:
+            raise RuntimeError("Kanban task archival failed")
+
     def reconcile_dispatch_task(self, task_id: str, task: KanbanTask) -> None:
         result = self._runner.run(_kanban_reconcile_argv(task_id, task))
         if result.returncode != 0:
@@ -547,7 +529,7 @@ def _kanban_create_argv(task: KanbanTask) -> list[str]:
             argv.extend(["--provider", task.provider_override])
     if task.reasoning_effort:
         argv.extend(["--reasoning", task.reasoning_effort])
-    if task.initial_status not in {"ready", "blocked", "running"}:
+    if task.initial_status not in {"ready", "blocked", "running", "todo"}:
         raise ValueError("Kanban task initial status is invalid")
     if task.initial_status != "ready":
         argv.extend(["--initial-status", task.initial_status])
@@ -1670,6 +1652,7 @@ def _complete_feedback(ctx: Any, args: argparse.Namespace) -> int:
         receipt,
         resolved_head_sha=str(args.resolved_head_sha),
         owner_login=admission.target.owner_login if admission.target is not None else None,
+        accepted_logins=policy.reviewer_logins,
     ):
         print(json.dumps({"status": "factual_reply_missing"}, sort_keys=True))
         return 1
@@ -1712,44 +1695,23 @@ def _complete_feedback(ctx: Any, args: argparse.Namespace) -> int:
         local_ci_status = _controller(policy, ledger).dispatch_local_ci_after_feedback(
             current
         )
-        if codex_retrigger_status == "unavailable":
-            # Codex retrigger is temporarily unavailable; treat the completion
-            # as retryable so the caller can attempt the full flow again.
-            print(
-                json.dumps(
-                    {
-                        "status": "codex_retrigger_unavailable",
-                        "repository": receipt.repository,
-                        "pr_number": receipt.pr_number,
-                        "feedback_kind": receipt.feedback_kind,
-                        "feedback_id": receipt.feedback_id,
-                        "resolved_head_sha": str(args.resolved_head_sha).casefold(),
-                        "review_thread_resolved": review_thread_resolved,
-                        "local_ci_status": local_ci_status,
-                        "codex_retrigger_status": codex_retrigger_status,
-                    },
-                    sort_keys=True,
-                )
+        print(
+            json.dumps(
+                {
+                    "status": "completed",
+                    "repository": receipt.repository,
+                    "pr_number": receipt.pr_number,
+                    "feedback_kind": receipt.feedback_kind,
+                    "feedback_id": receipt.feedback_id,
+                    "resolved_head_sha": str(args.resolved_head_sha).casefold(),
+                    "review_thread_resolved": review_thread_resolved,
+                    "local_ci_status": local_ci_status,
+                    "codex_retrigger_status": codex_retrigger_status,
+                },
+                sort_keys=True,
             )
-            return_code = 1
-        else:
-            print(
-                json.dumps(
-                    {
-                        "status": "completed",
-                        "repository": receipt.repository,
-                        "pr_number": receipt.pr_number,
-                        "feedback_kind": receipt.feedback_kind,
-                        "feedback_id": receipt.feedback_id,
-                        "resolved_head_sha": str(args.resolved_head_sha).casefold(),
-                        "review_thread_resolved": review_thread_resolved,
-                        "local_ci_status": local_ci_status,
-                        "codex_retrigger_status": codex_retrigger_status,
-                    },
-                    sort_keys=True,
-                )
-            )
-            return_code = 0
+        )
+        return_code = 0
     finally:
         ledger.close()
     return return_code
@@ -2009,6 +1971,34 @@ def _audit_pr(ctx: Any, args: argparse.Namespace) -> int:
             raise ValueError("audit target is not configured")
         github = _github_client(policy)
         state = github.get_merge_state(args.repository, args.pr_number)
+        if state.is_draft:
+            reason = "pull_request_draft"
+        elif state.state != "OPEN" or state.merged:
+            reason = "pull_request_not_open"
+        else:
+            reason = None
+        if reason is not None:
+            print(
+                json.dumps(
+                    {
+                        "status": "audit_skipped",
+                        "reason": reason,
+                        "repository": args.repository,
+                        "pr_number": args.pr_number,
+                        "head_sha": state.head_sha,
+                    },
+                    sort_keys=True,
+                ),
+                flush=True,
+            )
+            _complete_current_ci_task(
+                None,
+                result=(
+                    f"Skipped local CI audit: {reason}; audits are limited to open, "
+                    "non-draft pull requests."
+                ),
+            )
+            return 0
         if state.head_sha != str(args.head_sha).casefold():
             raise CIValidationError("canonical PR head changed")
         identity = CIAuditIdentity(
@@ -2209,7 +2199,11 @@ def _ci_audit_comment(receipt: CIAuditReceipt) -> str:
     return body
 
 
-def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
+def _complete_current_ci_task(
+    receipt: CIAuditReceipt | None,
+    *,
+    result: str | None = None,
+) -> None:
     task_id = os.environ.get("HERMES_KANBAN_TASK", "").strip()
     if not task_id:
         return
@@ -2217,14 +2211,12 @@ def _complete_current_ci_task(receipt: CIAuditReceipt) -> None:
     argv = [sys.executable, "-E", "-P", "-m", "hermes_cli.main", "kanban"]
     if board:
         argv.extend(["--board", board])
-    argv.extend(
-        [
-            "complete",
-            task_id,
-            "--result",
-            f"Exact-head local CI receipt {receipt.receipt_id}: {receipt.status}.",
-        ]
-    )
+    task_result = result
+    if task_result is None and receipt is not None:
+        task_result = f"Exact-head local CI receipt {receipt.receipt_id}: {receipt.status}."
+    if not task_result:
+        raise ValueError("a Kanban completion result is required")
+    argv.extend(["complete", task_id, "--result", task_result])
     try:
         completed = subprocess.run(
             argv,
@@ -3122,6 +3114,11 @@ def _load_policy_from_context(ctx: Any) -> PluginPolicy:
         value = ctx.get_config(key, default=_MISSING)
         if value is not _MISSING:
             settings[key] = value
+    # Each scan wrapper pins its board in the child environment. This keeps
+    # repository-specific scans from inheriting the plugin's global default.
+    board = os.environ.get("HERMES_KANBAN_BOARD", "").strip()
+    if board:
+        settings["board"] = board
     return load_policy(settings)
 
 

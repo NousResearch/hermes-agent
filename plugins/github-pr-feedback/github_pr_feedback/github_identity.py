@@ -1,14 +1,12 @@
-"""Central credential boundary for Hermes-owned GitHub automation."""
+"""Credential boundary owned by the GitHub PR feedback plugin."""
 
 from __future__ import annotations
 
 import base64
-import json
 import os
 import re
-import subprocess
 from dataclasses import dataclass
-from typing import Mapping, Sequence
+from typing import Mapping
 
 
 _LOGIN = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,37}[A-Za-z0-9])?$")
@@ -80,47 +78,3 @@ class GitHubAutomationIdentity:
             }
         )
         return child
-
-
-def run_as_github_automation(
-    argv: Sequence[str],
-    *,
-    identity: GitHubAutomationIdentity | None = None,
-    environ: Mapping[str, str] | None = None,
-    cwd: str | os.PathLike[str] | None = None,
-    timeout: float = 30,
-) -> subprocess.CompletedProcess[str]:
-    """Verify the bot viewer, then run one fixed-argv ``gh`` command."""
-
-    selected = identity or GitHubAutomationIdentity.from_environment(environ)
-    if not argv or os.path.basename(str(argv[0])).casefold() != "gh":
-        raise GitHubIdentityError("GitHub automation may execute only gh")
-    child_env = selected.command_environment(environ)
-    viewer = subprocess.run(
-        ["gh", "api", "user"],
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        env=child_env,
-    )
-    try:
-        payload = json.loads(viewer.stdout) if viewer.returncode == 0 else None
-    except json.JSONDecodeError:
-        payload = None
-    login = payload.get("login") if isinstance(payload, dict) else None
-    if not isinstance(login, str) or login.casefold() != selected.expected_login.casefold():
-        raise GitHubIdentityError("Hermes GitHub automation identity did not match")
-    return subprocess.run(
-        list(argv),
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        timeout=timeout,
-        env=child_env,
-        cwd=cwd,
-    )

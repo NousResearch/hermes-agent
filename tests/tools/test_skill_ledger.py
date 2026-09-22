@@ -783,3 +783,37 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
         assert survivors == seq[len(seq) - len(survivors):], (
             f"writer {k}: rows missing from the middle — a concurrent sweep dropped an append"
         )
+
+
+@pytest.mark.parametrize("sep", ["\u2028", "\u2029", "\u0085"])
+def test_readers_split_rows_on_the_physical_newline_only(ledger_env, sep):
+    """A row whose evidence carries a code point ``str.splitlines`` treats as a line break
+    (``ensure_ascii=False`` leaves it unescaped) is still ONE entry to every reader: it
+    lists, its blob survives GC while a genuine orphan is collected, compaction leaves the
+    file byte-for-byte, and the entry rolls back."""
+    from tools import skill_ledger
+
+    target = ledger_env["skills"] / "my-skill" / "notes.txt"
+    target.parent.mkdir()
+    target.write_bytes(b"after")
+    before_blob = skill_ledger._store_blob(b"before")
+    orphan = skill_ledger._store_blob(b"stale orphan")
+    for blob in (before_blob, orphan):
+        os.utime(skill_ledger.blobs_dir() / blob, (time.time() - 7200, time.time() - 7200))
+
+    entry_id = skill_ledger.append_entry(
+        "write_file", "my-skill",
+        before=[{"path": str(target), "sha256": before_blob}],
+        after=skill_ledger.snapshot_paths(target.parent),
+        evidence={"file_path": f"line one{sep}line two"})
+    raw = skill_ledger.ledger_path().read_bytes()
+    assert raw.count(b"\n") == 1 and sep.encode("utf-8") in raw, "test precondition: one physical row"
+
+    assert [r["id"] for r in skill_ledger.list_entries()] == [entry_id]
+    assert skill_ledger.gc_blobs()[0] == 1
+    assert (skill_ledger.blobs_dir() / before_blob).exists() and not (skill_ledger.blobs_dir() / orphan).exists()
+    assert skill_ledger.compact_ledger()[0] == 1
+    assert skill_ledger.ledger_path().read_bytes() == raw, "compaction must not re-split the row"
+    ok, msg = skill_ledger.rollback_entry(entry_id)
+    assert ok, msg
+    assert target.read_bytes() == b"before"

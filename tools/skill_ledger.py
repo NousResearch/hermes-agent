@@ -336,6 +336,17 @@ def _read_ledger(what: str, *, quiet_missing: bool = False) -> Optional[bytes]:
         return None
 
 
+def _ledger_rows(raw: bytes) -> List[bytes]:
+    """Physical rows of the ledger, split on b"\n" only (no trailing empty element).
+    ``str.splitlines`` would also split on U+2028/U+2029/U+0085, which ``ensure_ascii=False``
+    rows may legitimately contain — every reader must see the same row boundaries the
+    appender wrote."""
+    lines = raw.split(b"\n")
+    if lines and lines[-1] == b"":
+        lines.pop()
+    return lines
+
+
 _TRIM_LOW_WATER = 0.8  # trim target as a fraction of ``skills.ledger_max_bytes``
 
 
@@ -392,11 +403,7 @@ def _trim_oldest_locked(max_bytes: int) -> int:
     raw = _read_ledger("trim skipped")
     if raw is None:
         return 0
-    # Split on the physical row terminator only: ``str.splitlines`` would also split on
-    # U+2028/U+2029/U+0085, which ``ensure_ascii=False`` rows may legitimately contain.
-    lines = raw.split(b"\n")
-    if lines and lines[-1] == b"":
-        lines.pop()
+    lines = _ledger_rows(raw)
     kept: List[bytes] = []
     size = 0
     for line in reversed(lines):  # the first iteration always keeps lines[-1]: the newest entry
@@ -427,22 +434,20 @@ def _compact_ledger_locked() -> Tuple[int, int, int]:
     raw = _read_ledger("compaction skipped")
     if raw is None:
         return 0, 0, 0
-    text = raw.decode("utf-8")
-    out, kept = [], 0
-    for line in text.splitlines():
+    lines, kept = [], 0
+    for line in _ledger_rows(raw):
         if not line.strip():
             continue
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
-            out.append(line)
+            lines.append(line)
             continue
         if isinstance(row, dict) and row.get("action") != "pre-rollback":
             row["before"], row["after"] = _delta(row.get("before") or [], row.get("after") or [])
-            line = json.dumps(row, ensure_ascii=False)
-        out.append(line)
+            line = json.dumps(row, ensure_ascii=False).encode("utf-8")
+        lines.append(line)
         kept += 1
-    lines = [line.encode("utf-8") for line in out]
     if (b"\n".join(lines) + b"\n" if lines else b"") == raw:
         return kept, len(raw), len(raw)  # already compact (append-time _delta): no rewrite to pay
     data = _rewrite_ledger(path, lines, "compact")
@@ -468,7 +473,7 @@ def _gc_blobs_locked() -> Tuple[int, int]:
     raw = _read_ledger("blob GC skipped")
     if raw is None:  # an unavailable ledger is not evidence that its blobs are unreferenced
         return 0, 0
-    for line in raw.decode("utf-8").splitlines():
+    for line in _ledger_rows(raw):
         if not line.strip():
             continue
         try:
@@ -540,7 +545,7 @@ def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> Li
     if raw is None:
         return []
     rows: List[Dict[str, Any]] = []
-    for line in raw.decode("utf-8").splitlines():
+    for line in _ledger_rows(raw):
         with suppress(json.JSONDecodeError):
             row = json.loads(line) if line.strip() else None
             if isinstance(row, dict) and (not skill or row.get("skill") == skill):

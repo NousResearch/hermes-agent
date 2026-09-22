@@ -422,6 +422,48 @@ class TestSyncSkills:
         stack.enter_context(patch("tools.skills_sync.MANIFEST_FILE", manifest_file))
         return stack
 
+    @pytest.mark.skipif(os.name == "nt", reason="per-skill symlink entries are a POSIX model")
+    def test_symlinked_entry_left_as_symlink(self, tmp_path):
+        """A symlinked skill entry (a per-skill symlink into a shared tree) must survive a sync
+        unchanged — never silently replaced by a real directory copy, which would fork the skill
+        into a divergent second writer."""
+        bundled = tmp_path / "bundled_skills"
+        skill_src = bundled / "category" / "linked-skill"
+        skill_src.mkdir(parents=True)
+        (skill_src / "SKILL.md").write_text("# Bundled body")
+        (skill_src / "main.py").write_text("print('bundled')")
+
+        skills_dir = tmp_path / "user_skills"
+        manifest_file = skills_dir / ".bundled_manifest"
+
+        shared = tmp_path / "shared" / "linked-skill"
+        shared.mkdir(parents=True)
+        (shared / "SKILL.md").write_text("# Shared body")
+
+        dest = skills_dir / "category" / "linked-skill"
+        dest.parent.mkdir(parents=True)
+        dest.symlink_to(shared, target_is_directory=True)
+
+        # Tracked as pristine at the shared origin, with the bundled body now changed: WITHOUT the
+        # guard, _replace_skill_dir would move the symlink aside and copy a real directory over it.
+        manifest_file.parent.mkdir(parents=True, exist_ok=True)
+        origin_hash = _dir_hash(shared)
+        manifest_file.write_text(f"linked-skill:{origin_hash}\n")
+
+        with self._patches(bundled, skills_dir, manifest_file), \
+                patch("tools.skills_sync.HERMES_HOME", tmp_path / "home"):
+            result = sync_skills(quiet=True)
+
+        assert dest.is_symlink(), "symlinked entry was replaced by a real directory"
+        assert "linked-skill" in result["symlinked"]
+        assert "linked-skill" not in result["copied"]
+        assert "linked-skill" not in result["updated"]
+        # The link still resolves to the shared target, whose body is untouched.
+        assert dest.resolve() == shared.resolve()
+        assert "# Shared body" in (shared / "SKILL.md").read_text()
+        # The manifest entry is left as-is, not re-baselined to the bundled hash.
+        assert f"linked-skill:{origin_hash}" in manifest_file.read_text()
+
     def test_suppressed_builtin_not_reseeded(self, tmp_path):
         """A curator-pruned built-in in the suppression list must NOT be
         re-copied on sync — that's what makes the prune durable across updates.

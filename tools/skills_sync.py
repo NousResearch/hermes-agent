@@ -239,6 +239,7 @@ class _SyncState:
     user_modified: List[str] = field(default_factory=list)
     suppressed: List[str] = field(default_factory=list)
     relocated: List[str] = field(default_factory=list)
+    symlinked: List[str] = field(default_factory=list)
     shadowed_by_external: List[str] = field(default_factory=list)
     active_index: Optional[Dict[str, List[Path]]] = None  # rename-recovery indexes are expensive on
     hub_paths: Set[str] = field(default_factory=set)  # bind mounts: built lazily, only when needed
@@ -371,7 +372,8 @@ def sync_skills(quiet: bool = False) -> dict:
     bundled_dir = _get_bundled_dir()
     if not bundled_dir.exists():
         return {"copied": [], "updated": [], "skipped": 0, "user_modified": [], "cleaned": [],
-                "suppressed": [], "total_bundled": 0, "optional_provenance_backfilled": []}
+                "suppressed": [], "symlinked": [],
+                "total_bundled": 0, "optional_provenance_backfilled": []}
     _skills_dir().mkdir(parents=True, exist_ok=True)
     bundled_skills = _discover_bundled_skills(bundled_dir)
     if essential_only:
@@ -386,6 +388,15 @@ def sync_skills(quiet: bool = False) -> dict:
             st.suppressed.append(skill_name)
             continue
         dest = _compute_relative_dest(skill_src, bundled_dir)
+        if dest.is_symlink():
+            # A symlinked entry points at a location this sync does not own (e.g. a
+            # per-skill symlink into a shared tree). Replacing it with a real directory
+            # copy would silently fork the skill into a divergent second writer, so leave
+            # the link alone and never materialize over it.
+            st.symlinked.append(skill_name)
+            st.skipped += 1
+            st.say(f"  ⟳ {skill_name} (symlinked — left alone)")
+            continue
         bundled_hash = _dir_hash(skill_src)
         # Recoveries run BEFORE classification so a missing dest isn't misread as user-deleted.
         _recover_orphan_backup(dest)
@@ -411,6 +422,7 @@ def sync_skills(quiet: bool = False) -> dict:
     return {
         "copied": st.copied, "updated": st.updated, "skipped": st.skipped, "user_modified": st.user_modified,
         "cleaned": cleaned, "suppressed": st.suppressed, "relocated": st.relocated,
+        "symlinked": st.symlinked,
         "total_bundled": len(bundled_skills),
         "optional_provenance_backfilled": _backfill_optional_provenance(quiet=quiet),
         "shadowed_by_external": st.shadowed_by_external,

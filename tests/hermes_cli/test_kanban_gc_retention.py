@@ -61,6 +61,19 @@ def test_gc_worker_logs_rejects_negative_window(board):
     assert log.exists()
 
 
+def _archived_scratch_workspace(conn) -> Path:
+    tid = kb.create_task(conn, title="archived with workspace")
+    with kb.write_txn(conn):
+        conn.execute(
+            "UPDATE tasks SET status='archived', workspace_kind='scratch' WHERE id=?",
+            (tid,),
+        )
+    ws = kb.workspaces_root() / tid
+    ws.mkdir(parents=True)
+    (ws / "scratch.txt").write_text("keep me")
+    return ws
+
+
 @pytest.mark.parametrize(
     ("days", "expect_rc", "expect_kept"),
     [
@@ -70,31 +83,19 @@ def test_gc_worker_logs_rejects_negative_window(board):
     ],
 )
 def test_cmd_gc_retention_bounds(board, days, expect_rc, expect_kept):
+    """Invalid retention must refuse before ANY sweep: the (unconditional)
+    workspace collection runs first in the command body, so the archived
+    scratch workspace surviving the negative case proves ordering, not just
+    event/log preservation. Valid values (0 or positive) let it run."""
     with kbc.connect_closing() as conn:
         tid = _done_task_with_old_event(conn)
+        ws = _archived_scratch_workspace(conn)
     log = _old_log_file()
     assert kanban_ops._cmd_gc(_args(event_days=days, log_days=days)) == expect_rc
     with kbc.connect_closing() as conn:
         assert (_event_rows(conn, tid) > 0) is expect_kept
     assert log.exists() is expect_kept
-
-
-def test_cmd_gc_negative_days_leaves_workspaces_untouched(board):
-    """Invalid retention must refuse before ANY sweep: the workspace collection
-    runs first in the command body, so this fixture proves ordering, not just
-    event/log preservation."""
-    with kbc.connect_closing() as conn:
-        tid = kb.create_task(conn, title="archived with workspace")
-        with kb.write_txn(conn):
-            conn.execute(
-                "UPDATE tasks SET status='archived', workspace_kind='scratch' WHERE id=?",
-                (tid,),
-            )
-    ws = kb.workspaces_root() / tid
-    ws.mkdir(parents=True)
-    (ws / "scratch.txt").write_text("keep me")
-    assert kanban_ops._cmd_gc(_args(event_days=-1)) != 0
-    assert (ws / "scratch.txt").exists()
+    assert (ws / "scratch.txt").exists() is (expect_rc != 0)
 
 
 @pytest.mark.parametrize(

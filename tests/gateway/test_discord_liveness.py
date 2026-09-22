@@ -437,3 +437,45 @@ async def test_recovery_after_unhealthy_streak_is_logged(monkeypatch, caplog):
     handler.assert_not_called()
 
     await adapter.disconnect()
+
+
+@pytest.mark.asyncio
+async def test_probe_exit_after_mark_disconnected_is_logged_at_info(monkeypatch, caplog):
+    """The probe must say why it stopped, even on a benign exit (#118487, #118504).
+
+    Reached through a *production* setter (``_mark_disconnected`` flips
+    ``_running``) rather than by poking adapter internals, so this pins the
+    unconditional INFO log at the loop's exit guard.
+    """
+    adapter = _make_adapter(monkeypatch, interval=0.01, threshold=3)
+    handler = AsyncMock()
+    adapter.set_fatal_error_handler(handler)
+
+    samples = 0
+
+    def _probe(client):
+        nonlocal samples
+        samples += 1
+        return True, "healthy"
+
+    monkeypatch.setattr(adapter, "_read_websocket_health", _probe)
+
+    with caplog.at_level("INFO", logger="plugins.platforms.discord.adapter"):
+        await _connect(adapter, monkeypatch, _live_bot_factory())
+        task = adapter._liveness_task
+        assert task is not None
+        await _wait_until(lambda: samples >= 1, "probe never took a sample")
+
+        adapter._mark_disconnected()
+        await _wait_until(task.done, "probe did not exit after _mark_disconnected()")
+
+    assert not task.cancelled()
+    exits = [
+        r for r in caplog.records
+        if "probe exiting (running=False" in r.getMessage()
+    ]
+    assert len(exits) == 1
+    assert exits[0].levelname == "INFO"
+    handler.assert_not_called()
+
+    await adapter.disconnect()

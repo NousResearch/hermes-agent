@@ -10,8 +10,8 @@ from gateway.platforms.base import BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.platforms._shared import extra_or_secret as _extra_or_secret
 
-from plugins.platforms.rubika.client import RubikaClient, RubikaAPIError
-from plugins.platforms.rubika.inbound import parse_update, parse_inline_message
+from .client import RubikaClient, RubikaAPIError
+from .inbound import parse_update, parse_inline_message
 
 logger = logging.getLogger(__name__)
 
@@ -132,7 +132,7 @@ class RubikaAdapter(BasePlatformAdapter):
 
     async def send(self, chat_id: str, content: str, reply_to: Optional[str] = None,
                    metadata: Optional[Dict[str, Any]] = None) -> SendResult:
-        from plugins.platforms.rubika.keypad import build_chat_keypad, build_inline_keypad
+        from .keypad import build_chat_keypad, build_inline_keypad
         metadata = metadata or {}
         params: Dict[str, Any] = {"chat_id": chat_id, "text": content}
         if reply_to:

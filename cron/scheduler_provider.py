@@ -126,12 +126,24 @@ _LOCAL_SCHEDULED_MODEL_PROVIDERS = frozenset({
 })
 
 
-def _scheduled_model_route_is_local(provider: Any, base_url: Any = None) -> bool:
+def _scheduled_model_route_is_local(
+    provider: Any, base_url: Any = None, *, cfg: dict | None = None,
+) -> bool:
     """Whether a scheduled model route is explicitly machine/local-network bound."""
     provider_name = str(provider or "").strip().lower()
     if provider_name in _LOCAL_SCHEDULED_MODEL_PROVIDERS:
         return True
     url = str(base_url or "").strip()
+    if not url and provider_name and cfg is not None:
+        from hermes_cli.config_providers import get_compatible_custom_providers
+        from hermes_cli.providers import resolve_provider_full
+
+        resolved = resolve_provider_full(
+            provider_name,
+            cfg.get("providers"),
+            get_compatible_custom_providers(cfg),
+        )
+        url = str(resolved.base_url or "").strip() if resolved is not None else ""
     if not url:
         return False
     from agent.model_metadata import is_local_endpoint
@@ -149,11 +161,15 @@ def scheduled_model_fallback_chain(job: dict, cfg: dict) -> list[dict]:
     from hermes_cli.fallback_config import get_fallback_chain
 
     chain = [entry for entry in get_fallback_chain(cfg) if isinstance(entry, dict)]
-    if _scheduled_model_route_is_local(job.get("provider"), job.get("base_url")):
+    if _scheduled_model_route_is_local(
+        job.get("provider"), job.get("base_url"), cfg=cfg,
+    ):
         return chain
     return [
         entry for entry in chain
-        if not _scheduled_model_route_is_local(entry.get("provider"), entry.get("base_url"))
+        if not _scheduled_model_route_is_local(
+            entry.get("provider"), entry.get("base_url"), cfg=cfg,
+        )
     ]
 
 

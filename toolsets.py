@@ -146,13 +146,11 @@ TOOLSETS = {
     "delegation": _ts("Spawn subagents with isolated context for complex subtasks", ["delegate_task"]),
     "homeassistant": _ts("Home Assistant smart home control and monitoring", _HA_TOOLS),
     "kanban": _ts(
-        "Kanban multi-agent coordination — only active when the agent is spawned by "
-        "the kanban dispatcher (HERMES_KANBAN_TASK env set). The dispatcher runs "
-        "inside the gateway by default; see `kanban.dispatch_in_gateway` in "
-        "config.yaml. Lets workers mark tasks done with structured handoffs, enter "
-        "first-class review (request_review — not a block), return review changes, "
-        "block for human input, heartbeat during long ops, comment on threads, attach "
-        "files, and (for orchestrators) list, unblock, and fan out tasks.",
+        "Kanban multi-agent coordination with role-scoped schemas. Dispatcher workers "
+        "receive task lifecycle and shared reporting/fan-out tools; profiles that "
+        "explicitly enable this toolset receive board-routing and shared tools without "
+        "worker-only complete/block/review/heartbeat actions. The dispatcher runs inside "
+        "the gateway by default; see `kanban.dispatch_in_gateway` in config.yaml.",
         [t for t in _HERMES_CORE_TOOLS if t.startswith("kanban_")],
     ),
     "discord": _ts("Discord read and participate tools (fetch messages, search members, create threads)", ["discord"]),

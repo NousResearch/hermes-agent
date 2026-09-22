@@ -80,26 +80,32 @@ def _is_dispatcher_owned_worker() -> bool:
     return _delegation_ctx("is_dispatcher_owned_worker_context", True)
 
 
-def _visible(*, to_env_worker: bool) -> bool:
-    """check_fn core: never for delegate children; dispatcher-spawned env workers
-    (HERMES_KANBAN_TASK) per flag; else the profile toolset decides."""
+def _visible(*, to_env_worker: bool, to_profile: bool) -> bool:
+    """check_fn core: never for delegate children; otherwise select the worker
+    or profile-orchestrator surface without exposing the other role's tools."""
     if _is_delegated_child_context():
         return False
     if os.environ.get("HERMES_KANBAN_TASK") and _is_dispatcher_owned_worker():
         return to_env_worker
-    return _profile_has_kanban_toolset()
+    return to_profile and _profile_has_kanban_toolset()
 
 
 @no_cache_check_fn
 def _check_kanban_mode() -> bool:
-    """Lifecycle tools: dispatcher workers + profiles with the ``kanban`` toolset."""
-    return _visible(to_env_worker=True)
+    """Worker lifecycle tools: dispatcher-owned task workers only."""
+    return _visible(to_env_worker=True, to_profile=False)
 
 
 @no_cache_check_fn
 def _check_kanban_orchestrator_mode() -> bool:
-    """Board-routing tools (kanban_list, kanban_unblock): hidden from task workers."""
-    return _visible(to_env_worker=False)
+    """Board-routing tools: profiles that explicitly enable ``kanban`` only."""
+    return _visible(to_env_worker=False, to_profile=True)
+
+
+@no_cache_check_fn
+def _check_kanban_common_mode() -> bool:
+    """Shared reporting/fan-out tools for workers and opted-in orchestrators."""
+    return _visible(to_env_worker=True, to_profile=True)
 
 
 # --- Shared helpers: validation failures raise _Reject; _kanban_handler renders it ---
@@ -1166,8 +1172,14 @@ def _handle_link(args: dict, **kw) -> str:
 
 # --- Registration (order preserved: it is the order tools appear in the schema) ---
 
-# kanban_list / kanban_unblock route the board and are hidden from task workers.
+# Keep role-specific lifecycle tools out of ordinary coordinator prompts, and
+# board-routing tools out of dispatcher workers. Reporting/fan-out tools are
+# intentionally shared by both roles.
 _ORCHESTRATOR_TOOLS = frozenset({"kanban_list", "kanban_unblock"})
+_WORKER_TOOLS = frozenset({
+    "kanban_complete", "kanban_block", "kanban_request_review",
+    "kanban_request_changes", "kanban_heartbeat",
+})
 _TOOLS = (
     ("kanban_show", KANBAN_SHOW_SCHEMA, _handle_show, "📋"),
     ("kanban_list", KANBAN_LIST_SCHEMA, _handle_list, "📋"),
@@ -1185,6 +1197,11 @@ _TOOLS = (
     ("kanban_link", KANBAN_LINK_SCHEMA, _handle_link, "🔗"))
 
 for _name, _sch, _handler, _emoji in _TOOLS:
-    _gate = _check_kanban_orchestrator_mode if _name in _ORCHESTRATOR_TOOLS else _check_kanban_mode
+    if _name in _ORCHESTRATOR_TOOLS:
+        _gate = _check_kanban_orchestrator_mode
+    elif _name in _WORKER_TOOLS:
+        _gate = _check_kanban_mode
+    else:
+        _gate = _check_kanban_common_mode
     registry.register(name=_name, toolset="kanban", schema=_sch, handler=_handler, emoji=_emoji,
                       check_fn=_gate)

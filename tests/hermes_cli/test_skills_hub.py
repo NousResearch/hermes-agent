@@ -290,6 +290,7 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
     import hermes_cli.skills_hub as cli_hub
     import tools.skills_hub as hub
     import tools.skills_hub_search as search
+    import tools.skills_hub_clawhub as clawhub
     from tools.skills_hub_models import SkillBundle, SkillMeta
 
     clients = []
@@ -319,6 +320,8 @@ def test_inspect_reuses_one_ssrf_safe_client_for_metadata_and_bundle(monkeypatch
             hub._guarded_http_get("https://example.com/metadata")
             # The Hermes-index fetch must ride the same pool (no cache → real GET).
             assert search._load_hermes_index() == {"skills": []}
+            # The ClawHub owner lookup must ride the same pool too.
+            assert clawhub.ClawHubSource()._fetch_owner_handle("slug") is None
             return SkillMeta("example", "metadata", "test", "example/id", "community")
 
         def fetch(self, _identifier):

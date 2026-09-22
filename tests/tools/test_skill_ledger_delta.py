@@ -86,7 +86,8 @@ def test_compact_leaves_an_undecodable_ledger_untouched(ledger_home, caplog):
 
 def test_list_entries_treats_an_undecodable_ledger_as_empty_and_warns(ledger_home, caplog):
     """A ledger that exists but is not UTF-8 lists as empty (rollback then fails closed on
-    ``get_entry`` -> None) and, unlike a merely missing ledger, is warned about (re-gate M8/S1)."""
+    ``get_entry`` -> None) and, unlike a merely missing ledger, is warned about: corruption
+    would otherwise be indistinguishable from a fresh install with no history."""
     from tools import skill_ledger
     ledger = skill_ledger.ledger_path()
     ledger.parent.mkdir(parents=True, exist_ok=True)

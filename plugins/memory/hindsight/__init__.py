@@ -24,7 +24,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable, Dict, List, NamedTuple, Optional
 
-from agent.memory_provider import MemoryProvider, RecallStatus, spawn_context_thread
+from agent.memory_provider import MemoryProvider, RecallStatus, ctx_bound, spawn_context_thread
 from agent.secret_scope import UnscopedSecretError, get_secret
 from hermes_cli.config import cfg_get
 from hermes_constants import get_hermes_home
@@ -57,6 +57,13 @@ class _ReadyRecall(NamedTuple):
     turn_number: int
     query: str
     result: tuple[str, int]
+
+
+class _RecallRequest(NamedTuple):
+    session_id: str
+    turn_number: int
+    query: str
+    operation: Callable[[], tuple[str, int]]
 
 
 def _ensure_client_dependency() -> None:
@@ -376,8 +383,8 @@ class HindsightMemoryProvider(MemoryProvider):
         self._prefetch_thread = None
         self._opportunistic_ready: list[_ReadyRecall] = []
         self._opportunistic_generation = 0
-        self._opportunistic_inflight: tuple[str, int, str] | None = None
-        self._opportunistic_pending: tuple[str, int, str] | None = None
+        self._opportunistic_inflight: _RecallRequest | None = None
+        self._opportunistic_pending: _RecallRequest | None = None
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
 
@@ -1009,36 +1016,45 @@ class HindsightMemoryProvider(MemoryProvider):
         """Start an opt-in current-turn recall without delaying the turn."""
         if self._recall_sync or not self._recall_async or self._recall_disabled():
             return
-        key = (str(session_id or self._session_id or ""), int(turn_number), query)
+        request = _RecallRequest(
+            str(session_id or self._session_id or ""),
+            int(turn_number),
+            query,
+            ctx_bound(lambda: self._do_recall(query)),
+        )
+        key = request[:3]
 
         def _run() -> None:
-            active_key = key
+            active_request = request
             active_generation = generation
-            while active_key is not None:
-                recalled = self._do_recall(active_key[2])
+            while active_request is not None:
+                recalled = active_request.operation()
                 with self._prefetch_lock:
                     current_generation = self._opportunistic_generation
                     if active_generation == current_generation and recalled[0]:
                         self._opportunistic_ready.append(
-                            _ReadyRecall(*active_key, recalled)
+                            _ReadyRecall(*active_request[:3], recalled)
                         )
-                    active_key = self._opportunistic_pending
+                    active_request = self._opportunistic_pending
                     self._opportunistic_pending = None
-                    self._opportunistic_inflight = active_key
+                    self._opportunistic_inflight = active_request
                     active_generation = current_generation
 
         with self._prefetch_lock:
-            if self._opportunistic_inflight == key or any(
+            if (
+                self._opportunistic_inflight is not None
+                and self._opportunistic_inflight[:3] == key
+            ) or any(
                 (ready.session_id, ready.turn_number, ready.query) == key
                 for ready in self._opportunistic_ready
             ):
                 return
             if self._opportunistic_inflight is not None:
-                self._opportunistic_pending = key
+                self._opportunistic_pending = request
                 return
             generation = self._opportunistic_generation
             worker = spawn_context_thread(_run, name="hindsight-prefetch")
-            self._opportunistic_inflight = key
+            self._opportunistic_inflight = request
             self._prefetch_thread = worker
             try:
                 worker.start()

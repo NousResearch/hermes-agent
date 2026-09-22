@@ -266,6 +266,27 @@ class TestMemoryManager:
         worker.join(timeout=2.0)
         assert provider.started_prefetches == [("first", "session", 1)]
 
+    def test_start_prefetch_thread_start_failure_rolls_back_before_shutdown(self):
+        class UnstartableThread:
+            def start(self):
+                raise RuntimeError("thread capacity exhausted")
+
+        mgr = MemoryManager()
+        provider = FakeMemoryProvider("unstartable")
+        mgr.add_provider(provider)
+
+        with patch(
+            "agent.memory_manager.spawn_context_thread",
+            return_value=UnstartableThread(),
+        ):
+            with pytest.raises(RuntimeError, match="thread capacity exhausted"):
+                mgr.start_prefetch_all("query", session_id="session", turn_number=1)
+
+        assert mgr._start_prefetch_threads == {}
+        assert mgr._start_prefetch_pending == {}
+        mgr.shutdown_all()
+        assert provider.shutdown_called is True
+
     def test_add_provider(self):
         mgr = MemoryManager()
         p = FakeMemoryProvider("test1")

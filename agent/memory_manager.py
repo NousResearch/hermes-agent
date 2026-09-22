@@ -510,7 +510,13 @@ class MemoryManager:
                     name=f"memory-start-prefetch-{provider.name}",
                 )
                 self._start_prefetch_threads[provider.name] = thread
-                thread.start()
+                try:
+                    thread.start()
+                except Exception:
+                    if self._start_prefetch_threads.get(provider.name) is thread:
+                        self._start_prefetch_threads.pop(provider.name, None)
+                    self._start_prefetch_pending.pop(provider.name, None)
+                    raise
 
     def _prefetch_provider(self, provider: MemoryProvider, query: str, *, session_id: str = "") -> str:
         """Run one provider's prefetch; external providers are bounded by a timeout. A stuck external

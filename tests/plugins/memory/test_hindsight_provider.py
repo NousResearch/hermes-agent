@@ -13,6 +13,7 @@ import stat
 import sys
 import threading
 import time
+from contextvars import ContextVar
 from datetime import datetime
 from pathlib import Path
 from types import ModuleType, SimpleNamespace
@@ -635,6 +636,7 @@ class TestPrefetch:
 
     def test_recall_async_single_flight_runs_latest_pending_query(self, provider_with_config):
         p = provider_with_config(recall_async=True)
+        profile = ContextVar("hindsight_recall_profile", default="unset")
         first_started = threading.Event()
         release_first = threading.Event()
         second_completed = threading.Event()
@@ -642,7 +644,7 @@ class TestPrefetch:
 
         async def _recall(**kwargs):
             query = kwargs["query"]
-            queries.append(query)
+            queries.append((query, profile.get()))
             if query == "first query":
                 first_started.set()
                 release_first.wait(timeout=2.0)
@@ -652,14 +654,19 @@ class TestPrefetch:
 
         p._client.arecall = AsyncMock(side_effect=_recall)
 
+        profile.set("profile-A")
         p.start_prefetch("first query", session_id="test-session", turn_number=1)
         assert first_started.wait(timeout=2.0)
+        profile.set("profile-B")
         p.start_prefetch("second query", session_id="test-session", turn_number=2)
         release_first.set()
 
         assert second_completed.wait(timeout=2.0)
         p._prefetch_thread.join(timeout=2.0)
-        assert queries == ["first query", "second query"]
+        assert queries == [
+            ("first query", "profile-A"),
+            ("second query", "profile-B"),
+        ]
 
     def test_recall_async_publishes_worker_atomically_with_inflight(
         self, provider_with_config, monkeypatch
@@ -705,7 +712,7 @@ class TestPrefetch:
             )
         )
         switcher.start()
-        assert not switch_completed.wait(timeout=0.05)
+        assert not p._prefetch_lock.acquire(blocking=False)
 
         release_start.set()
         kickoff.join(timeout=2.0)

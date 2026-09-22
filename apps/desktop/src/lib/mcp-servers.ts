@@ -6,6 +6,8 @@
 
 export type McpServers = Record<string, Record<string, unknown>>
 
+export type McpServerEntry = McpServers[string]
+
 export const isServerShape = (value: Record<string, unknown>) =>
   typeof value.command === 'string' || typeof value.url === 'string'
 

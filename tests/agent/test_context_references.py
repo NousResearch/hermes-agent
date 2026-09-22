@@ -614,3 +614,36 @@ async def test_side_thread_expansion_guards_the_served_profile_home(tmp_path: Pa
 
     assert "HUB-CACHE-BODY" not in result.message
     assert any("internal Hermes path" in w for w in result.warnings)
+
+
+@pytest.mark.asyncio
+async def test_composer_paste_outside_workspace_is_attached_but_sibling_dir_is_not(tmp_path, monkeypatch):
+    """Desktop saves a large paste under <HERMES_HOME>/composer-pastes and attaches it
+    as `@file:`; the chat cwd is almost never an ancestor of that directory, so the
+    workspace guard must admit exactly that anchored root (#117149) — and nothing
+    that merely contains the substring next to it."""
+    from agent.context_references import preprocess_context_references_async
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    hermes_home = tmp_path / ".hermes"
+    monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+    paste = hermes_home / "composer-pastes" / "pasted_content_1.txt"
+    paste.parent.mkdir(parents=True)
+    paste.write_text("PASTED-BODY-MARKER\n", encoding="utf-8")
+    lookalike = hermes_home / "my-composer-pastes-backup" / "secret.txt"
+    lookalike.parent.mkdir(parents=True)
+    lookalike.write_text("LOOKALIKE-SECRET\n", encoding="utf-8")
+    workspace = tmp_path / "project"
+    workspace.mkdir()
+
+    result = await preprocess_context_references_async(
+        f"see @file:{paste} and @file:{lookalike}",
+        cwd=workspace,
+        allowed_root=workspace,
+        context_length=100_000,
+    )
+
+    assert result.expanded
+    assert "PASTED-BODY-MARKER" in result.message
+    assert "LOOKALIKE-SECRET" not in result.message
+    assert "outside the allowed workspace" in "\n".join(result.warnings)

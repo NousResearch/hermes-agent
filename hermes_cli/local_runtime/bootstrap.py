@@ -142,6 +142,28 @@ def refresh_local_runtime() -> bool:
         return False
 
 
+def _admitted_models_max(mdir: Path, configured: int) -> int:
+    """Residency cap to hand the router: derived from the hardware budget, ``models_max`` as a ceiling.
+
+    A cap of "four" on a card that holds one model is how a second child ends up paged (WDDM) and
+    silently slow — llama.cpp evicts its LRU before an incoming load only when the cap says the
+    card is full. A probe miss or an unpriceable model keeps the configured count: this must never
+    block a boot.
+    """
+    try:
+        from hermes_cli.local_runtime.hardware import probe_budget
+        from hermes_cli.local_runtime.presets import admitted_residency_count
+
+        cap = admitted_residency_count(mdir, probe_budget(planning=True), configured)
+    except Exception as exc:  # noqa: BLE001
+        logger.warning("residency cap probe failed (%s); using models_max=%s", exc, configured)
+        return configured
+    if cap != configured:
+        logger.info("residency cap: %s resident model(s) on this card (models_max=%s)",
+                    cap, configured)
+    return cap
+
+
 def _generate_presets(mdir: Path, preset_path: Path) -> Path | None:
     """Write the launch-policy INI for every staged model; returns the path to hand the router.
 
@@ -310,7 +332,8 @@ def ensure_local_runtime(config: dict, force: bool = False) -> "object | None":
             preset_path = _generate_presets(mdir, runtimes_root() / "presets.ini")
 
             sup = LlamaServerSupervisor(install_dir, mdir, preset_path=preset_path,
-                                        models_max=int(section.get("models_max", 4)),
+                                        models_max=_admitted_models_max(
+                                            mdir, int(section.get("models_max", 4))),
                                         port=int(section.get("port", 0)) or None)
             try:
                 sup.start()

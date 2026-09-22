@@ -5,6 +5,7 @@ from . import (  # noqa: F401
     billing_delegation_pets,
     common,
     config_free_tier_control,
+    connectors,
     connectors_operation,
     events,
     groups_bot_relay,

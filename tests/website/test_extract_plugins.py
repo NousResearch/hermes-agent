@@ -144,6 +144,33 @@ def test_version_and_image_are_emitted_and_offhost_image_is_dropped_not_fatal(mo
     assert entries["offhost"]["image"] == "" and entries["offhost"]["version"] == "1.4.0"
 
 
+def test_page_fields_screenshots_readme_url_and_maintainer_slug(mod, tmp_path):
+    """Detail-page inputs: screenshots follow the image host rule (off-host dropped, never fatal), readme
+    resolves to the raw README at the PINNED sha (GitHub and GitLab, subdir-aware) BY DEFAULT, is off for
+    other forges or `readme: false`, and the maintainer slug is what /docs/plugins/by/<slug> is generated from."""
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    shot = "https://raw.githubusercontent.com/owner/repo/38fe0fb53eff98d477f807432e965429e665ca33/docs/1.png"
+    _write_entry(catalog, "gh", screenshots=[shot, "https://cdn.example.com/x.png"], readme=True, subdir="catalog",
+                 maintainer="Nous Research")
+    _write_entry(catalog, "gl", repo="https://gitlab.com/group/proj", readme=True)
+    _write_entry(catalog, "other", repo="https://codeberg.org/o/r", readme=True)
+    _write_entry(catalog, "plain")
+    _write_entry(catalog, "optout", readme=False)
+
+    entries = {e["name"]: e for e in mod.load_catalog_entries(catalog)}
+    assert entries["gh"]["screenshots"] == [shot]
+    assert entries["gh"]["readme"] is True
+    assert entries["gh"]["readmeUrl"] == (
+        "https://raw.githubusercontent.com/example/gh/38fe0fb53eff98d477f807432e965429e665ca33/catalog/README.md")
+    assert entries["gh"]["maintainerSlug"] == "nous-research"
+    assert entries["gl"]["readmeUrl"] == "https://gitlab.com/group/proj/-/raw/38fe0fb53eff98d477f807432e965429e665ca33/README.md"
+    assert entries["other"]["readme"] is False and entries["other"]["readmeUrl"] == ""
+    assert entries["plain"]["readme"] is True and entries["plain"]["readmeUrl"].endswith("/README.md")
+    assert entries["plain"]["screenshots"] == [] and entries["plain"]["maintainerSlug"] == "example"
+    assert entries["optout"]["readme"] is False and entries["optout"]["readmeUrl"] == ""
+
+
 # --------------------------------------------------------------------------
 # Full run: outputs + graceful degradation
 # --------------------------------------------------------------------------
@@ -219,3 +246,51 @@ def test_script_exits_zero_as_subprocess_when_catalog_missing(tmp_path):
     assert result.returncode == 0, result.stderr
     assert (out_dir / "plugins.json").exists()
     assert (out_dir / "plugins-meta.json").exists()
+
+
+# --------------------------------------------------------------------------
+# addedAt / updatedAt from git history
+# --------------------------------------------------------------------------
+
+def _git(repo: Path, *args: str, date: str) -> None:
+    env = {
+        "GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@example.com", "GIT_AUTHOR_DATE": date,
+        "GIT_COMMITTER_NAME": "t", "GIT_COMMITTER_EMAIL": "t@example.com", "GIT_COMMITTER_DATE": date,
+        "HOME": str(repo), "PATH": __import__("os").environ["PATH"],
+    }
+    subprocess.run(["git", *args], cwd=repo, env=env, check=True, capture_output=True)
+
+
+def test_git_dates_added_is_first_commit_updated_is_last_and_renames_keep_added(mod, tmp_path):
+    repo = tmp_path / "repo"
+    catalog = repo / "plugin-catalog"
+    catalog.mkdir(parents=True)
+    _git(repo, "init", "-q", "-b", "main", date="2026-01-01T00:00:00+00:00")
+    _write_entry(catalog, "alpha")
+    _write_entry(catalog, "old-name")
+    _git(repo, "add", ".", date="2026-01-01T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "add", date="2026-01-01T00:00:00+00:00")
+    # Pin bump on alpha only.
+    _write_entry(catalog, "alpha", sha="a" * 40)
+    _git(repo, "commit", "-q", "-am", "bump alpha", date="2026-02-01T00:00:00+00:00")
+    # Rename old-name → new-name (content unchanged so git detects the rename).
+    _git(repo, "mv", "plugin-catalog/old-name.yaml", "plugin-catalog/new-name.yaml", date="2026-03-01T00:00:00+00:00")
+    _git(repo, "commit", "-q", "-m", "rename", date="2026-03-01T00:00:00+00:00")
+
+    dates = mod.load_git_dates(catalog)
+
+    assert dates["alpha.yaml"] == {"addedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-02-01T00:00:00Z"}
+    assert dates["new-name.yaml"] == {"addedAt": "2026-01-01T00:00:00Z", "updatedAt": "2026-03-01T00:00:00Z"}
+    entries = mod.load_catalog_entries(catalog, dates=dates)
+    by_name = {e["name"]: e for e in entries}
+    assert by_name["alpha"]["addedAt"] == "2026-01-01T00:00:00Z"
+    assert by_name["alpha"]["updatedAt"] == "2026-02-01T00:00:00Z"
+
+
+def test_git_dates_are_null_outside_a_repository(mod, tmp_path):
+    catalog = tmp_path / "plugin-catalog"
+    catalog.mkdir()
+    _write_entry(catalog, "alpha")
+    assert mod.load_git_dates(catalog) == {}
+    entries = mod.load_catalog_entries(catalog)
+    assert entries[0]["addedAt"] is None and entries[0]["updatedAt"] is None

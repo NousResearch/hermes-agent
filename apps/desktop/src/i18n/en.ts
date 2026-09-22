@@ -12,11 +12,7 @@ export const en: Translations = {
     grant: 'Reconnect',
     connected: 'Connected',
     checking: 'Checking your apps…',
-    waitingSignIn: 'Waiting for you to finish signing in…',
     notConnected: 'Not connected',
-    notAvailable: 'Not available',
-    startWith: count => `Start the task with ${count} ${count === 1 ? 'app' : 'apps'} connected`,
-    startWithout: 'Start without connections',
     skipped: 'Skipped',
     disabled: 'Unavailable',
     failed: 'Could not connect',
@@ -25,7 +21,6 @@ export const en: Translations = {
     waiting: 'Waiting for your browser…',
     timeout: 'Still waiting for authorization.',
     refresh: 'Refresh status',
-    statusError: 'Could not check connections. Try refreshing.',
     connectError: 'Could not start authorization. Try again.',
     connectErrorFor: (app: string) => `Could not start authorization for ${app}.`,
     unavailable: 'Connectors are unavailable for this session.',
@@ -33,7 +28,252 @@ export const en: Translations = {
     search: 'Find an app',
     empty: 'No matching apps',
     disclaimer: 'Connecting is optional. Only authorize the apps you want Hermes to use.',
-    execution: 'Connector tools'
+    execution: 'Connector tools',
+    setup: server => `Set up ${server}`,
+    openInBrowser: 'Open in browser',
+    setupCancel: 'Cancel',
+    authorizedToolsUnavailable: 'Authorized. Tools unavailable.',
+    required: 'Required'
+  },
+
+  // `connectors.*` above stays the onboarding and chat vocabulary; these are the page's own, and the two are not shared.
+  connectorsPage: {
+    title: 'Connectors',
+    searchPlaceholder: (count: number) => `Search ${count} apps`,
+    filterCategory: 'Category',
+    categoryAll: 'All categories',
+    uncategorised: 'Uncategorised',
+
+    residencyLocal: 'On this device',
+
+    segment: {
+      all: 'All',
+      available: 'Available',
+      connected: 'Connected',
+      off: 'Turned off'
+    },
+
+    group: {
+      connected: 'Connected',
+      connectedNote: 'Broken connections first.',
+      available: 'Available',
+      off: 'Turned off',
+      offNote: 'Sign-ins are kept.'
+    },
+
+    card: {
+      kindManaged: 'Managed',
+      kindCatalog: 'MCP · Catalog',
+      kindCustom: 'MCP · Custom',
+      kindPlugin: (plugin: string) => `MCP · Plugin ${plugin}`,
+      inCatalog: 'In the Hermes catalog',
+      hostedTwin: 'Managed version available',
+      alsoLocal: 'Also runs on this device',
+      open: (name: string) => `Open ${name}`,
+      turnServerOn: (name: string) => `Turn ${name} on`,
+      turnServerOff: (name: string) => `Turn ${name} off`,
+      state: {
+        accessExpired: 'Access expired',
+        available: 'Available',
+        connected: 'Connected',
+        connecting: 'Connecting',
+        connectionUnknown: 'State unknown',
+        couldNotConnect: 'Could not connect',
+        offByYourOrganisation: 'Off by your organisation',
+        offForYou: 'Off for you',
+        serverConnecting: 'Connecting…',
+        serverError: 'Error',
+        serverNeedsAuth: 'Needs authentication',
+        serverOff: 'Off',
+        serverOn: 'On',
+        serverOnUnused: 'On, unused'
+      },
+      fact: {
+        tools: (count: number) => `${count} tool${count === 1 ? '' : 's'}`,
+        toolsOff: (count: number) => `${count} tool${count === 1 ? '' : 's'} off`,
+        toolsOn: (count: number) => `${count} tool${count === 1 ? '' : 's'} on`,
+        toolsSomeOn: (total: number, on: number) => `${total} tools, ${on} on`
+      },
+      verb: {
+        authenticate: 'Authenticate',
+        connect: 'Connect',
+        install: 'Install',
+        openLogs: 'Open logs',
+        reconnect: 'Reconnect',
+        stopWaiting: 'Stop waiting',
+        tryAgain: 'Try again',
+        turnBackOn: 'Turn back on'
+      },
+      reason: {
+        finishSignIn: 'Finish the sign-in in your browser.',
+        reconnect: 'Reconnect to keep this app working.',
+        serverError: 'The server refused the connection.',
+        serverNeedsAuth: 'Sign in to let this server answer.'
+      }
+    },
+
+    page: {
+      loading: 'Reading the catalog and the servers on this computer',
+      emptyTitle: 'No apps here yet. Add a server on this computer to get started.',
+      noMatchTitle: 'No matching apps',
+      noMatchBody: 'Nothing here matches. Point Hermes at your own MCP server to add it.',
+      clearSearch: 'Clear the search',
+      hostedFailedTitle: 'Could not reach the hosted apps.',
+      hostedFailedBody: 'The servers on this computer are unaffected and still running. Nothing was turned off.',
+      retry: 'Retry',
+      matchesElsewhere: (count: number) => `${count} more match${count === 1 ? '' : 'es'} in other groups.`,
+      showAllMatches: 'Show all matches',
+      segmentNoMatch: (segment: string) => `No match in ${segment}, so every match is shown.`,
+      freeTierNote: 'Connections stay on this computer until you sign in.',
+      signInLine: 'Sign in to Nous to use managed apps.',
+      signIn: 'Sign in',
+      managedUnavailable: 'Managed apps are not available for this account yet.',
+      writeFailed: 'That change was not saved.',
+      refreshFailed: 'The tool list was not refreshed.',
+      disconnectNoAccount: 'Hermes has no account to disconnect here. Refresh the page and try again.'
+    },
+
+    add: {
+      action: 'Add your own',
+      title: 'Connect to a custom MCP',
+      hint: 'one new entry in mcp.json on this device',
+      pasteLabel: 'Paste a command or a snippet',
+      pastePlaceholder: 'npx -y @modelcontextprotocol/server-filesystem /path/to/dir',
+      pasteNoMatch: 'Nothing here reads as a server. Fill the fields below instead.',
+      name: 'Name',
+      nameTaken: 'That name is already used.',
+      type: 'Type',
+      typeStdio: 'STDIO',
+      typeHttp: 'Streamable HTTP',
+      command: 'Command to launch',
+      args: 'Arguments',
+      addArg: '+ Add argument',
+      envVars: 'Environment variables',
+      addEnvVar: '+ Add environment variable',
+      passthrough: 'Environment variable passthrough',
+      addPassthrough: '+ Add variable',
+      cwd: 'Working directory',
+      url: 'URL',
+      headers: 'Headers',
+      addHeader: '+ Add header',
+      auth: 'Auth',
+      authNone: 'None',
+      authOauth: 'OAuth',
+      authBearer: 'Bearer token',
+      keyPlaceholder: 'KEY',
+      valuePlaceholder: 'value',
+      removeRow: 'Remove this row',
+      editJson: 'Edit mcp.json',
+      saveFailed: 'That server was not saved.'
+    },
+
+    dialog: {
+      disconnect: 'Disconnect',
+      disconnectTitle: (name: string) => `Disconnect ${name}?`,
+      disconnectBody: 'Hermes stops acting as this account. You can connect again at any time.',
+      menuRefreshTools: 'Refresh tools',
+      moreActions: 'More actions',
+      removeServerTitle: (name: string) => `Remove ${name}?`,
+      removeServerBody: 'The entry leaves mcp.json on this computer. Nothing else is deleted.',
+      appSwitch: (name: string) => `Hermes can use ${name}`,
+      waysTitle: (name: string) => `How Hermes reaches ${name}`,
+      wayHosted: 'Managed',
+      bothOn: (name: string) => `Both are on, so Hermes sees every ${name} tool twice.`,
+      turnOffLocal: 'Turn off the local server',
+      providedByPlugin: (plugin: string) => `Provided by plugin ${plugin}`,
+      openPlugins: 'Open the Plugins tab',
+      // Verbatim, by decision of the design of record.
+      nousLine: 'Nous apps follow your account, not the profile.',
+      rulesReadOnly: 'Rules cannot be changed right now.',
+      rulesAppOff: (name: string) => `Turn ${name} on to change its tools.`,
+      rulesSignIn: 'Sign in to change what Hermes may do here.',
+      orgNote: (count: number) => `Your organisation turned ${count} tools off.`,
+      orgLink: 'Open the connectors admin',
+      connectEnded: 'The sign-in did not finish.',
+      connectOpenAgain: 'Open the link again',
+      tokensPerCall: 'tokens per call',
+      usesPerMonth: 'uses in 30 days',
+      advanced: 'Advanced',
+      advancedHint: 'the mcp.json entry and logs'
+    },
+
+    tools: {
+      title: 'Tools',
+      notInstalledBody: 'Install it on this device to see the tools it brings.',
+      summaryTitle: (name: string) => `What Hermes may do with ${name}`,
+      summaryPreviewTitle: (name: string) => `What Hermes could do with ${name} once you connect`,
+      summaryCount: (count: number) => `${count} tool${count === 1 ? '' : 's'}`,
+      summaryAllTools: 'All tools',
+      summaryOther: 'Other',
+      allToolsSwitch: 'Turn every tool on or off',
+      summaryAllOn: 'all on',
+      summarySomeOn: (on: number, total: number) => `${on} of ${total} on`,
+      summaryOff: 'off',
+      showAllTools: (count: number) => `Show all ${count} tool${count === 1 ? '' : 's'}`,
+      showSummary: 'Show summary',
+      facetSwitch: (facet: string) => `Turn ${facet} tools on or off`,
+      moreHints: (count: number) => `+${count}`,
+      staleSignIn: 'Sign in to read the latest tool list.',
+      searchCountPlaceholder: (count: number) => `Search ${count} tools`,
+      toolList: (name: string) => `${name} tools`,
+      categorySelect: (count: number) => `${count} categories`,
+      showDeprecated: (count: number) => `Show ${count} deprecated`,
+      hideDeprecated: (count: number) => `Hide ${count} deprecated`,
+      quickReadOnly: 'Read only',
+      quickNoDestructive: 'Turn off destructive',
+      quickEverythingOn: 'Everything on',
+      lockedHint: 'off by your organisation',
+      turnToolOn: (tool: string) => `Turn ${tool} on`,
+      turnToolOff: (tool: string) => `Turn ${tool} off`,
+      showDetails: (tool: string) => `Show what ${tool} does`,
+      hideDetails: (tool: string) => `Hide what ${tool} does`,
+      noMatch: 'No tool matches these filters.',
+      loading: 'Reading the tool list',
+      unavailableLine: 'Tool list unavailable.',
+      needsAuthTitle: (name: string) => `Sign in to ${name} to read its tools.`,
+      needsAuthBody: 'The sign-in stays on this computer. Nothing leaves it.',
+      retry: 'Retry',
+      goneTitle: (name: string) => `${name} left the catalog.`,
+      goneBody: 'Hermes cannot call it any more. The row stays until you remove it, so nothing vanishes.',
+      remove: 'Remove',
+      offTitle: (name: string) => `${name} is off.`,
+      offBody: 'Turn it on with the switch above to read the tools it brings.',
+      signedOutTitle: 'Sign in to Nous to read the tool list.',
+      signedOutBody: 'Your servers on this computer are unaffected.',
+      conflictTitle: 'Someone changed this rule while you were editing.',
+      // Two sentences at most, and the second says the work is still here.
+      conflictBody: (theyOff: number, theyOn: number) => {
+        const they = [
+          theyOff > 0 ? `turned off ${theyOff} tool${theyOff === 1 ? '' : 's'} you have on` : '',
+          theyOn > 0 ? `left ${theyOn} tool${theyOn === 1 ? '' : 's'} on that you turned off` : ''
+        ].filter(Boolean)
+
+        return `${they.length > 0 ? `They ${they.join(', and ')}. ` : ''}Your edits stay on screen; nothing was written.`
+      },
+      conflictReload: 'Reload their version',
+      conflictSave: 'Save over their version',
+      saveFailed: 'Those tool rules were not saved.',
+      footerDirty: (off: number, backOn: number) =>
+        `${off} tool${off === 1 ? '' : 's'} off, ${backOn === 0 ? 'none' : backOn} back on`,
+      discard: 'Discard',
+      save: 'Save changes',
+      saving: 'Saving...'
+    },
+
+    // The label rides in every tool row, so it stays short enough not to widen one.
+    vocabulary: {
+      facetRead: { label: 'Read', long: 'Reads data out of this app. It changes nothing.' },
+      facetWrite: { label: 'Write', long: 'Creates or changes something in this app.' },
+      facetDestructive: { label: 'Destructive', long: 'Can remove something in this app for good.' },
+      facetUnclassified: { label: 'Unknown effect', long: 'The app never said what this tool does.' },
+      hintReadOnly: { label: 'Read only', long: 'The tool declares that it only reads.' },
+      hintCreate: { label: 'Creates', long: 'Makes something new.' },
+      hintUpdate: { label: 'Updates', long: 'Changes something that already exists.' },
+      hintDelete: { label: 'Deletes', long: 'Removes something.' },
+      hintDestructive: { label: 'Destructive', long: 'The change it makes cannot be undone here.' },
+      hintIdempotent: { label: 'Repeatable', long: 'Running it twice does what running it once does.' },
+      hintOpenWorld: { label: 'External', long: 'Reaches something outside this app.' }
+    }
   },
 
   sessionImport: {
@@ -146,7 +386,8 @@ export const en: Translations = {
       startingHermesDesktop: 'Starting Hermes Desktop…'
     },
     errors: {
-      backgroundExited: 'The service that runs your chats closed unexpectedly. Restart it to keep going — your chats and settings are safe.',
+      backgroundExited:
+        'The service that runs your chats closed unexpectedly. Restart it to keep going — your chats and settings are safe.',
       backgroundExitedDuringStartup: 'Hermes stopped right after it started.',
       backendStopped: 'Hermes stopped working in the background',
       restartHermes: 'Restart Hermes',
@@ -248,11 +489,14 @@ export const en: Translations = {
       storageFailure: "Hermes couldn't save to its data folder. Open Maintenance to check and repair it.",
       gatewayAuthFailed:
         'This Hermes no longer accepts your saved sign-in. Open Gateways and sign in again (or paste a new access token), then retry.',
-      methodNotAllowed: "Hermes' background service is out of step with the app, probably after an update. Restart it to fix this.",
+      methodNotAllowed:
+        "Hermes' background service is out of step with the app, probably after an update. Restart it to fix this.",
       microphonePermission: 'Microphone permission was denied.',
       openaiRejectedApiKey: "OpenAI didn't accept your API key. Update it in Settings → Keys, then try again.",
       openaiTtsNeedsKey: 'Voice needs an OpenAI key. Add one in Settings → Keys.',
-      codeSkewRestartRequired: 'Hermes was updated but is still running the old version. Restart it to finish the update.',
+      codeSkewRestartRequired:
+        'Hermes was updated but is still running the old version. Restart it to finish the update.',
+      rpcOutOfSync: 'The app and the backend are on different versions. Update both.',
       restartHermesFailed: "Couldn't restart Hermes"
     },
     actions: {
@@ -528,6 +772,7 @@ export const en: Translations = {
       gatewayManagedUpdatesUnavailable: 'Remote updates need a desktop version with managed SSH update support.',
       gatewayManagedUpdatesEmpty: 'Add an SSH connection in Saved connections to manage its updates here.',
       keyboardShortcuts: 'Key bindings',
+      hudGesture: 'HUD gesture',
       screenCapture: 'Screen capture',
       notificationAlerts: 'Desktop alerts',
       notificationSounds: 'Sounds',
@@ -591,6 +836,7 @@ export const en: Translations = {
         includesHeading: 'This package includes',
         agentLabel: 'Agent plugin',
         desktopLabel: 'Desktop UI',
+        profileLabel: 'Install for profile',
         agentTargetLocal: (profile, dir) => `Installs into the ${profile} backend (${dir})`,
         agentTargetRemote: profile => `Installs into the connected ${profile} backend`,
         catalogPinned: (name, sha) =>
@@ -630,7 +876,8 @@ export const en: Translations = {
         desktopSuccess: name => `Desktop plugin ${name} installed`,
         agentFailed: 'Agent plugin install failed',
         desktopFailed: 'Desktop plugin install failed',
-        missingEnv: (name, vars) => `${name} is installed but needs a key before it can work: ${vars}. Add it now, or the plugin's tools will fail.`
+        missingEnv: (name, vars) =>
+          `${name} is installed but needs a key before it can work: ${vars}. Add it now, or the plugin's tools will fail.`
       }
     },
     vault: {
@@ -798,7 +1045,8 @@ export const en: Translations = {
       sessionDensityComfortable: 'Comfortable',
       sessionDensityDetailed: 'Detailed',
       tabStripTitle: 'Tab Strip',
-      tabStripDesc: 'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',
+      tabStripDesc:
+        'Show tabs above a zone. Auto hides them for a single pane unless another chat or tile zone is open.',
       tabStripAuto: 'Auto',
       tabStripAlways: 'Always',
       tabStripNever: 'Never',
@@ -991,6 +1239,11 @@ export const en: Translations = {
       daysAgo: count => `${count} days ago`
     },
     config: {
+      minimizeToTrayTitle: 'Minimize to tray',
+      minimizeToTrayDesc:
+        'Minimize windows or close the main window to hide them in the system tray (menu bar on macOS) and keep Hermes running. Use Quit Hermes from the tray menu or Cmd+Q to exit. Off by default; applies only to this device.',
+      minimizeToTrayUnavailable:
+        'The system tray is unavailable. Windows will minimize and close normally. Turn this off and on to retry.',
       none: 'None',
       noneParen: '(none)',
       builtinOnly: 'Built-in only',
@@ -1018,6 +1271,19 @@ export const en: Translations = {
       attachmentSizeUnit: 'MB',
       attachmentSizeLabel: 'Max preview / image load size in megabytes',
       showOptions: 'Show options'
+    },
+    hudModifier: {
+      title: 'Tap to summon HUD',
+      description:
+        'Tap and release ⌘ + Option on Mac, or Ctrl + Alt on Windows/Linux, to bring the HUD forward from any app. Off by default; applies only to this device.',
+      permission:
+        'Allow Hermes in System Settings → Privacy & Security → Input Monitoring, then retry. This gesture does not record keystrokes or capture your screen.',
+      unavailable:
+        'The HUD gesture helper could not start or stopped unexpectedly. Retry, or restart Hermes. The existing HUD shortcut still works inside Hermes.',
+      missingHelper:
+        'This Hermes installation is missing the HUD gesture helper. Update or reinstall Hermes, then retry.',
+      unsupportedSession:
+        'This desktop session does not support global modifier taps. Linux requires X11; Wayland is not supported.'
     },
     screenshot: {
       enabledTitle: 'Screenshot shortcut',
@@ -1156,7 +1422,8 @@ export const en: Translations = {
     gateway: {
       loading: 'Loading gateway settings...',
       unavailableTitle: 'Gateway settings unavailable',
-      unavailableDesc: 'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
+      unavailableDesc:
+        'Connection settings can only be changed from the Hermes Desktop app on the computer running it.',
       title: 'Gateway Connection',
       envOverride: 'env override',
       intro:
@@ -1209,7 +1476,8 @@ export const en: Translations = {
       remoteUrlTitle: 'Remote URL',
       remoteUrlDesc: 'Base URL for the remote dashboard backend. Path prefixes are supported, for example /hermes.',
       probing: 'Checking how this gateway authenticates…',
-      probeError: "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
+      probeError:
+        "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
       signedIn: 'Signed in',
       signIn: 'Sign in',
       signOut: 'Sign out',
@@ -1227,11 +1495,11 @@ export const en: Translations = {
       pasteSessionToken: 'Paste session token',
       plainTextConfirmTitle: 'Store the gateway token in plain text?',
       plainTextConfirmDesc:
-        'No OS keyring service was found on this machine, so the token would be saved unencrypted in the app’s connection settings file, readable by any process running as this user. Install or enable GNOME Keyring or KWallet for encrypted storage.',
+        'No OS keyring service was found on this machine, so the token would be saved unencrypted in the app’s connection settings file, readable by any process running as this user. Install or enable your system keychain (GNOME Keyring or KWallet on Linux) for encrypted storage.',
       plainTextConfirmAction: 'Save as plain text',
       plainTextStoredTitle: 'Token stored in plain text',
       plainTextStoredDesc:
-        'Secure storage is unavailable, so the saved token is stored unencrypted in the app’s connection settings file on this machine. Install or enable GNOME Keyring or KWallet to encrypt it.',
+        'Secure storage is unavailable, so the saved token is stored unencrypted in the app’s connection settings file on this machine. Install or enable your system keychain (GNOME Keyring or KWallet on Linux) to encrypt it.',
       keychainEncryptionTitle: 'Encrypt saved secrets with the OS keychain',
       keychainEncryptionDesc:
         'Off by default. When on, gateway tokens and sign-in credentials are encrypted with your system keychain (Keychain Access, GNOME Keyring, or Windows DPAPI) — your system may ask for permission or a password. When off, they are stored as plain files readable only by your user account.',
@@ -1315,59 +1583,24 @@ export const en: Translations = {
     },
     mcp: {
       loading: 'Loading MCP servers...',
-      failedLoad: 'MCP config failed to load',
-      nameRequiredTitle: 'Name required',
-      nameRequiredMessage: 'Give this MCP server a config key.',
-      objectRequired: 'Server config must be a JSON object',
       invalidJson: 'Invalid MCP JSON',
       saveFailed: 'Save failed',
       removeFailed: 'Remove failed',
-      gatewayUnavailableTitle: 'Gateway unavailable',
-      gatewayUnavailableMessage: 'Reconnect the gateway before reloading MCP.',
-      reloadedTitle: 'MCP tools reloaded',
-      reloadedMessage: 'New tool schemas apply to fresh turns.',
       reloadFailed: 'MCP reload failed',
       savedTitle: 'MCP server saved',
       savedMessage: name => `${name} applies after MCP reload.`,
-      newServer: 'New server',
-      reload: 'Reload MCP',
-      reloading: 'Reloading...',
-      emptyTitle: 'No MCP servers',
-      emptyDesc: 'Add a stdio or HTTP server to expose MCP tools.',
       disabled: 'disabled',
-      editServer: 'Edit server',
       name: 'Name',
       serverJson: 'Server JSON',
       remove: 'Remove',
-      saveServer: 'Save server',
       test: 'Test connection',
-      testing: 'Testing...',
-      testOk: count => `Connected — ${count} tool${count === 1 ? '' : 's'} available`,
-      testFailed: 'Connection failed',
-      enableServer: name => `Enable ${name}`,
-      disableServer: name => `Disable ${name}`,
-      serverEnabled: name => `${name} enabled — applies to new sessions.`,
-      serverDisabled: name => `${name} disabled — applies to new sessions.`,
-      toggleFailed: (name, enabled) => `Failed to turn ${name} ${enabled ? 'on' : 'off'}`,
-      tabServers: 'Servers',
-      tabCatalog: 'Catalog',
       catalogLoading: 'Loading MCP catalog...',
-      catalogLoadFailed: 'MCP catalog failed to load',
-      catalogEmpty: 'No catalog entries available.',
-      catalogInstalled: 'Installed',
-      catalogEnabled: 'Enabled',
-      catalogNeedsInstall: 'Needs build',
-      catalogInstall: 'Install',
-      catalogInstalling: 'Installing...',
-      catalogInstallStarted: name => `Installing ${name}... applies to new sessions when done.`,
       catalogInstallFailed: name => `Failed to install ${name}`,
-      catalogEnvPrompt: name => `${name} requires credentials`,
       catalogEnvRequired: 'Fill in the required values before installing.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} tools`, ...(prompts ? [`${prompts} prompts`] : []), ...(resources ? [`${resources} resources`] : [])].join(', ')} enabled`,
       costTokens: tokens => `~${tokens} tok/call`,
       usage30d: uses => `${uses} uses/30d`,
-      unusedPill: 'unused',
       statusConnecting: 'Connecting…',
       statusNeedsAuth: 'Needs authentication',
       statusError: 'Error',
@@ -1375,11 +1608,7 @@ export const en: Translations = {
       allServers: 'All servers',
       authenticatedTitle: 'Authenticated',
       authenticatedMessage: (server, count) => `${server}: ${count} tools`,
-      waitingForBrowser: 'Waiting for browser…',
       authenticate: 'Authenticate',
-      unsavedConnect: 'Unsaved — save mcp.json to connect.',
-      enableTool: tool => `Enable ${tool}`,
-      disableTool: tool => `Disable ${tool}`,
       noOutput: 'No output yet.',
       deepLinkTitle: 'Add MCP server?',
       deepLinkDescription:
@@ -1394,13 +1623,7 @@ export const en: Translations = {
       deepLinkErrorConfig: 'The link\u2019s config is not valid base64-encoded JSON.',
       deepLinkErrorShape: 'The config must be a JSON object with a string `url` or `command` field.',
       deepLinkErrorUrl: 'Only http:// and https:// server URLs are allowed.',
-      deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.',
-      importButton: 'Import',
-      importPlaceholder: 'Paste an mcp.json snippet, npx/docker command, claude mcp add line, URL, or Cursor link…',
-      importNoMatch: 'No server config recognized in the pasted text.',
-      importConfirm: 'Add to mcp.json',
-      importConfirmMany: count => `Add ${count} servers to mcp.json`
-    },
+      deepLinkErrorTooLarge: 'The config payload exceeds the 32KB limit.',},
     model: {
       loading: 'Loading model configuration...',
       appliesDesc: 'Applies to new sessions. Use the model picker in the composer to hot-swap the active chat.',
@@ -1656,7 +1879,8 @@ export const en: Translations = {
       useBackend: 'Use this backend',
       nousIncluded: 'Included with a Nous subscription — sign in with your Nous account to activate.',
       nousAuthNeededTitle: 'Sign in with your Nous account',
-      nousAuthNeededMessage: provider => `${provider} is saved but will only work once you sign in with your Nous account.`,
+      nousAuthNeededMessage: provider =>
+        `${provider} is saved but will only work once you sign in with your Nous account.`,
       nousAuthSignIn: 'Sign in',
       nousAuthDoneTitle: 'Nous account connected',
       nousAuthDoneMessage: 'Your subscription backends are now active.',
@@ -1675,7 +1899,8 @@ export const en: Translations = {
       postSetupCompleteTitle: 'Setup complete',
       postSetupCompleteMessage: step => `${step} installed.`,
       postSetupErrorTitle: 'Setup finished with errors',
-      postSetupErrorMessage: step => `Setting up ${step} did not finish. Open the logs to see why, then run setup again.`,
+      postSetupErrorMessage: step =>
+        `Setting up ${step} did not finish. Open the logs to see why, then run setup again.`,
       postSetupOpenLogs: 'Open logs',
       postSetupRunAgain: 'Run again',
       postSetupFailed: step => `Failed to run ${step} setup`,
@@ -1750,7 +1975,6 @@ export const en: Translations = {
     tabSkills: 'Skills',
     tabToolsets: 'Tools',
     configuringProfile: 'Configuring:',
-    tabMcp: 'MCP',
     all: 'All',
     searchSkills: 'Search skills...',
     searchToolsets: 'Search tools...',
@@ -1849,11 +2073,37 @@ export const en: Translations = {
       updateToPin: (sha: string) => `Update to ${sha}`,
       updateFailed: (name: string) => `Could not update ${name}`,
       updated: (name: string) => `${name} updated to the current catalog pin. Restart the gateway to apply.`,
+      updateConsentTitle: (name: string) => `${name} asks for more`,
+      updateConsentBody: (name: string, sha: string) =>
+        `The new catalog pin of ${name} (${sha}) adds surfaces the installed version does not have. Apply it only if you trust them:`,
+      updateConsentConfirm: 'Apply update',
+      uninstall: 'Uninstall',
+      uninstallTip: (name: string, profile: string) => `Uninstall ${name} from ${profile}`,
+      uninstallConfirmTitle: (name: string) => `Uninstall ${name}?`,
+      uninstallConfirmBody: (name: string, profile: string) =>
+        `This deletes the plugin's files from the ${profile} profile. Any desktop half it shipped is removed with it. Reinstall it from the catalog or from Git at any time.`,
+      uninstallFailed: (name: string) => `Could not uninstall ${name}`,
+      uninstalled: (name: string) => `${name} uninstalled. Restart the gateway to unload it.`,
+      uninstallDesktopTip: (name: string) => `Uninstall ${name} from this app`,
+      uninstallDesktopConfirmBody: (name: string) =>
+        `This deletes ${name} from the desktop-plugins folder on this computer and unloads it now. Reinstall it from Git or drop the folder back at any time.`,
+      uninstalledDesktop: (name: string) => `${name} uninstalled.`,
       deepLinkErrorTitle: 'Plugin install link rejected',
       deepLinkCatalogInvalidName: 'The link\u2019s catalog name is missing or invalid.',
       deepLinkCatalogUnknown: (name: string) =>
         `\u201C${name}\u201D is not in the Hermes plugin catalog. Nothing was installed.`,
-      deepLinkCatalogUnavailable: 'Could not load the Hermes plugin catalog. Check your connection and open the link again.'
+      deepLinkCatalogUnavailable:
+        'Could not load the Hermes plugin catalog. Check your connection and open the link again.',
+      settingsToggle: (name: string) => `Settings: ${name}`,
+      settingsForm: {
+        save: 'Save settings',
+        saved: (name: string) => `${name} settings saved.`,
+        saveFailed: (name: string) => `Could not save ${name} settings`,
+        optional: '(optional)',
+        secretSet: '•••••••• (set)',
+        secretStoredAs: (env: string) =>
+          `Stored in the profile's .env as ${env}, never in config.yaml; leave blank to keep the current value.`
+      }
     },
     officialCatalog: 'Available to install',
     officialPill: 'Official',
@@ -3154,6 +3404,8 @@ export const en: Translations = {
   },
 
   statusStack: {
+    hideStack: 'Hide status stack',
+    showStack: 'Show status stack',
     agents: 'Agents',
     background: count => `${count} Background`,
     goalActive: 'Goal active',
@@ -3434,7 +3686,8 @@ export const en: Translations = {
     remoteUrlDesc: 'Use the base URL of the Hermes gateway, including https:// when remote.',
     remoteUrlPlaceholder: 'https://gateway.example.com/hermes',
     probing: 'Detecting gateway authentication...',
-    probeError: "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
+    probeError:
+      "Hermes can't reach that address. Check the URL and that the other computer is running Hermes — sign-in options appear once it answers.",
     probeErrorDetails: 'Details',
     identityProvider: 'your identity provider',
     authTitle: 'Authentication',
@@ -3602,7 +3855,7 @@ export const en: Translations = {
     timedOutHeading: 'That sign-in link has expired',
     timedOutBody: "Start again whenever you're ready. You're still on the free Nous service.",
     retiredBody:
-      'Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you\'re ready.',
+      "Your session ended before the sign-in finished. Hermes will start a new one; then sign in again whenever you're ready.",
     errorBody: "Sign-in didn't finish. Try again whenever you're ready.",
     busyHeading: 'Almost there',
     busyBody: wait =>
@@ -3624,7 +3877,8 @@ export const en: Translations = {
       powRequired:
         "The Nous server asked for a proof of work, but that isn't implemented in your Agent yet. Sign in or create a free Nous account to continue.",
       locked: "This session can't continue without signing in. Sign in or create a free Nous account to keep going.",
-      generic: "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
+      generic:
+        "Hermes couldn't set up free access without signing in. Signing in is free, or connect another provider.",
       signInBelow: 'Signing in is free. Pick Nous below.',
       tryAgain: 'Try again',
       retrying: 'Trying again…'
@@ -4075,17 +4329,21 @@ export const en: Translations = {
         auth: 'The AI service rejected your sign-in. Check the credentials for this provider, then send your message again.',
         billing: 'Your account has no credits left for this provider. Top up or switch provider, then send again.',
         disk: 'Your disk is full, so Hermes could not save this conversation. Free some space, then retry.',
-        endpoint: "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
-        gateway: 'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
+        endpoint:
+          "Hermes can't reach your custom model server. Check that it is running, then send your message again.",
+        gateway:
+          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
         generic: 'Something went wrong while Hermes was replying. Retry, or copy the details if it keeps happening.',
         provider: 'The AI service could not complete this request. Retry in a moment or switch provider.',
-        runtime: 'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
+        runtime:
+          'Hermes hit an internal problem starting this reply. Send your message again; if it keeps happening, send diagnostics.',
         streaming: 'The connection dropped before the reply finished. Retry to send it again.'
       },
       errorCodes: {
         auth: {
           title: provider => `${provider} rejected your sign-in`,
-          body: provider => `The credentials saved for ${provider} were not accepted. Fix them in Settings or switch provider, then send your message again.`
+          body: provider =>
+            `The credentials saved for ${provider} were not accepted. Fix them in Settings or switch provider, then send your message again.`
         },
         auth_permanent: {
           title: provider => `${provider} rejected your sign-in`,
@@ -4140,7 +4398,8 @@ export const en: Translations = {
         },
         model_not_found: {
           title: 'This model is not available',
-          body: provider => `${provider} does not offer this model on your account. Choose another model, then send your message again.`
+          body: provider =>
+            `${provider} does not offer this model on your account. Choose another model, then send your message again.`
         },
         provider_policy_blocked: {
           title: 'This model is blocked by your account settings',
@@ -4316,7 +4575,6 @@ export const en: Translations = {
       authorized: server => `Authorized ${server}`,
       failed: server => `Setup failed for ${server}`,
       toolCount: count => (count === 1 ? '1 tool' : `${count} tools`),
-      notInCatalog: server => `“${server}” is not in the MCP catalog`,
       envRequired: 'Fill in the required credentials first',
       sendFailed: 'Could not send MCP setup response',
       reloadFailed: 'Server saved, but reloading MCP tools failed — they load next session',
@@ -4431,8 +4689,10 @@ export const en: Translations = {
     sudoSendFailed: 'Could not send sudo password',
     secretSendFailed: 'Could not send secret',
     sudoTitle: 'Administrator password',
-    sudoDesc: 'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
-    sudoCommandUnavailable: 'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
+    sudoDesc:
+      'Review the command before entering your sudo password. Your password is sent to the agent running it and cached for this session.',
+    sudoCommandUnavailable:
+      'This agent did not provide the command. Cancel if you cannot verify it in the conversation.',
     sudoPlaceholder: 'sudo password',
     secretTitle: 'Secret required',
     secretDesc: 'Hermes needs a credential to continue.',
@@ -4550,7 +4810,8 @@ export const en: Translations = {
       success: platform => `Handed off to ${platform}. Resume here anytime.`,
       systemNote: platform => `↻ Handed off to ${platform} — resume here anytime.`,
       failed: error => `Handoff failed: ${error}`,
-      timedOut: "Hermes couldn't reach your messaging connection. Start it from Settings → Messaging, then try the handoff again.",
+      timedOut:
+        "Hermes couldn't reach your messaging connection. Start it from Settings → Messaging, then try the handoff again.",
       startMessaging: 'Start messaging'
     }
   },

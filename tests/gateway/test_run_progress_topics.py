@@ -927,6 +927,25 @@ class CommentaryAgent:
         }
 
 
+class FinalAsInterimAgent:
+    """Model bridge that reports its completed final through the interim callback."""
+
+    def __init__(self, **kwargs):
+        self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
+        self.tools = []
+
+    def run_conversation(self, message, conversation_history=None, task_id=None, **kwargs):
+        final = "A completed answer from the model bridge."
+        if self.interim_assistant_callback:
+            self.interim_assistant_callback(final, already_streamed=False)
+        return {
+            "final_response": final,
+            "response_previewed": True,
+            "messages": [],
+            "api_calls": 1,
+        }
+
+
 class PreviewedResponseAgent:
     def __init__(self, **kwargs):
         self.interim_assistant_callback = kwargs.get("interim_assistant_callback")
@@ -1452,6 +1471,25 @@ async def test_display_streaming_does_not_enable_gateway_streaming(monkeypatch, 
     assert result.get("already_sent") is not True
     assert adapter.edits == []
     assert [call["content"] for call in adapter.sent] == ["I'll inspect the repo first."]
+
+
+@pytest.mark.asyncio
+async def test_non_editable_interim_final_is_recorded_for_final_send_dedup(monkeypatch, tmp_path):
+    adapter, result = await _run_with_agent(
+        monkeypatch,
+        tmp_path,
+        FinalAsInterimAgent,
+        session_id="sess-non-editable-interim-final",
+        config_data={
+            "display": {"interim_assistant_messages": True},
+            "streaming": {"enabled": False},
+        },
+        adapter_cls=NonEditingProgressCaptureAdapter,
+    )
+
+    assert result["already_sent"] is True
+    assert [call["content"] for call in adapter.sent] == [result["final_response"]]
+    assert adapter.edits == []
 
 
 class TransformedStreamAgent:

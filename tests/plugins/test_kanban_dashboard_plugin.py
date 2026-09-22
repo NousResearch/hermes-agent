@@ -292,7 +292,7 @@ def test_reopening_parent_demotes_ready_child(client):
 
     r = client.patch(
         f"/api/plugins/kanban/tasks/{parent['id']}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert r.status_code == 200
 
@@ -316,7 +316,7 @@ def test_reopening_parent_demotes_ready_child(client):
 def test_reopening_parent_retracts_review_and_blocks_approval(client):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="parent", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert kb.complete_task(conn, parent_id, result="done")
         child_id = kb.create_task(
             conn,
             title="child in review",
@@ -361,7 +361,7 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{parent_id}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert response.status_code == 200, response.text
 
@@ -385,14 +385,14 @@ def test_reopening_parent_retracts_review_and_blocks_approval(client):
 def test_reopening_parent_recursively_retracts_done_and_running_descendants(client):
     with kbc.connect() as conn:
         parent_id = kb.create_task(conn, title="root", assignee="planner")
-        assert kb.complete_task(conn, parent_id)
+        assert kb.complete_task(conn, parent_id, result="done")
         child_id = kb.create_task(
             conn,
             title="accepted child",
             assignee="builder",
             parents=[parent_id],
         )
-        assert kb.complete_task(conn, child_id)
+        assert kb.complete_task(conn, child_id, result="done")
         grandchild_id = kb.create_task(
             conn,
             title="running grandchild",
@@ -421,7 +421,7 @@ def test_reopening_parent_recursively_retracts_done_and_running_descendants(clie
 
     response = client.patch(
         f"/api/plugins/kanban/tasks/{parent_id}",
-        json={"status": "done"},
+        json={"status": "done", "result": "done", "summary": "done"},
     )
     assert response.status_code == 200, response.text
     with kbc.connect() as conn:

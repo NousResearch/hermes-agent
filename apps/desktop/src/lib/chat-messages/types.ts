@@ -1,5 +1,5 @@
 import type { ThreadMessageLike } from '@assistant-ui/react'
-import { type BillingBlock } from '@hermes/shared'
+import { type BillingBlock, type ToolLabel } from '@hermes/shared'
 
 import type { ErrorSurface } from '@/lib/error-surface'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
@@ -17,6 +17,8 @@ export interface TimelinePartMetadata {
   /** Raw streamed text behind a `text` part whose MEDIA tags are already rendered,
    * so the next delta re-renders from the source instead of the render. */
   mediaSource?: string
+  /** Durable source occurrence, even when several backend rows share a bubble. */
+  sourceRowId?: number
 }
 
 export type ChatMessagePart = Exclude<ThreadMessageLike['content'], string>[number] & TimelinePartMetadata
@@ -42,6 +44,10 @@ export type ChatMessage = {
    *  action footer so only the turn's final reply carries copy/refresh, and
    *  the live view matches rehydration (which merges the turn into one bubble). */
   interim?: boolean
+  /** Locally recovered output not yet represented by a durable completed reply. */
+  recovered?: boolean
+  /** Whether hydration reached a final assistant source row, rather than a tool round. */
+  durableComplete?: boolean
   /** Whole-turn wall-clock seconds (message.start → message.complete),
    *  stamped by the desktop when it watched the turn run. Absent for
    *  messages hydrated from history — the backend doesn't persist it. */
@@ -50,6 +56,12 @@ export type ChatMessage = {
   attachmentRefs?: string[]
   /** Durable backend `messages.id`. Absent until the row is persisted. */
   rowId?: number
+  /** Backend transcript rows this message represents — the hydration fold
+   *  merges a turn's tool rows into the assistant message they belong to, so a
+   *  message is not one backend row. The older-page offset (transcript-tail) is
+   *  counted in backend rows, so anything that rewinds that offset must convert
+   *  through this. Absent means one row. */
+  serverRowSpan?: number
   /** Emoji reactions on this message — one per author (see MessageReaction). */
   reactions?: MessageReaction[]
 }
@@ -70,6 +82,7 @@ export type GatewayEventPayload = {
   arguments?: unknown
   context?: string
   input?: unknown
+  labels?: ToolLabel[]
   preview?: string
   result?: unknown
   summary?: string

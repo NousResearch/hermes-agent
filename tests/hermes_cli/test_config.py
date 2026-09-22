@@ -555,9 +555,9 @@ class TestSaveConfigAtomicity:
             config_path = tmp_path / "config.yaml"
             assert config_path.exists()
 
-            # Simulate a crash during yaml.dump by making atomic_yaml_write's
-            # yaml.dump raise after the temp file is created but before replace.
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            # Simulate a crash mid-dump: the round-trip writer raises after the temp file is
+            # created but before replace.
+            with patch("utils._roundtrip_dump", side_effect=OSError("disk full")):
                 try:
                     config["model"] = "should-not-persist"
                     save_config(config)
@@ -574,7 +574,7 @@ class TestSaveConfigAtomicity:
             config = load_config()
             save_config(config)
 
-            with patch("utils.yaml.dump", side_effect=OSError("disk full")):
+            with patch("ruamel.yaml.YAML.dump", side_effect=OSError("disk full")):
                 try:
                     save_config(config)
                 except OSError:
@@ -2015,6 +2015,18 @@ def test_empty_dict_default_sections_are_open_containers():
     known, suggestion = _validate_config_key("compression.model_threshold.gpt-5")
     assert known is False
     assert suggestion == "compression.model_thresholds"
+
+
+def test_lsp_root_policy_keys_are_recognized_and_off_by_default():
+    """``lsp.warmup_timeout`` / ``broken_retry_seconds`` / ``exclude_roots`` (#116446) must be settable via
+    ``hermes config set`` and must default to today's behaviour (no grace, lifetime broken set, no exclusion)."""
+    from hermes_cli.config import _validate_config_key
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    assert DEFAULT_CONFIG["lsp"]["warmup_timeout"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["broken_retry_seconds"] == 0.0
+    assert DEFAULT_CONFIG["lsp"]["exclude_roots"] == []
+    for key in ("lsp.warmup_timeout", "lsp.broken_retry_seconds", "lsp.exclude_roots"):
+        assert _validate_config_key(key) == (True, None)
 
 
 class TestSaveConfigExplicitPathAuthority:

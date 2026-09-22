@@ -175,9 +175,8 @@ class ThreadParticipationTracker:
 
         ``_save`` ends in ``atomic_json_write`` -> ``os.replace``, whose
         duration is unbounded under filesystem pressure.  Every caller of this
-        tracker sits on an inbound-message coroutine (Matrix
-        ``_resolve_message_context``, Discord ``_handle_message``), so the
-        rename must not be paid inline on the event loop -- it stalls every
+        tracker sits on an inbound-message coroutine in the Discord and Matrix
+        adapters, so the rename must not be paid inline on the event loop -- it stalls every
         other adapter's polling and every in-flight turn for as long as it runs.
         """
         if self._remember(thread_id):

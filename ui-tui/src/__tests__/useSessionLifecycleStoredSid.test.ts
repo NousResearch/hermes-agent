@@ -194,6 +194,7 @@ describe('useSessionLifecycle durable session id', () => {
       ]
     })
     await history
+    await new Promise(resolve => setTimeout(resolve, 0))
 
     expect(mounted.setHistoryItems).not.toHaveBeenCalled()
 

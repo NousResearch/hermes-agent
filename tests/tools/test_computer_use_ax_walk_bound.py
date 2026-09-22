@@ -10,6 +10,7 @@ from __future__ import annotations
 
 from typing import Any, Dict, List, Optional
 
+import pytest
 
 from tools.computer_use import cua_backend
 from tools.computer_use.cua_backend_capture import _CaptureMixin
@@ -67,16 +68,10 @@ class TestCappedWalkHint:
                             elements=[UIElement(index=i + 1, role="AXButton", label=f"b{i}") for i in range(n_elements)])
         return "\n".join(tool._capture_summary_lines(tool._capture_view(cap, max_elements=5)))
 
-    def test_capped_walk_is_named_and_full_is_dropped(self, monkeypatch):
-        text = self._summary(monkeypatch, n_elements=8, bound=8)
-        assert "accessibility walk capped at 8 elements; pass app= to narrow" in text
-        assert "full element tree" not in text
+    @pytest.mark.parametrize(("n_elements", "bound", "capped"), [(8, 8, True), (8, 50, False), (8, 0, False)])
+    def test_hint_names_a_cap_only_when_the_walk_hit_it(self, monkeypatch, n_elements, bound, capped):
+        text = self._summary(monkeypatch, n_elements=n_elements, bound=bound)
+        assert ("accessibility walk capped" in text) is capped
+        assert (f"accessibility walk capped at {bound} elements; pass app= to narrow" in text) is capped
+        assert ("full element tree with untruncated labels saved to" in text) is not capped
         assert "element tree with untruncated labels saved to" in text
-
-    def test_uncapped_walk_still_promises_the_full_tree(self, monkeypatch):
-        text = self._summary(monkeypatch, n_elements=8, bound=50)
-        assert "accessibility walk capped" not in text
-        assert "full element tree with untruncated labels saved to" in text
-
-    def test_zero_bound_never_claims_a_cap(self, monkeypatch):
-        assert "accessibility walk capped" not in self._summary(monkeypatch, n_elements=8, bound=0)

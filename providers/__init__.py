@@ -231,6 +231,10 @@ def _home_layer() -> _HomeLayer:
     if home is not None and (stamps := _plugin_dir_stamps(home)) != layer.stamps:
         _scan_home_layer(layer, key)
         layer.stamps = stamps
+        # Auth synchronization enumerates providers again. Publish the completed
+        # scan first so that read does not recursively rescan and synchronize.
+        if _discovered and not _discovering:
+            _sync_auth_registry()
     return layer
 
 
@@ -333,8 +337,6 @@ def _scan_home_layer(layer: _HomeLayer, key: str) -> None:
     finally:
         _REGISTRATION_TARGET.reset(token)
         _discovering = prior_discovering
-    if _discovered and not _discovering:
-        _sync_auth_registry()
 
 
 def _user_module_name(plugin_dir: Path, home_key: str) -> str:

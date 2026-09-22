@@ -90,3 +90,45 @@ def test_plugin_installed_after_discovery_is_found_without_a_restart(homes):
 
     assert providers.get_provider_profile("late-install") is not None
     assert "late-install" in {p.name for p in providers.list_providers()}
+
+
+def test_home_discovery_can_sync_auth_without_recursively_rescanning(homes, monkeypatch):
+    import providers
+    import hermes_cli.auth as auth
+    from agent import secret_scope
+
+    launch, secondary = homes
+    # Complete process-wide discovery before observing the per-home import boundary.
+    providers.list_providers()
+    _install(launch, "launch-sync")
+    _install(secondary, "secondary-sync")
+    monkeypatch.setattr(auth, "PROVIDER_REGISTRY", dict(auth.PROVIDER_REGISTRY))
+    real_sync = auth.sync_plugin_provider_registry
+    depth = 0
+    max_depth = 0
+
+    def observe_sync():
+        nonlocal depth, max_depth
+        depth += 1
+        max_depth = max(max_depth, depth)
+        try:
+            # The real auth synchronizer enumerates providers again. That read
+            # must see the completed scan rather than start another sync.
+            return real_sync()
+        finally:
+            depth -= 1
+
+    monkeypatch.setattr(auth, "sync_plugin_provider_registry", observe_sync)
+    was_multiplex = secret_scope.is_multiplex_active()
+    token = secret_scope.set_secret_scope({})
+    secret_scope.set_multiplex_active(True)
+    try:
+        for home, name in ((launch, "launch-sync"), (secondary, "secondary-sync"), (launch, "launch-sync")):
+            profile = _bound(home, lambda: providers.get_provider_profile(name))
+            assert profile is not None
+            assert _bound(home, lambda: auth.resolve_provider(name)) == name
+            assert auth.PROVIDER_REGISTRY[name].inference_base_url == profile.base_url
+    finally:
+        secret_scope.set_multiplex_active(was_multiplex)
+        secret_scope.reset_secret_scope(token)
+    assert max_depth == 1, "provider discovery recursively re-entered auth synchronization"

@@ -523,15 +523,6 @@ def _prune_unlocked(conn, now: float) -> None:
                  LIMIT ?)""", (total - _MAX_ROWS,))
 
 
-def _prune(now: Optional[float] = None) -> None:
-    now = now if now is not None else time.time()
-    try:
-        with _transaction() as conn:
-            _prune_unlocked(conn, now)
-    except Exception:
-        logger.debug("delivery ledger prune failed", exc_info=True)
-
-
 def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:
     """Read the ``gateway.delivery_ledger`` config gate (default on)."""
     try:

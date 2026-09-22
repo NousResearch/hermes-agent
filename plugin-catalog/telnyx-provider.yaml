@@ -1,0 +1,17 @@
+name: telnyx-provider
+repo: https://github.com/team-telnyx/hermes-inference-provider
+sha: f53c20e80f84b4a880a7f2b4f1ed2f8b3fa1d11c
+description: Vendor-maintained Telnyx inference provider with an authenticated live model catalog, hosted open models, frontier routes, and catalog-derived pricing.
+maintainer: Telnyx
+tier: community
+category: models
+requires_hermes: ">=0.21.4"
+docs_url: https://github.com/team-telnyx/hermes-inference-provider#readme
+version: "0.1.0"
+platforms: []
+capabilities:
+  provides_tools: []
+  provides_hooks: []
+  provides_middleware: []
+  requires_env:
+  - TELNYX_API_KEY

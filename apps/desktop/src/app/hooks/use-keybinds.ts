@@ -40,6 +40,7 @@ import {
   togglePanesFlipped,
   toggleSidebarOpen
 } from '@/store/layout'
+import { $pinnedRows, stepPinnedSession } from '@/store/pinned-navigation'
 import { openBrowserTab } from '@/store/preview'
 import {
   $newChatProfile,
@@ -234,6 +235,10 @@ export function useKeybinds(deps: KeybindRuntimeDeps): void {
     ...sessionSlotHandlers,
     'session.focusSearch': requestSessionSearchFocus,
     'session.togglePin': deps.toggleSelectedPin,
+    // Walk the Pinned section in visible sidebar order; a cold or empty store
+    // (no sidebar mounted) makes these a no-op rather than a dead key.
+    'session.pinned.next': () => goToSession(stepPinnedSession($pinnedRows.get(), $selectedStoredSessionId.get(), 1)),
+    'session.pinned.previous': () => goToSession(stepPinnedSession($pinnedRows.get(), $selectedStoredSessionId.get(), -1)),
     'session.archive': deps.archiveSelectedSession,
     // openWorktreeDialog resolves the target. There is no test for a repo
     // here, so the key works from a detached session that sits inside a

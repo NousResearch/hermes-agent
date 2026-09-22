@@ -3119,6 +3119,11 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # invalidate the marker. Do not "fix" this with _ensure_aware normalization.
     manual_run = job.get("manual_run_at") == next_run
     from cron.occurrences import completed_occurrence, scheduled_instant
+    from cron.unreachable_retry import is_retry_instant
+
+    # plan_retry's re-run instant (now + 5/15/30 min) is off a cron expression's lattice by
+    # design; the stale-expression guard would take it for a hand edit and skip it unfired.
+    retry_run = is_retry_instant(job, next_run)
 
     if not manual_run and completed_occurrence(job, next_run):
         new_next = d.recompute_next() if recurring else None
@@ -3134,7 +3139,7 @@ def _evaluate_due_job(job: Dict[str, Any], scan: _DueScan, run_claim_ttl: float)
     # Only the dispatch snapshot carries this field; never infer it from a later stamp.
     job["_scheduled_instant"] = None if manual_run else scheduled_instant(job.get("next_run_at"))
 
-    if not manual_run and kind == "cron" and _reanchor_stale_cron(d):
+    if not (manual_run or retry_run) and kind == "cron" and _reanchor_stale_cron(d):
         return False
     grace = _compute_grace_seconds(d.schedule)
     if not manual_run and recurring and _fast_forward_missed_recurring(d, grace):

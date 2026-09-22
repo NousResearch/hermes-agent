@@ -32,7 +32,8 @@ logger = logging.getLogger("cron.scheduler")
 RETRY_DELAYS_SECONDS: tuple[int, ...] = (300, 900, 1800)
 
 # Persisted on the job while a retry cycle is active: {"attempt": <1-based count of
-# retries already scheduled>}. Cleared by any run that reached the model.
+# retries already scheduled>, "at": <the next_run_at string plan_retry wrote>}. Cleared by
+# any run that reached the model.
 STATE_KEY = "unreachable_retry"
 
 
@@ -77,6 +78,15 @@ def will_retry(job: Dict[str, Any]) -> bool:
     return retry_enabled()
 
 
+def is_retry_instant(job: Dict[str, Any], next_run: str) -> bool:
+    """True when *next_run* is the re-run instant ``plan_retry`` wrote. That instant is off
+    a cron expression's lattice by design, so the due scan must not take it for a hand edit
+    of ``schedule.expr``. String-exact like ``manual_run_at``: a schedule edit or re-anchor
+    rewrites ``next_run_at`` and so drops the exemption."""
+    state = job.get(STATE_KEY)
+    return isinstance(state, dict) and state.get("at") == next_run
+
+
 def clear_state(job: Dict[str, Any]) -> None:
     """A run reached the model (any outcome): the ladder resets."""
     job.pop(STATE_KEY, None)
@@ -113,7 +123,7 @@ def plan_retry(job: Dict[str, Any]) -> bool:
         clear_state(job)
         return False
     retry_at = retry_dt.isoformat()
-    job[STATE_KEY] = {"attempt": attempt + 1}
+    job[STATE_KEY] = {"attempt": attempt + 1, "at": retry_at}
     job["next_run_at"] = retry_at
     if job.get("state") != "paused":
         job["state"] = "scheduled"

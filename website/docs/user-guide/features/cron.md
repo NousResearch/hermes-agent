@@ -429,8 +429,10 @@ a single model call was made — the classic case is a fire right after the
 computer wakes, while the VPN or Wi-Fi is still reconnecting — does not sit
 out a whole period. The scheduler re-runs it automatically after **5, 15, and
 30 minutes** (inspired by Claude Cowork's scheduled-task re-runs), then falls
-back to the normal schedule. Because zero API calls were made, the re-run is
-spend-neutral and cannot duplicate any side effect.
+back to the normal schedule. This holds for cron expressions too: a
+`0 9 * * *` job re-runs at about 09:05, 09:20 and 09:50, even though the
+expression itself never names those minutes. Because zero API calls were made,
+the re-run is spend-neutral and cannot duplicate any side effect.
 
 While a re-run is pending, the interim failure notice is suppressed — you get
 the real result when a re-run succeeds, or a normal failure alert once the

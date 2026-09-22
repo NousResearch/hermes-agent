@@ -2365,6 +2365,12 @@ DEFAULT_CONFIG = {
         # processes don't accumulate stale children (hundreds of MB + pipe FDs each) across
         # worktrees. 0 = keep servers for process lifetime.
         "idle_timeout": 600.0,
+        # V8 old-space heap cap (MB) for spawned Node-based language servers, applied at spawn
+        # as --max-old-space-size via NODE_OPTIONS, REPLACING any inherited value (the gateway's
+        # own heap flag would otherwise leak into every server child, and Node's default ~4GiB
+        # cap lets a large-workspace server grow until it degrades the shared host, #116446).
+        # Raise for big monorepos where tsserver needs more; 0 = leave the inherited env untouched.
+        "max_heap_mb": 2048,
         # Per-server overrides keyed by registry server_id (pyright, gopls...): disabled: true;
         # command: ["path/to/server", "--stdio"] (bypasses auto- install); env: {...};
         # initialization_options: {...} (merged into LSP initializationOptions).

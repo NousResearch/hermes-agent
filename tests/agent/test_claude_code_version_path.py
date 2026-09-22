@@ -67,4 +67,4 @@ def test_oauth_identity_clamps_stale_installed_version(monkeypatch):
     monkeypatch.setattr(adapter, "_claude_code_version_cache", None)
     monkeypatch.setattr(adapter, "_detect_claude_code_version", lambda: "2.1.270")
 
-    assert _get_claude_code_version() == "2.1.280"
+    assert _get_claude_code_version() == _CLAUDE_CODE_VERSION_FALLBACK

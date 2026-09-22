@@ -848,16 +848,10 @@ export const en: Translations = {
         reviewedHeading: 'Reviewed catalog entry',
         reviewedIntro:
           'This entry was human-reviewed at its pinned commit. You can still inspect the exact code below.',
-        restartToApply: 'Restart the gateway for the plugin to take effect.',
-        restartNow: 'Restart gateway',
-        connectServers: (name, n) =>
-          n === 1
-            ? `${name} installed. Its MCP server is not connected yet.`
-            : `${name} installed. Its ${n} MCP servers are not connected yet.`,
-        connectNow: 'Connect now',
-        connectSub: 'Open chats re-send their context',
-        connectFailed: 'Could not connect the plugin’s MCP servers.',
-        liveNow: name => `${name} installed and active.`,
+        toolsConnected: n => (n === 1 ? '1 tool connected' : `${n} tools connected`),
+        skillsReady: names => (names.length === 1 ? `skill ${names[0]} ready` : `${names.length} skills ready`),
+        nextChat: 'more tools available in your next chat',
+        serverNotConnected: (server, reason) => `MCP server ${server} is not connected${reason ? `: ${reason}` : '.'}`,
         missingEnvAction: 'Set it up',
         alreadyInstalled: (name: string) => `${name} is already installed.`,
         desktopTarget: "Installs into this app's local desktop-plugins folder",

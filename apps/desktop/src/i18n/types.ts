@@ -713,13 +713,10 @@ export interface Translations {
         catalogPinned: (name: string, sha: string) => string
         reviewedHeading: string
         reviewedIntro: string
-        restartToApply: string
-        restartNow: string
-        connectServers: (name: string, n: number) => string
-        connectNow: string
-        connectSub: string
-        connectFailed: string
-        liveNow: (name: string) => string
+        toolsConnected: (n: number) => string
+        skillsReady: (names: string[]) => string
+        nextChat: string
+        serverNotConnected: (server: string, reason: string) => string
         missingEnvAction: string
         alreadyInstalled: (name: string) => string
         desktopTarget: string

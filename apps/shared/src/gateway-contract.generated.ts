@@ -3941,12 +3941,29 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}`` with only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and ``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server names (exactly as ``mcp.servers.*`` know them) — not connected until ``mcp.reload``. The Desktop "Installed. Connect its servers now" card reads exactly ``deferred.mcp_servers``. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now`` kinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the error) and skills, usable in every open chat of the profile from its next turn — the chats also get a note listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids) apply from the next session. */
 export interface PluginActivation {
   name: string
   key: string
   activated_now?: Record<string, string[]>
+  live_now?: PluginLiveNow | null
   deferred?: Record<string, string[]>
+}
+export interface PluginLiveNow {
+  mcp_servers?: PluginLiveServer[]
+  skills?: PluginLiveSkill[]
+}
+/** One plugin MCP server connected at activation: its callable tool names, or the reason it did not connect. */
+export interface PluginLiveServer {
+  name: string
+  connected: boolean
+  tools?: string[]
+  error?: string | null
+}
+/** One plugin skill usable now through ``skill_view`` (qualified ``<plugin>:<skill>``). */
+export interface PluginLiveSkill {
+  name: string
+  description?: string
 }
 /** Single question: ``question`` / ``choices`` (/ ``multi_select``); batch: ``questions``. ``answers`` rides only on a reconnect replay (locks the server already accepted). */
 export interface ClarifyRequestParams {

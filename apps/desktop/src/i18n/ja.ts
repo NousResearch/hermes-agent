@@ -362,14 +362,10 @@ export const ja = defineLocale({
         installFromGit: 'Git からインストール',
         reviewRepository: 'リポジトリを確認',
         repoPlaceholder: 'https://github.com/owner/repo',
-        connectServers: (name, n) =>
-          n === 1
-            ? `${name} をインストールしました。その MCP サーバーはまだ接続されていません。`
-            : `${name} をインストールしました。${n} 個の MCP サーバーはまだ接続されていません。`,
-        connectNow: '今すぐ接続',
-        connectSub: '開いているチャットはコンテキストを再送します',
-        connectFailed: 'プラグインの MCP サーバーに接続できませんでした。',
-        liveNow: name => `${name} はインストールされ、有効です。`
+        toolsConnected: n => `${n} 個のツールを接続しました`,
+        skillsReady: names => (names.length === 1 ? `スキル ${names[0]} の準備ができました` : `${names.length} 個のスキルの準備ができました`),
+        nextChat: 'ほかのツールは次のチャットで使えます',
+        serverNotConnected: (server, reason) => `MCP サーバー ${server} は接続されていません${reason ? `: ${reason}` : '。'}`
       }
     },
     closeSettings: '設定を閉じる',

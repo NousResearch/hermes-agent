@@ -19476,7 +19476,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}``\nwith only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names),\n``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in\nthe running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and\n``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server\nnames (exactly as ``mcp.servers.*`` know them) \u2014 not connected until ``mcp.reload``.\nThe Desktop \"Installed. Connect its servers now\" card reads exactly ``deferred.mcp_servers``.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``). ``activated_now``\nkinds (``{kind: [names]}``): ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook\nnames), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in the running gateway once it reloaded\n(``gateway_reloaded``). ``live_now``: the plugin's MCP servers (connected, with their tools, or the\nerror) and skills, usable in every open chat of the profile from its next turn \u2014 the chats also get a\nnote listing them. ``deferred`` kinds: ``tools`` (Python tool names) and ``prompt`` (section ids)\napply from the next session.",
         "properties": {
           "name": {
             "title": "Name",
@@ -19496,6 +19496,17 @@
             "title": "Activated Now",
             "type": "object"
           },
+          "live_now": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginLiveNow"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
           "deferred": {
             "additionalProperties": {
               "items": {
@@ -19512,6 +19523,86 @@
           "key"
         ],
         "title": "PluginActivation",
+        "type": "object"
+      },
+      "PluginLiveNow": {
+        "additionalProperties": false,
+        "properties": {
+          "mcp_servers": {
+            "items": {
+              "$ref": "#/components/schemas/PluginLiveServer"
+            },
+            "title": "Mcp Servers",
+            "type": "array"
+          },
+          "skills": {
+            "items": {
+              "$ref": "#/components/schemas/PluginLiveSkill"
+            },
+            "title": "Skills",
+            "type": "array"
+          }
+        },
+        "title": "PluginLiveNow",
+        "type": "object"
+      },
+      "PluginLiveServer": {
+        "additionalProperties": false,
+        "description": "One plugin MCP server connected at activation: its callable tool names, or the reason it did not connect.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "connected": {
+            "title": "Connected",
+            "type": "boolean"
+          },
+          "tools": {
+            "items": {
+              "type": "string"
+            },
+            "title": "Tools",
+            "type": "array"
+          },
+          "error": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Error"
+          }
+        },
+        "required": [
+          "name",
+          "connected"
+        ],
+        "title": "PluginLiveServer",
+        "type": "object"
+      },
+      "PluginLiveSkill": {
+        "additionalProperties": false,
+        "description": "One plugin skill usable now through ``skill_view`` (qualified ``<plugin>:<skill>``).",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "description": {
+            "default": "",
+            "title": "Description",
+            "type": "string"
+          }
+        },
+        "required": [
+          "name"
+        ],
+        "title": "PluginLiveSkill",
         "type": "object"
       },
       "PluginServerRow": {

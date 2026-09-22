@@ -1,7 +1,7 @@
 """#87770 — a Desktop/TUI ``plugins.manage install`` is a mid-run load path too: the install performs a REAL
 forced rescan in the serving process, ``PluginManager.on_plugin_loaded`` fires from inside it for the newcomer,
-and the RESULT carries the activation summary (live now vs deferred, ``deferred.mcp_servers`` naming the
-plugin's mcp.json servers) plus ``gateway_reloaded`` / ``restart_required``.
+and the RESULT carries the activation summary (``live_now.mcp_servers`` naming the plugin's mcp.json servers,
+connected in place) plus ``gateway_reloaded`` / ``restart_required``.
 
 The broken invariant: before, ``_plugins_install`` returned with no rescan, so a later non-forced
 ``discover_plugins()`` (``tools/mcp_tool_config._portable_mcp_servers`` → ``reload.mcp``) short-circuited on
@@ -40,12 +40,14 @@ def test_plugins_manage_install_rescans_fires_on_plugin_loaded_and_exposes_mcp_s
     manager.on_plugin_loaded(events.append)
     with patch("hermes_cli.plugins_cmd._install_plugin_core", _fake_install_core), \
          patch("hermes_cli.plugins_cmd._install_python_dependencies_quietly", return_value=[]), \
-         patch("gateway.control_socket.reload_gateway_plugins", return_value=None):  # no gateway running
+         patch("gateway.control_socket.reload_gateway_plugins", return_value=None), \
+         patch("tools.mcp_tool_discovery.register_mcp_servers", return_value=[]), \
+         patch("tools.connectors.mcp._registered_tool_names", return_value=[]):  # no gateway, no real server
         resp = server.handle_request({"id": "1", "method": "plugins.manage",
                                       "params": {"action": "install", "repo": "owner/late-mcp", "enable": True}})
     result = resp["result"]
     assert [e["name"] for e in events[-1]] == ["late-mcp"]  # fired from inside the rescan, newcomer only
-    servers = result["activation"]["deferred"]["mcp_servers"]
+    servers = [row["name"] for row in result["activation"]["live_now"]["mcp_servers"]]
     assert servers == ["worker"]  # exactly the mcp.json name, as mcp.servers.* know it
     assert result["gateway_reloaded"] is False and result["restart_required"] is True
     # The invariant that was broken: a later NON-forced discovery (what reload.mcp runs) sees the servers.

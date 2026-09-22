@@ -353,12 +353,10 @@ export const zhHant = defineLocale({
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',
         repoPlaceholder: 'https://github.com/owner/repo',
-        connectServers: (name, n) =>
-          n === 1 ? `${name} 已安裝。其 MCP 伺服器尚未連線。` : `${name} 已安裝。其 ${n} 個 MCP 伺服器尚未連線。`,
-        connectNow: '立即連線',
-        connectSub: '開啟的聊天會重新傳送其上下文',
-        connectFailed: '無法連線該外掛的 MCP 伺服器。',
-        liveNow: name => `${name} 已安裝並生效。`
+        toolsConnected: n => `已連線 ${n} 個工具`,
+        skillsReady: names => (names.length === 1 ? `技能 ${names[0]} 已就緒` : `${names.length} 個技能已就緒`),
+        nextChat: '更多工具將在下一次聊天中可用',
+        serverNotConnected: (server, reason) => `MCP 伺服器 ${server} 未連線${reason ? `：${reason}` : '。'}`
       }
     },
     closeSettings: '關閉設定',

@@ -530,14 +530,10 @@ export const ar = defineLocale({
       empty: 'لا توجد إضافات سطح مكتب مثبتة بعد.',
       kinds: { bundled: 'مضمّنة', disk: 'على القرص', runtime: 'وقت التشغيل' },
       installModal: {
-        connectServers: (name, n) =>
-          n === 1
-            ? `تم تثبيت ${name}. خادم MCP الخاص به لم يتصل بعد.`
-            : `تم تثبيت ${name}. خوادم MCP ال${n} الخاصة به لم تتصل بعد.`,
-        connectNow: 'الاتصال الآن',
-        connectSub: 'الدردشات المفتوحة تعيد إرسال سياقها',
-        connectFailed: 'تعذر الاتصال بخوادم MCP الخاصة بالإضافة.',
-        liveNow: name => `تم تثبيت ${name} وهو مفعّل.`
+        toolsConnected: n => `تم توصيل ${n} من الأدوات`,
+        skillsReady: names => (names.length === 1 ? `المهارة ${names[0]} جاهزة` : `${names.length} من المهارات جاهزة`),
+        nextChat: 'أدوات أخرى متاحة في دردشتك التالية',
+        serverNotConnected: (server, reason) => `خادم MCP ${server} غير متصل${reason ? `: ${reason}` : '.'}`
       }
     },
     notifications: {

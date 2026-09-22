@@ -23,8 +23,8 @@ import { useI18n } from '@/i18n'
 import { ExternalLink } from '@/lib/external-link'
 import { AlertTriangle } from '@/lib/icons'
 import { resolvePluginSourceLinks } from '@/lib/plugin-source-urls'
-import { COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
-import { notify, notifyError } from '@/store/notifications'
+import { type AgentPluginLiveNow, COMMIT_SHA_RE, installAgentPlugin, loadAgentPlugins } from '@/store/agent-plugins'
+import { notify } from '@/store/notifications'
 import {
   $pluginInstallRequest,
   closePluginInstallRequest,
@@ -32,12 +32,24 @@ import {
   type PluginInstallRequest
 } from '@/store/plugin-install-request'
 import { $activeGatewayProfile, $profiles, $profileScope, normalizeProfileKey, profileLabel } from '@/store/profile'
-import { $activeSessionId, $connection } from '@/store/session'
-import { runGatewayRestart } from '@/store/system-actions'
+import { $connection } from '@/store/session'
 
 type ProbeResult = Awaited<ReturnType<NonNullable<NonNullable<Window['hermesDesktop']>['probePluginRepo']>>>
 
 type ProbePhase = 'idle' | 'probing' | 'ready' | 'error'
+
+type InstallModalCopy = ReturnType<typeof useI18n>['t']['settings']['plugins']['installModal']
+
+/** What an agent-plugin install made usable, as toast fragments ("12 tools connected", ...). */
+function installOutcome(m: InstallModalCopy, live: AgentPluginLiveNow, nextChat: boolean): string[] {
+  const tools = live.mcpServers.reduce((n, server) => n + (server.connected ? server.tools.length : 0), 0)
+
+  return [
+    ...(tools > 0 ? [m.toolsConnected(tools)] : []),
+    ...(live.skills.length > 0 ? [m.skillsReady(live.skills)] : []),
+    ...(nextChat ? [m.nextChat] : [])
+  ]
+}
 
 export function PluginInstallModal() {
   const request = useStore($pluginInstallRequest)
@@ -207,9 +219,7 @@ export function PluginInstallModal() {
     const errors: string[] = []
     const successes: string[] = []
     let agentInstalled = false
-    let deferredMcpServers: string[] = []
-    let gatewayReloaded = false
-    let agentPluginName = ''
+    let live: AgentPluginLiveNow = { mcpServers: [], skills: [] }
 
     try {
       if (installAgent && probe.agent) {
@@ -223,11 +233,13 @@ export function PluginInstallModal() {
         })
 
         if (result.ok) {
-          successes.push(m.agentSuccess(result.pluginName ?? request.repo))
+          successes.push(
+            [m.agentSuccess(result.pluginName ?? request.repo), ...installOutcome(m, result.live, result.nextChat)].join(
+              ' · '
+            )
+          )
           agentInstalled = true
-          deferredMcpServers = result.deferredMcpServers
-          gatewayReloaded = result.gatewayReloaded
-          agentPluginName = result.pluginName ?? request.repo
+          live = result.live
 
           if (result.missingEnv?.length) {
             const firstVar = result.missingEnv[0]
@@ -290,41 +302,10 @@ export function PluginInstallModal() {
           notify({ kind: 'success', message })
         }
 
-        // The right follow-up depends on what the backend says is live now:
-        // deferred MCP servers can be connected in place (reload.mcp), an
-        // already-reloaded gateway needs nothing, and only a plugin the
-        // gateway did not pick up still needs the restart.
+        // Open chats of the profile already have the plugin's MCP tools and skills (no click).
         if (agentInstalled && enableAgent) {
-          if (deferredMcpServers.length > 0) {
-            notify({
-              kind: 'success',
-              message: m.connectServers(agentPluginName, deferredMcpServers.length),
-              meta: m.connectSub,
-              action: {
-                label: m.connectNow,
-                onClick: () => {
-                  void (async () => {
-                    try {
-                      await requestGateway('reload.mcp', {
-                        confirm: true,
-                        session_id: $activeSessionId.get() ?? undefined
-                      })
-                      await loadAgentPlugins(requestGateway, targetProfile)
-                    } catch (err) {
-                      notifyError(err, m.connectFailed)
-                    }
-                  })()
-                }
-              }
-            })
-          } else if (gatewayReloaded) {
-            notify({ kind: 'success', message: m.liveNow(agentPluginName) })
-          } else {
-            notify({
-              kind: 'success',
-              message: m.restartToApply,
-              action: { label: m.restartNow, onClick: () => void runGatewayRestart() }
-            })
+          for (const server of live.mcpServers.filter(s => !s.connected)) {
+            notify({ kind: 'warning', message: m.serverNotConnected(server.name, server.error || '') })
           }
         }
 

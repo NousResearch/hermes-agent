@@ -5,6 +5,8 @@ import { capabilityScoped, hermesApi, type ProfileScope, profileScoped } from '.
 export interface McpTestResult {
   ok: boolean
   error?: string
+  /** Machine-readable failure class from the backend. Older backends omit it. */
+  error_kind?: 'auth' | 'network' | 'server'
   /** `schema_chars` (converted registry-schema size, chars) is additive —
    *  older backends omit it and the cost overlay shows no token estimate. */
   tools: { name: string; description: string; schema_chars?: number }[]

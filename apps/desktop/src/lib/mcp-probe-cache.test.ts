@@ -15,13 +15,23 @@ describe('classifyProbe', () => {
     'HTTP 401 Unauthorized',
     'invalid_token: The access token expired',
     'OAuth authorization required',
-    'authentication failed'
+    'authentication failed',
+    'HTTP 403 Forbidden'
   ])('classifies "%s" as needs-auth', error => {
     expect(classifyProbe(result({ ok: false, error }))).toBe('needs-auth')
   })
 
-  it('classifies other failures as error', () => {
-    expect(classifyProbe(result({ ok: false, error: 'ECONNREFUSED 127.0.0.1:3845' }))).toBe('error')
+  it.each([
+    'ECONNREFUSED 127.0.0.1:3845',
+    "Connecting to MCP server 'inspo' timed out after 30s (bounded by connect_timeout; an OAuth login also by oauth.timeout)",
+    'The server responded, but no OAuth token was obtained — this provider may require a manually-registered OAuth client.'
+  ])('classifies connectivity/non-auth OAuth prose as error: %s', error => {
+    expect(classifyProbe(result({ ok: false, error }))).toBe('error')
+  })
+
+  it('prefers the backend failure class over prose', () => {
+    expect(classifyProbe(result({ ok: false, error: 'connection failed', error_kind: 'auth' }))).toBe('needs-auth')
+    expect(classifyProbe(result({ ok: false, error: 'OAuth login timed out', error_kind: 'network' }))).toBe('error')
   })
 
   it('classifies a failure without an error string as error', () => {

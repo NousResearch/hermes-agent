@@ -39,5 +39,10 @@ export function classifyProbe(result: McpTestResult): 'error' | 'needs-auth' | '
     return 'ok'
   }
 
+  if (result.error_kind) {
+    return result.error_kind === 'auth' ? 'needs-auth' : 'error'
+  }
+
+  // Compatibility for older backends that do not emit error_kind yet.
   return NEEDS_AUTH_RE.test(result.error ?? '') ? 'needs-auth' : 'error'
 }

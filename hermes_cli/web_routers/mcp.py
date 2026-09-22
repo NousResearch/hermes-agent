@@ -221,9 +221,17 @@ async def test_mcp_server(name: str, profile: Optional[str] = None):
     except Exception as exc:
         from hermes_cli.mcp_config import redact_mcp_probe_text
 
-        return {"ok": False, "error": redact_mcp_probe_text(exc), "tools": []}
+        # Preserve exception semantics across the API boundary. The Desktop must not
+        # infer auth state from prose (timeout diagnostics can legitimately mention OAuth).
+        error_kind = "network" if isinstance(exc, (TimeoutError, ConnectionError, OSError)) else "server"
+        return {"ok": False, "error": redact_mcp_probe_text(exc), "error_kind": error_kind, "tools": []}
     if not token_present:
-        return {"ok": False, "error": "OAuth authentication required — no token found.", "tools": []}
+        return {
+            "ok": False,
+            "error": "OAuth authentication required — no token found.",
+            "error_kind": "auth",
+            "tools": [],
+        }
     # Optional per-tool schema size (chars) for the desktop's cost overlay;
     # failed probes simply omit it.
     schema_chars = details.get("schema_chars") or {}

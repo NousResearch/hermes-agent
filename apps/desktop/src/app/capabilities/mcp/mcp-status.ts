@@ -3,7 +3,7 @@ import { compactNumber } from '@hermes/shared'
 import { getUsageAnalytics, type McpTestResult, type ProfileScope } from '@/hermes'
 import type { Translations } from '@/i18n'
 import { estimateServerTokens, serverUsageCount } from '@/lib/mcp-cost'
-import { NEEDS_AUTH_RE } from '@/lib/mcp-probe-cache'
+import { classifyProbe } from '@/lib/mcp-probe-cache'
 import type { McpServerEntry } from '@/lib/mcp-servers'
 import { countEnabledTools } from '@/lib/mcp-tool-filter'
 
@@ -64,7 +64,7 @@ export function statusOf(server: McpServerEntry, probe: Probe | undefined): Serv
     return 'ok'
   }
 
-  return NEEDS_AUTH_RE.test(probe.error ?? '') ? 'needs-auth' : 'error'
+  return classifyProbe(probe)
 }
 
 export const STATUS_DOT = {

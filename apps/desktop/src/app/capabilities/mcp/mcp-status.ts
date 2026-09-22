@@ -7,7 +7,6 @@ import { NEEDS_AUTH_RE } from '@/lib/mcp-probe-cache'
 import { type McpServerEntry, serverEnabled } from '@/lib/mcp-servers'
 import { countEnabledTools } from '@/lib/mcp-tool-filter'
 
-
 export const MCP_CATALOG_KEY = ['mcp-catalog'] as const
 
 export type Probe = McpTestResult | 'probing'

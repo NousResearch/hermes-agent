@@ -223,15 +223,7 @@ declare global {
       // v2 multi-connection registry: named agent sources, all persisted
       // together (local + any number of remote/cloud/ssh instances).
       connections: {
-        managedRollouts?: {
-          capabilities: () => Promise<{
-            protocol: 1
-            available: false
-            reason: 'trusted-assurance-provider-unavailable'
-            maxConcurrency: 0
-            maxInstallations: 0
-          }>
-        }
+        managedRollouts?: DesktopManagedRolloutsBridge
         list: () => Promise<DesktopConnectionsRegistry>
         save: (
           payload: DesktopRegistryConnectionInput
@@ -1026,6 +1018,32 @@ export interface DesktopRegistryConnection {
   // connections sharing it are one physical backend registered under two
   // addresses (display-only "Same backend as …" hint in Settings).
   installId?: string
+}
+
+export interface DesktopManagedRolloutSnapshot {
+  revision: number
+  rolloutId: string | null
+  phase: string
+  data: Record<string, unknown>
+}
+
+export interface DesktopManagedRolloutReadResponse {
+  revision: number
+  snapshot: DesktopManagedRolloutSnapshot | null
+}
+
+export interface DesktopManagedRolloutsBridge {
+  capabilities: () => Promise<{
+    protocol: 1
+    available: boolean
+    reason?: string
+    maxConcurrency: number
+    maxInstallations: number
+  }>
+  // These members are optional while the main-process provider is unavailable.
+  // The renderer must not fall back to the older one-install update surface.
+  read?: (sinceRevision: number | null) => Promise<DesktopManagedRolloutReadResponse>
+  command?: (payload: Record<string, unknown>) => Promise<unknown>
 }
 
 export interface DesktopConnectionsRegistry {

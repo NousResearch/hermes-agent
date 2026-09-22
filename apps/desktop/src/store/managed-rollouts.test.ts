@@ -74,6 +74,45 @@ describe('managed rollout renderer store', () => {
     expect(command).toHaveBeenCalledTimes(1)
   })
 
+  it('stays fail-closed when the modern capability is unavailable', async () => {
+    const command = vi.fn()
+    const capabilities = vi.fn().mockResolvedValue({
+      available: false,
+      reason: 'trusted-assurance-provider-unavailable'
+    })
+    _setManagedRolloutsBridgeForTests({ capabilities, command })
+
+    await pollManagedRollouts()
+
+    expect(capabilities).toHaveBeenCalledTimes(1)
+    expect(command).not.toHaveBeenCalled()
+    expect($managedRollouts.get()).toMatchObject({
+      status: 'unsupported',
+      error: 'managed-rollouts-read-unavailable'
+    })
+  })
+
+  it('ignores a late response after polling is stopped', async () => {
+    let resolve!: (value: unknown) => void
+    const read = vi.fn().mockReturnValue(new Promise(value => { resolve = value }))
+    _setManagedRolloutsBridgeForTests({ read, command: vi.fn() })
+
+    const pending = pollManagedRollouts()
+    stopManagedRolloutPolling()
+    resolve({ revision: 2, snapshot: snapshot(2) })
+    await pending
+
+    expect($managedRollouts.get()).toMatchObject({ status: 'loading', revision: null, snapshot: null })
+  })
+
+  it('requires a stable request id before crossing the command bridge', async () => {
+    const command = vi.fn()
+    _setManagedRolloutsBridgeForTests({ command })
+
+    await expect(sendManagedRolloutCommand({ action: 'pause' })).rejects.toThrow('request-id-required')
+    expect(command).not.toHaveBeenCalled()
+  })
+
   it('rejects a different in-flight action instead of coalescing it', async () => {
     const command = vi.fn().mockReturnValue(new Promise(() => undefined))
     _setManagedRolloutsBridgeForTests({ read: vi.fn(), command })

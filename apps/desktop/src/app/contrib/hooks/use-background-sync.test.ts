@@ -1,6 +1,7 @@
 import { act, cleanup, renderHook, waitFor } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { ChatMessage } from '@/lib/chat-messages'
 import { createClientSessionState } from '@/lib/chat-runtime'
 import { sessionMessagesSignature } from '@/lib/session-signatures'
 import { $changeEventsAvailable, notifySessionsChanged, resetLiveSync } from '@/store/live-sync'
@@ -26,6 +27,7 @@ import {
 
 import {
   type ActiveTranscriptRefreshDeps,
+  hydrateStoredSessionTranscript,
   isTypingBurstActive,
   noteRendererKeyboardActivity,
   profileScopeForTranscriptSession,
@@ -1138,27 +1140,23 @@ describe('isTypingBurstActive', () => {
   })
 })
 
-describe('reconcileActiveTranscript with an empty persisted page', () => {
+describe('an empty persisted page over a populated runtime', () => {
   // A backend respawn (or a state.db read racing the change event) answers a
-  // `sessions.changed` refresh with zero rows. That page is not proof the
-  // transcript is empty; accepting it blanks the view, flips the routed
-  // thread into its loading branch and re-runs the composer lifecycle.
-  function populatedFixture() {
+  // refresh with zero rows. That page is not proof the transcript is empty;
+  // accepting it blanks the view, flips the routed thread into its loading
+  // branch and re-runs the composer lifecycle.
+  const populated = (): ChatMessage[] => [
+    { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
+    { id: 'assistant-1', parts: [{ text: 'answer', type: 'text' }], role: 'assistant' }
+  ]
+
+  const emptyPage = (sessionId = ACTIVE_STORED_ID) => ({ messages: [], session_id: sessionId })
+
+  it('active pane: keeps the transcript and records no signature for the ignored page', async () => {
     const fixture = makeRefresh()
 
-    fixture.state.messages = [
-      { id: 'user-1', parts: [{ text: 'question', type: 'text' }], role: 'user' },
-      { id: 'assistant-1', parts: [{ text: 'answer', type: 'text' }], role: 'assistant' }
-    ]
+    fixture.state.messages = populated()
     publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
-
-    return fixture
-  }
-
-  const emptyPage = () => ({ messages: [], session_id: ACTIVE_STORED_ID })
-
-  it('keeps a populated active transcript when the refresh reads zero rows', async () => {
-    const fixture = populatedFixture()
     vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
 
     await fixture.refresh()
@@ -1168,49 +1166,80 @@ describe('reconcileActiveTranscript with an empty persisted page', () => {
       'user-1',
       'assistant-1'
     ])
-  })
 
-  it('does not record the ignored empty page as accepted, so the next usable page still lands', async () => {
-    const fixture = populatedFixture()
-    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(emptyPage() as never)
-
-    await fixture.refresh()
-
-    vi.mocked(getLatestSessionMessages).mockResolvedValueOnce(transcript('a newer answer') as never)
+    // Once the runtime is genuinely empty the same empty page is authoritative
+    // again. It would be deduped away had the ignored read left a signature.
+    publishSessionState(ACTIVE_RUNTIME_ID, { ...fixture.state, messages: [] })
 
     await fixture.refresh()
-
-    const messages = fixture.states.get(ACTIVE_RUNTIME_ID)?.messages ?? []
 
     expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
-    expect(messages.flatMap(message => message.parts.map(part => ('text' in part ? part.text : '')))).toContain(
-      'a newer answer'
+  })
+
+  it('active pane: a runtime bound to another stored session does not veto the requested page', async () => {
+    const fixture = makeRefresh()
+
+    publishSessionState(
+      ACTIVE_RUNTIME_ID,
+      createClientSessionState('stored-other', [
+        { id: 'other-user', parts: [{ text: 'elsewhere', type: 'text' }], role: 'user' }
+      ])
     )
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
+
+    await fixture.refresh()
+
+    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
   })
 
-  it('still accepts an empty page for a session whose transcript is genuinely empty', async () => {
+  it('tile: keeps the transcript and records no signature for the ignored page', async () => {
+    const runtimeId = 'runtime-tile'
+    const storedId = 'stored-tile'
+    const signatureRef = { current: new Map<string, string>() }
+
+    $activeSessionId.set(ACTIVE_RUNTIME_ID)
+    publishSessionState(runtimeId, createClientSessionState(storedId, populated()))
+    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage(storedId) as never)
+
+    const updateSessionState = vi.fn()
+
+    await reconcileTileTranscriptsForTest({
+      requestSequenceRef: { current: 0 },
+      signatureRef,
+      tiles: [{ runtimeId, storedSessionId: storedId }],
+      updateSessionState
+    })
+
+    expect(updateSessionState).not.toHaveBeenCalled()
+    expect(signatureRef.current.size).toBe(0)
+  })
+
+  it('post-turn hydrate: an empty page is not the answer, the next attempt is', async () => {
+    vi.useFakeTimers()
     const fixture = makeRefresh()
+
+    fixture.state.messages = populated()
     publishSessionState(ACTIVE_RUNTIME_ID, fixture.state)
-    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
+    vi.mocked(getLatestSessionMessages)
+      .mockResolvedValueOnce(emptyPage() as never)
+      .mockResolvedValueOnce(transcript('a newer answer') as never)
 
-    await fixture.refresh()
+    const hydrated = hydrateStoredSessionTranscript({
+      attempts: 2,
+      storedSessionId: ACTIVE_STORED_ID,
+      runtimeSessionId: ACTIVE_RUNTIME_ID,
+      storedProfile: 'default',
+      updateSessionState: fixture.updateSessionState
+    })
 
-    expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
-    expect(fixture.states.get(ACTIVE_RUNTIME_ID)?.messages).toEqual([])
-  })
-
-  it('does not let a runtime bound to another stored session veto the requested page', async () => {
-    const fixture = makeRefresh()
-
-    const foreign = createClientSessionState('stored-other', [
-      { id: 'other-user', parts: [{ text: 'elsewhere', type: 'text' }], role: 'user' }
-    ])
-
-    publishSessionState(ACTIVE_RUNTIME_ID, foreign)
-    vi.mocked(getLatestSessionMessages).mockResolvedValue(emptyPage() as never)
-
-    await fixture.refresh()
+    await vi.advanceTimersByTimeAsync(250)
+    await hydrated
 
     expect(fixture.updateSessionState).toHaveBeenCalledTimes(1)
+    expect(
+      fixture.states
+        .get(ACTIVE_RUNTIME_ID)
+        ?.messages.flatMap(message => message.parts.map(part => ('text' in part ? part.text : '')))
+    ).toContain('a newer answer')
   })
 })

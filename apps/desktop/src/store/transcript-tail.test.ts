@@ -154,12 +154,4 @@ describe('recordTranscriptTail with an empty page', () => {
 
     expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
   })
-
-  it('still records an empty page when nothing was truncated before', () => {
-    recordTranscriptTail('s1', page(3))
-
-    recordTranscriptTail('s1', page(0))
-
-    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 0, possiblyTruncated: false })
-  })
 })

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import logging
 from dataclasses import dataclass, replace
 from typing import Any, Literal
 
@@ -11,6 +12,8 @@ from hermes_platform.resolver.app import AppDef, AppResolver
 from hermes_platform.resolver.availability import Availability, availability
 from hermes_platform.resolver.base import Effort
 from hermes_platform.resolver.core import CheckState
+
+logger = logging.getLogger(__name__)
 
 LivenessKind = Literal["static", "server_json", "interactive_session"]
 LivenessState = Literal[
@@ -71,11 +74,11 @@ def parse_liveness(raw: Any) -> Liveness:
     if set(raw) - {"kind", "path", "fields"}:
         raise ValueError("server_json liveness has unknown fields")
     path = raw.get("path")
-    fields = raw.get("fields")
+    fields = {"url": "http", "token": "token", "pid": "pid", **(raw.get("fields") or {})}
     if not isinstance(path, str) or not path.strip():
         raise ValueError("server_json liveness requires a non-empty path")
-    if not isinstance(fields, dict) or set(fields) != {"url", "token", "pid"}:
-        raise ValueError("server_json liveness fields must name url, token, and pid")
+    if set(fields) != {"url", "token", "pid"}:
+        raise ValueError("server_json liveness fields may only override url, token, and pid")
     if any(not isinstance(value, str) or not value.strip() for value in fields.values()):
         raise ValueError("server_json liveness field names must be non-empty strings")
     return Liveness(
@@ -94,7 +97,13 @@ def liveness_for(server_name: str) -> Liveness:
     except ImportError:
         return Liveness("static")
     raw = registered_liveness(server_name)
-    return parse_liveness(raw) if raw is not None else Liveness("static")
+    if raw is None:
+        return Liveness("static")
+    try:
+        return parse_liveness(raw)
+    except ValueError as exc:
+        logger.warning("MCP server '%s' has an invalid liveness declaration (%s); treating it as static", server_name, exc)
+        return Liveness("static")
 
 
 def _action(state: LivenessState, app_name: str) -> tuple[str, Retry]:

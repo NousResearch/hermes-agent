@@ -37,6 +37,22 @@ def test_parse_liveness_contract():
     )
     with pytest.raises(ValueError, match="unknown liveness kind"):
         parse_liveness({"kind": "unknown"})
+    defaulted = parse_liveness({"kind": "server_json", "path": "/tmp/example.json"})
+    assert (defaulted.url_field, defaulted.token_field, defaulted.pid_field) == ("http", "token", "pid")
+    partial = parse_liveness({"kind": "server_json", "path": "/tmp/example.json", "fields": {"url": "endpoint"}})
+    assert (partial.url_field, partial.token_field, partial.pid_field) == ("endpoint", "token", "pid")
+    with pytest.raises(ValueError, match="may only override"):
+        parse_liveness({"kind": "server_json", "path": "/tmp/example.json", "fields": {"port": "p"}})
+
+
+def test_invalid_registered_liveness_degrades_to_static(monkeypatch, caplog):
+    import hermes_cli.agent_plugins as agent_plugins
+    from tools.mcp_liveness import liveness_for
+
+    monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {"kind": "server_json"}, raising=False)
+    caplog.set_level(logging.WARNING)
+    assert liveness_for("example-server").kind == "static"
+    assert any("invalid liveness declaration" in record.getMessage() for record in caplog.records)
 
 
 @pytest.mark.parametrize(

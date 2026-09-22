@@ -1268,41 +1268,24 @@ class TestForceReloadSymmetry:
             assert mgr.invoke_hook("post_tool_call") == ["survived"]
         assert "bounded plugin requested process exit" in caplog.text
 
-    def test_pre_tool_call_direct_callback_exception_fails_closed(self, monkeypatch):
-        """A synchronous policy callback error must block rather than allow the tool."""
-        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
-
+    @pytest.mark.parametrize("timeout", [0.0, 1.0], ids=["caller-thread", "bounded-worker"])
+    def test_pre_tool_call_callback_exception_fails_closed(self, monkeypatch, timeout):
+        """A policy callback that raises made no decision: it must block like a timeout does
+        (#109624), on both the caller-thread and the bounded-worker path, and the block message
+        names the callback and the error so a crashing guard is distinguishable from a slow one."""
         monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 0.0
+            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: timeout
         )
 
         def boom(**_kwargs):
             raise RuntimeError("policy plugin blew up")
 
         mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [boom]
+        mgr._hooks["pre_tool_call"] = [boom, lambda **_kw: {"action": "approve"}]
 
-        assert mgr.invoke_hook("pre_tool_call", tool_name="terminal", args={}) == [
-            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
-        ]
-
-    def test_pre_tool_call_timeout_worker_exception_fails_closed(self, monkeypatch):
-        """A bounded policy callback error must use the same fail-closed directive."""
-        from hermes_cli.plugins import _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE
-
-        monkeypatch.setattr(
-            "hermes_cli.plugins._resolve_hook_callback_timeout", lambda: 1.0
-        )
-
-        def boom(**_kwargs):
-            raise RuntimeError("policy plugin blew up")
-
-        mgr = PluginManager()
-        mgr._hooks["pre_tool_call"] = [boom]
-
-        assert mgr.invoke_hook("pre_tool_call", tool_name="terminal", args={}) == [
-            {"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE}
-        ]
+        results = mgr.invoke_hook("pre_tool_call", tool_name="terminal", args={})
+        assert [r.get("action") for r in results] == ["block", "approve"]
+        assert "boom" in results[0]["message"] and "RuntimeError: policy plugin blew up" in results[0]["message"]
 
     def test_hook_callback_timeout_reads_config(self, tmp_path, monkeypatch):
         hermes_home = tmp_path / "hermes_test"

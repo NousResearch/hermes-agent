@@ -52,6 +52,15 @@ _HOOK_CALLER_THREAD_HOOKS: Set[str] = {"subagent_stop"}
 _HOOK_TIMEOUT_SUPPRESSION_SECONDS = 60.0
 _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE = "pre_tool_call plugin callback timed out or is still running"
 
+
+def _policy_error_block_directive(hook_name: str, cb: Callable, exc: BaseException) -> Dict[str, str]:
+    """Block directive for a fail-closed hook whose callback raised: names the callback and the
+    error (truncated — a hook that embeds tool args in its exception must not grow the tool
+    result) so the operator can tell a crashing guard from a slow one."""
+    callback_name = getattr(cb, "__name__", repr(cb))
+    return {"action": "block",
+            "message": f"{hook_name} plugin callback {callback_name} raised {type(exc).__name__}: {str(exc)[:200]}"}
+
 # System-prompt sections are tightly bounded: they become high-trust prompt bytes charged every turn.
 SYSTEM_PROMPT_SECTION_POSITIONS = frozenset({"after_memory"})
 DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS = 4_000
@@ -220,8 +229,8 @@ class PluginDispatchMixin:
                     results.append(ret)
             except (Exception, SystemExit) as exc:
                 self._report_hook_failure(hook_name, cb, kwargs, exc)
-                if fail_closed:
-                    results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
+                if fail_closed:  # a guard that raised made no decision: same veto as a timeout
+                    results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
 
     def _report_hook_failure(

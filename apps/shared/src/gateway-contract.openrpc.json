@@ -7035,6 +7035,53 @@
         "title": "CapabilityEntry",
         "type": "object"
       },
+      "CatalogAppState": {
+        "description": "The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration.",
+        "enum": [
+          "present",
+          "missing_app",
+          "app_not_running",
+          "unknown"
+        ],
+        "title": "CatalogAppState",
+        "type": "string"
+      },
+      "CatalogScan": {
+        "additionalProperties": false,
+        "description": "The catalog's security scan of the pinned commit; read-only on the card.",
+        "properties": {
+          "status": {
+            "$ref": "#/components/schemas/CatalogScanStatus"
+          },
+          "summary": {
+            "title": "Summary",
+            "type": "string"
+          }
+        },
+        "required": [
+          "status",
+          "summary"
+        ],
+        "title": "CatalogScan",
+        "type": "object"
+      },
+      "CatalogScanStatus": {
+        "enum": [
+          "passed",
+          "warnings",
+          "failed"
+        ],
+        "title": "CatalogScanStatus",
+        "type": "string"
+      },
+      "CatalogTier": {
+        "enum": [
+          "official",
+          "community"
+        ],
+        "title": "CatalogTier",
+        "type": "string"
+      },
       "ChangeSignalPayload": {
         "additionalProperties": true,
         "description": "``change_watcher._CHANGE_WATCHES`` payload fn \u2014 ``{}`` for every watch except pet.changed.",
@@ -8831,6 +8878,165 @@
             ],
             "default": null,
             "title": "Hint"
+          },
+          "display": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Display"
+          },
+          "description": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Description"
+          },
+          "tier": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogTier"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "platforms": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Platforms"
+          },
+          "repo": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Repo"
+          },
+          "sha": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Sha"
+          },
+          "subdir": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Subdir"
+          },
+          "scan": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogScan"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "requirements": {
+            "anyOf": [
+              {
+                "items": {
+                  "type": "string"
+                },
+                "type": "array"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Requirements"
+          },
+          "has_desktop_half": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Has Desktop Half"
+          },
+          "target_profile": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Target Profile"
+          },
+          "app_state": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/CatalogAppState"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
+          },
+          "skill": {
+            "anyOf": [
+              {
+                "type": "string"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Skill"
           }
         },
         "required": [
@@ -9028,7 +9234,9 @@
       "ConnectionTargetKind": {
         "enum": [
           "connector",
-          "mcp"
+          "mcp",
+          "plugin",
+          "skill"
         ],
         "title": "ConnectionTargetKind",
         "type": "string"

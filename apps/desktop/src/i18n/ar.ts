@@ -2929,6 +2929,29 @@ export const ar = defineLocale({
     }
   },
   assistant: {
+    catalogInstall: {
+      preparing: 'جارٍ تجهيز التثبيت…',
+      install: 'تثبيت',
+      advanced: 'خيارات متقدمة',
+      skip: 'تخطٍّ',
+      installing: 'جارٍ التثبيت…',
+      installed: 'مثبّت',
+      notInstalled: 'غير مثبّت',
+      failed: 'فشل',
+      showNames: 'إظهار الأسماء',
+      hideNames: 'إخفاء الأسماء',
+      skill: name => `المهارة ${name}`,
+      kind: { plugin: 'إضافة', skill: 'مهارة' },
+      tier: { official: 'رسمي', community: 'مجتمعي' },
+      targetProfile: profile => `يُثبَّت في ملفك الشخصي ${profile}`,
+      sendFailed: 'تعذّر إرسال ردك. حاول مرة أخرى.',
+      commitLabel: 'الإيداع',
+      subdirLabel: 'المجلد',
+      securityHeading: 'الأمان',
+      scan: { passed: 'نجح الفحص', warnings: 'وجد الفحص تحذيرات', failed: 'فشل الفحص' },
+      requirementsLabel: 'المتطلبات',
+      credentialsHeading: 'بيانات الاعتماد'
+    },
     thread: {
       loadingSession: 'جار تحميل الجلسة...',
       showEarlier: 'عرض الرسائل الأقدم',

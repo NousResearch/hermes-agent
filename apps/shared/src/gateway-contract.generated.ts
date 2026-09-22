@@ -889,8 +889,21 @@ export interface ConnectionOperationTarget {
   required_env?: ConnectionTargetEnvField[] | null
   tools?: string[] | null
   hint?: string | null
+  display?: string | null
+  description?: string | null
+  tier?: CatalogTier | null
+  platforms?: string[] | null
+  repo?: string | null
+  sha?: string | null
+  subdir?: string | null
+  scan?: CatalogScan | null
+  requirements?: string[] | null
+  has_desktop_half?: boolean | null
+  target_profile?: string | null
+  app_state?: CatalogAppState | null
+  skill?: string | null
 }
-export type ConnectionTargetKind = 'connector' | 'mcp'
+export type ConnectionTargetKind = 'connector' | 'mcp' | 'plugin' | 'skill'
 export type ConnectionTargetAction = 'authorize' | 'connect' | 'enable' | 'install' | 'reconnect'
 /** ``tools/connectors/contract.py::TargetState``. */
 export type ConnectionTargetState = 'pending' | 'initiated' | 'connected' | 'skipped' | 'failed' | 'expired' | 'not_connected'
@@ -902,6 +915,15 @@ export interface ConnectionTargetEnvField {
   default: string
   prompt?: string | null
 }
+export type CatalogTier = 'official' | 'community'
+/** The catalog's security scan of the pinned commit; read-only on the card. */
+export interface CatalogScan {
+  status: CatalogScanStatus
+  summary: string
+}
+export type CatalogScanStatus = 'passed' | 'warnings' | 'failed'
+/** The desktop app a catalog plugin drives, from its ``hermes_platform`` declaration. */
+export type CatalogAppState = 'present' | 'missing_app' | 'app_not_running' | 'unknown'
 export interface ConnectionWakeResult {
   status: 'ok'
 }

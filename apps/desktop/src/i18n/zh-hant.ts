@@ -3344,6 +3344,29 @@ export const zhHant = defineLocale({
   },
 
   assistant: {
+    catalogInstall: {
+      preparing: '正在準備安裝…',
+      install: '安裝',
+      advanced: '進階',
+      skip: '略過',
+      installing: '正在安裝…',
+      installed: '已安裝',
+      notInstalled: '未安裝',
+      failed: '失敗',
+      showNames: '顯示名稱',
+      hideNames: '隱藏名稱',
+      skill: name => `技能 ${name}`,
+      kind: { plugin: '外掛', skill: '技能' },
+      tier: { official: '官方', community: '社群' },
+      targetProfile: profile => `安裝到你的 ${profile} 設定檔`,
+      sendFailed: '無法傳送你的回覆，請再試一次。',
+      commitLabel: '提交',
+      subdirLabel: '資料夾',
+      securityHeading: '安全性',
+      scan: { passed: '掃描通過', warnings: '掃描發現警告', failed: '掃描未通過' },
+      requirementsLabel: '需求',
+      credentialsHeading: '憑證'
+    },
     thread: {
       loadingSession: '正在載入工作階段',
       showEarlier: '顯示較早的訊息',

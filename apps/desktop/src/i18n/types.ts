@@ -3879,6 +3879,29 @@ export interface Translations {
       lateAnswerTip: string
       lateAnswerHint: string
     }
+    catalogInstall: {
+      preparing: string
+      install: string
+      advanced: string
+      skip: string
+      installing: string
+      installed: string
+      notInstalled: string
+      failed: string
+      showNames: string
+      hideNames: string
+      skill: (name: string) => string
+      kind: { plugin: string; skill: string }
+      tier: { official: string; community: string }
+      targetProfile: (profile: string) => string
+      sendFailed: string
+      commitLabel: string
+      subdirLabel: string
+      securityHeading: string
+      scan: { passed: string; warnings: string; failed: string }
+      requirementsLabel: string
+      credentialsHeading: string
+    }
     mcpSetup: {
       installTitle: string
       enableTitle: string

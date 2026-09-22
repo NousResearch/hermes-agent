@@ -4,6 +4,7 @@ through ``tools.skill_manager_tool`` so that module owns it."""
 
 import json
 import logging
+import os
 import posixpath
 import shutil
 import tempfile
@@ -130,21 +131,43 @@ def _validate_batch_ops(operations, default_name, tool_error):
 
 def _snapshot_skills(names, snap_root, find_skill):
     """Copy every touched skill aside. Returns (snapshots, None) or (None, error_text)."""
-    snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None)
+    snapshots = {}  # skill name -> (pre_dir or None, snapshot_dir or None, link_target or None)
     for nm in dict.fromkeys(names):  # ordered unique
         pre = find_skill(nm)
         pre_dir = Path(pre["path"]) if pre else None
+        # Record the pre-state shape: a skill installed as a per-skill SYMLINK
+        # into a shared tree must be restored as a symlink, never materialized
+        # as a real-directory copy of the snapshot (which would silently detach
+        # the lane's farm entry from the shared corpus).
+        link_target = None
+        if pre_dir is not None and pre_dir.is_symlink():
+            try:
+                link_target = os.readlink(pre_dir)
+            except OSError:  # noqa: BLE001 — raced with a concurrent remove
+                link_target = None
         snap = snap_root / nm if pre_dir is not None and pre_dir.is_dir() else None
         if snap is not None:
             try:
                 shutil.copytree(pre_dir, snap)
             except Exception as exc:  # noqa: BLE001 — no snapshot, no atomicity
                 return None, f"Could not snapshot '{nm}' for atomic batch: {exc}"
-        snapshots[nm] = (pre_dir, snap)
+        snapshots[nm] = (pre_dir, snap, link_target)
     return snapshots, None
 
 
-def _restore_snapshot(pre_dir, snap, post_dir) -> None:
+def _restore_snapshot(pre_dir, snap, post_dir, link_target=None) -> None:
+    if link_target is not None:
+        # Pre-state was a per-skill SYMLINK into a shared tree: restore it AS a
+        # symlink to that same target. Never copytree the snapshot over the
+        # link's path — a real-directory copy of the shared package in the farm
+        # silently detaches the lane from the corpus (and rmtree cannot remove a
+        # symlinked aside, so the broken-state move would leak a stray link too).
+        if pre_dir.is_symlink():
+            pre_dir.unlink(missing_ok=True)
+        elif pre_dir.exists():
+            shutil.rmtree(pre_dir, ignore_errors=True)
+        os.symlink(link_target, pre_dir)
+        return
     post_exists = post_dir is not None and post_dir.is_dir()
     if snap is None:
         if post_exists:  # Batch created this skill: remove the partial result.
@@ -171,10 +194,11 @@ def _restore_snapshot(pre_dir, snap, post_dir) -> None:
 def _rollback(snapshots, find_skill):
     """Restore every snapshot. Returns (note, failed)."""
     notes = []
-    for nm, (pre_dir, snap) in snapshots.items():
+    for nm, (pre_dir, snap, link_target) in snapshots.items():
         try:
             post = find_skill(nm)
-            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None)
+            _restore_snapshot(pre_dir, snap, Path(post["path"]) if post else None,
+                              link_target=link_target)
         except Exception as exc:  # noqa: BLE001
             notes.append(f"ROLLBACK FAILED for '{nm}' ({exc})"
                          + (f"; snapshot preserved at '{snap}'" if snap is not None else ""))

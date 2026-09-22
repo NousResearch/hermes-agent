@@ -212,6 +212,37 @@ class TestSkillManageBatch(unittest.TestCase):
         content = open(skill_md).read()
         self.assertIn("Step ONE.", content)
 
+    def test_failed_batch_preserves_symlinked_skill(self):
+        """A skill installed as a per-skill SYMLINK into a shared tree must be
+        restored AS a symlink when a later op in the batch fails — never
+        materialized as a real-directory copy of the snapshot (which would
+        silently detach the lane's farm entry from the shared corpus), and with
+        no stray ``*.rollback-broken`` link left in the farm."""
+        shared = os.path.join(self.home, "shared", "skills", "yoyodine")
+        farm = os.path.join(self.home, "skills", "yoyodine")
+        os.makedirs(farm, exist_ok=True)
+        for name in ("demo-alpha", "demo-beta"):
+            src = os.path.join(shared, name)
+            os.makedirs(os.path.join(src, "references"), exist_ok=True)
+            with open(os.path.join(src, "SKILL.md"), "w") as fh:
+                fh.write(SK.format(n=name) + "ORIGINAL BODY\n")
+            os.symlink(src, os.path.join(farm, name), target_is_directory=True)
+        r = json.loads(self.smt.skill_manage(action="", name="", operations=[
+            {"name": "demo-alpha", "action": "patch",
+             "old_string": "ORIGINAL BODY", "new_string": "EDITED BODY"},
+            {"name": "demo-beta", "action": "patch",
+             "old_string": "STRING-THAT-DOES-NOT-EXIST-ANYWHERE", "new_string": "X"},
+        ]))
+        self.assertFalse(r["success"])
+        for name in ("demo-alpha", "demo-beta"):
+            entry = os.path.join(farm, name)
+            self.assertTrue(os.path.islink(entry),
+                            f"{name} was restored as a real directory, not a symlink")
+            self.assertEqual(os.readlink(entry), os.path.join(shared, name),
+                             f"{name} link target changed")
+        leftovers = [p for p in os.listdir(farm) if "rollback-broken" in p]
+        self.assertEqual(leftovers, [], "stray .rollback-broken residue left in farm")
+
     def test_single_op_path_unchanged(self):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         raw = self.smt.skill_manage(

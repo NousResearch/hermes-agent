@@ -147,7 +147,11 @@ describe('tiers', () => {
 
   it('shows untagged items everywhere and a tiered item only in its mode', async () => {
     const { shownInMode, $showsAdvancedChrome, setInterfaceMode } = await loadStore()
-    const items = [{ id: 'settings' }, { id: 'hud', tier: 'advanced' as const }, { id: 'side', tier: 'simple' as const }]
+    const items = [
+      { id: 'settings' },
+      { id: 'hud', tier: 'advanced' as const },
+      { id: 'side', tier: 'simple' as const }
+    ]
 
     expect(items.filter(shownInMode('advanced')).map(item => item.id)).toEqual(['settings', 'hud'])
     expect(items.filter(shownInMode('simple')).map(item => item.id)).toEqual(['settings', 'side'])

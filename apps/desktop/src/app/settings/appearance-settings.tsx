@@ -514,7 +514,10 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
     { id: 'detailed', label: a.sessionDensityDetailed }
   ] as const satisfies readonly { id: SessionListDensity; label: string }[]
 
-  const interfaceModeOptions = INTERFACE_MODES.map(id => ({ id, label: t.interfaceMode[id].label })) satisfies readonly {
+  const interfaceModeOptions = INTERFACE_MODES.map(id => ({
+    id,
+    label: t.interfaceMode[id].label
+  })) satisfies readonly {
     id: InterfaceMode
     label: string
   }[]

@@ -526,7 +526,19 @@ export function TreeSplit({
     },
     // trackCtx is derived state rebuilt per render; the drag captures it once.
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, revealsHidden, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      editMode,
+      revealsHidden,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // Double-click a sash: every neighbor returns to its DEFAULT size.
@@ -603,7 +615,19 @@ export function TreeSplit({
       setTreeSplitWeights(node.id, !preset && !pinned ? weights.map(() => 1) : weights)
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [axis, editMode, revealsHidden, horizontal, node.children, node.id, node.weights, hiddenPanes, narrow, overrides, panes]
+    [
+      axis,
+      editMode,
+      revealsHidden,
+      horizontal,
+      node.children,
+      node.id,
+      node.weights,
+      hiddenPanes,
+      narrow,
+      overrides,
+      panes
+    ]
   )
 
   // A run of ONLY fixed tracks can't fill the container (grow-0 all around

@@ -4,7 +4,13 @@ import { afterEach, beforeEach, describe, expect, it } from 'vitest'
 import { registry } from '@/contrib/registry'
 
 import { allPaneIds, findGroupOfPane, group, split } from './model'
-import { applyLayoutPreset, deleteUserPreset, layoutPresetTier, registerBundledPresets, saveCurrentLayoutAs } from './presets'
+import {
+  applyLayoutPreset,
+  deleteUserPreset,
+  layoutPresetTier,
+  registerBundledPresets,
+  saveCurrentLayoutAs
+} from './presets'
 import { $dismissedPanes, $hiddenTreePanes, $layoutTree, bindPaneVisibility, bindToolPaneCollapse } from './store'
 
 // Basic used to be `sessions | workspace`, and picking it produced Focus:
@@ -47,9 +53,24 @@ describe('resting presets', () => {
     const $files = atom(true)
     const $review = atom(true)
 
-    bindToolPaneCollapse('terminal', $terminal, () => $terminal.set(false), () => $terminal.set(true))
-    bindPaneVisibility('files', $files, () => $files.set(false), () => $files.set(true))
-    bindPaneVisibility('review', $review, () => $review.set(false), () => $review.set(true))
+    bindToolPaneCollapse(
+      'terminal',
+      $terminal,
+      () => $terminal.set(false),
+      () => $terminal.set(true)
+    )
+    bindPaneVisibility(
+      'files',
+      $files,
+      () => $files.set(false),
+      () => $files.set(true)
+    )
+    bindPaneVisibility(
+      'review',
+      $review,
+      () => $review.set(false),
+      () => $review.set(true)
+    )
 
     disposers.push(
       registerBundledPresets([
@@ -83,10 +104,22 @@ describe('resting presets', () => {
     const $terminal = atom(false)
     const $files = atom(true)
 
-    bindToolPaneCollapse('terminal', $terminal, () => $terminal.set(false), () => $terminal.set(true))
-    bindPaneVisibility('files', $files, () => $files.set(false), () => $files.set(true))
+    bindToolPaneCollapse(
+      'terminal',
+      $terminal,
+      () => $terminal.set(false),
+      () => $terminal.set(true)
+    )
+    bindPaneVisibility(
+      'files',
+      $files,
+      () => $files.set(false),
+      () => $files.set(true)
+    )
 
-    disposers.push(registerBundledPresets([{ id: 'seed', title: 'Seed', order: 0, tree: ARRANGEMENT, resting: ['terminal'] }]))
+    disposers.push(
+      registerBundledPresets([{ id: 'seed', title: 'Seed', order: 0, tree: ARRANGEMENT, resting: ['terminal'] }])
+    )
     applyLayoutPreset('seed', ARRANGEMENT)
     saveCurrentLayoutAs('Mine')
 
@@ -104,7 +137,12 @@ describe('resting presets', () => {
   it('a reveal on apply never steals the tab the preset put first', () => {
     const $terminal = atom(false)
 
-    bindToolPaneCollapse('terminal', $terminal, () => $terminal.set(false), () => $terminal.set(true))
+    bindToolPaneCollapse(
+      'terminal',
+      $terminal,
+      () => $terminal.set(false),
+      () => $terminal.set(true)
+    )
 
     // Focus: the terminal is a tab BEHIND the chat, and opening it on apply
     // used to front it over the chat.

@@ -131,7 +131,8 @@ export const en: Translations = {
       writeFailed: 'That change was not saved.',
       refreshFailed: 'The tool list was not refreshed.',
       disconnectNoAccount: 'Hermes has no account to disconnect here. Refresh the page and try again.',
-      disconnectRefused: 'Nous could not remove this sign-in right now. Turn the app off with the switch instead, or try again later.'
+      disconnectRefused:
+        'Nous could not remove this sign-in right now. Turn the app off with the switch instead, or try again later.'
     },
 
     add: {

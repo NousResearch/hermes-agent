@@ -574,7 +574,7 @@ export const en: Translations = {
       blurb:
         'Extend this app, not an agent — installed once for the whole app, whichever profile, gateway, or machine you connect to. Bundled or dropped into the desktop-plugins folder; toggles apply live.',
       count: n => `${n} installed`,
-      openFolder: 'Open plugins folder',
+      openFolder: 'Open Desktop plugins folder',
       rescan: 'Rescan',
       reveal: 'Reveal in file manager',
       enable: 'Enable',

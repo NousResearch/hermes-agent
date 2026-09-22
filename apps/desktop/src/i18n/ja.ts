@@ -357,6 +357,7 @@ export const ja = defineLocale({
       billingPlans: 'プラン'
     },
     plugins: {
+      openFolder: 'デスクトッププラグインフォルダーを開く',
       installModal: {
         installFromGit: 'Git からインストール',
         reviewRepository: 'リポジトリを確認',

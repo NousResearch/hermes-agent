@@ -348,6 +348,7 @@ export const zhHant = defineLocale({
       billingPlans: '方案'
     },
     plugins: {
+      openFolder: '開啟桌面外掛資料夾',
       installModal: {
         installFromGit: '從 Git 安裝',
         reviewRepository: '檢查儲存庫',

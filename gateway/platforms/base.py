@@ -2019,9 +2019,14 @@ class BasePlatformAdapter(ABC):
         if mode == "verbose":
             return f'{head}: "{event.preview}"'
         # "all" / "new": short capped preview (default 40; progress bubbles persist as messages).
+        # Thread the previous call's raw preview so truncate_middle can reveal the *differing
+        # tail* of consecutive similar previews (e.g. `cd <path> && cmdA` vs `... && cmdB`)
+        # instead of a trailing "..." that hides the meaningful end.
         cap = preview_max_len if preview_max_len > 0 else 40
+        prev = getattr(self, "_tool_preview_prev", None)
         prepared = prepare_tool_preview(
-            event.tool_name, event.args, fallback=event.preview, max_len=cap)
+            event.tool_name, event.args, fallback=event.preview, max_len=cap, prev=prev)
+        self._tool_preview_prev = event.preview
         return f'{head}: "{self.format_tool_preview(prepared)}"'
 
     def format_tool_preview(self, preview: "ToolPreview") -> str:

@@ -172,6 +172,98 @@ def _clip(text: str, n: int) -> str:
     return f"{text[:n]}{'...' if len(text) > n else ''}"
 
 
+_ELLIPSIS = "..."
+# How much of the budget to reserve for the trailing suffix in the
+# stateless fallback (2/5 ≈ 40%).  Chosen so shell-style commands keep
+# enough of the trailing action visible to differentiate consecutive
+# previews that share a `cd <path>` prefix.
+_TAIL_FRACTION_NUM = 2
+_TAIL_FRACTION_DEN = 5
+
+
+def truncate_middle(text: str, max_len: int, prev: str | None = None) -> str:
+    """Truncate ``text`` to at most ``max_len`` chars, filling the budget
+    with as much content as possible while revealing what differs from
+    ``prev``.  Presentation only — deduplication keys on raw tool identity
+    (see ``gateway/run_turn_runner.py``'s ``_progress_emit`` raw_key), so this
+    never needs to preserve equality.
+
+    Resolution order (each step skipped if it doesn't apply):
+
+    1. ``text`` fits in ``max_len`` → return ``text`` unchanged.
+    2. ``prev`` provided → show ``text`` from the first differing char
+       through the end (the part the reader needs to see), then prepend
+       as much of the shared prefix as remaining budget allows (with
+       ``"..."`` to mark the elision).
+    3. Otherwise → stateless head + ellipsis + short tail truncation.
+
+    ``max_len`` values ``<= 0`` produce ``""``.
+    """
+    if max_len <= 0:
+        return ""
+
+    if len(text) <= max_len:
+        return text
+
+    if prev:
+        diff_view = _truncate_around_diff(text, prev, max_len)
+        if diff_view is not None:
+            return diff_view
+
+    return _head_tail_truncate(text, max_len)
+
+
+def _truncate_around_diff(text: str, prev: str, max_len: int) -> str | None:
+    """Build a truncation of the form ``text[:keep] + "..." + text[diff:]``
+    that fills as much of ``max_len`` as possible while keeping the
+    chars from the first divergence onward fully visible.
+
+    Returns ``None`` when no useful diff-aware truncation exists (no
+    shared prefix, or the must-show tail alone overflows ``max_len``).
+    """
+    n = min(len(text), len(prev))
+    i = 0
+    while i < n and text[i] == prev[i]:
+        i += 1
+
+    if i == 0 or i == len(text):
+        # No shared prefix to elide, or text is itself a prefix of prev
+        # (nothing new to highlight in text).  Caller can fall back.
+        return None
+
+    tail = text[i:]
+    if len(tail) > max_len:
+        # The mandatory "from diff onward" portion alone overflows;
+        # caller should head-tail the whole string instead.
+        return None
+
+    head_budget = max_len - len(tail)
+    # We know text doesn't fit (caller checked) so head_budget < i.
+    el = len(_ELLIPSIS)
+
+    if head_budget >= el + 1:
+        # Show beginning of prefix + ellipsis + tail.
+        keep = head_budget - el
+        return text[:keep] + _ELLIPSIS + tail
+
+    # head_budget is too small for "...x" + tail.  Use ellipsis alone
+    # if it fits as a marker; otherwise emit tail without any prefix.
+    if el + len(tail) <= max_len:
+        return _ELLIPSIS + tail
+    return tail
+
+
+def _head_tail_truncate(text: str, max_len: int) -> str:
+    """Stateless: keep the head, drop the middle, keep a short tail.
+    Used as a fallback when no prev preview is available."""
+    avail = max_len - len(_ELLIPSIS)
+    if avail < 2:
+        return text[:max_len]
+    suffix_len = max(1, avail * _TAIL_FRACTION_NUM // _TAIL_FRACTION_DEN)
+    prefix_len = avail - suffix_len
+    return text[:prefix_len] + _ELLIPSIS + text[-suffix_len:]
+
+
 @dataclass(frozen=True)
 class ToolPreview:
     """A compact tool preview plus presentation facts lost to truncation."""
@@ -469,11 +561,16 @@ def build_tool_preview(tool_name: str, args: dict, max_len: int | None = None) -
     return _tail_trunc(preview, max_len) if preview else None
 
 
-def prepare_tool_preview(tool_name: str, args: dict | None, *, fallback: str, max_len: int) -> ToolPreview:
+def prepare_tool_preview(tool_name: str, args: dict | None, *, fallback: str, max_len: int,
+                         prev: str | None = None) -> ToolPreview:
     """Compact preview plus explicit truncation/URL facts (the uncapped preview is
-    rebuilt from the arguments so an upstream display cap cannot drop its link target)."""
+    rebuilt from the arguments so an upstream display cap cannot drop its link target).
+
+    ``prev`` is the previous call's raw (pre-truncation) preview text; when supplied,
+    truncation reveals the *differing tail* vs a shared prefix instead of a dumb trailing
+    ``...`` (see ``truncate_middle``)."""
     full_text = build_tool_preview(tool_name, args, max_len=0) or fallback
-    text = _tail_trunc(full_text, max_len)
+    text = truncate_middle(full_text, max_len, prev=prev)
     truncated = text != full_text
     url = _http_url(_display_url(full_text)) if truncated else None
     return ToolPreview(text=text, truncated=truncated, url=url)

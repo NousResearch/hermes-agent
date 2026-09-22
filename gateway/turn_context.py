@@ -32,6 +32,12 @@ class TurnContext:
     last_tool: list = field(default_factory=lambda: [None])
     last_was_terminal_block: list = field(default_factory=lambda: [False])
     repeat_count: list = field(default_factory=lambda: [0])
+    # diff-aware progress truncation state (PR #24304): previous terminal cmd_short (untruncated
+    # first line) and previous raw preview thread `prev=` into truncate_middle/prepare_tool_preview;
+    # last_raw_key dedups on raw tool identity so distinct commands never collapse to (×N).
+    last_terminal_cmd: list = field(default_factory=lambda: [None])
+    last_preview_raw: list = field(default_factory=lambda: [None])
+    last_raw_key: list = field(default_factory=lambda: [None])
     long_tool_hint_fired: list = field(default_factory=lambda: [False])
     agent_holder: list = field(default_factory=lambda: [None])
     _LONG_TOOL_THRESHOLD_S: float = 30.0

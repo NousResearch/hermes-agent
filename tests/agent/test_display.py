@@ -124,6 +124,9 @@ class TestBuildToolPreview:
 
 class TestPrepareToolPreview:
     def test_recovers_and_describes_truncated_url(self):
+        # The tool-preview path now truncates via truncate_middle (head + "..." +
+        # short tail when no prev is threaded), so the link target must still be
+        # recoverable even though the visible text drops the middle.
         url = "https://example.com/a/very/long/path/to/a/page"
         set_tool_preview_max_len(20)
 
@@ -134,7 +137,9 @@ class TestPrepareToolPreview:
             max_len=20,
         )
 
-        assert preview.text == url[:17] + "..."
+        assert len(preview.text) == 20
+        assert "..." in preview.text
+        assert preview.text.startswith("https://")
         assert preview.truncated is True
         assert preview.url == url
 

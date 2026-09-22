@@ -838,9 +838,11 @@ def test_discord_truncated_tool_url_links_to_full_destination(monkeypatch, tmp_p
 
     assert result["final_response"] == "done"
     assert adapter.sent
-    visible = UrlPreviewAgent.URL[:37] + "..."
-    label = visible.removeprefix("https://")
-    assert f"[{label}](<{UrlPreviewAgent.URL}>)" in adapter.sent[0]["content"]
+    content = adapter.sent[0]["content"]
+    # The full URL must be retained in the link target beyond its visible cap.
+    assert f"](<{UrlPreviewAgent.URL}>)" in content
+    # Diff-aware truncation keeps the meaningful tail visible (was a dumb head-cut before).
+    assert "/tool-progress" in content and "..." in content
 
 
 class CommentaryAgent:

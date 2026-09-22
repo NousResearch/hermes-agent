@@ -54,6 +54,48 @@ def save_disabled_skills(config: dict, disabled: Set[str], platform: Optional[st
     save_config(config)
 
 
+def _configured_disabled_skills(config: dict, platform: Optional[str]) -> Set[str]:
+    """Return only the disabled names stored in the requested config scope.
+
+    Unlike :func:`get_disabled_skills`, this intentionally does not union the global list with
+    a platform list: a CLI enable/disable operation must not copy global names into a platform
+    override while updating one skill.
+    """
+    skills_cfg = config.get("skills") if isinstance(config, dict) else None
+    if not isinstance(skills_cfg, dict):
+        return set()
+    values = skills_cfg.get("disabled") if platform is None else cfg_get(
+        skills_cfg, "platform_disabled", platform)
+    return _normalize_skill_names(values)
+
+
+def skill_toggle_command(args) -> None:
+    """Enable or disable one skill in the global or platform-specific config scope."""
+    action = getattr(args, "skills_action", None)
+    platform = getattr(args, "platform", None)
+    if platform is not None:
+        platform = platform.strip()
+        if not platform:
+            raise SystemExit("Error: --platform cannot be empty")
+
+    config = load_config()
+    disabled = _configured_disabled_skills(config, platform)
+    name = args.name.strip()
+    if not name:
+        raise SystemExit("Error: skill name cannot be empty")
+    if action == "disable":
+        disabled.add(name)
+    elif action == "enable":
+        disabled.discard(name)
+    else:
+        raise SystemExit(f"Error: unsupported skills action: {action}")
+
+    save_disabled_skills(config, disabled, platform)
+    scope = f"platform {platform}" if platform else "all platforms"
+    verb = "Disabled" if action == "disable" else "Enabled"
+    print(f"✓ {verb} skill '{name}' for {scope}.")
+
+
 def _list_all_skills() -> List[dict]:
     """Return all installed skills (ignoring disabled state)."""
     try:

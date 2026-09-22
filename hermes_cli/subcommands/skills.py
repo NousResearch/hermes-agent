@@ -174,4 +174,15 @@ def build_skills_parser(subparsers, *, cmd_skills: Callable) -> None:
     skills_subparsers.add_parser(
         "config", help="Interactive skill configuration — enable/disable individual skills")
 
+    for action, description in (
+        ("enable", "Enable a skill without opening the interactive configurator"),
+        ("disable", "Disable a skill without opening the interactive configurator"),
+    ):
+        toggle = skills_subparsers.add_parser(action, help=description)
+        toggle.add_argument("name", help="Skill name")
+        toggle.add_argument(
+            "--platform", metavar="PLATFORM",
+            help="Apply only to this messaging platform (default: all platforms)",
+        )
+
     skills_parser.set_defaults(func=cmd_skills)

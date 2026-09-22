@@ -352,6 +352,7 @@ from hermes_cli.subcommands.tools import build_tools_parser
 from hermes_cli.subcommands.insights import build_insights_parser
 from hermes_cli.subcommands.monitoring import build_monitoring_parser
 from hermes_cli.subcommands.skills import build_skills_parser
+from hermes_cli.subcommands.soul import build_soul_parser
 from hermes_cli.subcommands.pairing import build_pairing_parser
 from hermes_cli.subcommands.plugins import build_plugins_parser
 from hermes_cli.subcommands.mcp import build_mcp_parser
@@ -2344,6 +2345,7 @@ def _coalesce_session_name_args(argv: list) -> list:
 
 
 from hermes_cli.profile_cmd import cmd_profile
+from hermes_cli.soul_cmd import cmd_soul
 
 
 def _dashboard_lifecycle_flags(args, token_file) -> None:
@@ -2606,6 +2608,7 @@ _BUILTIN_SUBCOMMANDS = frozenset(
         "resume",
         "send", "sessions", "setup",
         "skin", "skills", "slack", "status", "sync", "tools", "uninstall", "update",
+        "soul",
         "webhook", "whatsapp", "whatsapp-cloud", "worktree", "chat", "secrets", "security",
         "browser",
         "verify",
@@ -3227,6 +3230,7 @@ def _build_cli_parser():
     build_console_parser(subparsers, cmd_console=cmd_console)
     build_pairing_parser(subparsers, cmd_pairing=cmd_pairing)
     build_skills_parser(subparsers, cmd_skills=cmd_skills)
+    build_soul_parser(subparsers, cmd_soul=cmd_soul)
     build_bundles_parser(subparsers)
     build_plugins_parser(subparsers, cmd_plugins=cmd_plugins)
 

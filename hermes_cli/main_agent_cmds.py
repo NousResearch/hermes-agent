@@ -169,6 +169,9 @@ def cmd_skills(args):
         _require_tty("skills config")
         from hermes_cli.skills_config import skills_command as skills_config_command
         skills_config_command(args)
+    elif action in {"enable", "disable"}:
+        from hermes_cli.skills_config import skill_toggle_command
+        skill_toggle_command(args)
     elif action in ("trust", "untrust"):
         _cmd_skills_trust(args)
     else:

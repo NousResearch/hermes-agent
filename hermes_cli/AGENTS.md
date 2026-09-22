@@ -121,3 +121,10 @@ matchers; parser-derived flag sets; never blanket-exclude gateway ancestors, #87
 every `get_hermes_home()` scopes to the active profile (rules in root). Profiles are independent
 islands by design — no live config inheritance; `--clone` copies at creation. Multiplex
 (`gateway.multiplex_profiles`) secret-scope rules: `gateway/AGENTS.md`.
+
+Non-interactive profile operations are available without opening the chat UI: `hermes -p NAME
+soul set TEXT` (or `soul set --file PATH`) replaces that profile's `SOUL.md`; `hermes -p NAME
+skills enable NAME` and `skills disable NAME` update `skills.disabled`. Add `--platform PLATFORM`
+to the skills commands to update only `skills.platform_disabled.<platform>`. The `-p` selector is
+resolved before argument parsing, so these commands can safely target a profile that is not the
+sticky active profile.

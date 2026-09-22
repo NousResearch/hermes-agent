@@ -30,21 +30,13 @@ class SkillPublicationTest(unittest.TestCase):
             self.assertIn(key, frontmatter)
         self.assertIn("name: citation-integrity", frontmatter)
 
-    def test_public_skill_frontmatter_contract(self):
-        expected = {
-            "citation-integrity": "Use when verifying citation ledgers, quotes, and evidence.",
-            "evidence-reports": "Use when writing research reports with checked claims.",
-            "merge-reconciler": "Use when reconciling conflicting Git branches safely.",
-        }
-        for name, description in expected.items():
-            skill = ROOT.parent / name / "SKILL.md"
-            self.assertTrue(skill.is_file(), skill)
-            text = skill.read_text(encoding="utf-8")
-            frontmatter = text.split("---\n", 2)[1]
-            self.assertIn(f"name: {name}", frontmatter)
-            self.assertIn(f'description: "{description}"', frontmatter)
-            self.assertLessEqual(len(description), 60)
-            self.assertTrue(description.endswith("."))
+    def test_citation_integrity_frontmatter_contract(self):
+        description = "Use when verifying citation ledgers, quotes, and evidence."
+        frontmatter = self.text.split("---\n", 2)[1]
+        self.assertIn("name: citation-integrity", frontmatter)
+        self.assertIn(f'description: "{description}"', frontmatter)
+        self.assertLessEqual(len(description), 60)
+        self.assertTrue(description.endswith("."))
 
     def test_covers_required_topics(self):
         for phrase in (

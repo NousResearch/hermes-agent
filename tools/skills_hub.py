@@ -338,9 +338,26 @@ class _JsonStateFile:
 
     def _read(self) -> dict:
         try:
-            return json.loads(self.path.read_text(encoding="utf-8-sig"))
+            data = json.loads(self.path.read_text(encoding="utf-8-sig"))
         except (json.JSONDecodeError, OSError):
+            data = None
+        if not self._has_state_shape(data):
             return json.loads(json.dumps(self.EMPTY))
+        for key, template in self.EMPTY.items():
+            if key not in data and isinstance(template, (dict, list)):
+                data[key] = json.loads(json.dumps(template))
+        return data
+
+    @classmethod
+    def _has_state_shape(cls, data: Any) -> bool:
+        """A state file is a JSON object whose declared container keys keep the
+        container types ``EMPTY`` declares.  Scalars (``version``) go unchecked:
+        they are never subscripted, and a future schema bump must not be wiped
+        as corrupt."""
+        return isinstance(data, dict) and all(
+            key not in data or isinstance(data[key], type(template))
+            for key, template in cls.EMPTY.items()
+            if isinstance(template, (dict, list)))
 
     def _write(self, data: dict, **dumps_kwargs) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
@@ -429,10 +446,12 @@ class HubLockFile(_JsonStateFile):
         self._update(forget, ensure_ascii=False)
 
     def get_installed(self, name: str) -> Optional[dict]:
-        return self.load()["installed"].get(name)
+        entry = self.load()["installed"].get(name)
+        return entry if isinstance(entry, dict) else None
 
     def list_installed(self) -> list[dict]:
-        return [{"name": name, **entry} for name, entry in self.load()["installed"].items()]
+        return [{"name": name, **entry} for name, entry in self.load()["installed"].items()
+                if isinstance(entry, dict)]
 
     def by_identifier(self) -> dict[str, dict]:
         """Installed entries keyed by identifier. A ClawHub row is also keyed by the
@@ -473,7 +492,9 @@ class TapsManager(_JsonStateFile):
     _LOCK_HOLDER = threading.local()
 
     def load(self) -> list[dict]:
-        return self._read().get("taps", [])
+        return [t for t in self._read().get("taps", [])
+                if isinstance(t, dict) and isinstance(t.get("repo"), str)
+                and all(isinstance(t.get(k, ""), str) for k in ("path", "bucket"))]
 
     def save(self, taps: list[dict]) -> None:
         self._write({"taps": taps})

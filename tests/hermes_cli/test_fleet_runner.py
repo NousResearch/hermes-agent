@@ -92,6 +92,8 @@ def test_runner_uses_windows_executable_as_an_argument_vector_and_reports_comple
         r"C:\Users\idrat\AppData\Local\hermes\bin\hermes.exe",
         "-p",
         "coding-expert",
+        "-m",
+        "gpt-5",
         "-z",
         "Run the build",
     ]]

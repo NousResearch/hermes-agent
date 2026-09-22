@@ -60,6 +60,36 @@ function Quote-Argument([string]$value) {
     '"' + $value.Replace('"', '\"') + '"'
 }
 
+function Get-ProfileModelConfig([string]$ProfileName) {
+    $profileConfig = Join-Path $HermesRoot "config.yaml"
+    if ($ProfileName -ne "default") {
+        $profileConfig = Join-Path (Join-Path $HermesRoot "profiles") "$ProfileName\config.yaml"
+    }
+    if (-not (Test-Path -LiteralPath $profileConfig)) {
+        return @("", "")
+    }
+
+    $inModel = $false
+    $model = ""
+    $provider = ""
+    foreach ($line in Get-Content -LiteralPath $profileConfig) {
+        if ($line -match "^model:\s*$") {
+            $inModel = $true
+            continue
+        }
+        if ($inModel -and $line -match "^[^\s]") {
+            break
+        }
+        if ($inModel -and $line -match "^\s+default:\s*(.+?)\s*$") {
+            $model = $Matches[1].Trim().Trim("'").Trim('"')
+        }
+        if ($inModel -and $line -match "^\s+provider:\s*(.+?)\s*$") {
+            $provider = $Matches[1].Trim().Trim("'").Trim('"')
+        }
+    }
+    return @($model, $provider)
+}
+
 function Start-Runner {
     if (-not (Test-Path -LiteralPath $bundle)) {
         throw "Fleet runner bundle does not exist: $bundle"
@@ -75,17 +105,40 @@ function Start-Runner {
     $env:HERMES_FLEET_TOKEN = $tokenLines[0].Substring($prefix.Length)
     New-Item -ItemType File -Force -Path $marker | Out-Null
 
+    $profileNames = @("default") + $Profile
+    $profileRoot = Join-Path $HermesRoot "profiles"
+    if (Test-Path -LiteralPath $profileRoot) {
+        $profileNames += @(Get-ChildItem -LiteralPath $profileRoot -Directory | Select-Object -ExpandProperty Name)
+    }
+    $profileNames = @($profileNames | Select-Object -Unique)
+    $profileModelArgs = @()
+    $profileProviderArgs = @()
+    $hermesExecutable = Join-Path $HermesRoot "bin\\hermes.exe"
+    foreach ($profileName in $profileNames) {
+        $modelInfo = @(Get-ProfileModelConfig $profileName)
+        if ($modelInfo.Count -ge 2 -and $modelInfo[0] -and $modelInfo[1]) {
+            $profileModelArgs += @("--profile-model", "$profileName=$($modelInfo[0])")
+            $profileProviderArgs += @("--profile-provider", "$profileName=$($modelInfo[1])")
+        }
+    }
+
     $arguments = @(
         (Quote-Argument $bundle),
         "--node-id $(Quote-Argument $NodeId)",
         "--coordinator $(Quote-Argument $Coordinator)",
-        "--hermes-executable $(Quote-Argument (Join-Path $HermesRoot 'bin\\hermes.exe'))"
+        "--hermes-executable $(Quote-Argument $hermesExecutable)"
     )
-    foreach ($profileName in $Profile) {
+    foreach ($profileName in $profileNames) {
         $arguments += "--profile $(Quote-Argument $profileName)"
     }
     foreach ($projectName in $Project) {
         $arguments += "--project $(Quote-Argument $projectName)"
+    }
+    foreach ($profileModelArg in $profileModelArgs) {
+        $arguments += (Quote-Argument $profileModelArg)
+    }
+    foreach ($profileProviderArg in $profileProviderArgs) {
+        $arguments += (Quote-Argument $profileProviderArg)
     }
     $arguments += "--liveness-file $(Quote-Argument $marker)"
     $arguments += "--interval 2"

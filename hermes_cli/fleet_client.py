@@ -132,6 +132,11 @@ class FleetClient:
     def list_tasks(self) -> list[TaskRecord]:
         return [_record_from_dict(item) for item in self._request("GET", "/v1/fleet/tasks").get("tasks", [])]
 
+    def list_runners(self) -> list[dict[str, Any]]:
+        """Return coordinator-owned runner status without exposing the token."""
+        runners = self._request("GET", "/v1/fleet/runners").get("runners", [])
+        return [runner for runner in runners if isinstance(runner, dict)]
+
 
 def _record_from_dict(value: dict[str, Any]) -> TaskRecord:
     return TaskRecord(

@@ -74,12 +74,62 @@ start_runner() {
     local token="$(read_token)"
     [[ -n "$token" ]] || return 1
     export HERMES_FLEET_TOKEN="$token"
+    typeset -a profile_args
+    typeset -a profile_names
+    typeset -a profile_model_args
+    typeset -a profile_provider_args
+    typeset -A seen_profiles
+    profile_args=()
+    profile_names=()
+    profile_model_args=()
+    profile_provider_args=()
+    for profile_name in default coding-expert task-orchestrator; do
+        if [[ -z "${seen_profiles[$profile_name]-}" ]]; then
+            profile_names+=("$profile_name")
+            seen_profiles[$profile_name]=1
+        fi
+    done
+    for profile_dir in "$hermes_root/profiles"/*(/N); do
+        profile_name="${profile_dir:t}"
+        if [[ -z "${seen_profiles[$profile_name]-}" ]]; then
+            profile_names+=("$profile_name")
+            seen_profiles[$profile_name]=1
+        fi
+    done
+    for profile_name in "${profile_names[@]}"; do
+        profile_args+=(--profile "$profile_name")
+        profile_config="$hermes_root/config.yaml"
+        [[ "$profile_name" != "default" ]] && profile_config="$hermes_root/profiles/$profile_name/config.yaml"
+        model_name="$(/usr/bin/awk '
+            /^model:[[:space:]]*$/ { in_model=1; next }
+            /^[^[:space:]]/ { in_model=0 }
+            in_model && /^[[:space:]]+default:[[:space:]]*/ {
+                sub(/^[[:space:]]+default:[[:space:]]*/, "")
+                print
+                exit
+            }
+        ' "$profile_config" 2>/dev/null | /usr/bin/sed -E 's/^['"'"']|['"'"']$//g')"
+        provider_name="$(/usr/bin/awk '
+            /^model:[[:space:]]*$/ { in_model=1; next }
+            /^[^[:space:]]/ { in_model=0 }
+            in_model && /^[[:space:]]+provider:[[:space:]]*/ {
+                sub(/^[[:space:]]+provider:[[:space:]]*/, "")
+                print
+                exit
+            }
+        ' "$profile_config" 2>/dev/null | /usr/bin/sed -E 's/^['"'"']|['"'"']$//g')"
+        if [[ -n "$model_name" && -n "$provider_name" ]]; then
+            [[ -n "$model_name" ]] && profile_model_args+=(--profile-model "$profile_name=$model_name")
+            [[ -n "$provider_name" ]] && profile_provider_args+=(--profile-provider "$profile_name=$provider_name")
+        fi
+    done
     HERMES_FLEET_TOKEN="$token" /usr/bin/nohup "$python_executable" \
         "$source_root/scripts/fleet_runner.py" \
         --node-id mac --coordinator http://127.0.0.1:8799 \
         --hermes-executable /Users/mikedemott/.local/bin/hermes \
-        --profile coding-expert --profile task-orchestrator \
+        "${profile_args[@]}" \
         --project "Hermes Agent" --project LunaBot \
+        "${profile_model_args[@]}" "${profile_provider_args[@]}" \
         --liveness-file "$marker" --interval 2 \
         >> "$runner_log" 2>&1 &
     print $! >| "$runner_pid_file"

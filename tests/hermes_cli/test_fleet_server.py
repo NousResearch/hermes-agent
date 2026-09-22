@@ -1,4 +1,5 @@
 from contextlib import contextmanager
+import time
 
 import pytest
 
@@ -80,3 +81,19 @@ def test_expired_heartbeat_is_not_claimable_over_http(tmp_path):
         client.submit_task(_task(), now=100.0)
 
         assert client.claim_task(mac, now=102.0, lease_seconds=20.0) is None
+
+
+def test_runner_status_keeps_expired_rows_visible_for_desktop(tmp_path):
+    with _server(tmp_path) as (_store, coordinator, client):
+        mac = _runner("mac")
+        now = time.time()
+        client.register_runner(mac, now=now, ttl=1.0)
+
+        online = client.list_runners()
+        assert online[0]["node_id"] == "mac"
+        assert online[0]["capability"]["models"] == ["gpt-5"]
+        assert online[0]["online"] is True
+
+        expired = _store.list_runners(now=now + 2.0)
+        assert expired[0]["online"] is False
+        assert expired[0]["profile"] == "coding-expert"

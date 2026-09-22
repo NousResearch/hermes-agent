@@ -6,7 +6,7 @@ import platform
 import subprocess
 import threading
 import time
-from collections.abc import Callable, Iterable
+from collections.abc import Callable, Iterable, Mapping
 from typing import Any
 
 from hermes_cli.fleet_protocol import RunnerCapability
@@ -30,6 +30,8 @@ class FleetRunner:
         capabilities: Iterable[RunnerCapability] | None = None,
         models: Iterable[str] = (),
         tools: Iterable[str] = ("terminal", "git"),
+        profile_models: Mapping[str, str] | None = None,
+        profile_providers: Mapping[str, str] | None = None,
         liveness_check: Callable[[], bool] | None = None,
         executor: Callable[[list[str]], Any] | None = None,
     ):
@@ -38,6 +40,8 @@ class FleetRunner:
         self.hermes_executable = hermes_executable
         self.profiles = tuple(profiles)
         self.projects = tuple(projects)
+        self.profile_models = dict(profile_models or {})
+        self.profile_providers = dict(profile_providers or {})
         self.capabilities = tuple(capabilities or self._default_capabilities(models, tools))
         self._liveness_check = liveness_check or (lambda: True)
         self._executor = executor or self._execute
@@ -47,11 +51,12 @@ class FleetRunner:
 
     def _default_capabilities(self, models: Iterable[str], tools: Iterable[str]):
         current_platform = "windows" if platform.system().lower() == "windows" else platform.system().lower()
+        default_models = tuple(models)
         return tuple(
             RunnerCapability(
                 node_id=self.node_id,
                 profile=profile,
-                models=tuple(models),
+                models=((self.profile_models[profile],) if profile in self.profile_models else default_models),
                 tools=tuple(tools),
                 projects=self.projects,
                 platform=current_platform,
@@ -127,7 +132,16 @@ class FleetRunner:
 
     def _execute_task(self, task: Any, profile: str):
         body = task.get("body") if isinstance(task, dict) else task.body
-        return self._executor([self.hermes_executable, "-p", profile, "-z", body])
+        requirement = task.get("requirement") if isinstance(task, dict) else task.requirement
+        models = requirement.get("models", ()) if isinstance(requirement, dict) else requirement.models
+        argv = [self.hermes_executable, "-p", profile]
+        if len(models) == 1:
+            provider = self.profile_providers.get(profile)
+            if provider:
+                argv.extend(["--provider", provider])
+            argv.extend(["-m", models[0]])
+        argv.extend(["-z", body])
+        return self._executor(argv)
 
     @staticmethod
     def _execute(argv: list[str]):

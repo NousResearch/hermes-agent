@@ -31,6 +31,7 @@ import type {
   KanbanProject,
   KanbanTask,
   KanbanTaskDetail,
+  FleetStatusResponse,
   OrchestrationSettings,
   TaskEstimate,
   WorkerLog
@@ -262,6 +263,7 @@ export const BOARDS_KEY = ['kanban', 'boards'] as const
 export const PROFILES_KEY = ['kanban', 'profiles'] as const
 export const PROJECTS_KEY = ['kanban', 'projects'] as const
 export const ORCHESTRATION_KEY = ['kanban', 'orchestration'] as const
+export const FLEET_STATUS_KEY = ['kanban', 'fleet', 'status'] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 
@@ -276,6 +278,9 @@ export const fetchLog = (id: string) => call<WorkerLog>(withBoard(`/tasks/${id}/
 export const fetchBoards = () => call<BoardsResponse>('/boards')
 
 export const fetchProfiles = () => call<{ profiles: KanbanProfile[] }>('/profiles')
+
+/** Shared Mac/Windows runner state, read through the authenticated backend. */
+export const fetchFleetStatus = () => call<FleetStatusResponse>('/fleet/status')
 
 /** First-class Hermes projects, for scoping a board's default workspace. */
 export const fetchProjects = () => call<{ projects: KanbanProject[] }>('/projects')

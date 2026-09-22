@@ -202,6 +202,40 @@ export interface OrchestrationSettings {
   resolved_default_assignee: string
 }
 
+/** Read-only coordinator snapshot used by the Kanban Desktop fleet strip. */
+export interface FleetRunnerStatus {
+  node_id: string
+  profile: string
+  capability: {
+    models?: string[]
+    projects?: string[]
+    platform?: string
+  }
+  last_seen: number
+  expires_at: number
+  active_load: number
+  online: boolean
+}
+
+export interface FleetTaskStatus {
+  task_id: string
+  title: string
+  status: string
+  node_id?: null | string
+  runner_profile?: null | string
+  attempt: number
+  updated_at: number
+  error?: null | string
+}
+
+export interface FleetStatusResponse {
+  enabled: boolean
+  reachable: boolean
+  error?: string
+  runners: FleetRunnerStatus[]
+  tasks: FleetTaskStatus[]
+}
+
 /** GET /profiles — the roster the decomposer routes across. */
 export interface KanbanProfile {
   name: string

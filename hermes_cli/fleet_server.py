@@ -146,6 +146,12 @@ class _FleetHandler(BaseHTTPRequestHandler):
                 {"tasks": [_record_dict(record) for record in self.fleet.store.list_tasks()]},
             )
             return
+        if path == "/v1/fleet/runners":
+            self._respond(
+                HTTPStatus.OK,
+                {"runners": self.fleet.store.list_runners()},
+            )
+            return
         self._respond(HTTPStatus.NOT_FOUND, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802 - BaseHTTPRequestHandler API

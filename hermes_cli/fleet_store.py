@@ -401,6 +401,36 @@ class FleetStore:
             rows = connection.execute("SELECT * FROM fleet_tasks ORDER BY created_at, task_id").fetchall()
             return [self._record(row) for row in rows]
 
+    def list_runners(self, *, now: float | None = None) -> list[dict]:
+        """Return the latest capability and liveness record for every runner.
+
+        Expired rows stay visible so an operator can distinguish a runner that
+        was never registered from one whose Desktop process went offline.
+        Callers receive plain dictionaries because this is a read-only status
+        surface, not a claim/lease protocol.
+        """
+        now = _now() if now is None else now
+        with self._connection() as connection:
+            rows = connection.execute(
+                "SELECT node_id, profile, capability_json, last_seen, expires_at, active_load "
+                "FROM fleet_runners ORDER BY node_id, profile"
+            ).fetchall()
+        runners = []
+        for row in rows:
+            capability = json.loads(row["capability_json"])
+            runners.append(
+                {
+                    "node_id": row["node_id"],
+                    "profile": row["profile"],
+                    "capability": capability,
+                    "last_seen": row["last_seen"],
+                    "expires_at": row["expires_at"],
+                    "active_load": row["active_load"],
+                    "online": row["expires_at"] > now,
+                }
+            )
+        return runners
+
     @staticmethod
     def _record(row: sqlite3.Row) -> TaskRecord:
         return TaskRecord(

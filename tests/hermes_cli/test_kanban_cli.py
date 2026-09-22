@@ -100,6 +100,34 @@ def test_kanban_edit_updates_documented_task_fields(kanban_home):
     assert any(event.kind == "reprioritized" for event in events)
 
 
+def test_kanban_edit_goal_flags_preserve_the_launch_contract(kanban_home):
+    with kbc.connect_closing() as conn:
+        task_id = kb.create_task(conn, title="goal settings", assignee="worker")
+
+    output = kc.run_slash(f"edit {task_id} --goal-max-turns 14")
+    assert f"Edited {task_id}" in output
+    assert "Edited" in kc.run_slash(f"edit {task_id} --goal")
+    with kbc.connect_closing() as conn:
+        configured = kb.get_task(conn, task_id)
+    assert configured.goal_mode is True
+    assert configured.goal_max_turns == 14
+
+    assert "Edited" in kc.run_slash(f"edit {task_id} --no-goal")
+    with kbc.connect_closing() as conn:
+        disabled = kb.get_task(conn, task_id)
+    assert disabled.goal_mode is False
+    assert disabled.goal_max_turns == 14
+
+    assert "Edited" in kc.run_slash(f"edit {task_id} --no-goal --clear-goal-max-turns")
+    with kbc.connect_closing() as conn:
+        cleared = kb.get_task(conn, task_id)
+        assert kb.claim_task(conn, task_id, claimer="worker") is not None
+    assert cleared.goal_mode is False
+    assert cleared.goal_max_turns is None
+
+    assert "cannot be changed after execution has started" in kc.run_slash(f"edit {task_id} --goal")
+
+
 def test_worker_link_preserves_foreign_child_rules(kanban_home, monkeypatch):
     with kbc.connect_closing() as conn:
         worker = kb.create_task(conn, title="worker")
@@ -239,5 +267,3 @@ def test_run_slash_reclaim_running_task(kanban_home):
 # ---------------------------------------------------------------------------
 # /kanban help / no-args / unknown-action UX (issue #21794)
 # ---------------------------------------------------------------------------
-
-

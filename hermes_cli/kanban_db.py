@@ -2706,6 +2706,15 @@ class LiveClaimError(ValueError):
         )
 
 
+class GoalConfigurationLockedError(RuntimeError):
+    """A worker launch contract cannot change after its first durable run."""
+
+    def __init__(self, task_id: str):
+        super().__init__(
+            f"goal configuration for {task_id} cannot be changed after execution has started"
+        )
+
+
 def _claim_is_live(trow) -> bool:
     """True when a ``running`` task's claim still protects a run: the worker process
     it spawned exists (PID + start-time fingerprint). A claim whose worker is gone,
@@ -3128,27 +3137,62 @@ def _unique_attachment_path(directory: Path, filename: str, used: set[Path]) -> 
     return candidate
 
 
+_GOAL_MAX_TURNS_UNSET: Any = object()
+
+
+def goal_configuration_locked(conn: sqlite3.Connection, task_id: str) -> bool:
+    """Return the domain lock shared by mutation paths and task-detail clients."""
+    return conn.execute(
+        "SELECT 1 FROM task_runs WHERE task_id = ? LIMIT 1", (task_id,)
+    ).fetchone() is not None
+
+
 def edit_task(
     conn: sqlite3.Connection, task_id: str, *, title: Optional[str] = None,
     body: Optional[str] = None, priority: Optional[int] = None,
     result: Optional[str] = None, summary: Optional[str] = None,
     metadata: Optional[dict] = None, board: Optional[str] = None,
+    goal_mode: Optional[bool] = None, goal_max_turns: Any = _GOAL_MAX_TURNS_UNSET,
 ) -> bool:
-    """Edit task fields, optionally backfilling a completed task's result."""
+    """Edit task fields, optionally backfilling a completed task's result.
+
+    Goal settings are the worker launch contract.  They are mutable only until
+    the first durable task run exists; the history check and write share this
+    ``BEGIN IMMEDIATE`` transaction, so a claim cannot land between them.
+    ``goal_max_turns=None`` explicitly returns the card to the engine default.
+    """
+    changing_goal = goal_mode is not None or goal_max_turns is not _GOAL_MAX_TURNS_UNSET
+    if goal_max_turns is not _GOAL_MAX_TURNS_UNSET and goal_max_turns is not None:
+        if isinstance(goal_max_turns, bool) or not isinstance(goal_max_turns, int) or goal_max_turns <= 0:
+            raise ValueError("goal_max_turns must be a positive integer")
+    if goal_mode is False and goal_max_turns not in (_GOAL_MAX_TURNS_UNSET, None):
+        raise ValueError("goal_max_turns cannot be set while disabling goal mode")
     changed_fields = [
         field for field, value in (("title", title), ("body", body), ("priority", priority))
         if value is not None
     ]
+    if goal_mode is not None:
+        changed_fields.append("goal_mode")
+    if goal_max_turns is not _GOAL_MAX_TURNS_UNSET:
+        changed_fields.append("goal_max_turns")
     with write_txn(conn):
         status = _task_status(conn, task_id)
         if status is None or (result is not None and status != "done"):
             return False
+        if changing_goal and goal_configuration_locked(conn, task_id):
+            raise GoalConfigurationLockedError(task_id)
         assignments = []
         params = []
         for field, value in (("title", title), ("body", body), ("priority", priority)):
             if value is not None:
                 assignments.append(f"{field} = ?")
                 params.append(value)
+        if goal_mode is not None:
+            assignments.append("goal_mode = ?")
+            params.append(1 if goal_mode else 0)
+        if goal_max_turns is not _GOAL_MAX_TURNS_UNSET:
+            assignments.append("goal_max_turns = ?")
+            params.append(goal_max_turns)
         if result is not None:
             assignments.append("result = ?")
             params.append(result)

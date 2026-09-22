@@ -428,12 +428,21 @@ def _create_skill(name: str, content: str, category: str = None) -> Dict[str, An
     if existing := _find_skill(name):
         return _err(f"A skill named '{name}' already exists at {existing['path']}.")
     skill_dir = _resolve_skill_dir(name, category)
+    # A pre-existing dir that _find_skill cannot see (no SKILL.md, or an excluded path) is NOT
+    # ours — on a blocked scan only remove what this call wrote, never the dir's contents.
+    dir_existed = skill_dir.is_dir()
     from hermes_constants import mkdir_under_hermes_home
     mkdir_under_hermes_home(skill_dir)
     skill_md = skill_dir / "SKILL.md"
+    original_md = skill_md.read_text(encoding="utf-8") if skill_md.exists() else None
     atomic_write_text(skill_md, content, preserve_mode=True, create_mode=0o644)
     if scan_error := _security_scan_skill(skill_dir):
-        shutil.rmtree(skill_dir, ignore_errors=True)
+        if not dir_existed:
+            shutil.rmtree(skill_dir, ignore_errors=True)
+        elif original_md is not None:
+            atomic_write_text(skill_md, original_md, preserve_mode=True)
+        else:
+            skill_md.unlink(missing_ok=True)
         return _err(scan_error)
     root = _skills_dir()  # display relative under the profile dir; absolute under skills.create_dir
     display = skill_dir.relative_to(root) if skill_dir.is_relative_to(root) else skill_dir

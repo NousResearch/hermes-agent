@@ -180,6 +180,70 @@ class TestCreateSkill:
         assert "Invalid category '../escape'" in result["error"]
         assert not (tmp_path / "escape").exists()
 
+    def test_scan_block_on_preexisting_dir_preserves_contents(self, tmp_path):
+        """A dir _find_skill cannot see (no SKILL.md) is not ours — a blocked
+        scan must not rmtree its contents, only the SKILL.md this call wrote."""
+        victim = tmp_path / "colliding-name"
+        (victim / "references").mkdir(parents=True)
+        (victim / "notes.txt").write_text("user data", encoding="utf-8")
+        (victim / "references" / "guide.md").write_text("keep me", encoding="utf-8")
+
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._security_scan_skill", return_value="blocked by scan"):
+            result = _create_skill("colliding-name", VALID_SKILL_CONTENT)
+
+        assert result["success"] is False
+        assert (victim / "notes.txt").read_text() == "user data"
+        assert (victim / "references" / "guide.md").read_text() == "keep me"
+        assert not (victim / "SKILL.md").exists()
+
+    def test_scan_block_on_fresh_dir_removes_dir(self, tmp_path):
+        """Control: a dir this call created is still fully removed on a blocked scan."""
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._security_scan_skill", return_value="blocked by scan"):
+            result = _create_skill("fresh-skill", VALID_SKILL_CONTENT)
+
+        assert result["success"] is False
+        assert not (tmp_path / "fresh-skill").exists()
+
+    def test_scan_block_restores_preexisting_skill_md(self, tmp_path):
+        """A pre-existing SKILL.md that _find_skill missed (e.g. a skills.create_dir
+        outside the scanned roots) is restored, not deleted."""
+        victim = tmp_path / "shadowed"
+        victim.mkdir()
+        original = "---\nname: shadowed\ndescription: pre-existing\n---\noriginal body\n"
+        (victim / "SKILL.md").write_text(original, encoding="utf-8")
+
+        with _skill_dir(tmp_path), \
+             patch("tools.skill_manager_tool._find_skill", return_value=None), \
+             patch("tools.skill_manager_tool._security_scan_skill", return_value="blocked by scan"):
+            result = _create_skill("shadowed", VALID_SKILL_CONTENT)
+
+        assert result["success"] is False
+        assert (victim / "SKILL.md").read_text() == original
+
+    def test_scan_block_via_skill_manage_preserves_contents(self, tmp_path):
+        """E2E through the public handler (gate bypassed as during approval replay):
+        a blocked create over a pre-existing dir still leaves its contents alone."""
+        import tools.skill_manager_tool as smt
+
+        victim = tmp_path / "colliding-name"
+        victim.mkdir()
+        (victim / "notes.txt").write_text("user data", encoding="utf-8")
+
+        token = smt._skill_gate_bypass.set(True)
+        try:
+            with _skill_dir(tmp_path), \
+                 patch("tools.skill_manager_tool._security_scan_skill", return_value="blocked by scan"):
+                result = json.loads(smt.skill_manage(
+                    action="create", name="colliding-name", content=VALID_SKILL_CONTENT))
+        finally:
+            smt._skill_gate_bypass.reset(token)
+
+        assert result["success"] is False
+        assert (victim / "notes.txt").read_text() == "user data"
+        assert not (victim / "SKILL.md").exists()
+
 
     def test_edit_long_desc_still_allowed_with_preview(self, tmp_path):
         """Edit/patch paths stay permissive so existing over-limit skills

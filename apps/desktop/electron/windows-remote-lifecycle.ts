@@ -19,6 +19,10 @@ function powerShellCommand(script) {
   return `powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -EncodedCommand ${encodedPowerShell(script)}`
 }
 
+function powerShellStdinCommand() {
+  return 'powershell.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -'
+}
+
 async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   const explicit = psLiteral(explicitHermesPath)
 
@@ -67,7 +71,7 @@ async function probeWindowsRemote(ssh, explicitHermesPath = '') {
   return JSON.parse((await ssh.exec(powerShellCommand(script))).trim())
 }
 
-function windowsUpdateMarkerProbeCommand(hermesHome) {
+function windowsUpdateMarkerProbeScript(hermesHome) {
   const script = [
     '$ErrorActionPreference="Stop"',
     `Add-Type -TypeDefinition @'
@@ -127,7 +131,9 @@ public static class HermesMarkerNoFollow {
     'Write-Output $result'
   ].join(';')
 
-  return powerShellCommand(script)
+  // Windows PowerShell reads `-Command -` from stdin; the BOM keeps literal
+  // paths Unicode-safe when OpenSSH forwards the pipe as UTF-8.
+  return `\uFEFF${script}`
 }
 
 /**
@@ -140,7 +146,7 @@ async function assertWindowsRemoteInstallUpdateClear(ssh, hermesHome) {
 
   try {
     observation =
-      String(await ssh.exec(windowsUpdateMarkerProbeCommand(hermesHome)))
+      String(await ssh.exec(powerShellStdinCommand(), { stdinData: windowsUpdateMarkerProbeScript(hermesHome) }))
         .replace(/^\uFEFF/, '')
         .trim()
         .split(/\r?\n/)

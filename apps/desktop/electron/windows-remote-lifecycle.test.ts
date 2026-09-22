@@ -88,8 +88,8 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command, options) => {
+      scripts.push(options?.stdinData || decode(command))
 
       return 'CLEAR'
     }),
@@ -161,15 +161,23 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
 })
 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
-  let script = ''
+  let command = ''
+  let stdinData: unknown
 
-  const ssh = sshWith(async command => {
-    script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (receivedCommand, options) => {
+    command = receivedCommand
+    stdinData = options?.stdinData
 
     return 'CLEAR'
   })
 
   await assertWindowsRemoteInstallUpdateClear(ssh, 'C:\\Users\\alice\\.hermes\\profiles\\research')
+  assert.match(command, /powershell\.exe -NoProfile -NonInteractive -ExecutionPolicy Bypass -Command -$/)
+  assert.ok(command.length < 2544)
+  assert.equal(typeof stdinData, 'string')
+
+  const script = String(stdinData)
+  assert.ok(script.startsWith('\uFEFF'))
   assert.match(script, /\.hermes-update-in-progress/)
   assert.match(script, /Split-Path -Leaf \$parent.*profiles/)
   assert.match(script, /UTF8Encoding.*true/)

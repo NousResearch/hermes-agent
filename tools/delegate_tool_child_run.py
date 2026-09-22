@@ -7,6 +7,7 @@ import logging
 import contextvars
 import json
 import os
+from pathlib import Path
 import threading
 import time
 from concurrent.futures import TimeoutError as FuturesTimeoutError
@@ -854,10 +855,30 @@ class _ChildRun:
         def _run_with_thread_capture():
             worker_thread_holder["t"] = threading.current_thread()
             from agent.delegation_context import delegated_child_context
-            with delegated_child_context(str(getattr(child, "session_id", "") or "")):
-                return child.run_conversation(
-                    user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
-                )
+            _realization = getattr(child, "_profile_realization", None)
+            if _realization is not None:
+                ok, err = _realization.verify()
+                if not ok:
+                    raise RuntimeError(err)
+                _pdir = _realization.path
+            else:
+                _pdir = getattr(child, "_profile_dir", None)
+
+            if _pdir is not None and isinstance(_pdir, (str, Path)):
+                from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+                _tok = set_hermes_home_override(str(_pdir))
+                try:
+                    with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                        return child.run_conversation(
+                            user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                        )
+                finally:
+                    reset_hermes_home_override(_tok)
+            else:
+                with delegated_child_context(str(getattr(child, "session_id", "") or "")):
+                    return child.run_conversation(
+                        user_message=user_message, task_id=self.child_task_id, stream_callback=self.relay_text,
+                    )
 
         future = executor.submit(contextvars.copy_context().run, _run_with_thread_capture)
         # One wait covers both ways out: the worker finishing, or the heartbeat's stale verdict.

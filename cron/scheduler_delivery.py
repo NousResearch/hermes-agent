@@ -14,6 +14,7 @@ import contextlib
 import contextvars
 import logging
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -23,6 +24,41 @@ from typing import Any, List, Optional
 
 # Log-record parity with the origin module.
 logger = logging.getLogger("cron.scheduler")
+
+
+CRON_DELIVERABLE_MARKER = "FINAL_CRON_OUTPUT:"
+_CRON_DELIVERABLE_MARKER_RE = re.compile(
+    rf"(?im)^\s*{re.escape(CRON_DELIVERABLE_MARKER)}[^\S\r\n]*(.*)$"
+)
+
+
+def _extract_cron_deliverable_response(text: str) -> str:
+    """Return the marked final user-facing cron response when present.
+
+    Cron jobs run in quiet, unattended mode. To avoid deleting legitimate
+    reports with broad content heuristics, only strip text before the explicit
+    marker injected into the cron prompt.
+    """
+    if not isinstance(text, str):
+        return ""
+    stripped = text.strip()
+    if not stripped:
+        return stripped
+
+    marker_matches = list(_CRON_DELIVERABLE_MARKER_RE.finditer(stripped))
+    if marker_matches:
+        marker = marker_matches[-1]
+        same_line_tail = (marker.group(1) or "").strip()
+        remaining_tail = stripped[marker.end():].strip()
+        if same_line_tail and remaining_tail:
+            tail = f"{same_line_tail}\n{remaining_tail}"
+        else:
+            tail = same_line_tail or remaining_tail
+        if tail:
+            return tail
+        return stripped
+
+    return stripped
 
 
 # Validates user-supplied delivery platform names, preventing env-var enumeration via crafted names.

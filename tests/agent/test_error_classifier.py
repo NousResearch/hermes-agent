@@ -966,6 +966,7 @@ class TestClassifyApiError:
         for msg in (
             "Error code: 400 - reasoning_effort 'none' unsupported; use minimal|low|medium|high|xhigh",
             "Unrecognized request argument supplied: reasoning_effort",
+            "request param validation error, Value error, reasoning_effort must be [low, high, max] for glm-5.3",
             "Error code: 400 - {'error': {'message': 'Invalid option: expected one of "
             "\"low\"|\"medium\"|\"high\"|\"xhigh\"|\"max\"', 'type': 'invalid_request_error', "
             "'param': 'reasoning_effort'}}",
@@ -978,6 +979,11 @@ class TestClassifyApiError:
             provider="custom", model="kimi-k2-thinking",
         )
         assert gated.reason != FailoverReason.reasoning_mandatory
+        unrelated = classify_api_error(
+            MockAPIError("Value error, temperature must be [0, 2]", status_code=400),
+            provider="custom", model="glm-5.3",
+        )
+        assert unrelated.reason != FailoverReason.reasoning_mandatory
 
     def test_structured_invalid_reasoning_effort_400_never_compresses(self):
         """A custom Responses relay rejects an unsupported ``reasoning.effort`` with a message-less

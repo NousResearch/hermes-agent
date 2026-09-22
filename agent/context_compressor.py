@@ -685,7 +685,12 @@ class _SummaryFailureKind:
 
 
 def _classify_summary_failure(e: Exception) -> _SummaryFailureKind:
-    """Classify a summary-call exception by status code / message shape."""
+    """Classify a summary-call exception by status code / message shape.
+
+    A "refusal content" RuntimeError (prose or provider ``refusal`` field) deliberately rides the
+    ``empty_content`` class — cooldown + main-model fallback + abort — so the "returned empty content"
+    fallback log line is expected for refusals.
+    """
     status = _exc_status_code(e)
     err = str(e).lower()
     return _SummaryFailureKind(

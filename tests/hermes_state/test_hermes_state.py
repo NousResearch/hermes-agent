@@ -5251,6 +5251,79 @@ def test_peer_fallback_never_adopts_a_sibling_profiles_row(tmp_path, monkeypatch
         store.close()
 
 
+def test_peer_fallback_reset_boundary_is_profile_fenced(tmp_path, monkeypatch):
+    """The recovery reset fence must not cross profiles either.
+
+    A sibling profile's newer session_reset row for the same peer tuple used
+    to suppress THIS profile's otherwise recoverable session: the NOT EXISTS
+    boundary subquery carried every peer predicate but profile_name. The
+    profile's own reset still fences recovery, and a store outside the
+    profile tree (no derivable owner) keeps the historical unfenced behavior.
+    """
+    import hermes_state
+
+    root = tmp_path / "hermes"
+    root.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setattr(hermes_state, "DEFAULT_DB_PATH", hermes_state._IMPORT_DEFAULT_DB_PATH)
+    store = SessionDB(db_path=root / "state.db")  # owner: default
+    try:
+        peer = {"user_id": "42", "chat_id": "42", "chat_type": "dm"}
+
+        def recover():
+            return store.find_latest_gateway_session_for_peer(
+                source="telegram", session_key="agent:main:telegram:dm:42", **peer
+            )
+
+        store.create_session("own", "telegram", session_key="agent:main:telegram:dm:42:old",
+                             profile_name="default", **peer)
+        store.append_message("own", "user", "default's conversation")
+        store._execute_write(
+            lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
+        )
+
+        # A sibling profile's later reset for the same tuple must NOT fence
+        # this profile's recovery.
+        store.create_session("sibling-reset", "telegram",
+                             session_key="agent:bot2:telegram:dm:42", profile_name="bot2", **peer)
+        store.append_message("sibling-reset", "user", "/new")
+        store.end_session("sibling-reset", "session_reset")
+
+        assert recover()["id"] == "own"
+
+        # The profile's OWN later reset still fences recovery.
+        store.create_session("own-reset", "telegram",
+                             session_key="agent:main:telegram:dm:42:r2", profile_name="default", **peer)
+        store.append_message("own-reset", "user", "/new")
+        store.end_session("own-reset", "session_reset")
+
+        assert recover() is None
+    finally:
+        store.close()
+
+    # Outside the profile tree there is no owner: every boundary counts.
+    (tmp_path / "elsewhere").mkdir()
+    unfenced = SessionDB(db_path=tmp_path / "elsewhere" / "state.db")
+    try:
+        peer = {"user_id": "42", "chat_id": "42", "chat_type": "dm"}
+        unfenced.create_session("own", "telegram", session_key="agent:main:telegram:dm:42:old",
+                                profile_name="default", **peer)
+        unfenced.append_message("own", "user", "conversation")
+        unfenced._execute_write(
+            lambda c: c.execute("UPDATE sessions SET last_activity_at = 1 WHERE id = 'own'")
+        )
+        unfenced.create_session("sibling-reset", "telegram",
+                                session_key="agent:bot2:telegram:dm:42", profile_name="bot2", **peer)
+        unfenced.append_message("sibling-reset", "user", "/new")
+        unfenced.end_session("sibling-reset", "session_reset")
+
+        assert unfenced.find_latest_gateway_session_for_peer(
+            source="telegram", session_key="agent:main:telegram:dm:42", **peer
+        ) is None
+    finally:
+        unfenced.close()
+
+
 def test_child_inherits_parent_profile_only_within_its_key_namespace(db):
     """#88381: parent→child ``profile_name`` COALESCE is fenced by ``agent:<ns>:``.
 

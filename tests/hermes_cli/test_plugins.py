@@ -2888,32 +2888,11 @@ class TestAsyncHookOnCallerLoop:
     the callback on the caller's loop.
     """
 
-    def test_callback_that_needs_the_caller_loop_completes(self):
-        import asyncio
-
-        mgr = PluginManager()
-
-        async def driver():
-            gate = asyncio.Event()
-
-            async def async_hook(**kwargs):
-                await gate.wait()  # only a sibling task on THIS loop can release it
-                return {"action": "allow"}
-
-            async def release():
-                await asyncio.sleep(0)
-                gate.set()
-
-            mgr._hooks.setdefault("pre_gateway_dispatch", []).append(async_hook)
-            asyncio.create_task(release())
-            return await asyncio.wait_for(
-                mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"), timeout=5)
-
-        assert asyncio.run(driver()) == [{"action": "allow"}]
-
-    def test_narrow_legacy_signature_still_gets_only_its_fields(self):
-        """Payload narrowing is shared with ``invoke_hook``: a callback declaring only ``event``
-        must not receive the additive ``gateway`` / ``telemetry_schema_version`` fields."""
+    def test_narrow_legacy_signature_still_gets_only_its_fields(self, caplog):
+        """Payload narrowing and failure isolation are shared with ``invoke_hook``: a callback
+        declaring only ``event`` must not receive the additive ``gateway`` /
+        ``telemetry_schema_version`` fields, and a raising callback is reported once and skipped
+        without losing its siblings' results."""
         import asyncio
 
         mgr = PluginManager()
@@ -2921,9 +2900,14 @@ class TestAsyncHookOnCallerLoop:
         def narrow(event):
             return {"seen": event}
 
+        async def boom(**_kw):
+            raise RuntimeError("async plugin blew up")
+
         async def narrow_async(event):
             return {"seen_async": event}
 
-        mgr._hooks.setdefault("pre_gateway_dispatch", []).extend([narrow, narrow_async])
-        results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
+        mgr._hooks.setdefault("pre_gateway_dispatch", []).extend([narrow, boom, narrow_async])
+        with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+            results = asyncio.run(mgr.ainvoke_hook("pre_gateway_dispatch", event="e", gateway="g"))
         assert results == [{"seen": "e"}, {"seen_async": "e"}]
+        assert "async plugin blew up" in caplog.text

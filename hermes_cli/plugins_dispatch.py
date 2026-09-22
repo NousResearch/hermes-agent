@@ -510,8 +510,12 @@ class PluginDispatchMixin:
                 logger.warning("Hook '%s' callback %s timed out after %.0fs", hook_name, callback_name, timeout)
                 if fail_closed:  # policy hook: fail closed with a block directive
                     results.append({"action": "block", "message": _PRE_TOOL_CALL_TIMEOUT_BLOCK_MESSAGE})
-            except Exception as exc:
-                logger.warning("Hook '%s' callback %s raised: %s", hook_name, callback_name, exc)
+            except (Exception, SystemExit) as exc:
+                # Same isolation + failure contract as the sync path (#111922 warn-once, #109624
+                # a raising policy guard fails closed).
+                self._report_hook_failure(hook_name, cb, kwargs, exc)
+                if fail_closed:
+                    results.append(_policy_error_block_directive(hook_name, cb, exc))
         return results
 
     def iter_hook_callbacks(self, hook_name: str) -> tuple[Callable, ...]:

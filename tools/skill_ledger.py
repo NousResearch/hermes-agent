@@ -157,8 +157,18 @@ def _trim_ledger_if_needed(path: Path) -> bool:
 @contextmanager
 def ledger_mutation():
     """Keep blob capture, the owning mutation, and ledger publication atomic against GC."""
-    with _ledger_lock():
+    lock = _ledger_lock()
+    try:
+        lock.__enter__()
+    except Exception as exc:
+        logger.warning(
+            "skill_ledger: could not lock mutation telemetry (%s) — mutation unaffected", exc)
         yield
+        return
+    try:
+        yield
+    finally:
+        lock.__exit__(None, None, None)
 
 
 def ledger_enabled() -> bool:

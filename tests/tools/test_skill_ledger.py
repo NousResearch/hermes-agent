@@ -11,6 +11,7 @@ skill history), reshaped for the all-actor JSONL ledger design.
 import hashlib
 import json
 import os
+from contextlib import contextmanager
 from pathlib import Path
 
 import pytest
@@ -384,6 +385,20 @@ def test_ledger_failure_never_blocks_the_mutation(ledger_env, monkeypatch):
         )
     )
     assert patched["success"] is True
+
+
+def test_ledger_lock_failure_never_blocks_the_mutation(ledger_env, monkeypatch):
+    from tools import skill_ledger
+
+    @contextmanager
+    def _broken_lock():
+        raise OSError("lock unavailable")
+        yield
+
+    monkeypatch.setattr(skill_ledger, "_ledger_lock", _broken_lock)
+
+    assert _create()["success"] is True
+    assert (ledger_env["skills"] / "my-skill" / "SKILL.md").exists()
 
 
 def test_list_entries_filtering_and_limit(ledger_env):

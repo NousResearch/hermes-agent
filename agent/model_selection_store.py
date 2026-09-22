@@ -422,23 +422,31 @@ def managed_recovery_hold(
                 started.append(row["id"])
         if not started:
             return None
-        latest_health = conn.execute(
-            "SELECT payload_json FROM routing_outcomes "
-            "WHERE receipt_id=? AND kind='routing_health' ORDER BY seq DESC LIMIT 1",
-            (started[-1],),
-        ).fetchone()
-        replay_authorized = conn.execute(
-            "SELECT 1 FROM routing_outcomes WHERE receipt_id=? "
-            "AND kind='routing_replay_authorized' LIMIT 1",
-            (started[-1],),
-        ).fetchone()
-    if replay_authorized is not None:
+        histories = [conn.execute(
+            "SELECT seq, kind, payload_json FROM routing_outcomes WHERE receipt_id=? ORDER BY seq",
+            (receipt_id,),
+        ).fetchall() for receipt_id in started]
+    latest_reconciled = False
+    for events in histories:
+        reconciled = max((e["seq"] for e in events if e["kind"] == "routing_replay_authorized"), default=0)
+        pending = set()
+        health_seen = False
+        for event in events:
+            if event["seq"] <= reconciled:
+                continue
+            payload = json.loads(event["payload_json"])
+            if event["kind"] == "routing_request_started":
+                pending.add(payload["request_id"])
+            elif event["kind"] == "routing_health":
+                health_seen = True
+                pending.discard(payload.get("request_id"))
+                if payload.get("replay_safe") is not True:
+                    return "routing replay uncertain: prior attempt may have produced output or external effects"
+        if pending or (not health_seen and not reconciled):
+            return "routing replay uncertain: prior provider contact has no terminal health outcome"
+        latest_reconciled = bool(reconciled) and not health_seen
+    if latest_reconciled:
         return None
-    if latest_health is None:
-        return "routing replay uncertain: prior provider contact has no terminal health outcome"
-    payload = json.loads(latest_health["payload_json"])
-    if payload.get("replay_safe") is not True:
-        return "routing replay uncertain: prior attempt may have produced output or external effects"
     if len(started) >= 2:
         return "routing alternate attempt exhausted: v1 permits at most one replacement per failure episode"
     return None

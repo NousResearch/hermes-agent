@@ -1,6 +1,7 @@
 """Receipted route health; never infer successful access from a catalogue."""
 import json
 import time
+import uuid
 from contextlib import contextmanager
 
 from agent.model_selection_store import _connect, append_outcome, get_receipt
@@ -28,7 +29,7 @@ def load_availability(home, policy_id: str, target_profile: str) -> dict:
 @contextmanager
 def observe_request(home, receipt_id):
     if not receipt_id:
-        yield
+        yield {}
         return
     from agent.error_classifier import classify_api_error
 
@@ -36,17 +37,20 @@ def observe_request(home, receipt_id):
     if receipt is None:
         raise RoutingBlocked("stale_or_revoked_decision", "health receipt is missing")
     route = receipt["selected"]
-    payload = dict(target_profile=receipt["requirements"].get("target_profile"),
-                   route_revision=route["route_revision"], endpoint=route["endpoint"])
+    payload: dict = dict(target_profile=receipt["requirements"].get("target_profile"),
+                   route_revision=route["route_revision"], endpoint=route["endpoint"],
+                   request_id=uuid.uuid4().hex)
+    # Persist before contact: a crash or failed terminal append leaves a pending request.
+    append_outcome(home, receipt_id, "routing_request_started", {"request_id": payload["request_id"]})
     try:
-        yield
+        yield payload
     except Exception as exc:
         reason = classify_api_error(exc, provider=route["provider"], model=route["model"]).reason.value
         status = {"auth": "missing_auth", "auth_permanent": "missing_auth",
                   "model_not_found": "denied_model", "billing": "quota", "rate_limit": "quota",
                   "upstream_rate_limit": "quota", "overloaded": "outage",
                   "server_error": "outage", "timeout": "outage"}.get(reason, "unknown")
-        replay_safe = reason in {
+        replay_safe = not payload.get("output_observed") and reason in {
             "auth", "auth_permanent", "model_not_found", "billing", "rate_limit",
             "upstream_rate_limit", "overloaded", "server_error",
         }
@@ -79,5 +83,7 @@ def observe_stream(home, receipt_id, stream):
     observation open until the consumer exhausts the stream so a partial stream
     is never recorded as healthy before its actual outcome is known.
     """
-    with observe_request(home, receipt_id):
-        yield from stream
+    with observe_request(home, receipt_id) as observation:
+        for chunk in stream:
+            observation["output_observed"] = True
+            yield chunk

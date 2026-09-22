@@ -46,7 +46,8 @@ def test_receipted_provider_failure_excludes_route_only_in_own_profile(tmp_path,
     assert get_receipt(tmp_path, implicit["receipt_id"])["requirements"]["target_profile"] == str(tmp_path.resolve())
 
 
-def test_managed_moa_stream_records_failure_during_consumption(tmp_path, monkeypatch):
+@pytest.mark.parametrize("failure", ["timeout", "quota"])
+def test_managed_moa_stream_records_failure_during_consumption(tmp_path, monkeypatch, failure):
     """The native MoA aggregator returns a lazy stream, so route health is not
     known when ``call_llm`` returns.  A failure raised while consuming that
     stream must be attributed to the receipted route rather than recorded as a
@@ -82,6 +83,11 @@ def test_managed_moa_stream_records_failure_during_consumption(tmp_path, monkeyp
     class BrokenStream:
         def __iter__(self):
             yield object()
+            if failure == "quota":
+                import httpx
+                from openai import RateLimitError
+                raise RateLimitError("stream disconnected after output", response=httpx.Response(
+                    429, request=httpx.Request("POST", route["endpoint"])), body=None)
             raise TimeoutError("stream disconnected after provider acceptance")
 
     monkeypatch.setattr(
@@ -115,11 +121,13 @@ def test_managed_moa_stream_records_failure_during_consumption(tmp_path, monkeyp
     stream = facade._call_prepared_aggregator(
         prepared, {"stream": True, "stream_options": {"include_usage": True}},
     )
-    with pytest.raises(TimeoutError, match="stream disconnected"):
+    from openai import RateLimitError
+    with pytest.raises((TimeoutError, RateLimitError), match="stream disconnected"):
         list(stream)
 
     health = [
         event["payload"] for event in list_outcomes(tmp_path, resolution["receipt_id"])
         if event["kind"] == "routing_health"
     ]
-    assert health and health[-1]["status"] == "outage"
+    assert health and health[-1]["status"] == {"timeout": "outage", "quota": "quota"}[failure]
+    assert health[-1]["replay_safe"] is False

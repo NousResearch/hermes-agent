@@ -362,3 +362,77 @@ def test_operator_reconciliation_allows_one_explicit_replay(
 
     assert result.spawned
     assert spawned == ["gpt-5", "gpt-5"]
+
+
+@pytest.mark.parametrize("history", ["effect_then_refusal", "refusal_then_interruption"])
+def test_recovery_retains_whole_attempt_uncertainty(
+    routing_home, all_assignees_spawnable, history,
+):
+    import json
+    import threading
+    from http.server import BaseHTTPRequestHandler, HTTPServer
+    from openai import OpenAI, RateLimitError
+    from agent.managed_route_health import observe_request
+    from agent.model_selection_store import activate_policy, append_outcome, publish_policy
+    from hermes_cli import kanban_db as kb, kanban_db_connect as kbc, kanban_db_dispatch as kbd
+
+    requests = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def do_POST(self):
+            requests.append(json.loads(self.rfile.read(int(self.headers["Content-Length"]))))
+            success = history == "effect_then_refusal" and len(requests) == 1
+            payload = ({"choices": [{"index": 0, "message": {"role": "assistant", "content": None,
+                        "tool_calls": [{"id": "effect", "type": "function", "function": {
+                            "name": "write_effect", "arguments": "{}"}}]}, "finish_reason": "tool_calls"}]}
+                       if success else {"error": {"message": "quota", "type": "rate_limit_error"}})
+            body = json.dumps(payload).encode()
+            self.send_response(200 if success else 429)
+            self.send_header("Content-Type", "application/json")
+            self.send_header("Content-Length", str(len(body)))
+            self.end_headers()
+            self.wfile.write(body)
+
+        def log_message(self, *args):
+            pass
+
+    server = HTTPServer(("127.0.0.1", 0), Handler)
+    thread = threading.Thread(target=server.serve_forever, daemon=True)
+    thread.start()
+    policy = _recovery_policy()
+    endpoint = f"http://127.0.0.1:{server.server_port}/v1"
+    policy["routes"][0]["endpoint"] = endpoint
+    publish_policy(routing_home, policy, approval_ref="operator:test")
+    activate_policy(routing_home, "kanban-default", 1)
+    kb.init_db()
+    spawned = []
+    try:
+        with kbc.connect() as conn, OpenAI(api_key="fixture", base_url=endpoint, max_retries=0) as client:
+            tid = kb.create_task(conn, title="whole attempt replay", assignee="alice", routing_role="builder",
+                                 routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192}, max_retries=10)
+            spawn = lambda task, workspace: spawned.append(task.model_override)
+            kbd.dispatch_once(conn, spawn_fn=spawn)
+            first = kb.get_task(conn, tid)
+            receipt = first.routing_receipt_id
+            append_outcome(routing_home, receipt, "routing_started", {})
+            if history == "effect_then_refusal":
+                with observe_request(routing_home, receipt):
+                    response = client.chat.completions.create(model="gpt-5", messages=[{"role": "user", "content": "act"}])
+                assert response.choices[0].message.tool_calls[0].function.name == "write_effect"
+                (routing_home / "effect.txt").write_text("external effect completed")
+            with pytest.raises(RateLimitError), observe_request(routing_home, receipt):
+                client.chat.completions.create(model="gpt-5", messages=[{"role": "user", "content": "continue"}])
+            if history == "refusal_then_interruption":
+                with pytest.raises(KeyboardInterrupt), observe_request(routing_home, receipt):
+                    raise KeyboardInterrupt("worker died after request contact began")
+            _fail_current_run(conn, first)
+            result = kbd.dispatch_once(conn, spawn_fn=spawn)
+            task = kb.get_task(conn, tid)
+            assert result.spawned == []
+            assert spawned == ["gpt-5"]
+            assert task.status == "blocked"
+            assert "uncertain" in task.last_failure_error.lower()
+    finally:
+        server.shutdown()
+        server.server_close()
+        thread.join()

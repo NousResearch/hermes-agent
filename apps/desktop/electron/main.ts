@@ -13174,7 +13174,7 @@ function reportPrimaryRecoveryCrashLoop(code: number | null, signal: string | nu
 
 function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
   startHermes({ supervisorRecovery: true }).catch(respawnError => {
-    rememberLog(`[supervisor] backend respawn failed: ${respawnError.message}`)
+    rememberLog(`[supervisor] backend respawn failed: ${firstLine(respawnError.message)}`)
 
     // Terminal boot failures still own their existing recovery UI. Only a
     // supervisor-owned respawn that failed transiently before ready may spend
@@ -13245,12 +13245,12 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // restarting a 5-10 minute install loop while the user is still reading
   // the failure overlay.
   if (bootstrapFailure) {
-    rememberLog(`[boot] bootstrap failure latched; refusing restart: ${bootstrapFailure.message}`)
+    rememberLog(`[boot] bootstrap failure latched; refusing restart: ${firstLine(bootstrapFailure.message)}`)
     throw bootstrapFailure
   }
 
   if (backendStartFailure) {
-    rememberLog(`[boot] backend start failure latched; refusing restart: ${backendStartFailure.message}`)
+    rememberLog(`[boot] backend start failure latched; refusing restart: ${firstLine(backendStartFailure.message)}`)
     throw backendStartFailure
   }
 
@@ -13258,7 +13258,7 @@ async function runHermesStart({ supervisorRecovery = false }: { supervisorRecove
   // Short-circuiting here keeps the boot-failure overlay latched and its
   // "Sign in" button clickable, instead of re-driving boot on every retry.
   if (remoteReauthFailure) {
-    rememberLog(`[boot] remote reauth failure latched; refusing restart: ${remoteReauthFailure.message}`)
+    rememberLog(`[boot] remote reauth failure latched; refusing restart: ${firstLine(remoteReauthFailure.message)}`)
     throw remoteReauthFailure
   }
 

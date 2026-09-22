@@ -880,8 +880,11 @@ SKILL_MANAGE_SCHEMA = {
                 # kept emitting file_content on create and the whole batch rolled back (#112677).
                 "items": {"anyOf": [
                     _op_schema("create", {
-                        "content": {"type": "string",
-                                    "description": "Full SKILL.md text (YAML frontmatter + markdown body)."},
+                        "content": {"type": "string", "description": (
+                            "Full SKILL.md text (YAML frontmatter + markdown body). "
+                            f"Frontmatter description must be at most {SKILL_PROMPT_DESC_LIMIT} characters; "
+                            "move detail into the body."
+                        )},
                         "category": {"type": "string",
                                      "description": "Optional category subdir (e.g. 'devops')."},
                     }, ("content",)),

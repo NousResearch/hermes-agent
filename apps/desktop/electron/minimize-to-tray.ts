@@ -178,12 +178,12 @@ export function createMinimizeToTray(options: Options) {
     return status()
   }
 
-  function registerWindow(win: BrowserWindow) {
+  function registerWindow(win: BrowserWindow, { closeToTray = false } = {}) {
     windows.add(win)
 
     const hide = () => {
       if (!enabled || !status().available || quitting || options.isQuittingForHandoff()) {
-        return
+        return false
       }
 
       hidden.add(win)
@@ -194,10 +194,20 @@ export function createMinimizeToTray(options: Options) {
 
       win.hide()
       syncDock()
+
+      return true
     }
 
     win.on('minimize', hide)
-    // Close (including Alt+F4) and explicit Quit keep their ordinary meaning.
+
+    if (closeToTray) {
+      win.on('close', event => {
+        if (hide()) {
+          event.preventDefault()
+        }
+      })
+    }
+
     // Windows session ending need not emit app.before-quit. Never hold it open.
     win.on('query-session-end', () => {
       quitting = true

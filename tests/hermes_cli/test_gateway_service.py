@@ -1,10 +1,12 @@
 """Tests for gateway service management helpers."""
 
+import json
 import os
 import plistlib
 import re
 import shlex
 import subprocess
+import sys
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -15,6 +17,7 @@ pwd = pytest.importorskip("pwd")
 grp = pytest.importorskip("grp")
 
 import hermes_cli.gateway as gateway_cli
+from hermes_cli.gateway_launchd import launchd_program_arguments
 from gateway import status
 from gateway.restart import (
     DEFAULT_GATEWAY_CRON_DRAIN_TIMEOUT,
@@ -26,13 +29,17 @@ from gateway.restart import (
 
 
 def _osascript_exec_argv(program_args: list[str]) -> list[str]:
-    """The argv a launchd ``ProgramArguments`` of ``/usr/bin/osascript -e <script>`` hands to ``exec`` —
-    undoing the AppleScript string escaping, then POSIX shell quoting, the way osascript and /bin/sh will."""
-    assert program_args[:2] == ["/usr/bin/osascript", "-e"] and len(program_args) == 3, program_args
-    script = program_args[2]
-    prefix, suffix = 'do shell script "', '"'
-    assert script.startswith(prefix) and script.endswith(suffix), script
-    shell = re.sub(r"\\(.)", r"\1", script[len(prefix):-len(suffix)])
+    """The argv the launchd JXA wrapper's libc ``system()`` hands to ``exec``."""
+    assert program_args[:4] == ["/usr/bin/osascript", "-l", "JavaScript", "-e"], program_args
+    assert len(program_args) == 5, program_args
+    script = program_args[4]
+    match = re.fullmatch(
+        r'ObjC\.import\("stdlib"\); const status=\$\.system\((.+)\); const signal=status & 127; '
+        r'\$\.exit\(status === -1 \? 1 : signal === 0 \? \(status >> 8\) & 255 : 128 \+ signal\);',
+        script,
+    )
+    assert match, script
+    shell = json.loads(match.group(1))
     exec_, *argv = shlex.split(shell)
     assert exec_ == "exec", shell
     return argv
@@ -1860,7 +1867,8 @@ class TestProfileArg:
         program_args = plistlib.loads(plist.encode("utf-8"))["ProgramArguments"]
 
         # The job is launched through osascript so macOS Local Network Privacy attributes the
-        # gateway's sockets to a platform binary (#71206); the real command is the exec'd child.
+        # gateway's sockets to a platform binary (#71206); JXA system() waits without the
+        # Standard Additions user-cancel polling loop.
         assert _osascript_exec_argv(program_args) == [
             "/usr/bin/python3",
             "-m",
@@ -1883,7 +1891,7 @@ class TestProfileArg:
         ]
 
     def test_launchd_osascript_wrapper_round_trips_shell_hostile_paths(self, tmp_path, monkeypatch):
-        """A home with spaces, quotes and a backslash survives shlex + AppleScript + plist quoting."""
+        """A home with spaces, quotes and a backslash survives shlex + JXA + plist quoting."""
         profile_dir = tmp_path / 'my "odd" dir \\ here' / ".hermes"
         profile_dir.mkdir(parents=True)
         monkeypatch.setattr(Path, "home", lambda: tmp_path)
@@ -1898,6 +1906,28 @@ class TestProfileArg:
         assert argv[-3:] == [str(profile_dir / "logs" / "gateway.log"), "2>>", str(profile_dir / "logs" / "gateway.error.log")]
         # The wrapper's own ps line must never be taken for the gateway (stop/status would signal osascript).
         assert status.looks_like_gateway_command_line(" ".join(program_args)) is False
+
+    @pytest.mark.skipif(sys.platform != "darwin", reason="osascript is macOS-only")
+    def test_launchd_osascript_wrapper_preserves_process_group_and_exit_status(self, tmp_path):
+        """The non-polling JXA wait keeps lifecycle signals and KeepAlive failure semantics intact."""
+        stdout_log = tmp_path / "stdout.log"
+        stderr_log = tmp_path / "stderr.log"
+        command = [
+            sys.executable,
+            "-c",
+            "import os, sys; print(os.getpgrp(), os.getpgid(os.getppid())); sys.exit(23)",
+        ]
+
+        result = subprocess.run(
+            launchd_program_arguments(command, stdout_log, stderr_log),
+            check=False,
+            timeout=10,
+        )
+
+        assert result.returncode == 23
+        child_group, wrapper_group = stdout_log.read_text().split()
+        assert child_group == wrapper_group
+        assert stderr_log.read_text() == ""
 
     def test_launchd_plist_path_uses_real_user_home_not_profile_home(self, tmp_path, monkeypatch):
         profile_dir = tmp_path / ".hermes" / "profiles" / "orcha"

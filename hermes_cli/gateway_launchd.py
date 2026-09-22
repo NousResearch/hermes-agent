@@ -219,20 +219,27 @@ def launchd_program_arguments(command: list[str], stdout_log: Path, stderr_log: 
     venv Python has no application ID and is not platform-entitled, so every LAN connect from the
     launchd gateway dies with ``EHOSTUNREACH`` while the same code works from Terminal (whose grant it
     inherits). An ad-hoc-signed helper .app does not help: nehelper never prompts for it and denies
-    (#57812 dead-end table, re-verified live on macOS 26.3). ``/usr/bin/osascript``'s ``do shell script``
-    spawns its child as osascript-responsible — an Apple platform binary — so the child is exempt;
-    ``/bin/sh -c exec …`` and ``/usr/bin/time`` wrappers are NOT (the launchd job identity is the
-    non-entitled first executable). ``do shell script`` buffers the child's stdout/stderr until it exits,
-    so the command appends both to the same files the plist's ``StandardOutPath``/``StandardErrorPath``
-    name (those keys stay: they are where osascript's own output lands — an empty result line per exit
-    and an un-timestamped ``execution error`` line on non-zero exit); ``exec`` keeps the
-    gateway a direct child in the job's process group, so ``launchctl bootout`` / ``kickstart -k`` still
-    deliver SIGTERM to it and KeepAlive's ``SuccessfulExit`` semantics are preserved (osascript exits 0
-    exactly when the shell did).
+    (#57812 dead-end table, re-verified live on macOS 26.3). ``/usr/bin/osascript`` spawning the child
+    makes it osascript-responsible — an Apple platform binary — so the child is exempt; ``/bin/sh -c
+    exec …`` and ``/usr/bin/time`` wrappers are NOT (the launchd job identity is the non-entitled first
+    executable).
+
+    Standard Additions' ``do shell script`` polls WindowServer for a user-cancel event while it waits.
+    That is appropriate for a short interactive script but burns CPU for the gateway's process lifetime.
+    JXA calling libc ``system()`` waits in the kernel instead while retaining osascript as the responsible
+    process. The shell's ``exec`` keeps the gateway in the launchd job's process group, so ``launchctl
+    bootout`` / ``kickstart -k`` still deliver SIGTERM to it. stdout/stderr are appended inside the shell
+    command because ``system()`` otherwise inherits osascript's plist log handles. The encoded wait status
+    is translated back to a process exit code so KeepAlive's ``SuccessfulExit`` semantics are preserved.
     """
     shell = f"exec {shlex.join(command)} >> {shlex.quote(str(stdout_log))} 2>> {shlex.quote(str(stderr_log))}"
-    applescript = shell.replace("\\", "\\\\").replace('"', '\\"')
-    return ["/usr/bin/osascript", "-e", f'do shell script "{applescript}"']
+    javascript = (
+        'ObjC.import("stdlib"); '
+        f"const status=$.system({json.dumps(shell)}); "
+        "const signal=status & 127; "
+        "$.exit(status === -1 ? 1 : signal === 0 ? (status >> 8) & 255 : 128 + signal);"
+    )
+    return ["/usr/bin/osascript", "-l", "JavaScript", "-e", javascript]
 
 
 def _timestamped_stderr_gateway_command(error_log: Path, *, external_supervisor: bool = False) -> list[str]:

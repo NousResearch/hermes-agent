@@ -631,6 +631,12 @@ _LOCAL_CRON_DELIVERY_NOTE = (
     "default-deliver cron job will message them in this session."
 )
 
+# Dropped from the assembled Telegram hint when rich_messages is on, so it
+# does not contradict TELEGRAM_RICH_MESSAGES_HINT (#118047).
+TELEGRAM_NO_TABLES_STEERING = (
+    "Prefer bullets or labeled lines for structured data (no tables). "
+)
+
 PLATFORM_HINTS = {
     "whatsapp": (
         "You are on WhatsApp. Standard markdown auto-converts to WhatsApp syntax (*bold*, _italic_, ~strike~, "
@@ -648,7 +654,7 @@ PLATFORM_HINTS = {
     "telegram": (
         "You are on Telegram. Standard Markdown auto-converts: **bold**, "
         "*italic*, ~~strikethrough~~, ||spoiler||, `code`, ```blocks```, "
-        "[links](url), ## headers. Prefer bullets or labeled lines for structured data (no tables). "
+        f"[links](url), ## headers. {TELEGRAM_NO_TABLES_STEERING}"
         f"{_MEDIA_NATIVE}Images (.png, .jpg, .webp) send as photos, videos (.mp4) play inline; image URLs via ![alt](url) send as "
         "photos. Audio: add [[audio_as_voice]] on its own line to send ANY audio file as a native voice bubble "
         "(non-Opus transcodes automatically); without it, .mp3/.m4a arrive as audio files, other formats as documents."

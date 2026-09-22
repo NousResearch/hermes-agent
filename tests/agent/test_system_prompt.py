@@ -513,6 +513,7 @@ class TestTelegramRichMessagesHint:
             }
             stable = _stable_prompt(agent)
         assert "Standard Markdown auto-converts" in stable
+        assert "(no tables)" in stable
         assert "lean into it" not in stable
         assert "task lists" not in stable
 
@@ -528,6 +529,8 @@ class TestTelegramRichMessagesHint:
         assert "lean into it" in stable
         assert "task lists" in stable
         assert "math/formulas" in stable
+        assert "real Markdown tables" in stable
+        assert "(no tables)" not in stable
 
     def test_rich_hint_from_top_level_platforms(self):
         """Top-level ``platforms.telegram.extra.rich_messages`` is merged
@@ -540,6 +543,7 @@ class TestTelegramRichMessagesHint:
             stable = _stable_prompt(agent)
         assert "lean into it" in stable
         assert "task lists" in stable
+        assert "(no tables)" not in stable
 
     def test_top_level_overrides_gateway_rich_messages(self):
         """Top-level ``platforms.telegram.extra`` wins over gateway.platforms
@@ -572,6 +576,7 @@ class TestTelegramRichMessagesHint:
             mock_cfg.return_value = {}
             stable = _stable_prompt(agent)
         assert "Standard Markdown auto-converts" in stable
+        assert "(no tables)" in stable
         assert "lean into it" not in stable
 
 

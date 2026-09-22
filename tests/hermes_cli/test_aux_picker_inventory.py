@@ -23,6 +23,7 @@ from unittest.mock import patch
 
 import pytest
 import yaml
+from hermes_cli import main_provider_setup
 
 
 CONFIG = {
@@ -123,7 +124,6 @@ def test_aux_pickers_route_through_the_shared_substrate(configured_home):
     of user config the author didn't think about. Both pickers must reach
     the provider list only through ``build_aux_picker_rows``.
     """
-    import hermes_cli.main as main
     import hermes_cli.tools_config as tools_config
 
     direct_calls = []
@@ -143,9 +143,9 @@ def test_aux_pickers_route_through_the_shared_substrate(configured_home):
     with (
         patch("hermes_cli.model_switch.list_authenticated_providers", _direct),
         patch("hermes_cli.inventory.build_aux_picker_rows", _substrate),
-        patch("hermes_cli.main._prompt_provider_choice", return_value=None),
+        patch("hermes_cli.main_provider_setup._prompt_provider_choice", return_value=None),
     ):
-        main._aux_select_for_task("compression")
+        main_provider_setup._aux_select_for_task("compression")
         tools_config._configure_vision_provider_model({}, {})
 
     assert len(substrate_calls) == 2, (

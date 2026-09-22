@@ -76,8 +76,22 @@ def test_curator_defaults(curator_env):
     c = curator_env["curator"]
     assert c.get_interval_hours() == 24 * 7  # 7 days
     assert c.get_min_idle_hours() == 2
-    assert c.get_stale_after_days() == 30
-    assert c.get_archive_after_days() == 90
+    assert c.get_stale_after_days() == 14
+    assert c.get_archive_after_days() == 30
+
+def test_bundled_skills_are_off_limits_unless_opted_in(curator_env, monkeypatch):
+    """Shipped skills vanishing after 30 idle days is opt-in: with no config the reader says off, and
+    the same reader flips with the key. Both loaders see the same answer (DEFAULT_CONFIG agrees)."""
+    import importlib
+    import tools.skill_usage as usage
+    from hermes_cli.config_defaults import DEFAULT_CONFIG
+    importlib.reload(usage)  # the fixture pins _prune_builtins_enabled; reload restores the real reader
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {}})
+    assert usage._prune_builtins_enabled() is False
+    assert DEFAULT_CONFIG["curator"]["prune_builtins"] is False
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: {"curator": {"prune_builtins": True}})
+    assert usage._prune_builtins_enabled() is True
+
 
 
 
@@ -305,19 +319,126 @@ def test_unreferenced_skill_is_still_archived(curator_env, monkeypatch):
 # ---------------------------------------------------------------------------
 
 def _enable_prune_builtins(curator_env, monkeypatch):
-    """Flip curator.prune_builtins on for both config-reading paths."""
-    c = curator_env["curator"]
+    """Flip curator.prune_builtins on (skill_usage is the only reader now)."""
     u = curator_env["usage"]
-    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": True})
     monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: True)
 
 
 def _disable_prune_builtins(curator_env, monkeypatch):
-    """Flip curator.prune_builtins off for both config-reading paths."""
+    """Flip curator.prune_builtins off (skill_usage is the only reader now)."""
+    u = curator_env["usage"]
+    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
+
+
+def _write_bundled_and_agent(curator_env, u):
+    """One bundled built-in, one ``skills.disabled`` agent skill and one plain agent-created skill under the test home."""
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-fixture")
+    _write_skill(skills_dir, "disabled-fixture")
+    _write_skill(skills_dir, "agent-fixture")
+    (skills_dir / ".bundled_manifest").write_text(
+        "bundled-fixture:deadbeef\n", encoding="utf-8",
+    )
+    (curator_env["home"] / "config.yaml").write_text(
+        "skills:\n  disabled:\n    - disabled-fixture\n", encoding="utf-8",
+    )
+    u.mark_agent_created("disabled-fixture")
+    u.mark_agent_created("agent-fixture")
+    return skills_dir
+
+
+def test_llm_candidate_list_omits_bundled_and_disabled_skills(
+    curator_env, monkeypatch,
+):
+    """The LLM pass is only offered candidates it can act on (#111608, #113013).
+
+    Bundled skills: ``prune_builtins`` makes them archive-eligible for the
+    deterministic walk, but every background ``skill_manage`` write to one is
+    refused. Disabled skills: ``skill_view`` — the fork's only read path —
+    refuses them. Either way the fork loops on refusals until the
+    same-tool-failure halt ends the run with zero findings. The aging pass
+    (``list_agent_created_skill_names``) must still see both.
+    """
     c = curator_env["curator"]
     u = curator_env["usage"]
-    monkeypatch.setattr(c, "_load_config", lambda: {"prune_builtins": False})
-    monkeypatch.setattr(u, "_prune_builtins_enabled", lambda: False)
+    _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    aging = set(u.list_agent_created_skill_names())
+    assert {"bundled-fixture", "disabled-fixture", "agent-fixture"} <= aging
+
+    listing = c._render_candidate_list()
+    assert "agent-fixture" in listing
+    assert "bundled-fixture" not in listing
+    assert "disabled-fixture" not in listing
+
+
+def test_llm_prompt_does_not_invite_bundled_writes_when_prune_builtins_on(
+    curator_env, monkeypatch,
+):
+    """The delivered review prompt must not override hard rule #1.
+
+    ``PRUNE-BUILTINS MODE IS ON`` used to tell the model bundled skills were
+    in the candidate list and may be archived by the LLM. Archival is the
+    deterministic pass's job; the LLM pass must not be asked to mutate them.
+    When nothing actionable remains the fork is skipped outright.
+    """
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    captured = {}
+
+    def _stub(prompt):
+        captured["prompt"] = prompt
+        return {"final": "", "summary": "s", "model": "", "provider": "",
+                "tool_calls": [], "error": None}
+
+    monkeypatch.setattr(c, "_run_llm_review", _stub)
+    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+
+    prompt = captured["prompt"]
+    assert "agent-fixture" in prompt
+    assert "bundled-fixture" not in prompt
+    assert "disabled-fixture" not in prompt
+    assert "PRUNE-BUILTINS MODE IS ON" not in prompt
+
+    # Only bundled + disabled candidates left: no fork at all.
+    import shutil
+    shutil.rmtree(skills_dir / "agent-fixture")
+    captured.clear()
+    c.run_curator_review(synchronous=True, consolidate=True, dry_run=True)
+    assert "prompt" not in captured
+
+
+def test_prune_builtins_still_archives_bundled_via_deterministic_pass(
+    curator_env, monkeypatch,
+):
+    """Flag on: a long-idle bundled skill is archived without the LLM list."""
+    c = curator_env["curator"]
+    u = curator_env["usage"]
+    skills_dir = _write_bundled_and_agent(curator_env, u)
+    _enable_prune_builtins(curator_env, monkeypatch)
+
+    super_old = (datetime.now(timezone.utc) - timedelta(days=200)).isoformat()
+    data = u.load_usage()
+    data["bundled-fixture"] = u._empty_record()
+    data["bundled-fixture"]["last_used_at"] = super_old
+    data["bundled-fixture"]["created_at"] = super_old
+    data["bundled-fixture"]["use_count"] = 1
+    u.save_usage(data)
+
+    # Eligible for the deterministic walk...
+    names = set(u.list_agent_created_skill_names())
+    assert "bundled-fixture" in names
+    # ...but not for the LLM rewrite pass.
+    assert "bundled-fixture" not in c._render_candidate_list()
+
+    counts = c.apply_automatic_transitions()
+    assert counts["archived"] >= 1
+    assert not (skills_dir / "bundled-fixture").exists()
+    assert "bundled-fixture" in u.read_suppressed_names()
 
 
 
@@ -331,13 +452,17 @@ def _disable_prune_builtins(curator_env, monkeypatch):
 
 
 def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypatch):
-    """A protected built-in (e.g. `plan`) is never archived, even when it is a
-    stale bundled skill under prune_builtins — it backs a load-bearing slash
-    command and must survive every curator pass."""
+    """A protected built-in is never archived, even when it is a stale
+    bundled skill under prune_builtins — it backs a load-bearing UX path and
+    must survive every curator pass.
+
+    The shipped set is currently empty (``plan`` graduated to a built-in
+    command), so the mechanism is exercised with a sentinel name."""
     u = curator_env["usage"]
     c = curator_env["curator"]
     skills_dir = curator_env["home"] / "skills"
-    name = next(iter(u.PROTECTED_BUILTIN_SKILLS))  # the real protected name(s)
+    name = "sentinel-protected-skill"
+    monkeypatch.setattr(u, "PROTECTED_BUILTIN_SKILLS", {name})
     _write_skill(skills_dir, name)
     (skills_dir / ".bundled_manifest").write_text(f"{name}:abc\n", encoding="utf-8")
     _enable_prune_builtins(curator_env, monkeypatch)
@@ -357,6 +482,33 @@ def test_protected_builtin_never_archived_even_when_stale(curator_env, monkeypat
     assert name not in u.read_suppressed_names()
 
 
+
+
+def test_preseeded_never_used_builtin_is_reanchored_not_staled(curator_env, monkeypatch):
+    """Telemetry records a bundled skill the moment it is seeded, months before the curator's first
+    sight; anchoring on that created_at marked 71 built-ins stale on one first run (#79295). First
+    sight re-anchors the clock (and reactivates a record the bug already staled); the skill then
+    ages normally and still goes stale after a full window of non-use."""
+    u, c = curator_env["usage"], curator_env["curator"]
+    skills_dir = curator_env["home"] / "skills"
+    _write_skill(skills_dir, "bundled-helper")
+    (skills_dir / ".bundled_manifest").write_text("bundled-helper:abc\n", encoding="utf-8")
+    _enable_prune_builtins(curator_env, monkeypatch)
+    super_old = (datetime.now(timezone.utc) - timedelta(days=365)).isoformat()
+    data = u.load_usage()
+    data["bundled-helper"] = {**u._empty_record(), "created_at": super_old, "state": u.STATE_STALE}
+    u.save_usage(data)
+
+    t0 = datetime.now(timezone.utc)
+    counts = c.apply_automatic_transitions(now=t0)
+    assert (counts["marked_stale"], counts["archived"], counts["seeded"]) == (0, 0, 1)
+    rec = u.get_record("bundled-helper")
+    assert rec["state"] == "active" and rec["first_seen_at"] is not None
+    assert datetime.fromisoformat(rec["created_at"]) > datetime.fromisoformat(super_old)
+
+    # One-shot: 15 days of continued non-use (past stale_after_days=14) → stale, not deferred forever.
+    counts = c.apply_automatic_transitions(now=t0 + timedelta(days=15))
+    assert counts["marked_stale"] == 1 and u.get_record("bundled-helper")["state"] == "stale"
 
 
 def test_prune_builtins_never_touches_hub_skills(curator_env, monkeypatch):
@@ -531,7 +683,9 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
 
     ``_background_review_read_before_write_guard`` refuses a background-review
     write whose target was not loaded via ``skill_view`` in the same turn —
-    edit, patch, write_file over an existing file, and remove_file. The forked
+    patch (targeted or full rewrite), write_file over an existing file, and
+    remove_file; ``edit`` is an unadvertised alias of the full-rewrite patch,
+    so the prompt no longer names it. The forked
     reviewer only performs that read if the prompt tells it to, so a guard the
     prompt never mentions is a silently jammed write channel rather than a
     safety net: the run completes, writes nothing, and reads like a pass that
@@ -558,7 +712,7 @@ def test_review_prompt_tells_reviewer_to_read_before_writing(curator_env, monkey
 
     prompt = captured["prompt"]
     assert "skill_view" in prompt
-    for action in ("edit", "patch", "write_file", "remove_file"):
+    for action in ("patch", "write_file", "remove_file"):
         assert f"action={action}" in prompt, (
             "the delivered prompt never tells the reviewer to call skill_view "
             f"before skill_manage action={action}, which the read-before-write "
@@ -693,23 +847,15 @@ def test_review_model_auxiliary_curator_partial_override_falls_back(curator_env)
         "model": dict(base_main),
         "auxiliary": {"curator": {"provider": "openrouter", "model": ""}},
     }
-    assert curator._resolve_review_model(cfg_provider_only) == (
-        "openrouter", "openai/gpt-5.5",
-    )
+    b = curator._resolve_review_runtime(cfg_provider_only)
+    assert (b.provider, b.model) == ("openrouter", "openai/gpt-5.5")
 
     cfg_model_only = {
         "model": dict(base_main),
         "auxiliary": {"curator": {"provider": "auto", "model": "gpt-5.4-mini"}},
     }
-    assert curator._resolve_review_model(cfg_model_only) == (
-        "openrouter", "openai/gpt-5.5",
-    )
-
-
-
-
-
-
+    b = curator._resolve_review_runtime(cfg_model_only)
+    assert (b.provider, b.model) == ("openrouter", "openai/gpt-5.5")
 
 
 def test_curator_slot_is_canonical_aux_task():
@@ -720,8 +866,8 @@ def test_curator_slot_is_canonical_aux_task():
     specifically so the unification doesn't silently regress.
     """
     from hermes_cli.config import DEFAULT_CONFIG
-    from hermes_cli.main import _AUX_TASKS
-    from hermes_cli.web_server import _AUX_TASK_SLOTS
+    from hermes_cli.main_provider_setup import _AUX_TASKS
+    from hermes_cli.web_server_config import _AUX_TASK_SLOTS
 
     # 1. DEFAULT_CONFIG.auxiliary — schema source
     assert "curator" in DEFAULT_CONFIG["auxiliary"], \
@@ -800,6 +946,44 @@ def test_review_fork_forwards_runtime_pool_and_overrides(curator_env, monkeypatc
     assert captured["kwargs"]["request_overrides"] == fake_overrides
 
 
+def test_review_fork_receives_configured_reasoning(curator_env, monkeypatch):
+    """#85153 class: the curator's review fork is an ``AIAgent()`` built from config, so ``agent.reasoning_effort``
+    must reach it through the shared ``resolve_reasoning_config`` chokepoint (resolved against the review model)."""
+    curator = curator_env["curator"]
+    import importlib
+    importlib.reload(curator)
+    captured = {}
+    cfg = {"model": {"provider": "openai-api", "default": "gpt-4o-mini"}, "agent": {"reasoning_effort": "none"}}
+
+    class _StubAgent:
+        def __init__(self, *args, **kwargs):
+            captured["kwargs"] = kwargs
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, user_message=None, **kwargs):
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("hermes_cli.config.load_config", lambda: cfg)
+    monkeypatch.setattr("hermes_cli.config.load_config_readonly", lambda: cfg)
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **kwargs: {"provider": "openai-api", "api_key": "k", "base_url": "https://api.openai.com/v1",
+                          "api_mode": "codex_responses"},
+    )
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+
+    meta = curator._run_llm_review("review prompt")
+
+    assert meta.get("error") is None, meta.get("error")
+    assert captured["kwargs"]["reasoning_config"] == {"enabled": False}
+
+
 def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch):
     curator = curator_env["curator"]
     import importlib
@@ -842,22 +1026,24 @@ def test_review_fork_uses_runtime_model_and_output_cap(curator_env, monkeypatch)
 
     assert result["error"] is None
     assert captured["model"] == "real-model-id"
-    assert captured["max_tokens"] == 1234
+    assert captured.get("max_tokens") is None
 
 
 
 
-def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monkeypatch):
-    """The curator LLM fork must advertise only the skills + terminal toolsets.
+def test_review_fork_restricts_toolsets_to_skills_only(curator_env, monkeypatch):
+    """The curator LLM fork must advertise only the skills toolset.
 
-    Without ``enabled_toolsets=["skills", "terminal"]`` on the AIAgent(...) call
-    in ``_run_llm_review``, ``enabled_toolsets`` defaults to None and init_agent
-    grants the fork the full default catalog (~30 tools) plus the context_engine
-    (lcm_*) tools, billing ~7K wasted schema tokens on every one of the fork's
-    50-100 API calls per consolidation pass. The prompt (curator.py:509-523)
-    confines the model to four tools in natural language, but only this kwarg
-    filters the advertised request schema. Capturing the constructor kwarg is
-    the sole assertion that distinguishes fixed from unfixed code.
+    ``terminal`` was removed from this fork for issue #96962: a terminal
+    mv/cp/rm under the skills tree bypasses the skill ledger entirely, so the
+    archive that followed snapshotted an already-stripped package and
+    ``hermes curator rollback`` restored a hollow skill. Removing the toolset
+    (rather than guarding terminal commands) closes every shell bypass by
+    construction. Without ``enabled_toolsets=["skills"]`` on the AIAgent(...)
+    call in ``_run_llm_review``, ``enabled_toolsets`` defaults to None and
+    init_agent grants the fork the full default catalog (~30 tools) plus the
+    context_engine (lcm_*) tools. Capturing the constructor kwarg is the sole
+    assertion that distinguishes fixed from unfixed code.
     """
     curator = curator_env["curator"]
 
@@ -888,37 +1074,131 @@ def test_review_fork_restricts_toolsets_to_skills_and_terminal(curator_env, monk
 
     # error is None proves the fork was actually constructed (capture ran).
     assert meta.get("error") is None, meta.get("error")
-    assert captured.get("enabled_toolsets") == ["skills", "terminal"], (
-        "curator review fork did not pass enabled_toolsets=['skills', "
-        "'terminal'] to AIAgent; the full default tool catalog (plus lcm_* "
-        "context_engine tools) would be advertised; got "
-        f"{captured.get('enabled_toolsets')!r}"
+    assert captured.get("enabled_toolsets") == ["skills"], (
+        "curator review fork did not pass enabled_toolsets=['skills'] to "
+        "AIAgent; terminal must stay out (issue #96962) and the full default "
+        "tool catalog (plus lcm_* context_engine tools) must not be "
+        f"advertised; got {captured.get('enabled_toolsets')!r}"
     )
 
 
-def test_review_fork_toolset_surface_is_skills_plus_terminal():
-    """Documentary check on the static surface the fork's kwarg resolves to.
+def test_review_fork_toolset_surface_excludes_execution_tools():
+    """The fork's toolset kwarg must resolve to a surface with no shell access.
 
-    Registry-independent (include_registry=False) so a plugin-registered tool
-    tagged into these toolsets cannot flake the membership checks. This
-    documents the intended surface (the four prompt-named tools present, dead
-    default and lcm_* schema absent) but does not itself guard the call-site
-    kwarg. No exact-set pin: intentional additions to either toolset must not
-    fail this test.
+    ``terminal`` and ``process`` must stay out of the curator fork's resolved
+    surface (issue #96962): a shell mv/cp/rm under the skills tree bypasses
+    the skill ledger entirely, the archive that follows snapshots an
+    already-stripped package, and ``hermes curator rollback`` restores a
+    hollow skill. The call-site kwarg is pinned to ``["skills"]`` by the test
+    above; this test pins the RESOLUTION, so an ``includes: ["terminal"]``
+    added to the skills toolset definition — or a new execution tool merged
+    into it — fails here even though the kwarg never changed.
+
+    Registry-independent (``include_registry=False``): the boundary is the
+    static toolset definition. A plugin registering a tool into "skills" is
+    the user's own install decision, not the attack class this guard defends
+    against.
     """
     from toolsets import resolve_toolset
 
-    surface = set(resolve_toolset("skills", include_registry=False)) | set(
-        resolve_toolset("terminal", include_registry=False)
-    )
+    surface = set(resolve_toolset("skills", include_registry=False))
 
-    # The four prompt-named tools are all present.
+    # The ledgered write surface is present in full.
     assert "skills_list" in surface
     assert "skill_view" in surface
     assert "skill_manage" in surface
-    assert "terminal" in surface
 
-    # Representative dropped default + context_engine tools are absent.
-    assert "read_file" not in surface
-    assert "web_search" not in surface
-    assert "lcm_grep" not in surface
+    # The incident class stays out: no command execution, no background
+    # process steering (stdin is a second unguarded write sink), and no
+    # generic filesystem-write tool.
+    for tool in ("terminal", "process_manage", "write_file", "patch",
+                 "execute_code", "computer_use", "browser_exec"):
+        assert tool not in surface, (
+            f"execution/write tool {tool!r} leaked into the curator fork's "
+            "surface via the skills toolset — un-ledgered skill mutations "
+            f"become possible again (issue #96962); surface={sorted(surface)}"
+        )
+
+
+def test_review_prompt_does_not_steer_terminal_writes():
+    """The consolidation prompt must not steer the fork into shell mutations.
+
+    The #96962 incident was steered by a prompt line telling the fork to
+    ``mkdir -p ~/.hermes/skills/<umbrella>/references/ && mv ...`` its
+    support files. Removing terminal from the toolset takes away the
+    capability; removing the steering stops the fork burning tool calls on
+    attempts that can only be refused. Both halves are load-bearing.
+    """
+    from agent.curator import CURATOR_DRY_RUN_BANNER, CURATOR_REVIEW_PROMPT
+
+    for text in (CURATOR_REVIEW_PROMPT, CURATOR_DRY_RUN_BANNER):
+        assert "mkdir -p" not in text, (
+            "the curator prompt steers the fork toward a shell write of the "
+            "skills tree (issue #96962); re-home content via skill_manage "
+            "write_file/remove_file instead"
+        )
+        assert "&& mv" not in text
+
+
+def test_review_fork_seeds_shared_read_marks(curator_env, monkeypatch):
+    """The curator LLM fork must install a shared read-before-write marks store
+    in its own context before ``run_conversation``.
+
+    Regression for the dead-end refusal the consolidation pass hit in practice:
+    ``mark_background_review_skill_read`` auto-creates a store when the
+    ContextVar is unset, but tool workers run on COPIED contexts, so each
+    worker's marks stayed private — a ``skill_view`` in one worker never
+    satisfied the write guard in another, and every ``skill_manage`` patch was
+    refused with "current SKILL.md content has not been loaded in this review
+    turn". The background-review fork seeds a shared store up front
+    (``agent/background_review.py``); the curator fork must do the same so
+    every copied worker context shares ONE store.
+    """
+    curator = curator_env["curator"]
+    importlib.reload(curator)
+    from tools.skill_manager_guards import _background_review_read_paths
+
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.config.load_config_readonly",
+        lambda: {"model": {"provider": "custom:gateway", "default": "gateway"}},
+    )
+    monkeypatch.setattr(
+        "hermes_cli.runtime_provider.resolve_runtime_provider",
+        lambda **_kwargs: {
+            "provider": "custom",
+            "model": "m",
+            "api_key": "k",
+            "base_url": "https://gateway.example/v1",
+            "api_mode": "chat_completions",
+        },
+    )
+
+    observed = {}
+
+    class _StubAgent:
+        def __init__(self, **kwargs):
+            self._memory_write_origin = "assistant_tool"
+            self._memory_nudge_interval = 0
+            self._skill_nudge_interval = 0
+            self._session_messages = []
+
+        def run_conversation(self, **_kwargs):
+            observed["marks"] = _background_review_read_paths.get()
+            return {"final_response": "ok"}
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr("run_agent.AIAgent", _StubAgent)
+    result = curator._run_llm_review("review")
+
+    assert result["error"] is None
+    assert observed["marks"] is not None, (
+        "curator LLM fork must seed a shared read-marks store before "
+        "run_conversation, or every copied tool-worker context keeps private "
+        "marks and the read-before-write guard refuses all patches"
+    )

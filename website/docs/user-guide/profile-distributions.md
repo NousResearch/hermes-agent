@@ -265,7 +265,7 @@ When an installer updates to a new version, some things get replaced (author's d
 
 | Category | Paths | On update |
 |---|---|---|
-| **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/`, `distribution.yaml` | Replaced from the new clone |
+| **Distribution-owned** | `SOUL.md`, `config.yaml`, `mcp.json`, `skills/`, `cron/`, `distribution.yaml` | Files are replaced from the new clone. Directories are merged per entry: each skill or cron job the new clone ships replaces its counterpart wholesale (files the author retired disappear), while skills or cron jobs you added yourself stay in place. |
 | **Config override** | `config.yaml` | Actually preserved by default — the installer may have tuned model or provider. Pass `--force-config` on update to reset. |
 | **User-owned** | `memories/`, `sessions/`, `state.db*`, `auth.json`, `.env`, `logs/`, `workspace/`, `plans/`, `home/`, `*_cache/`, `local/` | Never touched |
 
@@ -403,7 +403,7 @@ hermes profile update research-bot
 What happens:
 
 1. Re-clones the repo from the recorded source URL.
-2. Replaces distribution-owned files (SOUL, skills, cron, mcp.json).
+2. Replaces distribution-owned files (SOUL, mcp.json) and every skill or cron job the distribution ships; skills and cron jobs you added to the profile yourself are left alone.
 3. **Preserves** your `config.yaml` — you may have tuned the model, temperature, or other settings. Pass `--force-config` to overwrite.
 4. **Never touches** user data: memories, sessions, auth, `.env`, logs, state.
 
@@ -624,10 +624,23 @@ When you don't need versioning, skip the repo. `/export` packs a profile into a 
 In the CLI, TUI, or desktop chat:
 
 ```
-/export                          # the active profile → <name>.tar.gz
+/export                          # the active profile → managed profile-exports/<name>-<timestamp>.tar.gz
 /export research-bot             # a named profile
 /export research-bot -o ~/Desktop/research-bot.tar.gz
 ```
+
+Without `-o`, the CLI and TUI place the archive in Hermes's managed
+`profile-exports/` directory under the default Hermes home, not in the current
+working directory. This keeps routine exports out of source checkouts and
+prevents a generated profile snapshot from being mistaken for a repository
+source file. If the Hermes home itself lives inside a Git checkout (some
+Docker/custom deployments), the archive goes to `~/.hermes-profile-exports/`
+or, failing that, a per-user directory under the OS temp dir — never into
+the checkout. If no safe automatic location exists at all (every candidate
+is inside a Git checkout), the export refuses with "No safe automatic
+export destination" and you must pass `-o` with a path outside the
+checkout. An explicit `-o` path is still honored
+when you intentionally choose where to save the archive.
 
 Or from a shell, same machinery:
 

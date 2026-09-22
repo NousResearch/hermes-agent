@@ -27,6 +27,8 @@ def _session_with_compressor(**compression_ctor):
         context_compressor=compressor,
         compression_enabled=True,
         compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
     )
     return {
         "agent": agent,
@@ -67,6 +69,36 @@ def test_live_threshold_tokens_applies_on_next_turn_without_rebuild(monkeypatch)
     assert live_agent.compression_idle_compact_after_seconds == 1800
 
 
+def test_live_codex_native_compaction_applies_on_next_turn(monkeypatch):
+    session, _ = _session_with_compressor()
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {"compression": {"codex_responses_native": True}},
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert session["agent"].codex_responses_native_compaction is True
+
+
+def test_live_codex_native_threshold_applies_on_next_turn(monkeypatch):
+    session, _ = _session_with_compressor()
+
+    monkeypatch.setattr(
+        server,
+        "_load_cfg",
+        lambda: {
+            "compression": {"codex_responses_compact_threshold": 120_000}
+        },
+    )
+
+    server._sync_agent_compression_with_config("sid-95151", session)
+
+    assert session["agent"].codex_responses_compact_threshold == 120_000
+
+
 def test_unchanged_compression_config_is_noop(monkeypatch):
     session, compressor = _session_with_compressor(threshold_tokens_cap=100_000)
     cfg = {
@@ -82,7 +114,7 @@ def test_unchanged_compression_config_is_noop(monkeypatch):
     assert compressor.threshold_tokens == 99_999
 
 
-def test_clearing_threshold_tokens_restores_ratio_trigger(monkeypatch):
+def test_clearing_threshold_tokens_restores_default_cap(monkeypatch):
     session, compressor = _session_with_compressor(threshold_tokens_cap=100_000)
     assert compressor.threshold_tokens == 100_000
 
@@ -96,12 +128,52 @@ def test_clearing_threshold_tokens_restores_ratio_trigger(monkeypatch):
     )
     server._sync_agent_compression_with_config("sid-95151", session)
 
+    # Key removal restores what a fresh agent build installs (merged DEFAULT_CONFIG), not "no
+    # cap": a None here re-derives the uncapped ratio trigger and the 256K default is lost.
+    assert compressor.threshold_tokens_cap == 256_000
     assert compressor.threshold_tokens > 100_000
-    assert compressor.threshold_tokens_cap is None
+
+
+def test_absent_threshold_tokens_keeps_default_cap_on_1m_window(monkeypatch):
+    """#117093: the live read is unmerged (missing key = unset), so a config.yaml without
+    compression.threshold_tokens used to wipe the ctor-installed 256K cap at the first
+    turn's sync — the trigger re-derived to the uncapped ratio value (500K on a 1M window)
+    and compaction stopped firing at 256K while telemetry still reported the capped figure."""
+    compressor = ContextCompressor(
+        model="unset-test-model",
+        threshold_percent=0.85,
+        config_context_length=1_000_000,
+        threshold_tokens_cap=256_000,
+        quiet_mode=True,
+    )
+    agent = SimpleNamespace(
+        model="unset-test-model",
+        provider="",
+        context_compressor=compressor,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    session = {"agent": agent, "session_key": "session-unset"}
+    assert compressor.threshold_tokens == 256_000  # min(1M * 0.85, 256K cap)
+
+    # The pin is scoped to the configured default route (#116467); that scoping has its own tests,
+    # this one is about the cap, so keep the 1M window in scope for the bare test runtime.
+    import agent.agent_init as agent_init
+
+    monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 1_000_000)
+    _sync_with_cfg(monkeypatch, session, {"model": {"context_length": 1_000_000}, "compression": {}})
+
+    assert compressor.threshold_tokens_cap == 256_000
+    # threshold is absent too, so the derived 0.50 ratio applies — the 256K cap must still win.
+    assert compressor.threshold_tokens == 256_000
+
 
 
 def test_prompt_submit_calls_compression_sync_after_model_sync():
-    source = open(server.__file__, encoding="utf-8").read()
+    # Read the module that actually defines the turn (it moved out of server.py).
+    source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()
     model_idx = source.find("_sync_agent_model_with_config(sid, session)")
     compression_idx = source.find("_sync_agent_compression_with_config(sid, session)")
     assert model_idx != -1
@@ -130,9 +202,12 @@ def _neutral_session(**compression_ctor):
     agent = SimpleNamespace(
         model="unset-test-model",
         provider="",
+        base_url="",
         context_compressor=compressor,
         compression_enabled=True,
         compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
     )
     return {"agent": agent, "session_key": "session-unset"}, compressor
 
@@ -201,7 +276,8 @@ def test_removing_threshold_restores_derived_default(monkeypatch):
     )
     assert compressor._config_threshold_percent == 0.50
     assert compressor.threshold_percent == 0.50
-    assert compressor.threshold_tokens == int(600_000 * 0.50)
+    # The absent cap key restores the 256K default, which binds below the 300K ratio value.
+    assert compressor.threshold_tokens == min(int(600_000 * 0.50), 256_000)
 
 
 def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
@@ -218,7 +294,7 @@ def test_removing_context_length_reinfers_from_model_metadata(monkeypatch):
     _sync_with_cfg(monkeypatch, session, {"model": {}, "compression": {}})
     assert compressor._config_context_length is None
     assert compressor.context_length == 1_000_000
-    assert compressor.threshold_tokens == int(1_000_000 * 0.50)
+    assert compressor.threshold_tokens == min(int(1_000_000 * 0.50), 256_000)
 
 
 def test_removing_idle_compact_after_seconds_restores_zero(monkeypatch):
@@ -233,3 +309,38 @@ def test_removing_enabled_restores_true(monkeypatch):
     session["agent"].compression_enabled = False
     _sync_with_cfg(monkeypatch, session, {"compression": {}})
     assert session["agent"].compression_enabled is True
+
+
+def test_removing_codex_native_compaction_restores_false(monkeypatch):
+    session, _ = _neutral_session()
+    session["agent"].codex_responses_native_compaction = True
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].codex_responses_native_compaction is False
+
+
+def test_removing_codex_native_threshold_restores_default(monkeypatch):
+    session, _ = _neutral_session()
+    session["agent"].codex_responses_compact_threshold = 120_000
+    _sync_with_cfg(monkeypatch, session, {"compression": {}})
+    assert session["agent"].codex_responses_compact_threshold == 200_000
+
+
+def test_apply_live_compression_config_is_self_contained():
+    # Regression for #115572: _apply_live_compression_config referenced
+    # is_truthy_value without importing it, so a direct (non-rebound) call
+    # raised NameError. The module must not depend on server.py injecting the
+    # name via method_ctx.bind_module.
+    from tui_gateway.session_compression import _apply_live_compression_config
+
+    agent = SimpleNamespace(
+        model="unset-test-model",
+        provider="",
+        context_compressor=None,
+        compression_enabled=True,
+        compression_idle_compact_after_seconds=0,
+        codex_responses_native_compaction=False,
+        codex_responses_compact_threshold=200_000,
+    )
+    _apply_live_compression_config(agent, {"compression": {"enabled": True}})
+    assert agent.compression_enabled is True
+    assert agent.codex_responses_native_compaction is False

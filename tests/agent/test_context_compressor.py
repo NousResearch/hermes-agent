@@ -1,9 +1,11 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+import re
 import sqlite3
 import pytest
 import time
+from types import SimpleNamespace
 from unittest.mock import patch, MagicMock
 
 from agent.context_compressor import (
@@ -11,9 +13,12 @@ from agent.context_compressor import (
     HISTORICAL_TASK_HEADING,
     SUMMARY_PREFIX,
     COMPRESSED_SUMMARY_METADATA_KEY,
+    _COMPRESSION_MARKER_PREFIX,
+    _COMPRESSION_MARKER_TEMPLATE,
     _PRUNE_MIN_CHARS,
     _summarize_tool_result,
     _is_summary_access_or_quota_error,
+    _truncate_tool_call_args_json,
 )
 from hermes_state import SessionDB
 
@@ -61,6 +66,39 @@ class TestSummarizeToolResultWebExtract:
         args = json.dumps({"urls": [{"href": "https://example.com/h"}]})
         summary = _summarize_tool_result("web_extract", args, self.CONTENT)
         assert summary == "[web_extract] https://example.com/h (500 chars)"
+
+
+class TestSummarizeToolResultSkillTools:
+    """`skill_manage` names live at ``operations[i].name`` and `skills_list` has no ``name`` arg at
+    all, so the shared ``name=`` stub rendered ``name=?`` for both and dropped the outcome — a failed
+    batch compressed into the same line as a success (#112710)."""
+
+    @pytest.mark.parametrize("args", [
+        {"operations": [{"action": "create", "name": "orca-ade"}, {"action": "patch", "name": "llama-server"}]},
+        {"action": "create", "name": "orca-ade"},  # legacy flat shape, still accepted by the tool
+    ])
+    def test_skill_manage_names_ops_and_keeps_failure_visible(self, args):
+        error = "operations[0] (create on 'orca-ade') failed: content is required for 'create'\n— batch rolled back."
+        failed = _summarize_tool_result("skill_manage", json.dumps(args), json.dumps({"success": False, "error": error}))
+        ok = _summarize_tool_result("skill_manage", json.dumps(args), json.dumps({"success": True, "operations_applied": 1}))
+
+        for summary in (failed, ok):
+            assert summary.startswith("[skill_manage] create orca-ade")
+            assert "name=?" not in summary and "\n" not in summary
+        assert "FAILED: operations[0] (create on 'orca-ade') failed: content is required" in failed
+        assert "FAILED" not in ok
+        assert failed != ok
+
+    def test_skills_list_uses_category_and_count_and_marks_failure(self):
+        args = json.dumps({"category": "devops"})
+        ok_content = json.dumps({"success": True, "skills": [{}, {}], "count": 2})
+        ok = _summarize_tool_result("skills_list", args, ok_content)
+        failed = _summarize_tool_result("skills_list", "{}", json.dumps({"success": False, "error": "skills dir unreadable"}))
+
+        assert ok == f"[skills_list] category=devops 2 skills ({len(ok_content)} chars)"
+        assert failed.startswith("[skills_list] FAILED: skills dir unreadable")
+        # Control: skill_view really has a top-level ``name`` and keeps its stub.
+        assert _summarize_tool_result("skill_view", json.dumps({"name": "github"}), "x" * 100) == "[skill_view] name=github (100 chars)"
 
 
 class TestSummarizeToolResultClarify:
@@ -232,6 +270,39 @@ class TestSummarizeToolResultClarify:
 
             assert summary == "[clarify] asked user a question", sentinel
 
+    def test_preserves_batch_user_response_from_responses_list(self):
+        """Batch clarify (``questions=[...]``) nests answers inside ``responses[].user_response``;
+        the summarizer must surface them, not just 'asked user a question' (#106077)."""
+        content = json.dumps({
+            "responses": [
+                {
+                    "question": "May the fields be removed?",
+                    "choices_offered": None,
+                    "user_response": "Keep the fields until ratification.",
+                }
+            ]
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert summary == '[clarify] user responded: ["Keep the fields until ratification."]'
+
+    def test_preserves_batch_multi_select_and_skips_empties(self):
+        """A partially-answered batch (multi_select + a skipped question) still surfaces every real decision."""
+        content = json.dumps({
+            "responses": [
+                {"question": "Q1?", "user_response": "Answer one"},
+                {"question": "Q2?", "user_response": ["Choice A", "Choice B"]},
+                {"question": "Q3?", "user_response": ""},
+            ]
+        })
+
+        summary = _summarize_tool_result("clarify", "{}", content)
+
+        assert "Answer one" in summary
+        assert "Choice A" in summary
+        assert "Choice B" in summary
+
 
 class TestShouldCompress:
     def test_below_threshold(self, compressor):
@@ -252,7 +323,6 @@ class TestShouldCompress:
 class TestUpdateFromResponse:
     def test_updates_fields(self, compressor):
         compressor.awaiting_real_usage_after_compression = True
-        compressor.last_compression_rough_tokens = 90_000
         compressor.update_from_response({
             "prompt_tokens": 5000,
             "completion_tokens": 1000,
@@ -261,97 +331,39 @@ class TestUpdateFromResponse:
         assert compressor.last_prompt_tokens == 5000
         assert compressor.last_completion_tokens == 1000
         assert compressor.last_real_prompt_tokens == 5000
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
         assert compressor.awaiting_real_usage_after_compression is False
 
     def test_missing_fields_default_zero(self, compressor):
         compressor.update_from_response({})
         assert compressor.last_prompt_tokens == 0
 
-    def test_pairs_noted_rough_estimate_with_fitting_real_usage(self, compressor):
-        """note_request_rough_estimate() + a fitting response must anchor the
-        defer baseline even when no compression ever ran — this is what gives
-        fresh sessions a (rough, real) pair before their first compaction."""
-        compressor.note_request_rough_estimate(120_000)
-        compressor.update_from_response({"prompt_tokens": 60_000})
-
-        assert compressor.last_real_prompt_tokens == 60_000
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 120_000
-        # Consumed: a later usage-bearing response without a fresh note keeps
-        # the previous pair instead of re-pairing against a stale estimate.
-        assert compressor._pending_request_rough_tokens == 0
-
-    def test_post_compression_pairing_wins_over_noted_estimate(self, compressor):
-        """Right after a compaction the post-compression rough count is the
-        authoritative baseline (#36718); a stale pre-compression note must not
-        displace it."""
-        compressor.note_request_rough_estimate(120_000)
-        compressor.awaiting_real_usage_after_compression = True
-        compressor.last_compression_rough_tokens = 40_000
-        compressor.update_from_response({"prompt_tokens": 30_000})
-
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 40_000
-
-    def test_usage_less_response_preserves_pending_note(self, compressor):
-        """Transports that report usage separately send usage-less responses
-        first; the pending pair must survive until real usage arrives."""
-        compressor.note_request_rough_estimate(120_000)
-        compressor.update_from_response({})
-
-        assert compressor._pending_request_rough_tokens == 120_000
-
-    def test_over_threshold_real_usage_clears_pending_note(self, compressor):
-        compressor.note_request_rough_estimate(120_000)
-        compressor.update_from_response({"prompt_tokens": 90_000})
-
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 0
-        assert compressor._pending_request_rough_tokens == 0
 
 class TestPreflightDeferral:
+    """A whole-context rough estimate over threshold waits ONE request for real usage; callers
+    never consult this for usage-anchored figures."""
 
-    def test_defers_while_projected_real_usage_fits(self, compressor):
-        """Large rough growth alone must not trigger compaction: with real
-        usage at 50K and 10K of rough growth since that reading, projected
-        real usage is 60K — far under the 85K threshold. The old fixed 5%
-        growth tolerance compacted here at ~59% of the real window (CJK /
-        replay-blob overcount churn)."""
+    def test_rough_estimate_defers_until_provider_prices_it(self, compressor):
+        """Real usage far under threshold, rough estimate far over (CJK / replay-blob overcount):
+        the provider's next reading decides, not the estimate."""
+        compressor.context_length = 200_000
         compressor.threshold_tokens = 85_000
         compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
-
         assert compressor.should_defer_preflight_to_real_usage(100_000) is True
+        assert compressor.should_defer_preflight_to_real_usage(80_000) is False
 
-    def test_does_not_defer_when_projected_real_usage_crosses_threshold(self, compressor):
-        """Projection = last real + rough growth. 80K real + 6K growth = 86K
-        >= 85K threshold: compression must run."""
+    def test_never_defers_when_real_usage_cannot_arrive_or_is_already_over(self, compressor):
+        """Only provider evidence ends deferral, not the magnitude of a rough estimate."""
+        compressor.context_length = 100_000
         compressor.threshold_tokens = 85_000
-        compressor.last_real_prompt_tokens = 80_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
-
-        assert compressor.should_defer_preflight_to_real_usage(96_000) is False
-
-    def test_does_not_defer_without_a_baseline(self, compressor):
-        """No synchronized (rough, real) pair yet — fall back to trusting the
-        rough estimate (conservative: compress)."""
-        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 90_000
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
         compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 0
-        compressor.last_compression_rough_tokens = 0
-
-        assert compressor.should_defer_preflight_to_real_usage(100_000) is False
-
-    def test_defer_does_not_ratchet_baseline(self, compressor):
-        """The baseline is refreshed only by update_from_response() pairing.
-        Deferring must not advance it: without a fresh real reading, a
-        ratcheted baseline would shrink apparent growth and defer on stale
-        data."""
-        compressor.threshold_tokens = 85_000
-        compressor.last_real_prompt_tokens = 50_000
-        compressor.last_rough_tokens_when_real_prompt_fit = 90_000
-
-        assert compressor.should_defer_preflight_to_real_usage(100_000) is True
-        assert compressor.last_rough_tokens_when_real_prompt_fit == 90_000
-
+        for rough in (compressor.context_length, 150_000, 10_000_000):
+            assert compressor.should_defer_preflight_to_real_usage(rough) is True
+        compressor.note_usage_less_response()
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is False
+        compressor.update_from_response({"prompt_tokens": 50_000})
+        assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
     def test_defers_immediately_after_compaction_with_stale_real_prompt(self, compressor):
         """#36718: right after a compaction, last_real_prompt_tokens still holds
@@ -359,13 +371,24 @@ class TestPreflightDeferral:
         must force deferral so preflight doesn't fire a SECOND compaction before
         real post-compaction usage arrives."""
         compressor.threshold_tokens = 85_000
-        # Stale pre-compression value — would hit the `>= threshold => False`
-        # short-circuit and defeat deferral without the flag guard.
         compressor.last_real_prompt_tokens = 120_000
         compressor.awaiting_real_usage_after_compression = True
         assert compressor.should_defer_preflight_to_real_usage(95_000) is True
 
+    def test_native_checkpoint_defers_until_provider_usage_reanchors(self, compressor):
+        """A newly captured native checkpoint is opaque ciphertext whose serialized size can add
+        more than a million rough tokens; the local compressor waits one request for real usage."""
+        compressor.threshold_tokens = 85_000
+        compressor.last_real_prompt_tokens = 60_000
+        compressor.last_compression_rough_tokens = 40_000
 
+        compressor.note_native_compaction_checkpoint()
+
+        assert compressor.awaiting_real_usage_after_compression is True
+        assert compressor.last_compression_rough_tokens == 0
+        assert compressor.should_defer_preflight_to_real_usage(1_300_000) is True
+        compressor.update_from_response({"prompt_tokens": 65_000})
+        assert compressor.awaiting_real_usage_after_compression is False
 
 
 class TestCompress:
@@ -419,6 +442,31 @@ class TestCompress:
         t = ContextCompressor._compute_threshold_tokens(MINIMUM_CONTEXT_LENGTH, 0.50)
         assert t < MINIMUM_CONTEXT_LENGTH
         assert t == 54400  # 85% of 64000
+
+    def test_threshold_floor_capped_at_85_percent_of_window(self):
+        """The MINIMUM_CONTEXT_LENGTH floor must not consume the window's
+        output headroom. At context_length == 65,536 (a common local-model
+        window) the floored threshold used to pass through at 64,000 — 97.7%
+        of the window, ~1.5K tokens of output room — so pre-API compaction
+        effectively could not fire. Providers that silently truncate
+        over-window prompts instead of rejecting them (e.g. ollama's
+        OpenAI-compatible endpoint) never delivered the reactive
+        context-overflow backstop either: a live session rode into the window
+        ceiling and each length-continuation retry re-sent a window-filling
+        prompt (observed 65,120 -> 65,273 prompt tokens against 65,536,
+        leaving 263 output tokens) until the turn died with "Response
+        remained truncated after 4 continuation attempts". The floor is now
+        capped at 85% of the effective input budget whenever it is the
+        binding term."""
+        t = ContextCompressor._compute_threshold_tokens(65_536, 0.50)
+        assert t == int(65_536 * 0.85)  # 55,705
+        # Any window where the floor lands above 85% is capped the same way.
+        assert ContextCompressor._compute_threshold_tokens(70_000, 0.50) == 59_500
+        # Floor binding but at/under the 85% cap: unchanged.
+        assert ContextCompressor._compute_threshold_tokens(100_000, 0.50) == 64_000
+        # An explicit threshold_percent above 85% is user intent, not the
+        # floor — it is not capped.
+        assert ContextCompressor._compute_threshold_tokens(372_000, 0.90) == 334_800
 
 
 
@@ -828,6 +876,27 @@ class TestAuthFailureAborts:
             "found. Set the OPENCODE-ZEN_API_KEY environment variable."
         )
         assert _is_summary_access_or_quota_error(err) is True
+        # OAuth aux provider with no login: the hint names the sign-in command instead of an
+        # env var (#114405 / #78996) and must classify as permanent, not be retried.
+        oauth_err = RuntimeError(
+            "Provider 'minimax-oauth' is set in config.yaml but no credentials were found. "
+            "Run `hermes auth add minimax-oauth` to sign in, or switch to a different provider "
+            "with `hermes model`."
+        )
+        assert _is_summary_access_or_quota_error(oauth_err) is True
+
+    def test_unscoped_secret_read_is_terminal_access_failure(self):
+        # Multiplexed gateway: a credential read reached get_secret() from a
+        # worker thread without the profile scope. The summary model is
+        # unreachable until the spawn site is fixed — abort and preserve the
+        # session rather than truncating the middle window (#100849 bundle).
+        from agent.secret_scope import UnscopedSecretError
+
+        err = UnscopedSecretError(
+            "get_secret('SURPLUS_API_KEY') called with no profile secret scope "
+            "active while multiplexing is on."
+        )
+        assert _is_summary_access_or_quota_error(err) is True
 
 
 
@@ -905,6 +974,32 @@ class TestAuthFailureAborts:
         assert c._last_summary_auth_failure is False
         assert c._last_compress_aborted is False
         assert c._last_summary_fallback_used is True
+
+    def test_provider_overload_aborts_instead_of_dropping_context(self):
+        """A failed overload summary preserves completed work for a later retry."""
+        err = StubProviderError(
+            "Our servers are currently overloaded. Please try again later.",
+            status_code=503,
+        )
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            c = ContextCompressor(
+                model="test",
+                quiet_mode=True,
+                protect_first_n=2,
+                protect_last_n=2,
+                abort_on_summary_failure=False,
+            )
+        c.summary_model = "test/auxiliary"
+        msgs = self._msgs(12)
+        with patch("agent.context_compressor.call_llm", side_effect=err) as mock_call:
+            result = c.compress(msgs, current_tokens=999999, force=True)
+
+        assert mock_call.call_count == 2
+        assert result == msgs
+        assert c._last_compress_aborted is True
+        assert c._last_summary_fallback_used is False
+        assert c._last_summary_dropped_count == 0
+        assert c._last_compression_telemetry["failure_class"] == "summary_overload_failure"
 
 
     def test_403_also_flags_auth_failure(self):
@@ -2148,7 +2243,6 @@ class TestUpdateModelResetsCalibration:
         # Simulate a large-model session that proved a prompt fit.
         comp.last_prompt_tokens = 120_000
         comp.last_real_prompt_tokens = 120_000
-        comp.last_rough_tokens_when_real_prompt_fit = 130_000
         comp.last_compression_rough_tokens = 130_000
         comp.awaiting_real_usage_after_compression = True
         comp._ineffective_compression_count = 2
@@ -2157,25 +2251,23 @@ class TestUpdateModelResetsCalibration:
 
         assert comp.last_prompt_tokens == 0
         assert comp.last_real_prompt_tokens == 0
-        assert comp.last_rough_tokens_when_real_prompt_fit == 0
         assert comp.last_compression_rough_tokens == 0
         assert comp.awaiting_real_usage_after_compression is False
         assert comp._ineffective_compression_count == 0
 
-    def test_defer_no_longer_suppresses_after_switch(self):
-        """The exact #23767 failure: old model's 'it fit' must not defer
-        preflight on the new smaller model."""
+    def test_switch_waits_for_new_provider_evidence(self):
+        """A model switch clears old evidence; the new provider adjudicates pressure."""
         comp = self._comp()
         comp.last_real_prompt_tokens = 50_000
-        comp.last_rough_tokens_when_real_prompt_fit = 90_000
         # Before switch, a modest rough growth would defer.
         comp.threshold_tokens = 85_000
         assert comp.should_defer_preflight_to_real_usage(93_000) is True
 
-        # After switching to a 65K model, the stale state is gone, so a rough
-        # estimate over the new threshold is NOT deferred — preflight will run.
         comp.update_model("small-model", context_length=65_536)
-        assert comp.should_defer_preflight_to_real_usage(comp.threshold_tokens + 5_000) is False
+        assert comp.last_real_prompt_tokens == 0
+        assert comp.should_defer_preflight_to_real_usage(comp.context_length + 5_000) is True
+        comp.update_from_response({"prompt_tokens": comp.threshold_tokens + 1})
+        assert comp.should_defer_preflight_to_real_usage(comp.context_length + 5_000) is False
 
 
 
@@ -2200,6 +2292,27 @@ class TestThresholdTokensCap:
             _ = comp.context_length
         assert comp.threshold_tokens == 500_000
         assert comp.threshold_tokens_cap is None
+
+    @pytest.mark.parametrize("context_length", [128_000, 272_000, 400_000, 1_000_000])
+    def test_default_config_uses_lower_effective_trigger(self, context_length):
+        """Shipped defaults: the trigger is the LOWER of the ratio trigger and the absolute cap, so a
+        1M window compacts at the cap while windows whose ratio trigger sits below it are untouched."""
+        from hermes_cli.config import DEFAULT_CONFIG
+
+        default_pct = DEFAULT_CONFIG["compression"]["threshold"]
+        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
+        assert isinstance(default_cap, int) and 0 < default_cap < 1_000_000
+        with patch("agent.context_compressor.get_model_context_length", return_value=context_length):
+            ratio_only = ContextCompressor("model-a", threshold_percent=default_pct, quiet_mode=True)
+            comp = ContextCompressor(
+                "model-a", threshold_percent=default_pct, threshold_tokens_cap=default_cap, quiet_mode=True,
+            )
+            _ = ratio_only.context_length, comp.context_length
+
+        expected_threshold = min(ratio_only.threshold_tokens, default_cap)
+        assert comp.threshold_tokens == expected_threshold
+        assert comp.should_compress(expected_threshold - 1) is False
+        assert comp.should_compress(expected_threshold) is True
 
 
 
@@ -2242,32 +2355,23 @@ class TestThresholdTokensCap:
         assert comp.should_compress(200_000) is True    # at cap (below 500K pct)
         assert comp.should_compress(250_000) is True    # above cap
 
-    def test_default_config_disabled_and_no_behavior_change(self):
-        """DEFAULT_CONFIG ships threshold_tokens=None (disabled) and both
-        None and 0 leave the ratio-based trigger byte-identical."""
+    def test_default_config_cap_survives_model_switch(self):
+        """The shipped cap remains effective when the active model changes."""
         from hermes_cli.config import DEFAULT_CONFIG
-        assert DEFAULT_CONFIG["compression"]["threshold_tokens"] is None
 
         with patch("agent.context_compressor.get_model_context_length", return_value=1_000_000):
-            baseline = ContextCompressor(
-                "model-a", threshold_percent=0.50, quiet_mode=True,
+            comp = ContextCompressor(
+                "model-a",
+                threshold_percent=DEFAULT_CONFIG["compression"]["threshold"],
+                threshold_tokens_cap=DEFAULT_CONFIG["compression"]["threshold_tokens"],
+                quiet_mode=True,
             )
-            comp_none = ContextCompressor(
-                "model-a", threshold_percent=0.50, quiet_mode=True,
-                threshold_tokens_cap=None,
-            )
-            comp_zero = ContextCompressor(
-                "model-a", threshold_percent=0.50, quiet_mode=True,
-                threshold_tokens_cap=0,
-            )
-        assert comp_none.threshold_tokens == baseline.threshold_tokens
-        assert comp_zero.threshold_tokens == baseline.threshold_tokens
-        # And after a model switch, still identical to baseline.
-        baseline.update_model("model-b", context_length=200_000)
-        comp_none.update_model("model-b", context_length=200_000)
-        comp_zero.update_model("model-b", context_length=200_000)
-        assert comp_none.threshold_tokens == baseline.threshold_tokens
-        assert comp_zero.threshold_tokens == baseline.threshold_tokens
+            _ = comp.context_length
+
+        default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
+        assert comp.threshold_tokens == default_cap
+        comp.update_model("model-b", context_length=2_000_000)
+        assert comp.threshold_tokens == default_cap
 
 
 
@@ -2288,15 +2392,18 @@ class TestTruncateToolCallArgsJson:
     def test_shrunken_args_remain_valid_json(self):
         import json as _json
         shrink = self._helper()
+        content = "# Shopping Browser Setup Notes\n\n" + "abc " * 400
         original = _json.dumps({
             "path": "~/.hermes/skills/shopping/browser-setup-notes.md",
-            "content": "# Shopping Browser Setup Notes\n\n" + "abc " * 400,
+            "content": content,
         })
         assert len(original) > 500
         shrunk = shrink(original)
         parsed = _json.loads(shrunk)  # must not raise
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        # Head preserved, marker appended at the cut (not substituted for the leaf's own text).
+        assert parsed["content"].startswith(content[:200])
+        assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
         assert len(shrunk) < len(original)
 
 
@@ -2317,7 +2424,8 @@ class TestTruncateToolCallArgsJson:
         assert parsed["enabled"] is True
         assert parsed["timeout"] is None
         assert parsed["items"] == [1, 2, 3]
-        assert parsed["note"].endswith("...[truncated]")
+        assert parsed["note"].startswith("z" * 200)
+        assert parsed["note"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
 
 
 
@@ -2355,7 +2463,65 @@ class TestTruncateToolCallArgsJson:
         # Must parse — otherwise downstream provider returns 400
         parsed = _json.loads(shrunk)
         assert parsed["path"] == "~/.hermes/skills/shopping/browser-setup-notes.md"
-        assert parsed["content"].endswith("...[truncated]")
+        assert parsed["content"].startswith(huge_content[:200])
+        assert parsed["content"][200:].startswith(_COMPRESSION_MARKER_PREFIX)
+
+
+class TestTruncationMarkerNotImitable:
+    """Regression tests for #83714.
+
+    A model replayed its own history containing the bare
+    ``"...[truncated]"`` marker and, in a later turn, imitated it — writing
+    the literal marker into a *new* tool call's ``new_string`` instead of
+    real content. The compressor-side fix is to stop injecting a marker that
+    looks like something the model itself would plausibly write.
+    """
+
+    def test_old_bare_marker_no_longer_produced(self):
+        """The literal that caused #83714 must never come out of the shrink helper again."""
+        payload = json.dumps({"path": "/f.py", "new_string": "y" * 600})
+        shrunk = json.loads(_truncate_tool_call_args_json(payload))["new_string"]
+        assert "...[truncated]" not in shrunk
+        # ...and the leaf really was shrunk, so a no-op helper cannot pass this.
+        assert len(shrunk) < 600 and shrunk.startswith("y" * 200)
+
+    def test_args_without_a_net_gain_leaf_are_left_byte_identical(self):
+        """Leaves the marker would not shrink, and leaves that merely quote the marker.
+
+        Below the break-even (``head_chars`` + marker) replacing a leaf would grow the payload, and
+        re-serialising alone would rewrite compact wire JSON — both read as "this changed" upstream
+        and are counted as reclaimed pressure.
+        """
+        tiny = json.dumps({"new_string": "y" * 201, "pad": "z" * 320})
+        assert _truncate_tool_call_args_json(tiny) == tiny
+        compact = json.dumps({"new_string": "y" * 201, "pad": "z" * 320}, separators=(",", ":"))
+        assert _truncate_tool_call_args_json(compact) == compact
+        # Separator whitespace added by the re-serialise can exceed a single leaf's saving.
+        many_keys = json.dumps(
+            {**{f"k{i}": i for i in range(300)}, "big": "y" * 426}, separators=(",", ":")
+        )
+        assert _truncate_tool_call_args_json(many_keys) == many_keys
+
+        # The guard keys on the marker being the whole tail, so the imitation shape #83714
+        # describes — replayed head+marker followed by new content — is still shrinkable.
+        for leaf in (
+            "x" * 1000 + _COMPRESSION_MARKER_PREFIX + " 5 of 9⟫" + "y" * 500,
+            "x" * 200 + _COMPRESSION_MARKER_PREFIX + " 5 of 9 chars omitted⟫" + "y" * 5000,
+        ):
+            out = _truncate_tool_call_args_json(json.dumps({"new_string": leaf}))
+            assert json.loads(out)["new_string"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
+                omitted=len(leaf) - 200, total=len(leaf)
+            )
+
+    def test_shrunken_leaf_is_head_plus_marker_and_a_fixed_point(self):
+        """Re-shrinking must be a no-op: the marker's counts are its anti-imitation value."""
+        payload = json.dumps({"content": "x" * 2000})
+        once = _truncate_tool_call_args_json(payload)
+        assert len(once) < len(payload)
+        assert json.loads(once)["content"] == "x" * 200 + _COMPRESSION_MARKER_TEMPLATE.format(
+            omitted=1800, total=2000
+        )
+        assert _truncate_tool_call_args_json(once) == once
 
 
 class TestLazyContextResolution:
@@ -2425,36 +2591,39 @@ class TestLazyContextResolution:
 
 
 class TestPreflightSentinelGuard:
-    """Regression for #36718: the preflight token-display seed in
-    run_conversation must NOT overwrite the -1 sentinel that
-    compress_context() sets immediately after compression.
+    """Regression guards for the preflight token-display seed
+    (ContextCompressor.maybe_seed_preflight_display_tokens, called from
+    build_turn_context).
 
-    The old guard `_preflight_tokens > (last_prompt_tokens or 0)` evaluated
-    `(-1 or 0)` -> -1 (truthy), so any positive preflight estimate was > -1
-    and clobbered the sentinel with a schema-inflated rough count, re-firing
-    compression on the next turn. The fix treats any negative value as
-    "no real usage yet" and skips the seed.
+    Policy: seed ONLY from the 0 state ("no reading yet", #34282 — the seed
+    keeps the status bar live when a provider reports no usage). Any
+    non-zero value is preserved: the -1 post-compression sentinel (#36718 —
+    compress_context parks it while awaiting real usage, and the seed must
+    not clobber it) AND any positive real provider reading (#81481 — the
+    rough estimate intentionally over-counts CJK / reasoning replay, so it
+    must never overwrite a real measurement).
     """
-
-    def _seed(self, last_prompt_tokens, preflight_tokens):
-        # Mirror the exact guard in agent/conversation_loop.py run_conversation.
-        _last = last_prompt_tokens
-        if _last >= 0 and preflight_tokens > _last:
-            return preflight_tokens  # would overwrite
-        return last_prompt_tokens   # preserved
 
     def test_sentinel_preserved_after_compression(self, compressor):
         compressor.last_prompt_tokens = -1
         # A large schema-inflated preflight estimate must NOT overwrite -1.
-        result = self._seed(compressor.last_prompt_tokens, 250_000)
-        assert result == -1
+        compressor.maybe_seed_preflight_display_tokens(250_000)
+        assert compressor.last_prompt_tokens == -1
 
-    def test_real_value_still_revises_upward(self, compressor):
-        compressor.last_prompt_tokens = 10_000
-        result = self._seed(compressor.last_prompt_tokens, 50_000)
-        assert result == 50_000
+    def test_zero_state_still_seeded(self, compressor):
+        # 0 means "no reading yet" — the seed keeps the status bar live when
+        # providers report no usage.
+        compressor.last_prompt_tokens = 0
+        compressor.maybe_seed_preflight_display_tokens(50_000)
+        assert compressor.last_prompt_tokens == 50_000
 
-
+    def test_real_provider_reading_wins_over_rough_estimate(self, compressor):
+        # Regression for the 492K-vs-685K display jump: a real provider
+        # reading must never be replaced by the schema/reasoning-inflated
+        # rough preflight estimate (#81481 class inflation).
+        compressor.last_prompt_tokens = 492_000
+        compressor.maybe_seed_preflight_display_tokens(685_344)
+        assert compressor.last_prompt_tokens == 492_000
 
 class TestTurnPairPreservation:
     """Causal Coupling guard (#22523): compaction must never orphan a user turn.
@@ -3147,8 +3316,90 @@ class TestDoubleCompactionSummaryRole:
 
 class TestSummaryPromptBounding:
 
+    _ELISION_MARKER = re.compile(r"\n*\.\.\.\[[^\]]*elided[^\n]*\.\.\.\n*")
 
+    def test_lean_sampling_keeps_record_boundaries(self):
+        """Lean sampling must elide whole serialized records: no section between elision markers
+        may start mid-record, and every retained record must be complete — including records
+        whose body contains blank lines, which are not record delimiters."""
+        compressor = ContextCompressor(
+            model="test/model", threshold_percent=0.85, protect_first_n=2, protect_last_n=2,
+            quiet_mode=True, tail_mode="lean",
+        )
+        body = "para1\n\npara2 " + ("x" * 1200)
+        messages = [{"role": "user", "content": f"record-{i:04d} {body}"} for i in range(1200)]
+        resp = MagicMock()
+        resp.choices = [MagicMock()]
+        resp.choices[0].message = MagicMock()
+        resp.choices[0].message.content = "## Historical Task Snapshot\nDone."
+        telemetry = compressor._begin_compression_telemetry(current_tokens=1_000_000)
+        with patch("agent.context_compressor.call_llm", return_value=resp) as mock_call:
+            assert compressor._generate_summary(messages) is not None
+        assert mock_call.call_count == 1
+        prompt = mock_call.call_args.kwargs["messages"][0]["content"]
+        assert "chars elided" in prompt
 
+        transcript = prompt[prompt.index("[USER]: record-"):]
+        sections = [sec for sec in self._ELISION_MARKER.split(transcript) if "record-" in sec]
+        assert sections
+        for section in sections:
+            assert section.startswith("[USER]: record-"), section[:60]
+        whole = re.findall(r"\[USER\]: record-\d{4} " + re.escape(body) + r"(?=\n\n|\n*$)", transcript)
+        assert len(whole) == transcript.count("[USER]: record-") > 8
+        # Newest record anchors the tail and both ends of the history are represented.
+        assert whole[-1].startswith("[USER]: record-1199 ")
+        assert whole[0].startswith("[USER]: record-0000 ")
+        # Coverage telemetry describes exactly what the prompt shows, in records and record chars.
+        assert telemetry["summary_input_record_count"] == 1200
+        assert telemetry["summary_input_sampled_record_count"] == len(whole)
+        assert telemetry["summary_input_elided_record_count"] == 1200 - len(whole)
+        assert telemetry["summary_input_sampled_chars"] == sum(map(len, whole))
+        assert telemetry["summary_input_chars"] == (
+            telemetry["summary_input_sampled_chars"] + telemetry["summary_input_omitted_chars"]
+        )
+
+    def test_lean_sampling_oversized_middle_record_does_not_evict_tail(self):
+        """A record larger than one region's share is bounded inside itself, not allowed to consume
+        the other regions or push the newest record out of the prompt."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(400)]
+        records.append("[TOOL RESULT oversized-mid]: " + ("y" * (cap // 2)))
+        records.extend(f"[USER]: record-{i:04d} " + ("x" * 1200) for i in range(401, 800))
+        records.append("[USER]: newest-tail-record")
+        sampled, _coverage = ContextCompressor._sample_summary_records(records)
+        assert len(sampled) <= cap
+        assert sampled.rstrip().endswith("[USER]: newest-tail-record")
+        assert "[TOOL RESULT oversized-mid]: yyyy" in sampled
+        assert sampled.count("y" * 1000) < (cap // 2) // 1000
+        assert sampled.count("[USER]: record-") > 8
+        # The budget-extension pass hands out headroom round-robin, so no region ends up with
+        # more than its even share plus one record (the granularity of whole-record growth).
+        per_slice = [
+            sec.count("[USER]: record-") for sec in self._ELISION_MARKER.split(sampled)
+            if "[USER]: record-" in sec
+        ]
+        assert max(per_slice) <= sum(per_slice) / len(per_slice) + 1, per_slice
+
+    def test_lean_sampling_extension_closes_gaps_without_stray_markers(self):
+        """When the extension pass fully closes the gap between two slices, the neighbours become
+        one run joined by the record separator — no zero-width elision marker, no missing
+        separator — and the coverage telemetry still counts each shown record once."""
+        cap = ContextCompressor._SUMMARY_INPUT_MAX_CHARS
+        records = [f"[USER]: record-{i:02d} " + ("x" * 8500) for i in range(20)]
+        assert sum(map(len, records)) > cap  # sampling engages, with headroom > one gap
+        sampled, coverage = ContextCompressor._sample_summary_records(records)
+        assert len(sampled) <= cap
+        shown = [int(i) for i in re.findall(r"record-(\d\d) x", sampled)]
+        assert shown == sorted(set(shown))
+        assert shown[-1] == 19 and shown[0] == 0
+        assert coverage["sampled_record_count"] == len(shown)
+        # At least one initial gap was closed: fewer markers than the n-1 the n slices started with.
+        assert sampled.count("chars elided") < ContextCompressor._SAMPLED_INPUT_SLICES - 1
+        for a, b in zip(shown, shown[1:]):
+            if b == a + 1:
+                assert f"{records[a]}\n\n{records[b]}" in sampled, (a, b)
+            else:
+                assert f"{records[a]}\n\n...[records {a + 2:,}-{b:,}:" in sampled, (a, b)
 
     def test_iterative_update_path_is_bounded(self):
         """The iterative prompt (previous summary + new turns) must be bounded
@@ -3376,6 +3627,63 @@ class TestMinTailUserMessages:
         from agent.context_compressor import _estimate_msg_budget_tokens
         accumulated = sum(_estimate_msg_budget_tokens(m) for m in tail)
         assert accumulated > c.tail_token_budget
+
+
+class TestTailTokenBudgetCeiling:
+    def test_message_floor_does_not_unboundedly_override_soft_ceiling(self):
+        """Oversized optional rows must not ride the count floor past 1.5x budget."""
+        with patch("agent.context_compressor.get_model_context_length", return_value=200_000):
+            c = ContextCompressor(
+                model="test/model",
+                protect_first_n=1,
+                protect_last_n=20,
+                quiet_mode=True,
+                tail_mode="lean",
+            )
+        c.tail_token_budget = 10_000
+        oversized = "x" * 24_000
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": oversized},
+            {"role": "assistant", "content": oversized},
+            {"role": "user", "content": "latest request"},
+            {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [{"id": "call-latest", "function": {"name": "read_file", "arguments": "{}"}}],
+            },
+            {"role": "tool", "tool_call_id": "call-latest", "content": "result " + ("r" * 20_000)},
+            {"role": "assistant", "content": "latest answer"},
+        ]
+
+        cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+        tail = messages[cut:]
+
+        from agent.context_compressor import _estimate_msg_budget_tokens
+        tail_tokens = sum(_estimate_msg_budget_tokens(message) for message in tail)
+        assert tail_tokens <= int(c.tail_token_budget * 1.5)
+        assert any(message.get("content") == "latest request" for message in tail)
+        assert tail[-1]["content"] == "latest answer"
+        assert [message.get("role") for message in tail if message.get("tool_call_id") == "call-latest"] == ["tool"]
+        assert any(
+            call.get("id") == "call-latest"
+            for message in tail
+            for call in message.get("tool_calls", [])
+        )
+
+        # The ceiling remains soft when required continuity is itself oversized:
+        # keep the active user's whole tool group and final assistant response.
+        messages[9]["content"] = "result " + ("r" * 80_000)
+        oversized_cut = c._find_tail_cut_by_tokens(messages, head_end=1)
+        oversized_tail = messages[oversized_cut:]
+        assert sum(_estimate_msg_budget_tokens(message) for message in oversized_tail) > int(
+            c.tail_token_budget * 1.5
+        )
+        assert messages[7:] == oversized_tail
 
 
 
@@ -3619,3 +3927,60 @@ class TestPreLlmFeasibilityCheck:
             feasibility_skip=compressor._last_feasibility_skip,
         )
         assert compressor._fallback_compression_streak == 1
+
+
+class TestSanitizeToolPairsWhitespace:
+    """_sanitize_tool_pairs must strip whitespace from tool_call_id before
+    comparing, matching the fix applied to agent_runtime_helpers.py in
+    commit fa3ab2ffd.  Without stripping, a valid tool result whose
+    tool_call_id has surrounding whitespace is misclassified as orphaned
+    and silently replaced with a [Result unavailable] stub.
+    """
+
+    def _make(self):
+        with patch("agent.context_compressor.get_model_context_length", return_value=100000):
+            return ContextCompressor(model="test/model", quiet_mode=True,
+                                     protect_first_n=2, protect_last_n=2)
+
+    def _assistant(self, call_id):
+        return {
+            "role": "assistant", "content": "",
+            "tool_calls": [{"id": call_id, "type": "function",
+                             "function": {"name": "f", "arguments": "{}"}}],
+        }
+
+    def test_leading_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_abc"),
+            {"role": "tool", "tool_call_id": " call_abc", "content": "ok"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "ok", "valid result must not be treated as orphaned"
+
+    def test_trailing_whitespace_on_result_id_preserved(self):
+        c = self._make()
+        msgs = [
+            self._assistant("call_xyz"),
+            {"role": "tool", "tool_call_id": "call_xyz  ", "content": "data"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_msgs = [m for m in out if m.get("role") == "tool"]
+        assert len(tool_msgs) == 1
+        assert tool_msgs[0]["content"] == "data"
+
+    def test_truly_orphaned_still_removed(self):
+        """Whitespace-trimmed ID that still has no match must be removed.
+        The assistant's call_real has no matching result, so a stub is
+        inserted in its place — the original orphaned entry must be gone."""
+        c = self._make()
+        msgs = [
+            self._assistant("call_real"),
+            {"role": "tool", "tool_call_id": " call_orphan ", "content": "stale"},
+        ]
+        out = c._sanitize_tool_pairs(msgs)
+        tool_call_ids = [m.get("tool_call_id") for m in out if m.get("role") == "tool"]
+        assert "call_orphan" not in tool_call_ids, "genuinely orphaned result must be removed"
+        assert " call_orphan " not in tool_call_ids, "original whitespace form must also be gone"

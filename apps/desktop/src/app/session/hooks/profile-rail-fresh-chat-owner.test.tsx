@@ -5,7 +5,9 @@ import { useEffect, useMemo, useRef } from 'react'
 import { afterEach, beforeEach, describe, expect, it, type Mock, vi } from 'vitest'
 
 import { createSessionRpcDispatcher } from '@/app/contrib/session-rpc-dispatcher'
+import { prepareDefaultNewSession } from '@/app/session/new-session-route'
 import { getSession } from '@/hermes'
+import { $defaultProfileRoute } from '@/store/default-profile'
 import {
   activeGateway,
   activeGatewayConnectionId,
@@ -19,8 +21,11 @@ import {
   $newChatConnectionId,
   $newChatProfile,
   $newChatRoute,
+  captureNewChatSource,
   ensureGatewayAgent,
   newSessionInProfile,
+  pinLegacyNewChatProfile,
+  resolveNewChatOwnerRoute,
   selectProfile
 } from '@/store/profile'
 import {
@@ -41,6 +46,7 @@ import {
   setSessions
 } from '@/store/session'
 import { foregroundSessionScopes } from '@/store/session-states'
+import { deferred } from '@/test/deferred'
 import type { SessionInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../types'
@@ -257,6 +263,7 @@ function makePrimary(): MockGateway {
 interface HarnessHandle {
   busyRef: { current: boolean }
   bindings: () => { runtimeForStored: null | string; storedForRuntime: null | string }
+  createSession: () => Promise<string | null>
   submitText: (text: string, options?: SubmitTextOptions) => Promise<boolean>
   updateSessionState: (
     sessionId: string,
@@ -318,6 +325,7 @@ function Harness({
     selectedStoredSessionId,
     selectedStoredSessionIdRef: cache.selectedStoredSessionIdRef,
     sessionStateByRuntimeIdRef: cache.sessionStateByRuntimeIdRef,
+    holdSessionTranscriptView: cache.holdSessionTranscriptView,
     syncSessionStateToView: cache.syncSessionStateToView,
     updateSessionState: cache.updateSessionState
   })
@@ -352,6 +360,7 @@ function Harness({
         runtimeForStored: cache.runtimeIdByStoredSessionIdRef.current.get(mintedStoredId) ?? null,
         storedForRuntime: cache.sessionStateByRuntimeIdRef.current.get(mintedRuntimeId)?.storedSessionId ?? null
       }),
+      createSession: () => act(async () => sessionActions.createBackendSessionForSend()) as Promise<string | null>,
       submitText: (...args) => act(async () => submitText(...args)) as Promise<boolean>,
       updateSessionState: cache.updateSessionState as HarnessHandle['updateSessionState']
     })
@@ -360,6 +369,7 @@ function Harness({
     cache.sessionStateByRuntimeIdRef,
     cache.updateSessionState,
     onReady,
+    sessionActions.createBackendSessionForSend,
     submitText
   ])
 
@@ -394,7 +404,8 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     setAwaitingResponse(false)
     $newChatProfile.set(null)
     $newChatRoute.set(null)
-    $newChatConnectionId.set(null)
+    captureNewChatSource(null)
+    $defaultProfileRoute.set(null)
     _resetSessionOwnerHintsForTests({ storage: true })
   })
 
@@ -407,7 +418,8 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
     setConnection(null)
     $newChatProfile.set(null)
     $newChatRoute.set(null)
-    $newChatConnectionId.set(null)
+    captureNewChatSource(null)
+    $defaultProfileRoute.set(null)
     $activeGatewayProfile.set('default')
     vi.clearAllMocks()
     delete (window as unknown as { hermesDesktop?: unknown }).hermesDesktop
@@ -481,6 +493,98 @@ describe('profile rail: a fresh Omar chat keeps its exact registry owner across 
   }
 
   const calls = (socket: MockGateway) => socket.request.mock.calls.map(call => call[0] as string)
+
+  it('an ordinary profile pick supersedes the legacy default pin on the active registry source', async () => {
+    setPrimaryGateway(makePrimary() as never, 'default')
+    await ensureGatewayAgent(SOURCE_ID, 'default')
+    pinLegacyNewChatProfile('omar')
+    expect(resolveNewChatOwnerRoute()).toBeNull()
+
+    selectProfile('omar')
+    expect(resolveNewChatOwnerRoute()).toEqual({ connectionId: SOURCE_ID, profile: 'omar' })
+    await waitFor(() => expect(activeGatewayProfileKey()).toBe('omar'))
+    expect(activeGatewayConnectionId()).toBe(SOURCE_ID)
+    expect(window.hermesDesktop.getConnection).not.toHaveBeenCalledWith('omar')
+  })
+
+  it.each([
+    { connectionId: null, activeProfile: 'default' },
+    { connectionId: 'local', activeProfile: 'default' },
+    { connectionId: null, activeProfile: 'omar' }
+  ])(
+    'captures the saved $connectionId default before activation from remote $activeProfile',
+    async ({ connectionId, activeProfile }) => {
+      const primary = makePrimary()
+      setPrimaryGateway(primary as never, 'default')
+      await ensureGatewayAgent(SOURCE_ID, activeProfile)
+      ownerPort = connectionId === null ? V1_PORT : OMAR_PORT
+      const activation = deferred<void>()
+      const desktop = window.hermesDesktop!
+      vi.mocked(desktop.getConnectionFor!).mockClear()
+      const getConnection = vi.mocked(desktop.getConnection).getMockImplementation()!
+      const getConnectionFor = vi.mocked(desktop.getConnectionFor!).getMockImplementation()!
+
+      vi.mocked(desktop.getConnection).mockImplementation(async profile => {
+        await activation.promise
+
+        return { ...(await getConnection(profile)), mode: 'remote' }
+      })
+      vi.mocked(desktop.getConnectionFor!).mockImplementation(async route => {
+        await activation.promise
+
+        return getConnectionFor(route)
+      })
+
+      const ambientRequest = vi.fn(async (method: string, params?: Record<string, unknown>) =>
+        (activeGateway() as unknown as MockGateway).request(method, params)
+      )
+
+      let handle: HarnessHandle | null = null
+      render(<Harness ambientRequest={ambientRequest} onReady={h => (handle = h)} />)
+      await waitFor(() => expect(handle).not.toBeNull())
+      $defaultProfileRoute.set({ connectionId, profile: 'omar' })
+      let creating!: Promise<string | null>
+
+      try {
+        act(() => prepareDefaultNewSession())
+        expect(activeGatewayConnectionId()).toBe(SOURCE_ID)
+        expect(resolveNewChatOwnerRoute()).toEqual(connectionId === null ? null : { connectionId, profile: 'omar' })
+        creating = handle!.createSession()
+        expect(runtimeOwner).toBeNull()
+      } finally {
+        activation.resolve()
+      }
+
+      await expect(creating).resolves.toBe(mintedRuntimeId)
+      await expect(handle!.submitText('first prompt')).resolves.toBe(true)
+      await settleTurn(handle!)
+      await expect(handle!.submitText('second prompt')).resolves.toBe(true)
+      const owner = sockets.find(socket => socket.connectUrl?.includes(`:${ownerPort}`))!
+      expect(runtimeOwner).toBe(owner)
+      expect(calls(owner).filter(method => method === 'session.create')).toHaveLength(1)
+      expect(calls(owner).filter(method => method === 'prompt.submit')).toHaveLength(2)
+      expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: SOURCE_ID, profile: 'omar' })
+
+      if (connectionId === null) {
+        expect(desktop.getConnection).toHaveBeenCalledWith('omar')
+        expect(desktop.getConnectionFor).not.toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+        expect($connection.get()?.mode).toBe('remote')
+        expect(getSessionOwnerHint(mintedStoredId)).toBeUndefined()
+      } else {
+        expect(desktop.getConnectionFor).toHaveBeenCalledWith({ connectionId: 'local', profile: 'omar' })
+        expect(desktop.getConnection).not.toHaveBeenCalledWith('omar')
+        expect(getSessionOwnerHint(mintedStoredId)).toEqual({ connectionId, profile: 'omar' })
+      }
+
+      for (const socket of [primary, ...sockets]) {
+        if (socket !== owner) {
+          expect(
+            socket.request.mock.calls.filter(call => sessionScoped(call[1]) || call[0] === 'session.create')
+          ).toEqual([])
+        }
+      }
+    }
+  )
 
   it('dials homelab::omar when boot published homelab on the active primary gateway', async () => {
     const primary = makePrimary()

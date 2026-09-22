@@ -35,7 +35,7 @@ python batch_runner.py --list_distributions
 ```
 
 :::tip 大规模运行下的可预测成本
-批量运行会启动大量并发 agent 会话，每个会话都会调用模型和工具。[Nous Portal](/user-guide/features/tool-gateway) 订阅将模型访问、网页搜索、图像生成、TTS 以及云端浏览器统一计费——当你希望在不同供应商账户间稳定控制每条轨迹成本、避免触碰速率限制时非常实用。使用 `hermes setup --portal` 完成配置，然后将 `--model` 指向 Nous 模型。
+批量运行会启动大量并发 agent 会话，每个会话都会调用模型和工具。[Nous Portal](./tool-gateway.md) 订阅将模型访问、网页搜索、图像生成、TTS 以及云端浏览器统一计费——当你希望在不同供应商账户间稳定控制每条轨迹成本、避免触碰速率限制时非常实用。使用 `hermes setup --portal` 完成配置，然后将 `--model` 指向 Nous 模型。
 :::
 
 ## 数据集格式
@@ -68,7 +68,6 @@ python batch_runner.py --list_distributions
 | `--resume` | `false` | 从断点恢复 |
 | `--verbose` | `false` | 启用详细日志 |
 | `--max_samples` | 全部 | 仅处理数据集中前 N 条样本 |
-| `--max_tokens` | 模型默认值 | 每次模型响应的最大 token 数 |
 
 ### 供应商路由（OpenRouter）
 

@@ -57,7 +57,8 @@ beforeEach(() => {
     requested: false,
     firstRunSkipped: false,
     manual: false,
-    localEndpoint: false
+    localEndpoint: false,
+    freeTierReady: false
   })
   failBoot()
 })
@@ -65,12 +66,32 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('BootFailureOverlay', () => {
+  it('keeps keyboard focus inside the recovery surface', () => {
+    render(
+      <>
+        <button type="button">Background action</button>
+        <BootFailureOverlay />
+      </>
+    )
+
+    const recoverySurface = screen.getByRole('dialog', { name: /Hermes couldn't start/i })
+    const retry = screen.getByRole('button', { name: /retry/i })
+    const backgroundAction = screen.getByText(/background action/i)
+
+    retry.focus()
+    backgroundAction.focus()
+
+    expect(recoverySurface.getAttribute('aria-modal')).toBe('true')
+    expect(recoverySurface.contains(globalThis.document.activeElement)).toBe(true)
+  })
+
   it('swaps to the in-place gateway settings view (no route nav) and back', async () => {
     render(<BootFailureOverlay />)
 
     fireEvent.click(screen.getByRole('button', { name: /gateway settings/i }))
     // Recovery actions give way to the embedded panel (behind a Back control).
     expect(await screen.findByRole('button', { name: /back/i })).toBeTruthy()
+    expect(screen.getByRole('dialog', { name: /gateway settings/i }).getAttribute('aria-modal')).toBe('true')
     expect(screen.queryByRole('button', { name: /retry/i })).toBeNull()
 
     fireEvent.click(screen.getByRole('button', { name: /back/i }))
@@ -141,6 +162,51 @@ describe('BootFailureOverlay', () => {
       expect(logout).toHaveBeenCalledTimes(1)
       expect(logout).toHaveBeenCalledWith(gatewayUrl)
       expect(login).toHaveBeenCalledTimes(1)
+    } finally {
+      restore()
+    }
+  })
+
+  it('recovers a cloud connection through the portal cascade instead of native OAuth', async () => {
+    const gatewayUrl = 'https://agent-1.agents.nousresearch.com'
+    const logout = vi.fn().mockResolvedValue({ ok: true, connected: false })
+    const nativeLogin = vi.fn().mockResolvedValue({ ok: true, connected: false })
+    const cloudStatus = vi.fn().mockResolvedValue({ portalBaseUrl: 'https://portal.nousresearch.com', signedIn: false })
+
+    const cloudLogin = vi.fn().mockResolvedValue({
+      ok: true,
+      portalBaseUrl: 'https://portal.nousresearch.com',
+      signedIn: true
+    })
+
+    const cloudAgentSignIn = vi.fn().mockResolvedValue({ baseUrl: gatewayUrl, connected: false })
+
+    const restore = stubDesktop(
+      {
+        ...remoteToken,
+        mode: 'cloud',
+        remoteAuthMode: 'oauth',
+        remoteOauthConnected: false,
+        remoteTokenSet: false,
+        remoteUrl: gatewayUrl
+      },
+      {
+        cloud: { status: cloudStatus, login: cloudLogin, agentSignIn: cloudAgentSignIn },
+        oauthLoginConnectionConfig: nativeLogin,
+        oauthLogoutConnectionConfig: logout,
+        probeConnectionConfig: vi.fn().mockResolvedValue({ providers: [{ id: 'nous', type: 'oauth' }] })
+      }
+    )
+
+    try {
+      render(<BootFailureOverlay />)
+      fireEvent.click(await screen.findByRole('button', { name: /sign in/i }))
+
+      await waitFor(() => expect(cloudAgentSignIn).toHaveBeenCalledWith(gatewayUrl))
+      expect(logout).toHaveBeenCalledWith(gatewayUrl)
+      expect(cloudStatus).toHaveBeenCalledTimes(1)
+      expect(cloudLogin).toHaveBeenCalledTimes(1)
+      expect(nativeLogin).not.toHaveBeenCalled()
     } finally {
       restore()
     }

@@ -323,6 +323,8 @@ export const ko: Translations = {
     disableRuntime: "비활성화",
     enableAfterInstall: "설치 후 활성화",
     enableRuntime: "활성화",
+    toggleTakesEffectAfterRestart:
+      "저장됨 — 변경 사항을 적용하려면 게이트웨이를 다시 시작하세요.",
     forceReinstall: "강제 재설치 (기존 폴더를 먼저 삭제)",
     headline:
       "Hermes 플러그인을 검색, 설치, 활성화 및 업데이트합니다 (`hermes plugins` 동등).",
@@ -468,6 +470,8 @@ export const ko: Translations = {
     copyCliCommand: "CLI 명령 복사 (외부 / 대체용)",
     connect: "연결",
     sessionExpires: "세션이 {time} 후 만료됩니다",
+    sessionExpiredNoError:
+      "제공자에 도달하지 못한 채 로그인 시간이 만료되었습니다. 보통 열린 탭에서 로그인 페이지가 멈춘 경우입니다(서버 측 문제) — 해당 탭에서 로그인을 완료한 후 다시 시도를 클릭하세요. 계속 실패하면 API 키 또는 CLI를 사용하세요.",
     initiatingLogin: "로그인 흐름 시작 중…",
     exchangingCode: "코드를 토큰으로 교환 중…",
     connectedClosing: "연결되었습니다! 닫는 중…",

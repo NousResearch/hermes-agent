@@ -9,6 +9,8 @@ from unittest.mock import Mock
 
 import pytest
 
+from tools.computer_use import cua_backend_driver
+
 
 def _run(*args: str) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
@@ -44,25 +46,31 @@ def test_computer_use_rejects_removed_browser_approve_command() -> None:
     result = _run("browser-approve", "--pid", "123")
 
     assert result.returncode == 2
-    assert "invalid choice: 'browser-approve'" in result.stderr
+    assert "'browser-approve' is not a `hermes computer-use` command" in result.stderr
+    assert "choose from" not in result.stderr
 
 
 def test_computer_use_status_returns_zero_for_compatible_driver(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from hermes_cli import tools_config
-    from tools.computer_use import cua_backend
+    import hermes_cli.tools_config_cua as tools_config_cua
 
     driver = r"C:\Users\tester\.local\bin\cua-driver.exe"
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-    monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: driver)
+    monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: driver)
     monkeypatch.setattr(
         tools_config,
         "_cua_driver_contract_status",
         lambda _binary=None: {"ready": True},
     )
     monkeypatch.setattr(
-        cua_backend,
+        tools_config_cua,
+        "_cua_driver_contract_status",
+        lambda _binary=None: {"ready": True},
+    )
+    monkeypatch.setattr(
+        cua_backend_driver,
         "cua_driver_update_check",
         lambda: {"update_available": False},
     )
@@ -74,9 +82,8 @@ def test_computer_use_status_returns_nonzero_when_driver_is_missing(
     monkeypatch: pytest.MonkeyPatch,
     capsys: pytest.CaptureFixture[str],
 ) -> None:
-    from tools.computer_use import cua_backend
 
-    monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: None)
+    monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: None)
 
     assert _invoke(monkeypatch, "status") == 1
     assert "cua-driver: not installed" in capsys.readouterr().out
@@ -87,13 +94,21 @@ def test_computer_use_status_returns_nonzero_for_incompatible_standard_driver(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from hermes_cli import tools_config
-    from tools.computer_use import cua_backend
+    import hermes_cli.tools_config_cua as tools_config_cua
 
     driver = r"C:\Users\tester\.local\bin\cua-driver.exe"
     monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
-    monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: driver)
+    monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: driver)
     monkeypatch.setattr(
         tools_config,
+        "_cua_driver_contract_status",
+        lambda _binary=None: {
+            "ready": False,
+            "reason": "required runtime features are missing",
+        },
+    )
+    monkeypatch.setattr(
+        tools_config_cua,
         "_cua_driver_contract_status",
         lambda _binary=None: {
             "ready": False,
@@ -112,13 +127,18 @@ def test_computer_use_status_returns_nonzero_for_incompatible_custom_driver(
     capsys: pytest.CaptureFixture[str],
 ) -> None:
     from hermes_cli import tools_config
-    from tools.computer_use import cua_backend
+    import hermes_cli.tools_config_cua as tools_config_cua
 
     driver = r"C:\custom\cmd.exe"
     monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", driver)
-    monkeypatch.setattr(cua_backend, "resolve_cua_driver_cmd", lambda: driver)
+    monkeypatch.setattr(cua_backend_driver, "resolve_cua_driver_cmd", lambda: driver)
     monkeypatch.setattr(
         tools_config,
+        "_cua_driver_contract_status",
+        lambda _binary=None: {"ready": False, "reason": "manifest is invalid"},
+    )
+    monkeypatch.setattr(
+        tools_config_cua,
         "_cua_driver_contract_status",
         lambda _binary=None: {"ready": False, "reason": "manifest is invalid"},
     )
@@ -136,11 +156,17 @@ def test_computer_use_install_checks_resulting_runtime_contract(
     expected: int,
 ) -> None:
     from hermes_cli import tools_config
+    import hermes_cli.tools_config_cua as tools_config_cua
 
     install = Mock(return_value=True)
     monkeypatch.setattr(tools_config, "install_cua_driver", install)
     monkeypatch.setattr(
         tools_config,
+        "_cua_driver_contract_status",
+        lambda: {"ready": ready},
+    )
+    monkeypatch.setattr(
+        tools_config_cua,
         "_cua_driver_contract_status",
         lambda: {"ready": ready},
     )
@@ -153,6 +179,7 @@ def test_computer_use_install_returns_nonzero_for_unrepairable_custom_override(
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     from hermes_cli import tools_config
+    import hermes_cli.tools_config_cua as tools_config_cua
 
     driver = r"C:\custom\cmd.exe"
     monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", driver)
@@ -160,7 +187,28 @@ def test_computer_use_install_returns_nonzero_for_unrepairable_custom_override(
     contract = Mock(side_effect=AssertionError("failed install must short-circuit"))
     monkeypatch.setattr(tools_config, "install_cua_driver", install)
     monkeypatch.setattr(tools_config, "_cua_driver_contract_status", contract)
+    monkeypatch.setattr(tools_config_cua, "_cua_driver_contract_status", contract)
 
     assert _invoke(monkeypatch, "install") == 1
     install.assert_called_once_with(upgrade=False)
     contract.assert_not_called()
+
+
+def test_permissions_status_names_the_stale_tcc_row_for_the_missing_grant(
+    monkeypatch: pytest.MonkeyPatch,
+    capsys: pytest.CaptureFixture[str],
+) -> None:
+    """A grant the daemon reports missing while System Settings shows it ON is a stale TCC row (trycua/cua#3170);
+    the status output must name the reset for exactly the missing service, never for one that is granted."""
+    from tools.computer_use import permissions
+
+    status = {"platform": "darwin", "platform_supported": True, "installed": True, "version": "cua-driver 0.28.2",
+              "ready": False, "can_grant": True, "checks": [], "source": None, "error": None,
+              "accessibility": False, "screen_recording": True, "screen_recording_capturable": True}
+    monkeypatch.setattr(permissions, "computer_use_status", lambda driver_cmd=None: status)
+
+    assert _invoke(monkeypatch, "permissions", "status") == 1
+    out = capsys.readouterr().out
+    assert "tccutil reset Accessibility com.trycua.driver" in out
+    assert "ScreenCapture" not in out
+    assert "hermes computer-use permissions grant" in out

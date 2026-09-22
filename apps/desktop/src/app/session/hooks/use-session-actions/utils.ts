@@ -58,6 +58,7 @@ import { reportBackendContract, reportInstallMethodWarning } from '@/store/updat
 import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
+
 import {
   acknowledgedTranscriptBoundary,
   conflictingTranscriptIdentity,
@@ -686,12 +687,14 @@ export function preserveLocalPendingTurnMessages(
     }
 
     crossedUserBoundary ||= message.role === 'user' || message.role === 'system'
+
     // A second segment of the acknowledged turn can still be folded into its
     // final row. A new prompt closes that ownership; identical later replies
     // must not be consumed by the already-acknowledged prefix.
     const candidates = (crossedUserBoundary ? remainingNext : acknowledgedTurn).filter(
       candidate => !conflictingTranscriptIdentity(message, candidate)
     )
+
     const ordinal = previousRoleCounts.get(message.role) ?? 0
     previousRoleCounts.set(message.role, ordinal + 1)
 
@@ -739,6 +742,7 @@ export function preserveLocalPendingTurnMessages(
     }
 
     const ordinalMatch = nextByRoleOrdinal.get(`${message.role}:${ordinal}`)
+
     const authoritative =
       ordinalMatch && !conflictingTranscriptIdentity(message, ordinalMatch) ? ordinalMatch : undefined
 

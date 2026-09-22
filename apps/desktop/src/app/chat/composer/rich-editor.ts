@@ -712,6 +712,7 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
  * cloning the draft on every input flush makes ordinary typing needlessly costly. */
 function removeComposerJunk(editor: HTMLElement, node: ChildNode) {
   const selected = composerCollapsedSelectionContainer(editor)
+
   const offset =
     document.activeElement === editor && selected && node.contains(selected) ? caretOffsetInEditor(editor) : null
 

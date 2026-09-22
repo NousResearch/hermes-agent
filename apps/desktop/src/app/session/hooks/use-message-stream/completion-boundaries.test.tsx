@@ -14,8 +14,8 @@ import { $messages, setActiveSessionId, setMessages } from '@/store/session'
 import { $sessionStates } from '@/store/session-states'
 
 import { usePromptActions } from '../use-prompt-actions'
-import { useSessionStateCache } from '../use-session-state-cache'
 import { reconcileDurableHistory } from '../use-session-actions/utils'
+import { useSessionStateCache } from '../use-session-state-cache'
 
 import { useMessageStream } from './index'
 
@@ -109,12 +109,14 @@ function mount(rpc = requestGateway) {
 
 it('binds a late submit acknowledgement to its exact optimistic prompt without reviving the turn', async () => {
   const laterUser: ChatMessage = { id: 'later-user', role: 'user', parts: [{ type: 'text', text: 'Give the answer.' }] }
+
   const h = mount(async <T,>(): Promise<T> => {
     await h.send('message.start')
     await h.send('message.delta', { text: ANSWER })
     await h.send('message.complete', { text: ANSWER })
     h.update(state => ({ ...state, messages: [...state.messages, laterUser], needsInput: true }))
     await flush()
+
     return { status: 'started', user_row_id: 71 } as T
   })
 
@@ -139,6 +141,7 @@ it.each([true, false, undefined])(
     const assistantId = h.state().streamId
     const queued: ChatMessage = { id: `user-queued-${SID}`, role: 'user', parts: [{ type: 'text', text: 'Next' }] }
     h.update(state => ({ ...state, messages: [...state.messages, queued] }))
+
     const receipt =
       complete === undefined
         ? undefined
@@ -168,6 +171,7 @@ it.each([true, false, undefined])(
         ['user', 'Next']
       ])
     }
+
     h.dispose()
   }
 )

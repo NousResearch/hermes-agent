@@ -737,6 +737,7 @@ describe('preserveLocalPendingTurnMessages', () => {
     const answer = msg('stored-answer', 'assistant', 'Completed.', { rowId: 30, timestamp: 5 })
 
     const folded = { ...answer, rowId: 20, parts: [{ ...textPart('Completed.'), sourceRowId: 30 }] }
+
     for (const next of [[answer], [msg('stored-followup', 'user', 'Follow-up request'), answer], [folded]]) {
       expect(preserveLocalPendingTurnMessages(next, previous)).toEqual(next)
     }

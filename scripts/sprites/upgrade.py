@@ -109,6 +109,7 @@ def upgrade(revision: str) -> None:
             health_check(release)
             if not STOPPED.exists():
                 raise RuntimeError('Stop fence changed')
+            private_replace(receipt, json.dumps({'revision': revision, 'previous': previous, 'status': 'validated'}))
             link = Path('/opt/hermes.next')
             link.unlink(missing_ok=True)
             link.symlink_to(release)
@@ -128,4 +129,10 @@ def upgrade(revision: str) -> None:
 
 
 if __name__ == '__main__':
-    upgrade(sys.argv[1])
+    try:
+        upgrade(sys.argv[1])
+    except Exception:
+        print('Native upgrade failed; inspect the private upgrade receipt.', flush=True)
+    # Sprites Services restart even a successful one-shot. NAS deletes this
+    # service after reading the result; the waiter consumes no activity lease.
+    threading.Event().wait()

@@ -129,6 +129,9 @@ def _redirect_cache(tmp_path, monkeypatch):
     monkeypatch.setattr(
         "gateway.platforms.base.AUDIO_CACHE_DIR", tmp_path / "audio_cache"
     )
+    monkeypatch.setattr(
+        "gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "image_cache"
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -311,6 +314,51 @@ class TestVideoDownloadBlock:
 # ---------------------------------------------------------------------------
 # TestMediaGroups — media group (album) buffering
 # ---------------------------------------------------------------------------
+
+# ---------------------------------------------------------------------------
+# TestImageDocuments — photos sent "as a file" (uncompressed)
+# ---------------------------------------------------------------------------
+
+_HEIC_BYTES = b"\x00\x00\x00\x18ftypheic\x00\x00\x00\x00mif1heic" + b"\x00" * 64
+
+
+class TestImageDocuments:
+    """iOS sends uncompressed photos as HEIC documents; they must reach the agent
+    as images instead of "could not be read as an image"."""
+
+    @pytest.mark.asyncio
+    @pytest.mark.parametrize("file_name,mime_type,ext", [
+        ("IMG_0001.HEIC", "image/heic", ".heic"),
+        (None, "image/heic", ".heic"),
+        ("IMG_0002.HEIF", "image/heif", ".heif"),
+    ])
+    async def test_heic_document_is_cached_as_image(self, adapter, file_name, mime_type, ext):
+        doc = _make_document(file_name=file_name, mime_type=mime_type,
+                             file_size=len(_HEIC_BYTES), file_obj=_make_file_obj(_HEIC_BYTES))
+        msg = _make_message(document=doc)
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+        await asyncio.sleep(adapter.MEDIA_GROUP_WAIT_SECONDS + 0.05)
+
+        adapter.handle_message.assert_awaited_once()
+        event = adapter.handle_message.await_args.args[0]
+        assert event.message_type == MessageType.PHOTO
+        assert len(event.media_urls) == 1 and event.media_urls[0].endswith(ext)
+        assert event.media_types == [mime_type]
+        assert "could not be read" not in (event.text or "")
+
+    @pytest.mark.asyncio
+    async def test_spoofed_heic_document_is_still_rejected(self, adapter):
+        doc = _make_document(file_name="photo.heic", mime_type="image/heic", file_size=40,
+                             file_obj=_make_file_obj(b"<!DOCTYPE html><html>error</html>"))
+        msg = _make_message(document=doc)
+
+        await adapter._handle_media_message(_make_update(msg), MagicMock())
+
+        event = adapter.handle_message.call_args[0][0]
+        assert event.media_urls == []
+        assert "could not be read as an image" in (event.text or "")
+
 
 class TestMediaGroups:
     @pytest.mark.asyncio

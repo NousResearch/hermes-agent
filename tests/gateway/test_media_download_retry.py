@@ -106,6 +106,22 @@ class TestCacheImageFromBytes:
         with pytest.raises(ValueError, match="non-image data"):
             cache_image_from_bytes(b"<!DOCTYPE html><html><title>Slack</title></html>", ".png")
 
+    @pytest.mark.parametrize("brand,ext", [(b"heic", ".heic"), (b"mif1", ".heif"), (b"avif", ".avif")])
+    def test_caches_isobmff_stills(self, tmp_path, monkeypatch, brand, ext):
+        """iPhone photos sent as files are HEIC; image_routing transcodes them for vision."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        data = b"\x00\x00\x00\x18ftyp" + brand + b"\x00\x00\x00\x00mif1heic" + b"\x00" * 64
+        path = cache_image_from_bytes(data, ext)
+        assert path.endswith(ext)
+
+    def test_rejects_isobmff_video(self, tmp_path, monkeypatch):
+        """An MP4 shares the ftyp container but is not an image."""
+        monkeypatch.setattr("gateway.platforms.base.IMAGE_CACHE_DIR", tmp_path / "img")
+        from gateway.platforms.base import cache_image_from_bytes
+        with pytest.raises(ValueError, match="non-image data"):
+            cache_image_from_bytes(b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2" + b"\x00" * 64, ".heic")
+
 
 # ---------------------------------------------------------------------------
 # cache_image_from_url (base.py)

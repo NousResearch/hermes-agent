@@ -104,7 +104,8 @@ class GatewayTurnPrepareMixin:
         keeps a launch-policy session on its own route (see ``_resolve_policy_agent_runtime``)."""
         from gateway.run import (
             _credential_pool_for_provider, _get_channel_override, _resolve_gateway_model,
-            _resolve_runtime_agent_kwargs, _resolve_runtime_agent_kwargs_for_provider,
+            _resolve_direct_alias_agent_runtime, _resolve_runtime_agent_kwargs,
+            _resolve_runtime_agent_kwargs_for_provider,
         )
         from gateway.session_policy import policy_for_source
         # Every exit path starts clean: a stale notice must never attach to another session's next
@@ -115,6 +116,14 @@ class GatewayTurnPrepareMixin:
             return _resolve_policy_agent_runtime(self, policy, fallback=fallback)
         skey = self._resolve_session_key_or_none(source, session_key)
         model = _resolve_gateway_model(user_config)
+        # Gateway-created agents receive an explicit model, bypassing the CLI
+        # startup resolver. Expand a configured direct alias before selecting
+        # the default runtime so its short name never reaches the provider.
+        direct_alias_runtime = _resolve_direct_alias_agent_runtime(model)
+        if direct_alias_runtime is not None:
+            model, default_runtime_kwargs = direct_alias_runtime
+        else:
+            default_runtime_kwargs = None
         if skey:
             self._rehydrate_session_model_override(skey)
         _override_state = self._peek_session_state(skey) if skey else None
@@ -166,7 +175,7 @@ class GatewayTurnPrepareMixin:
                                exc_info=True)
                 unavailable_override, override = override, None
         if runtime_kwargs is None:
-            runtime_kwargs = _resolve_runtime_agent_kwargs()
+            runtime_kwargs = default_runtime_kwargs or _resolve_runtime_agent_kwargs()
         # Private notice metadata must never reach an ``AIAgent(**runtime_kwargs)`` spread; the turn
         # runner surfaces it through the agent's one-shot fallback notice (#74349).
         self._pre_agent_fallback_notice = runtime_kwargs.pop("_fallback_notice", None)

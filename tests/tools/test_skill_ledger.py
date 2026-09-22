@@ -11,6 +11,7 @@ skill history), reshaped for the all-actor JSONL ledger design.
 import hashlib
 import json
 import os
+import time
 from pathlib import Path
 
 import pytest
@@ -758,6 +759,10 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
     for _ in range(seeds):
         skill_ledger.append_entry("edit", "my-skill", before=[{"path": "s", "sha256": "0" * 64}],
                                   after=[{"path": "s", "sha256": "1" * 64}], evidence={"pad": "x" * 500})
+    # Unreferenced blobs: a fresh one is another process's in-flight capture (row not appended yet)
+    # and must survive every sweep's blob GC; one older than the grace window is garbage and goes.
+    fresh, aged = skill_ledger._store_blob(b"in-flight"), skill_ledger._store_blob(b"stale orphan")
+    os.utime(skill_ledger.blobs_dir() / aged, (time.time() - 7200, time.time() - 7200))
     threads = [threading.Thread(target=writer, args=(k,), name=k) for k in ids]
     for t in threads:
         t.start()
@@ -769,6 +774,7 @@ def test_concurrent_appends_never_lose_a_middle_row(ledger_env, monkeypatch):
     present = [json.loads(line)["id"] for line in
                skill_ledger.ledger_path().read_text(encoding="utf-8").splitlines() if line.strip()]
     assert present, "the newest row always survives a trim"
+    assert (skill_ledger.blobs_dir() / fresh).exists() and not (skill_ledger.blobs_dir() / aged).exists()
     assert len(present) == seeds + 2 * n - sum(dropped), (
         "every row is either in the ledger or was counted as trimmed — none silently lost"
     )

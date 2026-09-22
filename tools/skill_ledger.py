@@ -18,6 +18,7 @@ import logging
 import os
 import re
 import tarfile
+import time as _time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +37,7 @@ _ARCHIVE_TS_SUFFIX_RE = re.compile(r"^(.+)-\d{14}$")
 _PACKAGE_RESTORE_ACTIONS = frozenset({"delete", "archive", "purge"})
 _VALID_ACTORS = {"curator", "agent", "user"}
 _DEFAULT_LEDGER_MAX_BYTES = 5 * 1024 * 1024  # skills.ledger_max_bytes default (5 MB)
+_BLOB_GC_GRACE_SECS = 3600  # blobs younger than this may belong to an in-flight capture: never GC them
 _NON_PACKAGE_TOPS = {".curator_backups", ".hub", ".archive", ".locks"}
 # Transient/regeneratable local artifacts that must never be swept into a
 # snapshot, no matter how deep they sit under the skill dir — a stray venv or
@@ -451,7 +453,9 @@ def gc_blobs() -> Tuple[int, int]:
     """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
     write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
     (#107539). Malformed ledger lines, or an unreadable/undecodable ledger, abort the sweep
-    (blobs are kept) — an entry we cannot read may still hold references."""
+    (blobs are kept) — an entry we cannot read may still hold references. Blobs newer than
+    ``_BLOB_GC_GRACE_SECS`` are kept too: ``snapshot_paths`` stores them before the referencing row.
+    """
     with _ledger_lock():
         return _gc_blobs_locked()
 
@@ -477,10 +481,14 @@ def _gc_blobs_locked() -> Tuple[int, int]:
         for item in (row.get("before") or []) + (row.get("after") or []):
             referenced.add(str(item.get("sha256", "")))
     deleted = freed = 0
+    fresh_after = _time.time() - _BLOB_GC_GRACE_SECS
     for blob in blobs.iterdir():
         if blob.is_file() and blob.name not in referenced:
             try:
-                size = blob.stat().st_size
+                st = blob.stat()
+                if st.st_mtime > fresh_after:  # in-flight capture (incl. .tmp-*): row not appended yet
+                    continue
+                size = st.st_size
                 blob.unlink()
             except OSError:
                 continue

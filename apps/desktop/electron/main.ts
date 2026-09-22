@@ -10136,7 +10136,7 @@ const desktopInstallationId = loadOrCreateInstallationId(DESKTOP_INSTALLATION_PA
 // SSH connection, the service pauses new dials and dial-material mutations for
 // that connection id; the durable recovery journal below survives a crash
 // mid-transaction so the next launch can restore every drained scope.
-const managedSshUpdateService = createManagedSshUpdateService<any, any, any>({
+const managedSshUpdateService = createManagedSshUpdateService({
   resolveSource: connectionId =>
     readDesktopConnectionsRegistry().connections.find(connection => connection.id === connectionId) || null,
   readRecoveryRecords: () => readManagedSshRecoveryRecords(),

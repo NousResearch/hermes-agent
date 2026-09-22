@@ -84,9 +84,15 @@ def test_priority_capacity_is_rechecked_between_gateway_ticks(tmp_path, monkeypa
         "enabled": True, "project_roots": [str(root)], "entrypoints": ["main.py"], "max_in_progress": 2,
     }}, kb)
     observed = []
-    monkeypatch.setattr(dispatcher, "dispatch_once", lambda conn, **kwargs: observed.append(kwargs["max_in_progress"]))
+    monkeypatch.setattr(
+        dispatcher,
+        "dispatch_once",
+        lambda conn, **kwargs: observed.append(
+            (kwargs["max_in_progress"], kwargs["local_model_cap"])
+        ),
+    )
     worker = _KanbanDispatcher(kb, settings)
     for state in (False, True, False):
         active[0] = state
         worker.tick_once_for_board("default")
-    assert observed == [8, 2, 8]
+    assert observed == [(8, None), (8, 2), (8, None)]

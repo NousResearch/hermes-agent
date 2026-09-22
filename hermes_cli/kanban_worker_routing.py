@@ -163,9 +163,14 @@ def recover_generated_assignee(conn, row, default_assignee, *, dry_run, result):
     assignee = row["assignee"]
     if not assignee or profile_exists(assignee) or not default_assignee:
         return assignee
-    if (row["created_by"] or "").strip().lower() not in {
-        "auto-decomposer", "decomposer", "specialist-routing",
-    } or not profile_exists(default_assignee):
+    # Any persisted assignee is an execution claim, regardless of which
+    # producer wrote it.  Legacy producers have emitted stale aliases and
+    # typos (for example ``ci_general_fixer``); leaving those rows in ready
+    # strands them forever because the dispatcher correctly refuses to spawn
+    # a nonexistent profile.  Normalize every invalid assignee to the
+    # validated intake/default profile, which then applies deterministic
+    # specialist routing before spawn.
+    if not profile_exists(default_assignee):
         return assignee
     if not dry_run:
         with kb.write_txn(conn):
@@ -181,3 +186,53 @@ def recover_generated_assignee(conn, row, default_assignee, *, dry_run, result):
             })
     result.auto_reassigned_invalid.append(row["id"])
     return default_assignee
+
+
+def route_orchestrator_task(conn, row, *, dry_run: bool, result) -> Optional[str]:
+    """Hand a routed task to its repair owner before any worker is spawned."""
+    if row["assignee"] not in {"task-orchestrator", "task-intake-router", "intake-router"}:
+        return row["assignee"]
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_repair_routing import repair_profile_for_task
+
+    # Some older dispatcher callers provide a compact row without task prose;
+    # resolve the authoritative title/body by id before classifying ownership.
+    try:
+        title, body = row["title"], row["body"]
+    except (IndexError, KeyError):
+        detail = conn.execute(
+            "SELECT title, body FROM tasks WHERE id = ?", (row["id"],)
+        ).fetchone()
+        title = detail["title"] if detail else ""
+        body = detail["body"] if detail else ""
+    profile = repair_profile_for_task(title, body)
+    if profile is None:
+        if not dry_run:
+            with kb.write_txn(conn):
+                changed = conn.execute(
+                    "UPDATE tasks SET status = 'triage', assignee = 'task-intake-router' "
+                    "WHERE id = ? AND status = 'ready' AND assignee IN "
+                    "('task-orchestrator', 'task-intake-router', 'intake-router')",
+                    (row["id"],),
+                ).rowcount
+                if changed:
+                    kb._append_event(conn, row["id"], "orchestrator_scope_required", {
+                        "reason": "no deterministic repair profile matched",
+                        "assignee": "task-intake-router",
+                    })
+        return None
+    if not dry_run:
+        with kb.write_txn(conn):
+            changed = conn.execute(
+                "UPDATE tasks SET assignee = ?, consecutive_failures = 0, "
+                "last_failure_error = NULL WHERE id = ? AND status = 'ready' "
+                "AND assignee IN ('task-orchestrator', 'task-intake-router', 'intake-router')",
+                (profile, row["id"]),
+            ).rowcount
+            if changed:
+                kb._append_event(conn, row["id"], "assigned", {
+                    "from": row["assignee"], "assignee": profile,
+                    "source": "task_orchestrator_repair_routing",
+                })
+    result.routed_to_specialist.append((row["id"], profile))
+    return profile

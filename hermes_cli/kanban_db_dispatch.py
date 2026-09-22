@@ -118,6 +118,7 @@ class DispatchResult:
     """Ready task ids with no assignee at all — operator-actionable (usually a
     misfiled task waiting for routing)."""
     auto_reassigned_invalid: list[str] = field(default_factory=list)
+    routed_to_specialist: list[tuple[str, str]] = field(default_factory=list)
     auto_assigned_default: list[str] = field(default_factory=list)
     """Unassigned task ids that had ``kanban.default_assignee`` applied this
     tick before spawning, so telemetry/CLI/dashboard can show the dispatcher
@@ -1265,9 +1266,18 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 # Below budget: already back at ``ready`` with the error stamped.
                 # No ``_record_task_failure`` — must not consume the unified budget.
                 continue
-            # ``force_trip``: the decision (incl. per-task ``max_retries``) was
-            # already made against the violation streak above.
-            tripped = _record_task_failure(
+            # A worker protocol failure is a routing failure, not work being
+            # blocked.  Hand it back through deterministic intake so the
+            # source task can be repaired or reassigned; never trip the
+            # circuit breaker into the forbidden ``blocked`` lane.
+            routed, _, _ = _kb.route_worker_block_to_orchestrator(
+                conn, tid,
+                reason=(
+                    f"worker protocol violation after {streak} attempts: "
+                    f"{error_text}"
+                ),
+            )
+            tripped = False if routed else _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
@@ -1283,11 +1293,13 @@ def _account_crashes(conn: sqlite3.Connection, crash_details: list) -> list[str]
                 },
             )
         elif dead.terminal_provider:
-            # A retry cannot heal a revoked credential or a missing model, so
-            # the whole ``failure_limit`` budget would be spent on identical
-            # failures. ``force_trip`` blocks now, sticky: ``recompute_ready``
-            # must not auto-resume it before the operator fixes the provider.
-            tripped = _record_task_failure(
+            # Provider failures belong to intake/provider repair.  Do not
+            # strand the task in ``blocked`` where no worker can recover it.
+            routed, _, _ = _kb.route_worker_block_to_orchestrator(
+                conn, tid,
+                reason=f"terminal provider failure: {error_text}",
+            )
+            tripped = False if routed else _record_task_failure(
                 conn, tid,
                 error=error_text,
                 outcome="crashed",
@@ -1873,10 +1885,9 @@ def resolve_max_in_progress(
 
     The explicit operator-configured value is the normal performance cap.
     When unset, fall back to the memory-derived default (see
-    :func:`derive_default_max_in_progress`). A configured priority runtime may
-    temporarily lower either value, but never raises it. Callers that parse
-    config (gateway dispatcher, ``hermes kanban dispatch``) should route
-    through this so both paths agree.
+    :func:`derive_default_max_in_progress`). A configured priority runtime
+    lowers this returned cap for compatibility; dispatcher entry points use
+    :func:`resolve_global_max_in_progress` so cloud workers are not throttled.
     """
     from hermes_cli.kanban_runtime_priority import priority_runtime_state, configured_priority_runtime_guard
     if priority_runtime_guard is None:
@@ -1897,10 +1908,7 @@ def resolve_max_in_progress(
             and normal > 0
         ):
             resolved = normal
-    state = priority_runtime_state(
-        priority_runtime_guard,
-        process_scan=process_scan,
-    )
+    state = priority_runtime_state(priority_runtime_guard, process_scan=process_scan)
     if state not in {"active", "unknown"}:
         return resolved
     try:
@@ -1910,6 +1918,38 @@ def resolve_max_in_progress(
     if protected < 1:
         protected = 3
     return protected if resolved is None else min(resolved, protected)
+
+
+def resolve_global_max_in_progress(configured: Optional[int]) -> Optional[int]:
+    """Resolve the host-wide cloud-worker budget without the local-runtime guard."""
+    return resolve_max_in_progress(configured, priority_runtime_guard={})
+
+
+def resolve_priority_runtime_local_cap(
+    priority_runtime_guard: Optional[Mapping[str, Any]] = None,
+    *,
+    process_scan: Optional[ProcessScan] = None,
+) -> Optional[int]:
+    """Return the local-model cap while the protected runtime is active.
+
+    The priority runtime guard protects the host-heavy local inference lane.
+    Cloud model workers use the normal global cap and are not throttled by
+    this guard. An incomplete process scan remains fail-closed for local
+    workers, matching the previous global behavior.
+    """
+    from hermes_cli.kanban_runtime_priority import priority_runtime_state, configured_priority_runtime_guard
+    if priority_runtime_guard is None:
+        priority_runtime_guard = configured_priority_runtime_guard()
+    state = priority_runtime_state(priority_runtime_guard, process_scan=process_scan)
+    if state not in {"active", "unknown"}:
+        return None
+    try:
+        protected = int((priority_runtime_guard or {}).get("max_in_progress", 3))
+    except (TypeError, ValueError):
+        protected = 3
+    if protected < 1:
+        protected = 3
+    return protected
 
 
 def configured_max_in_progress() -> Optional[int]:
@@ -1930,6 +1970,35 @@ def configured_max_in_progress() -> Optional[int]:
     except (TypeError, ValueError):
         return None
     return ival if ival >= 1 else None
+
+
+def shared_kanban_config(kanban_cfg: Optional[Mapping[str, Any]] = None) -> dict[str, Any]:
+    """Overlay profile dispatcher settings with the installation-root policy.
+
+    Dispatcher capacity is a host concern. A named profile may customize its
+    own routing, but it must not silently lose the root ``kanban.max_in_progress``
+    policy and become an uncapped second dispatcher.
+    """
+    profile_cfg = dict(kanban_cfg or {})
+    try:
+        from hermes_cli.config import read_user_config_raw
+        from hermes_constants import get_default_hermes_root
+
+        root_cfg = read_user_config_raw(get_default_hermes_root() / "config.yaml")
+        root_kanban = root_cfg.get("kanban", {}) if isinstance(root_cfg, Mapping) else {}
+    except Exception:
+        root_kanban = {}
+    if not isinstance(root_kanban, Mapping):
+        root_kanban = {}
+    merged = dict(root_kanban)
+    for key, value in profile_cfg.items():
+        if isinstance(value, Mapping) and isinstance(merged.get(key), Mapping):
+            nested = dict(merged[key])
+            nested.update(value)
+            merged[key] = nested
+        else:
+            merged[key] = value
+    return merged
 
 
 def count_running_tasks(conn: sqlite3.Connection) -> int:
@@ -2035,6 +2104,7 @@ def dispatch_once(
     max_in_progress_per_model: Optional[int] = None,
     max_in_progress_by_model: Optional[dict] = None,
     max_in_progress_by_profile: Optional[dict] = None,
+    local_model_cap: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """Run one dispatcher tick under host admission and board writer locks.
@@ -2060,6 +2130,7 @@ def dispatch_once(
             max_in_progress_per_model=max_in_progress_per_model,
             max_in_progress_by_model=max_in_progress_by_model,
             max_in_progress_by_profile=max_in_progress_by_profile,
+            local_model_cap=local_model_cap,
             reconcile_orphans=reconcile_orphans,
         )
 
@@ -2374,7 +2445,7 @@ def _tick_spawn_budget(
 def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     """Unclaimed rows of one lane in dispatch order."""
     return conn.execute(
-        "SELECT id, assignee, created_by, provider_override, model_override FROM tasks "
+        "SELECT id, assignee, created_by, title, body, provider_override, model_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
         "AND COALESCE(created_by, '') != 'fleet' "
         "ORDER BY priority DESC, created_at ASC"
@@ -2447,6 +2518,7 @@ def _dispatch_once_locked(
     max_in_progress_per_model: Optional[int] = None,
     max_in_progress_by_model: Optional[dict] = None,
     max_in_progress_by_profile: Optional[dict] = None,
+    local_model_cap: Optional[int] = None,
     reconcile_orphans: bool = True,
 ) -> DispatchResult:
     """One dispatcher tick: reclaim stale/crashed running tasks, promote
@@ -2499,7 +2571,7 @@ def _dispatch_once_locked(
     capacity = WorkerCapacity(
         conn, model_cap=max_in_progress_per_model,
         model_caps=max_in_progress_by_model, profile_caps=max_in_progress_by_profile,
-        other_running_rows=other_running_rows,
+        other_running_rows=other_running_rows, local_model_cap=local_model_cap,
     )
     # Review-lane reservation: the ready loop runs first and would otherwise
     # consume the ENTIRE shared budget, starving reviews under a sustained ready
@@ -2523,8 +2595,17 @@ def _dispatch_once_locked(
     for row in ready_rows:
         if ready_budget is not None and spawned >= ready_budget:
             break
-        from hermes_cli.kanban_worker_routing import recover_generated_assignee
+        from hermes_cli.kanban_worker_routing import (
+            recover_generated_assignee,
+            route_orchestrator_task,
+        )
         row_assignee = recover_generated_assignee(conn, row, default_assignee, dry_run=dry_run, result=result)
+        if row_assignee in {"task-orchestrator", "task-intake-router", "intake-router"}:
+            row_assignee = route_orchestrator_task(
+                conn, row, dry_run=dry_run, result=result,
+            )
+            if not row_assignee:
+                continue
         if not row_assignee:
             # Honour kanban.default_assignee so an unassigned task doesn't
             # park in 'ready' forever.
@@ -3088,12 +3169,14 @@ def run_daemon(
         try:
             # Re-resolved every tick (config load is mtime-cached) so operator
             # edits apply without a restart.
-            max_in_progress = resolve_max_in_progress(configured_max_in_progress())
+            max_in_progress = resolve_global_max_in_progress(configured_max_in_progress())
+            local_model_cap = resolve_priority_runtime_local_cap()
             with contextlib.closing(_kbc.connect()) as conn:
                 res = dispatch_once(
                     conn,
                     max_spawn=max_spawn,
                     max_in_progress=max_in_progress,
+                    local_model_cap=local_model_cap,
                     failure_limit=failure_limit,
                 )
             if on_tick is not None:

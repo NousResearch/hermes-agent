@@ -3105,6 +3105,76 @@ def suspend_task_for_watchdog(
     return True
 
 
+def defer_task_for_watchdog(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    reason: str,
+    finding: dict[str, Any],
+    termination_fn=None,
+) -> bool:
+    """Stop an unhealthy worker and park its task in dependency-gated ``todo``.
+
+    Watchdog recovery is an internal handoff, not a human block.  Keeping the
+    original task in ``todo`` lets the repair child gate it without exposing a
+    ``blocked`` card or consuming the operator's blocked-card workflow.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id, claim_lock, worker_pid "
+        "FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if (
+        row is None or row["status"] != "running" or row["current_run_id"] is None
+        or int(row["current_run_id"]) != int(expected_run_id)
+    ):
+        return False
+
+    terminate = termination_fn or (
+        lambda pid, lock: _terminate_reclaimed_worker(pid, lock, task_id=task_id)
+    )
+    termination = terminate(row["worker_pid"], row["claim_lock"])
+    if not (
+        isinstance(termination, dict)
+        and termination.get("host_local")
+        and termination.get("termination_attempted")
+        and termination.get("terminated")
+    ):
+        return False
+
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is None or current["status"] != "running"
+            or current["current_run_id"] is None
+            or int(current["current_run_id"]) != int(expected_run_id)
+            or current["claim_lock"] != row["claim_lock"]
+        ):
+            return False
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'todo', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+            "current_run_id = NULL, block_kind = NULL "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (task_id, int(expected_run_id)),
+        )
+        if cur.rowcount != 1:
+            return False
+        metadata = {"watchdog_finding": finding, "termination": termination}
+        run_id = _end_run(
+            conn, task_id, outcome="watchdog_deferred", status="todo",
+            summary=reason, metadata=metadata,
+        )
+        _append_event(
+            conn, task_id, "watchdog_deferred",
+            {**finding, "reason": reason, "termination": termination}, run_id=run_id,
+        )
+    return True
+
+
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
     reason: Optional[str] = None,
@@ -3805,6 +3875,77 @@ def block_task(
         "kanban_task_blocked", blocked_task, task_id, run_id, conn=conn, reason=reason,
     )
     return True
+
+
+def route_worker_block_to_orchestrator(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    reason: Optional[str] = None,
+    expected_run_id: Optional[int] = None,
+) -> tuple[bool, Optional[str], Optional[str]]:
+    """Route an unresolved worker handoff through the intake router.
+
+    ``blocked`` is not a worker workflow state: it strands work until an
+    operator intervenes. A worker that cannot finish is handed to a deterministic
+    repair profile. The legacy ``task-orchestrator`` name is treated as a router
+    alias and never remains a worker owner; unknown scope stays in triage under
+    the canonical intake-router assignee.
+    """
+    with write_txn(conn):
+        row = conn.execute(
+            "SELECT status, assignee, current_run_id, title, body FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if row is None or row["status"] not in {"running", "ready"}:
+            return False, None, None
+        current_run_id = _row_get(row, "current_run_id")
+        if expected_run_id is not None and int(current_run_id or -1) != int(expected_run_id):
+            return False, None, None
+        from hermes_cli.kanban_repair_routing import repair_profile_for_task
+        specialist = repair_profile_for_task(row["title"], row["body"])
+        already_router = row["assignee"] in {
+            "task-orchestrator", "task-intake-router", "intake-router",
+        }
+        target_assignee = specialist or "task-intake-router"
+        new_status = "triage" if already_router and specialist is None else (
+            "ready" if _parents_satisfied(conn, task_id) else "todo"
+        )
+        new_assignee = target_assignee
+        cur = conn.execute(
+            "UPDATE tasks SET status = ?, assignee = ?, claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+            "block_kind = NULL, block_recurrences = 0 "
+            "WHERE id = ? AND status IN ('running', 'ready')",
+            (new_status, new_assignee, task_id),
+        )
+        if cur.rowcount != 1:
+            return False, None, None
+        run_id = _end_or_synthesize_run(
+            conn,
+            task_id,
+            outcome="routed_to_repair_profile",
+            status="routed",
+            summary=reason,
+            metadata={"from_assignee": row["assignee"], "to_assignee": new_assignee,
+                      "landed_status": new_status},
+            synthesize=True,
+        )
+        _append_event(
+            conn,
+            task_id,
+            "routed_to_repair_profile",
+            {
+                "reason": reason,
+                "from_assignee": row["assignee"],
+                "to_assignee": new_assignee,
+                "status": new_status,
+            },
+            run_id=run_id,
+        )
+        landed = get_task(conn, task_id)
+    notify_task_updated(conn, task_id, ("status", "assignee"))
+    return True, landed.status if landed else new_status, landed.assignee if landed else new_assignee
 
 
 def _route_block(

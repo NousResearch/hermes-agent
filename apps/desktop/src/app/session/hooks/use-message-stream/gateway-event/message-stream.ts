@@ -336,7 +336,16 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     playCompletionSound(sessionId)
 
     const finalText = coerceGatewayText(payload?.text) || coerceGatewayText(payload?.rendered)
+    // Some OpenRouter reasoning models only deliver their complete chain of
+    // thought in structured `reasoning_details`. Replace any sparse streamed
+    // reasoning with that authoritative final form before settling the turn,
+    // so a reasoning-only completion still creates the thinking part while
+    // the existing completion lifecycle clears the busy state.
+    const finalReasoning = coerceThinkingText(payload?.reasoning_details)
 
+    if (finalReasoning) {
+      appendReasoningDelta(sessionId, finalReasoning, true, occurredAt)
+    }
     // Terminal error frames (status "error") carry the failure in
     // structured fields: `error` is the message, `partial` marks
     // `text` as streamed output to keep rather than the error string, and

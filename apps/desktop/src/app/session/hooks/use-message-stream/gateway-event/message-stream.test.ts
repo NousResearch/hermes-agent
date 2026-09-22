@@ -54,4 +54,15 @@ describe('handleMessageStreamEvent session-control integration', () => {
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledTimes(1)
     expect(refreshSupportedSessionControlAfterTurn).toHaveBeenCalledWith('s1')
   })
+
+  it('renders reasoning_details from a reasoning-only completion before settling the turn', () => {
+    const ctx = context('message.complete')
+    ctx.payload = {
+      reasoning_details: [{ type: 'reasoning.text', text: 'Count the items.' }]
+    }
+
+    expect(handleMessageStreamEvent(ctx)).toBe(true)
+    expect(ctx.deps.appendReasoningDelta).toHaveBeenCalledWith('s1', 'Count the items.', true, 1_700_000_100)
+    expect(ctx.deps.completeAssistantMessage).toHaveBeenCalledWith('s1', '', undefined, undefined, 1_700_000_100)
+  })
 })

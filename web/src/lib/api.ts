@@ -1,4 +1,10 @@
-import { buildHermesWebSocketUrl } from "@hermes/shared";
+import {
+  buildHermesWebSocketUrl,
+  type ModelOptionProvider,
+  type ModelOptionsResult,
+} from "@hermes/shared";
+
+import { dashboardServingProfile } from "./profile-bootstrap";
 
 // The dashboard can be served either at the root of its host (e.g.
 // https://kanban.tilos.com/) or under a URL prefix when reverse-proxied
@@ -24,6 +30,7 @@ import {
   attemptDashboardTokenReloadOnce,
   clearDashboardTokenReloadAttempt,
 } from "@/lib/dashboard-auth-reload";
+import { apiErrorFromNetworkFailure, apiErrorFromResponse } from "@/lib/api-error";
 
 // Ephemeral session token for protected endpoints.
 // Injected into index.html by the server — never fetched via API.
@@ -59,14 +66,24 @@ export function setManagementProfile(name: string): void {
   _managementProfile = (name || "").trim();
 }
 
+/**
+ * The profile every management call targets: the switcher's selection, or —
+ * before it has resolved / on a host with no switcher interaction — the profile
+ * this backend itself serves.
+ *
+ * The fallback is not a guess: the backend injects a name only when it provably
+ * resolves back to its own home, so it names exactly the home an unnamed request
+ * already reached. Without it the dashboard sends no `?profile=` at all and every
+ * destructive route 400s as soon as the host has a second profile directory.
+ */
 export function getManagementProfile(): string {
-  return _managementProfile;
+  return _managementProfile || dashboardServingProfile();
 }
 
 // Endpoint families that honor ?profile= on the backend (web_server.py
-// _profile_scope or explicit per-profile DB opens). Anything else — ops,
-// cron (which has its own per-job profile params), profiles themselves — is
-// machine-global or self-scoped and must NOT be rewritten.
+// _profile_scope or explicit per-profile DB opens). Anything else — cron (which
+// has its own per-job profile params), profiles themselves — is machine-global or
+// self-scoped and must NOT be rewritten.
 const PROFILE_SCOPED_PREFIXES = [
   "/api/status",
   "/api/gateway",
@@ -92,15 +109,44 @@ const PROFILE_SCOPED_PREFIXES = [
   // consults that one — approving into the global store would grant access
   // the running gateway never sees.
   "/api/pairing",
+  // Memory files, the curator state file, webhook subscriptions, shell hooks,
+  // checkpoints, backups/imports and the dashboard's own theme/font/plugin
+  // preferences all live in a profile home. One backend now serves every
+  // profile, so the switcher's selection has to ride on the request or a reset
+  // lands on the launch profile's data.
+  "/api/memory",
+  "/api/curator",
+  "/api/webhooks",
+  "/api/ops",
+  "/api/logs",
+  "/api/portal",
+  // Pool entries live in the profile's home, and DELETE /api/credentials/pool/{provider}/{index}
+  // is destructive — without this prefix the dashboard's remove button never named a profile and
+  // a multi-profile host refused it outright.
+  "/api/credentials",
+  // Not covered by "/api/dashboard/plugins": this one writes memory.provider + context.engine
+  // into the named profile's config.yaml (same key as PUT /api/memory/provider).
+  "/api/dashboard/plugin-providers",
+  // Model/runtime activation persists into config.yaml; the read routes ignore an extra param.
+  "/api/model/recommended-default",
+  "/api/local-models",
+  "/api/dashboard/theme",
+  "/api/dashboard/font",
+  "/api/dashboard/plugins",
 ];
 
+// The dashboard's own profile when nothing else named one. The backend injects it only
+// when it provably resolves back to the serving home, so this can never retarget another
+// profile — it just says out loud what an unnamed request already meant. Without it every
+// destructive route 400s on a host that merely HAS a second profile directory.
 function withManagementProfile(url: string): string {
-  if (!_managementProfile) return url;
+  const scope = getManagementProfile();
+  if (!scope) return url;
   if (url.includes("profile=")) return url; // explicit param wins
   const path = url.split("?")[0];
   if (!PROFILE_SCOPED_PREFIXES.some((p) => path.startsWith(p))) return url;
   const sep = url.includes("?") ? "&" : "?";
-  return `${url}${sep}profile=${encodeURIComponent(_managementProfile)}`;
+  return `${url}${sep}profile=${encodeURIComponent(scope)}`;
 }
 
 export async function fetchJSON<T>(
@@ -115,15 +161,26 @@ export async function fetchJSON<T>(
   if (token) {
     setSessionHeader(headers, token);
   }
-  const res = await fetch(`${BASE}${url}`, {
-    ...init,
-    headers,
-    // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
-    // for any fetch routed through here. Loopback mode is unaffected — the
-    // server doesn't read cookies and the legacy session-token header is
-    // already attached above.
-    credentials: init?.credentials ?? "include",
-  });
+  let res: Response;
+  try {
+    res = await fetch(`${BASE}${url}`, {
+      ...init,
+      headers,
+      // ``credentials: 'include'`` so the cookie-auth path (gated mode) works
+      // for any fetch routed through here. Loopback mode is unaffected — the
+      // server doesn't read cookies and the legacy session-token header is
+      // already attached above.
+      credentials: init?.credentials ?? "include",
+    });
+  } catch (cause) {
+    // fetch() only rejects when the request never got a response: the
+    // backend is down, the port is closed, or the network dropped. Tell the
+    // user that in words instead of `TypeError: Failed to fetch`.
+    const err = apiErrorFromNetworkFailure(cause, url);
+    // The toast shows only the sentence; keep status/path/body in the console for bug reports.
+    console.warn("[api]", err.details);
+    throw err;
+  }
   if (res.status === 401) {
     // Phase 6: the gated middleware emits a structured envelope so the
     // SPA can full-page-navigate to /login on session expiry. Parse it,
@@ -181,7 +238,9 @@ export async function fetchJSON<T>(
   }
   if (!res.ok) {
     const text = await res.text().catch(() => res.statusText);
-    throw new Error(`${res.status}: ${text}`);
+    const err = apiErrorFromResponse(res.status, text, url);
+    console.warn("[api]", err.details);
+    throw err;
   }
   return res.json();
 }
@@ -209,7 +268,7 @@ export async function getWsTicket(): Promise<{ ticket: string; ttl_seconds: numb
     credentials: "include",
   });
   if (!res.ok) {
-    throw new Error(`/api/auth/ws-ticket: HTTP ${res.status}`);
+    throw apiErrorFromResponse(res.status, await res.text().catch(() => ""), "/api/auth/ws-ticket");
   }
   return res.json();
 }
@@ -249,6 +308,11 @@ export async function authedFetch(
   url: string,
   init?: RequestInit,
 ): Promise<Response> {
+  // Same management scope as fetchJSON: a binary endpoint under a profile-scoped
+  // family (``/api/ops/backup/download``) must read the SELECTED profile's archive,
+  // not the launch profile's, and an unprofiled back door beside a family that now
+  // 400s is exactly how the next hole gets in.
+  url = withManagementProfile(url);
   const headers = new Headers(init?.headers);
   const token = window.__HERMES_SESSION_TOKEN__;
   if (token) {
@@ -543,7 +607,7 @@ export const api = {
     // desktop chat pickers (#56974), so opt in explicitly here.
     qs.set("include_unconfigured", "1");
     const suffix = qs.toString() ? `?${qs.toString()}` : "";
-    return fetchJSON<ModelOptionsResponse>(`/api/model/options${suffix}`);
+    return fetchJSON<ModelOptionsResult>(`/api/model/options${suffix}`);
   },
   getAuxiliaryModels: (profile = getManagementProfile()) =>
     fetchJSON<AuxiliaryModelsResponse>(
@@ -875,8 +939,10 @@ export const api = {
   // Messaging platforms (gateway channels)
   getMessagingPlatforms: () =>
     fetchJSON<MessagingPlatformsResponse>("/api/messaging/platforms"),
+  // `hot_served`: a live multiplexer serving the selected named profile rebuilt its adapters from the
+  // new credentials right away (no gateway restart needed).
   updateMessagingPlatform: (id: string, body: MessagingPlatformUpdate) =>
-    fetchJSON<{ ok: boolean; platform: string }>(
+    fetchJSON<{ ok: boolean; platform: string; hot_served?: boolean }>(
       `/api/messaging/platforms/${encodeURIComponent(id)}`,
       {
         method: "PUT",
@@ -990,21 +1056,33 @@ export const api = {
     }),
 
   enableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/enable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/enable`, {
+      method: "POST",
+    }),
 
   disableAgentPlugin: (name: string) =>
-    fetchJSON<{ ok: boolean; name: string; unchanged?: boolean }>(
-      `/api/dashboard/agent-plugins/${pluginPath(name)}/disable`,
-      { method: "POST" },
-    ),
+    fetchJSON<{
+      ok: boolean;
+      name: string;
+      unchanged?: boolean;
+      restart_required?: boolean;
+    }>(`/api/dashboard/agent-plugins/${pluginPath(name)}/disable`, {
+      method: "POST",
+    }),
 
-  updateAgentPlugin: (name: string) =>
+  updateAgentPlugin: (name: string, acceptCapabilities = false) =>
     fetchJSON<AgentPluginUpdateResponse>(
       `/api/dashboard/agent-plugins/${pluginPath(name)}/update`,
-      { method: "POST" },
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ accept_capabilities: acceptCapabilities }),
+      },
     ),
 
   removeAgentPlugin: (name: string) =>
@@ -1907,9 +1985,17 @@ export interface StatusResponse {
   env_path: string;
   gateway_exit_reason: string | null;
   gateway_health_url: string | null;
+  /** Seconds since the gateway's housekeeping last stamped gateway_state.json, set only when the
+   * process is alive but the stamp is past the freshness TTL (loop/housekeeping wedged).
+   * null when healthy; absent on older backends. */
+  gateway_heartbeat_stale_s?: number | null;
   gateway_pid: number | null;
   gateway_platforms: Record<string, PlatformStatus>;
   gateway_running: boolean;
+  /** Every profile the gateway process serves when the managed profile is carried by the
+   * shared multiplexer (e.g. ["default", "alpha", "beta"]); null/absent for a standalone
+   * gateway or an older backend. */
+  gateway_shared_with?: string[] | null;
   gateway_state: string | null;
   gateway_updated_at: string | null;
   hermes_home: string;
@@ -2299,6 +2385,8 @@ export interface CronJob {
   workdir?: string | null;
   last_run_at?: string | null;
   next_run_at?: string | null;
+  /** Seconds since the job's profile ticker last iterated; null when it cannot be dated. */
+  scheduler_heartbeat_age_s?: number | null;
   last_status?: string | null;
   last_error?: string | null;
   last_delivery_error?: string | null;
@@ -2431,23 +2519,7 @@ export interface ModelInfoResponse {
 
 // ── Model options / assignment types ──────────────────────────────────
 
-export interface ModelOptionProvider {
-  name: string;
-  slug: string;
-  models?: string[];
-  total_models?: number;
-  is_current?: boolean;
-  is_user_defined?: boolean;
-  source?: string;
-  warning?: string;
-  authenticated?: boolean;
-}
-
-export interface ModelOptionsResponse {
-  model?: string;
-  provider?: string;
-  providers?: ModelOptionProvider[];
-}
+export type { ModelOptionProvider, ModelOptionsResult };
 
 export interface AuxiliaryTaskAssignment {
   task: string;
@@ -2725,6 +2797,11 @@ export interface AgentPluginUpdateResponse {
   output?: string;
   unchanged?: boolean;
   error?: string;
+  /** The new catalog pin widens the plugin; nothing changed until the client
+   *  retries with `accept_capabilities`. */
+  consent_required?: boolean;
+  sha?: string;
+  delta_lines?: string[];
 }
 
 export interface PluginProvidersPutRequest {

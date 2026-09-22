@@ -5,12 +5,14 @@ import { PANE_TOGGLE_REVEAL_EVENT } from '@/components/pane-shell'
 import {
   restoreHiddenTreeSideTabs,
   restoreMinimizedTreeSide,
-  setTreeSideCollapsed
+  setTreeSideCollapsed,
+  type TreeSide
 } from '@/components/pane-shell/tree/store'
 import { matchesQuery } from '@/hooks/use-media-query'
 import { connectionScopedAtom } from '@/lib/connection-scoped'
 import { type Codec, Codecs, persistentAtom } from '@/lib/persisted'
 import { arraysEqual, insertUniqueId, readKey } from '@/lib/storage'
+import { modeBound } from '@/store/interface-mode'
 
 import { $paneStates, ensurePaneRegistered, setPaneOpen, setPaneWidthOverride } from './panes'
 import { $showAllProfiles, setShowAllProfiles } from './profile'
@@ -78,9 +80,16 @@ export const $sidebarOpen: ReadableAtom<boolean> = computed(
   states => states[CHAT_SIDEBAR_PANE_ID]?.open ?? true
 )
 
-export const $fileBrowserOpen: ReadableAtom<boolean> = computed(
+// The file tree's own toggle (⌘J), which doubles as the RIGHT side's collapse.
+// Simple mode rests it closed without touching the pane record; ⌘J still opens
+// it for the session.
+const $fileBrowserOpenPref: ReadableAtom<boolean> = computed(
   $paneStates,
   states => states[FILE_BROWSER_PANE_ID]?.open ?? false
+)
+
+export const $fileBrowserOpen = modeBound('fileBrowserOpen', $fileBrowserOpenPref, open =>
+  setPaneOpen(FILE_BROWSER_PANE_ID, open)
 )
 
 // Persisted so a relaunch reopens the same rail tab. Null when the rail has no
@@ -252,7 +261,10 @@ export const $sidebarAgentsGrouped: ReadableAtom<boolean> = computed(
 /** How the recents list is divided. `date` is the sidebar's long-standing
  *  default (Today / Yesterday / Last week dividers). `profile` only means
  *  anything while the sidebar is showing every profile at once. */
-export type SidebarGrouping = 'date' | 'profile' | 'project' | 'status'
+export const SIDEBAR_GROUPING_ORDER = ['date', 'project', 'status', 'profile'] as const
+/** Derived from the order so a new grouping cannot exist without a slot in the
+ *  filter menu and the `view.cycleSidebarGrouping` keybind, which both walk it. */
+export type SidebarGrouping = (typeof SIDEBAR_GROUPING_ORDER)[number]
 /** What ranks rows within whatever grouping is active. */
 export type SidebarOrdering = 'cost' | 'created' | 'manual' | 'status' | 'tokens' | 'updated'
 /** The sort keys the menu offers; `manual` is entered by dragging, not picked. */
@@ -313,11 +325,15 @@ const $sidebarSortKey = persistentAtom<SidebarSortKey>(
   oneOf(SIDEBAR_SORT_KEYS, 'updated')
 )
 
-export const $sidebarRowMeta = persistentAtom<SidebarRowMeta[]>(
+// Simple mode rests the rows on what was said and when, without touching
+// this preference.
+const $sidebarRowMetaPref = persistentAtom<SidebarRowMeta[]>(
   SIDEBAR_ROW_META_STORAGE_KEY,
   SIDEBAR_DEFAULT_ROW_META,
   listOf(ROW_META)
 )
+
+export const $sidebarRowMeta = modeBound('sidebarRowMeta', $sidebarRowMetaPref, meta => $sidebarRowMetaPref.set(meta))
 
 /** Inbox style: render the flat list's session rows as three-line cards
  *  (project · age / title / model · size) instead of the one-line row. A
@@ -531,13 +547,19 @@ function revealNarrowPane(id: string, mode: 'close' | 'open' | 'toggle'): boolea
   return true
 }
 
+// An edge belongs to the pane that sits on it: the flip (⌘\ / a mirrored
+// layout) puts the sessions sidebar on the right, and ⌘B keeps meaning the
+// sidebar, ⌘J the file tree — never "whatever is on the left".
+export const sidebarSide = (): TreeSide => ($panesFlipped.get() ? 'right' : 'left')
+export const fileBrowserSide = (): TreeSide => ($panesFlipped.get() ? 'left' : 'right')
+
 export function setSidebarOpen(open: boolean) {
   setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
-  setTreeSideCollapsed('left', !open)
+  setTreeSideCollapsed(sidebarSide(), !open)
 
   if (open) {
-    restoreMinimizedTreeSide('left')
-    restoreHiddenTreeSideTabs('left')
+    restoreMinimizedTreeSide(sidebarSide())
+    restoreHiddenTreeSideTabs(sidebarSide())
   }
 
   revealNarrowPane(CHAT_SIDEBAR_PANE_ID, open ? 'open' : 'close')
@@ -545,9 +567,9 @@ export function setSidebarOpen(open: boolean) {
 
 export function toggleSidebarOpen() {
   if (!revealNarrowPane(CHAT_SIDEBAR_PANE_ID, 'toggle')) {
-    const open = restoreMinimizedTreeSide('left') || !$sidebarOpen.get()
+    const open = restoreMinimizedTreeSide(sidebarSide()) || !$sidebarOpen.get()
     setPaneOpen(CHAT_SIDEBAR_PANE_ID, open)
-    setTreeSideCollapsed('left', !open)
+    setTreeSideCollapsed(sidebarSide(), !open)
   }
 }
 
@@ -556,18 +578,18 @@ export function toggleFileBrowserOpen() {
     return
   }
 
-  const open = restoreMinimizedTreeSide('right') || !$fileBrowserOpen.get()
-  setPaneOpen(FILE_BROWSER_PANE_ID, open)
-  setTreeSideCollapsed('right', !open)
+  const open = restoreMinimizedTreeSide(fileBrowserSide()) || !$fileBrowserOpen.get()
+  $fileBrowserOpen.set(open)
+  setTreeSideCollapsed(fileBrowserSide(), !open)
 }
 
 export function setFileBrowserOpen(open: boolean) {
-  setPaneOpen(FILE_BROWSER_PANE_ID, open)
-  setTreeSideCollapsed('right', !open)
+  $fileBrowserOpen.set(open)
+  setTreeSideCollapsed(fileBrowserSide(), !open)
 
   if (open) {
-    restoreMinimizedTreeSide('right')
-    restoreHiddenTreeSideTabs('right')
+    restoreMinimizedTreeSide(fileBrowserSide())
+    restoreHiddenTreeSideTabs(fileBrowserSide())
   }
 
   revealNarrowPane(FILE_BROWSER_PANE_ID, open ? 'open' : 'close')
@@ -654,6 +676,12 @@ export function setSidebarGrouping(grouping: SidebarGrouping) {
   }
 
   $sidebarFlatGrouping.set(grouping)
+}
+
+export function cycleSidebarGrouping() {
+  const currentIndex = SIDEBAR_GROUPING_ORDER.indexOf($sidebarGrouping.get())
+
+  setSidebarGrouping(SIDEBAR_GROUPING_ORDER[(currentIndex + 1) % SIDEBAR_GROUPING_ORDER.length])
 }
 
 export function setSidebarOrdering(ordering: SidebarOrdering) {

@@ -1,3 +1,4 @@
+import type { OnboardingEnsureSetupProfileResult } from '@hermes/shared'
 import { useCallback } from 'react'
 
 import type { useSessionActions } from '@/app/session/hooks/use-session-actions'
@@ -8,17 +9,12 @@ import {
   pickOnboardingGreeting,
   takeGuideShape
 } from '@/components/onboarding-chat/assembly'
-import {
-  $setupSession,
-  ensureSetupProfile,
-  guideSourceConnectionId,
-  SETUP_CHAT_TITLE,
-  SETUP_PROFILE
-} from '@/components/onboarding-chat/setup-profile'
+import { $setupSession, guideSourceConnectionId, SETUP_CHAT_TITLE } from '@/components/onboarding-chat/setup-profile'
 import { isOnboardingEnabled } from '@/lib/onboarding-enabled'
 import { activeGatewayConnectionId, requestGatewayForProfile } from '@/store/gateway'
 import { loadMachineProfile } from '@/store/machine'
 import { notify } from '@/store/notifications'
+import { readOnboardingCapabilities } from '@/store/onboarding-capabilities'
 import { skipGuide } from '@/store/onboarding-gate'
 import { buildChatOnboardingSeedMessages } from '@/store/onboarding-script'
 import {
@@ -53,6 +49,7 @@ interface GuideSession {
 }
 
 async function adoptGuideSession(
+  setupProfile: string,
   canonical: GuideSession,
   freeTier: SetupStatus['free_tier'],
   resumeSession: OnboardingKickoffOptions['resumeSession'],
@@ -63,7 +60,7 @@ async function adoptGuideSession(
   $chatOnboardingThreadIds.set(adoptedRuntimeId ? [canonical.id, adoptedRuntimeId] : [canonical.id])
   $setupSession.set({
     connectionId: guideSourceConnectionId(canonical.id),
-    profile: SETUP_PROFILE,
+    profile: setupProfile,
     runtimeId: adoptedRuntimeId ?? canonical.id,
     storedId: canonical.id
   })
@@ -77,7 +74,7 @@ async function adoptGuideSession(
   }
 }
 
-/** Seeds the runbook and a pre-written greeting on hermes-setup before the phase advances.
+/** Seeds the runbook and a pre-written greeting on the setup profile before the phase advances.
  * The seeded assistant row shows the chat's first message without a model turn. */
 export function useOnboardingKickoff({
   createBackendSessionForSend,
@@ -99,11 +96,14 @@ export function useOnboardingKickoff({
     let swapped = false
 
     try {
-      await ensureSetupProfile(requestGateway)
+      const { name: setupProfile } = await requestGateway<OnboardingEnsureSetupProfileResult>(
+        'onboarding.ensure_setup_profile',
+        {}
+      )
 
       // Probe the guide's own socket before switching profiles so a refusal
       // leaves classic onboarding on the user's current backend.
-      const record = await requestGatewayForProfile<SetupStatus>(SETUP_PROFILE, 'setup.status', {})
+      const record = await requestGatewayForProfile<SetupStatus>(setupProfile, 'setup.status', {})
 
       if (record.ready !== true || record.provider_configured !== true) {
         return false
@@ -111,18 +111,16 @@ export function useOnboardingKickoff({
 
       swapped = true
       $newChatRoute.set(null)
-      $newChatProfile.set(SETUP_PROFILE)
-      await ensureGatewayProfile(SETUP_PROFILE)
+      $newChatProfile.set(setupProfile)
+      await ensureGatewayProfile(setupProfile)
 
       // Idempotent: the gate already took the shape on the tick the guide was
       // owed, so no full-size shell painted during the profile round trips.
       takeGuideShape()
       await loadMachineProfile()
 
-      const seedMessages = buildChatOnboardingSeedMessages(pickOnboardingGreeting(), record.free_tier !== true)
-
       const guideRequest: AmbientGatewayRequest = (method, params, timeout) =>
-        requestGatewayForProfile(SETUP_PROFILE, method, params, timeout)
+        requestGatewayForProfile(setupProfile, method, params, timeout)
 
       // Look the guide up by its exact title: a relaunch adopts the existing guide session before creating
       // one, so the backend's UNIQUE(title) constraint cannot leave an untitled duplicate behind.
@@ -134,11 +132,22 @@ export function useOnboardingKickoff({
       const canonical = registryHit?.sessions?.[0]
 
       if (canonical?.id) {
-        await adoptGuideSession(canonical, record.free_tier, resumeSession, guideRequest)
+        await adoptGuideSession(setupProfile, canonical, record.free_tier, resumeSession, guideRequest)
 
         // runGuideKickoff records the guided phase only after adoption.
         return true
       }
+
+      const capabilities = await readOnboardingCapabilities({
+        connectionId: previousConnectionId,
+        profile: setupProfile
+      })
+
+      const seedMessages = buildChatOnboardingSeedMessages(
+        pickOnboardingGreeting(),
+        record.free_tier !== true,
+        capabilities
+      )
 
       const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }
 
@@ -146,7 +155,7 @@ export function useOnboardingKickoff({
         createOverrides.reasoningEffort = 'minimal'
       }
 
-      const runtimeId = await runCreatePinnedTo(SETUP_PROFILE, () =>
+      const runtimeId = await runCreatePinnedTo(setupProfile, () =>
         createBackendSessionForSend(null, seedMessages, createOverrides)
       )
 
@@ -158,7 +167,7 @@ export function useOnboardingKickoff({
       $chatOnboardingThreadIds.set(storedId ? [storedId, runtimeId] : [runtimeId])
       $setupSession.set({
         connectionId: guideSourceConnectionId(storedId),
-        profile: SETUP_PROFILE,
+        profile: setupProfile,
         runtimeId,
         storedId
       })

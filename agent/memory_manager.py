@@ -16,7 +16,7 @@ from concurrent.futures import Future, ThreadPoolExecutor, wait
 from functools import partial
 from typing import Any, Callable, Dict, List, Optional
 
-from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION
+from agent.memory_provider import MemoryProvider, PRE_COMPRESS_CHECKPOINT_API_VERSION, ctx_bound, spawn_context_thread
 from agent.skill_commands import extract_user_instruction_from_skill_message
 from tools.hook_output_spill import get_spill_config, spill_if_oversized
 from tools.registry import tool_error
@@ -57,12 +57,6 @@ def _accepts_require_checkpoint(fn: Callable[..., Any]) -> bool:
         return False
     kind = getattr(params.get("require_checkpoint"), "kind", None)
     return _has_var_kwargs(params) or kind in (inspect.Parameter.KEYWORD_ONLY, inspect.Parameter.POSITIONAL_OR_KEYWORD)
-
-
-def _ctx_bound(fn: Callable[[], Any]) -> Callable[[], Any]:
-    """Bind ``fn`` to the CALLER's contextvars for another thread: profile isolation is a
-    ContextVar-scoped HERMES_HOME override, and an unbound worker would silently use the default profile."""
-    return partial(contextvars.copy_context().run, fn)
 
 
 # -- Tool-schema plumbing -----------------------------------------------------
@@ -269,13 +263,66 @@ class StreamingContextScrubber:
             self._at_block_boundary = self._ends_at_block_boundary(text)
 
 
+# A markdown bullet: a marker, whitespace, then content. The whitespace matters — it is what keeps
+# ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
+_RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
+
+
+def _drop_repeated_recall_lines(text: str) -> str:
+    """Drop a recalled bullet that an EARLIER line of this same block already states.
+
+    Providers merge several stores (and this merges several providers), so one prefetch routinely
+    surfaces the same fact two or three times. A byte-identical repeat inside one block tells the
+    model nothing the block has not already said, and it is not free: the composed block is stamped
+    into the user row's ``api_content`` sidecar and replayed verbatim on every later request for as
+    long as that row is in context, so each duplicate is paid once per turn, forever.
+
+    The ``seen`` set is scoped per section — every non-bullet line at column 0 (a heading of any
+    style, a ``---`` rule, prose) starts a new one — so a repeat is only dropped when the SAME
+    section already states it.
+
+    Only a SELF-CONTAINED bullet is considered — a marker, whitespace, content, and no continuation
+    line indented beneath it. A bullet that carries continuation lines is never dropped and never
+    suppresses a later one, because two entries can share a headline and differ underneath it
+    (``- prefers draft PRs`` / ``  (logged 12 Jan, builtin)`` vs the same headline logged elsewhere):
+    dropping one would re-parent its provenance under the other and invent a record neither provider
+    reported. Headings — including ``**bold**`` ones — prose, blank lines, separators and numbered
+    items are left exactly as written.
+    """
+    lines = text.split("\n")
+    seen: set[str] = set()
+    kept: list[str] = []
+    for index, line in enumerate(lines):
+        stripped = line.strip()
+        # An indented line is a continuation of the bullet above it (nested child, provenance,
+        # wrapped prose). It never participates in dedupe and is never dropped.
+        if stripped and line[0].isspace():
+            kept.append(line)
+            continue
+        is_bullet = bool(_RECALL_BULLET_RE.match(stripped))
+        # Any column-0 non-bullet line (heading, rule, paragraph) opens a fresh dedupe scope.
+        if stripped and not is_bullet:
+            seen.clear()
+        if is_bullet:
+            following = lines[index + 1] if index + 1 < len(lines) else ""
+            carries_continuation = bool(following.strip()) and following[0].isspace()
+            if not carries_continuation:
+                if stripped in seen:
+                    continue
+                seen.add(stripped)
+        kept.append(line)
+    return "\n".join(kept)
+
+
 def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
-    clean = sanitize_context(raw_context)
-    if clean != raw_context:
+    sanitized = sanitize_context(raw_context)
+    if sanitized != raw_context:
+        # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
         logger.warning("memory provider returned pre-wrapped context; stripped")
+    clean = _drop_repeated_recall_lines(sanitized)
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "
@@ -331,16 +378,22 @@ class MemoryManager:
 
     def add_provider(self, provider: MemoryProvider) -> None:
         """Register a provider; builtin always accepted, only ONE external allowed."""
+        if provider.name != "builtin" and self._has_external:
+            existing = next((p.name for p in self._providers if p.name != "builtin"), "unknown")
+            logger.warning(
+                "Rejected memory provider '%s' — external provider '%s' is "
+                "already registered. Only one external memory provider is "
+                "allowed at a time. Configure which one via memory.provider "
+                "in config.yaml.", provider.name, existing,
+            )
+            return
+
+        # Load schemas BEFORE mutating any manager state: a provider whose schema
+        # load raises must leave `_providers` / `_has_external` untouched, otherwise
+        # it blocks every later external provider in this process (#9948).
+        schemas = list(provider.get_tool_schemas())
+
         if provider.name != "builtin":
-            if self._has_external:
-                existing = next((p.name for p in self._providers if p.name != "builtin"), "unknown")
-                logger.warning(
-                    "Rejected memory provider '%s' — external provider '%s' is "
-                    "already registered. Only one external memory provider is "
-                    "allowed at a time. Configure which one via memory.provider "
-                    "in config.yaml.", provider.name, existing,
-                )
-                return
             self._has_external = True
             self._external_prefetch_spill_config = get_spill_config()
 
@@ -353,7 +406,7 @@ class MemoryManager:
         # registries. See #40466.
         from toolsets import _HERMES_CORE_TOOLS
 
-        for raw_schema in provider.get_tool_schemas():
+        for raw_schema in schemas:
             schema = normalize_tool_schema(raw_schema)
             if schema is None:
                 continue
@@ -372,7 +425,7 @@ class MemoryManager:
             else:
                 self._tool_to_provider[tool_name] = provider
 
-        logger.info("Memory provider '%s' registered (%d tools)", provider.name, len(provider.get_tool_schemas()))
+        logger.info("Memory provider '%s' registered (%d tools)", provider.name, len(schemas))
 
     @property
     def providers(self) -> List[MemoryProvider]:
@@ -415,7 +468,7 @@ class MemoryManager:
             except Exception as exc:  # pragma: no cover - re-raised by caller
                 result_box["error"] = exc
 
-        thread = threading.Thread(target=_ctx_bound(_run), daemon=True, name=f"memory-prefetch-{provider.name}")
+        thread = spawn_context_thread(_run, name=f"memory-prefetch-{provider.name}")
         with self._external_prefetch_lock:
             existing = self._external_prefetch_threads.get(provider.name)
             if existing is not None and existing.is_alive():
@@ -505,9 +558,9 @@ class MemoryManager:
 
     def _submit_background(self, fn, *, kind: str = "write") -> None:
         """Queue ``fn`` on the serialized worker (created lazily; None once shutting down) and track its
-        durability class. Runs under the caller's contextvars (``_ctx_bound``). If the executor is
+        durability class. Runs under the caller's contextvars (``ctx_bound``). If the executor is
         unavailable outside shutdown, run inline — the historical fail-safe."""
-        fn = _ctx_bound(fn)
+        fn = ctx_bound(fn)
         executor = None if self._shutting_down else self._sync_executor
         if executor is None and not self._shutting_down:
             with self._sync_executor_lock:

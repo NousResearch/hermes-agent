@@ -2,11 +2,15 @@
 stripping, thread participation tracking, GFM table → bullets, mention-pattern
 compilation, and fence-aware markdown chunking."""
 
+import asyncio
+import contextlib
 import json
 import logging
 import re
+import threading
 import time
 from pathlib import Path
+from typing import Any, MutableMapping, Optional
 from gateway.platforms.event import MessageEvent
 from utils import atomic_json_write
 
@@ -57,6 +61,33 @@ class MessageDeduplicator:
         self._seen.clear()
 
 
+# Worker-thread handoff used by the off-loop persist paths.  A module attribute
+# so tests can replace THIS seam instead of patching ``asyncio.to_thread``
+# globally.
+_to_thread = asyncio.to_thread
+
+
+async def cancel_task(task: Optional[asyncio.Task]) -> None:
+    """Cancel *task* and wait for it to unwind. ``None``/finished tasks are no-ops; awaiting the
+    current task would deadlock, so a self-cancel only requests cancellation. Exceptions the task
+    dies with are swallowed: at teardown nobody is left to handle them."""
+    if task is None or task.done():
+        return
+    task.cancel()
+    if task is not asyncio.current_task():
+        with contextlib.suppress(asyncio.CancelledError, Exception):
+            await task
+
+
+def bounded_put(store: MutableMapping[str, Any], key: str, value: Any, cap: int) -> None:
+    """Insert into an insertion-ordered mapping with a hard size bound, evicting the oldest keys. A
+    re-put moves the key to the newest position so live entries outlast stale ones."""
+    store.pop(key, None)
+    store[key] = value
+    while len(store) > cap:
+        del store[next(iter(store))]
+
+
 # Markdown-stripping rules, applied in order: bold, italic, bold/italic underscore,
 # code fence markers, inline code, headings, links, then newline squeeze.
 _STRIP_RULES = (
@@ -88,6 +119,19 @@ class ThreadParticipationTracker:
     def __init__(self, platform_name: str, max_tracked: int = 500):
         self._platform = platform_name
         self._max_tracked = max_tracked
+        # ``mark_async`` runs the persist on a worker thread, which removes the
+        # accidental serialization the event loop used to provide.  Two locks,
+        # never nested the other way round:
+        #   ``_lock``    guards ONLY the in-memory set (``_remember``,
+        #                ``__contains__``, ``clear`` and the snapshot in
+        #                ``_save``); held for microseconds, safe on the loop.
+        #   ``_io_lock`` worker-only; serializes snapshot+write in ``_save`` so
+        #                two persists cannot interleave and lose an entry.
+        # ``_save`` must NOT hold ``_lock`` across ``os.replace``: the adapters'
+        # ``thread_id in tracker`` gate runs on the loop thread and would stall
+        # for the whole rename.
+        self._lock = threading.Lock()
+        self._io_lock = threading.Lock()
         self._threads: dict[str, None] = dict.fromkeys(str(t) for t in self._load())
 
     def _state_path(self) -> Path:
@@ -102,23 +146,56 @@ class ThreadParticipationTracker:
         return [str(thread_id) for thread_id in data] if isinstance(data, list) else []
 
     def _save(self) -> None:
-        thread_list = list(self._threads)
-        if len(thread_list) > self._max_tracked:
-            thread_list = thread_list[-self._max_tracked:]
-            self._threads = dict.fromkeys(thread_list)
-        atomic_json_write(self._state_path(), thread_list, indent=None)
+        with self._io_lock:
+            with self._lock:
+                thread_list = list(self._threads)
+                if len(thread_list) > self._max_tracked:
+                    thread_list = thread_list[-self._max_tracked:]
+                    self._threads = dict.fromkeys(thread_list)
+            atomic_json_write(self._state_path(), thread_list, indent=None)
+
+    def _remember(self, thread_id: str) -> bool:
+        """Record *thread_id* in memory; ``True`` when a persist is still owed.
+
+        The in-memory half stays synchronous even for :meth:`mark_async` so that
+        a ``thread_id in tracker`` check immediately after marking is correct --
+        the mention-gating logic in the adapters depends on that.
+        """
+        with self._lock:
+            if thread_id in self._threads:
+                return False
+            self._threads[thread_id] = None
+            return True
 
     def mark(self, thread_id: str) -> None:
-        """Mark *thread_id* as participated and persist."""
-        if thread_id not in self._threads:
-            self._threads[thread_id] = None
+        """Mark *thread_id* as participated and persist.
+
+        Blocking: ends in ``atomic_json_write`` -> ``os.replace``.  Coroutines
+        must use :meth:`mark_async` instead.
+        """
+        if self._remember(thread_id):
             self._save()
 
+    async def mark_async(self, thread_id: str) -> None:
+        """Off-loop form of :meth:`mark`.
+
+        ``_save`` ends in ``atomic_json_write`` -> ``os.replace``, whose
+        duration is unbounded under filesystem pressure.  Every caller of this
+        tracker sits on an inbound-message coroutine in the Discord and Matrix
+        adapters, so the rename must not be paid inline on the event loop -- it
+        stalls every other adapter's polling and every in-flight turn for as
+        long as it runs.
+        """
+        if self._remember(thread_id):
+            await _to_thread(self._save)
+
     def __contains__(self, thread_id: str) -> bool:
-        return thread_id in self._threads
+        with self._lock:
+            return thread_id in self._threads
 
     def clear(self) -> None:
-        self._threads.clear()
+        with self._lock:
+            self._threads.clear()
 
 
 def redact_phone(phone: str) -> str:
@@ -511,6 +588,32 @@ def _chunk_newline_preferred(text, limit, len_fn):
     if remaining:
         chunks.append(remaining)
     return chunks
+
+
+# ─── Discord channel obfuscation (Bot API change, mandatory Nov 16 2026) ───────
+# Channels a bot lacks VIEW_CHANNEL on are still dispatched over the Gateway with the
+# name replaced by "___hidden___", sensitive fields nulled and flag 1 << 17 set; over
+# HTTP they are omitted. https://discord.com/developers/docs/change-log (Aug 12, 2026)
+DISCORD_CHANNEL_OBFUSCATED_FLAG = 1 << 17
+DISCORD_OBFUSCATED_CHANNEL_NAME = "___hidden___"
+
+
+def is_discord_channel_obfuscated(channel) -> bool:
+    """True when a discord.py channel object is an obfuscated placeholder.
+
+    Skip these wherever guild channels are enumerated (channel directory, message
+    backfill): history reads and sends always fail with a permission error. Flag
+    first; the sentinel name is the fallback for discord.py builds that don't
+    expose the flag (a visible channel literally named ``___hidden___`` is then
+    also skipped — deliberate bias toward hiding). #90154
+    """
+    try:
+        flag_value = channel.flags.value
+    except AttributeError:
+        flag_value = None
+    if isinstance(flag_value, int) and flag_value & DISCORD_CHANNEL_OBFUSCATED_FLAG:
+        return True
+    return getattr(channel, "name", None) == DISCORD_OBFUSCATED_CHANNEL_NAME
 
 
 # ---- BEGIN PLUGIN-COMPAT (revert-scheduled; see COMPAT_MANIFEST.md) ----

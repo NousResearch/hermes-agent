@@ -4,26 +4,37 @@ The Desktop's relay door on each connected gateway. Contracts:
 - roster.sync persists validated rows and reports the accepted count;
 - outbox.drain returns queued envelopes exactly once;
 - deliver validates the target profile against THIS install and runs the
-  one-turn Bot Chat transport (subprocess is faked here — the argv contract
-  is what's pinned);
+  one-turn Bot Chat transport (the turn runner is faked here — the argv
+  contract is what's pinned; the runner itself is pinned below with real
+  children: its cap bounds the turn, not the exit linger, #114980);
 - reply writes the waiter's file and rejects malformed envelope ids.
 """
 
 from __future__ import annotations
 
 import json
+import os
+import subprocess
+import sys
+import textwrap
+import threading
+import time
+from pathlib import Path
+from unittest import mock
 
 import pytest
 
 import tui_gateway.server as srv
 from hermes_cli.dashboard_auth.ws_tickets import INTERNAL_PROVIDER, INTERNAL_USER_ID
 from tools import bot_relay
+from tui_gateway import methods_bot_relay
 
 
 @pytest.fixture
 def home(tmp_path, monkeypatch):
     h = tmp_path / ".hermes"
     (h / "profiles" / "ops").mkdir(parents=True)
+    (h / "profiles" / "ops" / "config.yaml").write_text("{}\n")  # identity marker: a bare dir is no target
     monkeypatch.setenv("HERMES_HOME", str(h))
     return h
 
@@ -61,6 +72,45 @@ def test_outbox_drain_returns_each_envelope_once(home):
     assert second["envelopes"] == []
 
 
+def test_outbox_drain_reoffers_a_claimed_envelope_the_desktop_never_delivered(home):
+    """A Desktop that disconnects between ``outbox.drain`` and ``bot_relay.deliver`` leaves the
+    envelope in ``claimed/`` with no reply: silent until the waiter's deadline, then swept, while
+    every later drain saw an empty outbox (#111021, redo of #111207). Once it has sat unanswered
+    for ``REOFFER_AFTER_SECONDS`` the next drain hands it out again — exactly once, ever — an
+    envelope whose reply already landed is never re-offered, and one still unanswered when the
+    waiter's ``REPLY_WAIT_SECONDS`` run out gets a ``delivery_timeout`` reply instead of a turn loop."""
+    import os
+    import time
+
+    target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
+              "connection_label": "", "title": "", "description": ""}
+    lost = bot_relay.enqueue_envelope(home, target=target, message="lost", sender_profile="w", sender_handle="w")
+    done = bot_relay.enqueue_envelope(home, target=target, message="done", sender_profile="w", sender_handle="w")
+    drain = srv._methods["bot_relay.outbox.drain"]
+    assert sorted(e["id"] for e in _result(drain(1, {}))["envelopes"]) == sorted([lost["id"], done["id"]])
+    bot_relay.write_reply(home, done["id"], reply="answered")
+    # Fresh claims are the Desktop's for a whole window: nothing to re-offer yet.
+    assert _result(drain(2, {}))["envelopes"] == []
+    claimed_dir = bot_relay.relay_root(home) / bot_relay.CLAIMED_DIR
+    lost_path = claimed_dir / f"{lost['id']}.json"
+    old = time.time() - bot_relay.REOFFER_AFTER_SECONDS - 1
+    for path in claimed_dir.glob("*.json"):
+        os.utime(path, (old, old))
+    reoffered = _result(drain(3, {}))["envelopes"]
+    assert [(e["id"], e["message"]) for e in reoffered] == [(lost["id"], "lost")]
+    # One re-offer per envelope: a second silent loss is not handed out again, however old it gets.
+    os.utime(lost_path, (old, old))
+    assert _result(drain(4, {}))["envelopes"] == []
+    assert json.loads(lost_path.read_text(encoding="utf-8"))["reoffered_at"] >= int(old)
+    # Past the waiter's deadline the drain settles it with a typed timeout so the sender learns.
+    stale = json.loads(lost_path.read_text(encoding="utf-8"))
+    stale["created_at"] = int(time.time()) - bot_relay.REPLY_WAIT_SECONDS - 1
+    lost_path.write_text(json.dumps(stale), encoding="utf-8")
+    assert _result(drain(5, {}))["envelopes"] == []
+    reply = json.loads((bot_relay.relay_root(home) / bot_relay.REPLIES_DIR / f"{lost['id']}.json").read_text(encoding="utf-8"))
+    assert reply["reason"] == "delivery_timeout" and reply["error"]
+
+
 def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     calls = {}
 
@@ -74,17 +124,16 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
         calls["kwargs"] = kwargs
         return _Proc()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     out = _result(
         srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"})
     )
     assert out["reply"] == "pong from ops"
-    # Decoding is pinned (#93590 sibling defect): without encoding= the
-    # child's UTF-8 output is decoded with the locale codec — cp1252/GBK on
-    # Windows — mangling non-ASCII replies; errors="replace" keeps a bad
-    # byte from raising instead of delivering.
-    assert calls["kwargs"]["encoding"] == "utf-8"
-    assert calls["kwargs"]["errors"] == "replace"
+    # The cap bounds the turn; the relay wants the printed answer, so a reported child is
+    # booked only at the cap (exit_grace=None), never early like the cron lane (#114980).
+    assert calls["kwargs"]["timeout"] == bot_relay.TURN_ATTEMPT_TIMEOUT_SECONDS
+    assert calls["kwargs"]["exit_grace"] is None
+    assert calls["kwargs"]["report_path"].endswith(".turn.json")
     argv = calls["argv"]
     # argv[0] may be a resolved venv path (#93590) — match by basename.
     assert argv[1:3] == ["-p", "ops"]
@@ -95,16 +144,65 @@ def test_deliver_validates_profile_and_runs_transport(home, monkeypatch):
     _result(srv._methods["bot_relay.deliver"](2, {"profile": "hermes", "message": "x"}))
     assert calls["argv"][1:3] == ["-p", "default"]
 
-    # unknown profile refuses without spawning
+    # unknown profile refuses without spawning; so does a bare infra dir under profiles/ (#99392)
     calls.clear()
-    err = srv._methods["bot_relay.deliver"](3, {"profile": "ghost", "message": "x"})
-    assert "error" in err and "ghost" in err["error"]["message"]
+    (home / "profiles" / "sessions" / "cron").mkdir(parents=True)
+    for target in ("ghost", "sessions"):
+        err = srv._methods["bot_relay.deliver"](3, {"profile": target, "message": "x"})
+        assert "error" in err and target in err["error"]["message"]
     assert not calls
 
 
 def test_deliver_requires_params(home):
     err = srv._methods["bot_relay.deliver"](1, {"profile": "", "message": ""})
     assert "error" in err
+
+
+def test_deliver_restamps_relayed_sender_with_a_reply_safe_handle(home, monkeypatch):
+    """#103731: the sender signs with its bare @handle, which for another machine's ``default`` is
+    ``@hermes`` — the recipient's OWN default. The delivered text names the sender by the form this
+    gateway resolves back to it: its title slug when the local relay roster carries it, else
+    ``handle@connection``. A stamp that is not the relay's is left alone."""
+    seen = []
+
+    class _Proc:
+        returncode, stderr, stdout = 0, "", "ok"
+
+    def _fake_run(argv, **_kwargs):
+        seen.append(Path(argv[argv.index("--query-file") + 1]).read_text(encoding="utf-8"))
+        return _Proc()
+
+    # The deliver child's runner, whichever this tree has: subprocess.run today, and
+    # quiet_single_query.run_reported_turn once the relay books turns from their report
+    # (#114980) — patching only the first would spawn a real ``hermes chat -Q`` child there.
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
+    bot_relay.write_remote_roster(home, [
+        {"profile": "default", "handle": "hermes", "connection_id": "vps-1", "title": "CoS Bot"},
+    ])
+    stamp = "Message from 🤖 CoS Bot (@hermes): are we done?"
+    sender = {"from_profile": "default", "from_handle": "hermes", "from_connection": "vps-1"}
+    _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": stamp, **sender}))
+    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": stamp, **sender, "from_connection": "lan-2"}))
+    _result(srv._methods["bot_relay.deliver"](3, {"profile": "ops", "message": "plain text (@hermes): x", **sender}))
+    assert seen == ["Message from 🤖 CoS Bot (@cos-bot): are we done?",
+                    "Message from 🤖 CoS Bot (@hermes@lan-2): are we done?",
+                    "plain text (@hermes): x"]
+
+
+def test_deliver_relays_empty_reply_for_a_bare_silence_marker(home, monkeypatch):
+    """#110782: the subprocess transport applies the gateway's silence rule — a bare marker
+    relays as "", prose that merely mentions one is relayed verbatim."""
+    class _Proc:
+        returncode, stderr = 0, ""
+        stdout = " *NO_REPLY* "
+
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", lambda *_a, **_k: _Proc())
+    assert _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))["reply"] == ""
+
+    _Proc.stdout = "The NO_REPLY marker means do not answer."
+    out = _result(srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping"}))
+    assert out["reply"] == _Proc.stdout.strip()
 
 
 def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch):
@@ -128,7 +226,7 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
             spawned.append(argv)
         return _Proc()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     monkeypatch.setitem(
         srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"})
     )
@@ -151,6 +249,127 @@ def test_deliver_lands_in_live_bot_chat_instead_of_subprocess(home, monkeypatch)
 
     out = _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
     assert out["reply"] == "pong" and spawned and not submitted
+
+
+def _lease_open_bot_chat(home, *, live_session_id="live-in-other-process"):
+    """A Bot Chat leased by a mailbox-capable live owner in the target's home (real state.db row,
+    real lease) — what a Desktop-opened Bot Chat looks like from the relay handler's side."""
+    from hermes_cli.active_sessions import try_acquire_active_session
+    from hermes_state import SessionDB
+
+    ops_home = home / "profiles" / "ops"
+    db = SessionDB(db_path=ops_home / "state.db")
+    db.create_session(session_id="chat", source="desktop")
+    db.set_session_title("chat", "Bot Chat")
+    db.close()
+    lease, refusal = try_acquire_active_session(
+        session_id="chat", surface="desktop", config={}, registry_home=ops_home,
+        metadata={"live_session_id": live_session_id, "bot_live_delivery_consumer": True})
+    assert refusal is None
+    return ops_home, lease
+
+
+def _no_cli_transport(monkeypatch, spawned):
+    def _fake_run(argv, *a, **k):
+        if argv and argv[0] != "git":
+            spawned.append(argv)
+        raise AssertionError("the CLI transport collides with the live owner")
+
+    # Guard the deliver child's runner, whichever this tree has: subprocess.run today, and
+    # quiet_single_query.run_reported_turn once the relay books turns from their report
+    # (#114980) — guarding only the first would let a real ``hermes chat -Q`` child spawn there.
+    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run, raising=False)
+
+
+def _owner_settles(ops_home, outcome: dict) -> threading.Thread:
+    """Stand in for the owner's poller (session_notifications._poll_bot_live_delivery_once): claim
+    the queued DM, run "the turn", write the terminal receipt."""
+    from tools import bot_live_delivery as mailbox
+
+    def run():
+        owner = mailbox.find_canonical_live_owner(ops_home)
+        deadline = time.monotonic() + 10
+        while time.monotonic() < deadline:
+            claimed = mailbox.claim_pending_delivery(ops_home, owner)
+            if claimed is not None:
+                mailbox.complete_delivery(ops_home, claimed["delivery_id"], **outcome)
+                return
+            time.sleep(0.05)
+
+    thread = threading.Thread(target=run, daemon=True)
+    thread.start()
+    return thread
+
+
+@pytest.mark.parametrize(
+    ("live_here", "outcome", "expect"),
+    [
+        (True, {"status": "settled", "reply": "pong from the open chat"}, ("reply", "pong from the open chat")),
+        (False, {"status": "failed", "error": "Error code: 429 - rate limit exceeded", "reason": "provider_rate_limit"},
+         ("reason", "provider_rate_limit")),
+    ],
+    ids=["answer-from-a-chat-live-here", "typed-failure-from-a-chat-live-elsewhere"],
+)
+def test_deliver_into_an_open_bot_chat_returns_the_owners_answer(home, monkeypatch, live_here, outcome, expect):
+    """#113753 put a relayed DM into the mailbox of a Bot Chat live in a sibling process, and the
+    owner settles a receipt carrying the reply — the receipt local DMs wait on (_wait_live_dm).
+    The relay answered with a receipt sentence instead, so the sending agent never got the target's
+    answer whenever its Bot Chat happened to be open. Now the handler waits on the receipt, on the
+    local lane's budget: the reply comes back, a failed turn as the typed 5092 refusal, and the
+    CLI is never spawned. A mailbox-capable chat live in THIS process takes the same door — one
+    door, one receipt — and prompt.submit (#100523) stays the fallback for a live session with no
+    mailbox (test_deliver_lands_in_live_bot_chat_instead_of_subprocess)."""
+    ops_home, lease = _lease_open_bot_chat(home)
+    spawned, submitted = [], []
+    _no_cli_transport(monkeypatch, spawned)
+    monkeypatch.setitem(
+        srv._methods, "prompt.submit", lambda rid, p: submitted.append(p) or srv._ok(rid, {"status": "streaming"}))
+    monkeypatch.setattr(srv, "_profile_home", lambda name: ops_home)
+    monkeypatch.setattr(srv, "_sessions", (
+        {"live-ops": {"profile_home": str(ops_home), "pending_title": "Bot Chat", "history": []}} if live_here else {}))
+    monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 10)
+    try:
+        owner = _owner_settles(ops_home, outcome)
+        out = srv._methods["bot_relay.deliver"](1, {
+            "profile": "ops", "message": "ping", "from_profile": "cody", "from_handle": "cody",
+            "from_connection": "conn-a"})
+        owner.join(timeout=10)
+        assert not spawned and submitted == []
+        key, value = expect
+        if key == "reply":
+            assert _result(out)["reply"] == value
+        else:
+            assert out["error"]["code"] == 5092 and out["error"]["data"]["reason"] == value
+    finally:
+        lease.release()
+
+
+def test_deliver_into_a_busy_open_bot_chat_reports_it_queued_and_keeps_the_receipt(home, monkeypatch):
+    """The owner admits at its next idle boundary; a DM not answered within the budget is reported
+    queued there — the record stays for the owner, carrying the message and the relayed sender as
+    the turn author, and the sender is told not to resend."""
+    from tools import bot_live_delivery as mailbox
+
+    ops_home, lease = _lease_open_bot_chat(home)
+    spawned = []
+    _no_cli_transport(monkeypatch, spawned)
+    monkeypatch.setattr(srv, "_profile_home", lambda name: ops_home)
+    monkeypatch.setattr(srv, "_sessions", {})
+    monkeypatch.setattr("tools.bot_mode_dm._LIVE_WAIT_SECONDS", 0.6)
+    try:
+        out = _result(srv._methods["bot_relay.deliver"](1, {
+            "profile": "ops", "message": "ping", "from_profile": "cody", "from_handle": "cody",
+            "from_connection": "conn-a"}))
+        assert not spawned and "open Bot Chat" in out["reply"] and "Do not resend" in out["reply"]
+        (queued,) = [
+            r for p in (ops_home / "runtime" / mailbox.DELIVERY_DIR_NAME).glob("*.json")
+            if (r := json.loads(p.read_text(encoding="utf-8")))]
+        assert queued["status"] == "queued" and queued["message"] == "ping"
+        assert queued["owner"]["lease_id"] == lease.lease_id
+        assert queued["author"]["name"] == "cody" and queued["author"]["is_bot"] is True
+    finally:
+        lease.release()
 
 
 def test_reply_roundtrip_and_id_validation(home):
@@ -210,7 +429,7 @@ def fake_runs(monkeypatch):
 
         return _Proc()
 
-    monkeypatch.setattr("subprocess.run", _fake_run)
+    monkeypatch.setattr("hermes_cli.quiet_single_query.run_reported_turn", _fake_run)
     return calls, outcomes
 
 
@@ -269,7 +488,12 @@ SENDER_AUTHOR = {"id": "bot:cloud-1/scout", "name": "scout", "is_bot": True}
     {"user_id": INTERNAL_USER_ID, "provider": INTERNAL_PROVIDER},
 ], ids=["no identity", "server-internal identity"])
 def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_runs, bound_client, identity):
-    """The Desktop and server-internal callers carry no login identity; their sender fields become the author."""
+    """A caller with no identity, or one holding the ``?internal=`` credential, keeps its sender fields.
+
+    NOT the Desktop: it mints a ws-ticket carrying the signed-in ``{user_id, provider}`` on every
+    gateway that requires sign-in (``hermes_cli/dashboard_auth/routes.py``), so it is a login
+    identity and takes the principal-author branch above.
+    """
     from agent.turn_author import TURN_AUTHOR_ENV
 
     calls, _outcomes = fake_runs
@@ -280,18 +504,127 @@ def test_deliver_accepts_a_sender_from_an_admitted_non_login_client(home, fake_r
     assert [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls] == [SENDER_AUTHOR]
 
 
-def test_deliver_refuses_a_sender_from_a_logged_in_client(home, fake_runs, bound_client):
-    """A browser login never relays for another connection, so its from_* fields are refused before any turn runs.
-    Without sender fields the same client still delivers, unattributed."""
+def test_deliver_from_a_logged_in_client_is_attributed_to_its_principal_never_to_the_claimed_sender(
+        home, fake_runs, bound_client):
+    """A logged-in client's sender fields are not trusted — but the dm is neither refused nor left unattributed.
+
+    Refusing the CALL (the original guard) took cross-machine relay offline for every auth-gated gateway,
+    because the Desktop is itself a logged-in client there. Dropping the AUTHOR instead made the turn the
+    human's to the recipient's memory (Honcho routes an unattributed turn into the human session and allows
+    conclusion / profile / mirror writes). So the author is derived from the caller's minted identity:
+    stable, unspoofable, and still a bot — whether or not the client named a sender.
+    """
+    import json
+
     from agent.turn_author import TURN_AUTHOR_ENV
 
     calls, _outcomes = fake_runs
     bound_client.auth_identity = {"user_id": "alice", "provider": "google"}
 
-    for sender in ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER):
-        err = srv._methods["bot_relay.deliver"](1, {"profile": "ops", "message": "ping", **sender})
-        assert err["error"]["code"] == 4095
-    assert not calls
+    shapes = ({"from_profile": "scout"}, {"from_connection": "cloud-1"}, SENDER, {})
+    for rid, sender in enumerate(shapes):
+        _result(srv._methods["bot_relay.deliver"](rid, {"profile": "ops", "message": "ping", **sender}))
 
-    _result(srv._methods["bot_relay.deliver"](2, {"profile": "ops", "message": "ping"}))
-    assert len(calls) == 1 and TURN_AUTHOR_ENV not in calls[0]["env"]
+    assert len(calls) == len(shapes), "every relayed dm from a logged-in client must still run its turn"
+    authors = [json.loads(c["env"][TURN_AUTHOR_ENV]) for c in calls]
+    assert all(a["is_bot"] is True for a in authors), "a relayed dm stays bot-authored for the recipient's memory"
+    assert all(a["id"].startswith("bot:principal:dashboard:") and a["id"].endswith("/relay") for a in authors)
+    assert all(a["name"] == "relayed teammate" for a in authors)
+    assert SENDER_AUTHOR not in authors, "the claimed sender must not become the author"
+    assert len({a["id"] for a in authors}) == 1, "one signed-in principal, one author — with or without sender fields"
+
+    bound_client.auth_identity = {"user_id": "bob", "provider": "google"}
+    _result(srv._methods["bot_relay.deliver"](9, {"profile": "ops", "message": "ping", **SENDER}))
+    assert json.loads(calls[-1]["env"][TURN_AUTHOR_ENV])["id"] != authors[0]["id"], "a different principal is a different author"
+
+
+@pytest.mark.parametrize("subdir", ["profiles/ops", "dev"])
+def test_gateway_drains_the_mailbox_the_tools_write_to(tmp_path, monkeypatch, subdir):
+    """Both ends of the relay mailbox derive the install root from HERMES_HOME with ONE formula.
+    The writer side (``message_agent``'s ``_hermes_root``) and the drain side
+    (``methods_bot_relay._relay_root``) must agree for a ``profiles/<name>`` home AND for an
+    arbitrary subdir of the native ``~/.hermes`` — a split here is silent non-delivery."""
+    from tools.bot_mode_probe import _default_home, _hermes_root
+    from tui_gateway import methods_bot_relay
+
+    monkeypatch.setenv("HOME", str(tmp_path))
+    home = tmp_path / ".hermes" / subdir
+    home.mkdir(parents=True)
+    monkeypatch.setenv("HERMES_HOME", str(home))
+
+    writer_root = _hermes_root(Path(_default_home()))
+    target = {"profile": "scout", "handle": "scout", "connection_id": "cloud-1",
+              "connection_label": "", "title": "", "description": ""}
+    env = bot_relay.enqueue_envelope(
+        writer_root, target=target, message="m", sender_profile="default", sender_handle="hermes")
+
+    assert methods_bot_relay._relay_root() == writer_root
+    drained = _result(srv._methods["bot_relay.outbox.drain"](1, {}))
+    assert [e["id"] for e in drained["envelopes"]] == [env["id"]]
+
+
+_REPO_ROOT = os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+
+def _child_argv(monkeypatch, body: str) -> dict:
+    """Stand in a Python child for the ``hermes`` transport; it imports ``hermes_cli`` from this checkout."""
+    argv = [sys.executable, "-c", textwrap.dedent(body)]
+    monkeypatch.setattr(bot_relay, "local_delivery_command", lambda prof, tmp: argv)
+    return {**os.environ, "PYTHONPATH": os.pathsep.join(p for p in (_REPO_ROOT, os.environ.get("PYTHONPATH")) if p)}
+
+
+def _spy_popen():
+    procs, real_popen = [], subprocess.Popen
+
+    def spy(*args, **kwargs):
+        procs.append(real_popen(*args, **kwargs))
+        return procs[-1]
+
+    return procs, spy
+
+
+def test_reported_turn_still_lingering_at_the_cap_is_booked_from_its_latest_report_not_killed(tmp_path, monkeypatch):
+    """#114980: the cap bounds the TURN. A child that reported its turn and then lingers for a
+    nested notify_on_complete reply (bounded by oneshot_completion_wait_seconds, default == the
+    cap) is booked at the cap from its report — the answer a follow-up turn last wrote there,
+    exit code 0, never delivery_timeout — and is NOT killed, so its own handoff survives."""
+    env = _child_argv(monkeypatch, """
+        import os, time
+        from hermes_cli.quiet_single_query import TURN_REPORT_FILE_ENV, write_turn_report
+        path = os.environ.pop(TURN_REPORT_FILE_ENV)
+        write_turn_report(path, exit_code=0, reply="asking the teammate")
+        time.sleep(0.5)
+        write_turn_report(path, exit_code=0, reply="teammate says: done")
+        time.sleep(30)
+        """)
+    procs, spy = _spy_popen()
+    tmp = tmp_path / "dm.txt"
+    tmp.write_text("hi", encoding="utf-8")
+    started = time.monotonic()
+    try:
+        with mock.patch.object(subprocess, "Popen", side_effect=spy) as popen:
+            result = methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=2)
+        elapsed = time.monotonic() - started
+        assert (result.returncode, result.stdout, result.stderr) == (0, "teammate says: done", "")
+        assert 2 <= elapsed < 8, elapsed
+        assert procs[0].poll() is None, "the lingering child must survive the booking"
+        assert not (tmp_path / "dm.txt.turn.json").exists(), "the report is the runner's to clean up"
+        # Decoding stays pinned through the runner (#93590 sibling defect): without encoding= the
+        # child's UTF-8 output is decoded with the locale codec — cp1252/GBK on Windows — mangling
+        # non-ASCII replies; errors="replace" keeps a bad byte from raising instead of delivering.
+        assert popen.call_args.kwargs["encoding"] == "utf-8" and popen.call_args.kwargs["errors"] == "replace"
+    finally:
+        for proc in procs:
+            proc.kill()
+            proc.wait(timeout=10)
+
+
+def test_turn_that_never_ends_is_still_a_delivery_timeout(tmp_path, monkeypatch):
+    """Control: with no turn report the cap stays the guard it always was."""
+    env = _child_argv(monkeypatch, "import time; time.sleep(30)")
+    tmp = tmp_path / "dm.txt"
+    tmp.write_text("hi", encoding="utf-8")
+    started = time.monotonic()
+    with pytest.raises(subprocess.TimeoutExpired):
+        methods_bot_relay._run_delivery("ops", str(tmp), env, timeout=1)
+    assert time.monotonic() - started < 8

@@ -8,7 +8,7 @@ import { atom, computed, type ReadableAtom } from 'nanostores'
 
 import { SIDEBAR_COLLAPSE_MEDIA_QUERY } from '@/app/layout-constants'
 import { setPluginEnabled } from '@/contrib/plugins-store'
-import { registry } from '@/contrib/registry'
+import { $registryVersion, registry } from '@/contrib/registry'
 import { translateNow } from '@/i18n'
 import { readJson, readKey, writeJson, writeKey } from '@/lib/storage'
 import { notify } from '@/store/notifications'
@@ -376,8 +376,8 @@ export function registerPaneCloser(paneId: string, close?: () => void) {
  * Route a pane's "show it" intent through the app store that owns its
  * visibility — the mirror of `registerPaneCloser`, so a preset can reveal a
  * toggle-gated pane (e.g. the terminal, whose visibility ⌃`/`$terminalTakeover`
- * owns) while the toggle stays truthful. Only panes that opt in via
- * `data.revealOnPreset` are opened on preset apply.
+ * owns) while the toggle stays truthful. Applying a preset opens every pane it
+ * places, except the ones it places resting.
  */
 export function registerPaneOpener(paneId: string, open: () => void) {
   paneOpeners[paneId] = open
@@ -697,12 +697,15 @@ export function hideOnlyZoneTabs(groupId: string): { hidden: boolean; id: string
 
   return group.panes.flatMap(id => {
     const pane = panes.find(p => p.id === id)
+    const chrome = pane?.data as { hideOnly?: boolean; tabTitleText?: () => string } | undefined
 
-    if (!(pane?.data as { hideOnly?: boolean } | undefined)?.hideOnly) {
+    if (!chrome?.hideOnly) {
       return []
     }
 
-    return [{ hidden: hidden.has(id), id, title: String(pane?.title ?? id) }]
+    // Menu-open time, so a locale-following label (`tabTitleText`) resolves
+    // against the LOADED locale rather than the register-time `title`.
+    return [{ hidden: hidden.has(id), id, title: chrome.tabTitleText?.() ?? String(pane?.title ?? id) }]
   })
 }
 
@@ -730,7 +733,7 @@ export const $newSessionTabAction = atom<(() => void) | null>(null)
  * the raw array made ⌘2 land on what the strip called tab 1 after a hidden
  * pane sat earlier in the list (classic after-⌘W-shift offset).
  */
-function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
+export function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   const hidden = $hiddenTreePanes.get()
   const registered = registry.getArea('panes')
   const paneFor = (id: string) => registered.find(c => c.id === id)
@@ -760,19 +763,36 @@ function shownPanesInGroup(group: { panes: readonly string[] }): string[] {
   })
 }
 
+/** How many zones currently show a MAIN tile (a chat, a page, a preview). A
+ *  count, not a list, so it notifies only when a main zone appears or goes —
+ *  every TreeGroup reads it, and a sash drag rewrites the tree once per frame.
+ *  Registry-versioned because a freshly adopted session tile is in the tree
+ *  before its contribution registers `placement: 'main'`. */
+export const $mainTileZoneCount = computed(
+  [$layoutTree, $hiddenTreePanes, $registryVersion],
+  (tree: LayoutNode | null) =>
+    tree
+      ? groupLeafIds(tree).filter(id =>
+          shownPanesInGroup({ panes: findGroup(tree, id)?.panes ?? [] }).some(isMainStripPane)
+        ).length
+      : 0
+)
+
 /** Is this zone showing a tab strip right now? The store's adapter over the
  *  shared resolver — TreeGroup answers the same question from its own render
  *  inputs, so the toggle command and the strip on screen cannot disagree about
  *  which way "toggle" points. */
 export function tabStripVisibleForGroup(group: GroupNode): boolean {
   const registered = registry.getArea('panes')
+  const shown = shownPanesInGroup(group)
 
   return tabStripVisibleForZone({
     active: group.active,
     isCollapsePane,
     mode: group.tabStrip,
     paneFor: (id: string) => registered.find(c => c.id === id),
-    shown: shownPanesInGroup(group)
+    shown,
+    siblingMainZone: $mainTileZoneCount.get() > (shown.some(isMainStripPane) ? 1 : 0)
   })
 }
 
@@ -1620,7 +1640,7 @@ export function moveTreePane(paneId: string, target: { groupId: string; pos: Dro
  * preset) are adopted into the group their current siblings land in, so
  * applying a preset never loses a pane.
  */
-export function applyTree(tree: LayoutNode, presetId: string) {
+export function applyTree(tree: LayoutNode, presetId: string, resting: readonly string[] = []) {
   const previous = $layoutTree.get()
 
   // A preset defines the layout's SIZES too — stale drag overrides from the
@@ -1631,19 +1651,44 @@ export function applyTree(tree: LayoutNode, presetId: string) {
   commit(previous ? adoptMissingPanes(tree, previous) : tree)
   markActivePreset(presetId)
 
-  // Picking a named layout is an intent to SEE its panes. Toggle-gated panes
-  // (the terminal, whose visibility a store owns) would otherwise stay
-  // collapsed after the tree changes — so reveal the ones that opt in through
-  // their owning store, keeping the ⌃`/toggle state truthful. Iterate the
-  // preset's DECLARED panes (not the adopted result) so only panes a preset
-  // explicitly places are turned on.
-  const panes = registry.getArea('panes')
+  // A preset says what is ON SCREEN. Every toggle-gated pane it places opens
+  // through its owning store (so ⌃`/⌘J/⌘G stay truthful), except the ones it
+  // places RESTING, which close through the same store. Iterate the preset's
+  // DECLARED panes (not the adopted result) so only panes it explicitly places
+  // move.
+  const rests = new Set(resting)
 
   for (const paneId of allPaneIds(tree)) {
-    const data = panes.find(c => c.id === paneId)?.data as { revealOnPreset?: boolean } | undefined
+    if (rests.has(paneId)) {
+      paneClosers[paneId]?.()
 
-    if (data?.revealOnPreset) {
+      // A store already reading closed makes that closer a same-value no-op,
+      // and the fresh tree carries no minimized flag — so a tool pane's rail
+      // is collapsed explicitly. Hide-style panes need nothing: the hidden
+      // set outlives the tree.
+      if (isCollapsePane(paneId)) {
+        setPaneCollapsed(paneId, true)
+      }
+    } else {
       paneOpeners[paneId]?.()
+    }
+  }
+
+  // Opening fronts the pane in its stack (a reveal is "show me this"), which
+  // steals the active slot from whatever the preset put first — Focus opened
+  // with the terminal over the chat. The preset's own tab order is the intent:
+  // re-assert each declared group's active tab after the reveals.
+  const applied = $layoutTree.get()
+
+  if (applied) {
+    for (const groupId of groupLeafIds(tree)) {
+      const declared = findGroup(tree, groupId)
+      const want = declared?.active ?? declared?.panes[0]
+      const live = findGroup(applied, groupId)
+
+      if (want && live && live.active !== want && live.panes.includes(want)) {
+        activateTreePane(groupId, want)
+      }
     }
   }
 }
@@ -1886,12 +1931,17 @@ export function bindPaneVisibility(
  * wasn't the active tab, the shared-zone branch declined, and the key read as
  * dead until the stack was broken up. The persisted tree already records which
  * tab was active — leave it alone.
+ *
+ * `$rail` says whether a CLOSED pane keeps its rail on screen. Off, the pane
+ * hides instead (Simple has no terminal) — same store, same toggle, only the
+ * resting shape differs. Omitted means always.
  */
 export function bindToolPaneCollapse(
   paneId: string,
   $open: { get(): boolean; listen(fn: (open: boolean) => void): void },
   close: () => void,
-  open: () => void
+  open: () => void,
+  $rail?: { get(): boolean; listen(fn: (rail: boolean) => void): void }
 ) {
   markCollapsePane(paneId)
 
@@ -1902,6 +1952,14 @@ export function bindToolPaneCollapse(
   $open.listen(isOpen => (isOpen ? revealTreePane(paneId) : setPaneCollapsed(paneId, true)))
   registerPaneCloser(paneId, close)
   registerPaneOpener(paneId, open)
+
+  if ($rail) {
+    const sync = () => setTreePaneHidden(paneId, !$open.get() && !$rail.get())
+
+    sync()
+    $open.listen(sync)
+    $rail.listen(sync)
+  }
 }
 
 /**

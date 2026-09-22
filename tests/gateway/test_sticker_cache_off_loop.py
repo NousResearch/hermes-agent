@@ -6,11 +6,9 @@ unbounded under filesystem pressure.  Its only production caller is Telegram's
 missed the cache paid that rename inline on the loop, stalling every other
 adapter and every in-flight turn in the process.
 
-These tests use no wall-clock thresholds.  The witness is ORDERING: the rename
-is held open on a barrier released only by a background timer, and the sibling
-task must have ticked BEFORE that release.  A companion gate-proof drives the
-identical barrier through the synchronous form and asserts the loop DOES
-starve, so the liveness assertion cannot pass vacuously.
+These tests pin the two invariants of the off-loop form: the write runs on a
+worker thread, and the lock keeps two concurrent load/merge/save triples from
+losing an entry in the DURABLE file.
 """
 import asyncio
 import json

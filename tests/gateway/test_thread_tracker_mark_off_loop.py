@@ -14,13 +14,9 @@ call sites await it.  ``mark`` keeps its exact synchronous contract for the
 non-loop callers and tests.
 
 These tests are about OBSERVABLE BEHAVIOUR -- can the loop keep running while
-the persist is in its slow path -- not about which API was called.  There are no
-wall-clock thresholds: the rename is held open on a real barrier for as long as
-the assertion needs, and a companion gate-proof forces the pre-fix inline shape
-and asserts the very same barrier DOES starve the loop, so the liveness test
-cannot pass vacuously.
+the persist is in its slow path -- not about which API was called.
 
-They also pin the property the off-loop move would otherwise silently break.
+They pin the property the off-loop move would otherwise silently break.
 Moving the persist to a worker thread removes the accidental serialization the
 event loop used to provide, so the check/insert/trim/write sequence can now
 interleave across two marks and lose an entry.  ``atomic_json_write`` makes each

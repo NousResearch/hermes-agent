@@ -165,8 +165,7 @@ class ThreadParticipationTracker:
         """Mark *thread_id* as participated and persist.
 
         Blocking: ends in ``atomic_json_write`` -> ``os.replace``.  Coroutines
-        must use :meth:`mark_async` instead; a lexical AST sweep in
-        ``tests/gateway/test_thread_tracker_mark_off_loop.py`` enforces that.
+        must use :meth:`mark_async` instead.
         """
         if self._remember(thread_id):
             self._save()

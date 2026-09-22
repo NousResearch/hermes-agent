@@ -63,10 +63,7 @@ def cache_sticker_description(
     """
     entry = {"description": description, "emoji": emoji, "set_name": set_name,
              "cached_at": time.time()}
-    # ``atomic_json_write`` makes each WRITE atomic, not the load/mutate/save
-    # TRIPLE. The inline call used to be serialized by the event loop itself;
-    # the async form below runs on a worker thread, so without this lock two
-    # concurrently described stickers lose one of the two descriptions.
+    # The lock makes the load/mutate/save triple atomic across worker threads.
     with _CACHE_LOCK:
         _save_cache({**_load_cache(), file_unique_id: entry})
 

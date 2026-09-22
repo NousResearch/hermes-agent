@@ -613,9 +613,13 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
     fake_adapter.send.assert_called_once()
     sent = fake_adapter.send.call_args[0][1]
     assert tid in sent
-    # Plain-language outcome per event kind (no internal event names).
-    expected = {"crashed": "stopped unexpectedly", "gave_up": "blocked", "timed_out": "time limit"}[kind]
+    # Plain-language outcome per event kind (no internal event names). This event carries no
+    # payload at all: neither `limit_seconds` (the dispatcher's wall-clock cap) nor the worker's
+    # budget error, so a `timed_out` ping must not claim either cause — it names the kind only.
+    expected = {"crashed": "stopped unexpectedly", "gave_up": "blocked", "timed_out": "timed out"}[kind]
     assert expected in sent
+    if kind == "timed_out":
+        assert "max_runtime" not in sent and "0s" not in sent
 
     # ...but the subscription survives so a respawn-then-same-event cycle
     # reaches the user too. The cursor (last_event_id) advanced inside
@@ -634,6 +638,62 @@ async def test_notifier_unsubs_after_abnormal_events(kind, kanban_home):
         "(claim_unseen_events_for_sub advances atomically inside the "
         "same write txn as the read)."
     )
+
+
+@pytest.mark.asyncio
+async def test_notifier_ping_names_the_iteration_budget_when_the_task_has_no_cap(kanban_home):
+    """Live payload from the board (task t_f7465637): a worker that ran out of turns records
+    ``timed_out`` carrying an ``error`` and NO ``limit_seconds``, because that task's
+    ``max_runtime_seconds`` is NULL. The ping must name the budget it exhausted and invent no cap.
+    """
+    from gateway.run import GatewayRunner
+    from gateway.config import Platform
+
+    error = ("Iteration budget exhausted (150/150) — task could not complete within "
+             "the allowed iterations")
+    payload = {"error": error, "failures": 1, "retry_status": "ready"}
+
+    conn = kbc.connect()
+    try:
+        tid = kb.create_task(conn, title="out of turns", assignee="worker1")
+        kbn.add_notify_sub(conn, task_id=tid, platform="telegram", chat_id="chat1")
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, "timed_out", payload)
+        cap = conn.execute(
+            "SELECT max_runtime_seconds FROM tasks WHERE id = ?", (tid,)).fetchone()[0]
+    finally:
+        conn.close()
+    assert cap is None, "the ticket's task has no runtime cap — the ping must not print one"
+
+    runner = object.__new__(GatewayRunner)
+    runner._owns_kanban_dispatcher_lock = lambda: True
+    runner._running = True
+    runner._kanban_sub_fail_counts = {}
+
+    fake_adapter = MagicMock()
+
+    async def _send_and_stop(chat_id, msg, metadata=None):
+        runner._running = False
+
+    fake_adapter.send = AsyncMock(side_effect=_send_and_stop)
+    runner.adapters = {Platform.TELEGRAM: fake_adapter}
+
+    _orig_sleep = asyncio.sleep
+
+    async def _fast_sleep(_):
+        await _orig_sleep(0)
+
+    with patch("gateway.run.asyncio.sleep", side_effect=_fast_sleep):
+        await asyncio.wait_for(
+            runner._kanban_notifier_watcher(interval=1),
+            timeout=10.0,
+        )
+
+    sent = fake_adapter.send.call_args[0][1]
+    assert tid in sent
+    assert "iteration budget" in sent and "150/150" in sent
+    assert "max_runtime" not in sent and "0s" not in sent
+    assert "limit" not in sent.lower() and "minute" not in sent
 
 
 

@@ -446,11 +446,48 @@ def _fmt_gave_up(ev, n) -> tuple:
     )
 
 
+# ``timed_out`` is ONE event kind covering two different terminal causes: the dispatcher's
+# wall-clock cap (``enforce_max_runtime`` stamps ``limit_seconds``) and the worker's own
+# iteration budget (``agent/turn_finalizer.py`` records "Iteration budget exhausted (used/max)").
+# Naming the wrong cause — or printing a limit the task never had — sends the operator after the
+# wrong fix, so both surfaces (Telegram here, TUI/Desktop in ``tui_gateway``) classify via here.
+_ITERATION_BUDGET_PHRASE_RE = re.compile(r"iteration budget\b", re.IGNORECASE)
+_ITERATION_BUDGET_COUNTS_RE = re.compile(r"iteration budget\b[^(]*\((\d+)\s*/\s*(\d+)\)", re.IGNORECASE)
+
+
+def timed_out_cause(payload: Any) -> tuple[str, int, int]:
+    """``(cause, used, cap)`` for a ``timed_out`` event payload.
+
+    ``"iteration_budget"`` — the worker ran out of turns; ``used``/``cap`` hold the iteration
+    counts when the dispatcher recorded them (else 0/0). ``"limit"`` — the wall-clock cap
+    stopped it; ``used`` is that cap in seconds. ``"unknown"`` — the payload carries neither
+    signal, so callers must name no cause and print no number (a task with
+    ``max_runtime_seconds`` NULL has no cap to print).
+    """
+    data = payload if isinstance(payload, dict) else {}
+    error = str(data.get("error") or "")
+    if _ITERATION_BUDGET_PHRASE_RE.search(error):
+        counts = _ITERATION_BUDGET_COUNTS_RE.search(error)
+        if counts:
+            return "iteration_budget", int(counts.group(1)), int(counts.group(2))
+        return "iteration_budget", 0, 0
+    try:
+        limit = int(data.get("limit_seconds") or 0)
+    except (TypeError, ValueError):
+        limit = 0
+    return ("limit", limit, 0) if limit > 0 else ("unknown", 0, 0)
+
+
 def _fmt_timed_out(ev, n) -> tuple:
-    limit = int(_payload(ev, "limit_seconds") or 0)
-    minutes = max(1, round(limit / 60)) if limit else 0
-    span = f"its {minutes}-minute limit" if minutes else "its time limit"
-    return f"⏱ {n.head} ran past {span} and was stopped; it will be retried automatically.", None, None
+    cause, used, cap = timed_out_cause(getattr(ev, "payload", None))
+    if cause == "iteration_budget":
+        detail = f" ({used}/{cap})" if used and cap else ""
+        return (f"⏱ {n.head} exhausted its iteration budget{detail} and was stopped; "
+                "it will be retried automatically.", None, None)
+    if cause == "limit":
+        return (f"⏱ {n.head} ran past its {max(1, round(used / 60))}-minute limit and was stopped; "
+                "it will be retried automatically.", None, None)
+    return (f"⏱ {n.head} timed out and was stopped; it will be retried automatically.", None, None)
 
 
 # archived / unblocked are claimed (so the cursor advances past them) but

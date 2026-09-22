@@ -140,6 +140,31 @@ class TestCollectKanbanNotifications:
         assert len(rows) == 1
         assert rows[0]["last_event_id"] > pre_cursor
 
+    def test_iteration_budget_event_delivers_the_cause_not_a_fake_cap(self):
+        """End-to-end over the real claim path (live-board payload): a worker that ran out of
+        turns must reach the session as an iteration-budget stop, with no fabricated
+        ``max_runtime`` and no invented time cap."""
+        tid = _create_subscribed_task()
+        error = ("Iteration budget exhausted (150/150) — task could not complete within "
+                 "the allowed iterations")
+        payload = {"error": error, "failures": 1, "retry_status": "ready"}
+        conn = kbc.connect()
+        try:
+            with kb.write_txn(conn):
+                run_id = kb._end_run(conn, tid, outcome="timed_out", status="timed_out",
+                                     error=error, metadata=payload)
+                kb._append_event(conn, tid, "timed_out", payload, run_id=run_id)
+        finally:
+            conn.close()
+
+        texts = _collect_kanban_notifications(_session())
+
+        assert len(texts) == 1
+        assert tid in texts[0]
+        assert "iteration budget" in texts[0] and "150/150" in texts[0]
+        assert "max_runtime" not in texts[0] and "0s" not in texts[0]
+        assert "limit" not in texts[0].lower()
+
     def test_non_tui_subscription_does_not_open_board_writable(self):
         tid = _create_subscribed_task(platform="telegram", chat_id="chat-1")
         # New subs start caught up at creation time (issue #29905); record the
@@ -263,6 +288,75 @@ class TestFormatKanbanEventText:
         ev = SimpleNamespace(kind="timed_out", payload={"limit_seconds": "not-a-number"})
         text = _format_kanban_event_text(self.SUB, self.TASK, ev, "")
         assert "timed out" in text
+
+    def test_timed_out_by_iteration_budget_names_it_and_prints_no_limit(self):
+        """The payload the dispatcher records when a worker runs out of turns: the task has no
+        runtime cap at all, so the ping must name the budget and print no ``max_runtime``."""
+        ev = SimpleNamespace(kind="timed_out", payload={
+            "error": "Iteration budget exhausted (150/150) — task could not complete within "
+                     "the allowed iterations",
+            "failures": 1, "retry_status": "ready"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "default")
+        assert "iteration budget" in text
+        assert "150/150" in text
+        assert "will retry" in text
+        assert "max_runtime" not in text and "0s" not in text
+        assert "limit" not in text.lower()
+
+    def test_timed_out_by_wall_clock_cap_names_its_limit(self):
+        ev = SimpleNamespace(kind="timed_out", payload={
+            "pid": 4242, "elapsed_seconds": 1875, "limit_seconds": 1800, "sigkill": False})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "default")
+        assert "30-minute limit" in text
+        assert "will retry" in text
+        assert "max_runtime" not in text and "0s" not in text
+        assert "iteration" not in text.lower()
+
+    def test_timed_out_without_a_recorded_cause_invents_no_number(self):
+        ev = SimpleNamespace(kind="timed_out", payload={"failures": 1, "retry_status": "ready"})
+        text = _format_kanban_event_text(self.SUB, self.TASK, ev, "default")
+        assert "timed out" in text and "will retry" in text
+        assert "max_runtime" not in text and "0s" not in text
+        assert "minute" not in text and "iteration" not in text.lower()
+
+
+class TestTimedOutCauseParity:
+    """One kind, two terminal causes. The TUI/Desktop ping (``_kb_timed_out``) and the Telegram ping
+    (``gateway`` ``_EVENT_FORMATTERS``) classify through the same ``timed_out_cause``, so a task can
+    never read as a wall-clock cap on one surface and a budget exhaustion on the other."""
+
+    SUB = {"task_id": "t_abc123"}
+    TASK = SimpleNamespace(title="build the thing", assignee="worker", result=None)
+    CASES = (
+        # (cause, payload the dispatcher writes, phrase both surfaces must carry)
+        ("iteration_budget", {"error": "Iteration budget exhausted (150/150) — task could not "
+                                       "complete within the allowed iterations",
+                              "failures": 1, "retry_status": "ready"}, "iteration budget"),
+        ("limit", {"pid": 4242, "elapsed_seconds": 1875, "limit_seconds": 1800, "sigkill": False},
+         "30-minute limit"),
+        ("unknown", {"failures": 1, "retry_status": "ready"}, None),
+    )
+
+    def test_both_surfaces_name_the_same_cause(self):
+        from gateway.kanban_watchers_notifier import _EVENT_FORMATTERS, timed_out_cause
+
+        names = SimpleNamespace(task_id="t_abc123", head="[main] Kanban t_abc123", title="x",
+                                board_tag="[main] ")
+        for cause, payload, phrase in self.CASES:
+            assert timed_out_cause(payload)[0] == cause
+            tui = _format_kanban_event_text(
+                self.SUB, self.TASK, SimpleNamespace(kind="timed_out", payload=payload), "main")
+            telegram, *_ = _EVENT_FORMATTERS["timed_out"](SimpleNamespace(payload=payload), names)
+            for msg in (tui, telegram):
+                assert "retr" in msg.lower(), msg  # the retry promise survives every cause
+                assert "max_runtime" not in msg, msg
+                assert "0s" not in msg, msg
+                if phrase:
+                    assert phrase in msg.lower(), msg
+                if cause != "limit":
+                    assert "limit" not in msg.lower() and "minute" not in msg, msg
+                if cause != "iteration_budget":
+                    assert "iteration" not in msg.lower(), msg
 
 
 class TestNotificationPollerLoopKanbanWiring:

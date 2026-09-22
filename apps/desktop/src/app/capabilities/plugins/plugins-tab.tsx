@@ -644,25 +644,27 @@ export const PluginsTab = memo(function PluginsTab({
                     }
                   }
 
-                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(async outcome => {
-                    if (outcome.kind !== 'consent') {
-                      finish(outcome)
+                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                    async outcome => {
+                      if (outcome.kind !== 'consent') {
+                        finish(outcome)
 
-                      return
+                        return
+                      }
+
+                      // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                      // half); the backend changed nothing until the user confirms the delta.
+                      const ok = await confirm({
+                        confirmLabel: p.updateConsentConfirm,
+                        description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                        title: p.updateConsentTitle(row.name)
+                      })
+
+                      if (ok) {
+                        finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                      }
                     }
-
-                    // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
-                    // half); the backend changed nothing until the user confirms the delta.
-                    const ok = await confirm({
-                      confirmLabel: p.updateConsentConfirm,
-                      description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
-                      title: p.updateConsentTitle(row.name)
-                    })
-
-                    if (ok) {
-                      finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
-                    }
-                  })
+                  )
                 }}
                 onDesktopRemove={record => {
                   void confirm({

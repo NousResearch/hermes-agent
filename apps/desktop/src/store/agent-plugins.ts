@@ -256,8 +256,7 @@ export async function installAgentPlugin(
  *  when already at pin, `consent` when the new pin widens the plugin — the
  *  backend changed nothing and waits for `acceptCapabilities`. */
 export type AgentPluginUpdateOutcome =
-  | { kind: 'applied' | 'unchanged' | 'failed' }
-  | { kind: 'consent'; sha: string; deltaLines: string[] }
+  { kind: 'applied' | 'unchanged' | 'failed' } | { kind: 'consent'; sha: string; deltaLines: string[] }
 
 /** Re-pin a catalog-installed plugin to the current catalog SHA (backend
  *  `plugins.manage update`; catalog installs only). Refreshes the list on

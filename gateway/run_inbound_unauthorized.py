@@ -14,6 +14,7 @@ Two audiences, two rules:
 from __future__ import annotations
 
 import logging
+import string
 from collections import OrderedDict
 
 from gateway.pairing import CODE_TTL_SECONDS, _allowlist_env_for_platform
@@ -36,19 +37,47 @@ def pairing_profile_arg(pairing_store) -> str:
     return ""
 
 
-def pairing_code_reply(platform_name: str, code: str, profile_arg: str = "") -> str:
+def pairing_code_reply(
+    platform_name: str,
+    code: str,
+    profile_arg: str = "",
+    *,
+    custom_template: str = "",
+) -> str:
     """The DM a first-time sender receives: what happened, how long the code lives, what to do
-    whether they are the owner or a guest, and that they must message again after approval."""
+    whether they are the owner or a guest, and that they must message again after approval.
+
+    ``custom_template`` (``gateway.pairing_message``) rewrites the whole reply for deployments
+    whose owner approves in a web panel instead of a terminal. Only ``{code}`` and ``{platform}``
+    are substituted; a template without ``{code}``, or one naming anything else, falls back to
+    the stock text — a stranger must never receive a reply they cannot act on."""
     hours = max(1, CODE_TTL_SECONDS // 3600)
     validity = f"{hours} hour" if hours == 1 else f"{hours} hours"
     approve_cmd = f"hermes {profile_arg}pairing approve {platform_name} {code}"
-    return (
+    stock = (
         "Hi! I don't recognize you yet, so I can't reply until the person running this bot "
         "approves you.\n\n"
         f"Your pairing code: `{code}` (valid for {validity})\n\n"
         f"If you run this bot, open a terminal and run: `{approve_cmd}`. "
         "Otherwise send that command to the bot owner. After approval, send your message again."
     )
+    template = (custom_template or "").strip()
+    if not template:
+        return stock
+    allowed = {"code", "platform"}
+    placeholders = {
+        field_name
+        for _, field_name, _, _ in string.Formatter().parse(template)
+        if field_name
+    }
+    if "code" not in placeholders or not placeholders <= allowed:
+        logger.warning(
+            "Ignoring gateway.pairing_message without {code} or with unknown placeholders %s; "
+            "using the stock pairing reply",
+            sorted(placeholders - allowed),
+        )
+        return stock
+    return template.format(code=code, platform=platform_name)
 
 
 PAIRING_RATE_LIMITED_REPLY = (

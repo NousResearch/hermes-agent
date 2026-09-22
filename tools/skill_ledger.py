@@ -329,7 +329,13 @@ def _maintain_size() -> None:
     """Keep the ledger bounded: once it crosses ``skills.ledger_max_bytes`` run the
     delta-dedup rewrite, and if genuinely-divergent entries still exceed the cap,
     drop the oldest ones until it fits. Best-effort telemetry, never a gate: any
-    failure is logged and the just-appended entry stays on disk."""
+    failure is logged and the just-appended entry stays on disk.
+
+    Trimming stops at a LOW-WATER mark (``_TRIM_LOW_WATER`` of the cap), not at the
+    cap itself: a ledger trimmed to exactly the cap is over it again on the very next
+    append, so every append would pay compact + trim + blob GC. ``gc_blobs`` only
+    runs when the trim actually dropped rows — that is the only way a blob can
+    become orphaned here."""
     max_bytes = _max_ledger_bytes()
     if max_bytes <= 0:
         return
@@ -337,22 +343,27 @@ def _maintain_size() -> None:
         if ledger_path().stat().st_size <= max_bytes:
             return
         _, _, size_after = compact_ledger()
-        if size_after > max_bytes:
-            _trim_oldest(max_bytes)
-        gc_blobs()
+        low_water = int(max_bytes * _TRIM_LOW_WATER)
+        dropped = _trim_oldest(low_water) if size_after > low_water else 0
+        if dropped:
+            gc_blobs()
     except Exception as e:
         logger.warning(
             "skill_ledger: maintenance sweep failed (%s) — ledger left as-is", e
         )
 
 
-def _trim_oldest(max_bytes: int) -> None:
+_TRIM_LOW_WATER = 0.8  # trim target as a fraction of ``skills.ledger_max_bytes``
+
+
+def _trim_oldest(max_bytes: int) -> int:
     """Rewrite the ledger without its oldest parsed entries until it is at most
-    *max_bytes*; the newest entry always survives, malformed lines are kept verbatim."""
+    *max_bytes*; the newest entry always survives, malformed lines are kept verbatim.
+    Returns the number of lines dropped (0 = file untouched)."""
     path = ledger_path()
     raw = _read_ledger("trim skipped")
     if raw is None:
-        return
+        return 0
     lines = raw.decode("utf-8").splitlines()
     newest_json = None
     for line in reversed(lines):
@@ -370,10 +381,15 @@ def _trim_oldest(max_bytes: int) -> None:
     kept.reverse()
     data = ("\n".join(kept) + "\n").encode("utf-8") if kept else b""
     if newest_json is not None and newest_json not in kept:
+        kept = [newest_json]
         data = (newest_json + "\n").encode("utf-8")
+    dropped = len(lines) - len(kept)
+    if dropped <= 0:
+        return 0
     tmp = path.with_name(path.name + ".trim.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
+    return dropped
 
 
 def compact_ledger() -> Tuple[int, int, int]:

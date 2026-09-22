@@ -638,8 +638,9 @@ def test_auto_compact_triggers_at_threshold(ledger_env, monkeypatch):
 
 def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     """When compaction alone cannot reach the cap (every entry genuinely
-    differs), the oldest entries are dropped until it fits — newest entries
-    survive, malformed lines are kept verbatim."""
+    differs), the oldest entries are dropped until it fits under the LOW-WATER
+    mark (80% of the cap, so the next append does not immediately re-trigger the
+    sweep) — newest entries survive, malformed lines are kept verbatim."""
     from tools import skill_ledger
 
     import hermes_cli.config as _cfg
@@ -666,6 +667,13 @@ def test_trim_oldest_when_still_over_cap(ledger_env, monkeypatch):
     raw = skill_ledger.ledger_path().read_text(encoding="utf-8")
     assert "{not json at all" in raw
     assert skill_ledger.ledger_path().stat().st_size <= 8192
+    # A sweep that fires does not stop at the cap but at the low-water mark, so the
+    # next few appends ride under the cap without paying compact+trim+gc again.
+    skill_ledger.append_entry(
+        "edit", "my-skill", before=[{"path": "my-skill/z.md", "sha256": "a" * 64}],
+        after=[{"path": "my-skill/z2.md", "sha256": "b" * 64}], evidence={"pad": "z" * 3000})
+    assert skill_ledger.ledger_path().stat().st_size <= int(8192 * 0.8)
+    assert "{not json at all" in skill_ledger.ledger_path().read_text(encoding="utf-8")
 
 
 def test_disabled_threshold_never_touches_the_file(ledger_env, monkeypatch):

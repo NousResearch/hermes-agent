@@ -4,13 +4,16 @@ import contextlib
 import hashlib
 import logging
 import os
+import re
 import shlex
 import shutil
 import subprocess
 import tempfile
+import uuid
 from pathlib import Path
 from typing import Iterable
 
+from hermes_constants import get_hermes_home
 from tools.environments.base import BaseEnvironment, EnvironmentConnectionError
 from tools.environments.base_output import _popen_bash
 from tools.environments.file_sync import (
@@ -27,6 +30,11 @@ _SSH_MULTIPLEX = os.name != "nt"
 
 # Module-level binding: tests patch ``ssh._load_hermes_env_vars`` to fake the .env file.
 _load_hermes_env_vars = load_hermes_env_vars
+
+# GNU tar's --keep-newer-files skip notice, e.g. ``tar: Current ‘./skills/x/SKILL.md’ is newer
+# or same age``. Non-English locales change the wording; the skip itself is what protects the
+# file — this only surfaces it.
+_NEWER_SKIPPED_RE = re.compile(rb"Current (.+?) is newer or same age")
 
 
 def _ensure_ssh_available() -> None:
@@ -78,11 +86,21 @@ class SSHEnvironment(BaseEnvironment):
             return
         self._remote_home = self._detect_remote_home()
         self._ensure_remote_dirs()
-        self._sync_manager = FileSyncManager(
-            get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
-            upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
-            bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
-        self._sync_manager.sync(force=True)
+        self._remote_gnu_tar: bool | None = None  # lazy, see _keep_newer_extract_flag
+        if self._sync_target_is_local():
+            # ssh to the machine/account the agent itself runs as: the "remote" ~/.hermes IS
+            # ours. Syncing then only rewrites live files with bytes a tar read earlier, so a
+            # push stalled behind a busy multiplexed channel silently reverts newer writes
+            # (2026-09-19 skills-revert incident). Nothing to sync — disable the manager.
+            logger.info("SSH: %s@%s resolves to this host's own hermes home — file sync disabled",
+                        self.user, self.host)
+            self._sync_manager = None
+        else:
+            self._sync_manager = FileSyncManager(
+                get_files_fn=lambda: iter_sync_files(f"{self._remote_home}/.hermes"),
+                upload_fn=self._scp_upload, delete_fn=self._ssh_delete,
+                bulk_upload_fn=self._ssh_bulk_upload, bulk_download_fn=self._ssh_bulk_download)
+            self._sync_manager.sync(force=True)
         self.init_session()
 
     def _control_socket_for(self, send_env: tuple[str, ...]) -> Path:
@@ -162,6 +180,60 @@ class SSHEnvironment(BaseEnvironment):
         self._run_ssh(quoted_mkdir_command([base, f"{base}/skills", f"{base}/credentials", f"{base}/cache"]),
                       timeout=10)
 
+    def _sync_target_is_local(self) -> bool:
+        """True when the SSH target reads a tree this host also writes directly (same machine).
+
+        The sync maps the remote ``{remote_home}/.hermes`` onto that SAME local path — the
+        ``iter_sync_files(f"{self._remote_home}/.hermes")`` source wired up in ``__init__`` — so
+        that path is the tree whose identity decides whether a sync is a self-sync. A profile
+        runs with ``~/.hermes/profiles/<name>``: probing only the profile home reads a file the
+        mapped root does not hold, so a same-disk target never matched and the self-sync stayed
+        on (2026-09-19: profile ``trader`` → ``cameron@rei.taila6a102.ts.net``, its own host —
+        263 failed sync_backs, 7.2 GB tars stranded in /tmp). The launching profile's home is
+        probed as well, for the case where it *is* that mapped root under another spelling (the
+        default profile, a ``HERMES_HOME`` override, a symlink): both answer the same question.
+
+        Each candidate root gets a nonce file written into it and that name read back from the
+        remote ``{remote_home}/.hermes``. Only a root that holds the very file the remote reads
+        can return the nonce; a different tree never does, however identical its paths look. A
+        missing or unreadable root, a failed ``cat`` or any doubt returns False, leaving sync
+        enabled exactly as before — a real remote must keep its workspace.
+        """
+        remote_base = f"{self._remote_home}/.hermes"
+        seen: set[Path] = set()
+        for root in (Path(remote_base), Path(get_hermes_home())):
+            if root in seen:
+                continue
+            seen.add(root)
+            try:
+                if self._probe_root_is_shared(root, remote_base):
+                    return True
+            except Exception:
+                logger.debug("SSH: same-tree sync probe failed for %s", root, exc_info=True)
+        return False
+
+    def _probe_root_is_shared(self, local_root: Path, remote_base: str) -> bool:
+        """Nonce round-trip: *local_root* is the remote's *remote_base* iff the nonce comes back.
+
+        Never raises for a merely unusable root (missing, or a ``stat`` the process may not
+        perform — ``/root/.hermes`` from an unprivileged user raises PermissionError).
+        """
+        if not local_root.is_dir():
+            return False
+        nonce = uuid.uuid4().hex
+        probe = local_root / f".sync-probe-{nonce}"
+        probe.write_text(nonce, encoding="utf-8")
+        try:
+            remote = f"{remote_base}/{probe.name}"
+            result = self._run_ssh(f"cat {shlex.quote(remote)} 2>/dev/null", timeout=10)
+            same = result.returncode == 0 and (result.stdout or "").strip() == nonce
+            if same:
+                logger.debug("SSH: same-tree probe matched (%s)", remote)
+            return same
+        finally:
+            with contextlib.suppress(OSError):
+                probe.unlink()
+
     def _scp_upload(self, host_path: str, remote_path: str) -> None:
         """Upload a single file via scp over ControlMaster."""
         self._run_ssh(f"mkdir -p {shlex.quote(str(Path(remote_path).parent))}", timeout=10)
@@ -186,6 +258,7 @@ class SSHEnvironment(BaseEnvironment):
         # without Developer Mode symlink creation raises OSError winerror 1314;
         # only that case falls back to a plain copy, other OSErrors re-raise.
         with tempfile.TemporaryDirectory(prefix="hermes-ssh-bulk-") as staging:
+            staged_names: list[str] = []
             for host_path, remote_path in files:
                 try:
                     rel_remote = os.path.relpath(remote_path, base)
@@ -201,11 +274,30 @@ class SSHEnvironment(BaseEnvironment):
                     if getattr(e, "winerror", None) != 1314:
                         raise
                     shutil.copy2(host_path, staged)
+                staged_names.append("./" + rel_remote.replace(os.sep, "/"))
 
-            # --no-overwrite-dir keeps tar from stamping the staging dir's mode onto
-            # existing dirs (e.g. /home/<user>); a umask-002 0775 home breaks sshd StrictModes.
-            ssh_cmd = self._build_ssh_command() + [f"tar xf - --no-overwrite-dir -C {shlex.quote(base)}"]
-            tar_proc = subprocess.Popen(["tar", "-chf", "-", "-C", staging, "."], stdin=subprocess.DEVNULL,
+            # The archive carries FILES ONLY (explicit member list, no directory entries). A
+            # file-only stream is what lets the GNU-tar extract use --keep-newer-files: GNU tar
+            # treats --keep-newer-files and --no-overwrite-dir as mutually exclusive overwrite
+            # policies, so the old ``tar c .``-style archive plus keep-newer made tar exit 2 and
+            # fail the whole upload. Existing directories are never touched either way (missing
+            # parents are created by the extract itself), so the historical protection
+            # (--no-overwrite-dir kept tar from stamping the staging dir's mode onto existing
+            # dirs, e.g. /home/<user>, breaking sshd StrictModes) is structural now; the flag
+            # stays on the non-GNU path where --keep-newer-files is unavailable.
+            # --keep-newer-files makes the extract skip any member whose destination is newer,
+            # so bytes tarred before a concurrent write can never revert that write (a stalled
+            # multiplexed channel can delay the extract minutes after the read).
+            keep_newer = self._keep_newer_extract_flag()
+            overwrite_flags = keep_newer or " --no-overwrite-dir"
+            ssh_cmd = self._build_ssh_command() + [
+                f"tar xf -{overwrite_flags} -C {shlex.quote(base)}"]
+            listing = os.path.join(staging, ".push-names")
+            with open(listing, "w", encoding="utf-8", newline="") as fh:
+                for name in staged_names:
+                    fh.write(name + "\0")
+            tar_proc = subprocess.Popen(["tar", "-chf", "-", "-C", staging, "--null", "-T", listing],
+                                        stdin=subprocess.DEVNULL,
                                         stdout=subprocess.PIPE, stderr=subprocess.PIPE)
             try:
                 ssh_proc = subprocess.Popen(ssh_cmd, stdin=tar_proc.stdout,
@@ -237,7 +329,43 @@ class SSHEnvironment(BaseEnvironment):
                 raise _sync_error(f"tar extract over SSH failed (rc={ssh_proc.returncode}): "
                                   f"{ssh_stderr.decode(errors='replace').strip()}",
                                   f"File sync over SSH to {self.host}", what="the connection")
+            self._warn_extract_skipped_newer(ssh_stderr)
         logger.debug("SSH: bulk-uploaded %d file(s) via tar pipe", len(files))
+
+    def _keep_newer_extract_flag(self) -> str:
+        """`` --keep-newer-files`` when the remote tar is GNU tar, else ``""``.
+
+        bsdtar and friends reject the flag outright and a rejected flag fails the whole
+        upload, so the capability is probed once per environment and cached. Checked lazily:
+        environments that never sync pay nothing.
+        """
+        if self._remote_gnu_tar is None:
+            try:
+                result = self._run_ssh("tar --version 2>&1 | head -1", timeout=10)
+                self._remote_gnu_tar = "GNU tar" in (result.stdout or "")
+                logger.debug("SSH: remote tar is %sGNU", "" if self._remote_gnu_tar else "not ")
+            except Exception:
+                logger.debug("SSH: remote tar version probe failed", exc_info=True)
+                self._remote_gnu_tar = False
+        return " --keep-newer-files" if self._remote_gnu_tar else ""
+
+    @staticmethod
+    def _warn_extract_skipped_newer(ssh_stderr: bytes) -> None:
+        """Surface every push skip caused by --keep-newer-files.
+
+        Each skipped file is one whose destination was rewritten after the tar read it; the
+        skip is the fix working, but silence would hide the loss the way it hid the original
+        incident, so say it loudly with the paths.
+        """
+        skipped = [m.group(1).decode("utf-8", "replace").strip().strip("\u2018\u2019'\"")
+                   for m in _NEWER_SKIPPED_RE.finditer(ssh_stderr or b"")]
+        if not skipped:
+            return
+        shown = ", ".join(skipped[:5])
+        more = f" (+{len(skipped) - 5} more)" if len(skipped) > 5 else ""
+        logger.warning(
+            "file_sync: push kept %d newer local file(s) instead of reverting them to older "
+            "pushed bytes (stale-push protection): %s%s", len(skipped), shown, more)
 
     def _ssh_bulk_download(self, dest: Path) -> None:
         """Download remote .hermes/ as a tar archive."""

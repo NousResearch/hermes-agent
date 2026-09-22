@@ -184,6 +184,19 @@ def _sha256_file(path: str) -> str:
     return h.hexdigest()
 
 
+def _file_mtime(path: str) -> float:
+    """Modification time, or 0.0 when it cannot be read (unstattable staged files then lose to any real host mtime)."""
+    try:
+        return os.path.getmtime(path)
+    except OSError:
+        return 0.0
+
+
+def _format_mtime(mtime: float) -> str:
+    """Human-readable local time for log lines (epoch is unreadable at a glance)."""
+    return time.strftime("%Y-%m-%d %H:%M:%S", time.localtime(mtime)) if mtime else "unknown"
+
+
 class FileSyncManager:
     """Tracks local file changes and syncs to a remote environment. Backends supply transport
     callbacks (upload, delete) and a file-source callable; the manager handles mtime-based
@@ -435,10 +448,12 @@ class FileSyncManager:
         self, staged_file: str, remote_path: str, file_mapping: list[tuple[str, str]], upload_only_host_paths: set[str],
     ) -> int:
         """Copy one extracted remote file onto the host if it changed since push. Returns 1 if
-        applied, 0 if skipped (unchanged, unmapped, or an upload-only credential). A host file
-        modified since push is overwritten with the remote version (last-write-wins) with a warning."""
+        applied, 0 if skipped (unchanged, unmapped, an upload-only credential, or newer on the
+        host). A host file older than the staged copy but modified since push is overwritten
+        with the remote version (last-write-wins) with a warning."""
         pushed_hash = self._pushed_hashes.get(remote_path)
-        if pushed_hash is not None and _sha256_file(staged_file) == pushed_hash:
+        staged_hash = _sha256_file(staged_file)
+        if pushed_hash is not None and staged_hash == pushed_hash:
             return 0  # unchanged from push
 
         host_path = self._resolve_host_path(remote_path, file_mapping)
@@ -452,11 +467,29 @@ class FileSyncManager:
             logger.debug("sync_back: skipping upload-only credential file %s", remote_path)
             return 0
 
-        if pushed_hash is not None and os.path.exists(host_path) and _sha256_file(host_path) != pushed_hash:
-            logger.warning(
-                "sync_back: conflict on %s — host modified "
-                "since push, remote also changed. Applying remote version (last-write-wins).",
-                remote_path)
+        host_hash = _sha256_file(host_path) if os.path.exists(host_path) else None
+        if host_hash is not None and host_hash != staged_hash:
+            # The staged copy is a snapshot: tarred remotely before this download, it can already
+            # be older than the live file (a stalled transfer widens the gap to minutes), so
+            # applying it blindly reverts writes that landed in between — silently, because the
+            # copy looks like any other. Newer host bytes always win; say so with both versions.
+            staged_mtime, host_mtime = _file_mtime(staged_file), _file_mtime(host_path)
+            # A zero/unreadable staged mtime means staleness cannot be proven (synthetic test
+            # archives, exotic tooling); fall back to the historical last-write-wins path below
+            # rather than silently dropping the remote edit. Real tar members carry real mtimes.
+            if staged_mtime > 0 and host_mtime > staged_mtime:
+                logger.warning(
+                    "sync_back: refusing to overwrite newer local file %s — keeping local copy "
+                    "(mtime %s, sha256 %s) over the older staged version (mtime %s, sha256 %s); "
+                    "the local edit landed after the remote snapshot was taken",
+                    host_path, _format_mtime(host_mtime), host_hash[:12],
+                    _format_mtime(staged_mtime), staged_hash[:12])
+                return 0
+            if pushed_hash is not None and host_hash != pushed_hash:
+                logger.warning(
+                    "sync_back: conflict on %s — host modified "
+                    "since push, remote also changed. Applying remote version (last-write-wins).",
+                    remote_path)
 
         os.makedirs(os.path.dirname(host_path), exist_ok=True)
         shutil.copy2(staged_file, host_path)

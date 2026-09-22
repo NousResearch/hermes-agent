@@ -32,6 +32,7 @@ def mock_env(monkeypatch):
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/testuser")
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
     monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_sync_target_is_local", lambda self: False)
     monkeypatch.setattr(
         ssh_env, "FileSyncManager",
         lambda **kw: type("M", (), {"sync": lambda self, **k: None})(),
@@ -50,8 +51,11 @@ class TestSSHBulkUpload:
             mock_run.assert_not_called()
             mock_popen.assert_not_called()
 
-    def test_mkdir_batched_into_single_call(self, mock_env, tmp_path):
+    def test_mkdir_batched_into_single_call(self, mock_env, tmp_path, monkeypatch):
         """All parent directories should be created in one SSH call."""
+        # Neutralize the GNU-tar capability probe (its own subprocess.run call is covered by
+        # test_sync_stale_clobber_guard) so this test measures the mkdir batching alone.
+        monkeypatch.setattr(mock_env, "_keep_newer_extract_flag", lambda: "")
         # Create test files
         f1 = tmp_path / "a.txt"
         f1.write_text("aaa")

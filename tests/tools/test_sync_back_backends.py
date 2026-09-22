@@ -24,6 +24,7 @@ def ssh_mock_env(monkeypatch):
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_detect_remote_home", lambda self: "/home/testuser")
     monkeypatch.setattr(ssh_env.SSHEnvironment, "_ensure_remote_dirs", lambda self: None)
     monkeypatch.setattr(ssh_env.SSHEnvironment, "init_session", lambda self: None)
+    monkeypatch.setattr(ssh_env.SSHEnvironment, "_sync_target_is_local", lambda self: False)
     monkeypatch.setattr(
         ssh_env, "FileSyncManager",
         lambda **kw: type("M", (), {

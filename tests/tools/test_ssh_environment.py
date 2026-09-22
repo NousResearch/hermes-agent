@@ -285,7 +285,11 @@ class TestSSHProbeOnly:
 
         assert normal.control_socket.exists()
         assert not first_probe.control_socket.exists()
-        assert len(control_exit_calls) == 1
+        # control_exit_calls records every ssh invocation; the normal env's same-tree sync
+        # probe (a plain `cat` over the shared master) is one of them. Only the probe env's
+        # cleanup must issue a ControlMaster exit.
+        control_exits = [cmd for cmd in control_exit_calls if "exit" in cmd]
+        assert len(control_exits) == 1
 
 
 def _setup_ssh_env(monkeypatch, persistent: bool):

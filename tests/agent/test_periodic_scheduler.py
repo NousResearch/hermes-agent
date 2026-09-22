@@ -3,6 +3,8 @@
 import threading
 import time
 
+import pytest
+
 from agent import periodic_scheduler
 from agent.periodic_scheduler import PeriodicScheduler, schedule
 
@@ -14,6 +16,17 @@ def _wait_until(pred, timeout=3.0):
             return True
         time.sleep(0.005)
     return pred()
+
+
+@pytest.mark.parametrize("interval", [0, -1, float("nan"), float("inf"), float("-inf")])
+def test_schedule_rejects_invalid_intervals_before_starting_scheduler(interval):
+    scheduler = PeriodicScheduler()
+
+    with pytest.raises(ValueError, match="positive finite"):
+        scheduler.schedule(lambda: None, interval)
+
+    assert scheduler._thread is None
+    assert scheduler._heap == []
 
 
 def test_two_intervals_fire_proportionally_and_cancel_stops_one():

@@ -183,6 +183,47 @@ def _dist_installed(req: str) -> Optional[bool]:
 
 
 class PluginLoaderMixin:
+    def on_plugin_loaded(self, callback: Callable[[List[Dict[str, Any]]], Any]) -> Callable[[], None]:
+        """Subscribe to "a discovery sweep loaded plugins this process did not have": fires from INSIDE
+        :meth:`discover_and_load` (never emitted by an install RPC) with one
+        ``{name, key, activated_now, deferred}`` summary per NEWLY loaded plugin — every plugin at boot,
+        just the newcomer after a mid-run ``hermes plugins install/enable``, Desktop / dashboard /
+        ``plugins.manage`` install-enable-update, a tool-triggered force re-discovery or the gateway's
+        ``reload-plugins`` verb (all of which run ``discover_plugins(force=True)``; a non-forced call
+        short-circuits on ``_discovered`` and never fires). See
+        :func:`hermes_cli.plugins_activation.plugin_activation_summary` for the payload: ``activated_now``
+        (gateway commands/transforms/hooks/callbacks, live at once) vs ``deferred`` (``tools``/``prompt``
+        until the next session, ``mcp_servers`` — the plugin's mcp.json server names — until ``mcp.reload``).
+        Listeners belong to the process (gateway runner, TUI server), not to a plugin, so ``unload()``
+        never clears them. Returns an unsubscribe callable. Fires on the discovering thread with the
+        discovery lock released; marshal onto your own loop."""
+        if not callable(callback):
+            raise ValueError("on_plugin_loaded requires a callable")
+        listeners = self._plugin_loaded_listeners
+        listeners.append(callback)
+
+        def _unsubscribe() -> None:
+            try:
+                listeners.remove(callback)
+            except ValueError:
+                pass
+        return _unsubscribe
+
+    def _notify_plugin_loaded(self, loaded_before: frozenset) -> None:
+        """Fire every :meth:`on_plugin_loaded` listener for the plugins this sweep added over
+        ``loaded_before``; nothing new = no event. One raising listener never starves the rest."""
+        if not self._plugin_loaded_listeners:
+            return
+        from hermes_cli.plugins_activation import activation_summaries
+        summaries = [s for s in activation_summaries(self) if s["key"] not in loaded_before]
+        if not summaries:
+            return
+        for callback in list(self._plugin_loaded_listeners):
+            try:
+                callback(summaries)
+            except Exception:
+                logger.warning("plugin-loaded listener %r raised", callback, exc_info=True)
+
     @staticmethod
     def _platform_name_from_manifest(manifest: PluginManifest) -> str:
         """Derive the platform name without importing the adapter: strip a trailing ``-platform`` from the

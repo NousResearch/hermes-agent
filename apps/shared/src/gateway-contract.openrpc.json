@@ -19376,6 +19376,46 @@
         "title": "PingResult",
         "type": "object"
       },
+      "PluginActivation": {
+        "additionalProperties": false,
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}``\nwith only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names),\n``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in\nthe running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and\n``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server\nnames (``<namespace>__<server>``, as ``mcp.servers.*`` know them) \u2014 not connected until ``mcp.reload``.\nThe Desktop \"Installed. Connect its servers now\" card reads exactly ``deferred.mcp_servers``.",
+        "properties": {
+          "name": {
+            "title": "Name",
+            "type": "string"
+          },
+          "key": {
+            "title": "Key",
+            "type": "string"
+          },
+          "activated_now": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Activated Now",
+            "type": "object"
+          },
+          "deferred": {
+            "additionalProperties": {
+              "items": {
+                "type": "string"
+              },
+              "type": "array"
+            },
+            "title": "Deferred",
+            "type": "object"
+          }
+        },
+        "required": [
+          "name",
+          "key"
+        ],
+        "title": "PluginActivation",
+        "type": "object"
+      },
       "PluginServerRow": {
         "additionalProperties": false,
         "properties": {
@@ -19699,7 +19739,7 @@
       },
       "PluginsManageResult": {
         "additionalProperties": false,
-        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
+        "description": "``list`` \u2192 ``plugins`` + counts; ``toggle`` \u2192 ``ok``/``unchanged``/``restart_required``/``name``\n(the canonical key written)/``plugin``; ``install`` \u2192 ``hermes_cli.plugins_cmd.dashboard_install_plugin``'s\nok payload; ``toggle``/``install``/``update`` that loaded a plugin also carry ``gateway_reloaded`` (the\nrunning gateway picked it up and re-wired its handlers) and ``activation`` \u2014 the honest split of what is\nlive now vs deferred, so ``restart_required`` is True only when no gateway answered; ``update`` \u2192 ``ok``/``unchanged``/``sha``, or ``ok=false`` + ``consent_required`` with the\n``delta`` (``{surface: [added...]}``) / ``delta_lines`` a widened pin adds \u2014 nothing changed until the\nclient retries with ``accept_capabilities``; ``remove`` \u2192 ``ok``/``name`` plus\n``cleared_memory_provider`` when the removed plugin was the live ``memory.provider``.",
         "properties": {
           "plugins": {
             "anyOf": [
@@ -19775,6 +19815,29 @@
             ],
             "default": null,
             "title": "Restart Required"
+          },
+          "gateway_reloaded": {
+            "anyOf": [
+              {
+                "type": "boolean"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null,
+            "title": "Gateway Reloaded"
+          },
+          "activation": {
+            "anyOf": [
+              {
+                "$ref": "#/components/schemas/PluginActivation"
+              },
+              {
+                "type": "null"
+              }
+            ],
+            "default": null
           },
           "cleared_memory_provider": {
             "anyOf": [

@@ -815,6 +815,9 @@ export interface Translations {
       daysAgo: (count: number) => string
     }
     config: {
+      minimizeToTrayTitle: string
+      minimizeToTrayDesc: string
+      minimizeToTrayUnavailable: string
       none: string
       noneParen: string
       builtinOnly: string
@@ -840,6 +843,14 @@ export interface Translations {
       attachmentSizeUnit: string
       attachmentSizeLabel: string
       showOptions: string
+    }
+    hudModifier: {
+      title: string
+      description: string
+      permission: string
+      unavailable: string
+      missingHelper: string
+      unsupportedSession: string
     }
     screenshot: {
       enabledTitle: string

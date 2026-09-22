@@ -396,24 +396,54 @@ def _credential_claims(config) -> dict[tuple, str]:
     return claims
 
 
+def _credential_key_names(platform_value: str) -> str:
+    """Env key NAMES (never values) that make ``platform_value`` connect as a bot, e.g.
+    ``TELEGRAM_BOT_TOKEN``; the platform id when no key is registered (config.yaml-only token)."""
+    from hermes_cli.profile_channels import credential_env_keys
+    names = sorted(key for key, pid in credential_env_keys().items() if pid == platform_value)
+    return "/".join(names) or f"the {platform_value} token"
+
+
+def duplicate_credential_lines(configs: list[tuple[str, object]]) -> list[str]:
+    """One finding per platform credential two profiles both hold, with the remedy. The SINGLE
+    source for the migrate preflight, ``hermes doctor`` and ``hermes gateway status``, so all three
+    name the same duplicates the same way: profile names + key names only, never a value or hash."""
+    owners: dict[tuple, str] = {}
+    lines: list[str] = []
+    for name, cfg in configs:  # default first: it wins the claim, like at multiplexer startup
+        for claim, platform_value in _credential_claims(cfg).items():
+            owner = owners.setdefault(claim, name)
+            if owner == name:
+                continue
+            key = _credential_key_names(platform_value)
+            lines.append(
+                f"Profiles '{owner}' and '{name}' both hold the same {platform_value} credential ({key}): "
+                f"one platform token can serve only one gateway, so the bot answers from whichever profile "
+                f"claims it first and the other's adapter is parked. Give '{name}' its own bot token, or remove "
+                f"{key} from the profile that should not own it (or keep it in {owner} and route {name}'s "
+                f"chats with profile_routes — gateway.profile_routes in {owner}'s config.yaml), then run "
+                f"{MIGRATE_COMMAND}."
+            )
+    return lines
+
+
+def duplicate_credential_findings() -> list[str]:
+    """The preflight's duplicate-credential check read straight from the local profile homes, for
+    diagnostics that have no migration plan (doctor, gateway status). A profile whose gateway config
+    does not load is skipped here — ``build_migration_plan`` reports that one as its own blocker."""
+    configs: list[tuple[str, object]] = []
+    with _multiplex_read_mode():
+        for name, home in _profile_homes():
+            with contextlib.suppress(Exception):
+                configs.append((name, _profile_gateway_config(home)))
+    return duplicate_credential_lines(configs)
+
+
 def _check_duplicate_credentials(plan: MigrationPlan, configs: dict[str, object]) -> None:
     """BLOCKER: the same bot credential configured on two profiles — the multiplexer would park
     the duplicate adapter, so one profile's bot would go silent after migration."""
-    owners: dict[tuple, str] = {}
-    for profile in plan.profiles:  # default first: it wins the claim, like at multiplexer startup
-        cfg = configs.get(profile.name)
-        if cfg is None:
-            continue
-        for claim, platform_value in _credential_claims(cfg).items():
-            owner = owners.setdefault(claim, profile.name)
-            if owner == profile.name:
-                continue
-            plan.blockers.append(
-                f"Profiles '{owner}' and '{profile.name}' both configure {platform_value} with the same "
-                f"credential: the bot can only belong to one profile; remove the token from "
-                f"'{profile.name}' or keep it in {owner} and route {profile.name}'s chats with "
-                f"profile_routes (gateway.profile_routes in {owner}'s config.yaml)."
-            )
+    plan.blockers.extend(duplicate_credential_lines(
+        [(p.name, configs[p.name]) for p in plan.profiles if p.name in configs]))
 
 
 def platform_serves_profile_prefix(platform_value: str) -> bool:

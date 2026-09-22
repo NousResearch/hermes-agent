@@ -153,7 +153,7 @@ def test_exhausted_retry_collapses_stream_continuation_into_durable_partial():
         _Agent(), error, classified, max_retries=3, is_rate_limited=False,
         error_msg=str(error).lower(), api_kwargs=None, api_messages=[], messages=messages,
         conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
-        base_url="https://openrouter.ai/api/v1", model="m",
+        base_url="https://openrouter.ai/api/v1", model="m", current_turn_user_idx=0,
     )
 
     assert result["partial"] is True
@@ -164,6 +164,46 @@ def test_exhausted_retry_collapses_stream_continuation_into_durable_partial():
     assert not any(
         message.get("_length_continuation_fragment") or message.get("_length_continuation_nudge")
         for message in result["messages"]
+    )
+
+
+def test_exhausted_retry_preserves_prior_turn_continuation_marker():
+    error = _Http(503, "HTTP 503: upstream unavailable")
+    classified = classify_api_error(error, provider="openrouter", model="m")
+    prior_fragment = {
+        "role": "assistant",
+        "content": "Earlier crash fragment",
+        "_length_continuation_fragment": True,
+    }
+    messages = [
+        {"role": "user", "content": "Earlier turn"},
+        prior_fragment,
+        {"role": "user", "content": "Current turn"},
+        {
+            "role": "assistant",
+            "content": "Visible partial",
+            "_length_continuation_fragment": True,
+        },
+        {
+            "role": "user",
+            "content": "Continue exactly where you left off",
+            "_length_continuation_nudge": True,
+        },
+    ]
+
+    result = max_retries_exhausted_result(
+        _Agent(), error, classified, max_retries=3, is_rate_limited=False,
+        error_msg=str(error).lower(), api_kwargs=None, api_messages=[], messages=messages,
+        conversation_history=None, api_call_count=3, approx_tokens=10, provider="openrouter",
+        base_url="https://openrouter.ai/api/v1", model="m", current_turn_user_idx=2,
+    )
+
+    assert result["final_response"] == "Visible partial"
+    assert result["messages"].count(prior_fragment) == 1
+    assert result["messages"][-1]["content"] == "Visible partial"
+    assert not any(
+        message.get("_length_continuation_fragment") or message.get("_length_continuation_nudge")
+        for message in result["messages"][3:]
     )
 
 

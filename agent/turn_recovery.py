@@ -1018,7 +1018,7 @@ def max_retries_exhausted_result(
     agent: Any, api_error: Exception, classified: Any, *, max_retries: int, is_rate_limited: bool,
     error_msg: str, api_kwargs: Any, api_messages: Any, messages: List[Dict[str, Any]],
     conversation_history: Any, api_call_count: int, approx_tokens: int, provider: Any,
-    base_url: Any, model: Any,
+    base_url: Any, model: Any, current_turn_user_idx: Any = None,
 ) -> Dict[str, Any]:
     """Terminal path once retries, transport recovery and fallback all failed: flush the
     trace, emit the billing / rate-limit / generic status, print stream-drop or thinking-timeout
@@ -1095,7 +1095,7 @@ def max_retries_exhausted_result(
     # this request failed without producing a token. The truncation ceiling is not
     # reached in that sequence, so finalize its tagged trail before persistence.
     from agent.turn_truncation import finalize_continuation_partial
-    _partial_response = finalize_continuation_partial(messages)
+    _partial_response = finalize_continuation_partial(messages, current_turn_user_idx)
     if _partial_response:
         agent._session_messages = messages
     agent._persist_session(messages, conversation_history)

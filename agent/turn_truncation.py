@@ -43,7 +43,9 @@ _CONTEXT_OVERFLOW_PARTIAL_FINAL = (
 )
 
 
-def finalize_continuation_partial(messages: List[Dict[str, Any]]) -> str:
+def finalize_continuation_partial(
+    messages: List[Dict[str, Any]], current_turn_user_idx: Any,
+) -> str:
     """Collapse an unfinished continuation trail into one durable assistant row.
 
     A stream drop appends tagged assistant fragments and synthetic user nudges while it
@@ -51,10 +53,17 @@ def finalize_continuation_partial(messages: List[Dict[str, Any]]) -> str:
     the normal truncation ceiling never cleans that trail. Persist the text the user
     already saw without leaving an unanswered synthetic user message in history.
     """
+    if not (
+        isinstance(current_turn_user_idx, int)
+        and 0 <= current_turn_user_idx < len(messages)
+    ):
+        return ""
+
+    turn_start = current_turn_user_idx + 1
     parts: List[str] = []
     retained: List[Dict[str, Any]] = []
     found_trail = False
-    for message in messages:
+    for message in messages[turn_start:]:
         if not isinstance(message, dict):
             retained.append(message)
             continue
@@ -72,7 +81,7 @@ def finalize_continuation_partial(messages: List[Dict[str, Any]]) -> str:
     if not found_trail:
         return ""
 
-    messages[:] = retained
+    messages[turn_start:] = retained
     from agent.conversation_loop import _join_truncated_parts
     partial = _join_truncated_parts(parts).strip()
     if partial:

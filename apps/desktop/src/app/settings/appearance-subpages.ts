@@ -19,6 +19,7 @@ const SETTING_SUBPAGES: Readonly<Record<string, AppearanceSubpageId>> = {
   'appearance.intro-splash': 'general',
   'appearance.language': 'general',
   'appearance.minimize-to-tray': 'window-layout',
+  'appearance.reduced-effects': 'general',
   'appearance.pet': 'pet',
   'appearance.theme': 'theme',
   'appearance.tool-view': 'chat-display',

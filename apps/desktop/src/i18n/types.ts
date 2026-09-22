@@ -853,6 +853,10 @@ export interface Translations {
       reasoningCollapsedDesc: string
       uiScaleTitle: string
       uiScaleDesc: (percent: number) => string
+      effectsTitle: string
+      effectsDesc: string
+      effectsFull: string
+      effectsReduced: string
       sessionDensityTitle: string
       sessionDensityDesc: string
       sessionDensityCompact: string

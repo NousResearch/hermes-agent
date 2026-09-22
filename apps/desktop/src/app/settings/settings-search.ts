@@ -20,6 +20,7 @@ export const APPEARANCE_SETTING_IDS = {
   introSplash: 'appearance.intro-splash',
   language: 'appearance.language',
   minimizeToTray: 'appearance.minimize-to-tray',
+  reducedEffects: 'appearance.reduced-effects',
   theme: 'appearance.theme',
   toolView: 'appearance.tool-view',
   translucency: 'appearance.translucency',

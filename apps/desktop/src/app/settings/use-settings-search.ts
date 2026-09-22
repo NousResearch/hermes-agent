@@ -208,6 +208,15 @@ export function useSettingsSearchCatalog(enabled: boolean) {
     },
     {
       context: appearanceContext,
+      description: appearance.effectsDesc,
+      icon: Palette,
+      id: `setting:${APPEARANCE_SETTING_IDS.reducedEffects}`,
+      keywords: ['motion', 'animation', 'effects', 'gpu', 'reduced'],
+      label: appearance.effectsTitle,
+      target: { setting: APPEARANCE_SETTING_IDS.reducedEffects, view: 'config:appearance' }
+    },
+    {
+      context: appearanceContext,
       description: appearance.toolViewDesc,
       icon: Palette,
       id: `setting:${APPEARANCE_SETTING_IDS.toolView}`,

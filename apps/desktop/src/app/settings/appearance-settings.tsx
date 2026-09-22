@@ -22,6 +22,7 @@ import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
 import { $reactionsEnabled, setReactionsEnabled } from '@/store/reactions-enabled'
 import { $reasoningCollapsedByDefault, setReasoningCollapsedByDefault } from '@/store/reasoning-disclosure'
+import { $reducedEffects, setReducedEffects } from '@/store/reduced-effects'
 import { $sessionListDensity, type SessionListDensity, setSessionListDensity } from '@/store/session-list-density'
 import { $tabStripDefault, setTabStripDefault, type TabStripDefault } from '@/store/tabstrip-prefs'
 import { $hideThreadTimeline, setHideThreadTimeline } from '@/store/thread-timeline'
@@ -423,6 +424,7 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
   const glassMode = translucency.mode === 'glass' && GLASS_SUPPORTED
   const userBubbleTransparency = useStore($userBubbleTransparency)
   const reactionsEnabled = useStore($reactionsEnabled)
+  const reducedEffects = useStore($reducedEffects)
   const tipsEnabled = useStore($tipsEnabled)
   const toursEnabled = useStore($toursEnabled)
   const spentTips = useStore($spentTipCount)
@@ -725,6 +727,27 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               description={a.appActionsDesc}
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
               title={a.appActionsTitle}
+            />
+          )}
+
+          {show('general') && (
+            <ListRow
+              action={
+                <SegmentedControl
+                  onChange={id => {
+                    triggerHaptic('selection')
+                    setReducedEffects(id === 'reduced')
+                  }}
+                  options={[
+                    { id: 'full', label: a.effectsFull },
+                    { id: 'reduced', label: a.effectsReduced }
+                  ]}
+                  value={reducedEffects ? 'reduced' : 'full'}
+                />
+              }
+              description={a.effectsDesc}
+              id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.reducedEffects)}
+              title={a.effectsTitle}
             />
           )}
 

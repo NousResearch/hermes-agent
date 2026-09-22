@@ -5569,11 +5569,16 @@ async def _start_gateway_start_control_socket(runner):
             except concurrent.futures.TimeoutError:
                 return {"multiplex": True, "pending": True, "served_profiles": runner.served_profile_names()}
 
+        from gateway.vault_unlock import vault_unlock_handlers
+        # vault-unlock: a messaging session cannot prompt for a manager's master password, so the
+        # owner redeems a one-time code from a terminal on this host (`hermes vault unlock <code>`)
+        # and this process — the one holding the vault session — performs the unlock (#108316).
         _control_server = GatewayControlServer(
             verb_handlers={"pause-for-update": _pause_for_update_handler,
                            "rescan-profiles": _rescan_profiles_handler,
                            "migrate-profile-identity": migrate_profile_identity_verb(runner),
-                           "purge-profile-identity": purge_profile_identity_verb(runner)})
+                           "purge-profile-identity": purge_profile_identity_verb(runner),
+                           **vault_unlock_handlers()})
         if not await _control_server.start():
             _control_server = None
         else:

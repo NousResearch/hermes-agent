@@ -7,6 +7,10 @@ Subcommands:
 - ``hermes vault list``  metadata — labels, kinds, identifiers, origins,
   handles. Passwords are never shown.
 - ``hermes vault rm``    remove an item by handle/id.
+- ``hermes vault unlock`` redeem a one-time code from a chat session (or
+  ``--backend NAME``) to unlock a password manager in the RUNNING gateway:
+  the master password is read here through a masked prompt and handed to the
+  gateway over its local control socket, so it never travels through the chat.
 
 The vault backs the password-blind browser autofill tools
 (``browser_vault_list`` / ``browser_vault_fill``): the agent sees handles
@@ -17,6 +21,10 @@ server-side without ever seeing it.
 from __future__ import annotations
 
 import getpass
+
+# `bw unlock`/`op signin` run a manager CLI inside the gateway, so allow more than the control
+# socket's 2 s liveness budget before calling it a missing gateway.
+_UNLOCK_TIMEOUT_S = 60.0
 
 
 def _console():
@@ -182,6 +190,47 @@ def _cmd_rm(args) -> None:
         c.print(f"[red]No vault item with handle {args.handle!r}[/]")
 
 
+def _cmd_unlock(args) -> None:
+    """Unlock a password manager in the running gateway for the session that asked.
+
+    A chat platform has no masked prompt, so ``browser_vault_unlock`` returns a one-time code; the
+    owner redeems it here and the running gateway performs the unlock with the same backend API an
+    interactive surface uses. The master password is read locally (masked prompt) and sent over the
+    gateway's local control socket — it never enters the chat, this process's argv, or any file.
+    ``--backend NAME`` unlocks without a code (no chat session has to ask first).
+    """
+    from gateway.control_socket import query_gateway_control
+    from hermes_constants import display_hermes_home, get_hermes_home
+    from hermes_cli.secret_prompt import masked_secret_prompt
+
+    c = _console()
+    code = str(getattr(args, "code", "") or "").strip().upper()
+    backend = str(getattr(args, "backend", "") or "").strip().lower()
+    if not code and not backend:
+        c.print("[red]Pass the unlock code shown in your chat, or --backend bitwarden to unlock without one.[/]")
+        return
+    password = masked_secret_prompt(
+        "Master password (hidden; sent to the running gateway on this machine, never stored): ")
+    if not password:
+        c.print("[red]No master password entered.[/]")
+        return
+    params = {"code": code} if code else {"backend": backend}
+    try:
+        result = query_gateway_control(get_hermes_home(), "vault-unlock",
+                                       params={**params, "password": password}, timeout=_UNLOCK_TIMEOUT_S)
+    finally:
+        password = ""
+    if result is None:
+        c.print(f"[red]No running Hermes gateway answered on its control socket[/] for this profile "
+                f"({display_hermes_home()}). Run this on the machine hosting the gateway, and pass "
+                f"`-p <profile>` if the gateway serves another profile.")
+        return
+    if result.get("unlocked"):
+        c.print(f"[green]{result.get('backend') or backend} unlocked[/] for this profile — retry in the chat now.")
+        return
+    c.print(f"[red]{result.get('error') or 'Unlock failed'}[/]")
+
+
 def register_cli(subparser) -> None:
     """Build the ``hermes vault`` argparse tree (called from main.py)."""
     subs = subparser.add_subparsers(dest="vault_action")
@@ -202,6 +251,16 @@ def register_cli(subparser) -> None:
     p_rm = subs.add_parser("rm", help="Remove a vault item by handle")
     p_rm.add_argument("handle", help="Item handle (see `hermes vault list`)")
     p_rm.set_defaults(_vault_handler=_cmd_rm)
+
+    p_unlock = subs.add_parser(
+        "unlock",
+        help="Unlock a password manager in the RUNNING gateway (messaging sessions show a one-time code)",
+    )
+    p_unlock.add_argument("code", nargs="?", default="",
+                          help="One-time code from browser_vault_unlock (shown in your chat)")
+    p_unlock.add_argument("--backend", metavar="NAME", default="",
+                          help="Unlock this manager without a code: onepassword | bitwarden")
+    p_unlock.set_defaults(_vault_handler=_cmd_unlock)
 
     p_src = subs.add_parser("sources", help="Show detected password managers (1Password, Bitwarden); they are on automatically")
     group = p_src.add_mutually_exclusive_group()

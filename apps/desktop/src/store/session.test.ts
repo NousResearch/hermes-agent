@@ -535,6 +535,19 @@ describe('mergeSessionPage', () => {
     expect(mergeSessionPage(previous, incoming, ['b']).map(s => s.id)).toEqual(['b'])
   })
 
+  it('never resurrects a HIDDEN session even when the keep set names it (#113273)', () => {
+    // Bot Mode canonical chats are born hidden and are live almost constantly
+    // (routines, bot-to-bot turns), so $workingSessionIds nearly always holds
+    // them — and an open Bot Chat tab pins the id via the tile keep too. The
+    // server page never lists hidden rows; the merge must not let the
+    // keep-list re-insert what the backend excludes by design, or "Bot Chat"
+    // rows become permanent residents of the Sessions sidebar.
+    const previous = [session({ hidden: true, id: 'bot-chat', title: 'Bot Chat' }), session({ id: 'mine' })]
+    const incoming = [session({ id: 'mine', message_count: 3 })]
+
+    expect(mergeSessionPage(previous, incoming, ['bot-chat']).map(s => s.id)).toEqual(['mine'])
+  })
+
   it('keeps a pinned session that has aged off the recent page', () => {
     // Repro of "loses pins until you refresh": a pinned chat falls off the
     // most-recent page, so the server stops returning it. A hard replace would
@@ -750,6 +763,20 @@ describe('carryForwardFailedProfileSessions', () => {
       'idle'
     ])
   })
+
+  it('does not carry a hidden row forward through a failed profile scan (#113273)', () => {
+    // The failed-slice carry is the back door: a canonical Bot Chat parked in
+    // the list by an owner-resolution upsert would ride the "keep what the
+    // failed scan couldn't confirm" rule right back into the sidebar.
+    const previous = [
+      session({ hidden: true, id: 'bot-chat', profile: 'work', title: 'Bot Chat' }),
+      session({ id: 'idle', profile: 'work' })
+    ]
+
+    const carried = carryForwardFailedProfileSessions(previous, [], [{ profile: 'work', error: 'disk I/O error' }])
+
+    expect(carried.map(s => s.id)).toEqual(['idle'])
+  })
 })
 
 describe('keepFailedProfileMeta', () => {
@@ -933,6 +960,35 @@ describe('workspaceCwdForNewSession', () => {
     // never reads the remote keys (nor inherits the sticky local workspace).
     $connection.set(null)
     expect(workspaceCwdForNewSession()).toBe('')
+  })
+
+  it('reseeding a remote gateway with no remembered workspace clears a folder left by another backend (#114306)', async () => {
+    // The door the switch wipe does not cover: `$currentCwd` is initialised from
+    // whatever key is current at module load (the LOCAL memory when the app
+    // boots straight into a remote gateway), and boot reseeds through
+    // ensureDefaultWorkspaceCwd alone — no beginGatewaySwitch runs. An empty
+    // remembered value for the incoming gateway must therefore publish as a
+    // clear, not skip via the truthy-only seed, so seedDefaultCwd can apply
+    // that gateway's own default.
+    const sanitizeWorkspaceCwd = vi.fn(async (cwd: string) => ({ cwd }))
+
+    ;(window as { hermesDesktop?: unknown }).hermesDesktop = {
+      sanitizeWorkspaceCwd,
+      settings: { getDefaultProjectDir: vi.fn(async () => ({ defaultLabel: '', dir: '', resolvedCwd: '' })) }
+    }
+
+    $connection.set({ baseUrl: 'http://backend-a', mode: 'remote' } as never)
+    setCurrentCwd('/opt/data/profiles/project-a')
+    expect(getRememberedWorkspaceCwd()).toBe('/opt/data/profiles/project-a')
+
+    // Simulate the gateway switch: connection flips to B before the reseed
+    // runs, exactly as beginGatewaySwitch/softSwitch do today.
+    $connection.set({ baseUrl: 'http://backend-b', mode: 'remote' } as never)
+    expect(getRememberedWorkspaceCwd()).toBe('')
+
+    await ensureDefaultWorkspaceCwd(() => true)
+
+    expect($currentCwd.get()).toBe('')
   })
 
   it('remembers only the workspace the user picked, not the one they looked at', () => {
@@ -1306,7 +1362,7 @@ describe('remembered route (per profile)', () => {
   })
 
   it('discards legacy unsuffixed keys on first read (zero-migration, refuse-to-guess)', () => {
-    localStorage.setItem('hermes.desktop.lastRoute', '/skills')
+    localStorage.setItem('hermes.desktop.lastRoute', '/capabilities')
 
     // Reading from any profile discards the legacy key.
     expect(getRememberedRoute('default')).toBeNull()

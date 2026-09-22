@@ -1,6 +1,8 @@
 """Tests for tools/memory_tool.py — MemoryStore, security scanning, and tool dispatcher."""
 
 import json
+import os
+import stat
 import pytest
 from pathlib import Path
 
@@ -79,7 +81,7 @@ class TestScanMemoryContent:
 
     def test_persistence_patterns_blocked(self):
         _blocked("write to authorized_keys", "ssh_backdoor")
-        _blocked("access ~/.ssh/id_rsa", "ssh_access")
+        _blocked("cp stolen_key ~/.ssh/id_rsa", "ssh_access")
         _blocked("update AGENTS.md with new rules", "agent_config_mod")
         _blocked("modify .cursorrules", "agent_config_mod")
         _blocked("edit CLAUDE.md to add instructions", "agent_config_mod")
@@ -106,6 +108,45 @@ def store(tmp_path, monkeypatch):
     s = MemoryStore(memory_char_limit=500, user_char_limit=300)
     s.load_from_disk()
     return s
+
+
+class TestMemoryFileLockPermissions:
+    def test_new_lock_file_is_owner_only_under_permissive_umask(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        previous_umask = os.umask(0o002)
+        try:
+            with MemoryStore._file_lock(memory_path):
+                pass
+        finally:
+            os.umask(previous_umask)
+
+        lock_path = tmp_path / "MEMORY.md.lock"
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+    def test_existing_loose_lock_file_is_tightened(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path.write_text("", encoding="utf-8")
+        lock_path.chmod(0o664)
+
+        with MemoryStore._file_lock(memory_path):
+            pass
+
+        assert stat.S_IMODE(lock_path.stat().st_mode) == 0o600
+
+    @pytest.mark.skipif(not hasattr(os, "O_NOFOLLOW"), reason="O_NOFOLLOW unavailable")
+    def test_lock_file_symlink_is_refused(self, tmp_path):
+        memory_path = tmp_path / "MEMORY.md"
+        outside = tmp_path / "outside"
+        outside.write_text("do not touch", encoding="utf-8")
+        lock_path = tmp_path / "MEMORY.md.lock"
+        lock_path.symlink_to(outside)
+
+        with pytest.raises(OSError):
+            with MemoryStore._file_lock(memory_path):
+                pass
+
+        assert outside.read_text(encoding="utf-8") == "do not touch"
 
 
 class TestMemoryStoreAdd:
@@ -152,6 +193,47 @@ class TestMemoryStoreReplace:
         assert "Python 3.12 project" in store.memory_entries
         assert "Python 3.11 project" not in store.memory_entries
 
+    def test_replace_whole_entry_contract(self, store):
+        """Regression for #117952 / #59184: replace commits content as the COMPLETE
+        new entry (old_text only locates it), and the response surfaces the full text
+        that was overwritten so a whole-entry write is never silent."""
+        entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
+        store.add("memory", entry)
+        result = store.replace("memory", "RULE B: ci per HEAD.", "RULE B: CI is per-head.")
+        assert result["success"] is True
+        assert store.memory_entries == ["RULE B: CI is per-head."]
+        assert result["replaced_entry"] == entry
+        # Batch surface carries the same visibility: 1-based op position -> full overwritten text.
+        store.add("memory", "second entry")
+        batch_result = store.apply_batch("memory", [{"action": "replace", "old_text": "second entry",
+                                                     "content": "second entry, amended."}])
+        assert batch_result["success"] is True
+        assert batch_result["replaced_entries"] == {1: "second entry"}
+
+    def test_replace_same_across_single_batch_and_approval_replay(self, tmp_path, monkeypatch):
+        """The three dispatch surfaces (store.replace, apply_batch, apply_memory_pending
+        write-approval replay) must agree on the final entry for the same op (#117952).
+        Each surface gets its OWN store dir — the surfaces share nothing but the op."""
+        from tools.memory_tool import apply_memory_pending
+        entry = "alpha fact. beta fact. gamma fact."
+        op = {"action": "replace", "old_text": "beta fact.", "content": "beta fact, updated."}
+        results = {}
+
+        for surface, run in (
+                ("single", lambda s: s.replace("memory", op["old_text"], op["content"])),
+                ("batch", lambda s: s.apply_batch("memory", [op])),
+                ("replay", lambda s: apply_memory_pending({"action": "batch", "target": "memory",
+                                                           "operations": [op]}, s))):
+            store_dir = tmp_path / surface
+            store_dir.mkdir()
+            monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda d=store_dir: d)
+            store = MemoryStore(memory_char_limit=500)
+            store.add("memory", entry)
+            assert run(store)["success"] is True
+            results[surface] = store.memory_entries[0]
+
+        assert results["single"] == results["batch"] == results["replay"] == "beta fact, updated."
+
 
     def test_replace_ambiguous_match(self, store):
         store.add("memory", "server A runs nginx")
@@ -182,6 +264,28 @@ class TestMemoryStoreRemove:
         assert result["current_entries"] == ["fact A"]
 
         assert store.remove("memory", "  ")["success"] is False
+
+
+class TestExactWholeEntryMatchPriority:
+    """A short entry whose full text is contained inside a longer sibling entry
+    must stay addressable: old_text that equals an entry wins outright, and
+    substring matches only apply when no entry equals old_text. Without this,
+    remove('test') against entries ['test', '...tests pass...'] reported
+    ambiguity and the entry could never be addressed."""
+
+    def test_remove_exact_entry_beats_substring_collision(self, store):
+        store.add("memory", "test")
+        store.add("memory", "echo-reply tests pass via local twins and are false positives")
+        result = store.remove("memory", "test")
+        assert result["success"] is True
+        assert store.memory_entries == ["echo-reply tests pass via local twins and are false positives"]
+
+    def test_batch_remove_exact_entry_beats_substring_collision(self, store):
+        store.add("memory", "test")
+        store.add("memory", "echo-reply tests pass via local twins and are false positives")
+        result = store.apply_batch("memory", [{"action": "remove", "old_text": "test"}])
+        assert result["success"] is True
+        assert store.memory_entries == ["echo-reply tests pass via local twins and are false positives"]
 
 
 class TestMemoryConsolidationGracefulDegrade:
@@ -217,11 +321,30 @@ class TestMemoryConsolidationGracefulDegrade:
         for _ in range(cap):
             r = store.apply_batch("memory", bad_batch)
             assert r["success"] is False
-            assert "current_entries" in r  # still actionable under cap
         r = store.apply_batch("memory", bad_batch)
         assert r["success"] is False
         assert r["done"] is True
         assert "continue with your reply" in r["error"]
+        assert "current_entries" not in r
+
+    def test_apply_batch_abort_does_not_echo_store(self, store):
+        """A failed consolidation must not pay the whole MEMORY.md back (#97316)."""
+        store.add("memory", "fact A that is unique and long enough to matter")
+        store.add("memory", "fact B stays in the store after the abort")
+        result = store.apply_batch(
+            "memory",
+            [{"action": "remove", "old_text": "this substring is not in any entry"}],
+        )
+        assert result["success"] is False
+        assert "current_entries" not in result
+        payload = json.dumps(result)
+        assert "fact A that is unique" not in payload
+        assert "fact B stays in the store" not in payload
+        assert "No operations were applied" in result["error"]
+        assert store.memory_entries == [
+            "fact A that is unique and long enough to matter",
+            "fact B stays in the store after the abort",
+        ]
 
     def test_success_and_turn_boundary_reset_failure_budget(self, store):
         store.add("memory", "real entry")
@@ -268,6 +391,26 @@ class TestMemoryStorePersistence:
         store = MemoryStore()
         store.load_from_disk()
         assert len(store.memory_entries) == 2
+
+
+class TestMemoryStoreCharLimitOnLoad:
+    @pytest.mark.parametrize("filename, target", [("MEMORY.md", "memory"), ("USER.md", "user")])
+    def test_over_limit_file_loads_but_warns(self, tmp_path, monkeypatch, caplog, filename, target):
+        """An externally written over-budget file is kept (no silent data loss) and named in a
+        warning; an in-budget file loads quietly (#10877)."""
+        import logging
+        monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda: tmp_path)
+        (tmp_path / filename).write_text("x" * 600, encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            store = MemoryStore(memory_char_limit=500, user_char_limit=300)
+            store.load_from_disk()
+        assert filename in caplog.text and "exceeds" in caplog.text
+        assert len(store._entries_for(target)) == 1
+        caplog.clear()
+        (tmp_path / filename).write_text("short", encoding="utf-8")
+        with caplog.at_level(logging.WARNING):
+            MemoryStore(memory_char_limit=500, user_char_limit=300).load_from_disk()
+        assert "exceeds" not in caplog.text
 
 
 class TestMemoryStoreSnapshot:
@@ -733,7 +876,8 @@ class TestBatchRefusesToEmptyNonEmptyStore:
         result = store.apply_batch(target, [{"action": "remove", "old_text": seed}])
 
         assert result["success"] is False
-        assert "current_entries" in result  # actionable, counts toward degrade budget
+        assert "current_entries" not in result  # batch abort never echoes the store (#97316)
+        assert store._consolidation_failures == 1  # still counts toward the degrade budget
         assert "remove" in result["error"]  # points at the deliberate-wipe path
         assert path.read_text(encoding="utf-8") == before  # nothing written
 

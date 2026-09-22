@@ -124,10 +124,28 @@ class TestContextCompressionTimeoutState:
 
 
 class TestResolveContextCompressionTimeouts:
+    @pytest.fixture(autouse=True)
+    def _no_aux_floor(self, monkeypatch):
+        # The aux compression request budget floors the idle window (#114594); pin it off so the legacy
+        # clamps below are judged on their own, and on in the dedicated test.
+        import agent.auxiliary_client as aux
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 0.0)
+
     def test_defaults_when_empty_cfg(self):
         idle, ceiling = resolve_context_compression_timeouts({})
         assert idle == 120.0
         assert ceiling == 600.0
+
+    def test_idle_is_floored_at_the_aux_compression_request_budget(self, monkeypatch):
+        """The host must never judge silence before the summary request itself would time out; a budget
+        above the ceiling raises the ceiling too, and a larger explicit idle is kept."""
+        import agent.auxiliary_client as aux
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 300.0)
+        assert resolve_context_compression_timeouts({}) == (300.0, 600.0)
+        assert resolve_context_compression_timeouts({"context_timeout_seconds": 900}) == (900.0, 900.0)
+        monkeypatch.setattr(aux, "_effective_aux_timeout", lambda task, timeout: 900.0)
+        assert resolve_context_compression_timeouts({}) == (900.0, 900.0)
+        assert resolve_context_compression_timeouts({"context_timeout_seconds": 0}) == (0.0, 600.0)
 
     def test_zero_idle_disables_wrapper(self):
         idle, ceiling = resolve_context_compression_timeouts(

@@ -49,7 +49,20 @@ def _install_signal_forwarders(proc: subprocess.Popen[bytes]) -> dict[int, objec
             pass
 
     previous: dict[int, object] = {}
-    for signum in (signal.SIGTERM, signal.SIGINT, getattr(signal, "SIGHUP", None)):
+    # SIGUSR1 is the gateway's drain-aware restart request. launchd owns THIS wrapper's PID,
+    # so `hermes update` signals us, not the gateway; an unforwarded SIGUSR1 kills the wrapper
+    # (Python's default action), launchd tears the group down with SIGTERM and applies its
+    # ~60 s crash back-off per sibling profile (#101426). SIGUSR2 is the gateway's
+    # faulthandler stack-dump request (gateway/run_startup.py); unforwarded it terminates
+    # the wrapper the same way instead of dumping stacks.
+    forwarded = (
+        signal.SIGTERM,
+        signal.SIGINT,
+        getattr(signal, "SIGHUP", None),
+        getattr(signal, "SIGUSR1", None),
+        getattr(signal, "SIGUSR2", None),
+    )
+    for signum in forwarded:
         if signum is not None:
             try:
                 previous[signum] = signal.getsignal(signum)
@@ -88,6 +101,22 @@ def _prepare_child_command(command: Sequence[str], environ: Mapping[str, str] | 
     return argv
 
 
+def _child_returncode_for_supervisor(command: Sequence[str], returncode: int) -> int:
+    """Exit status the launchd wrapper reports for *returncode* from *command*.
+
+    Signal deaths stay 128+N. Gateway EX_CONFIG (78) becomes 0 so
+    ``KeepAlive.SuccessfulExit=false`` parks the job instead of crash-looping;
+    a non-gateway child that happens to exit 78 is left alone.
+    """
+    if returncode < 0:
+        return 128 + abs(returncode)
+    from gateway.restart import GATEWAY_FATAL_CONFIG_EXIT_CODE, map_fatal_config_exit_for_launchd
+
+    if returncode == GATEWAY_FATAL_CONFIG_EXIT_CODE and _is_hermes_gateway_run_argv(command):
+        return map_fatal_config_exit_for_launchd(returncode)
+    return returncode
+
+
 def _parse_args(argv: Sequence[str] | None) -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run a command and timestamp each stderr line into a log file.")
     parser.add_argument("--error-log", required=True, type=Path)
@@ -115,12 +144,14 @@ def main(argv: Sequence[str] | None = None) -> int:
     previous_handlers = _install_signal_forwarders(proc)
     try:
         _copy_stderr_with_timestamps(proc.stderr, log_path)
+        # Keep forwarding until the child has actually exited: a signal that lands between
+        # its stderr EOF and wait() would otherwise kill the wrapper with the default action.
+        returncode = proc.wait()
     finally:
         proc.stderr.close()
         for signum, handler in previous_handlers.items():
             signal.signal(signum, handler)
-    returncode = proc.wait()
-    return 128 + abs(returncode) if returncode < 0 else returncode
+    return _child_returncode_for_supervisor(args.command, returncode)
 
 
 if __name__ == "__main__":

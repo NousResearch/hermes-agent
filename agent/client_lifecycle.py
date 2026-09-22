@@ -67,21 +67,23 @@ def _valid_credential_pair(api_key: Any, base_url: Any) -> bool:
 def _swap_fallback_clients(agent, fb_client, fb_provider: str, fb_model: str, fb_base_url: str, fb_api_mode: str) -> None:
     """Install the fallback client(s) in place, honoring request_timeout_seconds (None = SDK default)."""
     timeout = get_provider_request_timeout(fb_provider, fb_model)
+    if fb_provider == "bedrock" and fb_api_mode in ("anthropic_messages", "bedrock_converse"):
+        # Non-Mantle Bedrock: boto3-chain auth, no OpenAI/Anthropic SDK client to carry over.
+        from agent.bedrock_adapter import bind_bedrock_runtime
+        bind_bedrock_runtime(agent, fb_base_url, fb_api_mode)
+        return
     # The SDK exposes an empty/stale api_key when a rotating source is installed.
     key_provider = vars(fb_client).get("_api_key_provider")
     credential = key_provider if callable(key_provider) else fb_client.api_key
     if fb_api_mode == "anthropic_messages":
         from agent.anthropic_adapter import build_anthropic_client
-        from agent.anthropic_credentials import resolve_anthropic_token, _is_oauth_token
+        from agent.anthropic_credentials import resolve_anthropic_token, anthropic_route_is_oauth
         is_anthropic = fb_provider == "anthropic"
-        effective_key = credential or (resolve_anthropic_token() if is_anthropic else None) or ""
+        effective_key = credential or (resolve_anthropic_token(model=getattr(agent, "model", None)) if is_anthropic else None) or ""
         agent.api_key = agent._anthropic_api_key = effective_key
         agent._anthropic_base_url = fb_base_url
         agent._anthropic_client = build_anthropic_client(effective_key, fb_base_url, timeout=timeout)
-        agent._is_anthropic_oauth = (
-            _is_oauth_token(effective_key)
-            if is_anthropic and isinstance(effective_key, str) else False
-        )
+        agent._is_anthropic_oauth = anthropic_route_is_oauth(fb_base_url, effective_key, provider=fb_provider)
         agent.client, agent._client_kwargs = None, {}
         return
     agent.api_key = credential
@@ -118,7 +120,17 @@ class ClientLifecycleMixin:
             from tools.computer_use.tool import release_computer_use_session
             release_computer_use_session(task_id)
 
-        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id), release_computer_use):
+        def forget_file_state() -> None:
+            # File tools key their read stamps / writer claims by the per-turn task_id (cron:
+            # ``cron:<job>:<uuid>``, subagents: ``subagent-N-xxxx``), which differs from session_id;
+            # cleanup_vm(session_id) alone leaves a finished run looking like a live sibling (#114446).
+            from tools.file_tools import clear_file_ops_cache
+            for owner in getattr(self, "_process_owner_task_ids", ()):
+                if owner and owner != task_id:
+                    clear_file_ops_cache(owner)
+
+        for step in (kill_processes, lambda: cleanup_vm(task_id), lambda: cleanup_browser(task_id),
+                     release_computer_use, forget_file_state):
             _quietly(step)
 
     def _client_log_context(self) -> str:
@@ -404,6 +416,10 @@ class ClientLifecycleMixin:
             if cache["client"] is client:
                 cache["poisoned"] = True
         try:
+            # Non-HTTP providers cancel without closing owner-thread file descriptors.
+            if callable(getattr(type(client), "cancel", None)):
+                client.cancel()
+                return
             shutdown_count = self._force_close_tcp_sockets(client)
             # Zero sockets shut down means the worker stays blocked — WARN, not success.
             # tcp_force_closed=0 means the stranger-thread abort found no sockets to shut down — the worker
@@ -477,9 +493,9 @@ class ClientLifecycleMixin:
         return build_anthropic_client(token, base_url, timeout=get_provider_request_timeout(self.provider, self.model))
 
     def _anthropic_oauth_flag(self, token: str) -> bool:
-        """OAuth flag only on native Anthropic; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
-        from agent.anthropic_credentials import _is_oauth_token
-        return _is_oauth_token(token) if self.provider == "anthropic" else False
+        """OAuth flag only on native Anthropic routes; third-party Anthropic-protocol endpoints must not trip OAuth paths."""
+        from agent.anthropic_credentials import anthropic_route_is_oauth
+        return anthropic_route_is_oauth(getattr(self, "_anthropic_base_url", None), token, provider=self.provider)
 
     def _build_anthropic_client_for_key(self, key: tuple) -> Any:
         from agent.anthropic_adapter import build_anthropic_bedrock_client, build_anthropic_client
@@ -601,8 +617,9 @@ class ClientLifecycleMixin:
         api_key, base_url = creds.get("api_key"), creds.get("base_url")
         if not _valid_credential_pair(api_key, base_url):
             return False
-        if str(api_key).strip() == str(self.api_key or "").strip():
-            return False  # store holds the same key: nothing to adopt, no client rebuild
+        if (str(api_key).strip() == str(self.api_key or "").strip()
+                and str(base_url).strip().rstrip("/") == str(self.base_url or "").strip().rstrip("/")):
+            return False  # store holds the same key on the same route: nothing to adopt, no client rebuild
         if require_account is not None:
             try:
                 from hermes_cli.auth_constants import _decode_jwt_claims
@@ -863,7 +880,7 @@ class ClientLifecycleMixin:
             return False
         try:
             from agent.anthropic_credentials import resolve_anthropic_token
-            new_token = resolve_anthropic_token()
+            new_token = resolve_anthropic_token(model=self.model)
         except Exception as exc:
             logger.debug("Anthropic credential refresh failed: %s", exc)
             return False

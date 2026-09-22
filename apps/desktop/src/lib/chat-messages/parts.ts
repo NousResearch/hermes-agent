@@ -10,9 +10,94 @@ export function reasoningPart(text: string, timestamp?: number): ChatMessagePart
   return { type: 'reasoning', text, ...(timestamp !== undefined ? { timestamp } : {}) }
 }
 
-const MEDIA_LINE_RE = /(^|\n)[\t ]*[`"']?MEDIA:\s*(?<line>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?[\t ]*(\n|$)/g
+/**
+ * Known deliverable file extensions — mirrors the Python-side
+ * `MEDIA_DELIVERY_EXTS` in `gateway/platforms/base.py` so the two surfaces
+ * agree on which `MEDIA:` paths are valid. Used to anchor the end of an
+ * unquoted path that may contain interior spaces (#96657).
+ */
+const MEDIA_DELIVERY_EXTS = [
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'bmp',
+  'tiff',
+  'svg',
+  'mp4',
+  'mov',
+  'avi',
+  'mkv',
+  'webm',
+  '3gp',
+  'mp3',
+  'm2a',
+  'wav',
+  'ogg',
+  'opus',
+  'm4a',
+  'flac',
+  'pdf',
+  'docx',
+  'doc',
+  'odt',
+  'rtf',
+  'txt',
+  'md',
+  'epub',
+  'xlsx',
+  'xls',
+  'ods',
+  'csv',
+  'tsv',
+  'json',
+  'xml',
+  'yaml',
+  'yml',
+  'kmz',
+  'kml',
+  'geojson',
+  'gpx',
+  'pptx',
+  'ppt',
+  'odp',
+  'key',
+  'zip',
+  'tar',
+  'gz',
+  'tgz',
+  'bz2',
+  'xz',
+  '7z',
+  'rar',
+  'apk',
+  'ipa',
+  'html',
+  'htm'
+] as const
 
-const MEDIA_TAG_RE = /[`"']?MEDIA:\s*(?<inline>`[^`\n]+`|"[^"\n]+"|'[^'\n]+'|\S+)[`"']?/g
+// Sort longest-first so the alternation never matches a shorter ext as a
+// prefix of a longer one (e.g. `tar` before a hypothetical `tar.gz`).
+const _MEDIA_EXT_ALTERNATION = [...MEDIA_DELIVERY_EXTS].sort((a, b) => b.length - a.length).join('|')
+
+/**
+ * Unquoted path branch: starts with a path anchor (`~/`, `/`, `X:\` or `X:/`),
+ * allows interior whitespace, and anchors the end on a known deliverable
+ * extension. Matches the Python-side `MEDIA_TAG_CLEANUP_RE` behavior where
+ * `(?:[^\S\n]+\S+?)*?\.(?:EXT)` permits spaces inside filenames (#96657).
+ */
+const _MEDIA_PATH_ANCHORED = `(?:~/|/|[A-Za-z]:[/\\\\])\\S+?(?:[^\\S\\n]+\\S+?)*?\\.(?:${_MEDIA_EXT_ALTERNATION})(?=[\\s\`"'*_,;:)\\]}]|MEDIA:|$)`
+
+const MEDIA_LINE_RE = new RegExp(
+  `(^|\\n)[\\t ]*[\`"']?MEDIA:\\s*(?<line>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?[\\t ]*(\\n|$)`,
+  'g'
+)
+
+const MEDIA_TAG_RE = new RegExp(
+  `[\`"']?MEDIA:\\s*(?<inline>\`[^\`\\n]+\`|"[^"\\n]+"|'[^'\\n]+'|${_MEDIA_PATH_ANCHORED}|\\S+)[\`"']?`,
+  'g'
+)
 
 function unquoteMediaPath(value: string): string {
   const trimmed = value.trim()
@@ -34,6 +119,11 @@ export function renderMediaTags(text: string): string {
       (_match, lead: string, value: string, trailer: string) => `${lead}${mediaLink(value)}${trailer}`
     )
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
+}
+
+/** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share. */
+export function mediaTagValues(text: string): string[] {
+  return [...text.matchAll(MEDIA_TAG_RE)].map(match => match[1] ?? '')
 }
 
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
@@ -116,41 +206,61 @@ export function collectUnspokenTurnSpeech(
   return { id, pending, text: parts.join('\n\n') }
 }
 
-const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
+export const normalizeWs = (value: string) => value.replace(/\s+/g, ' ').trim()
 
-/**
- * Drop earlier text parts that a later text part repeats verbatim (after
- * whitespace normalization). Providers that continue a turn after a tool
- * call sometimes re-send the previous assistant text as the next message's
- * prefix (tool_calls row, then a stop row with identical prose) — the turn
- * merge then holds the same paragraph twice and everything in it renders
- * twice, most visibly ::preview frames. The LAST occurrence is the
- * authoritative one; keep it.
- */
-export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
-  const lastByText = new Map<string, number>()
+type TextPart = Extract<ChatMessagePart, { type: 'text' }>
+const isTextPart = (part: ChatMessagePart): part is TextPart => part.type === 'text'
+
+/** The same physical row delivered twice is one occurrence; keep its last copy. */
+function dedupeRepeatedRowText(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const occurrence = (part: TextPart) => `${part.sourceRowId}:${normalizeWs(part.text)}`
+  const lastByOccurrence = new Map<string, number>()
 
   parts.forEach((part, index) => {
-    if (part.type === 'text') {
-      const key = normalizeWs(part.text)
-
-      if (key) {
-        lastByText.set(key, index)
-      }
+    if (part.type === 'text' && part.sourceRowId !== undefined) {
+      lastByOccurrence.set(occurrence(part), index)
     }
   })
 
-  const dropped = parts.filter((part, index) => {
-    if (part.type !== 'text') {
-      return true
-    }
+  const kept = parts.filter(
+    (part, index) =>
+      part.type !== 'text' || part.sourceRowId === undefined || lastByOccurrence.get(occurrence(part)) === index
+  )
 
-    const key = normalizeWs(part.text)
+  return kept.length === parts.length ? parts : kept
+}
 
-    return !key || lastByText.get(key) === index
-  })
+/**
+ * Collapse duplicate deliveries of the same text without touching authored
+ * repeats. Providers that continue a turn after a tool call sometimes re-send
+ * the previous assistant text verbatim as the stop row (tool_calls row, then a
+ * stop row with identical prose) — the turn merge then holds the same
+ * paragraph twice and everything in it renders twice, most visibly ::preview
+ * frames. Only that shape folds across rows: the bubble's final text (no tool
+ * call after it) equal to the text directly before it across a tool call.
+ * Equal commentary in earlier tool rounds is authored twice and must hydrate
+ * in step with the live stream.
+ */
+export function dedupeRepeatedTextInParts(parts: ChatMessagePart[]): ChatMessagePart[] {
+  const rowDeduped = dedupeRepeatedRowText(parts)
+  const texts = rowDeduped.flatMap((part, index) => (isTextPart(part) ? [{ index, part }] : []))
+  const [previous, last] = texts.slice(-2)
 
-  return dropped.length === parts.length ? parts : dropped
+  if (!last || !previous || rowDeduped.slice(last.index + 1).some(part => part.type === 'tool-call')) {
+    return rowDeduped
+  }
+
+  const key = normalizeWs(last.part.text)
+
+  if (
+    !key ||
+    key !== normalizeWs(previous.part.text) ||
+    !rowDeduped.slice(previous.index + 1, last.index).some(part => part.type === 'tool-call')
+  ) {
+    return rowDeduped
+  }
+
+  return rowDeduped.filter((_, index) => index !== previous.index)
 }
 
 /**
@@ -289,16 +399,27 @@ export function appendAssistantTextPart(
     return next
   }
 
-  const mayContainMedia =
-    delta.includes('MEDIA:') || delta.includes('DIA:') || delta.includes('EDIA:') || delta.includes('IA:')
+  // Re-render from the raw stream, never from the previous render: an unquoted
+  // spaced path (`MEDIA:/tmp/AI Brain/report.pdf`) split across deltas would
+  // otherwise settle on a card for `/tmp/AI` and keep the rest as prose (#96657).
+  const previous = parts[index]
+  const source = `${previous?.type === 'text' ? (previous.mediaSource ?? previous.text) : ''}${delta}`
 
-  if (mayContainMedia || part.text.includes('MEDIA:')) {
-    const rendered = renderMediaTags(part.text)
-
-    if (rendered !== part.text) {
-      next[index] = { ...part, text: rendered }
-    }
+  if (!source.includes('MEDIA:')) {
+    return next
   }
 
+  const rendered = renderMediaTags(source)
+
+  next[index] = rendered === source ? { ...part, text: source } : { ...part, mediaSource: source, text: rendered }
+
   return next
+}
+
+/** True when a visible user message follows `messageId` — the reader has moved
+ *  on, so a question card at `messageId` counts as answered. */
+export function answeredAfter(messages: ChatMessage[], messageId: string): boolean {
+  const at = messages.findIndex(message => message.id === messageId)
+
+  return at !== -1 && messages.slice(at + 1).some(message => message.role === 'user' && !message.hidden)
 }

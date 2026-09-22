@@ -49,7 +49,18 @@ class TestParseResponse:
         )
         assert r == {"action": "block", "message": "nope"}
 
-
+    @pytest.mark.parametrize("stdout, expected", [
+        ('{"action": "approve", "message": "  needs a human ", "rule_key": " terminal:rm "}',
+         {"action": "approve", "message": "needs a human", "rule_key": "terminal:rm"}),
+        ('{"action": "approve", "message": "", "rule_key": 7}', {"action": "approve"}),
+        # Claude-Code's ``decision: approve`` means auto-ALLOW, not "ask a human": never mapped.
+        ('{"decision": "approve", "reason": "ok"}', None),
+        ('{"action": "approve", "decision": "block", "reason": "no"}', {"action": "block", "message": "no"}),
+    ])
+    def test_approve_is_parsed_like_the_plugin_directive(self, stdout, expected):
+        """The documented ``approve`` action used to parse to None, so the tool ran with no
+        approval prompt (#92553). It now yields the same shape Python plugins return."""
+        assert shell_hooks._parse_response("pre_tool_call", stdout) == expected
 
     def test_empty_stdout_returns_none(self):
         assert shell_hooks._parse_response("pre_tool_call", "") is None
@@ -200,6 +211,32 @@ class TestCallbackSubprocess:
             args={"command": "rm"},
         )
         assert msg == "blocked-by-shell"
+
+    def test_approve_reaches_the_human_gate_through_plugin_manager(self, tmp_path, monkeypatch):
+        """End to end: a shell hook's approve directive escalates to request_tool_approval with its
+        message and rule_key, and the gate's denial blocks the tool (#92553)."""
+        from hermes_cli import plugins
+
+        script = _write_script(
+            tmp_path, "approve.sh",
+            "#!/usr/bin/env bash\n"
+            'printf \'{"action": "approve", "message": "risky", "rule_key": "terminal:rm"}\\n\'\n',
+        )
+        monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+        monkeypatch.setenv("HERMES_ACCEPT_HOOKS", "1")
+        plugins._plugin_manager = plugins.PluginManager()
+        cfg = {"hooks": {"pre_tool_call": [{"matcher": "terminal", "command": str(script)}]}}
+        assert len(shell_hooks.register_from_config(cfg, accept_hooks=True)) == 1
+
+        seen = []
+
+        def _gate(tool_name, reason, **kwargs):
+            seen.append((tool_name, reason, kwargs.get("rule_key")))
+            return {"approved": False, "message": "denied by human"}
+
+        monkeypatch.setattr("tools.approval.request_tool_approval", _gate)
+        assert plugins.resolve_pre_tool_block("terminal", {"command": "rm"}) == "denied by human"
+        assert seen == [("terminal", "risky", "terminal:rm")]
 
     def test_matcher_regex_filters_callback(self, tmp_path, monkeypatch):
         """A matcher set to 'terminal' must not fire for 'web_search'."""
@@ -452,14 +489,15 @@ class TestAllowlistConcurrency:
         p.parent.mkdir(parents=True, exist_ok=True)
 
         tmp_paths_seen: list = []
-        real_mkstemp = shell_hooks.tempfile.mkstemp
+        import utils
+        real_mkstemp = utils.tempfile.mkstemp
 
         def spying_mkstemp(*args, **kwargs):
             fd, path = real_mkstemp(*args, **kwargs)
             tmp_paths_seen.append(path)
             return fd, path
 
-        monkeypatch.setattr(shell_hooks.tempfile, "mkstemp", spying_mkstemp)
+        monkeypatch.setattr(utils.tempfile, "mkstemp", spying_mkstemp)
 
         shell_hooks.save_allowlist({"approvals": [{"event": "a", "command": "x"}]})
         shell_hooks.save_allowlist({"approvals": [{"event": "b", "command": "y"}]})
@@ -737,3 +775,76 @@ class TestFailSemanticsEndToEnd:
         assert result["timed_out"] is True
         assert result["parsed"]["action"] == "block"
         assert "failed closed" in result["parsed"]["message"]
+
+
+# ── multiplexed profiles ──────────────────────────────────────────────────
+
+
+class TestRoutedProfileEnv:
+    @pytest.mark.linux_only
+    def test_hook_child_sees_routed_profile_home_and_no_default_secrets(self, tmp_path, monkeypatch):
+        """Under multiplexing the child gets the ROUTED HERMES_HOME, the default profile's secrets
+        stay out of its env, and the payload names the firing profile."""
+        from hermes_constants import reset_hermes_home_override, set_hermes_home_override
+
+        launch, routed = tmp_path / "launch", tmp_path / "routed"
+        launch.mkdir(); routed.mkdir()
+        monkeypatch.setenv("HERMES_HOME", str(launch))
+        monkeypatch.setenv("OPENAI_API_KEY", "sk-default-profile")
+        monkeypatch.setattr("agent.secret_scope.is_multiplex_active", lambda: True)
+        script = _write_script(
+            tmp_path, "env_dump.sh",
+            "#!/usr/bin/env bash\ncat > /dev/null\n"
+            'printf \'{"home": "%s", "key": "%s"}\\n\' "$HERMES_HOME" "${OPENAI_API_KEY:-}"\n',
+        )
+        spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+        token = set_hermes_home_override(str(routed))
+        try:
+            result = shell_hooks._spawn(spec, shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+            payload = json.loads(shell_hooks._serialize_payload("pre_tool_call", {"tool_name": "terminal"}))
+        finally:
+            reset_hermes_home_override(token)
+        seen = json.loads(result["stdout"])
+        assert seen["home"] == str(routed)
+        assert seen["key"] == ""
+        assert "profile" in payload
+
+
+# ── bare script paths on native Windows ─────────────────────────────────
+# Real subprocesses, no mocked spawn: the failure being guarded is CreateProcess rejecting a text
+# file, which only exists on the host it happens on. Marked per the root AGENTS.md rule against
+# faking ``sys.platform``.
+
+
+@pytest.mark.windows_only
+def test_bare_script_hook_path_executes_on_windows(tmp_path):
+    """A hook whose command is a bare script path — the shape every example in
+    ``website/docs/user-guide/features/hooks.md`` uses — must run. POSIX gets there through the
+    kernel's shebang handling; CreateProcess has no equivalent, so the same config failed on
+    Windows while working everywhere else. A path that is not a file must still be reported as
+    missing rather than laundered through an interpreter."""
+    script = _write_script(tmp_path, "hook.sh", '#!/usr/bin/env bash\necho "ran" >&2\nexit 7\n')
+
+    def spec(command):
+        return shell_hooks.ShellHookSpec(event="pre_tool_call", command=command)
+
+    result = shell_hooks._spawn(spec(str(script)), "{}")
+    assert result["error"] is None, result["error"]
+    assert result["returncode"] == 7, "the script's own exit code must reach a fail_closed gate"
+    assert "ran" in result["stderr"]
+
+    missing = shell_hooks._spawn(spec(str(tmp_path / "gone.sh")), "{}")
+    assert missing["error"] == "command not found"
+
+
+@pytest.mark.windows_only
+def test_unroutable_script_hook_names_the_remediation(tmp_path):
+    """A suffix we deliberately do not route still fails, but the diagnostic has to say what to do:
+    the raw WinError text is localized, so a non-English Windows install could not act on it."""
+    script = _write_script(tmp_path, "hook.zsh", "#!/bin/zsh\necho hi\n")
+    spec = shell_hooks.ShellHookSpec(event="pre_tool_call", command=str(script))
+
+    result = shell_hooks._spawn(spec, "{}")
+
+    assert result["returncode"] is None
+    assert "interpreter" in result["error"] and "bash" in result["error"]

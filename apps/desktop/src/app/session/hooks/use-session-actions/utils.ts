@@ -1,10 +1,19 @@
+import { resolveSessionRpcOwner } from '@/app/contrib/wiring-routing'
 import { textWithoutReferenceLines } from '@/components/assistant-ui/reference-kinds'
 import { getSession } from '@/hermes'
-import { assistantTextPart, type ChatMessage, chatMessageText, textPart } from '@/lib/chat-messages'
+import {
+  assistantTextPart,
+  type ChatMessage,
+  chatMessageText,
+  preserveLocalAssistantErrors,
+  textPart,
+  toChatMessages
+} from '@/lib/chat-messages'
 import { normalizePersonalityValue } from '@/lib/chat-runtime'
 import { embeddedImageUrls, textWithoutEmbeddedImages } from '@/lib/embedded-images'
 import { parseErrorSurface } from '@/lib/error-surface'
 import { isMessagingSource, normalizeSessionSource } from '@/lib/session-source'
+import { isLiveTailReplyId } from '@/lib/spoken-reply'
 import { reconcileApprovalModeForProfile } from '@/store/approval-mode'
 import { requestDesktopOnboardingForCredentialWarning } from '@/store/onboarding'
 import { $activeGatewayProfile, $profiles, normalizeProfileKey } from '@/store/profile'
@@ -15,6 +24,9 @@ import {
   $messagingSessions,
   $sessions,
   commitWorkspaceCwdForSelectedSession,
+  getSessionOwnerHint,
+  knownSessionOwner,
+  ownerLookupSessionRows,
   releaseWorkspaceCwdOwner,
   sessionMatchesStoredId,
   setCronSessions,
@@ -25,22 +37,25 @@ import {
   setCurrentPersonality,
   setCurrentProvider,
   setCurrentReasoningEffort,
+  setCurrentReasoningEffortWire,
   setCurrentServiceTier,
   setCurrentUsage,
   setMessagingSessions,
   setSessionOwnerHint,
   setSessions,
+  setUnlistedSessionOwnerRows,
   setWorkspaceCwdOwner,
   setYoloActive
 } from '@/store/session'
 import type { SessionProfileRoute } from '@/store/session-request-router'
+import { runtimeSessionOwner, sessionTileOwnerRoute } from '@/store/session-states'
 
 // Re-exported for the many session-actions/tile call sites that already import
 // it from here; the canonical definition lives in @/store/session.
 export { sessionMatchesStoredId }
 import { sessionOwnerRouteFromRow, type SessionOwnerScope } from '@/store/session-request-router'
 import { reportBackendContract, reportInstallMethodWarning } from '@/store/updates'
-import type { SessionCreateResponse, SessionInfo, SessionResumeResponse, SessionRuntimeInfo } from '@/types/hermes'
+import type { SessionCreateResponse, SessionInfo, SessionResumeResult, SessionRuntimeInfo } from '@/types/hermes'
 
 import type { ClientSessionState } from '../../../types'
 
@@ -71,12 +86,7 @@ function hasStructuralParts(message: ChatMessage): boolean {
  * turn — as opposed to a committed transcript row.
  */
 function isLiveTailRow(message: ChatMessage): boolean {
-  return (
-    message.pending === true ||
-    message.id.startsWith('assistant-stream-') ||
-    message.id.startsWith('inflight-assistant-') ||
-    message.interim === true
-  )
+  return message.pending === true || isLiveTailReplyId(message.id) || message.interim === true
 }
 
 /**
@@ -141,6 +151,8 @@ function preserveStructuralParts(message: ChatMessage, previous: ChatMessage): C
 //   timestamp  — presentation-only (sort/age display), never affects transcript equality
 //   attachmentRefs — composer-side metadata; already reconciled in reconcileResumeMessages
 //   rowId — durable backend identity; stable for a given row, never changes what's painted
+//   serverRowSpan — backend rows the folded message covers; the older-page offset
+//                   accounting reads it, the transcript never paints it
 //
 // If your new field affects what the user sees in the transcript, add it to
 // COMPARED. If it's metadata that shouldn't trigger a re-render, add it to
@@ -150,7 +162,10 @@ const _chatMessageFieldsExhaustive: {
 } = {}
 
 const COMPARED_FIELDS = [
+  'durableComplete',
+  'recovered',
   'asyncResult',
+  'asyncResultKind',
   'id',
   'role',
   'pending',
@@ -169,7 +184,7 @@ const COMPARED_FIELDS = [
   'durationS'
 ] as const
 
-const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId'] as const
+const IGNORED_FIELDS = ['attachmentRefs', 'parts', 'rowId', 'serverRowSpan'] as const
 
 // Compile-time check: every ChatMessagePart discriminant must be handled by
 // chatPartsEquivalent. If @assistant-ui adds a new part type, this fails tsc.
@@ -212,6 +227,10 @@ export function chatPartsEquivalent(aPart: ChatMessage['parts'][number], bPart: 
   }
 
   if (aPart.type === 'text' || aPart.type === 'reasoning') {
+    if (aPart.sourceRowId !== bPart.sourceRowId) {
+      return false
+    }
+
     return (aPart as { text: string }).text === (bPart as { text: string }).text
   }
 
@@ -264,6 +283,8 @@ export function chatMessagesEquivalent(a: ChatMessage, b: ChatMessage): boolean 
   if (
     a.id !== b.id ||
     a.role !== b.role ||
+    a.durableComplete !== b.durableComplete ||
+    a.recovered !== b.recovered ||
     a.pending !== b.pending ||
     a.error !== b.error ||
     // Structural compare — the descriptor arrives as a fresh object per
@@ -316,6 +337,15 @@ export function preserveEquivalentTranscript(current: ChatMessage[], next: ChatM
   return chatMessageArraysEquivalent(current, next) ? current : next
 }
 
+/** Durable history against the local view: role-ordinal pairing, then the
+ *  local pending turn and local assistant errors the DB cannot know about. */
+export function reconcileDurableHistory(messages: ChatMessage[], previous: ChatMessage[]): ChatMessage[] {
+  const reconciled = reconcileResumeMessages(messages, previous)
+  const withPendingTurn = preserveLocalPendingTurnMessages(reconciled, previous)
+
+  return preserveLocalAssistantErrors(withPendingTurn, previous)
+}
+
 export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMessages: ChatMessage[]): ChatMessage[] {
   if (!previousMessages.length) {
     return nextMessages
@@ -359,7 +389,11 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
       return withAuthoritativeTurnState(previous, message)
     }
 
-    const sameText = nextText === previousVisibleText || nextText === previousText.trim()
+    // Empty prose carries no identity: an empty-text cached assistant and an
+    // empty/tool-only hydrated row can share a role ordinal while being
+    // different turns, and plain `'' === ''` would pair them (#114543),
+    // grafting the cached reasoning/tool parts onto the unrelated row.
+    const sameText = nextText.length > 0 && (nextText === previousVisibleText || nextText === previousText.trim())
 
     // Mid-turn, the authoritative text has advanced past the cached copy by one
     // or more deltas. That is still the same turn, and the cached row holds the
@@ -381,7 +415,8 @@ export function reconcileResumeMessages(nextMessages: ChatMessage[], previousMes
         previous.role === 'assistant' &&
         hasStructuralParts(previous) &&
         !hasStructuralParts(message) &&
-        isLiveTailRow(previous))
+        isLiveTailRow(previous) &&
+        isLiveTailRow(message))
 
     if (sameTurn) {
       preserved = preserveStructuralParts(preserved, previous)
@@ -519,6 +554,52 @@ const withAuthoritativeTurnState = (local: ChatMessage, authoritative: ChatMessa
   return merged
 }
 
+/** Text of the response that follows a folded tool round, not the commentary before it. */
+function lastFoldedResponseText(message: ChatMessage): string {
+  let afterTool = false
+  let text = ''
+
+  for (const part of message.parts) {
+    if (part.type === 'tool-call') {
+      afterTool = true
+      text = ''
+
+      continue
+    }
+
+    if (afterTool && part.type === 'text') {
+      text = textWithoutReferenceLines(part.text).trim()
+    }
+  }
+
+  return afterTool ? text : ''
+}
+
+/**
+ * History folds a final answer into the preceding tool-round bubble. A live
+ * stream bubble holding only that answer is the same occurrence, but full-bubble
+ * equality cannot see it.
+ */
+function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessage): boolean {
+  const needle = textWithoutReferenceLines(chatMessageText(live)).trim()
+
+  if (!needle || live.parts.some(part => part.type === 'tool-call')) {
+    return false
+  }
+
+  const lastUser = messages.findLastIndex(message => message.role === 'user' && !isGatewaySystemMarker(message))
+
+  return messages.slice(lastUser + 1).some(message => {
+    if (message.role !== 'assistant' || isLiveTailReplyId(message.id)) {
+      return false
+    }
+
+    const folded = lastFoldedResponseText(message)
+
+    return folded === needle || isStrictAnswerTextExtension(folded, needle)
+  })
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -582,6 +663,7 @@ export function preserveLocalPendingTurnMessages(
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
   const replacements = new Map<string, ChatMessage>()
+  const lastPreviousUser = previousMessages.findLastIndex(row => row.role === 'user' && !isGatewaySystemMarker(row))
 
   for (const message of previousMessages) {
     if (isGatewaySystemMarker(message)) {
@@ -721,6 +803,14 @@ export function preserveLocalPendingTurnMessages(
       }
     }
 
+    if (
+      isPendingAssistant &&
+      previousMessages.indexOf(message) > lastPreviousUser &&
+      durableFoldCoversLiveResponse(nextMessages, message)
+    ) {
+      continue
+    }
+
     preserved.push(message)
   }
 
@@ -741,11 +831,11 @@ export function preserveLocalPendingTurnMessages(
  */
 const safelyPersistedInflightUser = Symbol('safelyPersistedInflightUser')
 
-type LiveSessionProjection = Pick<SessionResumeResponse, 'inflight' | 'queued' | 'session_id'> & {
+type LiveSessionProjection = Pick<SessionResumeResult, 'inflight' | 'queued' | 'session_id'> & {
   [safelyPersistedInflightUser]?: true
 }
 
-type ReconciledSessionResumeResponse = SessionResumeResponse & {
+type ReconciledSessionResumeResult = SessionResumeResult & {
   [safelyPersistedInflightUser]?: true
 }
 
@@ -830,11 +920,34 @@ export function appendLiveSessionProjection(messages: ChatMessage[], projection:
     projection[safelyPersistedInflightUser] === true || (Boolean(inflightUser) && persistedInLatestRun(inflightUser))
 
   if (inflightUser && !inflightUserAlreadyPersisted) {
-    projected.push({
-      id: `user-inflight-${sessionId}`,
-      role: 'user',
-      parts: [textPart(inflightUser)]
-    })
+    // A synthetic starting prompt (process_complete, hidden, …) carries the
+    // display typing its persisted row will get: render it through the same
+    // timeline projection history uses instead of as a user bubble (#112144).
+    // `toChatMessages` yields nothing for `hidden`, so the prompt is omitted.
+    const displayKind = projection.inflight?.display_kind
+
+    const typed = displayKind
+      ? toChatMessages([
+          {
+            role: 'user',
+            content: inflightUser,
+            display_kind: displayKind,
+            ...(projection.inflight?.display_metadata !== undefined
+              ? { display_metadata: projection.inflight.display_metadata }
+              : {})
+          }
+        ])
+      : null
+
+    if (typed) {
+      projected.push(...typed.map(message => ({ ...message, id: `user-inflight-${sessionId}` })))
+    } else {
+      projected.push({
+        id: `user-inflight-${sessionId}`,
+        role: 'user',
+        parts: [textPart(inflightUser)]
+      })
+    }
   }
 
   // Keep a pending assistant boundary even before the first delta when a
@@ -999,8 +1112,8 @@ function transcriptAnchorMatches(a: ChatMessage, b: ChatMessage): boolean {
 export function dedupeInflightUserAgainstTranscript(
   persistedMessages: ChatMessage[],
   runtimeMessages: ChatMessage[],
-  projection: SessionResumeResponse
-): ReconciledSessionResumeResponse {
+  projection: SessionResumeResult
+): ReconciledSessionResumeResult {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
 
   if (!inflightUser) {
@@ -1048,7 +1161,7 @@ export function dedupeInflightUserAgainstTranscript(
  */
 export function removeRepresentedLocalLiveProjection(
   previousMessages: ChatMessage[],
-  projection: Pick<SessionResumeResponse, 'inflight' | 'queued'>
+  projection: Pick<SessionResumeResult, 'inflight' | 'queued'>
 ): ChatMessage[] {
   const inflightUser = projection.inflight?.user?.replace(/\s+/g, ' ').trim() ?? ''
   const inflightAssistant = projection.inflight?.assistant?.replace(/\s+/g, ' ').trim() ?? ''
@@ -1270,6 +1383,53 @@ export function upsertOptimisticSession(
   lastActive?: number,
   owner?: null | SessionProfileRoute
 ) {
+  const session = buildOptimisticSession(created, id, title, preview, parentSessionId, lastActive, owner)
+
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+
+  // A real row supersedes any unlisted-draft stub for the same id (first send
+  // on a ⌘T tab lists it); drop the stub so the atom stays bounded. The
+  // lookup shadow-filter covers any path that lists without passing here.
+  setUnlistedSessionOwnerRows(prev => (prev.some(s => s.id === id) ? prev.filter(s => s.id !== id) : prev))
+
+  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+}
+
+/**
+ * Record the owner of an UNLISTED draft tile without touching the visible
+ * sidebar list (see `openNewSessionTile` with `listed: false`, #102792). The
+ * stub carries the same stamps an optimistic row would — ambient profile for
+ * an unrouted create, exact connection tag for a routed one — and rides only
+ * the owner-lookup path, never the sidebar render path. A later real row for
+ * the same id shadows it; the first send replaces it outright.
+ */
+export function upsertUnlistedSessionOwner(
+  created: SessionCreateResponse,
+  id: string,
+  owner?: null | SessionProfileRoute
+) {
+  const stub = buildOptimisticSession(created, id, null, null, null, undefined, owner)
+  setSessionOwnerHintForStub(id, owner)
+  setUnlistedSessionOwnerRows(prev => [stub, ...prev.filter(s => s.id !== id)])
+}
+
+function setSessionOwnerHintForStub(id: string, owner?: null | SessionProfileRoute): void {
+  if (owner) {
+    setSessionOwnerHint(id, owner)
+  }
+}
+
+function buildOptimisticSession(
+  created: SessionCreateResponse,
+  id: string,
+  title: string | null = null,
+  preview: string | null = null,
+  parentSessionId: string | null = null,
+  lastActive?: number,
+  owner?: null | SessionProfileRoute
+): SessionInfo {
   const now = lastActive ?? Date.now() / 1000
   // Stamp the profile the session was just created on so the scoped sidebar
   // shows the new row immediately instead of filtering it out as "default"
@@ -1308,11 +1468,7 @@ export function upsertOptimisticSession(
     ...(connectionId ? { connection_id: connectionId } : {})
   }
 
-  if (owner) {
-    setSessionOwnerHint(id, owner)
-  }
-
-  setSessions(prev => [session, ...prev.filter(s => s.id !== id)])
+  return session
 }
 
 export function patchSessionWorkspace(sessionId: string, cwd: string | undefined) {
@@ -1360,16 +1516,19 @@ export function dropListedSession(storedSessionId: string): void {
   setSessions(prev => prev.filter(keep))
   setMessagingSessions(prev => prev.filter(keep))
   setCronSessions(prev => prev.filter(keep))
+  setUnlistedSessionOwnerRows(prev => prev.filter(keep))
+}
+
+export function listedSliceTarget(session: SessionInfo): ListedSessionSlice {
+  return isMessagingSource(session.source)
+    ? 'messaging'
+    : normalizeSessionSource(session.source) === 'cron'
+      ? 'cron'
+      : 'sessions'
 }
 
 export function restoreListedSession(session: SessionInfo, slice?: ListedSessionSlice): void {
-  const target: ListedSessionSlice =
-    slice ??
-    (isMessagingSource(session.source)
-      ? 'messaging'
-      : normalizeSessionSource(session.source) === 'cron'
-        ? 'cron'
-        : 'sessions')
+  const target: ListedSessionSlice = slice ?? listedSliceTarget(session)
 
   const prepend = (prev: SessionInfo[]) => [
     session,
@@ -1394,7 +1553,21 @@ export function restoreListedSession(session: SessionInfo, slice?: ListedSession
 function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
   const lineage = session._lineage_root_id ?? session.id
 
-  setSessions(prev => [
+  // A hidden row (canonical Bot Chat, room plumbing) is unlisted by design:
+  // inserting it into $sessions paints a sidebar row until the next refresh,
+  // and the keep-list then holds it there (#113273). Park it on the off-list
+  // owner atom the draft stubs ride — owner resolution still finds it via
+  // ownerLookupSessionRows, the sidebar never does.
+  if (session.hidden) {
+    setUnlistedSessionOwnerRows(prev => [
+      session,
+      ...prev.filter(existing => (existing._lineage_root_id ?? existing.id) !== lineage)
+    ])
+
+    return
+  }
+
+  const prepend = (prev: SessionInfo[]) => [
     session,
     ...prev.filter(existing => {
       if (sessionMatchesStoredId(existing, storedSessionId)) {
@@ -1403,7 +1576,23 @@ function upsertResolvedSession(session: SessionInfo, storedSessionId: string) {
 
       return (existing._lineage_root_id ?? existing.id) !== lineage
     })
-  ])
+  ]
+
+  // A resolve can observe a source move (cross-room /resume rewrites the row to
+  // source='matrix', #113827): the row belongs to its current slice, and the
+  // stale copy in every other slice must go or the session shows twice.
+  // Identity-stable when nothing matched — every sidebar memo keys on these
+  // arrays, and a resolve runs on each row open.
+  const evict = (prev: SessionInfo[]) =>
+    prev.some(existing => sessionMatchesStoredId(existing, storedSessionId))
+      ? prev.filter(existing => !sessionMatchesStoredId(existing, storedSessionId))
+      : prev
+
+  const target = listedSliceTarget(session)
+
+  setSessions(target === 'sessions' ? prepend : evict)
+  setMessagingSessions(target === 'messaging' ? prepend : evict)
+  setCronSessions(target === 'cron' ? prepend : evict)
 }
 
 // Every session row reachable through the profile-scoped project tree —
@@ -1570,6 +1759,18 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
     return undefined
   }
 
+  const owner = resolveSessionRpcOwner({
+    routingSessionId: storedSessionId,
+    tileOwnerRoute: sessionTileOwnerRoute,
+    sessionOwnerHint: getSessionOwnerHint,
+    sessionRowOwner: id => knownSessionOwner(ownerLookupSessionRows(), id),
+    eventOwner: runtimeSessionOwner
+  })
+
+  if (owner) {
+    return owner
+  }
+
   const row = await resolveStoredSession(storedSessionId)
 
   return sessionOwnerRouteFromRow(row) ?? (row?.profile?.trim() || undefined)
@@ -1578,7 +1779,16 @@ export async function resolveSessionOwner(storedSessionId: null | string): Promi
 type SessionRuntimeStatePatch = Partial<
   Pick<
     ClientSessionState,
-    'branch' | 'cwd' | 'fast' | 'model' | 'personality' | 'provider' | 'reasoningEffort' | 'serviceTier' | 'yolo'
+    | 'branch'
+    | 'cwd'
+    | 'fast'
+    | 'model'
+    | 'personality'
+    | 'provider'
+    | 'reasoningEffort'
+    | 'reasoningEffortWire'
+    | 'serviceTier'
+    | 'yolo'
   >
 >
 
@@ -1632,6 +1842,10 @@ function publishRuntimeToComposer(state: SessionRuntimeStatePatch): void {
 
   if (state.reasoningEffort !== undefined) {
     setCurrentReasoningEffort(state.reasoningEffort)
+  }
+
+  if (state.reasoningEffortWire !== undefined) {
+    setCurrentReasoningEffortWire(state.reasoningEffortWire)
   }
 
   if (state.serviceTier !== undefined) {
@@ -1696,6 +1910,10 @@ export function applyRuntimeInfo(
 
   if (typeof info.reasoning_effort === 'string') {
     sessionState.reasoningEffort = info.reasoning_effort
+  }
+
+  if (typeof info.reasoning_effort_wire === 'string') {
+    sessionState.reasoningEffortWire = info.reasoning_effort_wire
   }
 
   if (typeof info.service_tier === 'string') {

@@ -68,6 +68,24 @@ describe('live session activation in-flight state', () => {
     expect(getTurnState().streaming).toBe('partial answer')
   })
 
+  it('preserves synthetic turn display metadata while rebuilding live history', () => {
+    const inflight = {
+      assistant: '',
+      display_kind: 'process_complete',
+      display_metadata: { display_text: 'Finished syncing the workspace' },
+      streaming: true,
+      user: 'process completed'
+    }
+
+    expect(liveSessionInflightMessages(inflight)).toEqual([
+      {
+        kind: 'event',
+        role: 'system',
+        text: 'Finished syncing the workspace'
+      }
+    ])
+  })
+
   it('ignores empty in-flight payloads', () => {
     expect(liveSessionInflightMessages({ assistant: '', streaming: false, user: '   ' })).toEqual([])
 

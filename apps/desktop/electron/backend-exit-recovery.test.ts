@@ -89,3 +89,38 @@ test('a backend that dies after every ready is respawned at most maxRespawns tim
   assert.equal(latch.claim(empty), true)
   assert.equal(latch.isCrashLooping(), false)
 })
+
+
+test('a claimed recovery that fails before ready can retry within the same crash-loop budget', () => {
+  let clock = 1_000
+  const latch = createBackendExitRecoveryLatch({ maxRespawns: 3, windowMs: 120_000, now: () => clock })
+  const empty = { hasCurrentOwner: false, hasPendingStart: false, intentionalTeardown: false }
+
+  assert.equal(latch.claim(empty), true, 'ready backend death grants the first recovery')
+  clock += 1_000
+  assert.equal(latch.retryAfterFailedStart(empty), true, 'pre-ready failure grants a bounded retry')
+  clock += 1_000
+  assert.equal(latch.retryAfterFailedStart(empty), true, 'the final budgeted retry is still admitted')
+  clock += 1_000
+  assert.equal(latch.retryAfterFailedStart(empty), false, 'a fourth recovery attempt is refused')
+  assert.equal(latch.isCrashLooping(), true)
+})
+
+test('a failed recovery does not release its claim while another owner/start or teardown is present', () => {
+  const latch = createBackendExitRecoveryLatch()
+  const empty = { hasCurrentOwner: false, hasPendingStart: false, intentionalTeardown: false }
+
+  assert.equal(latch.claim(empty), true)
+  assert.equal(latch.retryAfterFailedStart({ ...empty, hasPendingStart: true }), false)
+  assert.equal(latch.claim(empty), false, 'the pending-start refusal preserves the original claim')
+
+  latch.reset()
+  assert.equal(latch.claim(empty), true)
+  assert.equal(latch.retryAfterFailedStart({ ...empty, hasCurrentOwner: true }), false)
+  assert.equal(latch.claim(empty), false, 'the current-owner refusal preserves the original claim')
+
+  latch.reset()
+  assert.equal(latch.claim(empty), true)
+  assert.equal(latch.retryAfterFailedStart({ ...empty, intentionalTeardown: true }), false)
+  assert.equal(latch.claim(empty), false, 'intentional teardown does not re-arm recovery')
+})

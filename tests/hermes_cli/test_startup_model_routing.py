@@ -80,11 +80,32 @@ def test_startup_route_ignores_tuning_only_vendor_block(monkeypatch):
     assert route is None
 
 
+def test_startup_route_ignores_per_model_tuning_metadata(monkeypatch):
+    """A documented dict-shaped models block is metadata, not an allowlist."""
+    monkeypatch.setattr(model_switch, "DIRECT_ALIASES", {})
+    route = model_switch.resolve_startup_model_route(
+        "anthropic/claude-opus-4.6",
+        current_provider="nous",
+        user_providers={"anthropic": {
+            "request_timeout_seconds": 30,
+            "models": {"claude-opus-4.6": {"timeout_seconds": 600}},
+        }},
+    )
+    assert route is None
+
+
 @pytest.mark.parametrize(
     "provider_entry",
     [
         {"api_key": "configured-key"},
         {"models": ["deepseek-v4-flash-0731"]},
+        {"models": "deepseek-v4-flash-0731"},
+        {"model": "deepseek-v4-flash-0731"},
+        {"default_model": "deepseek-v4-flash-0731"},
+        {"base_url": "https://api.example/v1"},
+        {"transport": "anthropic_messages"},
+        {"api_mode": "chat_completions"},
+        {"apiMode": "chat_completions"},
     ],
 )
 def test_startup_route_keeps_vendor_blocks_that_declare_a_route(monkeypatch, provider_entry):

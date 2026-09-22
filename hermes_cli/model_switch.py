@@ -363,17 +363,23 @@ def _provider_entry_claims_startup_route(entry: Any) -> bool:
     """
     if not isinstance(entry, dict):
         return False
-    if any(_clean(entry.get(key)) for key in ("base_url", "baseUrl", "url", "api")):
+    if any(_clean(entry.get(key)) for key in ("base_url", "baseUrl", "url")):
+        return True
+    # ``api`` is an endpoint alias only when scalar.  A nested mapping is
+    # transport tuning, and must not claim a vendor/model startup route.
+    api = entry.get("api")
+    if isinstance(api, str) and _clean(api):
         return True
     if any(
         _clean(entry.get(key))
         for key in ("api_key", "apiKey", "key_env", "keyEnv", "api_key_env", "apiKeyEnv", "key_cmd")
     ):
         return True
-    return any(
-        _declared_model_ids(entry.get(key))
-        for key in ("model", "default_model", "defaultModel", "models")
-    )
+    if any(_clean(entry.get(key)) for key in ("model", "default_model", "defaultModel")):
+        return True
+    if _models_config_is_allowlist(entry.get("models"), _entry_models_discovered(entry)):
+        return True
+    return any(_clean(entry.get(key)) for key in ("api_mode", "apiMode", "transport"))
 
 
 def resolve_startup_model_route(

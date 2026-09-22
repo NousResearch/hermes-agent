@@ -43,9 +43,9 @@ def test_entry_stores_only_changed_paths_and_rollback_still_restores(ledger_home
         p.write_bytes(skill_ledger.read_blob(i["sha256"]))
     ok, msg = skill_ledger.rollback_entry(entry_id)
     assert ok, msg
-    assert (skills / "big" / "SKILL.md").read_text() == "v1"
-    assert (skills / "big" / "references" / "a.md").read_text() == "same"
-    assert (skills / "big" / "references" / "gone.md").read_text() == "old"
+    assert (skills / "big" / "SKILL.md").read_text(encoding="utf-8") == "v1"
+    assert (skills / "big" / "references" / "a.md").read_text(encoding="utf-8") == "same"
+    assert (skills / "big" / "references" / "gone.md").read_text(encoding="utf-8") == "old"
     assert not (skills / "big" / "references" / "new.md").exists()
 
 
@@ -92,3 +92,38 @@ def test_gc_blobs_removes_only_unreferenced(ledger_home):
         fh.write("{broken\n")
     skill_ledger._store_blob(b"orphan two")
     assert skill_ledger.gc_blobs() == (0, 0)
+
+
+@pytest.mark.parametrize("failure", ["unreadable", "missing", "invalid-encoding"])
+def test_gc_keeps_rollback_blobs_when_the_ledger_cannot_be_read(ledger_home, monkeypatch, failure):
+    from tools import skill_ledger
+
+    skill = ledger_home / "skills" / "demo" / "SKILL.md"
+    skill.parent.mkdir()
+    skill.write_text("original", encoding="utf-8")
+    before = skill_ledger.snapshot_paths(skill)
+    skill.write_text("edited", encoding="utf-8")
+    entry_id = skill_ledger.record_mutation("patch", "demo", before=before, after_root=skill)
+    ledger = skill_ledger.ledger_path()
+    saved = ledger.read_bytes()
+    blobs_before = {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()}
+    with monkeypatch.context() as patch:
+        if failure == "unreadable":
+            real_read = Path.read_text
+
+            def read_text(path, *args, **kwargs):
+                if path == ledger:
+                    raise PermissionError("ledger is temporarily unreadable")
+                return real_read(path, *args, **kwargs)
+
+            patch.setattr(Path, "read_text", read_text)
+        elif failure == "missing":
+            ledger.unlink()
+        else:
+            ledger.write_bytes(b"\xff")
+        assert skill_ledger.gc_blobs() == (0, 0)
+        assert {p.name: p.read_bytes() for p in skill_ledger.blobs_dir().iterdir()} == blobs_before
+    ledger.write_bytes(saved)
+    ok, message = skill_ledger.rollback_entry(entry_id)
+    assert ok, message
+    assert skill.read_text(encoding="utf-8") == "original"

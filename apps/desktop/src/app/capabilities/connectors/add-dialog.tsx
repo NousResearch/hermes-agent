@@ -78,7 +78,9 @@ export function AddServerDialog({ controller, onOpenChange, open, profile }: Add
     <Dialog onOpenChange={next => (next ? onOpenChange(true) : close())} open={open}>
       <DialogContent
         bodyClassName="gap-0 overflow-hidden p-0"
-        className={raw ? 'h-[min(40rem,80vh)] min-w-[min(48rem,90vw)]' : 'max-h-[min(44rem,85vh)] min-w-[min(34rem,90vw)]'}
+        className={
+          raw ? 'h-[min(40rem,80vh)] min-w-[min(48rem,90vw)]' : 'max-h-[min(44rem,85vh)] min-w-[min(34rem,90vw)]'
+        }
         fitContent
       >
         <header className="flex shrink-0 items-center border-b border-(--ui-stroke-tertiary) px-5 py-3">

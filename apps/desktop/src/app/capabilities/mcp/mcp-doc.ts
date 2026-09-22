@@ -1,4 +1,3 @@
-
 // oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- `isServerShape` is main's exported name; it is bound to a domain name here instead of renaming the export.
 import { type McpServerEntry, type McpServers, isServerShape as namesAServer, normalizeEntry } from '@/lib/mcp-servers'
 

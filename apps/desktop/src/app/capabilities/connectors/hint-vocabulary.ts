@@ -92,8 +92,7 @@ export function vocabularyTag(raw: string): VocabularyTag {
 
 const FACET_SAYS = { destructive: 'destructiveHint' } satisfies Record<string, string>
 
-const facetSays = (facet: string): string | undefined =>
-  facet === 'destructive' ? FACET_SAYS.destructive : undefined
+const facetSays = (facet: string): string | undefined => (facet === 'destructive' ? FACET_SAYS.destructive : undefined)
 
 export function hintTags(hints: readonly string[], facet?: string): VocabularyTag[] {
   const said = facet === undefined ? undefined : facetSays(facet)

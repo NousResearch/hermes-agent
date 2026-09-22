@@ -155,7 +155,9 @@ function CardLane({
   return (
     <div className="relative z-10 flex w-[7.75rem] shrink-0 flex-col items-end gap-1">
       <span className="flex items-center gap-1.5 text-[0.6875rem] text-(--ui-text-secondary)">
-        {withDot ? <span aria-hidden className={cn('size-[5px] shrink-0 rounded-full', STATE_DOT[card.state])} /> : null}
+        {withDot ? (
+          <span aria-hidden className={cn('size-[5px] shrink-0 rounded-full', STATE_DOT[card.state])} />
+        ) : null}
         <span className="truncate">{stateLabel}</span>
       </span>
 

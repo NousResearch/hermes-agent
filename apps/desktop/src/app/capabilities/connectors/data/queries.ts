@@ -133,8 +133,7 @@ export function useHostedConnectors(scope: ProfileScope): HostedConnectorsView {
   }, [phase, scope])
 
   const listSlugs = useMemo(
-    () =>
-      new Set(blanked ? [] : (list.data?.connectors ?? []).flatMap(row => (row.connector ? [row.connector] : []))),
+    () => new Set(blanked ? [] : (list.data?.connectors ?? []).flatMap(row => (row.connector ? [row.connector] : []))),
     [blanked, list.data]
   )
 

@@ -617,6 +617,16 @@ test('pathForRegistryBackendRequest uses the resolved registry backend scope', (
   )
 })
 
+test('registry model reads and writes retain each profile on a shared local backend', () => {
+  for (const backend of [{ mode: 'local' }, { sharedPrimary: true }]) {
+    for (const profile of ['research', 'default', 'research']) {
+      for (const path of ['/api/model/info', '/api/model/options', '/api/model/set']) {
+        assert.equal(pathForRegistryBackendRequest(path, profile, backend), `${path}?profile=${profile}`)
+      }
+    }
+  }
+})
+
 // --- pathWithGlobalRemoteProfile ---
 
 test('pathWithGlobalRemoteProfile appends profile in global remote mode', () => {

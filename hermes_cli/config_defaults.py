@@ -672,9 +672,10 @@ DEFAULT_CONFIG = {
         # guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
     },
-    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h"; other
-    # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
-    # caching.
+    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
+    # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
+    # oneshot, webhook, kanban, api, tool, batch); other non-falsy values are ignored; falsy (false, null, "off",
+    # "disabled", "no", "none") disables caching.
     "prompt_caching": {"cache_ttl": "5m"},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
@@ -1682,6 +1683,10 @@ DEFAULT_CONFIG = {
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,
+        # Deadline (seconds) for one plugin's import + register() at load. A plugin that overruns it is
+        # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
+        # abandoned. 0 = no deadline (load inline). Max 600.
+        "load_timeout_seconds": 10,
         # Keep loading external plugins that still import pre-decomposition module paths after the
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.

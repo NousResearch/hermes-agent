@@ -3057,7 +3057,7 @@ def _format_gateway_process_notification(evt: dict) -> "str | None":
         text += "]"
         return text
 
-    if evt_type == "async_delegation":
+    if evt_type in ("async_delegation", "heartbeat"):
         from tools.process_registry_notifications import format_process_notification
         return format_process_notification(evt)
 
@@ -3076,7 +3076,8 @@ def _drain_gateway_watch_events(completion_queue) -> "list[dict]":
             break
         evt_type = evt.get("type", "completion")
         if evt_type in {
-            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released"}:
+            "watch_match", "watch_disabled", "watch_overflow_tripped", "watch_overflow_released",
+            "heartbeat"}:
             watch_events.append(evt)
         elif evt_type == "async_delegation":
             requeue.append(evt)
@@ -4280,6 +4281,17 @@ class GatewayRunner(
         from gateway.session_context import clear_session_vars
         clear_session_vars(tokens)
 
+    @_contextmanager
+    def _session_env_scope(self, context: SessionContext):
+        """Bind session context variables for the duration of the block, e.g. a plugin command
+        handler invoked outside the normal agent-turn path (``_set_session_env`` is otherwise only
+        reached there). Always cleared on exit, including on exception."""
+        tokens = self._set_session_env(context)
+        try:
+            yield
+        finally:
+            self._clear_session_env(tokens)
+
     async def _run_in_executor_with_context(self, func, *args):
         """Run blocking work in the thread pool while preserving session contextvars."""
         loop = asyncio.get_running_loop()
@@ -4895,8 +4907,9 @@ async def _shutdown_mcp_servers_nonblocking(timeout: float = 5.0, config: Any = 
     the trailing wildcard pass — the only one that stops the shared loop — never ran.
 
     The worker runs in a FRESH context, not ``copy_context()``: the caller may sit inside a served
-    profile's scope, and ``launch_profile_scope_if_multiplexed`` documents "no HERMES_HOME override"
-    — inheriting one made the wildcard pass resolve the live home to that profile.
+    profile's scope, and the trailing wildcard pass must run under the launch profile's own scope
+    (``launch_profile_scope_if_multiplexed`` binds the launch home) — inheriting the caller's made it
+    resolve the live home to that profile.
 
     See #82874.
     """

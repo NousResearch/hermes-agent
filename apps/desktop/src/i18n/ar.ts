@@ -407,6 +407,7 @@ export const ar = defineLocale({
       gatewayManagedUpdatesUnavailable: 'تتطلب التحديثات البعيدة إصدار سطح مكتب يدعم تحديثات SSH المُدارة.',
       gatewayManagedUpdatesEmpty: 'أضف اتصال SSH في الاتصالات المحفوظة لإدارة تحديثاته هنا.',
       keyboardShortcuts: 'تعيينات المفاتيح',
+      hudGesture: 'إيماءة HUD',
       screenCapture: 'التقاط الشاشة',
       notificationAlerts: 'تنبيهات سطح المكتب',
       notificationSounds: 'الأصوات',
@@ -879,6 +880,11 @@ export const ar = defineLocale({
       daysAgo: count => `قبل ${count} يوم`
     },
     config: {
+      minimizeToTrayTitle: 'التصغير إلى علبة النظام',
+      minimizeToTrayDesc:
+        'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
+      minimizeToTrayUnavailable:
+        'علبة النظام غير متاحة. ستُصغّر النوافذ وتُغلق كالمعتاد. أوقف هذا الخيار ثم فعّله لإعادة المحاولة.',
       none: 'لا شيء',
       noneParen: '(لا شيء)',
       notSet: 'غير مضبوط',
@@ -893,6 +899,18 @@ export const ar = defineLocale({
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
       invalidJson: 'JSON غير صالح'
+    },
+    hudModifier: {
+      title: 'استدعاء HUD بضغطة',
+      description:
+        'اضغط ثم حرّر ⌘ + Option على Mac، أو Ctrl + Alt على Windows/Linux، لإظهار HUD من أي تطبيق. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
+      permission:
+        'اسمح لـ Hermes في إعدادات النظام ← الخصوصية والأمان ← مراقبة الإدخال، ثم أعد المحاولة. لا تسجّل هذه الإيماءة ضغطات المفاتيح ولا تلتقط الشاشة.',
+      unavailable:
+        'تعذّر تشغيل مساعد إيماءة HUD أو توقف بشكل غير متوقع. أعد المحاولة أو أعد تشغيل Hermes. يظل اختصار HUD الحالي يعمل داخل Hermes.',
+      missingHelper: 'مساعد إيماءة HUD غير موجود في تثبيت Hermes هذا. حدّث Hermes أو أعد تثبيته، ثم أعد المحاولة.',
+      unsupportedSession:
+        'جلسة سطح المكتب هذه لا تدعم ضغطات مفاتيح التعديل على مستوى النظام. يتطلب Linux جلسة X11؛ Wayland غير مدعوم.'
     },
     screenshot: {
       enabledTitle: 'اختصار لقطة الشاشة',

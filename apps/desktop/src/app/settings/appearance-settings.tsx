@@ -68,6 +68,7 @@ import { appearanceSubpageForSetting, type AppearanceSubpageId } from './appeara
 import { ChatFontSetting } from './chat-font-setting'
 import { MODE_OPTIONS } from './constants'
 import { setNested } from './helpers'
+import { MinimizeToTraySetting } from './minimize-to-tray-setting'
 import { PetSettings } from './pet-settings'
 import { ListRow, SectionHeading, SettingsContent, ToggleRow } from './primitives'
 import { APPEARANCE_SETTING_IDS } from './settings-search'
@@ -725,6 +726,12 @@ export function AppearanceSettings({ subpage }: AppearanceSettingsProps = {}) {
               id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.appActions)}
               title={a.appActionsTitle}
             />
+          )}
+
+          {show('window-layout') && (
+            <div id={appearanceSettingElementId(APPEARANCE_SETTING_IDS.minimizeToTray)}>
+              <MinimizeToTraySetting />
+            </div>
           )}
 
           {/* Linux has neither half of this setting (see TRANSLUCENCY_SUPPORTED),

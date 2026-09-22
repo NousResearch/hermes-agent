@@ -49,6 +49,7 @@ test('the current CLI "Not installed:" tail parses into findings + trust', () =>
   const uncounted = [
     "Not installed: the security scan found high-risk patterns in 'org/skill' (listed above). Re-run with --force to install anyway."
   ]
+
   expect(parseInstallBlocked(uncounted)).toEqual({ findings: 0, unverified: false })
 })
 

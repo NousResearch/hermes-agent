@@ -35,7 +35,13 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
 human-merged via PR (`plugin-catalog/README.md` = admission policy; `plugin-catalog-ci.yml` clones
 each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
-every install path (CLI, dashboard, TUI) refuses matches; only the CLI has a loud `--allow-removed`.
+every install path (CLI, dashboard, TUI) refuses matches (repo URLs compared by canonical
+`host/owner/repo`, so `git@`/`ssh://`/`www.` spellings match); only the CLI has a loud
+`--allow-removed`, which is recorded on the install record and is the only thing that exempts an
+installed plugin from the same check at `update`, `enable` and load (`gate_manifest`). Catalog
+provenance lives on the installer-owned `.install-metadata.json` record (`catalog` block, sha =
+checked-out commit), NEVER in the tree: the in-tree `.hermes-catalog.json` is a convenience copy the
+Desktop reads for "Install here"; Python never trusts it (a repo can ship a forged one).
 Code: `hermes_cli/plugin_catalog.py` (loader, live refresh from
 `/docs/api/plugin-catalog.json` published by the docs build, in-tree fallback),
 `hermes_cli/plugins_cmd_catalog.py` (resolution, `.hermes-catalog.json` provenance sidecar,

@@ -296,18 +296,31 @@ def append_entry(
         return None
 
 
+def _read_ledger(what: str, *, quiet_missing: bool = False) -> Optional[bytes]:
+    """Raw ledger bytes, or ``None`` (after a warning) when the file cannot be read or is not UTF-8.
+    ``quiet_missing`` keeps a merely absent ledger silent — normal for a fresh install."""
+    try:
+        raw = ledger_path().read_bytes()
+        raw.decode("utf-8")
+        return raw
+    except (OSError, UnicodeError) as exc:
+        if not (quiet_missing and isinstance(exc, FileNotFoundError)):
+            logger.warning("skill_ledger: ledger unreadable (%s); %s", exc, what)
+        return None
+
+
 def compact_ledger() -> Tuple[int, int, int]:
     """Rewrite the ledger with every entry's unchanged paths dropped (see ``_delta``); ids, order and
     rollback semantics are preserved. Returns ``(entries, bytes_before, bytes_after)``. Atomic: the
     new file replaces the old only once fully written. Malformed lines are kept verbatim. Follow with
     ``gc_blobs()``: dropped references leave blobs nothing can restore."""
     path = ledger_path()
-    try:
-        raw = path.read_bytes()
-    except OSError:
+    raw = _read_ledger("compaction skipped")
+    if raw is None:
         return 0, 0, 0
+    text = raw.decode("utf-8")
     out, kept = [], 0
-    for line in raw.decode("utf-8").splitlines():
+    for line in text.splitlines():
         if not line.strip():
             continue
         try:
@@ -330,22 +343,24 @@ def compact_ledger() -> Tuple[int, int, int]:
 def gc_blobs() -> Tuple[int, int]:
     """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
     write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
-    (#107539). Malformed ledger lines abort the sweep (nothing deleted) — an unreadable entry
-    may still hold references."""
+    (#107539). Malformed ledger lines, or an unreadable/undecodable ledger, abort the sweep
+    (blobs are kept) — an entry we cannot read may still hold references."""
     blobs = blobs_dir()
     if not blobs.is_dir():
         return 0, 0
     referenced: set = set()
-    try:
-        lines = ledger_path().read_text(encoding="utf-8").splitlines()
-    except OSError:
-        lines = []
-    for line in lines:
+    raw = _read_ledger("blob GC skipped")
+    if raw is None:  # an unavailable ledger is not evidence that its blobs are unreferenced
+        return 0, 0
+    for line in raw.decode("utf-8").splitlines():
         if not line.strip():
             continue
         try:
             row = json.loads(line)
         except json.JSONDecodeError:
+            row = None
+        if not isinstance(row, dict):
+            logger.warning("skill_ledger: malformed ledger line; blob GC skipped")
             return 0, 0
         for item in (row.get("before") or []) + (row.get("after") or []):
             referenced.add(str(item.get("sha256", "")))
@@ -401,12 +416,11 @@ def capture_before(
 
 def list_entries(skill: Optional[str] = None, limit: Optional[int] = None) -> List[Dict[str, Any]]:
     """Read the ledger, newest first. Malformed lines are skipped."""
-    try:
-        lines = ledger_path().read_text(encoding="utf-8").splitlines()
-    except OSError:  # missing or unreadable ledger == empty
+    raw = _read_ledger("listing empty", quiet_missing=True)  # missing/unreadable/undecodable == empty
+    if raw is None:
         return []
     rows: List[Dict[str, Any]] = []
-    for line in lines:
+    for line in raw.decode("utf-8").splitlines():
         with suppress(json.JSONDecodeError):
             row = json.loads(line) if line.strip() else None
             if isinstance(row, dict) and (not skill or row.get("skill") == skill):

@@ -332,6 +332,106 @@ class TestDispatchMessage(unittest.TestCase):
             self.assertEqual(len(captured), 1)
 
 
+class TestDispatchDefersToGatewayAuthorization(unittest.TestCase):
+    """The pre-dispatch gate must not drop mail the gateway would authorize (GATEWAY_ALLOWED_USERS,
+    an approved pairing) or answer itself (an explicit pair/decline unauthorized_dm_behavior)."""
+
+    STRANGER = "stranger@example.com"
+
+    def setUp(self):
+        self._env = patch.dict(os.environ, {}, clear=False)
+        self._env.start()
+        for key in ("EMAIL_ALLOWED_USERS", "EMAIL_ALLOW_ALL_USERS", "GATEWAY_ALLOWED_USERS",
+                    "GATEWAY_ALLOW_ALL_USERS", "EMAIL_TRUST_FROM_HEADER"):
+            os.environ.pop(key, None)
+
+    def tearDown(self):
+        self._env.stop()
+
+    def _reached_gateway(self, *, extra=None, env=None, paired=False, authenticated=True):
+        """Dispatch one mail from STRANGER with the real GatewayRunner auth callback wired, as startup does;
+        return the events handed to the gateway. Each call gets its own pairing store."""
+        import asyncio
+        import tempfile
+        from pathlib import Path
+        from gateway.config import GatewayConfig, Platform, PlatformConfig
+        from gateway.pairing import PairingStore
+        from gateway.run import GatewayRunner
+        from plugins.platforms.email.adapter import EmailAdapter
+        with tempfile.TemporaryDirectory() as pairing_dir, \
+                patch("gateway.pairing.PAIRING_DIR", Path(pairing_dir)), \
+                patch.dict(os.environ, {"EMAIL_ADDRESS": "hermes@test.com", "EMAIL_PASSWORD": "secret",
+                                        "EMAIL_IMAP_HOST": "imap.test.com", "EMAIL_SMTP_HOST": "smtp.test.com",
+                                        **(env or {})}):
+            adapter = EmailAdapter(PlatformConfig(enabled=True, extra=dict(extra or {})))
+            runner = object.__new__(GatewayRunner)
+            runner.config = GatewayConfig(platforms={Platform.EMAIL: adapter.config})
+            runner.adapters = {Platform.EMAIL: adapter}
+            runner.pairing_store = PairingStore()
+            adapter.set_authorization_check(runner._make_adapter_auth_check(Platform.EMAIL))
+            if paired:
+                code = runner.pairing_store.generate_code("email", self.STRANGER, "Stranger")
+                self.assertIsNotNone(runner.pairing_store.approve_code("email", code))
+            captured = []
+
+            async def capture(event):
+                captured.append(event)
+
+            adapter.handle_message = capture
+            asyncio.run(adapter._dispatch_message({
+                "uid": b"301", "sender_addr": self.STRANGER, "sender_name": "Stranger", "subject": "Hello",
+                "message_id": "<m301@example.com>", "in_reply_to": "", "body": "Hi there", "attachments": [],
+                "date": "", "sender_authenticated": authenticated,
+                "auth_reason": "dmarc=pass" if authenticated else "no Authentication-Results header"}))
+        return captured
+
+    def test_mail_the_gateway_admits_or_answers_reaches_it(self):
+        cases = {
+            "pair opt-in": {"extra": {"unauthorized_dm_behavior": "pair"}},
+            "decline opt-in": {"extra": {"unauthorized_dm_behavior": "decline"}},
+            "GATEWAY_ALLOWED_USERS": {"env": {"GATEWAY_ALLOWED_USERS": self.STRANGER}},
+            "EMAIL_ALLOWED_USERS JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": f'["{self.STRANGER}"]'}},
+            "approved pairing": {"paired": True},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(len(self._reached_gateway(**kwargs)), 1)
+
+    def test_mail_the_gateway_would_ignore_or_that_forges_from_is_dropped(self):
+        cases = {
+            "default ignore": {},
+            "pair opt-in, unauthenticated From": {"extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False},
+            "approved pairing, unauthenticated From": {"paired": True, "authenticated": False},
+            # Open access grants a stranger nothing beside a list, so a pairing code must not go to a forged From:.
+            "pair opt-in, allow-all beside EMAIL list, unauthenticated From": {
+                "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,
+                "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "EMAIL_ALLOWED_USERS": "boss@example.com"}},
+            # GATEWAY_ALLOW_ALL_USERS is inert beside a list, so a listed address still has to authenticate its From:.
+            "listed sender, GATEWAY allow-all beside the list, unauthenticated From": {
+                "authenticated": False, "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "EMAIL_ALLOWED_USERS": self.STRANGER}},
+            "pair opt-in, allow-all beside GATEWAY list, unauthenticated From": {
+                "extra": {"unauthorized_dm_behavior": "pair"}, "authenticated": False,
+                "env": {"GATEWAY_ALLOW_ALL_USERS": "true", "GATEWAY_ALLOWED_USERS": "boss@example.com"}},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self._reached_gateway(**kwargs), [])
+
+    def test_bare_allowlist_entry_does_not_admit_its_local_part_at_any_domain(self):
+        """``GATEWAY_ALLOWED_USERS=stranger`` names one principal (say a chat username), not stranger@<any domain>."""
+        cases = {
+            "GATEWAY_ALLOWED_USERS bare entry": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"}},
+            "EMAIL_ALLOWED_USERS bare entry": {"env": {"EMAIL_ALLOWED_USERS": "stranger"}},
+            "GATEWAY_ALLOWED_USERS bare entry, JSON list literal": {"env": {"GATEWAY_ALLOWED_USERS": '["stranger"]'}},
+            "EMAIL_ALLOWED_USERS bare entry, JSON list literal": {"env": {"EMAIL_ALLOWED_USERS": '["stranger"]'}},
+            "bare entry, pair opt-in": {"env": {"GATEWAY_ALLOWED_USERS": "stranger"},
+                                        "extra": {"unauthorized_dm_behavior": "pair"}},
+        }
+        for label, kwargs in cases.items():
+            with self.subTest(label):
+                self.assertEqual(self._reached_gateway(**kwargs), [])
+
+
 class TestThreadContext(unittest.TestCase):
     """Test email reply threading logic."""
 

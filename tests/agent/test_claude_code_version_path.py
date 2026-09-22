@@ -14,7 +14,11 @@ import sys
 import pytest
 
 import agent.anthropic_adapter as adapter
-from agent.anthropic_adapter import _CLAUDE_CODE_VERSION_FALLBACK, _detect_claude_code_version
+from agent.anthropic_adapter import (
+    _CLAUDE_CODE_VERSION_FALLBACK,
+    _detect_claude_code_version,
+    _get_claude_code_version,
+)
 
 
 def _install(directory, name: str) -> str:
@@ -57,3 +61,10 @@ def test_path_hit_is_probed_first(monkeypatch, tmp_path):
     _cli_versions(monkeypatch, {on_path: "2.1.400", stale: "2.1.100"})
 
     assert _detect_claude_code_version() == "2.1.400"
+
+
+def test_oauth_identity_clamps_stale_installed_version(monkeypatch):
+    monkeypatch.setattr(adapter, "_claude_code_version_cache", None)
+    monkeypatch.setattr(adapter, "_detect_claude_code_version", lambda: "2.1.270")
+
+    assert _get_claude_code_version() == "2.1.280"

@@ -218,7 +218,7 @@ _OAUTH_ONLY_BETAS = ["claude-code-20250219", "oauth-2025-04-20"]
 # Claude Code identity — OAuth requests without it intermittently 500. Anthropic rejects OAuth
 # requests whose user-agent version is too far behind the actual release, so the installed
 # version is detected and this fallback kept current.
-_CLAUDE_CODE_VERSION_FALLBACK = "2.1.74"
+_CLAUDE_CODE_VERSION_FALLBACK = "2.1.280"
 _claude_code_version_cache: Optional[str] = None
 
 # Install prefixes probed in addition to PATH. GUI launches (the Electron desktop app, macOS
@@ -272,10 +272,18 @@ def _detect_claude_code_version() -> str:
 
 
 def _get_claude_code_version() -> str:
-    """Detect lazily (only OAuth headers need it) and cache for the process."""
+    """Detect lazily and clamp the OAuth identity to Hermes compatibility floor."""
     global _claude_code_version_cache
     if _claude_code_version_cache is None:
-        _claude_code_version_cache = _detect_claude_code_version()
+        detected = _detect_claude_code_version()
+        try:
+            detected_parts = tuple(int(part) for part in detected.split("."))
+            floor_parts = tuple(int(part) for part in _CLAUDE_CODE_VERSION_FALLBACK.split("."))
+            _claude_code_version_cache = (
+                detected if detected_parts >= floor_parts else _CLAUDE_CODE_VERSION_FALLBACK
+            )
+        except ValueError:
+            _claude_code_version_cache = _CLAUDE_CODE_VERSION_FALLBACK
     return _claude_code_version_cache
 
 

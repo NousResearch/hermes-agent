@@ -2614,8 +2614,8 @@ def _relay_sync_completion(
             name=provider_name, model_name=model_name, metadata=metadata,
             defer_logical_completion=True,
         ),
-        aux_task=metadata["auxiliary_task"], metadata=metadata, client=client, kwargs=kwargs,
-        provider=provider_name, model=model_name, api_mode=metadata["api_mode"],
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
     )
 
 
@@ -2640,8 +2640,8 @@ async def _relay_async_completion(
             kwargs, callback, name=provider_name, model_name=model_name,
             metadata=metadata, defer_logical_completion=True,
         ),
-        aux_task=metadata["auxiliary_task"], metadata=metadata, client=client, kwargs=kwargs,
-        provider=provider_name, model=model_name, api_mode=metadata["api_mode"],
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""),
     )
 
 
@@ -2666,8 +2666,8 @@ def _relay_sync_stream(
             kwargs, create, name=provider_name, model_name=model_name, finalizer=dict,
             metadata=metadata, completed_response_predicate=lambda value: hasattr(value, "choices"),
         ),
-        aux_task=metadata["auxiliary_task"], metadata=metadata, client=client, kwargs=kwargs,
-        provider=provider_name, model=model_name, api_mode=metadata["api_mode"], streaming=True,
+        aux_task=str(metadata.get("auxiliary_task") or ""), metadata=metadata, client=client, kwargs=kwargs,
+        provider=provider_name, model=model_name, api_mode=str(metadata.get("api_mode") or ""), streaming=True,
     )
 
 

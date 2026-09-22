@@ -107,11 +107,15 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    "memory.hindsight": ("hindsight-client==0.6.1",),
+    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
+    # made _is_satisfied() reject every newer compatible release, so `hermes update` (and the hindsight
+    # plugin's own >=_MIN_CLIENT_VERSION auto-upgrade) kept downgrading a working 0.9.x client to 0.6.1
+    # and broke embedded daemons whose DB a newer client had migrated (#86992, #39424, #98407).
+    "memory.hindsight": ("hindsight-client>=0.6.1,<1",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai==2.0.10",),
+    "memory.mem0": ("mem0ai>=2.0.10,<3",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),

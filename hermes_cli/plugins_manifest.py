@@ -477,6 +477,10 @@ def parse_manifest_file(
             logger.warning("PyYAML not installed – cannot load %s", manifest_file)
             return None
         data = fast_safe_load(manifest_file.read_text(encoding="utf-8")) or {}
+        if not isinstance(data, Mapping):
+            logger.warning("Failed to parse %s: top level must be a mapping, got %s (#14066)",
+                           manifest_file, type(data).__name__)
+            return None
         name = data.get("name", plugin_dir.name)
         key = f"{prefix}/{plugin_dir.name}" if prefix else name
         kind = _manifest_kind(data, key, plugin_dir)
@@ -487,7 +491,9 @@ def parse_manifest_file(
             description=data.get("description", ""), author=_display_author(data.get("author", "")),
             requires_env=data.get("requires_env", []),
             provides_tools=data.get("provides_tools", []),
-            provides_hooks=data.get("provides_hooks", []), source=source, path=str(plugin_dir),
+            # ``hooks:`` is the spelling the bundled manifests carried for months; external copies of it
+            # must keep declaring the same thing (#108371).
+            provides_hooks=data.get("provides_hooks", data.get("hooks", [])), source=source, path=str(plugin_dir),
             kind=kind, key=key, requires_hermes=str(data.get("requires_hermes") or "").strip(),
             capabilities=_parse_declared_capabilities(data.get("capabilities"), name),
             **_parse_manifest_v2_fields(data, key), emits=data.get("emits") or [],

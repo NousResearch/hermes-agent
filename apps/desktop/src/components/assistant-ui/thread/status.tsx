@@ -242,8 +242,8 @@ export const CenteredThreadSpinner: FC = () => {
 
 export const ResponseLoadingIndicator: FC = () => {
   const { t } = useI18n()
-  const { compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
-  const elapsed = useElapsedSeconds(true, undefined, turnStartedAt)
+  const { busy, compacting, drafting, providerWait, turnStartedAt } = useThreadSessionStatus()
+  const elapsed = useElapsedSeconds(busy, undefined, turnStartedAt)
   const hint = useStatusHint(compacting, drafting, providerWait)
   // Renderer-synthesized load bar: covers loads the backend's wait loop
   // can't narrate (gateway still initializing, or an auxiliary call — not

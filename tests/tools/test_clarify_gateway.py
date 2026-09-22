@@ -73,6 +73,19 @@ class TestClarifyPrimitive:
         assert entry.awaiting_text is False
         assert cm.get_pending_for_session("sk3") is None
 
+    def test_public_mode_accessor_distinguishes_prompt_modes_and_missing_state(self):
+        """Adapters can select a safe native control without reading clarify internals."""
+        from tools import clarify_gateway as cm
+
+        cm.register("open", "sk", "Explain", None)
+        cm.register("single", "sk", "Pick one", ["A", "B"])
+        cm.register("multi", "sk", "Pick many", ["A", "B"], multi_select=True)
+
+        assert cm.get_clarify_mode("open") == "open_text"
+        assert cm.get_clarify_mode("single") == "single_select"
+        assert cm.get_clarify_mode("multi") == "multi_select"
+        assert cm.get_clarify_mode("missing") is None
+
     def test_include_choice_prompts_returns_multi_choice_entry(self):
         """Gateway typed replies must see active choice prompts too."""
         from tools import clarify_gateway as cm

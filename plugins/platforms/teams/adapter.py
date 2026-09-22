@@ -21,6 +21,7 @@ import re
 import sys
 from collections import deque
 from contextlib import contextmanager, suppress
+from dataclasses import dataclass
 from typing import Any, Dict, Iterator, Optional
 from urllib.parse import urlparse
 
@@ -49,7 +50,8 @@ TEAMS_SDK_AVAILABLE = _probe_teams_sdk_available()
 ClientOptions = App = ActivityContext = MessageActivity = ConversationReference = None  # type: ignore[assignment,misc]
 TypingActivityInput = AdaptiveCardInvokeActivity = AdaptiveCardActionCardResponse = None  # type: ignore[assignment,misc]
 AdaptiveCardActionMessageResponse = AdaptiveCardInvokeResponse = InvokeResponse = None  # type: ignore[assignment,misc]
-HttpRequest = HttpResponse = HttpRouteHandler = AdaptiveCard = ExecuteAction = TextBlock = None  # type: ignore[assignment,misc]
+HttpRequest = HttpResponse = HttpRouteHandler = AdaptiveCard = ExecuteAction = TextBlock = TextInput = None  # type: ignore[assignment,misc]
+Choice = ChoiceSetInput = None  # type: ignore[assignment,misc]
 HttpMethod = str  # type: ignore[assignment,misc]
 
 from gateway.config import Platform, PlatformConfig
@@ -66,6 +68,17 @@ from gateway.platforms._shared import (
 )
 
 logger = logging.getLogger(__name__)
+
+
+@dataclass
+class _TeamsClarifyState:
+    session_key: str
+    question: str
+    choices: list[str]
+    mode: str
+    chat_id: str
+    user_id: str
+    awaiting_text: bool = False
 
 _DEFAULT_PORT = 3978
 _MAX_BODY_BYTES = 1_048_576  # Bot Framework activities are JSON well under 1 MiB
@@ -254,7 +267,8 @@ _SDK_IMPORTS = {
     "microsoft_teams.api.models.adaptive_card": ("AdaptiveCardActionCardResponse", "AdaptiveCardActionMessageResponse"),
     "microsoft_teams.api.models.invoke_response": ("InvokeResponse", "AdaptiveCardInvokeResponse"),
     "microsoft_teams.apps.http.adapter": ("HttpMethod", "HttpRequest", "HttpResponse", "HttpRouteHandler"),
-    "microsoft_teams.cards": ("AdaptiveCard", "ExecuteAction", "TextBlock")}
+    "microsoft_teams.cards": (
+        "AdaptiveCard", "ExecuteAction", "TextBlock", "TextInput", "Choice", "ChoiceSetInput")}
 
 
 # NOTE: ``check_requirements`` is the
@@ -364,6 +378,11 @@ class TeamsAdapter(BasePlatformAdapter):
         self._require_mention: bool = self._parse_require_mention(config)
         # Outbound activity ids (bounded) so require_mention can exempt replies to our own messages.
         self._sent_ids: deque = deque(maxlen=500)
+        # Card callbacks trust only this server-owned state. Client payloads carry an opaque id and
+        # selection indexes; mode, conversation, responder, and text-capture transitions stay here.
+        self._clarify_state: Dict[str, _TeamsClarifyState] = {}
+        self._retired_clarify_ids: set[str] = set()
+        self._retired_clarify_order: deque[str] = deque()
 
     @staticmethod
     def _parse_require_mention(config) -> bool:
@@ -618,8 +637,10 @@ class TeamsAdapter(BasePlatformAdapter):
         return InvokeResponse(status=200, body=AdaptiveCardActionMessageResponse(value=text))
 
     @staticmethod
-    def _invoke_card(body: list) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
+    def _invoke_card(body: list, actions: Optional[list] = None) -> "InvokeResponse[AdaptiveCardActionMessageResponse]":
         card = AdaptiveCard().with_version("1.4").with_body(body)
+        if actions:
+            card = card.with_actions(actions)
         return InvokeResponse(status=200, body=AdaptiveCardActionCardResponse(value=card))
 
     async def _on_card_action(
@@ -629,12 +650,16 @@ class TeamsAdapter(BasePlatformAdapter):
 
         data = ctx.activity.value.action.data or {}
         hermes_action = data.get("hermes_action", "")
-        session_key = data.get("session_key", "")
-        if not hermes_action or not session_key:
+        if not hermes_action:
             return self._invoke_message("Unknown action.")
         denied = self._card_action_denied(ctx.activity.from_)
         if denied:
             return self._invoke_message(denied)
+        if hermes_action.startswith("clarify_"):
+            return await self._on_clarify_card_action(ctx.activity, hermes_action, data)
+        session_key = data.get("session_key", "")
+        if not session_key:
+            return self._invoke_message("Unknown action.")
         choice = _APPROVAL_CHOICES.get(hermes_action)
         if not choice:
             return self._invoke_message("Unknown action.")
@@ -644,6 +669,117 @@ class TeamsAdapter(BasePlatformAdapter):
         body = _approval_body(data.get("cmd", ""), data.get("desc", ""))
         body.append(TextBlock(text=_APPROVAL_LABELS[choice], wrap=True, weight="Bolder"))
         return self._invoke_card(body)
+
+    async def _on_clarify_card_action(self, activity: Any, hermes_action: str, data: dict):
+        from tools.clarify_gateway import mark_awaiting_text, resolve_gateway_clarify
+
+        clarify_id = str(data.get("clarify_id") or "")
+        state = self._clarify_state.get(clarify_id)
+        if state is None:
+            return self._invoke_card([TextBlock(text="⚠️ Question already resolved or expired.", wrap=True)])
+        conversation_id = str(getattr(getattr(activity, "conversation", None), "id", "") or "")
+        clicker = getattr(activity, "from_", None)
+        user_id = str(getattr(clicker, "aad_object_id", None) or getattr(clicker, "id", "") or "")
+        if conversation_id != state.chat_id or user_id != state.user_id:
+            logger.warning(
+                "[teams] clarify callback origin mismatch (conversation=%s, user=%s)",
+                conversation_id, user_id,
+            )
+            return self._invoke_message("⛔ This clarification belongs to another conversation or user.")
+        if hermes_action == "clarify_submit_choices":
+            if state.mode != "multi_select":
+                return self._invoke_message("Invalid clarification action.")
+            raw = data.get("hermes_clarify_choices")
+            tokens = raw if isinstance(raw, list) else str(raw or "").split(",")
+            selected = []
+            try:
+                for token in tokens:
+                    index = int(str(token).strip())
+                    if not 0 <= index < len(state.choices):
+                        raise IndexError(index)
+                    choice = state.choices[index]
+                    if choice not in selected:
+                        selected.append(choice)
+            except (TypeError, ValueError, IndexError):
+                return self._invoke_message("Invalid clarification choice.")
+            if not selected:
+                return self._invoke_message("Select at least one option before submitting.")
+            answer = json.dumps(selected, ensure_ascii=False)
+            resolved = resolve_gateway_clarify(clarify_id, answer)
+            self._clarify_state.pop(clarify_id, None)
+            if not resolved:
+                return self._invoke_card([TextBlock(text="⚠️ Question already resolved or expired.", wrap=True)])
+            return self._invoke_card([
+                TextBlock(text=f"❓ {state.question}", wrap=True),
+                TextBlock(text=f"✅ {', '.join(selected)}", wrap=True, weight="Bolder"),
+            ])
+        if hermes_action == "clarify_submit_choice":
+            if state.mode != "single_select":
+                return self._invoke_message("Invalid clarification action.")
+            try:
+                index = int(str(data.get("hermes_clarify_choice") or "").strip())
+                if not 0 <= index < len(state.choices):
+                    raise IndexError(index)
+                choice = state.choices[index]
+            except (TypeError, ValueError, IndexError):
+                return self._invoke_message("Invalid clarification choice.")
+            resolved = resolve_gateway_clarify(clarify_id, choice)
+            self._clarify_state.pop(clarify_id, None)
+            if not resolved:
+                return self._invoke_card([TextBlock(text="⚠️ Question already resolved or expired.", wrap=True)])
+            return self._invoke_card([
+                TextBlock(text=f"❓ {state.question}", wrap=True),
+                TextBlock(text=f"✅ {choice}", wrap=True, weight="Bolder"),
+            ])
+        if hermes_action in {"clarify_other", "clarify_submit_text"}:
+            if hermes_action == "clarify_other":
+                if state.mode not in {"single_select", "multi_select"}:
+                    return self._invoke_message("Invalid clarification action.")
+                if not mark_awaiting_text(clarify_id):
+                    self._clarify_state.pop(clarify_id, None)
+                    return self._invoke_card([TextBlock(text="⚠️ Question already resolved or expired.", wrap=True)])
+                state.awaiting_text = True
+                submit = ExecuteAction(
+                    title="Submit", verb="hermes_clarify",
+                    data={"hermes_action": "clarify_submit_text", "clarify_id": clarify_id})
+                return self._invoke_card([
+                    TextBlock(text=f"❓ {state.question}", wrap=True),
+                    TextInput(
+                        id="hermes_clarify_text", label="Your answer", placeholder="Type your answer",
+                        isRequired=True, errorMessage="Enter an answer.", isMultiline=True),
+                ], [submit])
+            if state.mode != "open_text" and not state.awaiting_text:
+                return self._invoke_message("Choose Other before submitting a custom answer.")
+            answer = str(data.get("hermes_clarify_text") or "").strip()
+            if not answer:
+                return self._invoke_message("Enter an answer before submitting.")
+            resolved = resolve_gateway_clarify(clarify_id, answer)
+            self._clarify_state.pop(clarify_id, None)
+            if not resolved:
+                return self._invoke_card([TextBlock(text="⚠️ Question already resolved or expired.", wrap=True)])
+            return self._invoke_card([
+                TextBlock(text=f"❓ {state.question}", wrap=True),
+                TextBlock(text=f"✅ {answer}", wrap=True, weight="Bolder"),
+            ])
+        if hermes_action == "clarify_choice":
+            if state.mode != "single_select":
+                return self._invoke_message("Invalid clarification action.")
+            try:
+                index = int(data.get("choice_index"))
+                if not 0 <= index < len(state.choices):
+                    raise IndexError(index)
+                choice = state.choices[index]
+            except (TypeError, ValueError, IndexError):
+                return self._invoke_message("Invalid clarification choice.")
+            resolved = resolve_gateway_clarify(clarify_id, choice)
+            self._clarify_state.pop(clarify_id, None)
+            if not resolved:
+                return self._invoke_card([TextBlock(text="⚠️ Question already resolved or expired.", wrap=True)])
+            return self._invoke_card([
+                TextBlock(text=f"❓ {state.question}", wrap=True),
+                TextBlock(text=f"✅ {choice}", wrap=True, weight="Bolder"),
+            ])
+        return self._invoke_message("Unknown action.")
 
     @staticmethod
     def _card_action_denied(from_account: Any) -> Optional[str]:
@@ -693,6 +829,106 @@ class TeamsAdapter(BasePlatformAdapter):
         except Exception as e:
             logger.error("[teams] send_exec_approval failed: %s", e, exc_info=True)
             return SendResult(success=False, error=str(e), retryable=True)
+
+    async def send_clarify(
+        self, chat_id: str, question: str, choices: Optional[list], clarify_id: str,
+        session_key: str, metadata: Optional[Dict[str, Any]] = None,
+    ) -> SendResult:
+        """Render a responder-bound Adaptive Card for an unresolved gateway clarification."""
+        if not self._app:
+            return SendResult(success=False, error="Teams app not initialized")
+        from tools.clarify_gateway import get_clarify_mode
+
+        mode = get_clarify_mode(clarify_id)
+        if mode is None:
+            return SendResult(success=False, error="Clarification is no longer pending")
+        canonical_choices = [str(choice) for choice in choices or []]
+        metadata = metadata or {}
+        origin_chat_id = str(metadata.get("_clarify_origin_chat_id") or "")
+        origin_user_id = str(metadata.get("_clarify_origin_user_id") or "")
+        if not origin_chat_id or not origin_user_id or origin_chat_id != str(chat_id):
+            return SendResult(success=False, error="Clarification origin metadata is unavailable")
+        if clarify_id in self._retired_clarify_ids:
+            return SendResult(success=False, error="Clarification is already retired")
+        data = {"clarify_id": clarify_id}
+        body = [TextBlock(text=f"❓ {question}", wrap=True)]
+        # Pinned microsoft-teams-apps 2.0.13.4 routes only ``adaptiveCard/action`` here;
+        # an Action.Submit fallback would never reach ``on_card_action``, so support starts at
+        # clients that implement Action.Execute rather than advertising a dead fallback.
+        if mode == "multi_select":
+            body.append(ChoiceSetInput(
+                id="hermes_clarify_choices", label="Select all that apply",
+                choices=[Choice(title=choice, value=str(idx)) for idx, choice in enumerate(canonical_choices)],
+                style="expanded", isMultiSelect=True, isRequired=True,
+                errorMessage="Select at least one option.", wrap=True))
+            actions = [
+                ExecuteAction(
+                    title="Submit", verb="hermes_clarify",
+                    data={**data, "hermes_action": "clarify_submit_choices"}),
+                ExecuteAction(
+                    title="✏️ Other…", verb="hermes_clarify",
+                    data={**data, "hermes_action": "clarify_other"}),
+            ]
+        elif mode == "single_select" and len(canonical_choices) > 4:
+            body.append(ChoiceSetInput(
+                id="hermes_clarify_choice", label="Select one",
+                choices=[Choice(title=choice, value=str(idx)) for idx, choice in enumerate(canonical_choices)],
+                style="compact", isMultiSelect=False, isRequired=True,
+                errorMessage="Select an option.", wrap=True))
+            actions = [
+                ExecuteAction(
+                    title="Submit", verb="hermes_clarify",
+                    data={**data, "hermes_action": "clarify_submit_choice"}),
+                ExecuteAction(
+                    title="✏️ Other…", verb="hermes_clarify",
+                    data={**data, "hermes_action": "clarify_other"}),
+            ]
+        elif mode == "single_select":
+            actions = [
+                ExecuteAction(
+                    title=_truncate(choice.strip() or f"Option {idx + 1}", 80),
+                    verb="hermes_clarify",
+                    data={**data, "hermes_action": "clarify_choice", "choice_index": idx},
+                )
+                for idx, choice in enumerate(canonical_choices)
+            ]
+            actions.append(ExecuteAction(
+                title="✏️ Other…", verb="hermes_clarify",
+                data={**data, "hermes_action": "clarify_other"}))
+        elif mode == "open_text":
+            body.append(TextInput(
+                id="hermes_clarify_text", label="Your answer", placeholder="Type your answer",
+                isRequired=True, errorMessage="Enter an answer.", isMultiline=True))
+            actions = [ExecuteAction(
+                title="Submit", verb="hermes_clarify",
+                data={**data, "hermes_action": "clarify_submit_text"})]
+        else:
+            return SendResult(success=False, error="Unsupported clarification mode")
+        card = AdaptiveCard().with_version("1.4").with_body(body).with_actions(actions)
+        state = _TeamsClarifyState(
+            session_key=str(session_key), question=str(question), choices=canonical_choices,
+            mode=mode, chat_id=origin_chat_id, user_id=origin_user_id,
+        )
+        self._clarify_state[clarify_id] = state
+        while len(self._clarify_state) > 500:
+            self._clarify_state.pop(next(iter(self._clarify_state)))
+        try:
+            result = await self._send_card(chat_id, card)
+            return SendResult(success=True, message_id=getattr(result, "id", None) if result else None)
+        except Exception as e:
+            if self._clarify_state.get(clarify_id) is state:
+                self._clarify_state.pop(clarify_id, None)
+            logger.error("[teams] send_clarify failed: %s", e, exc_info=True)
+            return SendResult(success=False, error=str(e), retryable=True)
+
+    async def retire_clarify_card(self, clarify_id: str, notice: str) -> None:
+        """Retire callback state deterministically, including while the card send is in flight."""
+        self._clarify_state.pop(clarify_id, None)
+        if clarify_id not in self._retired_clarify_ids:
+            self._retired_clarify_ids.add(clarify_id)
+            self._retired_clarify_order.append(clarify_id)
+            if len(self._retired_clarify_order) > 500:
+                self._retired_clarify_ids.discard(self._retired_clarify_order.popleft())
 
     async def send(
         self, chat_id: str, content: str, reply_to: Optional[str] = None, metadata: Optional[Dict[str, Any]] = None

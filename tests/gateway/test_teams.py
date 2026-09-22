@@ -112,18 +112,34 @@ def _ensure_teams_mock():
 
     # Cards mocks
     class MockAdaptiveCard:
+        def __init__(self):
+            self.version = None
+            self.body = []
+            self.actions = []
+
         def with_version(self, v):
+            self.version = v
             return self
 
         def with_body(self, body):
+            self.body = body
             return self
 
         def with_actions(self, actions):
+            self.actions = actions
             return self
 
+    class MockCardElement:
+        def __init__(self, **kwargs):
+            for key, value in kwargs.items():
+                setattr(self, key, value)
+
     microsoft_teams_cards.AdaptiveCard = MockAdaptiveCard
-    microsoft_teams_cards.ExecuteAction = MagicMock
-    microsoft_teams_cards.TextBlock = MagicMock
+    microsoft_teams_cards.ExecuteAction = MockCardElement
+    microsoft_teams_cards.TextBlock = MockCardElement
+    microsoft_teams_cards.TextInput = MockCardElement
+    microsoft_teams_cards.Choice = MockCardElement
+    microsoft_teams_cards.ChoiceSetInput = MockCardElement
 
     # HttpRequest TypedDict mock
     def HttpRequest(body=None, headers=None):
@@ -204,6 +220,497 @@ register = _teams_mod.register
 
 def _make_config(**extra):
     return PlatformConfig(enabled=True, extra=extra)
+
+
+def _clarify_card_state(session_key, question, choices, mode):
+    return _teams_mod._TeamsClarifyState(
+        session_key=session_key, question=question, choices=choices, mode=mode,
+        chat_id="19:channel@thread.v2", user_id="aad-user",
+    )
+
+
+# ---------------------------------------------------------------------------
+# Tests: Native clarify cards
+# ---------------------------------------------------------------------------
+
+class TestTeamsClarifyCards:
+    @pytest.mark.anyio
+    async def test_send_clarify_uses_native_choice_card(self):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="clarify-message"))
+
+        session_key = "agent:katalista-cmo:teams:channel"
+        clarify_gateway.register("clarify-123", session_key, "Which environment?", ["Staging", "Production"])
+        try:
+            result = await adapter.send_clarify(
+                chat_id="19:channel@thread.v2", question="Which environment?",
+                choices=["Staging", "Production"], clarify_id="clarify-123", session_key=session_key,
+                metadata={"_clarify_origin_chat_id": "19:channel@thread.v2",
+                          "_clarify_origin_user_id": "aad-user"},
+            )
+        finally:
+            clarify_gateway.clear_session(session_key)
+
+        assert result.success is True
+        assert result.message_id == "clarify-message"
+        adapter._send_card.assert_awaited_once()
+        card = adapter._send_card.await_args.args[1]
+        assert card.body[0].text == "❓ Which environment?"
+        assert [action.title for action in card.actions] == ["Staging", "Production", "✏️ Other…"]
+        assert [action.data["choice_index"] for action in card.actions[:2]] == [0, 1]
+        assert all(action.data["clarify_id"] == "clarify-123" for action in card.actions)
+        assert all("session_key" not in action.data for action in card.actions)
+        assert card.actions[-1].data["hermes_action"] == "clarify_other"
+
+    @pytest.mark.anyio
+    async def test_send_clarify_uses_native_text_input_for_open_ended_question(self):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="clarify-message"))
+
+        session_key = "agent:katalista-cmo:teams:channel"
+        clarify_gateway.register("clarify-open", session_key, "What should we change?", None)
+        try:
+            result = await adapter.send_clarify(
+                chat_id="19:channel@thread.v2", question="What should we change?", choices=None,
+                clarify_id="clarify-open", session_key=session_key,
+                metadata={"_clarify_origin_chat_id": "19:channel@thread.v2",
+                          "_clarify_origin_user_id": "aad-user"},
+            )
+        finally:
+            clarify_gateway.clear_session(session_key)
+
+        assert result.success is True
+        card = adapter._send_card.await_args.args[1]
+        assert any(getattr(item, "id", None) == "hermes_clarify_text" for item in card.body)
+        assert card.actions[0].data["hermes_action"] == "clarify_submit_text"
+        assert "clarify-open" in adapter._clarify_state
+
+    @pytest.mark.anyio
+    async def test_send_clarify_uses_native_multi_select_input(self):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="clarify-message"))
+        session_key = "agent:katalista-cmo:teams:channel"
+        clarify_gateway.register(
+            "clarify-multi", session_key, "Where should we launch?",
+            ["US", "EU", "APAC"], multi_select=True,
+        )
+        try:
+            result = await adapter.send_clarify(
+                chat_id="19:channel@thread.v2",
+                question="Where should we launch?",
+                choices=["US", "EU", "APAC"],
+                clarify_id="clarify-multi",
+                session_key=session_key,
+                metadata={"_clarify_origin_chat_id": "19:channel@thread.v2",
+                          "_clarify_origin_user_id": "aad-user"},
+            )
+
+            assert result.success is True
+            card = adapter._send_card.await_args.args[1]
+            picker = next(item for item in card.body if getattr(item, "id", None) == "hermes_clarify_choices")
+            assert picker.isMultiSelect is True
+            assert [choice.value for choice in picker.choices] == ["0", "1", "2"]
+            assert card.actions[0].data["hermes_action"] == "clarify_submit_choices"
+        finally:
+            clarify_gateway.clear_session(session_key)
+
+    @pytest.mark.anyio
+    async def test_choice_card_action_resolves_canonical_choice(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._clarify_state["clarify-123"] = _clarify_card_state(
+            "agent:katalista-cmo:teams:channel", "Which environment?",
+            ["Staging", "Production"], "single_select")
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        resolve = MagicMock(return_value=True)
+        monkeypatch.setattr("tools.clarify_gateway.resolve_gateway_clarify", resolve)
+        activity = SimpleNamespace(
+            from_=SimpleNamespace(aad_object_id="aad-user"),
+            conversation=SimpleNamespace(id="19:channel@thread.v2"),
+            value=SimpleNamespace(action=SimpleNamespace(data={
+                "hermes_action": "clarify_choice",
+                "clarify_id": "clarify-123",
+                "session_key": "agent:katalista-cmo:teams:channel",
+                "choice_index": 1,
+            })),
+        )
+
+        response = await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+        assert response.status == 200
+        resolve.assert_called_once_with("clarify-123", "Production")
+        assert "clarify-123" not in adapter._clarify_state
+
+    @pytest.mark.anyio
+    async def test_choice_card_action_rejects_negative_index(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        session_key = "agent:katalista-cmo:teams:channel"
+        adapter._clarify_state["clarify-123"] = _clarify_card_state(
+            session_key, "Which environment?", ["Staging", "Production"], "single_select")
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        resolve = MagicMock(return_value=True)
+        monkeypatch.setattr("tools.clarify_gateway.resolve_gateway_clarify", resolve)
+        activity = SimpleNamespace(
+            from_=SimpleNamespace(aad_object_id="aad-user"),
+            conversation=SimpleNamespace(id="19:channel@thread.v2"),
+            value=SimpleNamespace(action=SimpleNamespace(data={
+                "hermes_action": "clarify_choice",
+                "clarify_id": "clarify-123",
+                "session_key": session_key,
+                "choice_index": -1,
+            })),
+        )
+
+        await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+        resolve.assert_not_called()
+        assert "clarify-123" in adapter._clarify_state
+
+    @pytest.mark.anyio
+    async def test_multi_select_card_action_resolves_canonical_choices(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        session_key = "agent:katalista-cmo:teams:channel"
+        adapter._clarify_state["clarify-multi"] = _clarify_card_state(
+            session_key, "Where should we launch?", ["US", "EU", "APAC"], "multi_select")
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        resolve = MagicMock(return_value=True)
+        monkeypatch.setattr("tools.clarify_gateway.resolve_gateway_clarify", resolve)
+        activity = SimpleNamespace(
+            from_=SimpleNamespace(aad_object_id="aad-user"),
+            conversation=SimpleNamespace(id="19:channel@thread.v2"),
+            value=SimpleNamespace(action=SimpleNamespace(data={
+                "hermes_action": "clarify_submit_choices",
+                "clarify_id": "clarify-multi",
+                "session_key": session_key,
+                "hermes_clarify_choices": "0,2",
+            })),
+        )
+
+        await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+        resolve.assert_called_once_with("clarify-multi", json.dumps(["US", "APAC"], ensure_ascii=False))
+        assert "clarify-multi" not in adapter._clarify_state
+
+    @pytest.mark.anyio
+    async def test_retire_clarify_card_drops_stale_callback_state(self):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        adapter._clarify_state["clarify-stale"] = _clarify_card_state(
+            "session", "Question?", ["One", "Two"], "single_select")
+
+        await adapter.retire_clarify_card("clarify-stale", "expired")
+
+        assert "clarify-stale" not in adapter._clarify_state
+
+    @pytest.mark.anyio
+    async def test_other_uses_native_text_input_and_submit(self, monkeypatch):
+        adapter = TeamsAdapter(_make_config(
+            client_id="bot-id", client_secret="secret", tenant_id="tenant",
+        ))
+        session_key = "agent:katalista-cmo:teams:channel"
+        adapter._clarify_state["clarify-123"] = _clarify_card_state(
+            session_key, "Which environment?", ["Staging", "Production"], "single_select")
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        mark_awaiting_text = MagicMock(return_value=True)
+        resolve = MagicMock(return_value=True)
+        monkeypatch.setattr("tools.clarify_gateway.mark_awaiting_text", mark_awaiting_text)
+        monkeypatch.setattr("tools.clarify_gateway.resolve_gateway_clarify", resolve)
+
+        def activity(data):
+            return SimpleNamespace(
+                from_=SimpleNamespace(aad_object_id="aad-user"),
+                conversation=SimpleNamespace(id="19:channel@thread.v2"),
+                value=SimpleNamespace(action=SimpleNamespace(data=data)),
+            )
+
+        other = await adapter._on_card_action(SimpleNamespace(activity=activity({
+            "hermes_action": "clarify_other",
+            "clarify_id": "clarify-123",
+            "session_key": session_key,
+        })))
+
+        mark_awaiting_text.assert_called_once_with("clarify-123")
+        other_card = other.body.value
+        assert any(getattr(item, "id", None) == "hermes_clarify_text" for item in other_card.body)
+        assert other_card.actions[0].data["hermes_action"] == "clarify_submit_text"
+
+        await adapter._on_card_action(SimpleNamespace(activity=activity({
+            "hermes_action": "clarify_submit_text",
+            "clarify_id": "clarify-123",
+            "session_key": session_key,
+            "hermes_clarify_text": "Use canary first",
+        })))
+
+        resolve.assert_called_once_with("clarify-123", "Use canary first")
+        assert "clarify-123" not in adapter._clarify_state
+
+    @pytest.mark.anyio
+    async def test_choice_prompt_rejects_forged_text_submit_until_other(self, monkeypatch):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        clarify_gateway.register("locked", "server-session", "Pick", ["A", "B"])
+        try:
+            await adapter.send_clarify(
+                "conversation-a", "Pick", ["A", "B"], "locked", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            )
+            activity = SimpleNamespace(
+                from_=SimpleNamespace(aad_object_id="aad-owner"),
+                conversation=SimpleNamespace(id="conversation-a"),
+                value=SimpleNamespace(action=SimpleNamespace(data={
+                    "hermes_action": "clarify_submit_text", "clarify_id": "locked",
+                    "session_key": "forged-session", "hermes_clarify_text": "forged",
+                })),
+            )
+
+            await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+            assert clarify_gateway.get_pending_for_session(
+                "server-session", include_choice_prompts=True,
+            ).event.is_set() is False
+            assert "locked" in adapter._clarify_state
+        finally:
+            clarify_gateway.clear_session("server-session")
+
+    @pytest.mark.anyio
+    async def test_single_choice_action_cannot_answer_multi_select(self, monkeypatch):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        clarify_gateway.register("multi-locked", "server-session", "Pick", ["A", "B"], multi_select=True)
+        try:
+            await adapter.send_clarify(
+                "conversation-a", "Pick", ["A", "B"], "multi-locked", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            )
+            activity = SimpleNamespace(
+                from_=SimpleNamespace(aad_object_id="aad-owner"),
+                conversation=SimpleNamespace(id="conversation-a"),
+                value=SimpleNamespace(action=SimpleNamespace(data={
+                    "hermes_action": "clarify_choice", "clarify_id": "multi-locked", "choice_index": 0,
+                    "session_key": "server-session",
+                })),
+            )
+
+            await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+            assert clarify_gateway.get_pending_for_session(
+                "server-session", include_choice_prompts=True,
+            ).event.is_set() is False
+        finally:
+            clarify_gateway.clear_session("server-session")
+
+    @pytest.mark.anyio
+    @pytest.mark.parametrize(
+        ("conversation_id", "user_id"),
+        [("conversation-b", "aad-owner"), ("conversation-a", "aad-attacker")],
+    )
+    async def test_callback_is_bound_to_original_conversation_and_responder(
+        self, monkeypatch, conversation_id, user_id,
+    ):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        clarify_gateway.register("bound", "server-session", "Pick", ["A", "B"])
+        try:
+            await adapter.send_clarify(
+                "conversation-a", "Pick", ["A", "B"], "bound", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            )
+            activity = SimpleNamespace(
+                from_=SimpleNamespace(aad_object_id=user_id),
+                conversation=SimpleNamespace(id=conversation_id),
+                value=SimpleNamespace(action=SimpleNamespace(data={
+                    "hermes_action": "clarify_choice", "clarify_id": "bound", "choice_index": 0,
+                    "session_key": "server-session",
+                })),
+            )
+
+            await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+            assert clarify_gateway.get_pending_for_session(
+                "server-session", include_choice_prompts=True,
+            ).event.is_set() is False
+        finally:
+            clarify_gateway.clear_session("server-session")
+
+    @pytest.mark.anyio
+    async def test_large_single_select_uses_choice_set_instead_of_top_level_action_per_option(self):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+        choices = [f"Option {index}" for index in range(8)]
+        clarify_gateway.register("large", "server-session", "Pick", choices)
+        try:
+            result = await adapter.send_clarify(
+                "conversation-a", "Pick", choices, "large", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            )
+
+            assert result.success is True
+            card = adapter._send_card.await_args.args[1]
+            picker = next(item for item in card.body if getattr(item, "id", None) == "hermes_clarify_choice")
+            assert picker.isMultiSelect is False
+            assert len(card.actions) == 2
+            assert card.actions[0].data["hermes_action"] == "clarify_submit_choice"
+        finally:
+            clarify_gateway.clear_session("server-session")
+
+    @pytest.mark.anyio
+    async def test_missing_gateway_state_fails_closed_without_sending_card(self):
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+
+        result = await adapter.send_clarify(
+            "conversation-a", "Pick", ["A", "B"], "missing", "server-session",
+            {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+        )
+
+        assert result.success is False
+        adapter._send_card.assert_not_awaited()
+
+    @pytest.mark.anyio
+    async def test_large_single_select_submit_resolves_canonical_choice(self, monkeypatch):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        choices = [f"Option {index}" for index in range(8)]
+        entry = clarify_gateway.register("large-submit", "server-session", "Pick", choices)
+        try:
+            await adapter.send_clarify(
+                "conversation-a", "Pick", choices, "large-submit", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            )
+            activity = SimpleNamespace(
+                from_=SimpleNamespace(aad_object_id="aad-owner"),
+                conversation=SimpleNamespace(id="conversation-a"),
+                value=SimpleNamespace(action=SimpleNamespace(data={
+                    "hermes_action": "clarify_submit_choice", "clarify_id": "large-submit",
+                    "hermes_clarify_choice": "6",
+                })),
+            )
+
+            await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+            assert entry.response == "Option 6"
+        finally:
+            clarify_gateway.clear_session("server-session")
+
+    @pytest.mark.anyio
+    async def test_open_ended_text_submit_is_valid_without_other_transition(self, monkeypatch):
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+        monkeypatch.setattr(adapter, "_card_action_denied", lambda _account: None)
+        entry = clarify_gateway.register("open-submit", "server-session", "Explain", None)
+        try:
+            await adapter.send_clarify(
+                "conversation-a", "Explain", None, "open-submit", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            )
+            activity = SimpleNamespace(
+                from_=SimpleNamespace(aad_object_id="aad-owner"),
+                conversation=SimpleNamespace(id="conversation-a"),
+                value=SimpleNamespace(action=SimpleNamespace(data={
+                    "hermes_action": "clarify_submit_text", "clarify_id": "open-submit",
+                    "hermes_clarify_text": "Use the canary rollout",
+                })),
+            )
+
+            await adapter._on_card_action(SimpleNamespace(activity=activity))
+
+            assert entry.response == "Use the canary rollout"
+        finally:
+            clarify_gateway.clear_session("server-session")
+
+    @pytest.mark.anyio
+    async def test_retire_while_send_is_in_flight_never_rearms_callback_state(self):
+        import asyncio
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def blocked_send(*_args):
+            entered.set()
+            await release.wait()
+            return SimpleNamespace(id="card")
+
+        adapter._send_card = blocked_send
+        clarify_gateway.register("racing", "server-session", "Pick", ["A", "B"])
+        try:
+            send = asyncio.create_task(adapter.send_clarify(
+                "conversation-a", "Pick", ["A", "B"], "racing", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            ))
+            await entered.wait()
+            await adapter.retire_clarify_card("racing", "expired")
+            release.set()
+
+            assert (await send).success is True
+            assert "racing" not in adapter._clarify_state
+        finally:
+            clarify_gateway.clear_session("server-session")
+
+    @pytest.mark.anyio
+    async def test_pinned_sdk_minimum_uses_execute_without_dead_submit_fallback(self):
+        """microsoft-teams-apps 2.0.13.4 routes adaptiveCard/action only, not Action.Submit."""
+        from tools import clarify_gateway
+
+        adapter = TeamsAdapter(_make_config(client_id="bot-id", client_secret="secret", tenant_id="tenant"))
+        adapter._app = MagicMock()
+        adapter._send_card = AsyncMock(return_value=SimpleNamespace(id="card"))
+        clarify_gateway.register("minimum", "server-session", "Pick", ["A", "B"])
+        try:
+            await adapter.send_clarify(
+                "conversation-a", "Pick", ["A", "B"], "minimum", "server-session",
+                {"_clarify_origin_chat_id": "conversation-a", "_clarify_origin_user_id": "aad-owner"},
+            )
+            card = adapter._send_card.await_args.args[1]
+            assert all(getattr(action, "fallback", None) is None for action in card.actions)
+        finally:
+            clarify_gateway.clear_session("server-session")
 
 
 # ---------------------------------------------------------------------------

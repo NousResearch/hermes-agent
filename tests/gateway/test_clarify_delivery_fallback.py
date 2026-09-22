@@ -27,6 +27,7 @@ class _CardAdapter(BasePlatformAdapter):
         self.card = card
         self.sent_text: list[str] = []
         self.cards = 0
+        self.clarify_kwargs = None
 
     def pause_typing_for_chat(self, chat_id):
         return None
@@ -36,6 +37,7 @@ class _CardAdapter(BasePlatformAdapter):
 
     async def send_clarify(self, **kwargs):
         self.cards += 1
+        self.clarify_kwargs = kwargs
         return await self.card()
 
     async def send(self, chat_id, content, reply_to=None, metadata=None):
@@ -71,7 +73,8 @@ def _runner(adapter, loop, monkeypatch, timeout=5):
     runner = object.__new__(TurnRunner)
     runner._ctx = SimpleNamespace(
         _status_adapter=adapter, _status_chat_id="42", _status_thread_metadata=None,
-        session_key="sk-fallback", stream_consumer_holder=[None], _loop_for_step=loop)
+        session_key="sk-fallback", stream_consumer_holder=[None], _loop_for_step=loop,
+        source=SimpleNamespace(chat_id="42", user_id="aad-original"))
     runner._close_native_stream_boundary = lambda *a, **k: None
     monkeypatch.setattr(cm, "get_clarify_timeout", lambda: timeout)
     return runner
@@ -104,6 +107,21 @@ def test_rejected_card_is_reasked_as_plain_text_and_the_typed_answer_counts(loop
     assert response == "beta"  # the numbered text prompt maps "2" back to the choice
     assert adapter.cards == 1
     assert len(adapter.sent_text) == 1 and "1. alpha" in adapter.sent_text[0]
+
+
+def test_native_clarify_receives_server_owned_origin_metadata(loop, monkeypatch):
+    async def sent():
+        cm.resolve_text_response_for_session("sk-fallback", "2")
+        return SendResult(success=True, message_id="card")
+
+    adapter = _CardAdapter(sent)
+    response = _runner(adapter, loop, monkeypatch)._clarify_callback_sync("Pick?", ["alpha", "beta"])
+
+    assert response == "beta"
+    assert adapter.clarify_kwargs["metadata"] == {
+        "_clarify_origin_chat_id": "42",
+        "_clarify_origin_user_id": "aad-original",
+    }
 
 
 def test_declined_card_is_never_reasked_as_text(loop, monkeypatch):

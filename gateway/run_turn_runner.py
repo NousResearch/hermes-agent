@@ -1390,9 +1390,14 @@ class TurnRunner:
         session_key = ctx.session_key or ""
         clarify_id = uuid.uuid4().hex[:10]
         choices = list(choices) if choices else None
+        clarify_metadata = dict(ctx._status_thread_metadata or {})
+        clarify_metadata.update({
+            "_clarify_origin_chat_id": str(ctx.source.chat_id),
+            "_clarify_origin_user_id": str(ctx.source.user_id),
+        })
         send_kwargs = dict(
             chat_id=ctx._status_chat_id, question=question, choices=choices, clarify_id=clarify_id,
-            session_key=session_key, metadata=ctx._status_thread_metadata,
+            session_key=session_key, metadata=clarify_metadata,
         )
 
         def _text_fallback():

@@ -193,6 +193,47 @@ class TestMemoryStoreReplace:
         assert "Python 3.12 project" in store.memory_entries
         assert "Python 3.11 project" not in store.memory_entries
 
+    def test_replace_whole_entry_contract(self, store):
+        """Regression for #117952 / #59184: replace commits content as the COMPLETE
+        new entry (old_text only locates it), and the response surfaces the full text
+        that was overwritten so a whole-entry write is never silent."""
+        entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
+        store.add("memory", entry)
+        result = store.replace("memory", "RULE B: ci per HEAD.", "RULE B: CI is per-head.")
+        assert result["success"] is True
+        assert store.memory_entries == ["RULE B: CI is per-head."]
+        assert result["replaced_entry"] == entry
+        # Batch surface carries the same visibility: 1-based op position -> full overwritten text.
+        store.add("memory", "second entry")
+        batch_result = store.apply_batch("memory", [{"action": "replace", "old_text": "second entry",
+                                                     "content": "second entry, amended."}])
+        assert batch_result["success"] is True
+        assert batch_result["replaced_entries"] == {1: "second entry"}
+
+    def test_replace_same_across_single_batch_and_approval_replay(self, tmp_path, monkeypatch):
+        """The three dispatch surfaces (store.replace, apply_batch, apply_memory_pending
+        write-approval replay) must agree on the final entry for the same op (#117952).
+        Each surface gets its OWN store dir — the surfaces share nothing but the op."""
+        from tools.memory_tool import apply_memory_pending
+        entry = "alpha fact. beta fact. gamma fact."
+        op = {"action": "replace", "old_text": "beta fact.", "content": "beta fact, updated."}
+        results = {}
+
+        for surface, run in (
+                ("single", lambda s: s.replace("memory", op["old_text"], op["content"])),
+                ("batch", lambda s: s.apply_batch("memory", [op])),
+                ("replay", lambda s: apply_memory_pending({"action": "batch", "target": "memory",
+                                                           "operations": [op]}, s))):
+            store_dir = tmp_path / surface
+            store_dir.mkdir()
+            monkeypatch.setattr("tools.memory_tool.get_memory_dir", lambda d=store_dir: d)
+            store = MemoryStore(memory_char_limit=500)
+            store.add("memory", entry)
+            assert run(store)["success"] is True
+            results[surface] = store.memory_entries[0]
+
+        assert results["single"] == results["batch"] == results["replay"] == "beta fact, updated."
+
 
     def test_replace_ambiguous_match(self, store):
         store.add("memory", "server A runs nginx")
@@ -223,6 +264,28 @@ class TestMemoryStoreRemove:
         assert result["current_entries"] == ["fact A"]
 
         assert store.remove("memory", "  ")["success"] is False
+
+
+class TestExactWholeEntryMatchPriority:
+    """A short entry whose full text is contained inside a longer sibling entry
+    must stay addressable: old_text that equals an entry wins outright, and
+    substring matches only apply when no entry equals old_text. Without this,
+    remove('test') against entries ['test', '...tests pass...'] reported
+    ambiguity and the entry could never be addressed."""
+
+    def test_remove_exact_entry_beats_substring_collision(self, store):
+        store.add("memory", "test")
+        store.add("memory", "echo-reply tests pass via local twins and are false positives")
+        result = store.remove("memory", "test")
+        assert result["success"] is True
+        assert store.memory_entries == ["echo-reply tests pass via local twins and are false positives"]
+
+    def test_batch_remove_exact_entry_beats_substring_collision(self, store):
+        store.add("memory", "test")
+        store.add("memory", "echo-reply tests pass via local twins and are false positives")
+        result = store.apply_batch("memory", [{"action": "remove", "old_text": "test"}])
+        assert result["success"] is True
+        assert store.memory_entries == ["echo-reply tests pass via local twins and are false positives"]
 
 
 class TestMemoryConsolidationGracefulDegrade:

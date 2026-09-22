@@ -34,9 +34,9 @@ describe('resolveDeepLinkAction', () => {
     ).toEqual({ type: 'plugin-catalog-install', name: 'nope' })
 
     // An empty catalog name is still a catalog request (→ error toast), not a fall-through.
-    expect(resolveDeepLinkAction({ kind: 'plugin', name: 'install', params: { catalog: '', repo: 'evil/repo' } })).toEqual(
-      { type: 'plugin-catalog-install', name: '' }
-    )
+    expect(
+      resolveDeepLinkAction({ kind: 'plugin', name: 'install', params: { catalog: '', repo: 'evil/repo' } })
+    ).toEqual({ type: 'plugin-catalog-install', name: '' })
   })
 
   it('routes legacy plugin-agent alias', () => {

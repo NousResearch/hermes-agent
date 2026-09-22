@@ -380,6 +380,17 @@ describe('per-turn socket lease', () => {
     expect(reply).toBe('routed reply')
     // The retain landed before the first session-scoped RPC on the route.
     expect(room.gateway.timeline[0]).toBe('retain')
+    expect(room.gateway.retains).toEqual([{ spawnPriority: 'foreground' }])
+
+    const resumes = room.gateway.rpcFor('session.resume')
+
+    expect(resumes.length).toBeGreaterThan(0)
+
+    for (const resume of resumes) {
+      expect(resume).toMatchObject({ spawnPriority: 'foreground', timeoutMs: 180_000 })
+    }
+
+    expect(room.gateway.rpcFor('session.create')).toEqual([expect.objectContaining({ spawnPriority: 'foreground' })])
 
     // The socket was NEVER disposed mid-turn: after every per-request lease
     // released, the turn lease still held the refcount above zero.

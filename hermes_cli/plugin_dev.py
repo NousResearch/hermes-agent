@@ -126,7 +126,7 @@ def _load_model_provider(copied: Path, manifest):
 
     # The live install may already have imported this very plugin (same directory name) during
     # startup discovery; import the copy fresh and put the live module/profiles back afterwards.
-    module_name = f"_hermes_user_provider_{copied.name.replace('-', '_')}"
+    module_name = providers._user_module_name(copied, "")
     prior_module = sys.modules.pop(module_name, None)
     before = dict(providers._REGISTRY)
     before_aliases = dict(providers._ALIASES)

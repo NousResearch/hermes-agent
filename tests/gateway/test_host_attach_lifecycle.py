@@ -137,14 +137,32 @@ def test_run_for_an_unserved_profile_rescans_then_attaches(tmp_path, monkeypatch
 
 
 def test_host_gateway_refuses_when_it_will_not_serve_the_profile(tmp_path, monkeypatch, owner_pid):
+    """A MULTIPLEXING owner whose roster still excludes us after a rescan is the permanent refusal."""
     owner_home = tmp_path / "root"
     _publish(owner_pid, owner_home, ("default",))
     _answer_identify(monkeypatch, owner_pid, owner_home, ["default"])
     monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: owner_home / "profiles" / "other")
     monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
-                        lambda home, timeout=8.0: {"multiplex": False})
+                        lambda home, timeout=8.0: {"multiplex": True, "served_profiles": ["default"]})
 
     assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is False
+
+
+def test_a_standalone_owner_is_the_per_profile_topology_not_a_refusal(tmp_path, monkeypatch, owner_pid, caplog):
+    """The owner answers ``multiplex: False``: it is a per-profile gateway, not a multiplexer that
+    excluded us. Refusing here (exit 78 → launchd parks the unit) took every other profile's
+    supervised gateway down at boot on a one-process-per-profile fleet. Start as before."""
+    owner_home = tmp_path / "root" / "profiles" / "tank"
+    _publish(owner_pid, owner_home, ("tank",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["tank"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: tmp_path / "root" / "profiles" / "nous")
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["tank"]})
+
+    with caplog.at_level("WARNING", logger="gateway.host_attach"):
+        assert host_attach.decide(tmp_path / "root" / "profiles" / "nous").outcome == host_attach.START
+    assert any("migrate --multiplex" in r.getMessage() for r in caplog.records), "the converge hint is logged"
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None
 
 
 def test_replace_signals_the_owner_instead_of_standing_down(tmp_path, monkeypatch, owner_pid):
@@ -191,8 +209,12 @@ def test_the_claim_time_record_publishes_no_served_set(tmp_path, monkeypatch):
         hr.clear_record(hr.ROLE_GATEWAY)
 
 
-def test_served_profiles_honours_a_multiplex_off_setting(monkeypatch):
-    """``served_profiles()`` forced ``multiplex=True`` and claimed profiles it would never serve."""
+def test_served_profiles_ignores_the_retired_opt_out_but_honours_an_explicit_argument(monkeypatch):
+    """``served_profiles()`` forced ``multiplex=True`` and claimed profiles it would never serve,
+    so it learned to read ``gateway.multiplex_profiles``. That key is now RETIRED as a topology
+    opt-out: reading it here was the last place an explicit ``false`` still narrowed the record,
+    which is why the CLI reported "standalone, serving default" while the runtime multiplexed.
+    The caller's explicit argument — the RUNTIME verdict — still decides."""
     asked: list[bool] = []
 
     def _roster(*, multiplex):
@@ -201,13 +223,12 @@ def test_served_profiles_honours_a_multiplex_off_setting(monkeypatch):
                 else [("default", Path("/x"))])
 
     monkeypatch.setattr("hermes_cli.profiles.profiles_to_serve", _roster)
-    # The operator's explicit `gateway.multiplex_profiles: false` — stubbed at the reader every
-    # tree has, so a tree that ignores the setting fails on the OUTCOME below.
     monkeypatch.setattr(
         "hermes_cli.gateway_multiplex_mode.explicit_multiplex_flag", lambda home: False)
 
-    assert hr.served_profiles() == ("default",)
-    assert asked == [False]
+    assert hr.served_profiles() == ("default", "other")
+    assert hr.served_profiles(multiplex=False) == ("default",)
+    assert asked == [True, False]
 
 
 @pytest.mark.skipif(sys.platform == "win32",
@@ -220,3 +241,21 @@ def test_a_foreign_record_is_not_a_record(tmp_path, monkeypatch, owner_pid):
 
     assert hr.read_record(hr.ROLE_GATEWAY) is None
     assert host_attach.host_gateway() is None
+
+
+def test_the_default_profile_arriving_second_starts_beside_a_standalone_named_owner(tmp_path, monkeypatch, owner_pid):
+    """The field shape of #118282: after a fleet restart a NAMED standalone unit claimed the host first and
+    the DEFAULT gateway arrived second. Refusing it exited 78 and its system unit crash-looped; the default
+    profile is a peer in a per-profile fleet, not a latecomer to a multiplexer."""
+    root = tmp_path / "root"
+    owner_home = root / "profiles" / "agent-ops"
+    _publish(owner_pid, owner_home, ("agent-ops",))
+    _answer_identify(monkeypatch, owner_pid, owner_home, ["agent-ops"])
+    monkeypatch.setattr(gateway_run, "get_hermes_home", lambda: root)
+    monkeypatch.setattr("gateway.control_socket.rescan_gateway_profiles",
+                        lambda home, timeout=8.0: {"multiplex": False, "served_profiles": ["agent-ops"]})
+
+    decision = host_attach.decide(root)
+    assert host_attach.profile_name_for_home(root) == "default"
+    assert decision.outcome == host_attach.START
+    assert asyncio.run(gateway_run._host_attach_or_none(replace=False)) is None

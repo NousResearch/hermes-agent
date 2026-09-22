@@ -79,11 +79,13 @@ it('keeps background continuations in one response with one action bar and the o
     expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
 
     unmount()
+
     const reloaded = render(
       <ThreadRuntime messages={messages}>
         <Thread />
       </ThreadRuntime>
     )
+
     expect(reloaded.container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
     reloaded.unmount()
   }
@@ -104,6 +106,7 @@ it('ends the response at a real user prompt or unrelated system event', () => {
       <Thread />
     </ThreadRuntime>
   )
+
   expect(container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(2)
   expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(3)
 })

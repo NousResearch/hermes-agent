@@ -245,10 +245,12 @@ test.skipIf(process.platform !== 'darwin')(
       const script = resolve(import.meta.dirname, '../scripts/build-command-screenshot-monitor.mjs')
       execFileSync(process.execPath, [script, '--out-dir', resolve(dir, 'dist')], { timeout: 60_000 })
       const binary = resolveCommandScreenshotMonitorPath(dir)
+
       const architectures = execFileSync('xcrun', ['lipo', '-archs', binary], { encoding: 'utf8' })
         .trim()
         .split(/\s+/)
         .sort()
+
       assert.deepEqual(architectures, ['arm64', 'x86_64'])
       const result = spawnSync(binary, ['--check'], { encoding: 'utf8', timeout: 5_000 })
       assert.equal(result.error, undefined)
@@ -281,6 +283,7 @@ test.skipIf(process.platform !== 'darwin')(
           monitor.stop()
           reject(new Error('real monitor did not settle'))
         }, 10_000)
+
         monitor.start(
           () => {},
           status => {

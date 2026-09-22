@@ -107,7 +107,7 @@ describe('CustomEndpointsSettings', () => {
 
     expect(validateCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({ api_mode: 'codex_responses' }),
-      undefined
+      'default'
     )
     expect(notify).toHaveBeenCalledWith({
       kind: 'success',
@@ -122,7 +122,7 @@ describe('CustomEndpointsSettings', () => {
         ]),
         models: ['gpt-5.6-sol', 'gpt-5.6-sol-high']
       }),
-      undefined
+      'default'
     )
   })
 

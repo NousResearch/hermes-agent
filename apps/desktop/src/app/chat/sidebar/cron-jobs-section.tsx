@@ -246,11 +246,31 @@ function CronJobSidebarRow({
 
   const overdue = nextRunOverdueMs(job, nowMs) !== null
 
+  // Running indicator: driven purely by the backend's authoritative in-flight
+  // flag AND start timestamp (cron/jobs.py `_stamp_running_job_ids`, sourced
+  // from the durable executions ledger, cross-process). The cron.changed
+  // watcher fires on run-start/finish (jobs.json mtime OR running-set change),
+  // so both the dot and the "X ago" counter refresh live — no client timestamp
+  // heuristic. `active_run_started_at` is the authoritative start the reviewer
+  // asked for; when it's set, show the live elapsed counter; when the run
+  // reaches a terminal state the backend clears it and the dot + counter flip
+  // back to "in X hr." for the next run.
+  const runningStart = job.active_run_started_at
+    ? Date.parse(job.active_run_started_at)
+    : null
+
+  const displayState = job.is_running === true ? 'running' : state
+
+  // In flight wins over overdue: a running job is by definition not waiting on
+  // its next scheduled run, so show the live elapsed counter; otherwise keep
+  // upstream's overdue-aware "next run" label.
   const meta = INACTIVE_STATES.has(state)
     ? (c.states[state] ?? state)
-    : next !== null
-      ? `${overdue ? `${c.overdueSince.replace(/:$/, '')} ` : ''}${relativeTime(next, nowMs)}`
-      : '—'
+    : job.is_running === true && runningStart !== null
+      ? relativeTime(runningStart, nowMs)
+      : next !== null
+        ? `${overdue ? `${c.overdueSince.replace(/:$/, '')} ` : ''}${relativeTime(next, nowMs)}`
+        : '—'
 
   // Pause/resume and delete aren't threaded through the sidebar's prop chain, so
   // drive them against the shared $cronJobs atom directly (same path the cron
@@ -362,14 +382,17 @@ function CronJobSidebarRow({
               onClick={onTogglePeek}
             >
               <SidebarRowLead>
-                <span
-                  aria-hidden="true"
-                  className={cn(
-                    'size-1 rounded-full',
-                    STATE_DOT[state] ?? 'bg-(--ui-text-quaternary)',
-                    state === 'running' && 'size-1.5 animate-pulse'
-                  )}
-                />
+                {displayState === 'running' ? (
+                  <span
+                    aria-hidden="true"
+                    className="relative size-1.5 rounded-full bg-(--ui-accent) shadow-[0_0_0.625rem_color-mix(in_srgb,var(--ui-accent)_55%,transparent)] before:absolute before:inset-0 before:animate-ping before:rounded-full before:bg-(--ui-accent) before:opacity-70 before:content-['']"
+                  />
+                ) : (
+                  <span
+                    aria-hidden="true"
+                    className={cn('size-1 rounded-full', STATE_DOT[displayState] ?? 'bg-(--ui-text-quaternary)')}
+                  />
+                )}
               </SidebarRowLead>
               <SidebarRowLabel className="group-hover/cron:text-foreground">{label}</SidebarRowLabel>
               <DisclosureCaret

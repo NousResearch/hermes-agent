@@ -69,17 +69,11 @@ describe('timeline metadata index', () => {
   it('names the mark before an anchor, paging a partial index only as far as one lookup may', async () => {
     api
       .mockResolvedValueOnce({
-        entries: [
-          { row_id: 10, preview: 'Prompt 10' },
-          { row_id: 20, preview: 'Prompt 20' }
-        ],
+        entries: [{ row_id: 10, preview: 'Prompt 10' }, { row_id: 20, preview: 'Prompt 20' }],
         pagination: { next_cursor: 20, has_more: true }
       })
       .mockResolvedValueOnce({
-        entries: [
-          { row_id: 30, preview: 'Prompt 30' },
-          { row_id: 40, preview: 'Prompt 40' }
-        ],
+        entries: [{ row_id: 30, preview: 'Prompt 30' }, { row_id: 40, preview: 'Prompt 40' }],
         pagination: { next_cursor: null, has_more: false }
       })
       .mockResolvedValue(page(1, true))

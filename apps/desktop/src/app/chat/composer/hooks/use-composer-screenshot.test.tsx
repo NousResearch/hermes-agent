@@ -17,41 +17,27 @@ const onAttach = vi.fn(async (_blob: Blob, isCurrent?: () => boolean) => isCurre
 
 function mount(target: string, surfaceId: string, key = 'draft-a') {
   const scope = { ...MAIN_COMPOSER_SCOPE, target, attachments: createComposerAttachmentScope() }
-
   const Wrapper = ({ children }: PropsWithChildren) => (
     <I18nProvider configClient={null}>
       <ComposerScopeProvider value={scope}>
         <ComposerSurfaceProvider value={surfaceId}>
-          <div data-composer-surface-id={surfaceId} data-composer-target={target}>
-            {children}
-          </div>
+          <div data-composer-surface-id={surfaceId} data-composer-target={target}>{children}</div>
         </ComposerSurfaceProvider>
       </ComposerScopeProvider>
     </I18nProvider>
   )
 
   return renderHook(({ sessionKey }) => useComposerScreenshot({ sessionKey, onAttachImageBlob: onAttach }), {
-    initialProps: { sessionKey: key },
-    wrapper: Wrapper
+    initialProps: { sessionKey: key }, wrapper: Wrapper
   })
 }
 
 function bridge() {
-  window.hermesDesktop = {
-    ...window.hermesDesktop,
-    screenshot: {
-      getSettings: vi.fn(),
-      setEnabled: vi.fn(),
-      openPermissionSettings: vi.fn(),
-      onStatus: () => () => undefined,
-      capture,
-      onRequest: callback => {
-        listeners.add(callback)
-
-        return () => listeners.delete(callback)
-      }
-    } as ScreenshotApi
-  }
+  window.hermesDesktop = { ...window.hermesDesktop, screenshot: {
+    getSettings: vi.fn(), setEnabled: vi.fn(), openPermissionSettings: vi.fn(), onStatus: () => () => undefined,
+    capture,
+    onRequest: callback => { listeners.add(callback); return () => listeners.delete(callback) }
+  } as ScreenshotApi }
 }
 
 afterEach(() => {
@@ -79,12 +65,7 @@ describe('screenshot composer routing', () => {
   it('rejects a late screenshot after a draft round trip and invalidates the image-write continuation', async () => {
     bridge()
     let finish!: (value: Awaited<ReturnType<ScreenshotApi['capture']>>) => void
-    capture.mockImplementation(
-      () =>
-        new Promise(resolve => {
-          finish = resolve
-        })
-    )
+    capture.mockImplementation(() => new Promise(resolve => { finish = resolve }))
     const hook = mount('main', 'primary')
     act(() => listeners.forEach(listener => listener('first')))
     hook.rerender({ sessionKey: 'draft-b' })
@@ -94,11 +75,7 @@ describe('screenshot composer routing', () => {
 
     capture.mockResolvedValue({ ok: true, png: new Uint8Array([1]) })
     let isCurrent!: () => boolean
-    onAttach.mockImplementation(async (_blob, guard) => {
-      isCurrent = guard!
-
-      return true
-    })
+    onAttach.mockImplementation(async (_blob, guard) => { isCurrent = guard!; return true })
     act(() => listeners.forEach(listener => listener('second')))
     await waitFor(() => expect(onAttach).toHaveBeenCalledOnce())
     expect(isCurrent()).toBe(true)

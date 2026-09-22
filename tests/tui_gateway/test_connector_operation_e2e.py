@@ -148,27 +148,17 @@ def owned_session(monkeypatch, tmp_path):
 
 
 def _rpc(client, method, **params):
-    with client._frames_lock:
-        before = len(client.frames)
     response = server.dispatch(
         {
             "jsonrpc": "2.0",
             "id": 7,
             "method": method,
-            "params": {"owner": {"type": "session", "session_id": SID}, **params},
+            "params": {"session_id": SID, **params},
         },
         client.transport,
     )
-    if response is not None:
-        return response
-    deadline = time.monotonic() + 5
-    while time.monotonic() < deadline:
-        with client._frames_lock:
-            replies = [frame for frame in client.frames[before:] if frame.get("id") == 7]
-        if replies:
-            return replies[-1]
-        time.sleep(0.01)
-    raise AssertionError("no reply")
+    assert response is not None
+    return response
 
 
 def test_desktop_connect_settles_through_callback_response(owned_session, monkeypatch):

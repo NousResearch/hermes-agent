@@ -90,18 +90,6 @@ def _doctor_runtime(plugin_path: Path):
             manifest=manifest, manager=manager, registered_tools=tuple(sorted(loaded.tools_registered)),
             registered_hooks=tuple(loaded.hooks_registered), registered_providers=())
     finally:
-        # Dispose the plugin's own registrations FIRST, while the temporary
-        # HERMES_HOME still exists. This runs the host-owned ctx.on_unload(...)
-        # callbacks — e.g. closing a SQLite handle a context-engine plugin
-        # opened under that home. Without it the DB stays open and stack.close()
-        # below (TemporaryDirectory removal) fails with WinError 32 on Windows
-        # (#99918). Best-effort: the snapshot restore below remains the
-        # authoritative registry cleanup, so an unload hiccup never masks it or
-        # the original exception.
-        try:
-            manager.unload()
-        except Exception:
-            pass
         entries_after = {entry.name: entry for entry in registry._snapshot_entries()}
         changed_names = {
             name
@@ -138,7 +126,7 @@ def _load_model_provider(copied: Path, manifest):
 
     # The live install may already have imported this very plugin (same directory name) during
     # startup discovery; import the copy fresh and put the live module/profiles back afterwards.
-    module_name = providers._user_module_name(copied, "")
+    module_name = f"_hermes_user_provider_{copied.name.replace('-', '_')}"
     prior_module = sys.modules.pop(module_name, None)
     before = dict(providers._REGISTRY)
     before_aliases = dict(providers._ALIASES)

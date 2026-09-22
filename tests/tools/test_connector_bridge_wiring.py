@@ -11,8 +11,7 @@ import logging
 import pytest
 
 from agent.tool_dispatch_helpers import _peel_bridge_call
-from tools.connectors.gateway.bridge import ConnectorLeg, connector_describe
-from tools.connectors.gateway.errors import GatewayAuthError
+from tools.connectors.gateway.bridge import connector_describe
 from tools.tool_search import (
     CONNECTOR_BATCH_SENTINEL,
     ToolSearchConfig,
@@ -162,7 +161,7 @@ def test_normalize_rejects_malformed_batches(bad, expected_fragment):
 
 def _fake_connector_search(queries):
     assert queries == [{"use_case": "send an email"}]
-    return ConnectorLeg(payload={
+    return {
         "results": [
             {"index": 1, "use_case": "send an email", "tools": ["GMAIL_SEND_EMAIL", "ORPHAN_TOOL"]},
         ],
@@ -177,7 +176,7 @@ def _fake_connector_search(queries):
             # connector it cannot compose a callable name and must be dropped.
         },
         "connections": [{"connector": "gmail", "connected": False, "description": ""}],
-    })
+    }
 
 
 def _registered_local_defs():
@@ -210,12 +209,12 @@ def test_connector_intent_is_not_starved_by_local_tools_sharing_one_word():
         out = json.loads(dispatch_tool_search(
             {"queries": ["send gmail email"], "limit": 5},
             current_tool_defs=defs,
-            connector_search=lambda q: ConnectorLeg(payload={
+            connector_search=lambda q: {
                 "results": [{"use_case": "send gmail email", "tools": ["GMAIL_SEND_EMAIL"]}],
                 "schemas": {"GMAIL_SEND_EMAIL": {
                     "connector": "gmail", "tool": "GMAIL_SEND_EMAIL",
                     "description": "Send an email via gmail", "input_schema": {}}},
-            })))
+            }))
         assert out["results"][0]["matches"] == ["connectors__gmail__SEND_EMAIL"]
     finally:
         for n in names:
@@ -232,12 +231,12 @@ def test_both_sources_answer_within_one_limit():
         out = json.loads(dispatch_tool_search(
             {"queries": ["tracker create issue"], "limit": 2},
             current_tool_defs=defs,
-            connector_search=lambda q: ConnectorLeg(payload={
+            connector_search=lambda q: {
                 "results": [{"use_case": "tracker create issue", "tools": ["TRACKER_CREATE_ISSUE"]}],
                 "schemas": {"TRACKER_CREATE_ISSUE": {
                     "connector": "tracker", "tool": "TRACKER_CREATE_ISSUE",
                     "description": "Create a tracker issue", "input_schema": {}}},
-            })))
+            }))
         matches = out["results"][0]["matches"]
         assert len(matches) == 2
         assert set(matches) == {"mcp__tracker__create_issue", "connectors__tracker__CREATE_ISSUE"}
@@ -251,7 +250,7 @@ def test_search_composes_lowercase_connector_from_vendor_cased_schema():
     # custom toolkits; the composed name must carry the lowercase catalog
     # form or the gateway's own policy gates refuse the call.
     def cased_search(queries):
-        return ConnectorLeg(payload={
+        return {
             "results": [{"index": 1, "tools": ["CUSTOM_X_READ"]}],
             "schemas": {
                 "CUSTOM_X_READ": {
@@ -261,7 +260,7 @@ def test_search_composes_lowercase_connector_from_vendor_cased_schema():
                     "input_schema": {},
                 }
             },
-        })
+        }
 
     out = json.loads(
         dispatch_tool_search(
@@ -299,7 +298,7 @@ def test_search_keeps_only_the_twin_a_colliding_name_reaches(order, caplog):
     describe the literal under a name that runs the prefixed tool, whichever the
     gateway listed first, and must say so in the log rather than alias silently."""
     def twins(queries):
-        return ConnectorLeg(payload={
+        return {
             "results": [{"index": 1, "tools": list(order)}],
             "schemas": {
                 "GMAIL_FETCH_PROFILE": {"connector": "gmail", "tool": "GMAIL_FETCH_PROFILE",
@@ -307,7 +306,7 @@ def test_search_keeps_only_the_twin_a_colliding_name_reaches(order, caplog):
                 "FETCH_PROFILE": {"connector": "gmail", "tool": "FETCH_PROFILE",
                                   "description": "literal twin", "input_schema": {}},
             },
-        })
+        }
 
     with caplog.at_level(logging.WARNING, logger="tools.connectors.search"):
         out = json.loads(dispatch_tool_search(
@@ -325,13 +324,13 @@ def test_search_keeps_only_the_twin_a_colliding_name_reaches(order, caplog):
 def test_search_limit_caps_the_group_across_both_legs_and_counts_total():
     def many_hits(queries):
         slugs = [f"CUSTOM_X_TOOL_{i}" for i in range(9)]
-        return ConnectorLeg(payload={
+        return {
             "results": [{"index": 1, "tools": slugs}],
             "schemas": {
                 s: {"connector": "custom_x", "tool": s, "description": "widget", "input_schema": {}}
                 for s in slugs
             },
-        })
+        }
 
     out = json.loads(
         dispatch_tool_search(
@@ -350,12 +349,12 @@ def test_search_limit_caps_the_group_across_both_legs_and_counts_total():
 
 def test_search_drops_remote_group_with_mismatched_use_case_echo():
     def misaligned(queries):
-        return ConnectorLeg(payload={
+        return {
             "results": [{"index": 1, "use_case": "SOMETHING ELSE", "tools": ["CUSTOM_X_READ"]}],
             "schemas": {
                 "CUSTOM_X_READ": {"connector": "custom_x", "tool": "CUSTOM_X_READ", "description": "d", "input_schema": {}}
             },
-        })
+        }
 
     out = json.loads(
         dispatch_tool_search(
@@ -367,24 +366,21 @@ def test_search_drops_remote_group_with_mismatched_use_case_echo():
     assert not any(m.startswith("connectors__") for m in out["results"][0]["matches"])
 
 
-def test_search_keeps_local_results_and_names_the_hosted_failure():
+def test_search_identical_to_local_only_when_remote_leg_fails():
     def exploding_search(queries):
         raise RuntimeError("gateway exploded")
 
-    local_only = json.loads(dispatch_tool_search(
+    local_only = dispatch_tool_search(
         {"queries": ["send an email"]},
         current_tool_defs=_local_defs(),
-        connector_search=lambda queries: ConnectorLeg(),
-    ))
-    with_failure = json.loads(dispatch_tool_search(
+        connector_search=lambda queries: {},
+    )
+    with_failure = dispatch_tool_search(
         {"queries": ["send an email"]},
         current_tool_defs=_local_defs(),
         connector_search=exploding_search,
-    ))
-    assert "connectors" not in local_only
-    connectors = with_failure.pop("connectors")
-    assert local_only == with_failure
-    assert connectors["status"] == "unavailable" and connectors["reason"] == "unreachable"
+    )
+    assert local_only == with_failure  # byte-identical: D32
 
 
 def test_search_never_sends_the_gateway_more_use_cases_than_it_accepts():
@@ -396,7 +392,7 @@ def test_search_never_sends_the_gateway_more_use_cases_than_it_accepts():
 
     def recording_search(use_cases):
         sent.append(use_cases)
-        return ConnectorLeg()
+        return {}
 
     seven = [f"query {i}" for i in range(7)]
     parsed = json.loads(dispatch_tool_search(
@@ -423,8 +419,7 @@ def test_describe_merges_remote_schema_and_leaves_misses_in_not_found():
 
     def fake_describe(names):
         assert set(names) == {composed, stale}
-        return ConnectorLeg(payload={
-            "tools": {composed: {"description": "Send an email", "parameters": {"type": "object"}}}})
+        return {"tools": {composed: {"description": "Send an email", "parameters": {"type": "object"}}}}
 
     out = json.loads(
         dispatch_tool_describe(
@@ -438,31 +433,16 @@ def test_describe_merges_remote_schema_and_leaves_misses_in_not_found():
     assert "errors" not in out  # a connector miss is stale/unknown, not an error
 
 
-def test_describe_connector_names_fall_to_not_found_when_dark_and_to_connectors_when_the_leg_fails():
+def test_describe_connector_names_fall_to_not_found_when_dark():
     composed = "connectors__gmail__SEND_EMAIL"
     out = json.loads(
         dispatch_tool_describe(
             {"names": [composed]},
             current_tool_defs=_local_defs(),
-            connector_describe=lambda names: ConnectorLeg(),
+            connector_describe=lambda names: {},
         )
     )
     assert out["not_found"] == [composed]
-
-    def exploding_describe(names):
-        raise RuntimeError("gateway exploded")
-
-    failed = json.loads(
-        dispatch_tool_describe(
-            {"names": [composed]},
-            current_tool_defs=_local_defs(),
-            connector_describe=exploding_describe,
-        )
-    )
-    assert "not_found" not in failed and "hint" not in failed
-    assert failed["connectors"]["status"] == "unavailable"
-    assert failed["connectors"]["reason"] == "unreachable"
-    assert failed["connectors"]["names"] == [composed]
 
 
 # ---------------------------------------------------------------------------
@@ -678,7 +658,7 @@ def test_connector_describe_maps_slugs_back_to_composed_names():
         availability=lambda: True,
         client_factory=lambda: FakeClient(),
     )
-    assert out.payload["tools"]["connectors__gmail__SEND_EMAIL"]["parameters"] == {"type": "object"}
+    assert out["tools"]["connectors__gmail__SEND_EMAIL"]["parameters"] == {"type": "object"}
 
 
 def test_connector_describe_colliding_candidate_slugs_resolve_per_name():
@@ -707,7 +687,7 @@ def test_connector_describe_colliding_candidate_slugs_resolve_per_name():
         availability=lambda: True,
         client_factory=lambda: FakeClient(),
     )
-    assert set(out.payload["tools"]) == {
+    assert set(out["tools"]) == {
         "connectors__first__SECOND_X",
         "connectors__second__X",
     }
@@ -743,23 +723,15 @@ def test_connector_describe_prefers_each_names_prefixed_candidate():
         availability=lambda: True,
         client_factory=lambda: FakeClient(),
     )
-    assert out.payload["tools"]["connectors__gmail__X"]["description"] == "prefixed"
+    assert out["tools"]["connectors__gmail__X"]["description"] == "prefixed"
 
 
-def test_connector_describe_is_empty_on_unavailable_and_names_the_failure_reason():
-    off = connector_describe(["connectors__g__T"], availability=lambda: False)
-    assert off == ConnectorLeg()
+def test_connector_describe_is_empty_on_unavailable_and_exploding_client():
+    assert connector_describe(["connectors__g__T"], availability=lambda: False) == {}
 
     def boom():
         raise RuntimeError("boom")
 
     assert connector_describe(
         ["connectors__g__T"], availability=lambda: True, client_factory=boom
-    ) == ConnectorLeg(failure="unreachable")
-
-    def rejected():
-        raise GatewayAuthError("token rejected", code="UNAUTHORIZED", status=401)
-
-    assert connector_describe(
-        ["connectors__g__T"], availability=lambda: True, client_factory=rejected
-    ) == ConnectorLeg(failure="sign_in_expired")
+    ) == {}

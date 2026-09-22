@@ -15,14 +15,7 @@
  * bot-initiated sends use `hermes -p <bot> chat --in ~ -c "Bot Chat"`.
  */
 
-import {
-  CHAT_EMPTY_AREA,
-  COMPOSER_AREAS,
-  host,
-  LocalizedTabTitle,
-  PALETTE_AREA,
-  translateNow
-} from '@hermes/plugin-sdk'
+import { CHAT_EMPTY_AREA, COMPOSER_AREAS, host, LocalizedTabTitle, PALETTE_AREA, translateNow } from '@hermes/plugin-sdk'
 import type { ChatEmptyProps, PluginContext } from '@hermes/plugin-sdk'
 
 import { startFaceClock, stopFaceClock } from './avatar'
@@ -276,8 +269,7 @@ export default {
                   // guard as the other maps — a held bot stays held across
                   // window restarts until explicitly released.
                   holds: room.holds && typeof room.holds === 'object' ? room.holds : {},
-                  externalCursors:
-                    room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
+                  externalCursors: room.externalCursors && typeof room.externalCursors === 'object' ? room.externalCursors : {},
                   members: Array.isArray(room.members) ? room.members : [],
                   roomId: typeof room.roomId === 'string' && room.roomId ? room.roomId : null,
                   image: typeof room.image === 'string' && room.image ? room.image : null,

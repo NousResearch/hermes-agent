@@ -667,10 +667,6 @@ The generated plist lives at `~/Library/LaunchAgents/ai.hermes.gateway.plist`. I
 launchd plists are static — if you install new tools (e.g. a new Node.js version via nvm, or ffmpeg via Homebrew) after setting up the gateway, run `hermes gateway install` again to capture the updated PATH. The gateway will detect the stale plist and reload automatically.
 :::
 
-:::info Local Network access (LAN devices fail with "No route to host")
-macOS Local Network Privacy attributes a socket to the executable launchd spawned for the job. A bare venv Python has no application identity, so a launchd-run gateway could not reach LAN hosts (Home Assistant, local model servers) — every connect failed with `errno 65 No route to host` while the same URL worked from Terminal, and no prompt was ever shown to grant it. The generated plist therefore runs the gateway through `/usr/bin/osascript` (`do shell script "exec …"`), whose children macOS treats as osascript's own — an Apple platform binary, exempt from the check. `ps` shows `osascript → stderr_timestamp → gateway run`; stop/restart/KeepAlive behave exactly as before. A plist installed by an older Hermes is refreshed by `hermes gateway install` (or on the next `hermes gateway start`).
-:::
-
 :::tip Picking up new credentials after `hermes auth add` / `hermes auth reset`
 Agents run as threads inside the one gateway process; the only child processes are tool subprocesses (terminal commands, browsers), which never hold provider credentials. A running gateway also re-reads the `openai-codex` login it seeded from `auth.json` the next time its pool selects that entry after it had gone `exhausted` or `dead` (entries added with `hermes auth add openai-codex` are independent accounts and are not resynced). When you want every session on the fresh login at once, restart the gateway — but prefer the drain-aware path over a bare kill:
 

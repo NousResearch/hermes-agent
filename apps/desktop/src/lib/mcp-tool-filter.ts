@@ -65,35 +65,5 @@ export function toggleToolInServer(server: ServerConfig, name: string): ServerCo
   return next
 }
 
-export function setDisabledTools(server: ServerConfig, disabled: string[], discovered: string[]) {
-  const { exclude, include } = readToolsFilter(server)
-  const off = new Set(disabled)
-  const seen = new Set(discovered)
-  const tools = { ...toolsObject(server) }
-  const kept = (stored: string[] | undefined) => (stored ?? []).filter(name => !seen.has(name))
-
-  if (include !== undefined) {
-    tools.include = [...discovered.filter(name => !off.has(name)), ...kept(include)]
-  } else {
-    const names = [...discovered.filter(name => off.has(name)), ...kept(exclude)]
-
-    if (names.length) {
-      tools.exclude = names
-    } else {
-      delete tools.exclude
-    }
-  }
-
-  const next = { ...server }
-
-  if (Object.keys(tools).length) {
-    next.tools = tools
-  } else {
-    delete next.tools
-  }
-
-  return next
-}
-
 export const countEnabledTools = (server: ServerConfig | null | undefined, names: string[]): number =>
   names.filter(name => isToolEnabled(server, name)).length

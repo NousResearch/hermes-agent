@@ -3,7 +3,6 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   $connectionOperation,
-  dismissConnectionOperation,
   resetConnectionOperationsForTests
 } from '../app/connectionOperationStore.js'
 import { createGatewayEventHandler } from '../app/createGatewayEventHandler.js'
@@ -70,10 +69,7 @@ const buildCtx = (appended: Msg[]) =>
 const serverRequest = (method: string, params: Record<string, unknown>, id = `srq-${method}`) => {
   const respond = vi.fn()
 
-  const handled = createServerRequestHandler({
-    ringPromptBell: vi.fn(),
-    setStatus: status => patchUiState({ status })
-  })({
+  const handled = createServerRequestHandler({ ringPromptBell: vi.fn(), setStatus: status => patchUiState({ status }) })({
     fail: vi.fn(),
     id,
     method,
@@ -97,8 +93,7 @@ describe('createGatewayEventHandler', () => {
 
   it('heals missed completion and blocking prompts only from the focused authoritative idle snapshot', () => {
     patchUiState({ sid: 'focused' })
-    const ctx = buildCtx([])
-    const onEvent = createGatewayEventHandler(ctx)
+    const onEvent = createGatewayEventHandler(buildCtx([]))
     onEvent({ session_id: 'focused', payload: {}, type: 'message.start' } as any)
     serverRequest('approval', { session_id: 'focused', request_id: 'approval', command: 'test' })
     const busyOverlay = getOverlayState().approval
@@ -143,35 +138,6 @@ describe('createGatewayEventHandler', () => {
       type: 'connection.update'
     })
     expect($connectionOperation.get()).toMatchObject({ seq: 2, targets: [target] })
-
-    // Esc on the "Finishing…" card drops it and it must not come back on a replay, but the settling
-    // frame that follows still records how each app ended.
-    const request = {
-      deadline_at: 10,
-      op_id: 'op-1',
-      seq: 2,
-      targets: [target],
-      timeout_seconds: 30
-    }
-
-    dismissConnectionOperation('op-1')
-    expect($connectionOperation.get()).toBeNull()
-    onEvent({ session_id: 'focused', payload: request, type: 'connection.request' })
-    expect($connectionOperation.get()).toBeNull()
-    expect(getOverlayState().connection).toBeNull()
-
-    onEvent({
-      session_id: 'focused',
-      payload: {
-        deadline_at: 12,
-        op_id: 'op-1',
-        seq: 3,
-        settled: true,
-        targets: [{ ...target, state: 'connected' }]
-      },
-      type: 'connection.update'
-    })
-    expect(ctx.system.sys.mock.calls.map((call: unknown[]) => call[0])).toEqual(['asana: connected'])
   })
 
   it('keeps the durable session id when a session.info payload omits it', () => {
@@ -1774,9 +1740,7 @@ describe('createGatewayEventHandler', () => {
   it('renders a failed turn from error_surface instead of the raw provider JSON', () => {
     const appended: Msg[] = []
     const onEvent = createGatewayEventHandler(buildCtx(appended))
-
-    const raw =
-      'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
+    const raw = 'Error code: 401 - {"error": {"message": "Incorrect API key provided", "type": "invalid_request_error"}}'
 
     onEvent({
       payload: {
@@ -1847,10 +1811,7 @@ describe('createGatewayEventHandler', () => {
     const ctx = buildCtx([])
     const onEvent = createGatewayEventHandler(ctx)
 
-    onEvent({
-      payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' },
-      type: 'error'
-    } as any)
+    onEvent({ payload: { message: 'invalid params for prompt.submit: turn_author: Extra inputs are not permitted' }, type: 'error' } as any)
 
     const line = String((ctx.system.sys as any).mock.calls.at(-1)?.[0])
     expect(line).toContain('/update')

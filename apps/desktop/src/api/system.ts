@@ -241,29 +241,18 @@ export function getGhAuthStatus(refresh = false): Promise<{ available: boolean; 
 // audit` / `hermes backup` / `hermes debug share` and the dashboard System
 // page). All except debug share are spawn-based background actions tailed via
 // getActionStatus().
-//
-// Every one carries the ambient profile: Electron pins the whole /api/ops
-// family to the shared primary backend (connection-config's
-// LOCAL_PRIMARY_SCOPED_ROUTES), so an unprofiled call acts on that backend's
-// LAUNCH profile — and debug share uploads a home's logs and config.
 // ---------------------------------------------------------------------------
 
 export function runDoctor(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({ ...profileScoped(), path: '/api/ops/doctor', method: 'POST', body: {} })
+  return hermesApi<ActionResponse>({ path: '/api/ops/doctor', method: 'POST', body: {} })
 }
 
 export function runSecurityAudit(): Promise<ActionResponse> {
-  return hermesApi<ActionResponse>({
-    ...profileScoped(),
-    path: '/api/ops/security-audit',
-    method: 'POST',
-    body: {}
-  })
+  return hermesApi<ActionResponse>({ path: '/api/ops/security-audit', method: 'POST', body: {} })
 }
 
 export function runBackup(): Promise<ActionResponse & { archive?: string }> {
   return hermesApi<ActionResponse & { archive?: string }>({
-    ...profileScoped(),
     path: '/api/ops/backup',
     method: 'POST',
     body: {}
@@ -272,7 +261,6 @@ export function runBackup(): Promise<ActionResponse & { archive?: string }> {
 
 export function runDebugShare(): Promise<DebugShareResponse> {
   return hermesApi<DebugShareResponse>({
-    ...profileScoped(),
     path: '/api/ops/debug-share',
     method: 'POST',
     body: {},

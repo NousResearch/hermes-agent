@@ -10,9 +10,6 @@ and refreshed off-thread for the next open.
 
 from __future__ import annotations
 
-import base64
-import json
-import os
 import time
 from unittest.mock import patch
 
@@ -89,74 +86,6 @@ class TestProviderModelsSWR:
             out = mod.cached_provider_model_ids("openrouter")
         assert out == ["new-key-models"]
         spawn.assert_not_called()
-
-    def test_codex_token_rotation_keeps_account_gated_models_for_same_principal(
-        self, tmp_path, monkeypatch,
-    ):
-        import hermes_cli.models as mod
-
-        def jwt(account_id, subject, nonce, exp=None):
-            def segment(value):
-                raw = json.dumps(value, separators=(",", ":")).encode()
-                return base64.urlsafe_b64encode(raw).rstrip(b"=").decode()
-
-            claims = {
-                "sub": subject,
-                "nonce": nonce,
-                "https://api.openai.com/auth": {"chatgpt_account_id": account_id},
-                **({"exp": exp} if exp is not None else {}),
-            }
-            return f"{segment({'alg': 'none'})}.{segment(claims)}.sig"
-
-        auth_path = tmp_path / "auth.json"
-        monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-        monkeypatch.setenv("HOME", str(tmp_path))
-
-        def write_auth(token, request_count, mtime_ns):
-            auth_path.write_text(json.dumps({
-                "version": 1,
-                "credential_pool": {
-                    "openai-codex": [{
-                        "id": "primary",
-                        "access_token": token,
-                        "refresh_token": "refresh",
-                        "request_count": request_count,
-                    }],
-                },
-            }), encoding="utf-8")
-            os.utime(auth_path, ns=(mtime_ns, mtime_ns))
-
-        write_auth(jwt("account-a", "user-a", "first"), 0, 1_000_000_000)
-        astra_models = ["gpt-6-astra", "gpt-6-astra-900k"]
-        mod.update_provider_cache_entry("openai-codex", astra_models)
-
-        # Routine OAuth rotation and pool counters rewrite auth.json, but the
-        # account-scoped catalog is still authoritative for the same principal.
-        write_auth(jwt("account-a", "user-a", "rotated"), 12, 2_000_000_000)
-        with patch.object(mod, "_spawn_swr_refresh") as spawn:
-            assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == astra_models
-        spawn.assert_not_called()
-
-        # Either principal component changing means a different entitlement boundary.
-        write_auth(jwt("account-a", "user-b", "new-member"), 0, 3_000_000_000)
-        with patch.object(mod, "_spawn_swr_refresh") as spawn:
-            assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
-        spawn.assert_called_once_with("openai-codex")
-
-        mod.update_provider_cache_entry("openai-codex", astra_models)
-        write_auth(jwt("account-b", "user-b", "new-account"), 0, 4_000_000_000)
-        with patch.object(mod, "_spawn_swr_refresh") as spawn:
-            assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
-        spawn.assert_called_once_with("openai-codex")
-
-        # An expired token only ever yields the static fallback (no Astra); the refresh to a live
-        # token for the same principal must bust that row instead of serving it for the whole TTL.
-        write_auth(jwt("account-b", "user-b", "stale", exp=time.time() - 60), 0, 5_000_000_000)
-        mod.update_provider_cache_entry("openai-codex", ["gpt-5.6-sol"])
-        write_auth(jwt("account-b", "user-b", "fresh", exp=time.time() + 3600), 0, 6_000_000_000)
-        with patch.object(mod, "_spawn_swr_refresh") as spawn:
-            assert mod.cached_provider_model_ids("openai-codex", non_blocking=True) == []
-        spawn.assert_called_once_with("openai-codex")
 
     def test_force_refresh_bypasses_swr(self):
         import hermes_cli.models as mod

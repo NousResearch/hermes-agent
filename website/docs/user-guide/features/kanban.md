@@ -985,7 +985,7 @@ hermes kanban context <id>                             # what a worker sees
 hermes kanban specify [<id> | --all] [--tenant T]      # flesh out a triage-column idea
         [--author NAME] [--json]                       #   into a full spec and promote to todo
 hermes kanban gc [--event-retention-days N]            # workspaces + old events + old logs
-        [--log-retention-days N]                       #   (negative N is rejected; 0 disables that sweep)
+        [--log-retention-days N]
 ```
 
 All commands are also available as a slash command in the interactive CLI and in the messaging gateway (see [`/kanban` slash command](#kanban-slash-command) below).

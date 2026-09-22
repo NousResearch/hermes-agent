@@ -35,13 +35,7 @@ command. A hook with no concrete consumer is speculative infrastructure and is r
 The ONLY discovery system for out-of-tree plugins. One YAML per entry, 40-hex SHA pin mandatory,
 human-merged via PR (`plugin-catalog/README.md` = admission policy; `plugin-catalog-ci.yml` clones
 each changed entry at its pin and runs `hermes plugins validate`). `removed.yaml` is the kill list —
-every install path (CLI, dashboard, TUI) refuses matches (repo URLs compared by canonical
-`host/owner/repo`, so `git@`/`ssh://`/`www.` spellings match); only the CLI has a loud
-`--allow-removed`, which is recorded on the install record and is the only thing that exempts an
-installed plugin from the same check at `update`, `enable` and load (`gate_manifest`). Catalog
-provenance lives on the installer-owned `.install-metadata.json` record (`catalog` block, sha =
-checked-out commit), NEVER in the tree: the in-tree `.hermes-catalog.json` is a convenience copy the
-Desktop reads for "Install here"; Python never trusts it (a repo can ship a forged one).
+every install path (CLI, dashboard, TUI) refuses matches; only the CLI has a loud `--allow-removed`.
 Code: `hermes_cli/plugin_catalog.py` (loader, live refresh from
 `/docs/api/plugin-catalog.json` published by the docs build, in-tree fallback),
 `hermes_cli/plugins_cmd_catalog.py` (resolution, `.hermes-catalog.json` provenance sidecar,
@@ -61,9 +55,7 @@ bare names resolve through the catalog or error.
 **Discovery timing pitfall:** `discover_plugins()` runs only as a side effect of importing
 `model_tools.py`. Code that reads plugin state without importing `model_tools.py` first must call
 `discover_plugins()` explicitly (idempotent). Hooks are invoked from `model_tools.py` (pre/post
-tool) and `run_agent.py` (lifecycle). Auxiliary LLM calls (titling, compression, MoA, vision, ...)
-fire `pre_auxiliary_call`/`post_auxiliary_call` from `agent/auxiliary_hooks.py` (payload = the
-`*_api_request` shape + `aux_task`); they never fire the turn-scoped `pre/post_api_request` (#79733). When a plugin changes a default, add a migration guard keyed
+tool) and `run_agent.py` (lifecycle). When a plugin changes a default, add a migration guard keyed
 on an "existing config" signal (`_explicitly_configured`) so existing users keep the old default.
 
 **Lifecycle hooks fire under the owning profile's scope, and the caller binds it.**

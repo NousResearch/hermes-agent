@@ -1234,7 +1234,6 @@ def terminal_tool(
     watch_patterns: Optional[List[str]] = None,
     _host_local: bool = False,
     _completion_output_chars: int = 0,
-    heartbeat: int = 0,
 ) -> str:
     """Execute *command* in the configured terminal environment; returns a JSON string.
 
@@ -1245,9 +1244,7 @@ def terminal_tool(
     background-only flags: on conflict watch_patterns is dropped. watch_patterns
     is hard rate-limited (1 notification / 15s / process) and auto-disabled
     after repeated strikes or a lifetime cap, promoting to notify_on_complete —
-    use it only for rare one-shot signals on long-lived processes. ``heartbeat`` (seconds,
-    background-only, implies notify_on_complete) emits a "still running + output since last
-    time" event every N seconds so the agent stays current on a long job without polling.
+    use it only for rare one-shot signals on long-lived processes.
     ``_completion_output_chars`` (internal) sizes the completion notification's output for a
     spawner whose output is the payload (a bot DM's reply); 0 keeps the usual tail.
     ``_host_local`` forces the local backend for Hermes-owned control-plane
@@ -1315,7 +1312,6 @@ def terminal_tool(
                 watch_patterns=watch_patterns, approval_note=verdict.note,
                 pty_disabled_reason=_PTY_DISABLED_REASON if pty_disabled else None,
                 completion_output_chars=_completion_output_chars,
-                heartbeat_seconds=heartbeat,
             )
             if plan.promoted_from_foreground_timeout is not None:
                 result = _with_promoted_note(result, plan.promoted_from_foreground_timeout)
@@ -1383,11 +1379,6 @@ TERMINAL_SCHEMA = {
                     {"type": "boolean"},
                     {"type": "array", "items": {"type": "string"}}
                 ]
-            },
-            "heartbeat": {
-                "type": "integer",
-                "minimum": 60,
-                "description": "With background=true: also notify every N seconds (min 60) with the output since the last notice. For long jobs you must react to mid-run (merge trains, full suites); implies notify=true."
             }
             # Legacy aliases (unadvertised, still accepted): notify_on_complete
             # (bool) and watch_patterns (list). notify=true|[...] maps onto
@@ -1416,14 +1407,11 @@ def _handle_terminal(args, **kw):
     notify = args.get("notify")
     notify_on_complete = args.get("notify_on_complete", False)
     watch_patterns = args.get("watch_patterns")
-    heartbeat = args.get("heartbeat") or 0
-    if not isinstance(heartbeat, int) or isinstance(heartbeat, bool) or heartbeat < 0:
-        return tool_error("heartbeat must be a whole number of seconds (min 60).")
     if not args.get("background", False):
-        if notify or watch_patterns or notify_on_complete or heartbeat:
+        if notify or watch_patterns or notify_on_complete:
             return tool_error(
-                "notify/heartbeat only apply to background commands (foreground "
-                "results return directly). Either drop them, or run as "
+                "notify only applies to background commands (foreground "
+                "results return directly). Either drop notify, or run as "
                 "terminal(command=..., background=true, notify=...)."
             )
         if args.get("pty", False):
@@ -1445,8 +1433,6 @@ def _handle_terminal(args, **kw):
                 "notify must be true/false (notify on exit) or a list of "
                 "strings (notify on output pattern match)."
             )
-    if heartbeat:
-        notify_on_complete = True  # the heartbeat rides the completion delivery path
     return terminal_tool(
         command=args.get("command"),
         background=args.get("background", False),
@@ -1457,7 +1443,6 @@ def _handle_terminal(args, **kw):
         pty=args.get("pty", False),
         notify_on_complete=notify_on_complete,
         watch_patterns=watch_patterns,
-        heartbeat=heartbeat,
     )
 
 

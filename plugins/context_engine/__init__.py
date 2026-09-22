@@ -1,8 +1,6 @@
-"""Context engine plugin discovery: bundled ``plugins/context_engine/<name>/`` then user
-``$HERMES_HOME/plugins/<name>/`` (bundled wins on collision) → ``ContextEngine``. Separate from the
-general plugin system: ``context.engine`` in config.yaml names the active engine (default
-``"compressor"``, the built-in ContextCompressor), so a user-installed engine needs no
-``plugins.enabled`` entry to be selectable."""
+"""Context engine plugin discovery: ``plugins/context_engine/<name>/`` → ``ContextEngine``.
+Engines ship in the repo, separate from the general plugin system; only one is active
+(``context.engine`` in config.yaml; default ``"compressor"``, the built-in ContextCompressor)."""
 
 from __future__ import annotations
 
@@ -15,53 +13,20 @@ from plugins import plugin_loader as _loader
 logger = logging.getLogger(__name__)
 
 _CONTEXT_ENGINE_PLUGINS_DIR = Path(__file__).parent
-# Synthetic parent package for user-installed engines (keeps them out of the bundled namespace).
-_USER_NAMESPACE = "_hermes_user_context_engine"
-
-
-def _is_context_engine_dir(path: Path) -> bool:
-    """Cheap text heuristic: ``__init__.py`` mentions the context engine contract."""
-    init_file = path / "__init__.py"
-    try:
-        source = init_file.read_text(errors="replace", encoding="utf-8")[:8192]
-    except OSError:
-        return False
-    return "register_context_engine" in source or "ContextEngine" in source
-
-
-def _iter_engine_dirs() -> List[Tuple[str, Path]]:
-    """``(name, path)`` for bundled then user engines; bundled wins on collisions."""
-    dirs = [(child.name, child) for child in _loader.iter_plugin_dirs(_CONTEXT_ENGINE_PLUGINS_DIR)]
-    seen = {name for name, _ in dirs}
-    user_dir = _loader.user_plugins_dir()
-    if user_dir:
-        dirs.extend((child.name, child) for child in _loader.iter_plugin_dirs(user_dir)
-                    if child.name not in seen and _is_context_engine_dir(child))
-    return dirs
 
 
 def discover_context_engines() -> List[Tuple[str, str, bool]]:
-    """Return ``[(name, description, is_available), ...]`` for every bundled and user engine."""
-    return [(name, _loader.read_plugin_description(child),
+    """Return ``[(name, description, is_available), ...]`` for every bundled engine."""
+    return [(child.name, _loader.read_plugin_description(child),
              _loader.probe_availability(lambda c=child: _load_engine_from_dir(c)))
-            for name, child in _iter_engine_dirs()]
-
-
-def find_engine_dir(name: str) -> Optional[Path]:
-    """Resolve an engine name to its directory (bundled first, then user-installed)."""
-    bundled = _CONTEXT_ENGINE_PLUGINS_DIR / name
-    if bundled.is_dir():
-        return bundled
-    user_dir = _loader.user_plugins_dir()
-    user = user_dir / name if user_dir else None
-    return user if user and user.is_dir() and _is_context_engine_dir(user) else None
+            for child in _loader.iter_plugin_dirs(_CONTEXT_ENGINE_PLUGINS_DIR)]
 
 
 def load_context_engine(name: str) -> Optional["ContextEngine"]:  # noqa: F821
     """Load a ContextEngine instance by name; None if not found or it fails to load."""
-    engine_dir = find_engine_dir(name)
-    if engine_dir is None:
-        logger.debug("Context engine '%s' not found in bundled or user plugins", name)
+    engine_dir = _CONTEXT_ENGINE_PLUGINS_DIR / name
+    if not engine_dir.is_dir():
+        logger.debug("Context engine '%s' not found in %s", name, _CONTEXT_ENGINE_PLUGINS_DIR)
         return None
     return _loader.load_named(
         name, engine_dir, _load_engine_from_dir, kind="Context engine", noun="engine", logger=logger
@@ -72,11 +37,9 @@ def _load_engine_from_dir(engine_dir: Path) -> Optional["ContextEngine"]:  # noq
     """Import an engine module and extract its ContextEngine (register(ctx) or subclass)."""
     from agent.context_engine import ContextEngine
     name = engine_dir.name
-    is_bundled = engine_dir.parent == _CONTEXT_ENGINE_PLUGINS_DIR
-    module_name = f"plugins.context_engine.{name}" if is_bundled else f"{_USER_NAMESPACE}.{name}"
     mod = _loader.load_plugin_module(
-        module_name, engine_dir, parents=("plugins", "plugins.context_engine"), logger=logger,
-        synthetic_namespace=None if is_bundled else _USER_NAMESPACE)
+        f"plugins.context_engine.{name}", engine_dir,
+        parents=("plugins", "plugins.context_engine"), logger=logger)
     return mod and _loader.instance_from_module(
         mod, collector=_EngineCollector(engine_name=name), collected_attr="engine",
         base_cls=ContextEngine, name=name, logger=logger)

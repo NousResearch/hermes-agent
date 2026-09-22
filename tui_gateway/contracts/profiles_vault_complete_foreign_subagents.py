@@ -9,7 +9,6 @@ histories on the serving backend; ``subagent.*`` is the session-scoped roster of
 
 from __future__ import annotations
 
-from typing import Literal
 
 from pydantic import Field
 
@@ -155,7 +154,6 @@ class ProfileRow(Result):
     description: str = ""
     display_name: str = ""
     skill_count: int = 0
-    previous_names: list[str] = Field(default_factory=list)
     last_session: ProfileSessionPreview | None = None
     worker_session: ProfileWorkerSession | None = None
     canonical_session: ProfileCanonicalSession | None = None
@@ -193,15 +191,15 @@ class ProfilesCreateParams(ProfileParams):
     soul: str | None = None
     model: str | None = None
     provider: str | None = None
-    share_auth: bool | str | None = None
+    share_auth: bool | str | None = None  # accepted from older clients; ignored (#111724)
     mirror_credentials: bool | str | None = None
 
 
 class ProfileMirrored(Result):
-    """What was copied from the launch profile; ``auth`` is ``"shared"`` under ``share_auth``."""
+    """What was copied from the launch profile."""
 
     env: bool = False
-    auth: bool | Literal["shared"] = False
+    auth: bool = False
     model_inherited: bool = False
     voice: bool = False
 

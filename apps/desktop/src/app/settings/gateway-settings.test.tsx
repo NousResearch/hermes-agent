@@ -66,7 +66,6 @@ describe('GatewaySettings', () => {
       authMode: 'oauth',
       org: 'old-team'
     }
-
     registry.value = { connections: [saved] }
     getConnectionConfig.mockResolvedValue({
       ...localConnection,
@@ -75,26 +74,20 @@ describe('GatewaySettings', () => {
       remoteUrl: 'https://other.example'
     })
     const calls: string[] = []
-
     const oauthLogoutConnectionConfig = vi.fn(async () => {
       calls.push('logout')
     })
-
     const agentSignIn = vi.fn(async () => {
       calls.push('login')
-
       return { connected: true }
     })
-
     const save = vi.fn(async () => {
       calls.push('save')
     })
-
     const discover = vi.fn().mockResolvedValue({
       needsOrgSelection: true,
       orgs: [{ id: 'new-team', name: 'New team', role: 'OWNER' }]
     })
-
     Object.assign(window.hermesDesktop, {
       oauthLogoutConnectionConfig,
       connections: { save },
@@ -218,7 +211,7 @@ describe('GatewaySettings', () => {
       render(<GatewaySettings embedded />)
 
       // The env override still owns the URL: the editor stays read-only.
-      expect(((await screen.findByDisplayValue(envUrl)) as HTMLInputElement).disabled).toBe(true)
+      expect((await screen.findByDisplayValue(envUrl) as HTMLInputElement).disabled).toBe(true)
 
       fireEvent.click(await screen.findByRole('button', { name: 'Sign in with Nous Research' }))
 
@@ -236,7 +229,7 @@ describe('GatewaySettings', () => {
 
       render(<GatewaySettings embedded />)
 
-      expect(((await screen.findByDisplayValue(envUrl)) as HTMLInputElement).disabled).toBe(false)
+      expect((await screen.findByDisplayValue(envUrl) as HTMLInputElement).disabled).toBe(false)
       expect(await screen.findByRole('button', { name: 'Sign in with Nous Research' })).toBeTruthy()
       expect(oauthLoginConnectionConfig).not.toHaveBeenCalled()
     })

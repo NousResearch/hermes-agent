@@ -206,7 +206,7 @@ def _check_version_consistency(issues: list[str]) -> None:
 
 
 def _check_s6_supervision(issues: list[str]) -> None:
-    """Under our s6 /init, report static services and the ONE host gateway slot; no-op elsewhere.
+    """Under our s6 /init, report static services and per-profile gateway slots that are ``up``; no-op elsewhere.
     Counterpart to :func:`_check_gateway_service_linger` (systemd-on-host)."""
     try:
         from hermes_cli.service_manager import S6ServiceManager, detect_service_manager
@@ -219,31 +219,12 @@ def _check_s6_supervision(issues: list[str]) -> None:
     for static in ("main-hermes", "dashboard"):  # s6-rc symlinks under /run/service/, same s6-svstat probe
         up = mgr.is_running(static)
         (check_ok if up else check_info)(f"{static}: up" if up else f"{static}: down (expected if not enabled via env)")
-    _report_host_gateway_slot(mgr, issues)
-
-
-def _report_host_gateway_slot(mgr, issues: list[str]) -> None:
-    """Multiplex-only: ONE gateway process serves N profiles, so report THAT process and its
-    roster. The old ``Per-profile gateways: up/total`` line described a topology we no longer
-    run — it counted supervision slots and never said which profiles were actually served."""
-    from gateway.host_topology import host_gateway_topology
-    slots = sorted(mgr.list_profile_gateways())
-    topology = host_gateway_topology()
-    if topology is None:
-        if not slots:
-            return check_info("No gateway registered yet — run `hermes gateway install`")
-        up = [p for p in slots if mgr.is_running(f"gateway-{p}")]
-        issues.append("No host gateway owns the gateway role — start the ONE host multiplexer: "
-                      "hermes --profile default gateway start")
-        return check_warn(f"No host gateway owns the gateway role ({len(up)}/{len(slots)} supervision "
-                          f"slots up: {', '.join(slots)})", "(nothing is serving these profiles)")
-    check_ok(f"Host gateway: {topology.describe()}")
-    legacy_up = sorted(p for p in slots if p != "default" and mgr.is_running(f"gateway-{p}"))
-    if legacy_up:
-        check_warn(f"LEGACY per-profile gateway slots still supervised: {', '.join(legacy_up)}",
-                   "(multiplex-only: the host gateway already serves every profile from one process)")
-        issues.append("Fold the legacy per-profile gateways into the host gateway: "
-                      "hermes --profile default gateway migrate --multiplex")
+    profiles = mgr.list_profile_gateways()
+    if not profiles:
+        return check_info("No per-profile gateways registered yet — create one with `hermes profile create <name>`")
+    up_count = sum(1 for p in profiles if mgr.is_running(f"gateway-{p}"))
+    check_ok(f"Per-profile gateways: {up_count}/{len(profiles)} supervised up"
+             + (f" ({', '.join(sorted(profiles))})" if len(profiles) <= 8 else ""))
 
 
 def check_certificates(should_fix: bool = False, issues: "list | None" = None) -> None:
@@ -295,23 +276,13 @@ def check_certificates(should_fix: bool = False, issues: "list | None" = None) -
 
 
 def _check_gateway_service_linger(issues: list[str]) -> None:
-    """Warn when a systemd user gateway service will stop after logout (skipped under s6: no linger concept).
-
-    Multiplex-only: the HOST gateway runs under the default profile's unit, so a doctor run from a
-    SERVED profile must still check it — gating on the active profile's own unit silently skipped
-    the check for every profile that does not own a service of its own.
-    """
+    """Warn when a systemd user gateway service will stop after logout (skipped under s6: no linger concept)."""
     try:
-        from hermes_cli.gateway import (
-            _SERVICE_BASE, get_systemd_linger_status, get_systemd_unit_path, is_linux,
-            user_systemd_unit_dir)
+        from hermes_cli.gateway import get_systemd_linger_status, get_systemd_unit_path, is_linux
         from hermes_cli.service_manager import detect_service_manager
     except Exception as e:
         return check_warn("Gateway service linger", f"(could not import gateway helpers: {e})")
-    if not is_linux() or detect_service_manager() == "s6":
-        return
-    host_unit = user_systemd_unit_dir() / f"{_SERVICE_BASE}.service"
-    if not (get_systemd_unit_path().exists() or host_unit.exists()):
+    if not is_linux() or detect_service_manager() == "s6" or not get_systemd_unit_path().exists():
         return
     _section("Gateway Service")
     linger_enabled, linger_detail = get_systemd_linger_status()

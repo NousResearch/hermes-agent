@@ -901,6 +901,11 @@ def _print_plugin_compat_notice() -> None:
     print(f"\n{colour}⚠  {lines[0]}\033[0m\n   {lines[1]}")
 
 
+def _print_profiles_without_credentials_notice() -> None:
+    from hermes_cli.profile_credential_audit import print_profiles_without_credentials_notice
+    print_profiles_without_credentials_notice()
+
+
 def _print_post_update_notices_and_self_heals() -> None:
     """Best-effort notices (FTS optimize, curator) and self-heals (FHS PATH, ACP launcher,
     Windows bin launchers, cua-driver refresh) that run after the summary."""
@@ -923,6 +928,9 @@ def _print_post_update_notices_and_self_heals() -> None:
         ('cua-driver refresh failed: %s', _refresh_cua_driver_after_update),
         ('Checkpoint footprint notice failed: %s', _print_checkpoint_footprint_notice),
         ('Plugin compat notice failed: %s', _print_plugin_compat_notice),
+        # Named profiles stopped inheriting the root auth.json (#111724): name every profile that
+        # now has no provider of its own so nobody finds out from a dead bot.
+        ('Profile credential notice failed: %s', _print_profiles_without_credentials_notice),
         # Legacy HERMES_NEMO_RELAY_ATIF_*/ATOF_* vars produce no traces since the Relay cutover;
         # generate each profile's relay-plugins.toml instead of leaving exports silently dead.
         ('Relay exporter migration failed: %s', _migrate_relay_exporter_env),

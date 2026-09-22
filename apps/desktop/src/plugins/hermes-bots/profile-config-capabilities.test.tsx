@@ -1,7 +1,7 @@
 /**
  * The bot editor's Advanced section renders the REAL core Capabilities
  * surfaces — CapabilitiesView (installed skills + hub installs + detail),
- * ToolsetConfigPanel (per-toolset env/keys/model/post-setup) and ConnectorsTab
+ * ToolsetConfigPanel (per-toolset env/keys/model/post-setup) and McpTab
  * (per-server enable + OAuth + API keys) — pinned to the bot's own profile,
  * instead of bare checkbox stand-ins.
  *
@@ -33,7 +33,7 @@ interface StubProps {
 
 /** The optional SDK exports, swapped per test to model each desktop build. */
 const sdk = vi.hoisted(() => {
-  const seen: Record<string, StubProps[]> = { ConnectorsTab: [], CapabilitiesView: [], ToolsetConfigPanel: [] }
+  const seen: Record<string, StubProps[]> = { McpTab: [], CapabilitiesView: [], ToolsetConfigPanel: [] }
 
   const spy = (name: string) => {
     const Stub = (props: StubProps) => {
@@ -77,7 +77,7 @@ vi.mock('@hermes/plugin-sdk', async importOriginal => {
     usePluginI18n: () => translateBots
   }
 
-  for (const name of ['ConnectorsTab', 'CapabilitiesView', 'ToolsetConfigPanel']) {
+  for (const name of ['McpTab', 'CapabilitiesView', 'ToolsetConfigPanel']) {
     Object.defineProperty(mocked, name, { configurable: true, enumerable: true, get: () => sdk.exports[name] })
   }
 
@@ -180,7 +180,7 @@ afterEach(() => {
 
 describe('a build whose CapabilitiesView cannot route connections', () => {
   const oldBuild = () => ({
-    ConnectorsTab: sdk.spy('ConnectorsTab'),
+    McpTab: sdk.spy('McpTab'),
     CapabilitiesView: sdk.spy('CapabilitiesView'),
     ToolsetConfigPanel: sdk.spy('ToolsetConfigPanel')
   })
@@ -192,7 +192,7 @@ describe('a build whose CapabilitiesView cannot route connections', () => {
     expect(await screen.findByText('Provider')).toBeTruthy()
     expect(screen.getByText(/Remote capabilities require a newer desktop/)).toBeTruthy()
     expect(sdk.seen.CapabilitiesView).toHaveLength(0)
-    expect(sdk.seen.ConnectorsTab).toHaveLength(0)
+    expect(sdk.seen.McpTab).toHaveLength(0)
     expect(sdk.seen.ToolsetConfigPanel).toHaveLength(0)
     expect(screen.queryByText('Skills Hub')).toBeNull()
     expect(screen.queryByRole('button', { name: /Set up/ })).toBeNull()
@@ -220,7 +220,7 @@ describe('a build whose CapabilitiesView cannot route connections', () => {
       profile: { connectionId: 'local', profile: 'default' },
       toolset: 'local-tools'
     })
-    expect(sdk.seen.ConnectorsTab[0]).toEqual({
+    expect(sdk.seen.McpTab[0]).toEqual({
       gateway: 'ambient-gateway',
       profile: { connectionId: 'local', profile: 'default' }
     })
@@ -259,7 +259,7 @@ describe('a connection-aware CapabilitiesView', () => {
 })
 
 describe('a build with no Capabilities exports at all', () => {
-  const bareBuild = { ConnectorsTab: undefined, CapabilitiesView: undefined, ToolsetConfigPanel: undefined }
+  const bareBuild = { McpTab: undefined, CapabilitiesView: undefined, ToolsetConfigPanel: undefined }
 
   it('keeps the checkbox MCP list with its inline setup button', async () => {
     await renderEditor(bareBuild, localBot)

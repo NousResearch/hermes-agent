@@ -156,19 +156,12 @@ def mount_spa(application: FastAPI):
         # Launcher-preselected profile (``--open-profile``): the SPA's fallback scope when the URL
         # omits ``?profile=`` (#73085). ``</`` escaped so a hostile name cannot close the script tag.
         initial_profile_js = json.dumps(str(getattr(application.state, "initial_profile", "") or "")).replace("</", "<\\/")
-        # This backend's OWN profile name (empty when it cannot be named unambiguously). The SPA
-        # falls back to it when neither the URL nor --open-profile names one, so requests carry an
-        # explicit scope from the first paint: destructive routes 400 on an unnamed profile as soon
-        # as the host serves more than one, and the switcher shows the same profile it writes.
-        from hermes_cli.web_server_profiles import serving_profile_name as _serving_profile_name
-        serving_profile_js = json.dumps(_serving_profile_name()).replace("</", "<\\/")
         bootstrap_script = (
             f"<script>{token_js}"
             f"window.__HERMES_DASHBOARD_EMBEDDED_CHAT__={chat_js};"
             f'window.__HERMES_BASE_PATH__="{prefix}";'
             f"window.__HERMES_AUTH_REQUIRED__={'true' if gated else 'false'};"
             f"window.__HERMES_INITIAL_PROFILE__={initial_profile_js};"
-            f"window.__HERMES_DASHBOARD_PROFILE__={serving_profile_js};"
             f"</script>"
         )
         if prefix:
@@ -677,14 +670,12 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
     started_at = time.monotonic()
     from hermes_cli.plugins_cmd import (
-        _category_active_names,
         _discover_all_plugins,
         _get_current_context_engine,
         _get_current_memory_provider,
         _discover_context_engines,
         _get_disabled_set,
         _get_enabled_set,
-        _plugin_status,
         _read_manifest as _read_plugin_manifest_at,
     )
     from hermes_cli.plugins_cmd_catalog import removed_annotation
@@ -701,16 +692,12 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
     # One kill-list resolution for the whole rebuild: resolving per row costs a live-catalog
     # fetch per installed plugin when the catalog host is slow or unreachable.
     removed_entries = resolved_removed_entries()
-    active = _category_active_names()
 
     for name, version, description, source, dir_str, key in _discover_all_plugins():
-        # Same verdict as `hermes plugins list` / the TUI hub: name+key aliases for the lists, bundled
-        # backends/platforms/providers and the live memory provider count as enabled without a list
-        # entry (#73131, #82898).
-        runtime_status = _plugin_status(
-            name, enabled_set, disabled_set, key=key, source=source, dir_path=dir_str, active=active)
-        if runtime_status == "not enabled":
-            runtime_status = "inactive"
+        # Both the path-derived key (nested category plugins) and the bare manifest name
+        # count for enabled/disabled state, matching the runtime loader's back-compat lookup.
+        aliases = {name, key} if key else {name}
+        runtime_status = _plugin_runtime_status(aliases, enabled_set, disabled_set)
 
         dir_path = Path(dir_str)
         dm = dash_by_name.get(name)

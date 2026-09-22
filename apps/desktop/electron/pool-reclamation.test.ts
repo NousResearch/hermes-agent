@@ -24,18 +24,15 @@ function harness() {
       return prepare(key)
     },
     commit: async () => true,
-    cancel: async key => {
-      cancelled.push(key)
-    },
-    stopBackend: key =>
-      new Promise<void>(resolve => {
-        stopped.push(key)
-        pool.delete(key)
-        exits.set(key, () => {
-          releases.get(key)?.()
-          resolve()
-        })
+    cancel: async key => { cancelled.push(key) },
+    stopBackend: key => new Promise<void>(resolve => {
+      stopped.push(key)
+      pool.delete(key)
+      exits.set(key, () => {
+        releases.get(key)?.()
+        resolve()
       })
+    }),
   })
 
   async function seed() {
@@ -45,20 +42,8 @@ function harness() {
     }
   }
 
-  return {
-    coordinator,
-    pool,
-    releases,
-    exits,
-    stopped,
-    cancelled,
-    prepared,
-    retirer,
-    seed,
-    setPrepare: (fn: typeof prepare) => {
-      prepare = fn
-    }
-  }
+  return { coordinator, pool, releases, exits, stopped, cancelled, prepared, retirer, seed,
+    setPrepare: (fn: typeof prepare) => { prepare = fn } }
 }
 
 test('reclamation sequences every foreground waiter, including an already queued background promotion', async () => {
@@ -68,16 +53,8 @@ test('reclamation sequences every foreground waiter, including an already queued
   const second = h.coordinator.request('e', { priority: 'background' })
   second.promote('foreground')
   let granted = 0
-  void first.acquired
-    .then(() => {
-      granted += 1
-    })
-    .catch(() => undefined)
-  void second.acquired
-    .then(() => {
-      granted += 1
-    })
-    .catch(() => undefined)
+  void first.acquired.then(() => { granted += 1 }).catch(() => undefined)
+  void second.acquired.then(() => { granted += 1 }).catch(() => undefined)
 
   try {
     await vi.waitFor(() => assert.deepEqual(h.stopped, ['a']), { timeout: 2000 })
@@ -106,12 +83,7 @@ test('withdrawn demand or replaced candidates cancel prepared authority without 
     const h = harness()
     await h.seed()
     let finishPrepare!: (value: string) => void
-    h.setPrepare(
-      () =>
-        new Promise(resolve => {
-          finishPrepare = resolve
-        })
-    )
+    h.setPrepare(() => new Promise(resolve => { finishPrepare = resolve }))
     const ticket = h.coordinator.request('d', { priority: 'foreground' })
     void ticket.acquired.catch(() => undefined)
 

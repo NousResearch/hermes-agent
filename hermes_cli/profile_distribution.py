@@ -21,7 +21,6 @@ from typing import Any, Dict, List, Optional, Tuple
 import yaml
 
 from hermes_cli._subprocess_compat import noninteractive_git_env
-from utils import rmtree_readonly
 
 
 MANIFEST_FILENAME = "distribution.yaml"
@@ -251,9 +250,7 @@ def _stage_source(source: str, workdir: Path) -> Tuple[Path, str]:
     if _looks_like_git_url(src_str):
         staged, provenance = workdir / "clone", src_str
         _git_clone(src_str, staged)
-        # Not ``ignore_errors``: a half-deleted ``.git`` (read-only objects on Windows) would
-        # otherwise be copied into the profile as distribution content (#117184).
-        rmtree_readonly(staged / ".git")
+        shutil.rmtree(staged / ".git", ignore_errors=True)
         missing = (
             f"No {MANIFEST_FILENAME} at the root of {src_str!r}. "
             "This repository is not a Hermes profile distribution."

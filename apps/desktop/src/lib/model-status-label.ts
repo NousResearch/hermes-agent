@@ -80,12 +80,7 @@ function prettifyBase(base: string): string {
   if (/^claude-/i.test(base)) {
     // Anthropic ids spell the version with hyphens (`haiku-4-5`, `fable-5-1`);
     // the human name is dotted ("Haiku 4.5"), not "Haiku 4 5".
-    return titleCase(
-      base
-        .replace(/^claude-/i, '')
-        .replace(/(\d)-(?=\d)/g, '$1.')
-        .replace(/-/g, ' ')
-    )
+    return titleCase(base.replace(/^claude-/i, '').replace(/(\d)-(?=\d)/g, '$1.').replace(/-/g, ' '))
   }
 
   if (/^gpt-/i.test(base)) {

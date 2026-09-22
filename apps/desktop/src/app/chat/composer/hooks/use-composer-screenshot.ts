@@ -26,7 +26,6 @@ export function useComposerScreenshot({ sessionKey, focusKey, onAttachImageBlob 
 
   useLayoutEffect(() => {
     const api = window.hermesDesktop?.screenshot
-
     if (!api || !surfaceId || !visible) {
       return
     }
@@ -34,24 +33,19 @@ export function useComposerScreenshot({ sessionKey, focusKey, onAttachImageBlob 
     let generation = 0
     let mounted = true
     let busy = false
-
     const offRoute = $activeGatewayRoute.listen(() => {
       generation += 1
     })
-
     const offStatus = api.onStatus(status => {
       if (!status.enabled) {
         generation += 1
       }
     })
-
     const offRequest = api.onRequest(requestId => {
       if (busy || getActiveComposer() !== scope.target || getVisibleComposerSurfaceId(scope.target) !== surfaceId) {
         return
       }
-
       const attach = latest.current.onAttachImageBlob
-
       if (!attach) {
         return
       }
@@ -64,16 +58,13 @@ export function useComposerScreenshot({ sessionKey, focusKey, onAttachImageBlob 
       void (async () => {
         try {
           const result = await api.capture(requestId)
-
           if (!isCurrent()) {
             report(latest.current.copy.contextChanged)
-
             return
           }
 
           if (!result.ok) {
             report(latest.current.copy.captureFailed)
-
             return
           }
 
@@ -81,7 +72,6 @@ export function useComposerScreenshot({ sessionKey, focusKey, onAttachImageBlob 
           // native bytes, before adding a chip, so a session swap cannot leak it.
           const blob = new Blob([new Uint8Array(result.png)], { type: 'image/png' })
           await attach(blob, isCurrent)
-
           if (!isCurrent()) {
             report(latest.current.copy.contextChanged)
           }

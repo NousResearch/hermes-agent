@@ -1,6 +1,4 @@
-import type { ConnectionRequestPayload, ToolLabel } from '@hermes/shared'
-
-export type StoredToolCallLabels = Record<string, ToolLabel[]>
+import type { ConnectionRequestPayload } from '@hermes/shared'
 
 export interface ConfigFieldSchema {
   category?: string
@@ -617,8 +615,6 @@ export interface SessionMessage {
    */
   args?: unknown
   codex_reasoning_items?: unknown
-  labels?: ToolLabel[]
-  tool_call_labels?: StoredToolCallLabels
   /** Responses-API assistant message items; text parts here are the
    *  user-visible reply when `content` persisted empty (#68321). */
   codex_message_items?: unknown
@@ -1657,7 +1653,6 @@ export interface McpServerTestResponse {
 export interface McpCatalogEntry {
   name: string
   description: string
-  connector_slug?: string | null
   source: string
   transport: string
   auth_type: string

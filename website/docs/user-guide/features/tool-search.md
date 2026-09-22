@@ -192,12 +192,6 @@ local MCP servers from the catalog (targets with `mcp: true`), so it is
 present whether or not you are signed in; only the managed-connector actions
 need the sign-in.
 
-The desktop backend's account-list and disconnect APIs use the Portal's
-account-management service, including its organization membership checks and
-disconnect audit. An unavailable Portal does not fall back to direct gateway
-account management. Tool discovery, execution, and connection-status watching
-continue through the gateway; the model tool cannot disconnect an account.
-
 `tool_call` accepts a batch: `calls` is an array of `{name, arguments}`
 entries (a single call is an array of one). Each connector entry in a batch
 is dispatched as its own gateway request, one after another; local deferred

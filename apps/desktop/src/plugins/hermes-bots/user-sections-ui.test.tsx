@@ -40,7 +40,15 @@ afterEach(() => {
 describe('SectionNameDialog Enter handling', () => {
   function mount() {
     const onSubmit = vi.fn()
-    render(<SectionNameDialog initialName="" mode="create" onOpenChange={() => undefined} onSubmit={onSubmit} open />)
+    render(
+      <SectionNameDialog
+        initialName=""
+        mode="create"
+        onOpenChange={() => undefined}
+        onSubmit={onSubmit}
+        open
+      />
+    )
 
     return { input: screen.getByRole('textbox'), onSubmit }
   }

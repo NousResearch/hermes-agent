@@ -29,34 +29,10 @@ test('a proven sign-in wall never escalates to the hidden renderer', async () =>
   // The three measured shapes of the wall are all proven from the curl tier:
   // arrival URL (Apps Script → www.google.com/a/<domain>/ServiceLogin), sign-in
   // title (Drive → accounts.google.com), and markup (a Doc that stays on its host).
-  assert.equal(
-    isAuthWall({ body: '', effectiveUrl: 'https://www.google.com/a/x.org/ServiceLogin?c=1', title: '' }),
-    true
-  )
-  assert.equal(
-    isAuthWall({
-      body: '',
-      effectiveUrl: 'https://accounts.google.com/v3/signin/identifier',
-      title: 'Google Drive: Sign-in'
-    }),
-    true
-  )
-  assert.equal(
-    isAuthWall({
-      body: '<a href="https://accounts.google.com/ServiceLogin">',
-      effectiveUrl: 'https://docs.google.com/document/d/1/edit',
-      title: ''
-    }),
-    true
-  )
-  assert.equal(
-    isAuthWall({
-      body: '<title>Q3 plan</title>',
-      effectiveUrl: 'https://docs.google.com/document/d/1/pub',
-      title: 'Q3 plan'
-    }),
-    false
-  )
+  assert.equal(isAuthWall({ body: '', effectiveUrl: 'https://www.google.com/a/x.org/ServiceLogin?c=1', title: '' }), true)
+  assert.equal(isAuthWall({ body: '', effectiveUrl: 'https://accounts.google.com/v3/signin/identifier', title: 'Google Drive: Sign-in' }), true)
+  assert.equal(isAuthWall({ body: '<a href="https://accounts.google.com/ServiceLogin">', effectiveUrl: 'https://docs.google.com/document/d/1/edit', title: '' }), true)
+  assert.equal(isAuthWall({ body: '<title>Q3 plan</title>', effectiveUrl: 'https://docs.google.com/document/d/1/pub', title: 'Q3 plan' }), false)
 })
 
 test('an ordinary title-less page still escalates to the hidden renderer', async () => {

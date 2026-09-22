@@ -104,7 +104,7 @@ export const buildProcessRows = (processes: readonly ProcessEntry[], nowMs: numb
   }
 
   return rows.sort((a, b) =>
-    (a.status === 'running') !== (b.status === 'running')
+    a.status === 'running' !== (b.status === 'running')
       ? a.status === 'running'
         ? -1
         : 1
@@ -118,5 +118,8 @@ export function useProcessRows(nowMs: number): ProcessRow[] {
   const snapshot = useStore($processSnapshot)
   const { sid } = useStore($uiState)
 
-  return useMemo(() => buildProcessRows(snapshot.sid === sid ? snapshot.processes : [], nowMs), [snapshot, sid, nowMs])
+  return useMemo(
+    () => buildProcessRows(snapshot.sid === sid ? snapshot.processes : [], nowMs),
+    [snapshot, sid, nowMs]
+  )
 }

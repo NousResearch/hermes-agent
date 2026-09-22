@@ -436,14 +436,9 @@ class SessionMaintenanceMixin:
                 # Same admission `hermes sessions optimize` runs: VACUUM plus the TRUNCATE checkpoint
                 # retire the WAL generation a sibling writer (gateway, Desktop, dashboard, cron) still
                 # holds, and that is exactly the state every agent then refuses turns in (#110054).
-                # The foreign scan skips our own pid, so it is paired with the in-process arm: under
-                # one multiplexed process another live SessionDB generation for this same path is
-                # just as much a holder as another process would be.
                 # Automatic maintenance only ever SKIPS — a turn is never refused over housekeeping.
-                from hermes_state_holders import (
-                    foreign_state_db_holders, in_process_state_db_holders)
-                holders = (foreign_state_db_holders(self.db_path)
-                           + in_process_state_db_holders(self.db_path, exclude=self))
+                from hermes_state_holders import foreign_state_db_holders
+                holders = foreign_state_db_holders(self.db_path)
                 if holders:
                     result["vacuum_skipped_holders"] = len(holders)
                     logger.debug(

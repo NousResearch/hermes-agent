@@ -16,7 +16,6 @@ from gateway.hosted_room_peer import GatewayRoomCatalog, catalog_mapping
 def _catalog(installation="install-peer"):
     return GatewayRoomCatalog.from_mapping(
         catalog_mapping(
-            target_profile="default",
             installation_id=installation,
             persistent_process=True,
         )

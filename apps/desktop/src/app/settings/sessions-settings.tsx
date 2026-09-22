@@ -8,8 +8,6 @@ import {
   deleteSession,
   getHermesConfigRecord,
   listAllProfileSessions,
-  peekConfigReadOrigin,
-  retainConfigReadOrigin,
   saveHermesConfig,
   setSessionArchived
 } from '@/hermes'
@@ -254,17 +252,13 @@ function AutoArchiveSetting() {
         auto_archive_days: archiveDays
       }
 
-      // Read the route at save time from the record itself, and carry it onto
-      // the replacement snapshot so the next save still targets the gateway
-      // that served the original GET.
-      const writeScope = peekConfigReadOrigin(config)
-
-      setConfig(retainConfigReadOrigin({ ...config, sessions }, config))
+      const updated = { ...config, sessions }
+      setConfig(updated)
 
       try {
         // Sparse patch: PUT /api/config deep-merges, and echoing the cached
         // snapshot would overwrite keys other surfaces changed since it loaded.
-        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } }, writeScope)
+        await saveHermesConfig({ sessions: { auto_archive: autoArchive, auto_archive_days: archiveDays } })
       } catch (err) {
         notifyError(err, s.autoArchiveFailed)
       }

@@ -24,11 +24,11 @@ export function createPoolRetirementClient(requestJson: RequestJson) {
     }
 
     try {
-      return (await requestJson(`http://127.0.0.1:${entry.port}/api/health/retirement`, entry.token, {
+      return await requestJson(`http://127.0.0.1:${entry.port}/api/health/retirement`, entry.token, {
         method: 'POST',
         body: { action, ...(token ? { token } : {}) },
-        timeoutMs: 3000
-      })) as RetirementReply | null
+        timeoutMs: 3000,
+      }) as RetirementReply | null
     } catch {
       // An older runtime, transport failure or unreadable reply grants no
       // authority. Prepared permits expire; committed ones remain recoverable
@@ -42,13 +42,12 @@ export function createPoolRetirementClient(requestJson: RequestJson) {
       const reply = await request(entry, 'prepare')
 
       return reply?.ok === true && reply.idle === true && typeof reply.token === 'string' && reply.token
-        ? reply.token
-        : null
+        ? reply.token : null
     },
     commit: async (_key: string, entry: PoolBackend, token: string): Promise<boolean> =>
       (await request(entry, 'commit', token))?.ok === true,
     cancel: async (_key: string, entry: PoolBackend, token: string): Promise<void> => {
       await request(entry, 'cancel', token)
-    }
+    },
   }
 }

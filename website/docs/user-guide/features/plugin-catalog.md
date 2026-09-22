@@ -72,29 +72,18 @@ The catalog is designed so you know exactly what you're installing:
   catalog install checked out at exactly the pinned SHA does not stop to ask
   about `caution` again; `dangerous` still blocks, and anything installed from
   a raw URL or at another revision gets the normal prompt.
-- **Desktop plugins run with the app's authority — review is the boundary.**
-  A plugin's `desktop/plugin.js` is evaluated inside the Desktop app itself,
-  in the same realm as the app's own code: there is no sandbox, and it can
-  do anything the app can (gateway RPC, the full `window.hermesDesktop`
-  bridge, storage of other plugins). What protects you is the trust model
-  above — a human read the exact pinned commit, and the install is that
-  commit — plus two tripwires: admission's `desktop surface` lint refuses
-  the obvious moves outside the plugin SDK (patching built-in prototypes,
-  `eval`, importing anything other than `@hermes/plugin-sdk`/`react`,
-  including remote scripts), and the app's loader refuses every non-SDK
-  import again at load time. Treat the lint as a review aid, not a
-  guarantee; give Desktop halves the same scrutiny you'd give a Python half.
+- **Desktop plugins stay inside the SDK.** A plugin's `desktop/plugin.js` runs
+  inside the Desktop app with the app's own authority, so listed ones may only
+  use the plugin SDK: no patching of built-in prototypes, no `eval`, no
+  importing the app's own bundle chunks or remote scripts. Admission refuses
+  these (`desktop surface` check) so a marketplace install cannot quietly
+  rewire the app around you.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.
 - **Removed list.** Plugins pulled from the catalog (for example after a
   security incident) go on `plugin-catalog/removed.yaml` with a reason and
-  date. Matching is by name or repository identity — `git@`, `ssh://`,
-  `http://` and `www.` spellings of the same repo all match. The installer
-  refuses to install anything on the removed list, and a plugin that lands on
-  the list *after* you installed it stops updating, cannot be enabled and is
-  refused at load time (`hermes plugins remove <name>`, or reinstall with
-  `--allow-removed` to keep it knowingly).
+  date. The installer refuses to install anything on the removed list.
 - **Installed ≠ enabled.** Installing a catalog plugin puts it on disk; like
   any plugin it must still be enabled before it loads. See
   [Plugins → Enabling and disabling](plugins.md).
@@ -146,20 +135,8 @@ hermes plugins enable snyk
 `hermes plugins update <name>` never runs `git pull` for catalog installs —
 it compares your installed pin against the current catalog pin and, when the
 catalog moved (via a reviewed PR), force-reinstalls at the new SHA. Your
-enabled/disabled state is preserved, and so are files the plugin's repo does
-not track (the `config.yaml` created from its `.example`, data files, `.env`).
-Edits you made to *tracked* files are not carried onto the new code; copies are
-saved under `~/.hermes/plugins-backup/<name>-<sha>/` and the update warns you.
-If the new pin renames the plugin's manifest, the old directory is removed and
-your enabled flag follows the new name. `hermes plugins list` shows catalog
+enabled/disabled state is preserved. `hermes plugins list` shows catalog
 installs as `catalog:<tier>@<sha>` so you can see provenance at a glance.
-
-Provenance is recorded by the installer in `~/.hermes/plugins/.install-metadata.json`,
-outside the plugin's own tree — a repository cannot ship a file that makes it
-look like a reviewed catalog install. (The `.hermes-catalog.json` inside the
-plugin directory is a convenience copy only.) Installing a catalog entry with
-`--ref <sha>` records the SHA you actually checked out, so `list`, the Desktop
-Plugins tab and `update` all report it as off the reviewed pin.
 
 ### Names not in the catalog
 
@@ -173,15 +150,10 @@ The docs build publishes the catalog as one JSON document
 (`https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json`).
 `search`/`install`/`update` fetch it at most every six hours and cache it under
 `~/.hermes/cache/`, so new entries and removals reach installed clients without
-updating Hermes. Offline, the cached copy is used for up to 24 hours, then the
-copy shipped with your checkout takes over (a failed fetch is remembered for a
-minute, so `plugins list` and the dashboard's Plugins page pay at most one
-connection timeout, not one per installed plugin). When the cached document and
-your checkout disagree on an entry's pin, the newer of the two wins — a git
-checkout whose catalog was committed after the document was published (a fresh
-`hermes update`) installs its own pin, never the cached older one. Removals
-from the in-tree list and the live list are always both enforced, whatever the
-cache's age.
+updating Hermes. Offline, the copy shipped with your checkout is used (a failed
+fetch is remembered for a minute, so `plugins list` and the dashboard's Plugins
+page pay at most one connection timeout, not one per installed plugin). Removals
+from the in-tree list and the live list are always both enforced.
 
 ### Custom git URLs are different
 

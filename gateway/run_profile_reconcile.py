@@ -156,11 +156,6 @@ class GatewayProfileReconcileMixin:
             for name in transient_failed:
                 if isinstance(self._served_profile_signatures, dict):
                     self._served_profile_signatures.pop(name, None)
-                # A cached config with no live adapters is owed a home-channel notice nothing can
-                # deliver, and the planned-restart marker then never clears.
-                configs = getattr(self, "_profile_configs", None)
-                if isinstance(configs, dict):
-                    configs.pop(name, None)
             if added:
                 await self._after_profiles_added([(n, current[n]) for n in added])
             result["served_profiles"] = self.served_profile_names()
@@ -197,50 +192,41 @@ class GatewayProfileReconcileMixin:
 
     async def _unserve_profile(self, name: str, home: "Path") -> None:
         """Stop and unroute one deleted profile: cancel its reconnects, tear down its adapters, drop its
-        bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds.
-
-        The whole teardown runs inside the DELETED profile's own runtime scope: adapter disconnect
-        hooks, the agent-cache eviction (provider/memory shutdown) and the state/memory handle
-        release all read config and credentials at call time, and this coroutine runs on the
-        reconcile task with no profile bound — unscoped they resolved against the LAUNCH home, so a
-        teardown hook needing this profile's credential failed closed (or, worse, borrowed the launch
-        profile's). Secrets are not re-hydrated: teardown must not block the loop on a source fetch.
-        """
-        from gateway.run import _profile_runtime_scope, _write_runtime_status_quiet
+        bookkeeping and release this process's handles into its home so the deleter's rmtree succeeds."""
+        from gateway.run import _write_runtime_status_quiet
         pending = (getattr(self, "_profile_failed_platforms", None) or {}).pop(name, None) or {}
         tasks = [t for t in pending.values() if isinstance(t, asyncio.Task) and not t.done()]
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.wait(tasks, timeout=self._adapter_disconnect_timeout_secs())
-        with _profile_runtime_scope(Path(home), hydrate_secrets=False):
-            adapters = (getattr(self, "_profile_adapters", None) or {}).pop(name, None) or {}
-            for platform, adapter in list(adapters.items()):
-                await self._bounded_adapter_teardown(adapter, platform, profile=name)
-            # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
-            _write_runtime_status_quiet(drop_profile_platforms=name)
-            for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
-                         "_busy_text_timing_by_profile", "_human_delay_by_profile", "_profile_configs"):
-                store = getattr(self, attr, None)
-                if isinstance(store, dict):
-                    store.pop(name, None)
-            if isinstance(self._served_profile_homes, dict):
-                self._served_profile_homes.pop(name, None)
-            if isinstance(self._served_profile_signatures, dict):
-                self._served_profile_signatures.pop(name, None)
-            from gateway.session import _session_key_namespace
-            prefix = _session_key_namespace(name) + ":"
-            cache = getattr(self, "_agent_cache", None)
-            for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
-                with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
-                    self._evict_cached_agent(key)
-            with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
-                from hermes_state_registry import close_all_under
-                close_all_under(home)
-            with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
-                from plugins.memory.holographic.store import MemoryStore
-                MemoryStore.release_all_under(home)
-            logger.info("[MULTIPLEX] Profile '%s' deleted — %d adapter(s) stopped and unrouted", name, len(adapters))
+        adapters = (getattr(self, "_profile_adapters", None) or {}).pop(name, None) or {}
+        for platform, adapter in list(adapters.items()):
+            await self._bounded_adapter_teardown(adapter, platform, profile=name)
+        # Its ``<name>:<platform>`` runtime entries describe a profile that no longer exists.
+        _write_runtime_status_quiet(drop_profile_platforms=name)
+        for attr in ("pairing_stores", "_busy_text_modes_by_profile", "_busy_input_modes_by_profile",
+                     "_busy_text_timing_by_profile", "_human_delay_by_profile"):
+            store = getattr(self, attr, None)
+            if isinstance(store, dict):
+                store.pop(name, None)
+        if isinstance(self._served_profile_homes, dict):
+            self._served_profile_homes.pop(name, None)
+        if isinstance(self._served_profile_signatures, dict):
+            self._served_profile_signatures.pop(name, None)
+        from gateway.session import _session_key_namespace
+        prefix = _session_key_namespace(name) + ":"
+        cache = getattr(self, "_agent_cache", None)
+        for key in [k for k in list(cache or {}) if str(k).startswith(prefix)]:
+            with _log_suppressed(logging.DEBUG, "agent eviction failed for %s", key, exc_info=True):
+                self._evict_cached_agent(key)
+        with _log_suppressed(logging.DEBUG, "profile handle release failed", exc_info=True):
+            from hermes_state_registry import close_all_under
+            close_all_under(home)
+        with _log_suppressed(logging.DEBUG, "memory-store release failed", exc_info=True):
+            from plugins.memory.holographic.store import MemoryStore
+            MemoryStore.release_all_under(home)
+        logger.info("[MULTIPLEX] Profile '%s' deleted — %d adapter(s) stopped and unrouted", name, len(adapters))
 
 
 def _mcp_config_reconciler(runner=None):

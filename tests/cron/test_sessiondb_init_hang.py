@@ -239,8 +239,8 @@ class TestDispatchGuardReleasedAfterHang:
         import cron.scheduler as sched
 
         monkeypatch.setenv("HERMES_CRON_SESSION_DB_TIMEOUT", "0.2")
-        sched._parallel_pools.clear()
-        sched._parallel_pool_max_workers.clear()
+        sched._parallel_pool = None
+        sched._parallel_pool_max_workers = None
         sched._running_job_ids.clear()
 
         job = {
@@ -291,7 +291,7 @@ class TestDispatchGuardReleasedAfterHang:
                 n2 = sched.tick(verbose=False)
                 assert n2 == 1
         finally:
-            sched._running_job_ids.discard(sched._inflight_key("guard-sessiondb-hang"))
+            sched._running_job_ids.discard("guard-sessiondb-hang")
             sched._shutdown_parallel_pool()
 
 

@@ -210,10 +210,18 @@ export const SessionControlLoopSection = memo(function SessionControlLoopSection
                     </span>
                   </StatusControlRow>
                 )}
-                {loop.deferred_by_goal && <StatusControlRow>{ctrl.loopDeferredNotice}</StatusControlRow>}
-                {loop.awaiting_response && <StatusControlRow>{ctrl.loopAwaitingResponse}</StatusControlRow>}
-                {loop.paused_reason && <StatusControlRow>{loop.paused_reason}</StatusControlRow>}
-                {loop.last_stop_reason && <StatusControlRow>{loop.last_stop_reason}</StatusControlRow>}
+                {loop.deferred_by_goal && (
+                  <StatusControlRow>{ctrl.loopDeferredNotice}</StatusControlRow>
+                )}
+                {loop.awaiting_response && (
+                  <StatusControlRow>{ctrl.loopAwaitingResponse}</StatusControlRow>
+                )}
+                {loop.paused_reason && (
+                  <StatusControlRow>{loop.paused_reason}</StatusControlRow>
+                )}
+                {loop.last_stop_reason && (
+                  <StatusControlRow>{loop.last_stop_reason}</StatusControlRow>
+                )}
               </div>
             </StatusSection>
           </div>

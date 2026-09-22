@@ -8,7 +8,6 @@ import pytest
 
 import hermes_cli.gateway as gateway
 import hermes_constants
-from hermes_platform.host import runtime as host_runtime
 
 
 # =============================================================================
@@ -20,7 +19,7 @@ class TestIsWsl:
 
     def setup_method(self):
         # Reset cached value between tests
-        host_runtime._wsl_detected = None
+        hermes_constants._wsl_detected = None
 
     def test_detects_wsl2(self):
         fake_content = (

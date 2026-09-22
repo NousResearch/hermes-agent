@@ -27,7 +27,7 @@ from typing import Dict, Iterator, List, NamedTuple, Optional, Set, Tuple
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import windows_hide_flags
 from hermes_cli.gitlock import clear_stale_tmp_packs
-from utils import env_int, rmtree_readonly
+from utils import env_int
 
 logger = logging.getLogger(__name__)
 
@@ -1050,7 +1050,7 @@ def _rmtree_counted(child: Path, result: Dict[str, int], key: str, fail_fmt: str
     """rmtree ``child``, crediting bytes + ``result[key]``; failures count as ``errors`` when tracked."""
     try:
         size = _dir_size_bytes(child)
-        rmtree_readonly(child)
+        shutil.rmtree(child)
         result["bytes_freed"] += size
         result[key] += 1
     except OSError as exc:
@@ -1271,7 +1271,7 @@ def clear_all(checkpoint_base: Optional[Path] = None) -> Dict[str, int]:
         return out
     size = _dir_size_bytes(base)
     try:
-        rmtree_readonly(base)
+        shutil.rmtree(base)
         out.update(bytes_freed=size, deleted=True)
     except OSError as exc:
         logger.warning("Could not clear checkpoint base %s: %s", base, exc)

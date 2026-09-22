@@ -3,7 +3,6 @@
 manifest_version: 1
 
 name: prisma-postgres
-connector_slug: prisma
 description: Create and manage Prisma Postgres databases.
 source: https://www.prisma.io/docs/postgres/integrations/mcp-server
 

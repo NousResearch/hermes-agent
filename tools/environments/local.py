@@ -38,9 +38,8 @@ logger = logging.getLogger(__name__)
 # --- Terminal temp-cache pruning ---
 # get_temp_dir() defaults to HERMES_HOME/cache/terminal (real storage, not tmpfs), so
 # stale artifacts don't vanish on reboot: the gateway housekeeping loop prunes hourly
-# and a once-per-process sweep covers CLI-only installs. Retention is idle-based like
-# the scratch dir: an entry goes 24h after the last write anywhere inside it.
-TERMINAL_TEMP_MAX_IDLE_HOURS = 24
+# and a once-per-process sweep covers CLI-only installs.
+TERMINAL_TEMP_MAX_AGE_HOURS = 72
 _terminal_temp_prune_lock = threading.Lock()
 _terminal_temp_pruned_once = False
 # Background artifacts come in triplets (hermes_bg_<id>.log/.pid/.exit). A live
@@ -58,13 +57,9 @@ def _default_terminal_temp_dir() -> "Path | None":
         return None
 
 
-def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HOURS) -> int:
-    """Delete session temp artifacts idle for *max_age_hours* (no write anywhere in a
-    directory's subtree; the kwarg name is the ``cleanup_*_cache`` signature the gateway
-    housekeeping loop calls every entry with); return count.
+def cleanup_terminal_temp_cache(max_age_hours: int = TERMINAL_TEMP_MAX_AGE_HOURS) -> int:
+    """Delete session temp artifacts older than *max_age_hours*; return count.
     Only the managed default dir is pruned — never a user-pointed ``terminal.temp_dir``."""
-    from hermes_constants_scratch import subtree_touched_since
-
     root = _default_terminal_temp_dir()
     if root is None:
         return 0
@@ -87,10 +82,7 @@ def cleanup_terminal_temp_cache(max_age_hours: float = TERMINAL_TEMP_MAX_IDLE_HO
     removed = 0
     for f, mt in mtimes.items():
         m = _BG_GROUP_RE.match(f.name)
-        if m:
-            if group_newest[m.group(1)] >= cutoff:
-                continue
-        elif subtree_touched_since(f, cutoff):
+        if (group_newest[m.group(1)] if m else mt) >= cutoff:
             continue
         try:
             shutil.rmtree(f, ignore_errors=True) if f.is_dir() else f.unlink()

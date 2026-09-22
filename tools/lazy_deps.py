@@ -107,15 +107,11 @@ LAZY_DEPS: dict[str, tuple[str, ...]] = {
 
     # ─── Memory providers ──────────────────────────────────────────────────
     "memory.honcho": ("honcho-ai==2.2.0",),
-    # Plugin-owned SDKs mirror the range their plugin.yaml declares instead of an exact pin: an exact pin
-    # made _is_satisfied() reject every newer compatible release, so `hermes update` (and the hindsight
-    # plugin's own >=_MIN_CLIENT_VERSION auto-upgrade) kept downgrading a working 0.9.x client to 0.6.1
-    # and broke embedded daemons whose DB a newer client had migrated (#86992, #39424, #98407).
-    "memory.hindsight": ("hindsight-client>=0.6.1,<1",),
+    "memory.hindsight": ("hindsight-client==0.6.1",),
     # Cloud memory SDKs MUST be allowlisted + ensure()'d at the import site, or they never
     # install on the sealed Docker image (durable-target only).
     "memory.supermemory": ("supermemory==3.50.0",),
-    "memory.mem0": ("mem0ai>=2.0.10,<3",),
+    "memory.mem0": ("mem0ai==2.0.10",),
 
     # ─── Messaging platforms (lazy-installable on demand) ──────────────────
     "platform.telegram": ("python-telegram-bot[webhooks]==22.8",),
@@ -532,15 +528,6 @@ def _run_installer(cmd: list[str], **kw) -> subprocess.CompletedProcess:
     return subprocess.run(cmd, **_SUBPROCESS_KW, creationflags=windows_hide_flags(), **kw)
 
 
-def _uv_policy_cwd() -> Optional[str]:
-    """Directory uv must run from so the checkout's ``[tool.uv]`` policy (``exclude-newer`` quarantine and its
-    per-package exceptions) applies: uv reads it from the *current directory's* project only, so a lazy or
-    plugin install launched from ``$HOME``, a gateway service or the Desktop backend was never quarantined.
-    ``None`` (inherit cwd) when this is not a source checkout."""
-    root = Path(__file__).resolve().parent.parent
-    return str(root) if (root / "pyproject.toml").is_file() else None
-
-
 def _uv_binary() -> Optional[str]:
     """Managed uv first ($HERMES_HOME/bin is never on PATH), then PATH. A lookup, not ensure_uv():
     downloading uv mid-turn is more than the caller asked for; pip covers no-uv."""
@@ -612,8 +599,7 @@ def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_
                 if pip_index_url:
                     uv_env["UV_INDEX_URL"] = pip_index_url
             try:
-                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs],
-                                   timeout=timeout, env=uv_env, cwd=_uv_policy_cwd())
+                r = _run_installer([uv_bin, "pip", "install", "--compile-bytecode", *extra_args, *specs], timeout=timeout, env=uv_env)
                 if r.returncode != 0:
                     logger.debug("uv pip install failed: %s", r.stderr)
                 # A uv resolver failure is authoritative: falling through to pip would discard uv

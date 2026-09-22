@@ -845,7 +845,9 @@ describe('the roster loop forgets a machine that left', () => {
     hostMock.profileRoutes = vi.fn(async () => [route('c')])
     await vi.advanceTimersByTimeAsync(60_000)
 
-    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual(['c'])
+    expect(calls.filter(call => call.method === 'bot_relay.roster.sync').map(call => call.connectionId)).toEqual([
+      'c'
+    ])
 
     stopBotRelay()
   })
@@ -858,13 +860,7 @@ describe('the drain loop does not let one delivery hold every other gateway’s 
   // and the sender's waiter is finite.
   type RelayEnvelopeFixture = { id: string; message: string; target_connection: string; target_profile: string }
   const toB: RelayEnvelopeFixture = { id: 'env-1', message: 'long job', target_connection: 'b', target_profile: 'ops' }
-
-  const toA: RelayEnvelopeFixture = {
-    id: 'env-2',
-    message: 'quick one',
-    target_connection: 'a',
-    target_profile: 'default'
-  }
+  const toA: RelayEnvelopeFixture = { id: 'env-2', message: 'quick one', target_connection: 'a', target_profile: 'default' }
 
   it('claims every outbox first and delivers to different targets concurrently', async () => {
     let releaseB!: (value: { reply: string }) => void

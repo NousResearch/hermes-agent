@@ -49,15 +49,7 @@ const INSTALLER_URL = 'https://hermes-agent.nousresearch.com/'
 function splitDetails(text: string): [string, string | null] {
   const marker = text.search(/\s*Details:\s*/)
 
-  return marker < 0
-    ? [text, null]
-    : [
-        text.slice(0, marker).trim(),
-        text
-          .slice(marker)
-          .replace(/^\s*Details:\s*/, '')
-          .trim()
-      ]
+  return marker < 0 ? [text, null] : [text.slice(0, marker).trim(), text.slice(marker).replace(/^\s*Details:\s*/, '').trim()]
 }
 
 function totalItems(groups: readonly CommitGroup[]) {

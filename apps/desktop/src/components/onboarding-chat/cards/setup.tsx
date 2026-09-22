@@ -102,11 +102,7 @@ export function ConnectorsCard({ locked }: CardProps) {
                 icon={
                   <ConnectorLogo
                     className="size-7 rounded-full text-sm"
-                    connector={{
-                      iconUrl: connectorIconUrl(row.connector),
-                      name: row.connector,
-                      title: connectorTitle(row.connector)
-                    }}
+                    connector={{ iconUrl: connectorIconUrl(row.connector), name: row.connector, title: connectorTitle(row.connector) }}
                   />
                 }
                 key={row.connector}

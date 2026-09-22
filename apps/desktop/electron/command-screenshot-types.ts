@@ -10,7 +10,8 @@ export interface ScreenshotWindow {
 }
 
 export type ScreenshotResult =
-  { ok: true; png: Uint8Array } | { ok: false; reason: 'expired' | 'screen-permission' | 'unavailable' }
+  | { ok: true; png: Uint8Array }
+  | { ok: false; reason: 'expired' | 'screen-permission' | 'unavailable' }
 
 export interface ScreenshotApi {
   getSettings(): Promise<ScreenshotStatus>

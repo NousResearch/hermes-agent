@@ -167,13 +167,10 @@ describe('messages below the viewport', () => {
     vi.stubGlobal('cancelAnimationFrame', () => {
       frame = undefined
     })
-    vi.stubGlobal(
-      'ResizeObserver',
-      class {
-        observe() {}
-        disconnect() {}
-      }
-    )
+    vi.stubGlobal('ResizeObserver', class {
+      observe() {}
+      disconnect() {}
+    })
 
     const flush = () =>
       act(() => {

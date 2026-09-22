@@ -58,29 +58,6 @@ from concurrent.futures import ThreadPoolExecutor, Future
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-def _sweep_killed_run_roots(root: str) -> None:
-    """Remove per-file temp roots older runs left behind. Each attempt deletes its own root
-    in ``finally``, but a runner that is SIGKILLed (a tool timeout, a stray pkill) never gets
-    there and leaks one root per in-flight worker; nothing else looks at this directory, so
-    983 of them (3.4 GB) accumulated on one host in three days. Idle for a day = dead."""
-    try:
-        from hermes_constants_scratch import prune_idle_entries
-    except ImportError:  # runner invoked from outside the repo root
-        return
-    prune_idle_entries(Path(root), 24, frozenset())
-
-
-def _rmtree_force(path: str) -> None:
-    def _chmod_retry(fn, p, _exc):
-        try:
-            os.chmod(os.path.dirname(p) if fn is os.rmdir or fn is os.listdir else p, 0o700)
-            os.chmod(p, 0o700)
-            fn(p)
-        except OSError:
-            pass
-    shutil.rmtree(path, onerror=_chmod_retry)
-
-
 def _runner_scratch_root() -> str:
     """Per-run temp roots live on DISK, never the system temp dir: a full-suite run writes
     gigabytes of tmp_path fixtures and /tmp is RAM-backed tmpfs on many Linux hosts. /var/tmp is
@@ -578,9 +555,8 @@ def _run_one_file_once(
     finally:
         # Delete the temp root for this attempt. Nothing reads it after the
         # subprocess exits. More than 3000 of them fill the disk of the
-        # runner over one suite. Permission fixtures leave read-only dirs
-        # behind; make them writable and retry instead of skipping them.
-        _rmtree_force(temproot)
+        # runner over one suite.
+        shutil.rmtree(temproot, ignore_errors=True)
 
     if rc == 5:
         # No tests collected in THIS file — legitimate per-file: a
@@ -1352,10 +1328,6 @@ def main() -> int:
             )
             if rc != 0:
                 _print_inline_failure(fpath, output, repo_root, pytest_passthrough)
-
-    if str(repo_root) not in sys.path:
-        sys.path.insert(0, str(repo_root))
-    _sweep_killed_run_roots(_runner_scratch_root())
 
     with ThreadPoolExecutor(max_workers=args.jobs) as pool:
         # Duration cache for the timeout scaler: known-slow files get

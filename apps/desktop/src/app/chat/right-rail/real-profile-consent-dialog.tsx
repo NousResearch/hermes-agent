@@ -50,7 +50,7 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
   const dismissed = useStore($realProfilePromptDismissed)
   const muted = useStore($realProfilePromptMuted)
   const claim = useStore($realProfilePromptClaim)
-  const { data: config, writeScope } = useHermesConfigRecord()
+  const { data: config } = useHermesConfigRecord()
   const setConfig = hermesConfigCacheWriter()
   const [busy, setBusy] = useState(false)
 
@@ -80,8 +80,7 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
     try {
       // Sparse patch: PUT /api/config deep-merges, and echoing the cached
       // snapshot would overwrite keys other surfaces changed since it loaded.
-      await saveHermesConfigRecord({ browser: { use_real_profile: true } }, writeScope)
-
+      await saveHermesConfigRecord({ browser: { use_real_profile: true } })
       notify({ kind: 'info', title: copy.enabledTitle, message: copy.enabledMessage })
     } catch (err) {
       setConfig(config)
@@ -89,7 +88,7 @@ export function RealProfileConsentDialog({ tabId }: RealProfileConsentDialogProp
     } finally {
       setBusy(false)
     }
-  }, [busy, config, copy, setConfig, writeScope])
+  }, [busy, config, copy, setConfig])
 
   // Config not loaded yet, feature already on, opted out, or another pane
   // owns the prompt — render nothing. `enabled` flipping true after a

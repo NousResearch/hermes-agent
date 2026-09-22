@@ -161,16 +161,3 @@ def test_round_trip_through_load_config(user_home):
     set_config_value("platform_toolsets.line", '["clarify", "file", "web"]')
     cfg = load_config()
     assert cfg["platform_toolsets"]["line"] == ["clarify", "file", "web"]
-
-
-def test_bare_string_into_list_slot_absent_from_defaults_is_refused(user_home, capsys):
-    """`plugins.enabled` / `model_catalog.excluded_providers` are omitted from DEFAULT_CONFIG, so the
-    container guard did not know them and `config set plugins.enabled a,b` stored a string every
-    isinstance(list) reader ignored (#83308, #105706)."""
-    from hermes_cli.config import set_config_value, read_raw_config
-
-    for key in ("plugins.enabled", "model_catalog.excluded_providers"):
-        with pytest.raises(SystemExit):
-            set_config_value(key, "a,b")
-        assert "must be a list" in capsys.readouterr().err
-    assert read_raw_config() in (None, {})

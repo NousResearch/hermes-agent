@@ -184,7 +184,9 @@ export function hasTranscriptTextSelection(scrollElement?: Element | null): bool
 
   const { anchorNode, focusNode } = selection
 
-  return Boolean((anchorNode && scrollElement.contains(anchorNode)) || (focusNode && scrollElement.contains(focusNode)))
+  return Boolean(
+    (anchorNode && scrollElement.contains(anchorNode)) || (focusNode && scrollElement.contains(focusNode))
+  )
 }
 
 export const resolveThreadScrollTarget: GetTargetScrollTop = (targetScrollTop, { scrollElement }) => {
@@ -737,9 +739,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
   useEffect(
     () =>
       onScrollToBottomRequest(() => {
-        if (isHistorical) {
-          returnToLatest?.()
-        }
+        if (isHistorical) {returnToLatest?.()}
 
         if (jumpRestoreRef.current) {
           jumpRestoreRef.current()
@@ -1173,16 +1173,7 @@ const ThreadMessageListInner: FC<ThreadMessageListProps> = ({
       cancelAnimationFrame(rafId)
       record()
     }
-  }, [
-    contentRef,
-    hasGroups,
-    paneVisible,
-    scrollRef,
-    scrollStorageKey,
-    scrollToBottomUnlessSelecting,
-    sessionKey,
-    stopScroll
-  ])
+  }, [contentRef, hasGroups, paneVisible, scrollRef, scrollStorageKey, scrollToBottomUnlessSelecting, sessionKey, stopScroll])
 
   // A thread can mount with a run already active, without a runStart event.
   useEffect(() => {

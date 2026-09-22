@@ -193,27 +193,3 @@ class TestUnknownTopLevelKeys:
         assert any("base_url" in i.message for i in misplaced)
         assert any("api_key" in i.message for i in misplaced)
 
-
-
-class TestQuotedContainerValues:
-    """A list/mapping slot holding one quoted string is ignored by every reader (#83308, #105706)."""
-
-    def test_quoted_list_in_container_slot_is_flagged_with_remedy(self):
-        issues = validate_config_structure({
-            "plugins": {"enabled": '["a","b"]'},
-            "model_catalog": {"excluded_providers": '["openai-api"]'},
-        })
-        flagged = {i.message.split(" ", 1)[0]: i for i in issues if "quoted string" in i.message}
-        assert set(flagged) == {"plugins.enabled", "model_catalog.excluded_providers"}
-        assert "hermes config set plugins.enabled '[\"a\",\"b\"]'" in flagged["plugins.enabled"].hint
-
-    def test_string_typed_and_tolerant_slots_are_not_flagged(self):
-        """`approvals.mode` is a string in the schema; `model: name` is the documented shorthand;
-        `agent.disabled_toolsets` readers parse the quoted form themselves."""
-        issues = validate_config_structure({
-            "approvals": {"mode": "[off]"},
-            "model": "gpt-4o",
-            "agent": {"disabled_toolsets": '["web"]'},
-            "plugins": {"enabled": ["a"]},
-        })
-        assert not [i for i in issues if "quoted string" in i.message]

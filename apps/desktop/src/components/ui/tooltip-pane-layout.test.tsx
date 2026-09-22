@@ -113,8 +113,6 @@ it('resolves the pane at open time, not at mount', async () => {
 
   await vi.waitFor(() => {
     // eslint-disable-next-line no-restricted-globals -- the portal mounts on the live document
-    expect(document.querySelector<HTMLElement>('[data-radix-popper-content-wrapper]')?.style.visibility).not.toBe(
-      'hidden'
-    )
+    expect(document.querySelector<HTMLElement>('[data-radix-popper-content-wrapper]')?.style.visibility).not.toBe('hidden')
   })
 })

@@ -83,14 +83,9 @@ export function buildMcpSuggestionIndex(
   entries: readonly Pick<McpCatalogEntry, 'name' | 'url' | 'suggest' | 'auth_type' | 'transport'>[]
 ): SuggestibleServer[] {
   return entries
-    .filter(
-      entry =>
-        entry.transport === 'http' &&
-        entry.auth_type === 'oauth' &&
-        !entry.suggest?.requires_app &&
-        entry.suggest &&
-        entry.url &&
-        (entry.suggest.keywords.length > 0 || entry.suggest.hosts.length > 0)
+    .filter(entry =>
+      entry.transport === 'http' && entry.auth_type === 'oauth' && !entry.suggest?.requires_app
+      && entry.suggest && entry.url && (entry.suggest.keywords.length > 0 || entry.suggest.hosts.length > 0)
     )
     .map(entry => ({
       hosts: entry.suggest!.hosts,

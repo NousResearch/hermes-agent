@@ -14,7 +14,6 @@ import json
 import logging
 import time
 from contextlib import suppress
-from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, cast
 
@@ -32,48 +31,6 @@ logger = logging.getLogger("gateway.run")
 _UPDATE_FAILED_NOTICE = (
     "❌ Hermes update failed; the previous version is still running. Run `hermes update` on the "
     "host to see the full error, or try /update again later.")
-
-# An update's completion notice waits for its target platform adapter to (re)connect before it
-# can be delivered. Nothing bounds that wait, so a marker naming a platform that is not
-# configured at all — no adapter will ever appear — would keep itself on disk and re-log a
-# deferred line on every poll, in every process, forever. Stop waiting past this age.
-_UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS = 3600.0
-
-
-def _served_notice_target_key(profile: Optional[str], platform_value: str, chat_id, thread_id) -> tuple:
-    """Notice-dedupe key for one SERVED profile's home channel.
-
-    A secondary uses the ``<profile>:<platform>`` key convention the runtime status already
-    stamps in ``gateway_state.json``; the launch profile keeps the bare platform value so a
-    marker written before this change still matches its delivered targets.
-    """
-    return _notice_target_key(
-        platform_value if profile is None else f"{profile}:{platform_value}", chat_id, thread_id)
-
-
-def _delivery_target_key(platform_value: str, chat_id, thread_id) -> tuple:
-    """Dedupe key for one DELIVERED chat, profile-independent.
-
-    Two served profiles can share a single home chat (one Telegram group for the whole host);
-    keyed per profile they would each post their own "Gateway online" notice into it.
-    """
-    return _notice_target_key(platform_value, chat_id, thread_id)
-
-
-def _safe_delivery_transport(platform, config, adapters, *, profile: Optional[str] = None):
-    """``resolve_delivery_transport`` isolated to one target: ``None`` (logged) on failure.
-
-    The fan-out spans every served profile, so one profile's broken adapter must not abort the
-    pass and starve every profile after it in dict order.
-    """
-    from gateway.delivery import resolve_delivery_transport
-    try:
-        return resolve_delivery_transport(platform, config, adapters)
-    except Exception as exc:
-        logger.debug(
-            "Home-channel transport unavailable for %s%s: %s",
-            f"{profile}:" if profile else "", getattr(platform, "value", platform), exc)
-        return None
 
 
 def _update_output_tail(output: str, limit: int) -> str:
@@ -529,24 +486,6 @@ class GatewayNotificationsMixin:
             return profile_from_session_key_namespace(parts[1])
         return None
 
-    @staticmethod
-    def _marker_age_seconds(data: dict) -> Optional[float]:
-        """Age of a persisted update marker, from the ``timestamp`` stamped by its writer.
-
-        ``None`` when the marker carries no parseable stamp — the field is absent on markers
-        written before it existed, and callers keep the old retry behavior rather than guess.
-        """
-        raw = str(data.get("timestamp") or "").strip()
-        if not raw:
-            return None
-        try:
-            stamped = datetime.fromisoformat(raw)
-        except ValueError:
-            return None
-        # The writer stamps a naive local ``datetime.now()``; tolerate a tz-aware one too.
-        now = datetime.now(stamped.tzinfo) if stamped.tzinfo else datetime.now()
-        return (now - stamped).total_seconds()
-
     def _resolve_update_target(self, paths: "_UpdatePaths") -> Optional["_UpdateTarget"]:
         """Resolve adapter/chat/session for update watcher messages from the pending marker."""
         for path in (paths.claimed, paths.pending):
@@ -756,18 +695,6 @@ class GatewayNotificationsMixin:
             platform = Platform(platform_str)
             adapter = self._authorization_adapter(platform, self._marker_profile(pending))
             if chat_id and not adapter:
-                age = self._marker_age_seconds(pending)
-                if age is not None and age > _UPDATE_NOTIFY_MAX_ADAPTER_WAIT_SECONDS:
-                    # The platform never came back. Deferring forever leaks the markers and re-logs
-                    # on every poll for the life of the install: the startup path reschedules this
-                    # watcher whenever the markers are still on disk, so an undeliverable marker
-                    # outlives every restart. Give up loudly, clear the markers, and report a
-                    # definitive decision (True) so the caller stops rescheduling.
-                    logger.warning(
-                        "Post-update notification for %s:%s dropped after %.1fh: %s adapter never "
-                        "connected", platform_str, chat_id, age / 3600.0, platform_str)
-                    self._clear_update_markers(paths, pending.get("session_key"))
-                    return True
                 # Target platform not reconnected yet (common right after the update's restart): keep the
                 # markers for a later retry instead of silently losing the notification.
                 return _defer("Update notification deferred: %s adapter not connected yet", platform_str)
@@ -848,44 +775,15 @@ class GatewayNotificationsMixin:
 
     def _home_channel_transports(self):
         """Yield ``(platform, platform_cfg, home, transport)`` for every home channel with a live transport."""
+        from gateway.delivery import resolve_delivery_transport
         for platform, platform_cfg in self.config.platforms.items():
             home = platform_cfg.home_channel
             if not home or not home.chat_id:
                 continue
-            transport = _safe_delivery_transport(platform, self.config, self.adapters)
+            transport = resolve_delivery_transport(platform, self.config, self.adapters)
             if transport is None:
                 continue
             yield platform, platform_cfg, home, transport
-
-    def _served_home_channel_configs(self):
-        """``(profile, platform, platform_cfg)`` for every SERVED profile's configured home channel.
-
-        ``self.config`` is the launch profile's alone, but one host process multiplexes every
-        profile, so a host-wide notice built from it silently skips the others' channels. The
-        secondary configs are the ones ``_load_secondary_profile_config`` already cached at
-        adapter start; ``profile`` is ``None`` for the launch profile.
-        """
-        for platform, platform_cfg in self.config.platforms.items():
-            yield None, platform, platform_cfg
-        for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
-            for platform, platform_cfg in profile_cfg.platforms.items():
-                yield profile, platform, platform_cfg
-
-    def _served_home_channel_transports(self):
-        """``(profile, platform, platform_cfg, home, transport)`` for every served profile's home
-        channel with a live transport — the launch profile's (``profile`` ``None``) first."""
-        for platform, platform_cfg, home, transport in self._home_channel_transports():
-            yield None, platform, platform_cfg, home, transport
-        for profile, profile_cfg in (getattr(self, "_profile_configs", None) or {}).items():
-            adapters = (getattr(self, "_profile_adapters", None) or {}).get(profile) or {}
-            for platform, platform_cfg in profile_cfg.platforms.items():
-                home = platform_cfg.home_channel
-                if not home or not home.chat_id:
-                    continue
-                transport = _safe_delivery_transport(platform, profile_cfg, adapters, profile=profile)
-                if transport is None:
-                    continue
-                yield profile, platform, platform_cfg, home, transport
 
     async def _send_home_channel_message(self, platform, home, transport, message: str, failure_fmt: str) -> bool:
         """Best-effort send to one home channel; True on success, failures logged with ``failure_fmt``."""
@@ -958,9 +856,8 @@ class GatewayNotificationsMixin:
                 # Owed targets come from config, not live transports: a removed home or an opt-out
                 # (gateway_restart_notification=false) must not keep the marker alive forever.
                 owed = {
-                    _served_notice_target_key(
-                        profile, platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
-                    for profile, platform, cfg in self._served_home_channel_configs()
+                    _notice_target_key(platform.value, cfg.home_channel.chat_id, cfg.home_channel.thread_id)
+                    for platform, cfg in self.config.platforms.items()
                     if cfg.home_channel and cfg.home_channel.chat_id and cfg.gateway_restart_notification
                 }
                 delivered |= await self._send_home_channel_startup_notifications(skip_targets=delivered)
@@ -975,13 +872,10 @@ class GatewayNotificationsMixin:
     async def _send_home_channel_startup_notifications(
         self, *, skip_targets: Optional[set[tuple[str, str, Optional[str]]]] = None
     ) -> set[tuple[str, str, Optional[str]]]:
-        """Notify EVERY served profile's configured home channels that the gateway is back online.
+        """Notify configured home channels that the gateway is back online.
 
-        Best-effort, once per home CHAT — several served profiles can share one chat (a single
-        Telegram group for the whole host), and one host process restarting once owes that chat
-        one notice. Accounting stays per profile so the marker's owed set still discharges.
-        ``skip_targets`` lets startup avoid duplicate messages when a more specific restart
-        notification is queued for the same chat.
+        Best-effort, once per connected platform home channel. ``skip_targets`` lets startup avoid
+        duplicate messages when a more specific restart notification is queued for the same chat.
         """
         delivered: set[tuple[str, str, Optional[str]]] = set()
         skipped = skip_targets or set()
@@ -989,31 +883,19 @@ class GatewayNotificationsMixin:
         free_tier_line = self._free_tier_startup_line()
         if free_tier_line:
             message = f"{message}\n{free_tier_line}"
-        targets = list(self._served_home_channel_transports())
-        # A chat already notified for ANOTHER profile is not notified again.
-        notified_chats = {
-            _delivery_target_key(platform.value, home.chat_id, home.thread_id)
-            for profile, platform, _cfg, home, _transport in targets
-            if _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id) in skipped
-        }
-        for profile, platform, platform_cfg, home, transport in targets:
+        for platform, platform_cfg, home, transport in self._home_channel_transports():
             if not platform_cfg.gateway_restart_notification:
                 logger.info(
                     "Home-channel startup notification suppressed: %s has gateway_restart_notification=false",
                     platform.value,
                 )
                 continue
-            target = _served_notice_target_key(profile, platform.value, home.chat_id, home.thread_id)
+            target = _notice_target_key(platform.value, home.chat_id, home.thread_id)
             if target in skipped or target in delivered:
-                continue
-            chat = _delivery_target_key(platform.value, home.chat_id, home.thread_id)
-            if chat in notified_chats:
-                delivered.add(target)
                 continue
             if await self._send_home_channel_message(
                 platform, home, transport, message, "Home-channel startup notification failed for %s:%s: %s",
             ):
-                notified_chats.add(chat)
                 delivered.add(target)
                 logger.info("Sent home-channel startup notification to %s:%s", platform.value, home.chat_id)
         return delivered
@@ -1556,14 +1438,10 @@ class GatewayNotificationsMixin:
         from hermes_constants import get_hermes_home_override
         source = self._build_process_event_source(evt)
         if source is None or not getattr(source, "profile", None):
-            # No routed profile: the launch profile's own completion. Bind ITS scope once the
-            # process multiplexes — unscoped, a fail-closed ledger read raises on a legitimate
-            # launch-profile event (no-op while single-profile).
-            from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
-            return async_launch_profile_scope_if_multiplexed()
+            return contextlib.nullcontext()
         profile_home = self._resolve_profile_home_for_source(source)
         if get_hermes_home_override() == str(profile_home):
-            return contextlib.nullcontext()  # already inside this profile's scope
+            return contextlib.nullcontext()
         return _async_profile_runtime_scope(profile_home)
 
     async def _deliver_completion_notification(
@@ -1903,14 +1781,10 @@ class GatewayNotificationsMixin:
         """Last ``limit`` chars of process output through the secret redactors (unconditional floor)."""
         from gateway.run import _redact_gateway_user_facing_secrets
         from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
         new_output = strip_ansi(session.output_buffer[-limit:]) if session.output_buffer else ""
         if new_output:
             from agent.redact import redact_terminal_output
-            _command = getattr(session, "command", "") or ""
-            new_output = transform_process_output(new_output, command=_command, returncode=session.exit_code,
-                                                  task_id=getattr(session, "task_id", "") or "")
-            new_output = redact_terminal_output(new_output, _command)
+            new_output = redact_terminal_output(new_output, getattr(session, "command", "") or "")
             # redact_terminal_output() is unforced (raw when security.redact_secrets is off); this goes
             # straight to the adapter, so apply the same unconditional floor as agent-notify.
             new_output = _redact_gateway_user_facing_secrets(new_output)
@@ -1943,11 +1817,8 @@ class GatewayNotificationsMixin:
         from gateway.run import _redact_gateway_user_facing_secrets
         from agent.redact import redact_terminal_output
         from tools.ansi_strip import strip_ansi
-        from tools.process_registry import transform_process_output
         _command = getattr(session, "command", "") or ""
         _raw = strip_ansi(session.output_buffer) if session.output_buffer else ""
-        _raw = transform_process_output(_raw, command=_command, returncode=session.exit_code,
-                                        task_id=getattr(session, "task_id", "") or "") if _raw else _raw
         _raw = redact_terminal_output(_raw, _command)
         # Keep the last ~2000 chars snapped to a line boundary, with a marker when cut.
         _LIMIT = 2000

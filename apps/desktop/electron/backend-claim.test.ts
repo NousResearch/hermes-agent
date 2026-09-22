@@ -145,16 +145,10 @@ test('exit line carries the buffered tail next to the exit code, preferring the 
     formatBackendExitLine('Ignoring stale Hermes backend exit', 1, null, tail),
     'Ignoring stale Hermes backend exit (1)\nRecent backend output:\nTraceback (most recent call last):'
   )
-  assert.equal(
-    formatBackendExitLine('Hermes backend exited', null, 'SIGTERM', tail),
-    'Hermes backend exited (SIGTERM)\nRecent backend output:\nTraceback (most recent call last):'
-  )
+  assert.equal(formatBackendExitLine('Hermes backend exited', null, 'SIGTERM', tail), 'Hermes backend exited (SIGTERM)\nRecent backend output:\nTraceback (most recent call last):')
 })
 
 test('exit line stays byte-identical to the legacy shape when the tail is empty or missing', () => {
-  assert.equal(
-    formatBackendExitLine('Hermes backend exited', 0, null, createBackendOutputTail(64)),
-    'Hermes backend exited (0)'
-  )
+  assert.equal(formatBackendExitLine('Hermes backend exited', 0, null, createBackendOutputTail(64)), 'Hermes backend exited (0)')
   assert.equal(formatBackendExitLine('Hermes backend exited', 1, null, null), 'Hermes backend exited (1)')
 })

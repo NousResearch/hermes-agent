@@ -774,7 +774,6 @@ from hermes_cli.main_platform_setup import (
     cmd_whatsapp_cloud,
 )
 from hermes_cli.main_dashboard import (
-    _attach_to_host_backend,
     _finalize_update_output,
     _find_stale_dashboard_pids,
     _install_hangup_protection,
@@ -2703,7 +2702,6 @@ def cmd_dashboard(args):
     _ssh_owner_nonce = _dashboard_validate_serve_args(args, _headless_backend, _token_file)
     _dashboard_sanitize_desktop_env(_headless_backend)
 
-    _attach_to_host_backend(args, _headless_backend)
     _route_named_profile_dashboard(args, _headless_backend, _ssh_owner_nonce, _token_file)
 
     # Apply the final process/profile policy after dashboard routing, but before

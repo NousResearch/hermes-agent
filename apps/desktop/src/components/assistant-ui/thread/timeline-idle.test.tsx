@@ -160,7 +160,6 @@ describe('ThreadTimeline availability', () => {
         <ThreadTimeline />
       </>
     )
-
     const rails = () => container.querySelectorAll('[data-slot="thread-timeline"]')
 
     expect(rails()).toHaveLength(0)

@@ -78,7 +78,6 @@ export function AccentSwatch({
     'relative inline-flex size-9 items-center justify-center rounded-full border border-foreground/15 transition-transform duration-150',
     !active && 'hover:scale-105'
   )
-
   const style = {
     background: hex,
     boxShadow: active ? `0 0 0 2px var(--dt-background), 0 0 0 4px ${hex}` : undefined
@@ -100,14 +99,7 @@ export function AccentSwatch({
           />
         </label>
       ) : (
-        <button
-          aria-label={name}
-          aria-pressed={active}
-          className={className}
-          onClick={onPick}
-          style={style}
-          type="button"
-        />
+        <button aria-label={name} aria-pressed={active} className={className} onClick={onPick} style={style} type="button" />
       )}
     </Tip>
   )

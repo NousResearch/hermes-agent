@@ -106,10 +106,7 @@ export function renderRosterToolbar({
               </DropdownMenuItem>
               {/* Same selectable set as CreateGroupChatDialog: one local bot plus a
                   remote-connection bot is a valid room (#101543). */}
-              <DropdownMenuItem
-                disabled={roster.filter(bot => !bot?.ghost).length < 2}
-                onSelect={() => setGroupCreateOpen(true)}
-              >
+              <DropdownMenuItem disabled={roster.filter(bot => !bot?.ghost).length < 2} onSelect={() => setGroupCreateOpen(true)}>
                 <Codicon className="mr-1.5" name="organization" />
                 {b.group.newTitle}
               </DropdownMenuItem>

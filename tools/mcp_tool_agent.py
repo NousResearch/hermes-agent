@@ -52,14 +52,6 @@ def _tool_defs_content_changed(agent, new_defs: list) -> bool:
         return False
 
 
-def _drop_side_agent_tools(agent, new_defs: list, new_names: set) -> tuple:
-    from tools.connectors.turn import side_agent_tool_drops
-    drops = side_agent_tool_drops(agent)
-    if not drops:
-        return new_defs, new_names
-    return [entry for entry in new_defs if _def_name(entry) not in drops], new_names - drops
-
-
 def _publish_tool_snapshot(
     agent, new_defs: list, new_names: set, *, snapshot_generation: int,
     staged_engine_names: set, content_aware: bool, prefix_registered: Optional[set]) -> Optional[set]:
@@ -76,7 +68,6 @@ def _publish_tool_snapshot(
         current = {_def_name(t) for t in current_defs}
         if prefix_registered is not None:
             new_defs, new_names = _merge_preserving_prefix(current_defs, new_defs, prefix_registered)
-        new_defs, new_names = _drop_side_agent_tools(agent, new_defs, new_names)
         # Record the generation even when unchanged so an in-flight older caller can't clobber.
         agent._tool_snapshot_generation = max(published_gen, snapshot_generation)
         # Same NAME set: no change for MCP-reload callers. Content-aware callers
@@ -181,7 +172,6 @@ def restore_agent_tool_prefix(agent, saved_names: list) -> bool:
     registered_names = {entry.name for entry in registry.get_all_entries()}
     merged, merged_names = _merge_preserving_prefix(saved_defs, fresh_defs, registered_names)
     _reinject_authorized_dynamic_tools(agent, merged, merged_names)
-    merged, merged_names = _drop_side_agent_tools(agent, merged, merged_names)
     with _agent_tools_lock:
         if merged == fresh_defs:
             return False

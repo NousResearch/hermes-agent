@@ -15,7 +15,7 @@ from agent.retry_utils import parse_retry_after_seconds
 from tools.skills_guard import TRUSTED_REPOS
 from tools.skills_hub_models import (
     SkillBundle, SkillMeta, SkillSource, _cache_metas, _cached_metas, _dedupe_by_trust,
-    _hermes_tags, _matches_query, _parse_frontmatter, _referenced_support_paths, hub,
+    _hermes_tags, _matches_query, _parse_frontmatter, _referenced_support_paths,
     _validate_bundle_rel_path,
 )
 
@@ -460,9 +460,7 @@ class GitHubSource(SkillSource):
             last_attempt = attempt >= max_retries - 1
             wait = backoff
             try:
-                resp = hub()._skills_hub_http_get(
-                    url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True
-                )
+                resp = httpx.get(url, params=params, headers=hdrs, timeout=timeout, follow_redirects=True)
             except httpx.HTTPError as e:
                 logger.debug("GitHub GET %s failed (attempt %d/%d): %s", url, attempt + 1, max_retries, e)
                 if last_attempt:

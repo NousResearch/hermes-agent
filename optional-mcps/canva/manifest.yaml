@@ -3,7 +3,6 @@
 manifest_version: 1
 
 name: canva
-connector_slug: canva_mcp
 description: Create, search, and manage Canva designs.
 source: https://www.canva.dev/docs/mcp/
 

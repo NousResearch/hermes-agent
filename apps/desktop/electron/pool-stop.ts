@@ -78,11 +78,9 @@ export function createPoolStopper(deps: PoolStopperDeps): PoolStopper {
         stops.delete(key)
       }
     }
-
     const stopping = (async () => {
       deps.stopChild(entry.process)
       await deps.waitForExit(entry.process)
-
       if (deps.afterStop) {
         await deps.afterStop(key)
       }

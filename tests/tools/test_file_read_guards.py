@@ -49,7 +49,7 @@ class _FakeReadResult:
 
 
 def _make_fake_ops(content="hello\n", total_lines=1, file_size=6):
-    fake = MagicMock(env=None)
+    fake = MagicMock()
     fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
         content=content, total_lines=total_lines, file_size=file_size,
     )
@@ -445,7 +445,7 @@ class TestFileDedup(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops")
     def test_write_rejects_internal_read_status_text(self, mock_ops):
         """write_file must not persist internal read_file status text."""
-        fake = MagicMock(env=None)
+        fake = MagicMock()
         fake.write_file = MagicMock()
         mock_ops.return_value = fake
 
@@ -806,7 +806,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
         read would previously cause the second read to return a stale dedup
         stub because the mtime comparison saw no change.
         """
-        fake = MagicMock(env=None)
+        fake = MagicMock()
         fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
             content="original content\n", total_lines=1, file_size=18,
         )
@@ -835,7 +835,7 @@ class TestWriteInvalidatesDedup(unittest.TestCase):
     @patch("tools.file_tools._get_file_ops")
     def test_write_invalidates_all_offsets(self, mock_ops):
         """A write invalidates dedup entries for ALL offset/limit combos."""
-        fake = MagicMock(env=None)
+        fake = MagicMock()
         fake.read_file = lambda path, offset=1, limit=500: _FakeReadResult(
             content="line1\nline2\nline3\n", total_lines=3, file_size=20,
         )

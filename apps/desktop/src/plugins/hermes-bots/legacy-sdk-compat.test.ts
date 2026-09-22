@@ -1,7 +1,7 @@
 /**
  * Bot Mode has to keep linking against an OLDER desktop SDK.
  *
- * `ConnectorsTab`, `ToolsetConfigPanel` and `CapabilitiesView` are capability exports: the
+ * `McpTab`, `ToolsetConfigPanel` and `CapabilitiesView` are capability exports: the
  * shell that hosts the plugin may predate any of them. Every use site is
  * therefore guarded, and the plugin module graph must evaluate — and still
  * hand back a registrable plugin — when all three are missing. A bare
@@ -12,7 +12,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 /** Names an older SDK is allowed not to export. */
-const OPTIONAL_CAPABILITY_EXPORTS = new Set(['ConnectorsTab', 'CapabilitiesView', 'ToolsetConfigPanel'])
+const OPTIONAL_CAPABILITY_EXPORTS = new Set(['McpTab', 'CapabilitiesView', 'ToolsetConfigPanel'])
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { atom } = await import('nanostores')

@@ -1,5 +1,4 @@
 import type {
-  ConnectionAnswer,
   ConnectionOperationStatus,
   ConnectionOperationTarget,
   ConnectionRequestPayload,
@@ -12,13 +11,9 @@ import type {
 } from '@hermes/shared'
 import { atom, computed } from 'nanostores'
 
-import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import type { SetupField } from '@/components/ui/setup-field-list'
 
-import { $gateway, requestGatewayForAgent } from './gateway'
-import { $activeGatewayProfile } from './profile'
-import { assertSessionOwnerResolved } from './session-owner-resolution'
-import { isSessionOwnerRoute } from './session-request-router'
+import { $gateway } from './gateway'
 
 /** The backend sends ``prompt`` as null when the catalog entry has none; the form takes an absent one. */
 const envFields = (fields: ConnectionTargetEnvField[] | null | undefined): SetupField[] =>
@@ -59,11 +54,6 @@ export interface ConnectionTarget {
 
 /** The session's connection operation. `deadlineAt`, `opId`, `targets[].state`, `settled` and
  *  `settledBy` are backend-owned; the renderer holds a cache and drives it through `connection.respond`. */
-export interface ConnectionOwner {
-  connectionId: null | string
-  profile: string
-}
-
 export interface ConnectionRequest {
   /** The model's tool call that opened the operation. The card lives on that row and no other. */
   toolCallId: string
@@ -80,6 +70,18 @@ export interface ConnectionRequest {
   sessionId: string | null
 }
 
+/** Answers the card may give for one target: the user said no, or the user consented and the backend
+ *  does the work. The card never reports an outcome; only the backend moves a target. */
+export type ConnectionTargetOutcome =
+  | { name: string; status: 'skipped' }
+  | { env?: Record<string, string>; name: string; status: 'approved' }
+
+export interface ConnectionOutcome {
+  targets?: ConnectionTargetOutcome[]
+  /** `continue` ends the operation now with unresolved targets stamped `not_connected`. */
+  settled_by?: 'continue'
+}
+
 const keyFor = (sessionId: string | null | undefined): string => sessionId ?? ''
 
 export const $connectionRequests = atom<Record<string, ConnectionRequest>>({})
@@ -94,11 +96,12 @@ const TARGET_STATES: readonly ConnectionTargetState[] = [
   'initiated',
   'not_connected',
   'pending',
-  'skipped'
+  'skipped',
+  'unavailable'
 ]
 
 const ACTIONS: readonly ConnectionTargetAction[] = ['authorize', 'connect', 'enable', 'install', 'reconnect']
-const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt']
+const SETTLE_REASONS: readonly ConnectionSettleReason[] = ['all_resolved', 'continue', 'deadline', 'interrupt', 'unavailable']
 
 // The wire carries these as typed literals already; the lookups defend against a backend a version ahead.
 const oneOf =
@@ -110,7 +113,7 @@ const targetState = oneOf(TARGET_STATES)
 const targetAction = oneOf(ACTIONS)
 const settleReason = oneOf(SETTLE_REASONS)
 
-export function parseConnectionTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
+function parseTarget(entry: ConnectionOperationTarget): ConnectionTarget | null {
   const name = entry.name.trim()
 
   if (!name) {
@@ -142,9 +145,7 @@ export function normalizeConnectionRequest(
     return null
   }
 
-  const targets = payload.targets
-    .map(parseConnectionTarget)
-    .filter((target): target is ConnectionTarget => target !== null)
+  const targets = payload.targets.map(parseTarget).filter((target): target is ConnectionTarget => target !== null)
 
   if (!payload.op_id || !payload.tool_call_id || !(payload.deadline_at > 0) || targets.length === 0) {
     return null
@@ -166,7 +167,10 @@ export function normalizeConnectionRequest(
 /** Overlay the authoritative `connectors.operation.status` snapshot on the cached request. Frames for
  *  another operation, and frames the operation wrote before the one already applied, change nothing:
  *  the transport can reorder them and an older one would regress a row. */
-export function applyOperationStatus(request: ConnectionRequest, status: ConnectionOperationStatus): ConnectionRequest {
+export function applyOperationStatus(
+  request: ConnectionRequest,
+  status: ConnectionOperationStatus
+): ConnectionRequest {
   if (status.op_id !== request.opId || status.seq <= request.seq) {
     return request
   }
@@ -235,7 +239,10 @@ const sameEnvFields = (next: SetupField[], previous: SetupField[]): boolean =>
 
 /** Apply one `connection.update` frame. Every frame carries the operation's full target snapshot, so
  *  the store overlays it; frames for another operation or for a settled request are ignored. */
-export function applyConnectionUpdate(request: ConnectionRequest, update: ConnectionUpdatePayload): ConnectionRequest {
+export function applyConnectionUpdate(
+  request: ConnectionRequest,
+  update: ConnectionUpdatePayload
+): ConnectionRequest {
   if (update.op_id !== request.opId || request.settled) {
     return request
   }
@@ -293,53 +300,20 @@ export const hasConnectionRequest = (sessionId: string | null | undefined): bool
   return Boolean(request && !request.settled)
 }
 
-export async function connectionOwnerFor(sessionId: string, method: string): Promise<ConnectionOwner | null> {
-  const ambientProfile = $activeGatewayProfile.get()
-
-  try {
-    const scope = await resolveSessionOwner(sessionId)
-    assertSessionOwnerResolved(scope, { method, sessionId })
-
-    return {
-      connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
-      profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
-    }
-  } catch {
-    return null
-  }
-}
-
-export const connectionRequestOpen = (
-  request: ConnectionRequest
-): request is ConnectionRequest & { sessionId: string } => {
-  const current = $connectionRequests.get()[keyFor(request.sessionId)]
-
-  return Boolean(request.sessionId && current && current.opId === request.opId && !current.settled)
-}
-
 /** Drive the operation. The entry stays in the store: the backend answers with `connection.update`
  *  and the card re-renders from that; only settlement removes it. */
-export async function respondToConnectionRequest(
-  request: ConnectionRequest,
-  outcome: ConnectionAnswer
-): Promise<boolean> {
-  if (!connectionRequestOpen(request)) {
+export async function respondToConnectionRequest(request: ConnectionRequest, outcome: ConnectionOutcome): Promise<boolean> {
+  const current = $connectionRequests.get()[keyFor(request.sessionId)]
+
+  if (!current || current.opId !== request.opId || current.settled) {
     return false
   }
 
-  const params = {
+  await $gateway.get()?.request('connection.respond', {
     op_id: request.opId,
-    owner: { session_id: request.sessionId, type: 'session' as const },
-    result: outcome
-  }
-
-  const owner = await connectionOwnerFor(request.sessionId, 'connection.respond')
-
-  if (owner) {
-    await requestGatewayForAgent(owner.connectionId, owner.profile, 'connection.respond', params)
-  } else {
-    await $gateway.get()?.request('connection.respond', params)
-  }
+    result: outcome,
+    session_id: request.sessionId
+  })
 
   return true
 }

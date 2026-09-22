@@ -15,16 +15,6 @@ import hermes_constants
 from tests import conftest as suite_conftest
 
 
-@pytest.fixture(autouse=True)
-def _sibling_root_only(monkeypatch):
-    """Relocate into the sibling-of-native root, never the host's shared disk root: these
-    tests use a fake native home under tmp_path and must not create or prune anything real."""
-    import os
-
-    real_isdir = os.path.isdir
-    monkeypatch.setattr(suite_conftest.os.path, "isdir", lambda p: False if p == "/var/tmp" else real_isdir(p))  # no-tmp: ok — disables the disk-root branch
-
-
 def _config_with_basetemp(given: Path | None) -> SimpleNamespace:
     return SimpleNamespace(
         _tmp_path_factory=SimpleNamespace(_given_basetemp=given),
@@ -43,11 +33,6 @@ def test_basetemp_inside_the_native_home_is_relocated_outside_it(tmp_path, monke
     relocated = config._tmp_path_factory._given_basetemp
     assert relocated is not None and not relocated.resolve().is_relative_to(native.resolve())
     assert config.option.basetemp == str(relocated)
-    # One shared, prunable root (never a loose dir in the operator's $HOME) and gone when
-    # this pytest exits; a run killed before that is swept as soon as the root is idle.
-    assert relocated.parent.name == "hermes-pytest" and relocated.parent != Path.home()
-    suite_conftest.pytest_unconfigure(config)
-    assert not relocated.exists()
     # The sandbox derived from it no longer resolves to the native root.
     monkeypatch.setenv("HERMES_HOME", str(relocated / "t0" / "hermes_test"))
     assert hermes_constants.get_default_hermes_root() == relocated / "t0" / "hermes_test"
@@ -80,22 +65,3 @@ def test_fallback_root_escapes_a_repo_checked_out_inside_the_native_home(tmp_pat
 
     relocated = config._tmp_path_factory._given_basetemp
     assert relocated is not None and not relocated.resolve().is_relative_to(native.resolve())
-
-
-def test_relocation_root_sweeps_basetemps_of_killed_runs_and_keeps_live_ones(tmp_path, monkeypatch):
-    import os
-    import time
-
-    native = tmp_path / "native-home"
-    native.mkdir()
-    root = native.parent / "hermes-pytest"
-    dead, live = root / "b-dead", root / "b-live"
-    dead.mkdir(parents=True)
-    live.mkdir()
-    (dead / "f").write_text("x", encoding="utf-8")
-    (live / "f").write_text("x", encoding="utf-8")
-    ancient = time.time() - 30 * 3600
-    for p in (dead, dead / "f", live):
-        os.utime(p, (ancient, ancient))
-    assert suite_conftest._pytest_disk_temp_root(native) == root
-    assert not dead.exists() and live.exists()

@@ -672,10 +672,9 @@ DEFAULT_CONFIG = {
         # guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
     },
-    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
-    # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
-    # oneshot, webhook, kanban, api, tool, batch); other non-falsy values are ignored; falsy (false, null, "off",
-    # "disabled", "no", "none") disables caching.
+    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h"; other
+    # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
+    # caching.
     "prompt_caching": {"cache_ttl": "5m"},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
@@ -1458,10 +1457,6 @@ DEFAULT_CONFIG = {
         # curator ledger` / `rollback <entry-id>`. Never a gate — failures can't block.
         # See #79686.
         "ledger": True,
-        # Size cap for that ledger: once the file grows past this, the next append rewrites it
-        # through the unchanged-file dedup and, if still over, drops the oldest entries (0 = keep
-        # the ledger append-only forever, the previous behaviour).
-        "ledger_max_bytes": 5 * 1024 * 1024,
     },
 
     # Curator — background maintenance of AGENT-CREATED skills (never hub-installed): marks
@@ -1687,10 +1682,6 @@ DEFAULT_CONFIG = {
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,
-        # Deadline (seconds) for one plugin's import + register() at load. A plugin that overruns it is
-        # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
-        # abandoned. 0 = no deadline (load inline). Max 600.
-        "load_timeout_seconds": 10,
         # Keep loading external plugins that still import pre-decomposition module paths after the
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.
@@ -2104,25 +2095,12 @@ DEFAULT_CONFIG = {
         "write_sessions_json": True,
         # One gateway for every profile on this host: the DEFAULT profile's gateway also connects
         # each named profile's bots (their own .env / config.yaml, per-profile secret scope) and
-        # stamps the profile into session keys. This is the ONLY supported topology — there is no
-        # `false` opt-out any more: an explicit `false` still parses (it is the runtime mode flag
-        # every scoped code path reads) but is warned about and IGNORED for process topology, and
-        # `hermes gateway migrate --multiplex` folds any per-profile fleet that is left.
-        # An UNSET key is a request, not a verdict: at boot the gateway runs the migration
-        # preflight and stays standalone (logging why) while a secondary still runs its own
-        # gateway or a blocker exists, then converges once that is resolved.
-        # TWO things DO change on a host that had pinned `false`, and neither is a process:
-        #   • INGRESS — `/p/<profile>/` on the default listener goes 404 -> served
-        #     (gateway/api_server.py::_resolve_request_profile, gateway/webhook.py). A host that
-        #     opted out GAINS that HTTP surface; it is authenticated exactly like the default
-        #     profile's, but it is new reachable surface, so audit any reverse proxy that assumed
-        #     /p/ was dead.
-        #   • SECRET SCOPE — eager multi-profile activation no longer consults the flag
-        #     (tui_gateway/launch_profile_policy.py), so a host with a leftover servable profile
-        #     dir flips eager=false/reads-open -> eager=true/fail-closed: an UNSCOPED `get_secret`
-        #     now raises UnscopedSecretError, and a key that lives ONLY in the unit's
-        #     `Environment=` (no .env) disappears from file-built scopes. A genuinely
-        #     single-profile host never activates and is byte-identical.
+        # stamps the profile into session keys. On by default. An UNSET key is a request, not a
+        # verdict: at boot the default gateway runs the migration preflight and stays standalone
+        # (logging why) when a secondary still runs its own gateway or a blocker exists — an
+        # explicit `true` (config or GATEWAY_MULTIPLEX_PROFILES) is honoured as before, an explicit
+        # `false` keeps per-profile gateways for good. `hermes gateway migrate --multiplex` folds a
+        # per-profile fleet (records a rollback manifest; `--standalone` undoes it and pins false).
         # Two profiles configuring the same bot token cannot be served together — the duplicate
         # adapter is parked; `hermes profile create --clone` therefore leaves messaging channels
         # behind unless --clone-channels is passed.
@@ -2130,9 +2108,9 @@ DEFAULT_CONFIG = {
         # May `hermes update` fold this install onto a multiplexed default gateway by itself?
         # True (the default) keeps today's behaviour: a multi-profile install whose secondaries run
         # their own gateways is migrated automatically after an update when nothing blocks it.
-        # Set to False to choose WHEN you converge, not whether: the fold is left to you to run by
-        # hand (it is not an opt-out from the one-gateway-per-host model, which has none). Only the
-        # AUTOMATIC path reads this: `hermes gateway migrate --multiplex` is explicit and proceeds.
+        # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
+        # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
+        # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
         "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].
@@ -2473,17 +2451,6 @@ DEFAULT_CONFIG = {
         # capture_after mode: som = screenshot + overlays; ax = elements only, no PNG (faster);
         # vision = pixels only.
         "capture_after_mode": "som",
-        # Bound cua-driver's accessibility-tree WALK on every capture (get_window_state max_elements).
-        # _DEFAULT_MAX_ELEMENTS in tools/computer_use/tool.py caps the SURFACED element list at 100 and
-        # spills the rest to a cache file, so an unbounded walk pays for nodes the model never sees:
-        # measured on macOS (cua-driver 0.28.2, M-series) a 1,444-node Chrome window went 540 ms -> 83 ms
-        # and a 456-node Finder window 6.9 s -> 0.6 s at 200, with the returned elements a prefix of the
-        # unbounded walk. 0 = driver default (2,000 elements / depth 25) — the pre-fix behaviour.
-        # ~400 keeps the full first 100 visible elements on a pathological tree, at ~1.4 s on Finder;
-        # the walk's cost grows with the bound, so keep it in the low hundreds. This caps the nodes
-        # COLLECTED, not the walk's wall clock: a target whose AX surface exceeds the driver's own 20 s
-        # walk timeout still fails at every bound (measured; a depth bound does not help there either).
-        "ax_max_elements": 200,
         # Disable cua-driver's cursor overlay, which can peg a core when idle (macOS redraw loop;
         # Linux/WSL2 idle spin). None = auto (off on macOS + headless/ WSL2 Linux, on elsewhere);
         # True = always disable; False = always enable.

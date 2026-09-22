@@ -601,7 +601,6 @@ describe('flat tool list approval surfacing', () => {
     const { container, rerender } = render(
       <GroupHarness message={{ ...message, content: [{ type: 'text', text: 'Waiting for approval.' }] }} />
     )
-
     const run = await screen.findByRole('button', { name: /Run/ })
     const host = run.closest('[data-approval-stack]')
     expect(host).not.toBeNull()

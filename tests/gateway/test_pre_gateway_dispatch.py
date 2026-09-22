@@ -102,14 +102,13 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
 
     seen = {}
 
-    async def _fake_hook(name, **kwargs):
+    def _fake_hook(name, **kwargs):
         if name == "pre_gateway_dispatch":
             seen["session_store"] = kwargs.get("session_store", "MISSING")
             return [{"action": "skip", "reason": "plugin-handled"}]
         return []
 
-    # The inbound path awaits the hook, so the seam is the async entry point.
-    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _fake_hook)
+    monkeypatch.setattr("hermes_cli.plugins.invoke_hook", _fake_hook)
 
     runner, adapter = _make_runner(Platform.WHATSAPP)
     del runner.session_store
@@ -118,38 +117,4 @@ async def test_hook_fires_without_session_store_attribute(monkeypatch):
     assert result is None
     # Hook actually fired (skip short-circuited before auth) with a None store.
     assert seen == {"session_store": None}
-    adapter.send.assert_not_awaited()
-
-
-@pytest.mark.asyncio
-async def test_async_hook_callback_is_awaited_on_the_gateway_loop(monkeypatch):
-    """An ``async def`` pre_gateway_dispatch callback is awaited on the gateway's own loop.
-
-    Regression: the inbound path called the sync ``invoke_hook``, which (since #109196) runs an
-    async callback on a helper thread while the calling loop blocks in ``done.wait()``. A
-    callback that awaits anything scheduled on the gateway loop could never complete, and every
-    message stalled the loop for the callback's whole duration. Here the callback waits for a
-    sibling task on the same loop to release it; that is only possible if the hook is awaited
-    in place.
-    """
-    import asyncio
-
-    _clear_auth_env(monkeypatch)
-    gate = asyncio.Event()
-
-    async def _hook(name, **kwargs):
-        assert name == "pre_gateway_dispatch"
-        await gate.wait()
-        return [{"action": "skip", "reason": "gated"}]
-
-    monkeypatch.setattr("hermes_cli.plugins.ainvoke_hook", _hook)
-
-    async def _release():
-        await asyncio.sleep(0)
-        gate.set()
-
-    runner, adapter = _make_runner(Platform.WHATSAPP)
-    asyncio.create_task(_release())
-    result = await asyncio.wait_for(runner._handle_message(_make_event("hi")), timeout=5)
-    assert result is None
     adapter.send.assert_not_awaited()

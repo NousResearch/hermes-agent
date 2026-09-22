@@ -32,10 +32,6 @@ def served_root(tmp_path, monkeypatch):
          "served_profiles": ["default", "coder"]}))
     monkeypatch.setenv("HERMES_HOME", str(root / "profiles" / "coder"))
     monkeypatch.delenv("GATEWAY_MULTIPLEX_PROFILES", raising=False)
-    # Never read the developer's / CI's REAL host rendezvous record (superseded by the
-    # tests/conftest.py hook in #118097 once that lands).
-    (tmp_path / "locks").mkdir()
-    monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path / "locks"))
     import hermes_constants
     import gateway.status as status
     monkeypatch.setattr(hermes_constants, "_default_hermes_root_memo", None)
@@ -103,10 +99,8 @@ def test_setup_wizard_skips_service_install_for_profile_served_by_multiplexer(
 
 def test_setup_gateway_service_step_skips_install_for_served_profile(served_root, monkeypatch, capsys):
     """``hermes -p <profile> setup gateway`` (and ``hermes setup`` / ``hermes import``) reach the service
-    step through ``ensure_gateway_service``: a served profile gets the multiplexer note and no unit/plist
-    (#111958), and a named profile the live record does not list gets no unit/plist either — one host
-    gateway serves every profile, so setup must not grow a standalone fleet member that
-    ``gateway install`` refuses (#109417)."""
+    step through ``ensure_gateway_service``: a served profile gets the multiplexer note and no unit/plist,
+    while a profile the live record does not list is still installed (#111958)."""
     import hermes_cli.gateway as gw
 
     calls: list[str] = []
@@ -123,8 +117,7 @@ def test_setup_gateway_service_step_skips_install_for_served_profile(served_root
 
     monkeypatch.setenv("HERMES_HOME", str(served_root / "profiles" / "other"))  # not in the live record
     assert gw.ensure_gateway_service(context="setup") is True
-    assert calls == []
-    assert "Profile 'other' does not get a gateway of its own" in capsys.readouterr().out
+    assert calls == ["install", "start"]
 
 
 def test_recycled_pid_does_not_lend_a_stale_record_its_served_profiles(served_root):
@@ -191,13 +184,7 @@ def test_satellite_gateway_identity_does_not_imply_cron_health(served_root, monk
     buf = io.StringIO()
     with contextlib.redirect_stdout(buf):
         cr.cron_status()
-    # Multiplex-only: the ONE host gateway is named as the ticker, with the profiles it serves —
-    # the FULL line, so this cannot pass on the sibling "(multiplexing this profile)" rung.
-    assert f"Scheduler host: the host gateway (PID {os.getpid()}) serving profiles default, coder" \
-        in buf.getvalue()
-    # The remediation this rung prints must run for a served NAMED profile (`hermes gateway
-    # restart` exits 78 there).
-    assert "restart: hermes --profile default gateway restart" in buf.getvalue()
+    assert "Scheduler host: default-profile multiplexer" in buf.getvalue()
     # A live scheduler host alone does not prove this satellite's ticker is healthy.
     assert "has not reported a heartbeat" in buf.getvalue()
     assert "will fire automatically" not in buf.getvalue()

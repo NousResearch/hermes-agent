@@ -46,7 +46,7 @@ def test_connector_scope_controls_schema_discovery_and_execution(monkeypatch, en
             return []
 
     monkeypatch.setattr(bridge, "_default_client_factory", Client)
-    monkeypatch.setattr(managed, "managed_client", Client)
+    monkeypatch.setattr(managed, "_default_client", Client)
     scope = {"enabled_toolsets": enabled, "disabled_toolsets": disabled}
     defs = model_tools.get_tool_definitions(**scope, quiet_mode=True, skip_tool_search_assembly=True)
     assert ("manage_connections" in {td["function"]["name"] for td in defs}) is allowed

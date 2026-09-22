@@ -189,8 +189,9 @@ const loadGetWindows = (): Promise<GetWindowsModule | EnumerationFailure> => {
     // the CJS loader, which this ESM main process never does (every import
     // here is `from 'node:child_process'`). Pointing the import at the
     // unpacked copy gives get-windows a real path to derive from.
-    const staged = resolveOutsideAsar(path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js'))
-
+    const staged = resolveOutsideAsar(
+      path.join(app.getAppPath(), 'dist', 'node_modules', 'get-windows', 'index.js')
+    )
     let stagedError = 'not staged in this build'
 
     if (fs.existsSync(staged)) {

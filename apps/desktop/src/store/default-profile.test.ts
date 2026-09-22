@@ -20,19 +20,14 @@ describe('default profile preference', () => {
     const read = deferred<typeof oldRoute>()
     let listener!: (route: DesktopProfileRoute | null) => void
     const off = vi.fn()
-
     const onDefaultChanged = vi.fn(callback => {
       listener = callback
-
       return off
     })
-
     const getDefault = vi.fn(() => {
       expect(onDefaultChanged).toHaveBeenCalledTimes(1)
-
       return read.promise
     })
-
     vi.stubGlobal('window', { hermesDesktop: { profile: { getDefault, onDefaultChanged } } })
     const { unmount } = renderHook(useDefaultProfilePreference)
 

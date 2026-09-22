@@ -1,12 +1,7 @@
 import { DEFAULT_REASONING_EFFORT, REASONING_EFFORT_VALUES } from '@hermes/shared'
 import { describe, expect, it } from 'vitest'
 
-import {
-  isThinkingEnabled,
-  reasoningEffortClamp,
-  reasoningEffortLabel,
-  resolveReasoningEffort
-} from './reasoning-effort'
+import { isThinkingEnabled, reasoningEffortClamp, reasoningEffortLabel, resolveReasoningEffort } from './reasoning-effort'
 
 describe('reasoning-effort', () => {
   it('labels every level it claims to support', () => {

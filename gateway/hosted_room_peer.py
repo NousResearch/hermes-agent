@@ -244,19 +244,14 @@ class GatewayRoomCatalog:
 def catalog_mapping(
     *, installation_id: str, protocol_versions: Iterable[int] = (PROTOCOL_VERSION,),
     link_modes: Iterable[LinkMode] = ("direct", "pull"), persistent_process: bool, text: bool = True,
-    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str,
+    attachments: bool = False, endpoint: Mapping[str, Any] | None = None, target_profile: str | None = None,
     execution_policy: Mapping[str, Any] | None = None) -> dict[str, Any]:
-    """Build a canonical catalog mapping with its digest for the SERVED ``target_profile``.
-
-    The profile is the session's, never the process's: a multiplexed gateway advertises one
-    catalog per served profile, so there is no env (``HERMES_PROFILE``) fallback (#116900)."""
+    """Build a canonical catalog mapping with its digest."""
     # A Desktop-managed gateway exits with the app: the caller's flag is only an upper bound.
     persistent_process = bool(persistent_process and os.getenv("HERMES_DESKTOP") != "1")
-    profile = _identifier(target_profile, field="target_profile")
+    profile = str(target_profile or "").strip() or (os.getenv("HERMES_PROFILE") or "default").strip() or "default"
     checked_policy = RoomExecutionPolicy.from_mapping(
         execution_policy or execution_policy_mapping(target_profile=profile))
-    if checked_policy.target_profile != profile:
-        raise HostedRoomPeerError("execution_policy target_profile does not match the catalog target_profile")
     # A RoomLink run is initiated by another installation. Process-wide YOLO mode bypasses the scoped
     # approval ContextVar, so rewriting the advertised policy cannot make it safe: refuse.
     if checked_policy.approval_mode == "off":

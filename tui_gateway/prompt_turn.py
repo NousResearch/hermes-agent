@@ -47,19 +47,11 @@ def _hook_failure(what: str, exc: BaseException) -> None:
 
 
 def _is_successful_goal_turn(result: Any, status: str, raw: Any) -> bool:
-    """Whether a turn produced a real response the goal judge can use.
-
-    A non-failed ``max_iterations_reached(...)`` handoff is a resumable turn boundary, not a
-    failure: its summary must reach the judge so an active goal continues (#102213). Failed,
-    interrupted and other ``completed is False`` turns still stay out (cf. #63180)."""
-    from agent.turn_failure_copy import is_max_iteration_handoff
-    if status != "complete" or not isinstance(raw, str) or not raw.strip():
-        return False
-    if not isinstance(result, dict):
-        return True
-    if result.get("failed") or result.get("interrupted"):
-        return False
-    return result.get("completed") is not False or is_max_iteration_handoff(result)
+    """Whether a turn produced a real response the goal judge can use."""
+    return bool(
+        status == "complete" and isinstance(raw, str) and raw.strip()
+        and not (isinstance(result, dict) and result.get("failed"))
+        and not (isinstance(result, dict) and result.get("completed") is False))
 
 
 def _active_goal_manager(session: dict):
@@ -786,17 +778,10 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if rendered := render_message(raw, cols):
         payload["rendered"] = rendered
     error_value = result.get("error")
-    final_text = result.get("final_response")
-    has_partial_text = bool(
-        result.get("partial") and isinstance(final_text, str)
-        and final_text.strip() and final_text.strip() != str(error_value or "").strip())
     with session["history_lock"]:
         if status == "error":
             # Retain the failed turn: resume's inflight payload is the only carrier of the
             # failure if this frame is lost to a disconnect.
-            if has_partial_text and not (session.get("inflight_turn") or {}).get("assistant"):
-                # Non-streaming results need a replay body too; keep existing streamed segments intact.
-                _append_inflight_delta(session, raw)
             _fail_inflight_turn(session, error_value, error_surface=_error_surface)
             st.error_retained = True
             st.error_detail = _turn_failure_detail(
@@ -806,9 +791,6 @@ def _complete_turn_payload(session: dict, st: _TurnRun, status_note: str | None,
     if status == "error":
         payload["error"] = str(error_value or raw)
         payload["recoverable"] = True
-        # Desktop distinguishes retained answer text from error copy using this flag.
-        if has_partial_text:
-            payload["partial"] = True
         if _error_surface:
             payload["error_surface"] = _error_surface
     if st.terminal_callback is not None:

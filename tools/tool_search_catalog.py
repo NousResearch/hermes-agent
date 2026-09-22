@@ -233,31 +233,6 @@ def _listing_group_label(source_name: str) -> str:
     return label[4:] if label.startswith("mcp-") else label
 
 
-def hidden_declared_sources() -> List[Dict[str, Any]]:
-    """Return deterministic summaries for declared MCP servers hidden by their check."""
-    from hermes_platform import declaration
-    from tools.mcp_liveness import unavailable_details
-    from tools.registry import registry
-
-    grouped: Dict[str, List[Any]] = {}
-    for entry in registry.get_all_entries():
-        if entry.toolset.startswith("mcp-"):
-            grouped.setdefault(entry.toolset[4:], []).append(entry)
-    rows: List[Dict[str, Any]] = []
-    for server_name in sorted(grouped):
-        if declaration.lookup(server_name) is None:
-            continue
-        entries = grouped[server_name]
-        if any(entry.check_fn is None or bool(entry.check_fn()) for entry in entries):
-            continue
-        details = unavailable_details(server_name)
-        if details is None:
-            continue
-        _decl, _current, sentence = details
-        rows.append({"name": server_name, "tool_count": len(entries), "unavailable": sentence})
-    return rows
-
-
 def build_catalog_listing_with_form(
     deferrable: List[Dict[str, Any]], *, max_tokens: int = 4000) -> Tuple[Optional[str], str]:
     """Render the deferred-catalog manifest: ``- name: short desc`` lines grouped per source.
@@ -274,8 +249,7 @@ def build_catalog_listing_with_form(
             # _classify_source gives ("other", "") when unregistered; the label of "" is "other".
             label = _listing_group_label(_classify_source(name)[1])
             groups.setdefault(label, []).append((name, _short_desc(fn.get("description", ""))))
-    unavailable = hidden_declared_sources()
-    if not groups and not unavailable:
+    if not groups:
         return None, "none"
 
     def render_group(label: str, mode: str) -> str:
@@ -295,20 +269,7 @@ def build_catalog_listing_with_form(
               f"`{TOOL_DESCRIBE_NAME}`, invoke via `{TOOL_CALL_NAME}`):")
 
     def assemble_if_fits(modes: Dict[str, str]) -> Optional[str]:
-        available_blocks = {label: render_group(label, modes[label]) for label in groups}
-        unavailable_blocks = {
-            row["name"]: (
-                f"{row['name']} ({row['tool_count']} tools unavailable: {row['unavailable']})"
-                if row.get("tool_count") is not None
-                else f"{row['name']} (tools unavailable: {row['unavailable']})"
-            )
-            for row in unavailable
-        }
-        blocks = [
-            available_blocks[label] if label in available_blocks else unavailable_blocks[label]
-            for label in sorted(available_blocks | unavailable_blocks)
-        ]
-        text = "\n".join([header] + blocks)
+        text = "\n".join([header] + [render_group(lbl, modes[lbl]) for lbl in sorted(groups)])
         return text if math.ceil(len(text) / CHARS_PER_TOKEN) <= max_tokens else None
 
     for mode in ("full", "names"):  # 1. everything full; 2. everything names-only

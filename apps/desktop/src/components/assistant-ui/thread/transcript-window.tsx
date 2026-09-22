@@ -31,10 +31,7 @@ const DEFAULT_TRANSCRIPT_WINDOW: Required<TranscriptWindowValue> = {
 
 const TranscriptWindowContext = createContext<Required<TranscriptWindowValue>>(DEFAULT_TRANSCRIPT_WINDOW)
 
-export function TranscriptWindowProvider({
-  children,
-  value
-}: {
+export function TranscriptWindowProvider({ children, value }: {
   children: ReactNode
   value: Pick<TranscriptWindowValue, 'olderAvailable' | 'expandWindow'> & Partial<TranscriptWindowValue>
 }) {

@@ -1,12 +1,12 @@
 name: lancedb-suite
 repo: https://github.com/3L0935/hermes-lancedb-memory-suite
-sha: 9a83a57335f4b1074d075b255ca289fda5290099
+sha: 7dda89a80706b392d4b0127562de7d9342e44683
 subdir: "plugin"
-description: Local-first LanceDB vector memory with a strict write contract, calibrated abstention, typed relations, conflict tracking and a retrieval-quality gate. Requires local Ollama + nomic-embed-text.
+description: Local-first LanceDB vector memory with a strict write contract, calibrated abstention, typed relations, conflict tracking and a retrieval-quality gate.
 maintainer: 3L0935
 tier: community
 category: memory
-version: "1.5.3"
+version: "1.5.2"
 docs_url: https://github.com/3L0935/hermes-lancedb-memory-suite#readme
 platforms: [linux, macos]
 capabilities:

@@ -446,7 +446,6 @@ export const ru = defineLocale({
       gatewayManagedUpdatesUnavailable: 'Нужна версия приложения с поддержкой управляемых обновлений SSH.',
       gatewayManagedUpdatesEmpty: 'Добавьте SSH в сохранённые подключения, чтобы управлять его обновлениями здесь.',
       keyboardShortcuts: 'Назначения клавиш',
-      hudGesture: 'Жест HUD',
       screenCapture: 'Захват экрана',
       notificationAlerts: 'Системные уведомления',
       notificationSounds: 'Звуки',
@@ -486,7 +485,7 @@ export const ru = defineLocale({
       title: 'Плагины приложения',
       blurb: 'Встроенные или добавленные в папку desktop-plugins. Отключите, чтобы выгрузить без перезапуска.',
       count: n => `Установлено: ${n}`,
-      openFolder: 'Открыть папку плагинов приложения',
+      openFolder: 'Открыть папку плагинов',
       rescan: 'Пересканировать',
       reveal: 'Показать в файловом менеджере',
       enable: 'Включить',
@@ -501,7 +500,6 @@ export const ru = defineLocale({
         includesHeading: 'Состав пакета',
         agentLabel: 'Плагин агента',
         desktopLabel: 'UI приложения',
-        profileLabel: 'Установить для профиля',
         agentTargetLocal: (profile, dir) => `Устанавливается в локальный бэкенд ${profile} (${dir})`,
         agentTargetRemote: profile => `Устанавливается в подключённый бэкенд ${profile}`,
         desktopTarget: 'Устанавливается в локальную папку desktop-plugins этого приложения',
@@ -612,8 +610,7 @@ export const ru = defineLocale({
       toolViewTitle: 'Отображение вызовов инструментов',
       toolViewDesc: 'Режим «Продукт» скрывает сырые данные инструментов, «Технический» показывает полный вход/выход.',
       hideCodeDiffsTitle: 'Скрывать изменения кода',
-      hideCodeDiffsDesc:
-        'Показывать правки файлов строками инструментов с числом добавленных и удалённых строк, без кода.',
+      hideCodeDiffsDesc: 'Показывать правки файлов строками инструментов с числом добавленных и удалённых строк, без кода.',
       hideThreadTimelineTitle: 'Скрывать полоски истории диалога',
       hideThreadTimelineDesc: 'Скрывать полоски навигации вдоль правого края каждого диалога.',
       reasoningCollapsedTitle: 'Сворачивать «мышление» по умолчанию',
@@ -628,8 +625,7 @@ export const ru = defineLocale({
       sessionDensityComfortable: 'Комфортно',
       sessionDensityDetailed: 'Подробно',
       tabStripTitle: 'Панель вкладок',
-      tabStripDesc:
-        'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',
+      tabStripDesc: 'Показывать вкладки над зоной. Автоматически скрываются для одной панели, если не открыта другая зона чата или плитки.',
       tabStripAuto: 'Авто',
       tabStripAlways: 'Всегда',
       tabStripNever: 'Никогда',
@@ -751,8 +747,7 @@ export const ru = defineLocale({
     },
     fieldLabels: defineFieldCopy({
       model: 'Модель по умолчанию',
-      modelContextLength:
-        'Переопределяет обнаруженное окно контекста ТОЛЬКО основной модели чата (в токенах). Оставьте 0, чтобы использовать обнаруженное значение выбранной модели. Не влияет на вспомогательные модели и модели MoA.',
+      modelContextLength: 'Переопределяет обнаруженное окно контекста ТОЛЬКО основной модели чата (в токенах). Оставьте 0, чтобы использовать обнаруженное значение выбранной модели. Не влияет на вспомогательные модели и модели MoA.',
       fallbackProviders: 'Резервные модели',
       toolsets: 'Включённые наборы инструментов',
       timezone: 'Часовой пояс',
@@ -978,8 +973,7 @@ export const ru = defineLocale({
       },
       auxiliary: {
         compression: {
-          timeout:
-            'Сколько секунд ждать вспомогательную модель сжатия за один вызов (по умолчанию 120). Увеличьте для медленных локальных моделей.'
+          timeout: 'Сколько секунд ждать вспомогательную модель сжатия за один вызов (по умолчанию 120). Увеличьте для медленных локальных моделей.'
         }
       },
       voice: {
@@ -1047,11 +1041,6 @@ export const ru = defineLocale({
       daysAgo: count => `${count} ${RU_NOUN(count, 'день', 'дня', 'дней')} назад`
     },
     config: {
-      minimizeToTrayTitle: 'Сворачивать в трей',
-      minimizeToTrayDesc:
-        'Сворачивание окон или закрытие главного окна скрывает их в системном трее (строке меню macOS), оставляя Hermes работать. Для выхода выберите «Выйти из Hermes» в меню трея или нажмите Cmd+Q. По умолчанию выключено; действует только на этом устройстве.',
-      minimizeToTrayUnavailable:
-        'Системный трей недоступен. Окна будут сворачиваться и закрываться как обычно. Выключите и снова включите настройку, чтобы повторить попытку.',
       none: 'Нет',
       noneParen: '(нет)',
       builtinOnly: 'Только встроенные',
@@ -1081,19 +1070,6 @@ export const ru = defineLocale({
       attachmentSizeUnit: 'МБ',
       attachmentSizeLabel: 'Макс. размер превью / загрузки изображений в мегабайтах'
     },
-    hudModifier: {
-      title: 'Вызов HUD коротким нажатием',
-      description:
-        'Нажмите и отпустите ⌘ + Option на Mac или Ctrl + Alt на Windows/Linux, чтобы вызвать HUD из любого приложения. По умолчанию выключено; действует только на этом устройстве.',
-      permission:
-        'Разрешите Hermes в Системных настройках → Конфиденциальность и безопасность → Мониторинг ввода, затем повторите попытку. Жест не записывает нажатия клавиш и не снимает экран.',
-      unavailable:
-        'Вспомогательная программа жеста HUD не запустилась или неожиданно остановилась. Повторите попытку или перезапустите Hermes. Обычное сочетание HUD по-прежнему работает внутри Hermes.',
-      missingHelper:
-        'В этой установке Hermes отсутствует вспомогательная программа жеста HUD. Обновите или переустановите Hermes и повторите попытку.',
-      unsupportedSession:
-        'Этот сеанс рабочего стола не поддерживает глобальные нажатия модификаторов. В Linux требуется X11; Wayland не поддерживается.'
-    },
     screenshot: {
       enabledTitle: 'Сочетание клавиш для снимка окна',
       enabledDesc:
@@ -1113,8 +1089,7 @@ export const ru = defineLocale({
       errorTitle: 'Ошибка сочетания для снимка окна',
       loadFailed: 'Не удалось прочитать состояние сочетания. Повторите попытку, чтобы проверить текущую настройку.',
       saveFailed: 'Не удалось подтвердить изменение сочетания. Повторите попытку, чтобы проверить текущую настройку.',
-      permissionFailed:
-        'Не удалось открыть Системные настройки. Откройте раздел «Конфиденциальность и безопасность» вручную и повторите попытку.',
+      permissionFailed: 'Не удалось открыть Системные настройки. Откройте раздел «Конфиденциальность и безопасность» вручную и повторите попытку.',
       captureFailed: 'Не удалось снять переднее окно. Ничего не прикреплено и не отправлено.',
       contextChanged: 'Текущий черновик изменился во время съёмки. Снимок не прикреплён и не отправлен.'
     },
@@ -1375,24 +1350,60 @@ export const ru = defineLocale({
     },
     mcp: {
       loading: 'Загрузка MCP-серверов…',
+      failedLoad: 'Не удалось загрузить конфигурацию MCP',
+      nameRequiredTitle: 'Нужно имя',
+      nameRequiredMessage: 'Задайте этому MCP-серверу ключ конфигурации.',
+      objectRequired: 'Конфигурация сервера должна быть JSON-объектом',
       invalidJson: 'Неверный JSON MCP',
       saveFailed: 'Не удалось сохранить',
       removeFailed: 'Не удалось удалить',
+      gatewayUnavailableTitle: 'Шлюз недоступен',
+      gatewayUnavailableMessage: 'Переподключите шлюз, прежде чем перезагружать MCP.',
+      reloadedTitle: 'Инструменты MCP перезагружены',
+      reloadedMessage: 'Новые схемы инструментов применяются к новым ходам.',
       reloadFailed: 'Не удалось перезагрузить MCP',
       savedTitle: 'MCP-сервер сохранён',
       savedMessage: name => `${name} применится после перезагрузки MCP.`,
+      newServer: 'Новый сервер',
+      reload: 'Перезагрузить MCP',
+      reloading: 'Перезагрузка…',
+      emptyTitle: 'MCP-серверов нет',
+      emptyDesc: 'Добавьте stdio- или HTTP-сервер, чтобы получить инструменты MCP.',
       disabled: 'отключён',
+      editServer: 'Изменить сервер',
       name: 'Имя',
       serverJson: 'JSON сервера',
       remove: 'Удалить',
+      saveServer: 'Сохранить сервер',
       test: 'Проверить соединение',
+      testing: 'Проверка…',
+      testOk: count =>
+        `Подключено — доступно ${count} ${RU_PLURAL(count, 'инструмент', 'инструмента', 'инструментов')}`,
+      testFailed: 'Не удалось подключиться',
+      enableServer: name => `Включить ${name}`,
+      disableServer: name => `Отключить ${name}`,
+      serverEnabled: name => `${name} включён — применится к новым сеансам.`,
+      serverDisabled: name => `${name} отключён — применится к новым сеансам.`,
+      toggleFailed: (name, enabled) => `Не удалось ${enabled ? 'включить' : 'отключить'} ${name}`,
+      tabServers: 'Серверы',
+      tabCatalog: 'Каталог',
       catalogLoading: 'Загрузка каталога MCP…',
+      catalogLoadFailed: 'Не удалось загрузить каталог MCP',
+      catalogEmpty: 'Записей каталога нет.',
+      catalogInstalled: 'Установлен',
+      catalogEnabled: 'Включён',
+      catalogNeedsInstall: 'Нужна сборка',
+      catalogInstall: 'Установить',
+      catalogInstalling: 'Установка…',
+      catalogInstallStarted: name => `Установка ${name}… применится к новым сеансам после завершения.`,
       catalogInstallFailed: name => `Не удалось установить ${name}`,
+      catalogEnvPrompt: name => `${name} требует учётные данные`,
       catalogEnvRequired: 'Заполните обязательные значения перед установкой.',
       capabilitySummary: (tools, prompts, resources) =>
         `${[`${tools} ${RU_NOUN(tools, 'инструмент', 'инструмента', 'инструментов')}`, ...(prompts ? [`${prompts} ${RU_NOUN(prompts, 'промпт', 'промпта', 'промптов')}`] : []), ...(resources ? [`${resources} ${RU_NOUN(resources, 'ресурс', 'ресурса', 'ресурсов')}`] : [])].join(', ')} включено`,
       costTokens: tokens => `~${tokens} ток/вызов`,
       usage30d: uses => `${uses} ${RU_NOUN(uses, 'использование', 'использования', 'использований')}/30д`,
+      unusedPill: 'не используется',
       statusConnecting: 'Подключение…',
       statusNeedsAuth: 'Нужна аутентификация',
       statusError: 'Ошибка',
@@ -1401,7 +1412,11 @@ export const ru = defineLocale({
       authenticatedTitle: 'Аутентифицирован',
       authenticatedMessage: (server, count) =>
         `${server}: ${count} ${RU_PLURAL(count, 'инструмент', 'инструмента', 'инструментов')}`,
+      waitingForBrowser: 'Ожидание браузера…',
       authenticate: 'Аутентифицироваться',
+      unsavedConnect: 'Не сохранено — сохраните mcp.json, чтобы подключиться.',
+      enableTool: tool => `Включить ${tool}`,
+      disableTool: tool => `Отключить ${tool}`,
       noOutput: 'Вывода пока нет.',
       deepLinkTitle: 'Добавить MCP-сервер?',
       deepLinkDescription:
@@ -1416,7 +1431,13 @@ export const ru = defineLocale({
       deepLinkErrorConfig: 'Конфигурация в ссылке не является корректным JSON в base64.',
       deepLinkErrorShape: 'Конфигурация должна быть JSON-объектом со строковым полем `url` или `command`.',
       deepLinkErrorUrl: 'Разрешены только URL серверов http:// и https://.',
-      deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.'
+      deepLinkErrorTooLarge: 'Пакет конфигурации превышает лимит 32 КБ.',
+      importButton: 'Импортировать',
+      importPlaceholder:
+        'Вставьте фрагмент mcp.json, команду npx/docker, строку claude mcp add, URL или ссылку Cursor…',
+      importNoMatch: 'В вставленном тексте не распознана конфигурация сервера.',
+      importConfirm: 'Добавить в mcp.json',
+      importConfirmMany: count => `Добавить ${count} ${RU_PLURAL(count, 'сервер', 'сервера', 'серверов')} в mcp.json`
     },
     model: {
       loading: 'Загрузка конфигурации модели…',
@@ -1607,6 +1628,7 @@ export const ru = defineLocale({
     tabSkills: 'Навыки',
     tabToolsets: 'Инструменты',
     configuringProfile: 'Настраивается:',
+    tabMcp: 'MCP',
     all: 'Все',
     searchSkills: 'Поиск навыков...',
     searchToolsets: 'Поиск инструментов...',
@@ -2892,8 +2914,6 @@ export const ru = defineLocale({
     }
   },
   statusStack: {
-    hideStack: 'Скрыть панель состояния',
-    showStack: 'Показать панель состояния',
     agents: 'Агенты',
     background: count => `${count} ${RU_NOUN(count, 'фоновая задача', 'фоновые задачи', 'фоновых задач')}`,
     goalActive: 'Цель активна',

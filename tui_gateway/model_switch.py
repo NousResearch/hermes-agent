@@ -51,7 +51,7 @@ def _restore_agent_model_runtime(agent, snapshot: dict | None) -> None:
             agent.reasoning_config = snapshot["reasoning_config"]
 
 
-def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True) -> "_TurnScopes":
+def _profile_runtime_scope_tokens(profile_home) -> "_TurnScopes":
     """Bind HERMES_HOME + secret + terminal scope for ``profile_home`` (None = launch profile) and
     return the reset tokens. The launch profile's SECRET scope is always bound — its ``.env`` over
     the launch env (live while single-profile, frozen at activation afterwards; never live
@@ -59,36 +59,26 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
     source is fixed at entry and an in-flight launch body survives a concurrent first-secondary
     activation instead of hitting ``UnscopedSecretError`` mid-request. Its terminal policy is bound
     only once multiplexing is active: single-profile terminal execution keeps the standalone
-    ``os.environ`` bridge.
-
-    ``hydrate_secrets=False`` skips resolving the profile's EXTERNAL secret sources (``op run``,
-    ``bws``, ``sh -c`` — a subprocess with a 30s CLI budget holding a process-global lock). Pass it
-    from any body that persists state rather than calls a provider: the exit-flush worker has a 5s
-    TOTAL budget, and one slow source there costs the transcript the flush exists to save.
-    """
+    ``os.environ`` bridge."""
     from agent.secret_scope import is_multiplex_active
     scopes = _TurnScopes()
     if profile_home:
         home = Path(profile_home)
         # External sources first: the requested profile may never have been served in this process.
-        if hydrate_secrets:
-            from hermes_cli.env_loader import hydrate_profile_secret_sources
-            hydrate_profile_secret_sources(home)
+        from hermes_cli.env_loader import hydrate_profile_secret_sources
+        hydrate_profile_secret_sources(home)
         secrets = build_profile_secret_scope(home)
         overlay = None
         scopes.home = set_hermes_home_override(str(home))
     else:
-        # The launch home IS get_hermes_home() (``_profile_home`` answers None for "already the
-        # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
-        # active the override is bound too: an unset override is the "unbound context" signal
-        # plugin runtime bindings and per-home slots fail closed on (#118538).
+        # No home override: the launch home IS get_hermes_home() (``_profile_home`` answers None for
+        # "already the launch profile"); only its secrets (+ terminal policy under multiplex) need binding.
         from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         home = Path(_hermes_home)
         secrets = launch_secret_scope(home)
         scopes.secret = set_secret_scope(secrets)
         if not is_multiplex_active():
             return scopes
-        scopes.home = set_hermes_home_override(str(home))
         overlay = launch_terminal_env()
     if scopes.secret is None:
         scopes.secret = set_secret_scope(secrets)
@@ -121,10 +111,10 @@ def _release_profile_runtime_scope_tokens(scopes: "_TurnScopes | None") -> None:
 
 
 @contextlib.contextmanager
-def _session_profile_runtime_scope(session: dict, *, hydrate_secrets: bool = True):
+def _session_profile_runtime_scope(session: dict):
     """Bind model resolution to the session's profile config and secrets (launch profile included
     once the process multiplexes; see ``_profile_runtime_scope_tokens``)."""
-    scopes = _profile_runtime_scope_tokens(session.get("profile_home"), hydrate_secrets=hydrate_secrets)
+    scopes = _profile_runtime_scope_tokens(session.get("profile_home"))
     try:
         yield
     finally:

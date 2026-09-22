@@ -394,16 +394,11 @@ def _add_description_prompt_preview(result: Dict[str, Any], content: str) -> Dic
     return result
 
 
-def _attach_lint_findings(result: Dict[str, Any], skill_md: Path, before: Optional[str] = None) -> None:
-    """Attach ADVISORY authoring findings (hard rejects already ran in _validate_frontmatter).
-    With ``before`` (the pre-write content) only rules the write INTRODUCED are attached, so a
-    patch reports the line it crossed rather than re-listing the skill's standing findings."""
+def _attach_lint_findings(result: Dict[str, Any], skill_md: Path) -> None:
+    """Attach ADVISORY authoring findings (hard rejects already ran in _validate_frontmatter)."""
     try:
-        from tools.skill_linter import lint_content, lint_skill  # local import: optional path
+        from tools.skill_linter import lint_skill  # local import: optional path
         findings = lint_skill(skill_md)
-        if before is not None:
-            standing = {f.rule for f in lint_content(before, skill_dir=skill_md.parent)}
-            findings = [f for f in findings if f.rule not in standing]
     except Exception:
         findings = None
     if not findings:
@@ -411,7 +406,7 @@ def _attach_lint_findings(result: Dict[str, Any], skill_md: Path, before: Option
     result["lint_warnings"] = [
         {"severity": f.severity, "rule": f.rule, "message": f.message} for f in findings]
     result["lint_hint"] = (
-        "The write succeeded. These are advisory authoring-convention findings (not blockers) "
+        "The skill was created. These are advisory authoring-convention findings (not blockers) "
         "— fix them with skill_manage(action='patch') to match Hermes skill standards.")
 
 
@@ -506,12 +501,7 @@ def _patch_skill(name: str, old_string: str, new_string: str, file_path: str = N
         "success": True,
         "message": f"Patched {target_label} in skill '{name}' ({match_count} replacement{'s' if match_count > 1 else ''}).",
         "_change": {"old": _clip(old_string, 200, "…"), "new": _clip(new_string, 200, "…")}}
-    result = _attach_org_note(result, name, skill_dir)
-    # SKILL.md grows by patches, not by creates: surface findings on the patch that crosses a line
-    # (oversized-body, incident-log-shape) — a clean patch attaches nothing and stays quiet.
-    if not file_path:
-        _attach_lint_findings(result, target, before=content)
-    return result
+    return _attach_org_note(result, name, skill_dir)
 
 
 def _delete_skill(name: str, absorbed_into: Optional[str] = None) -> Dict[str, Any]:

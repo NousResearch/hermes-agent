@@ -23,7 +23,7 @@ import { GeneratedImage } from '@/components/chat/generated-image-result'
 import { SCAFFOLD_LABEL_CLASS, SCAFFOLD_META_CLASS, ScaffoldRow } from '@/components/chat/scaffold-row'
 import { useOnboardingChatActive } from '@/components/onboarding-chat/assembly'
 import { useI18n } from '@/i18n'
-import { mcpTargets, toolLabels } from '@/lib/connector-tools'
+import { connectorCalls, mcpTargets } from '@/lib/connector-tools'
 import { generatedImageFromResult } from '@/lib/generated-images'
 import { separateGluedReasoningBlocks } from '@/lib/reasoning-blocks'
 import { isTodoToolName } from '@/lib/todos'
@@ -129,7 +129,7 @@ const ChainToolFallback: FC<TimelineToolCallProps> = props => {
     return <ConnectorTool {...props} />
   }
 
-  if (toolLabels(props.args).length > 0) {
+  if (connectorCalls(props.toolName, props.args).length > 0) {
     return <ConnectorExecution {...props} />
   }
 

@@ -24,12 +24,7 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
   it('opens the reviewed/pinned catalog dialog exactly like an in-app pick', async () => {
     const lookup = lookupFor({
       ok: true,
-      entry: {
-        name: 'aihubmix',
-        repo: 'https://github.com/AIhubmix/hermes-provider-aihubmix',
-        sha: 'b'.repeat(40),
-        subdir: 'aihubmix'
-      }
+      entry: { name: 'aihubmix', repo: 'https://github.com/AIhubmix/hermes-provider-aihubmix', sha: 'b'.repeat(40), subdir: 'aihubmix' }
     })
 
     await requestPluginCatalogInstallFromDeepLink('aihubmix', lookup)
@@ -59,10 +54,7 @@ describe('requestPluginCatalogInstallFromDeepLink', () => {
   })
 
   it('resolves against the live catalog feed by default and rejects unknown names', async () => {
-    const feed = JSON.stringify([
-      { name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40), subdir: '' }
-    ])
-
+    const feed = JSON.stringify([{ name: 'weather', repo: 'https://github.com/x/weather', sha: 'a'.repeat(40), subdir: '' }])
     const fetchSpy = vi.spyOn(globalThis, 'fetch').mockImplementation(async () => new Response(feed, { status: 200 }))
 
     await requestPluginCatalogInstallFromDeepLink('weather-evil')
@@ -85,15 +77,7 @@ describe('openCatalogPluginInstall', () => {
 
   it('short-circuits with a success toast when the entry is installed and current', () => {
     $agentPlugins.set([
-      {
-        catalog_name: 'weather',
-        description: '',
-        name: 'weather',
-        source: 'git',
-        status: 'enabled',
-        update_available: false,
-        version: '1'
-      }
+      { catalog_name: 'weather', description: '', name: 'weather', source: 'git', status: 'enabled', update_available: false, version: '1' }
     ])
 
     openCatalogPluginInstall({ name: 'weather', repo: 'https://github.com/x/weather' }, 'workbot')

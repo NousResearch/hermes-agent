@@ -38,38 +38,6 @@ Hardening invariants — each guards a real failure; don't weaken without answer
   serves, re-enumerate when a profile dir appears or is tombstoned) is per served home, not per
   process. Why: a store opened before the scope was entered wrote a secondary profile's run
   records into the launch profile's `jobs.json`.
-- **Cron ownership is not gated on `gateway.multiplex_profiles`.** That flag gates ADAPTERS; one
-  host gateway process ticks EVERY profile's store either way (`run.py::_cron_tick_profile_homes`).
-  Gating the tick set on it left every non-launch profile's jobs in a store no ticker visited.
-- **Per-profile process assumptions are the bug class.** One process ticks N homes, so anything
-  keyed on "this process's profile" is wrong: in-flight state (`_running_job_ids`,
-  `_running_since`, `_running_futures`, `_running_worker_pids`, `_running_fire_owners`,
-  `_interrupted_job_ids`) is keyed by `_inflight_key(job_id)` = `(home key, job id)` — two
-  profiles legitimately carry a `daily-brief`; the parallel pool is keyed by home
-  (`cron.max_parallel_jobs` is per profile); and the stale-code yield gate asks
-  `scheduler_ownership.owns_cron_tick_for(home)` / `live_gateway_ticking(home)` instead of the
-  process-global runtime-lock boolean. Public accessors (`get_running_job_ids`,
-  `get_running_job_details`, `get_wedged_job_ids`) still report the host-wide union of bare job
-  ids for the shutdown drain, but LIVENESS consumers (`jobs.py::_job_running_in_this_process`,
-  `tools/cronjob_tools`) ask `is_job_running(job_id, home=...)` — the union made profile A's
-  running `daily-brief` answer for profile B's idle one.
-- **A claim is released under the key it was registered with.** The cron scope is a ContextVar:
-  `try_register_running_job` runs on the ticker thread inside `_profile_cron_scope`, while the
-  pool worker's `finally` sits OUTSIDE `ctx.run` and resolves the LAUNCH home. Pass the
-  registering home (`release_running_job(job_id, home=...)`), or every secondary profile's claim
-  leaks — the job skips a fire window until the force-release backstop sweeps it, and the drain
-  sees phantom work. Never rebuild a home from a key half (`Path(key[0])`): `hermes_home_key`
-  normcases, so use `_inflight_home_path`.
-- **Ticked-home state is reclaimed when a home leaves the set.** `register_ticked_homes` is
-  republished every cycle and reaps the departed homes' parallel pools; pools used to live until
-  `atexit`, so each home ever ticked kept a ThreadPoolExecutor and its worker threads forever.
-- **The host gateway stands down for a profile that runs its OWN gateway.** `run.py::
-  _cron_profile_gate` (the same gate `hermes_cli/web_server.py` passes) keeps the launch process
-  and a per-profile gateway off one store: the tick lock stops a simultaneous double-run but not
-  the race, and when the launch process wins, delivery goes through `SharedRouteAdapters`/
-  fail-closed instead of that profile's live adapters. The gate compares the liveness PID against
-  `os.getpid()` — this process holds the launch `gateway.pid` AND publishes every served profile
-  in `served_profiles`, so a bare liveness answer would stand cron down host-wide.
 - Cron sessions pass `skip_memory=True`; memory providers intentionally do not run during cron.
 - Cron execution has its own session. Eligible continuable deliveries may mirror or seed the
   reply-facing conversation: origin, origin-less home fallback, user-written bare-platform home,

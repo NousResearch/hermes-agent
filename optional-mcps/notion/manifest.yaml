@@ -3,7 +3,6 @@
 manifest_version: 1
 
 name: notion
-connector_slug: notion
 description: >-
   Pages and databases from your Notion workspace.
 source: https://developers.notion.com/docs/mcp

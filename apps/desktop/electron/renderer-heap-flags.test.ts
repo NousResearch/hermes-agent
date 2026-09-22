@@ -22,10 +22,7 @@ describe('renderer heap flags', () => {
       ].join('\n')
     )
 
-    expect(cfg).toEqual({
-      electronFlags: ['--ozone-platform=x11', '--js-flags=--expose-gc'],
-      rendererMaxOldSpaceMb: 2048
-    })
+    expect(cfg).toEqual({ electronFlags: ['--ozone-platform=x11', '--js-flags=--expose-gc'], rendererMaxOldSpaceMb: 2048 })
     expect(planLaunchSwitches(cfg)).toEqual([
       { name: 'ozone-platform', value: 'x11' },
       { name: 'js-flags', value: '--expose-gc --max-old-space-size=2048' }
@@ -35,10 +32,7 @@ describe('renderer heap flags', () => {
   })
 
   it('merges with a js-flags switch already on argv instead of overwriting it', () => {
-    const cfg = readDesktopLaunchConfig(
-      'desktop:\n  electron_flags: [--disable-gpu]\n  renderer_max_old_space_mb: 1536\n'
-    )
-
+    const cfg = readDesktopLaunchConfig('desktop:\n  electron_flags: [--disable-gpu]\n  renderer_max_old_space_mb: 1536\n')
     const planned = planLaunchSwitches(cfg, ['/app/hermes', '--js-flags=--expose-gc', '--disable-gpu'])
 
     // --disable-gpu is already on the launcher's argv: not re-applied.

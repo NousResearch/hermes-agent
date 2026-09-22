@@ -24,7 +24,11 @@ export const sshInventoryAttemptedAt = new Map<string, number>()
  */
 export const connectionInstallIds = new Map<string, { id?: string; ts: number }>()
 
-const CONNECTION_SCOPED_CACHES: Map<string, unknown>[] = [sshRosterCache, sshInventoryAttemptedAt, connectionInstallIds]
+const CONNECTION_SCOPED_CACHES: Map<string, unknown>[] = [
+  sshRosterCache,
+  sshInventoryAttemptedAt,
+  connectionInstallIds
+]
 
 /**
  * Forget everything cached about a connection id. Call whenever that id stops naming the machine

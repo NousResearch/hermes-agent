@@ -2,11 +2,7 @@ import { ActionBarPrimitive, BranchPickerPrimitive, MessagePrimitive, useAuiStat
 import { type FC, type ReactNode, useCallback, useEffect, useRef, useState } from 'react'
 
 import { DirectiveContent } from '@/components/assistant-ui/directive-text'
-import {
-  messageAttachmentRefs,
-  messageContentText,
-  PROCESS_NOTIFICATION_RE
-} from '@/components/assistant-ui/thread/content'
+import { messageAttachmentRefs, messageContentText, PROCESS_NOTIFICATION_RE } from '@/components/assistant-ui/thread/content'
 import { ReactionBadge, ReactionPicker } from '@/components/assistant-ui/thread/message-reactions'
 import { BackgroundResult } from '@/components/assistant-ui/thread/system-message'
 import { MessageTimelineTimestamp } from '@/components/assistant-ui/thread/timeline-timestamp'

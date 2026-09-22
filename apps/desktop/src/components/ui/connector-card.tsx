@@ -72,7 +72,7 @@ export function ConnectorRow({ action, connector, cue, mark, markLabel }: Connec
         </span>
         <span className="flex w-22 shrink-0 justify-end">
           {action ? (
-            <span className="inline-flex h-6 w-22 items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
+            <span className="inline-flex h-6 w-full items-stretch overflow-hidden rounded-md border border-primary/25 bg-primary/10 text-primary">
               <Button
                 className="h-full w-full rounded-none px-2 text-xs font-medium text-primary hover:bg-primary/15 hover:text-primary"
                 disabled={action.disabled}
@@ -87,6 +87,7 @@ export function ConnectorRow({ action, connector, cue, mark, markLabel }: Connec
           ) : null}
         </span>
       </div>
+
     </div>
   )
 }

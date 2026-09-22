@@ -1240,9 +1240,11 @@ def _load_cfg() -> dict:
 
 def _save_cfg(cfg: dict):
     global _cfg_cache, _cfg_sig, _cfg_path
-    from hermes_cli.config import atomic_config_write
+    from utils import atomic_roundtrip_yaml_save
     path = _active_config_path()
-    atomic_config_write(path, cfg)
+    # Comment-, ordering- and Unicode-preserving write (a plain safe_dump clobbered hand-written configs);
+    # fails closed on an unreadable existing config.yaml like atomic_config_write.
+    atomic_roundtrip_yaml_save(path, cfg)
     with _cfg_lock:
         _cfg_cache, _cfg_path = copy.deepcopy(cfg), path
         try:
@@ -2046,7 +2048,7 @@ def _current_profile_name() -> str:
 # v5 ws_max_size >16 MiB file.attach frames; v6 plugins.manage rows carry the canonical registry key;
 # v7 blocking prompts are JSON-RPC server->client requests (`srq-<n>` frames, `open_requests` replay) — a v6
 # backend still emits `<kind>.request` notifications the renderer no longer listens for.
-DESKTOP_BACKEND_CONTRACT = 8
+DESKTOP_BACKEND_CONTRACT = 7
 
 
 def _session_usage_snapshot(session: dict | None) -> dict:
@@ -3329,7 +3331,7 @@ from . import (  # noqa: E402
     methods_projects as _methods_projects, methods_session_foreign as _methods_session_foreign,
     methods_session_control as _methods_session_control, methods_subagents as _methods_subagents,
     methods_vault as _methods_vault, methods_free_tier as _methods_free_tier,
-    methods_connectors as _methods_connectors, methods_connectors_account as _methods_connectors_account)
+    methods_connectors as _methods_connectors)
 
 for _m in (
     _session_transports, _session_reaper, _session_lifecycle, _session_workdir, _compute_host_bridge, _model_switch,
@@ -3339,7 +3341,6 @@ for _m in (
     _methods_browser_control, _methods_session, _methods_prompt, _methods_config,
     _methods_config_set, _methods_complete, _methods_tools, _methods_profiles, _methods_images,
     _methods_bot_relay, _prompt_turn, _billing_view, _methods_projects, _methods_session_foreign,
-    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors,
-    _methods_connectors_account):
+    _methods_session_control, _methods_subagents, _methods_vault, _methods_free_tier, _methods_connectors):
     _m.register(sys.modules[__name__])
 del _m

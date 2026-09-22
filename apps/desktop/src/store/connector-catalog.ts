@@ -18,11 +18,8 @@
 import { useEffect, useState } from 'react'
 
 import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
-import { translateNow } from '@/i18n'
 import type { ConnectorRow } from '@/lib/connector-tools'
-import { isMissingRpcMethod, isOutOfSyncRpcParams } from '@/lib/gateway-rpc'
 import { requestGatewayForAgent } from '@/store/gateway'
-import { notifyError } from '@/store/notifications'
 import { $activeGatewayProfile } from '@/store/profile'
 import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
 import { isSessionOwnerRoute } from '@/store/session-request-router'
@@ -57,7 +54,7 @@ export function useConnectorCatalog(storedId: null | string, runtimeId: null | s
           connectionId,
           profile,
           'connectors.list',
-          { owner: { session_id: runtimeId, type: 'session' } },
+          { session_id: runtimeId },
           15000
         )
       })
@@ -66,13 +63,9 @@ export function useConnectorCatalog(storedId: null | string, runtimeId: null | s
           setCatalog(response.available ? { rows: response.connectors, status: 'ready' } : { status: 'unavailable' })
         }
       })
-      .catch(error => {
+      .catch(() => {
         if (!cancelled) {
           setCatalog({ status: 'unavailable' })
-
-          if (isMissingRpcMethod(error) || isOutOfSyncRpcParams(error)) {
-            notifyError(error, translateNow('connectors.unavailable'), { id: 'connectors-rpc-out-of-sync' })
-          }
         }
       })
 

@@ -60,12 +60,7 @@ import { ChatBar, ChatBarFallback } from './composer'
 import { FloatingComposerSurface } from './composer/floating-surface'
 import { requestComposerInsert } from './composer/focus'
 import { droppedFileInlineRefs } from './composer/inline-refs'
-import {
-  ComposerScopeProvider,
-  ComposerSurfaceProvider,
-  useComposerScope,
-  useComposerSurfaceId
-} from './composer/scope'
+import { ComposerScopeProvider, ComposerSurfaceProvider, useComposerScope, useComposerSurfaceId } from './composer/scope'
 import type { ChatBarState } from './composer/types'
 import { useHistoryWindow } from './history-window'
 import { type DroppedFile, partitionDroppedFiles } from './hooks/use-composer-actions'
@@ -85,7 +80,6 @@ import {
   transcriptBackfillAvailable
 } from './transcript-backfill'
 import { advanceSessionTranscriptWindow, type SessionWindowMemo } from './transcript-window'
-import { useTranscriptRetention } from './use-transcript-retention'
 
 interface ChatViewProps extends Omit<React.ComponentProps<'div'>, 'onSubmit'> {
   gateway: HermesGateway | null
@@ -263,10 +257,9 @@ export function ChatRuntimeBoundary({
   const ownerConnection = ownerRoute?.connectionId
   const ownerProfile = ownerRoute?.targetProfile || ownerRoute?.profile
 
-  const tailProfile = useMemo(
-    () => (ownerProfile ? { connectionId: ownerConnection, profile: ownerProfile } : undefined),
-    [ownerConnection, ownerProfile]
-  )
+  const tailProfile = useMemo(() => ownerProfile
+    ? { connectionId: ownerConnection, profile: ownerProfile }
+    : undefined, [ownerConnection, ownerProfile])
 
   // A Bot chat opened IN PLACE in the main pane (openStoredBotChat) keeps the
   // active profile, so the ambient scope carries no owner. Publish the session
@@ -332,17 +325,6 @@ export function ChatRuntimeBoundary({
   }, [messages, windowPages])
 
   const currentMessages = history.page?.messages ?? windowedMessages
-  // Release the store's paged-through history (persisted rows older than the
-  // window) instead of retaining it for the window's lifetime (#77311). A
-  // static history page is not the live store, and neither is a suppressed
-  // transcript, so both opt out.
-  useTranscriptRetention({
-    anchorId: windowed ? (windowedMessages[0]?.id ?? null) : null,
-    enabled: !suppressMessages && !history.page,
-    profile: tailProfile,
-    runtimeId,
-    storedSessionId: storedId
-  })
   const runtimeMessageRepository = useRuntimeMessageRepository(currentMessages)
   // Subscribed (not read imperatively) so the "Show earlier" affordance
   // appears/retires as tail hydrations and backfill pages record their state.
@@ -354,9 +336,7 @@ export function ChatRuntimeBoundary({
     async (beforePrepend?: () => void) => {
       // A historical page is not the live tail: its older neighbours come from
       // the prompt range the rail already draws, never from store backfill.
-      if (history.page) {
-        return history.revealOlder(beforePrepend)
-      }
+      if (history.page) {return history.revealOlder(beforePrepend)}
 
       // Network latency is not scroll intent. Capture at arrival, immediately
       // before the store prepend, and only grow a window that has a page to show.
@@ -414,18 +394,9 @@ export function ChatRuntimeBoundary({
   const newerAvailable = history.page?.newerAvailable ?? false
   const { revealRow, returnToLatest } = history
 
-  const transcriptWindow = useMemo(
-    () => ({
-      olderAvailable,
-      expandWindow,
-      revealRow,
-      returnToLatest,
-      currentMessages,
-      isHistorical,
-      newerAvailable
-    }),
-    [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable]
-  )
+  const transcriptWindow = useMemo(() => ({
+    olderAvailable, expandWindow, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable
+  }), [expandWindow, olderAvailable, revealRow, returnToLatest, currentMessages, isHistorical, newerAvailable])
 
   const runtime = useIncrementalExternalStoreRuntime<ThreadMessage>({
     messageRepository: runtimeMessageRepository,

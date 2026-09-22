@@ -94,7 +94,7 @@ def test_preflight_blocker_and_single_profile_keep_the_unset_default_standalone(
     assert decision == mode.MultiplexDecision(False, "guard", mode.SINGLE_PROFILE_REASON)
 
 
-def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fleet, monkeypatch):
+def test_explicit_flag_is_never_second_guessed(fleet, monkeypatch):
     root, _services, pids = fleet
     pids["coder"] = 4101
     (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n", encoding="utf-8")
@@ -103,22 +103,12 @@ def test_explicit_true_is_never_second_guessed_and_explicit_false_is_retired(fle
     assert cfg.multiplex_profiles is True
     assert mode.explicit_multiplex_flag(root) is True
 
-    # RETIRED opt-out: `false` still parses, but it can no longer pin a second gateway onto this
-    # host — with nothing blocking, the process multiplexes and says the key was ignored.
     monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "false")
     pids.clear()
     cfg = load_gateway_config()
-    decision = mode.resolve_multiplex_mode(cfg)
-    assert decision.enabled is True and decision.source == "retired-opt-out"
-    assert cfg.multiplex_profiles is True
+    assert mode.resolve_multiplex_mode(cfg) == mode.MultiplexDecision(False, "config")
+    assert cfg.multiplex_profiles is False
     assert mode.explicit_multiplex_flag(root) is False
-
-    # ...and it still cannot force a fold that would double-bind: a secondary that owns a live
-    # gateway keeps this process standalone, with the blocker named (never a silent second bind).
-    pids["coder"] = 4101
-    cfg = load_gateway_config()
-    guarded = mode.resolve_multiplex_mode(cfg)
-    assert guarded.enabled is False and guarded.source == "guard" and "coder" in guarded.reason
 
 
 def test_migration_plan_treats_the_unset_default_as_not_yet_multiplexed(fleet):

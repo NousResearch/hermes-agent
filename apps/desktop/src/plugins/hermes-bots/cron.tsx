@@ -384,10 +384,7 @@ export function routineDetailRows(job: RoutineJob | null | undefined): Array<{ l
       ['Repeat', job?.repeat],
       // A slot parked past the scheduler grace is labelled overdue, never
       // promised as a next run (#114309); the card below makes the same call.
-      [
-        job && nextRunOverdueMs(job) !== null ? 'Overdue since' : 'Next run',
-        paused ? null : routineTimestamp(job?.next_run_at)
-      ],
+      [job && nextRunOverdueMs(job) !== null ? 'Overdue since' : 'Next run', paused ? null : routineTimestamp(job?.next_run_at)],
       ['Last run', routineTimestamp(job?.last_run_at)],
       ['Last result', routineLastResult(job?.last_status)],
       ['Delivers to', job?.deliver],

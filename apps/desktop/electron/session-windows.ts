@@ -95,13 +95,7 @@ interface InstanceWindowUrlOptions extends Partial<DesktopWindowLaunch> {
   rendererIndexPath?: string
 }
 
-function buildInstanceWindowUrl({
-  connectionId,
-  devServer,
-  profile,
-  profileWindow,
-  rendererIndexPath
-}: InstanceWindowUrlOptions = {}) {
+function buildInstanceWindowUrl({ connectionId, devServer, profile, profileWindow, rendererIndexPath }: InstanceWindowUrlOptions = {}) {
   const query = `?peer=1${profile ? `&profile=${encodeURIComponent(profile)}&connectionId=${encodeURIComponent(connectionId ?? '')}${profileWindow ? '&profileWindow=1' : ''}` : ''}`
 
   if (devServer) {

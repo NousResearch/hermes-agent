@@ -263,66 +263,13 @@ class StreamingContextScrubber:
             self._at_block_boundary = self._ends_at_block_boundary(text)
 
 
-# A markdown bullet: a marker, whitespace, then content. The whitespace matters — it is what keeps
-# ``**Preferences**`` (a bold heading) and ``*emphasis*`` out of the rule.
-_RECALL_BULLET_RE = re.compile(r"[-*+]\s+\S")
-
-
-def _drop_repeated_recall_lines(text: str) -> str:
-    """Drop a recalled bullet that an EARLIER line of this same block already states.
-
-    Providers merge several stores (and this merges several providers), so one prefetch routinely
-    surfaces the same fact two or three times. A byte-identical repeat inside one block tells the
-    model nothing the block has not already said, and it is not free: the composed block is stamped
-    into the user row's ``api_content`` sidecar and replayed verbatim on every later request for as
-    long as that row is in context, so each duplicate is paid once per turn, forever.
-
-    The ``seen`` set is scoped per section — every non-bullet line at column 0 (a heading of any
-    style, a ``---`` rule, prose) starts a new one — so a repeat is only dropped when the SAME
-    section already states it.
-
-    Only a SELF-CONTAINED bullet is considered — a marker, whitespace, content, and no continuation
-    line indented beneath it. A bullet that carries continuation lines is never dropped and never
-    suppresses a later one, because two entries can share a headline and differ underneath it
-    (``- prefers draft PRs`` / ``  (logged 12 Jan, builtin)`` vs the same headline logged elsewhere):
-    dropping one would re-parent its provenance under the other and invent a record neither provider
-    reported. Headings — including ``**bold**`` ones — prose, blank lines, separators and numbered
-    items are left exactly as written.
-    """
-    lines = text.split("\n")
-    seen: set[str] = set()
-    kept: list[str] = []
-    for index, line in enumerate(lines):
-        stripped = line.strip()
-        # An indented line is a continuation of the bullet above it (nested child, provenance,
-        # wrapped prose). It never participates in dedupe and is never dropped.
-        if stripped and line[0].isspace():
-            kept.append(line)
-            continue
-        is_bullet = bool(_RECALL_BULLET_RE.match(stripped))
-        # Any column-0 non-bullet line (heading, rule, paragraph) opens a fresh dedupe scope.
-        if stripped and not is_bullet:
-            seen.clear()
-        if is_bullet:
-            following = lines[index + 1] if index + 1 < len(lines) else ""
-            carries_continuation = bool(following.strip()) and following[0].isspace()
-            if not carries_continuation:
-                if stripped in seen:
-                    continue
-                seen.add(stripped)
-        kept.append(line)
-    return "\n".join(kept)
-
-
 def build_memory_context_block(raw_context: str) -> str:
     """Wrap prefetched memory in a fenced block with system note."""
     if not raw_context or not raw_context.strip():
         return ""
-    sanitized = sanitize_context(raw_context)
-    if sanitized != raw_context:
-        # Stays keyed on sanitization alone: a deduped bullet is routine, not a provider fault.
+    clean = sanitize_context(raw_context)
+    if clean != raw_context:
         logger.warning("memory provider returned pre-wrapped context; stripped")
-    clean = _drop_repeated_recall_lines(sanitized)
     return (
         "<memory-context>\n"
         "[System note: The following is recalled memory context, "

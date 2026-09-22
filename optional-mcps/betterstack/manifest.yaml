@@ -3,7 +3,6 @@
 manifest_version: 1
 
 name: betterstack
-connector_slug: better_stack_mcp
 description: 'Better Stack: logs, uptime monitors, incidents, and status pages.'
 source: https://betterstack.com/docs/getting-started/integrations/mcp/
 

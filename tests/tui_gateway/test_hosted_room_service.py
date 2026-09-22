@@ -1132,7 +1132,6 @@ def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
-            target_profile="default",
             installation_id="install-peer",
             persistent_process=True,
         )
@@ -1168,7 +1167,7 @@ def test_registered_peer_route_rehydrates_after_service_restart(tmp_path: Path):
 def test_one_corrupt_stored_route_does_not_hide_healthy_peers(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     service = HostedRoomService(_server(), db_path=db)
     for room_id, member_id in (("room-good", "member-good"), ("room-bad", "member-bad")):
@@ -1210,7 +1209,6 @@ def test_unpublished_roomlink_v1_route_is_quarantined_for_reinvitation(
     db = tmp_path / "state.db"
     legacy_catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
-            target_profile="default",
             installation_id="install-peer",
             protocol_versions=(1,),
             persistent_process=True,
@@ -1286,7 +1284,7 @@ def test_registration_disk_failure_does_not_publish_live_route(
     db = tmp_path / "state.db"
     service = HostedRoomService(_server(), db_path=db)
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -1322,7 +1320,7 @@ def test_room_route_revocation_is_remote_first_and_removes_local_state(
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -1356,7 +1354,7 @@ def test_failed_remote_revocation_preserves_route_for_retry(tmp_path: Path):
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -1389,7 +1387,7 @@ def test_expired_remote_grant_no_longer_blocks_room_cleanup(tmp_path: Path):
 
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -1422,7 +1420,7 @@ def test_expired_grant_surfaces_needs_reauthorization_without_secret(
 ):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -1520,7 +1518,7 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
 ):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -1612,9 +1610,6 @@ def test_not_admitted_dispatch_persists_unavailable_route_until_success(
 def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
     now = time.time()
     secret = b"s" * 32
-    catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
-    )
     old_grant = issue_room_grant(
         secret,
         grant_id="grant-old",
@@ -1625,7 +1620,6 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         member_id="member-peer",
         target_install_id="install-peer",
         target_profile="reviewer",
-        execution_policy_digest=catalog.execution_policy.policy_digest,
         issued_at=now - 3700,
         ttl_seconds=3600,
         status_expires_at=now + 10_000,
@@ -1640,10 +1634,12 @@ def test_dispatch_refresh_persists_before_remote_admission(tmp_path: Path):
         member_id="member-peer",
         target_install_id="install-peer",
         target_profile="reviewer",
-        execution_policy_digest=catalog.execution_policy.policy_digest,
         issued_at=now,
         ttl_seconds=3600,
         status_expires_at=now + 10_000,
+    )
+    catalog = GatewayRoomCatalog.from_mapping(
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -1749,14 +1745,12 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
     )
     base_catalog = GatewayRoomCatalog.from_mapping(
         catalog_mapping(
-            target_profile="reviewer",
             installation_id="install-peer",
             persistent_process=True,
             execution_policy=base_policy,
         )
     )
     refreshed_catalog = catalog_mapping(
-            target_profile="reviewer",
         installation_id="install-peer",
         persistent_process=True,
         attachments=capability_changed,
@@ -1824,7 +1818,7 @@ def test_dispatch_refresh_marks_route_for_reauthorization_on_drift(
 def test_peer_approval_is_scoped_visible_and_resolvable(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),
@@ -2018,7 +2012,7 @@ def test_stale_local_approval_cannot_resolve_replacement_request(tmp_path: Path)
 def test_peer_recovery_replays_the_same_execution_generation(tmp_path: Path):
     db = tmp_path / "state.db"
     catalog = GatewayRoomCatalog.from_mapping(
-        catalog_mapping(target_profile="default", installation_id="install-peer", persistent_process=True)
+        catalog_mapping(installation_id="install-peer", persistent_process=True)
     )
     route = PeerMemberRoute(
         home_install_id=hosted_rooms.local_authority_gateway_id(),

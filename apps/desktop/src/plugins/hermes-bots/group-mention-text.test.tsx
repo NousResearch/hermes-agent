@@ -27,10 +27,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
 
 vi.mock('./shared', () => ({ getPluginCtx: () => null, ID: 'hermes-bots' }))
 
-const members = [
-  { name: 'planner', handle: 'planner' },
-  { name: 'reviewer-mac-mini', handle: 'reviewer-mac-mini' }
-] as GroupMember[]
+const members = [{ name: 'planner', handle: 'planner' }, { name: 'reviewer-mac-mini', handle: 'reviewer-mac-mini' }] as GroupMember[]
 
 describe('group mention rendering', () => {
   it('classifies seated bots, the human and broadcasts, and leaves unknown tokens plain', () => {

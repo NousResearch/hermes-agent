@@ -42,18 +42,6 @@ function sessionScoped(scope?: ProfileScope): { connectionId?: string; profile?:
   return scoped
 }
 
-/**
- * The profile a session WRITE must name in its body. The PATCH handler reads
- * its target DB from `body.profile` alone (`_with_db(body.profile, ...)`), and
- * under multiplex-only there is no per-profile backend whose HERMES_HOME could
- * stand in for it: an unnamed owner lands the rename/pin/archive/mark-read on
- * the shared backend's own state.db. "Unnamed" therefore means "the profile I
- * am looking at", not "whatever home the backend was launched in".
- */
-function sessionWriteProfile(profile?: null | string): string | undefined {
-  return String(profile ?? '').trim() || getApiRequestProfile() || undefined
-}
-
 function sessionScopeQuery(scope?: ProfileScope): string {
   const profile = sessionScoped(scope).profile
 
@@ -356,13 +344,11 @@ export function setSessionArchived(id: string, archived: boolean, profile?: stri
   // remote gateway with no remoteProfile alias: the archive lands on the wrong
   // (default) state.db, no-ops on a missing row, and the archived/unarchived
   // state silently fails to stick — the same class as the unscoped DELETE.
-  const owner = sessionWriteProfile(profile)
-
   return hermesApi<{ ok: boolean }>({
-    ...(owner ? { profile: owner } : {}),
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { archived, ...(owner ? { profile: owner } : {}) }
+    body: { archived, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -374,13 +360,11 @@ export function setSessionPinnedRemote(id: string, pinned: boolean, profile?: st
   // Owning profile in the PATCH body (see setSessionArchived / renameSession):
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's pin must travel in the body or it no-ops on the wrong state.db.
-  const owner = sessionWriteProfile(profile)
-
   return hermesApi<{ ok: boolean }>({
-    ...(owner ? { profile: owner } : {}),
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { pinned, ...(owner ? { profile: owner } : {}) }
+    body: { pinned, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -393,13 +377,11 @@ export function setSessionUnreadRemote(id: string, unread: boolean, profile?: st
   // the handler reads its target DB from body.profile, so a remote/foreign
   // profile's unread toggle must travel in the body or it no-ops on the wrong
   // state.db.
-  const owner = sessionWriteProfile(profile)
-
   return hermesApi<{ ok: boolean }>({
-    ...(owner ? { profile: owner } : {}),
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { unread, ...(owner ? { profile: owner } : {}) }
+    body: { unread, ...(profile ? { profile } : {}) }
   })
 }
 
@@ -651,12 +633,10 @@ export function renameSession(
   title: string,
   profile?: string | null
 ): Promise<{ ok: boolean; title: string }> {
-  const owner = sessionWriteProfile(profile)
-
   return hermesApi<{ ok: boolean; title: string }>({
-    ...(owner ? { profile: owner } : {}),
+    ...(profile ? { profile } : {}),
     path: `/api/sessions/${encodeURIComponent(id)}`,
     method: 'PATCH',
-    body: { title, ...(owner ? { profile: owner } : {}) }
+    body: { title, ...(profile ? { profile } : {}) }
   })
 }

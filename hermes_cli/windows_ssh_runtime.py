@@ -2,7 +2,6 @@
 
 from __future__ import annotations
 
-import contextlib
 import importlib
 import json
 import os
@@ -179,20 +178,6 @@ def _write_new(path: Path, data: bytes, share: int = 0) -> None:
         win32file.FlushFileBuffers(handle)
     finally:
         win32file.CloseHandle(handle)
-
-
-def write_private_file(path: Path, data: bytes) -> None:
-    """Create/replace ``path`` with an owner+SYSTEM-only protected DACL (Windows only).
-
-    The repo's writer for any credential landing on a Windows disk: ``os.open(..., 0o600)`` sets
-    no ACLs there at all, so a token written that way inherits whatever the parent directory
-    grants. CreateFile ignores the security descriptor when the file already exists, so an
-    existing file is removed first rather than re-opened — which also avoids ``os.replace``
-    failing against a reader that still holds the old file open.
-    """
-    with contextlib.suppress(FileNotFoundError):
-        os.unlink(str(path))
-    _write_new(path, data)
 
 
 def _ensure_directory(path: Path) -> None:

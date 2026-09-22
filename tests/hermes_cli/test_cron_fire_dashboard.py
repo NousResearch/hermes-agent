@@ -279,12 +279,11 @@ def test_fire_endpoint_multiplex_reads_port_from_default_listener(tmp_path, monk
     url = _web_server_cron._gateway_fire_endpoint("worker_alpha", worker_home)
 
     assert url == "http://127.0.0.1:8650/p/worker_alpha/api/cron/fire"
-    # Forcing the retired opt-out off no longer restores per-profile routing: multiplex-only
-    # means the secondary has no listener of its own, so a fire URL aimed at its port would
-    # reach nothing. The /p/<profile>/ mirror on the default listener is the only live target.
+    # The GATEWAY_MULTIPLEX_PROFILES env override is still honored (parity
+    # with gateway/config.py): forcing it off restores per-profile routing.
     monkeypatch.setenv("GATEWAY_MULTIPLEX_PROFILES", "0")
     assert _web_server_cron._gateway_fire_endpoint("worker_alpha", worker_home) == (
-        "http://127.0.0.1:8650/p/worker_alpha/api/cron/fire"
+        "http://127.0.0.1:8702/api/cron/fire"
     )
 
 

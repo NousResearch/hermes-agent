@@ -182,6 +182,7 @@ export const Timeline = memo(function Timeline({
 
   return (
     <div className="pointer-events-auto flex w-[28rem] max-w-full items-center gap-3 [-webkit-app-region:no-drag]">
+
       <button
         aria-label={playing ? 'Pause' : 'Play timeline'}
         className="flex size-5 shrink-0 items-center justify-center text-foreground/75 transition-colors hover:text-foreground"

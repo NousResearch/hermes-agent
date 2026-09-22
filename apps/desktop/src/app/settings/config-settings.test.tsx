@@ -5,29 +5,15 @@ import { createRef } from 'react'
 import { MemoryRouter } from 'react-router'
 import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type * as ConfigApi from '@/api/config'
-import { $settingsRequestProfile } from '@/store/settings-scope'
-
 import type { ConfigSettings as ConfigSettingsType } from './config-settings'
-
-// The vi.mock factory below replaces the computed (read-only) atom with a
-// writable one; narrow the import back so tests can drive it.
-const scopeProfileMock = $settingsRequestProfile as unknown as { set: (value: string) => void }
 
 const getHermesConfigRecord = vi.fn()
 const getHermesConfigSchema = vi.fn()
 const saveHermesConfig = vi.fn()
 const getElevenLabsVoices = vi.fn()
 
-// Keep the real read-origin helpers (WeakMap peek/bind) live: the shared
-// config hook reaches them through the barrel, and a bare mock would throw.
-vi.mock('@/hermes', async () => ({
-  ...(await vi.importActual<typeof ConfigApi>('@/api/config')),
-  // use-config-record folds the scope into its cache key via the barrel; the
-  // real one is a pure string fold, mirrored here for the string scopes this
-  // suite passes.
-  profileScopeKey: (scope?: unknown) => (typeof scope === 'string' && scope.trim()) || 'default',
-  getHermesConfigRecord: (profile?: string) => getHermesConfigRecord(profile),
+vi.mock('@/hermes', () => ({
+  getHermesConfigRecord: () => getHermesConfigRecord(),
   getHermesConfigSchema: () => getHermesConfigSchema(),
   saveHermesConfig: (config: unknown, profile?: string) => saveHermesConfig(config, profile),
   getElevenLabsVoices: () => getElevenLabsVoices(),
@@ -44,10 +30,7 @@ vi.mock('../hooks/use-on-profile-switch', () => ({
 // scope chip it renders also reads the selected profile and the loud-note
 // selector, so those are stubbed to the single-profile default shape.
 vi.mock('@/store/settings-scope', () => ({
-  // The real store derives this from the displayed $settingsScopeProfile
-  // (never undefined for a real profile — settings-scope.test.ts pins that);
-  // here it is a plain atom so the page's threading of it can be driven.
-  $settingsRequestProfile: atom<string | undefined>('default'),
+  $settingsRequestProfile: atom<string | undefined>(undefined),
   $settingsScopeEditsNonDefault: atom(false),
   $settingsScopeOverride: atom<null | string>(null),
   $settingsScopeProfile: atom<string>('default')
@@ -69,7 +52,6 @@ beforeAll(async () => {
 }, 60_000)
 
 beforeEach(() => {
-  scopeProfileMock.set('default')
   getElevenLabsVoices.mockResolvedValue({ available: false })
   getHermesConfigSchema.mockResolvedValue({ fields: {} })
   saveHermesConfig.mockResolvedValue({ ok: true })
@@ -118,7 +100,7 @@ describe('ConfigSettings autosave', () => {
       await vi.advanceTimersByTimeAsync(700)
 
       await vi.waitFor(() =>
-        expect(saveHermesConfig).toHaveBeenCalledWith({ compression: { codex_gpt55_autoraise: false } }, 'default')
+        expect(saveHermesConfig).toHaveBeenCalledWith({ compression: { codex_gpt55_autoraise: false } }, undefined)
       )
     } finally {
       vi.useRealTimers()
@@ -152,30 +134,6 @@ describe('ConfigSettings autosave', () => {
       // (the field is back to its original value) and leave disk stuck at
       // `enabled: true` from the first save.
       expect(saveHermesConfig.mock.calls[1][0]).toEqual({ checkpoints: { enabled: false } })
-    } finally {
-      vi.useRealTimers()
-    }
-  })
-
-  it('threads the "Applies to" request scope into both the config read and the autosave write', async () => {
-    // #118432: the request scope is the concrete profile the page displays
-    // (see settings-scope.test.ts). The page must carry it into the read AND
-    // the write — a read scoped to B with a write that falls back to the
-    // ambient (launch) profile is exactly the silent cross-profile write.
-    scopeProfileMock.set('nash')
-    getHermesConfigRecord.mockResolvedValue({ checkpoints: { enabled: false } })
-
-    vi.useFakeTimers({ shouldAdvanceTime: true })
-
-    try {
-      renderConfigSettings()
-
-      await vi.waitFor(() => expect(getHermesConfigRecord).toHaveBeenCalledWith('nash'))
-
-      ;(await screen.findByRole('switch')).click()
-      await vi.advanceTimersByTimeAsync(700)
-
-      await vi.waitFor(() => expect(saveHermesConfig).toHaveBeenCalledWith({ checkpoints: { enabled: true } }, 'nash'))
     } finally {
       vi.useRealTimers()
     }

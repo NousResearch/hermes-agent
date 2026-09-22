@@ -58,31 +58,6 @@ def emit_terminal_post_tool_call(
         pass
 
 
-def apply_transform_tool_result(
-    agent,
-    *,
-    function_name: str,
-    function_args: dict,
-    result: Any,
-    effective_task_id: str,
-    tool_call_id: Optional[str],
-    duration_ms: int = 0,
-) -> Any:
-    """Apply ``transform_tool_result`` to an inline-dispatched tool's result.
-
-    Registry tools get this inside ``handle_function_call``; inline executors never
-    reach it, so the agent paths call the same helper (after the terminal
-    ``post_tool_call``) to keep the hook's "every tool" contract. Fail-open."""
-    try:
-        from model_tools import _CallIds, _apply_transform_tool_result_hook
-        return _apply_transform_tool_result_hook(
-            function_name, function_args, result, duration_ms,
-            _CallIds(**tool_hook_ids(agent, effective_task_id, tool_call_id)),
-        )
-    except Exception:
-        return result
-
-
 @dataclass
 class InlineToolContext:
     """Per-call state an inline executor may need beyond its arguments."""

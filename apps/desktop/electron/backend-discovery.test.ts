@@ -39,7 +39,8 @@ test('a running backend record makes startup attach and spawn zero processes', a
 
   const setup = await runPrimaryBackendStartup({
     assertCurrentAttempt: () => {},
-    attachHostBackend: () => attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(LEDGER)),
+    attachHostBackend: () =>
+      attachToHostBackend({ isolated: false, ledgerPath: '/ledger.json' }, attachDeps(LEDGER)),
     connectRemote: async () => ({ mode: 'remote' }),
     ensureLocalRuntime: async backend => backend,
     prepareLocalBackend: () => {

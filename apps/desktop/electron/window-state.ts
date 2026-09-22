@@ -117,7 +117,10 @@ function computeWindowOptions(state, displays): WindowOptions {
   }
 
   if (state && finite(state.x) && finite(state.y)) {
-    const workArea = matchingWorkArea({ x: state.x, y: state.y, width: opts.width, height: opts.height }, displays)
+    const workArea = matchingWorkArea(
+      { x: state.x, y: state.y, width: opts.width, height: opts.height },
+      displays
+    )
 
     if (workArea) {
       opts.width = clamp(opts.width, MIN_WIDTH, workArea.width)

@@ -98,11 +98,7 @@ export function SetupFormDialog({
           <Button disabled={pending} onClick={onCancel} variant="outline">
             {copy.cancel}
           </Button>
-          <Button
-            disabled={missingRequired || pending || awaitingBrowser}
-            loading={pending}
-            onClick={() => onConnect(draft)}
-          >
+          <Button disabled={missingRequired || pending || awaitingBrowser} loading={pending} onClick={() => onConnect(draft)}>
             {copy.connect}
           </Button>
         </DialogFooter>

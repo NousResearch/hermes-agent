@@ -1692,10 +1692,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return
         self._liveness_task = asyncio.create_task(self._liveness_loop())
 
-    # Reasons from ``_read_websocket_health`` that mean the transport is confirmed dead,
-    # not merely suspect: ``_liveness_loop`` escalates on the first such strike (#118487).
-    _TERMINAL_HEALTH_REASONS = frozenset({"socket_closed", "client_closed"})
-
     def _read_websocket_health(self, client: Any) -> tuple[bool, str]:
         """Return current Discord Gateway health without making a REST request."""
         try:
@@ -1757,12 +1753,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 return
             client = self._client
             if not self._running or client is None or self._disconnecting:
-                # The probe must never disappear silently (#118487): an exit here leaves the
-                # gateway with no watchdog, so say why before going away.
-                logger.info(
-                    "[%s] Discord liveness probe exiting (running=%s, client=%s, disconnecting=%s)",
-                    self.name, self._running, client is not None, self._disconnecting,
-                )
                 return
             try:
                 healthy, reason = self._read_websocket_health(client)
@@ -1771,14 +1761,6 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 healthy = False
                 reason = "health_check_error"
             if healthy:
-                if failures:
-                    # discord.py swaps in a fresh socket while resuming, so a transport-side
-                    # sample can read healthy again while events never resumed (#118487) —
-                    # logging the reset keeps that distinguishable from a dead probe task.
-                    logger.info(
-                        "[%s] Discord Gateway WebSocket healthy again after %d unhealthy sample(s)",
-                        self.name, failures,
-                    )
                 failures = 0
                 continue
             failures += 1
@@ -1786,18 +1768,13 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                 "[%s] Discord Gateway WebSocket unhealthy (%s, %d/%d)", self.name, reason, failures,
                 threshold,
             )
-            # A closed transport is a confirmed death, not a suspicion: escalate on the
-            # first strike; soft signals keep the threshold (#118487).
-            terminal = reason in self._TERMINAL_HEALTH_REASONS
-            if failures < threshold and not terminal:
+            if failures < threshold:
                 continue
             # Mark recovery before closing: Bot.start()'s done callback must not overwrite this reason.
             self._disconnecting = True
             logger.error(
-                "[%s] Discord Gateway WebSocket %s (%s, %d/%d); forcing reconnect",
-                self.name,
-                "transport closed" if terminal else "remained unhealthy",
-                reason, failures, threshold,
+                "[%s] Discord Gateway WebSocket remained unhealthy (%s); forcing reconnect",
+                self.name, reason,
             )
             self._set_fatal_error(
                 "discord_websocket_health_stale",
@@ -4714,7 +4691,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             await interaction.followup.send(f"Created thread {link}", ephemeral=True)
         # Track thread participation so follow-ups don't require @mention
         if thread_id:
-            await self._threads.mark_async(thread_id)
+            self._threads.mark(thread_id)
         starter = (message or "").strip()
         if starter and thread_id:
             await self._dispatch_thread_session(interaction, thread_id, thread_name, starter)
@@ -6006,13 +5983,11 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
                     parent_channel_id = str(message.channel.id)
                     is_thread = True
                     thread_id = str(thread.id)
+                    auto_threaded_channel = thread
+                    self._threads.mark(thread_id)
                     # Pre-seed dedup: message.create_thread() fires a second MESSAGE_CREATE for the
                     # starter (id == thread.id, maybe type=default); mark it so it can't trigger a rerun.
-                    # Must run before the first await below: mark_async yields to the loop, and the
-                    # echo's _discord_message_admission would otherwise claim the id first.
                     self._dedup.is_duplicate(str(thread.id))
-                    auto_threaded_channel = thread
-                    await self._threads.mark_async(thread_id)
                 else:
                     # Auto-threading is the routing target; do NOT fall back to an inline parent-channel
                     # reply (dumps the task into a shared channel). Surface an error and skip the run.
@@ -6139,7 +6114,7 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
 
         # Track participation so follow-ups in this thread don't need @mention.
         if thread_id:
-            await self._threads.mark_async(thread_id)
+            self._threads.mark(thread_id)
         # Only live plain text is batched: recovery candidates are complete; coalescing would replay IDs.
         if (not recovered and msg_type == MessageType.TEXT and self._text_batch_delay_seconds > 0):
             self._enqueue_text_event(event)

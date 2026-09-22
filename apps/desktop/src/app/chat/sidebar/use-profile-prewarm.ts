@@ -25,7 +25,6 @@ export function useProfilePrewarm(profile: string | null | undefined) {
 
   const cancelPrewarm = useCallback(() => {
     armed.current = false
-
     if (timer.current != null) {
       clearTimeout(timer.current)
       timer.current = null

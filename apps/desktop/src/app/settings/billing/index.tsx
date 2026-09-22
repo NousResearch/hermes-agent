@@ -419,11 +419,9 @@ function BillingHeader({
 
   return (
     <SectionHeading
-      aside={
-        import.meta.env.DEV && fixtureName && onFixtureChange ? (
-          <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />
-        ) : undefined
-      }
+      aside={import.meta.env.DEV && fixtureName && onFixtureChange ? (
+        <BillingFixtureSelect onValueChange={onFixtureChange} value={fixtureName} />
+      ) : undefined}
       icon={BarChart3}
       page
       title={t.settings.nav.billing}

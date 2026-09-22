@@ -226,12 +226,7 @@ function failureHeading(kind: FreeTierSignInFailure, copy: FreeTierCopy): string
   }
 }
 
-function failureBody(
-  kind: FreeTierSignInFailure,
-  message: null | string,
-  retryAfter: number,
-  copy: FreeTierCopy
-): string {
+function failureBody(kind: FreeTierSignInFailure, message: null | string, retryAfter: number, copy: FreeTierCopy): string {
   switch (kind) {
     case 'busy':
       // The backend's sentence already names the wait it was given; ours fills

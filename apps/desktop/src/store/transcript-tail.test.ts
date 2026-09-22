@@ -1,18 +1,11 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  $transcriptTailBySessionId,
-  clearTranscriptTailPaging,
-  recordTranscriptTail,
-  rewindTranscriptTail,
-  transcriptTailState
-} from './transcript-tail'
+import { $transcriptTailBySessionId, clearTranscriptTailPaging, recordTranscriptTail } from './transcript-tail'
 
-const page = (count: number, limit = 10) =>
-  ({
-    messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
-    pagination: { limit, offset: 0 }
-  }) as never
+const page = (count: number, limit = 10) => ({
+  messages: Array.from({ length: count }, (_, i) => ({ id: `m${i}` })),
+  pagination: { limit, offset: 0 }
+}) as never
 
 describe('recordTranscriptTail no-op suppression', () => {
   beforeEach(() => {
@@ -67,91 +60,5 @@ describe('recordTranscriptTail no-op suppression', () => {
 
     expect($transcriptTailBySessionId.get().active).toBeDefined()
     expect($transcriptTailBySessionId.get()['other-0']).toBeUndefined()
-  })
-})
-
-describe('rewindTranscriptTail', () => {
-  beforeEach(() => {
-    $transcriptTailBySessionId.set({})
-  })
-
-  it('decrements the recorded offset by the rows the store released', () => {
-    // page(10) records nextOffset 10; releasing 4 of those rows leaves the next
-    // older page starting 4 rows earlier, in the backend's own units.
-    recordTranscriptTail('s1', page(10))
-
-    expect(rewindTranscriptTail('s1', 4)).toBe(true)
-    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 6, possiblyTruncated: true })
-  })
-
-  it('keeps a rewind on the same route the tail was hydrated with', () => {
-    recordTranscriptTail(
-      's1',
-      page(10),
-      { connectionId: 'c1', profile: 'work' },
-      { connectionId: 'c1', profile: 'work' }
-    )
-
-    expect(rewindTranscriptTail('s1', 4, { connectionId: 'c1', profile: 'work' })).toBe(true)
-
-    const entry = $transcriptTailBySessionId.get()[JSON.stringify(['c1', 'work', 's1'])]
-
-    expect(entry).toMatchObject({ nextOffset: 6, possiblyTruncated: true })
-    expect(entry.profile).toEqual({ connectionId: 'c1', profile: 'work' })
-  })
-
-  it('never rewinds past the start of the transcript', () => {
-    recordTranscriptTail('s1', page(3))
-
-    expect(rewindTranscriptTail('s1', 9)).toBe(true)
-    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 0, possiblyTruncated: true })
-  })
-
-  it('refuses a rewind that would release nothing', () => {
-    recordTranscriptTail('s1', page(10))
-
-    expect(rewindTranscriptTail('s1', 0)).toBe(false)
-    expect($transcriptTailBySessionId.get().s1).toMatchObject({ nextOffset: 10 })
-  })
-
-  it('refuses to rewind a session with no recorded page route', () => {
-    // No entry means no route to fetch a page from: the caller must keep its
-    // rows rather than release history nothing can bring back.
-    expect(rewindTranscriptTail('unknown', 4)).toBe(false)
-    expect($transcriptTailBySessionId.get()).toEqual({})
-  })
-
-  it('refuses an ambiguous rewind when the session has several owner scopes', () => {
-    recordTranscriptTail(
-      's1',
-      page(10),
-      { connectionId: 'c1', profile: 'work' },
-      { connectionId: 'c1', profile: 'work' }
-    )
-    recordTranscriptTail(
-      's1',
-      page(10),
-      { connectionId: 'c2', profile: 'work' },
-      { connectionId: 'c2', profile: 'work' }
-    )
-
-    expect(rewindTranscriptTail('s1', 4)).toBe(false)
-  })
-})
-
-describe('recordTranscriptTail with an empty page', () => {
-  beforeEach(() => {
-    clearTranscriptTailPaging()
-  })
-
-  // The REST helper records the tail before the active refresh decides whether
-  // the page is authoritative. A transient zero-row read must not turn a
-  // known-truncated tail into "nothing earlier to show".
-  it('keeps an existing truncated entry so "Show earlier" stays armed', () => {
-    recordTranscriptTail('s1', page(10))
-
-    recordTranscriptTail('s1', page(0))
-
-    expect(transcriptTailState('s1')).toMatchObject({ nextOffset: 10, possiblyTruncated: true })
   })
 })

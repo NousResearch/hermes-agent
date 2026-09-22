@@ -32,9 +32,6 @@ CATALOG_TIERS = ("official", "community")
 CATALOG_CATEGORIES = ("desktop", "memory", "platform", "web", "tools", "voice", "automation", "models", "general")
 LIVE_CATALOG_URL = "https://hermes-agent.nousresearch.com/docs/api/plugin-catalog.json"
 LIVE_CATALOG_TTL_SECONDS = 6 * 60 * 60
-# Past this age an offline cache no longer supplies PINS (the in-tree catalog does); its removals
-# still count — a kill-list entry never expires.
-LIVE_CATALOG_MAX_STALE_SECONDS = 24 * 60 * 60
 LIVE_CATALOG_FAILURE_TTL_SECONDS = 60.0
 _REQUEST_TIMEOUT = 5.0
 _MAX_LIVE_BYTES = 2 * 1024 * 1024
@@ -233,26 +230,8 @@ def search_catalog(query: str) -> List[PluginCatalogEntry]:
 
 # ── Removed / blocklist ──────────────────────────────────────────────────────
 
-_SCP_URL_RE = re.compile(r"^(?:[^@/\s]+@)?([^:/\s]+):(?!//)(.+)$")  # git@host:owner/repo
-
-
 def _normalize_repo(url: str) -> str:
-    """Canonical ``host/path`` for a repo URL: scheme, user, ``www.``, ``.git`` and trailing slashes are
-    spelling, not identity — the kill list must match ``git@github.com:Evil/Bad.git`` when it names
-    ``https://github.com/evil/bad``."""
-    from urllib.parse import urlsplit
-    text = url.strip()
-    scp = _SCP_URL_RE.match(text)
-    if scp:
-        host, path = scp.group(1), scp.group(2)
-    elif "://" in text:
-        parts = urlsplit(text)
-        host, path = parts.hostname or "", parts.path
-    else:
-        host, path = "", text
-    host = host.lower().removeprefix("www.")
-    path = path.strip("/").removesuffix(".git").rstrip("/").lower()
-    return f"{host}/{path}" if host else path
+    return url.strip().rstrip("/").removesuffix(".git").lower()
 
 
 def find_removed(name_or_repo: str, catalog_dir: Optional[Path] = None) -> Optional[RemovedEntry]:
@@ -274,13 +253,6 @@ def resolved_removed_entries() -> List[RemovedEntry]:
     — e.g. a plugins-hub rebuild annotating every installed plugin — resolve the list once instead
     of paying a live-catalog fetch per candidate."""
     return load_removed_list() + live_removed_list()
-
-
-def cached_removed_entries() -> List[RemovedEntry]:
-    """In-tree list UNION the last fetched live copy, with NO network round-trip — for the load-time and
-    ``enable`` checks that run in every process and must never block on a dead catalog host."""
-    cached = _stale_live_cache(_live_cache_path()) or {}
-    return load_removed_list() + _removed_from_list(cached.get("removed"))
 
 
 def match_removed(
@@ -313,17 +285,9 @@ _live_fetch_failed_until = 0.0
 
 
 def _stale_live_cache(cache: Path) -> Optional[Dict[str, Any]]:
-    """A previously fetched copy still beats the in-tree one when the network is down — for
-    :data:`LIVE_CATALOG_MAX_STALE_SECONDS`. Past that its pins may trail the checkout's own catalog
-    (a 90-day-old cache outranked a freshly updated in-tree pin), so the entries are dropped and the
-    caller falls back to in-tree; the removals are kept."""
+    """A previously fetched copy still beats the in-tree one when the network is down."""
     try:
-        if not cache.is_file():
-            return None
-        data = json.loads(cache.read_text(encoding="utf-8"))
-        if time.time() - cache.stat().st_mtime > LIVE_CATALOG_MAX_STALE_SECONDS:
-            data = {**data, "entries": []}
-        return data
+        return json.loads(cache.read_text(encoding="utf-8")) if cache.is_file() else None
     except Exception:
         return None
 
@@ -346,7 +310,6 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
     try:
         import httpx
         from hermes_constants import mkdir_under_hermes_home
-        from utils import atomic_write_text
 
         resp = httpx.get(LIVE_CATALOG_URL, timeout=_REQUEST_TIMEOUT, follow_redirects=True)
         resp.raise_for_status()
@@ -356,9 +319,7 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         if not isinstance(data, dict) or not isinstance(data.get("entries"), list):
             raise ValueError("unexpected live catalog payload")
         mkdir_under_hermes_home(cache.parent)
-        # Atomic: a concurrent reader (gateway, TUI, a second CLI) must never see a half-written
-        # document, which would read as a fetch failure and start its own 60 s failure window.
-        atomic_write_text(cache, json.dumps(data), tmp_prefix=f"{cache.name}.tmp-")
+        cache.write_text(json.dumps(data), encoding="utf-8")
         return data
     except Exception as exc:
         logger.debug("Plugin catalog: live fetch failed: %s", exc)
@@ -366,76 +327,15 @@ def fetch_live_catalog(*, force: bool = False) -> Optional[Dict[str, Any]]:
         return _stale_live_cache(cache)
 
 
-_in_tree_catalog_time: Optional[float] = -1.0  # -1 = not resolved yet; None = no git checkout
-
-
-def in_tree_catalog_time() -> Optional[float]:
-    """Commit time (epoch) of the last change to this checkout's ``plugin-catalog/``, or ``None`` when
-    the install is not a git checkout (a release/pip install cannot be newer than the published doc).
-    Resolved once per process."""
-    global _in_tree_catalog_time
-    if _in_tree_catalog_time != -1.0:
-        return _in_tree_catalog_time
-    root = get_catalog_dir().parent
-    resolved: Optional[float] = None
-    if (root / ".git").exists():
-        try:
-            import subprocess
-            out = subprocess.run(["git", "-C", str(root), "log", "-1", "--format=%ct", "--", "plugin-catalog"],
-                                 capture_output=True, text=True, timeout=10, stdin=subprocess.DEVNULL)
-            resolved = float(out.stdout.strip()) if out.returncode == 0 and out.stdout.strip() else None
-        except Exception as exc:
-            logger.debug("Plugin catalog: could not date the in-tree catalog: %s", exc)
-    _in_tree_catalog_time = resolved
-    return resolved
-
-
-def _live_generated_time(data: Dict[str, Any]) -> Optional[float]:
-    raw = data.get("generated_at")
-    if not isinstance(raw, str) or not raw:
-        return None
-    try:
-        from datetime import datetime, timezone
-        parsed = datetime.fromisoformat(raw.replace("Z", "+00:00"))
-        return (parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)).timestamp()
-    except ValueError:
-        return None
-
-
-def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tree_is_newer: Optional[bool]) -> bool:
-    """For one entry present in both sources with a different pin: the newer catalog wins. Newer is
-    decided by the checkout's catalog commit time vs the doc's ``generated_at`` when both resolve;
-    otherwise by the entries' ``version`` labels when both parse; otherwise the live doc wins (a release
-    install's in-tree copy is frozen at release time)."""
-    if tree.sha == live.sha:
-        return False
-    if tree_is_newer is not None:
-        return tree_is_newer
-    if tree.version and live.version:
-        try:
-            from packaging.version import Version
-            return Version(tree.version) > Version(live.version)
-        except Exception:
-            return False
-    return False
-
-
 def load_catalog_live() -> List[PluginCatalogEntry]:
-    """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
-    different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
-    a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
+    """Entries from the live (or cached) catalog, else the in-tree catalog."""
     data = fetch_live_catalog()
-    if data is None:
-        return load_catalog()
-    entries = [e for i, raw in enumerate(data["entries"])
-               if (e := entry_from_mapping(raw, f"{LIVE_CATALOG_URL}#{i}")) is not None]
-    if not entries:
-        return load_catalog()
-    in_tree = {e.name: e for e in load_catalog()}
-    live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
-    tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer) else e
-            for e in entries]
+    if data is not None:
+        entries = [e for i, raw in enumerate(data["entries"])
+                   if (e := entry_from_mapping(raw, f"{LIVE_CATALOG_URL}#{i}")) is not None]
+        if entries:
+            return entries
+    return load_catalog()
 
 
 def live_removed_list() -> List[RemovedEntry]:

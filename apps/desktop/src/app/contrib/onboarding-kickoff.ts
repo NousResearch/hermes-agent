@@ -145,9 +145,7 @@ export function useOnboardingKickoff({
       })
 
       const seedMessages = buildChatOnboardingSeedMessages(
-        pickOnboardingGreeting(),
-        record.free_tier !== true,
-        capabilities
+        pickOnboardingGreeting(), record.free_tier !== true, capabilities
       )
 
       const createOverrides: SessionCreateOverrides = { title: SETUP_CHAT_TITLE }

@@ -37,7 +37,6 @@ import type { ClientSessionState } from '../../../types'
 import { collapseDuplicateFinalAfterToolInterim, type DuplicateFinalCollapse } from './collapse-duplicate-final'
 import { useGatewayEventHandler } from './gateway-event'
 import { handleServerRequest as dispatchServerRequest } from './gateway-event/server-requests'
-import { currentResponseParts, mergeCurrentResponseText } from './response-parts'
 import { completionErrorText, delegateTaskPayloads, MAX_STREAM_FLUSH_GAP_MS, STREAM_DELTA_FLUSH_MS } from './utils'
 
 interface MessageStreamOptions {
@@ -543,16 +542,7 @@ export function useMessageStream({
         const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleText = stripGeneratedImageEchoes(authoritativeText, generatedImageEchoSources(parts)).trim()
 
-          // A later response can share this bubble after a suppressed interim.
-          // A seal arriving after its tools, without any newer text, still
-          // confirms the pre-tool response (legacy/delayed seal ordering).
-          const hasNewResponse = currentResponseParts(parts).some(
-            part => (part.type === 'text' || part.type === 'reasoning') && part.text.trim()
-          )
-
-          return hasNewResponse
-            ? mergeCurrentResponseText(parts, visibleText, occurredAt)
-            : mergeFinalAssistantText(parts, visibleText, occurredAt)
+          return mergeFinalAssistantText(parts, visibleText, occurredAt)
         }
 
         let nextMessages = state.messages
@@ -645,14 +635,10 @@ export function useMessageStream({
           ? Math.max(1, Math.round((Date.now() - state.turnStartedAt) / 1000))
           : undefined
 
-        const replaceTextPart = (parts: ChatMessagePart[], interim: boolean) => {
+        const replaceTextPart = (parts: ChatMessagePart[]) => {
           const visibleFinalText = stripGeneratedImageEchoes(finalText, generatedImageEchoSources(parts)).trim()
 
-          // Partial terminal errors carry the whole retained assistant buffer,
-          // not just the response after the last tool (unlike healthy finals).
-          return interim || keepFailedPartialText
-            ? mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
-            : mergeCurrentResponseText(parts, visibleFinalText, occurredAt)
+          return mergeFinalAssistantText(parts, visibleFinalText, occurredAt)
         }
 
         // Settling the final response onto a bubble makes it the turn's real
@@ -664,7 +650,6 @@ export function useMessageStream({
             parts: completeOpenTimelineParts(message.parts, occurredAt),
             pending: false,
             interim: false,
-            recovered: false,
             ...(durationS !== undefined ? { durationS } : {}),
             ...(completionError && failure?.surface ? { errorSurface: failure.surface } : {})
           }
@@ -675,7 +660,7 @@ export function useMessageStream({
 
           return {
             ...settled,
-            parts: completeOpenTimelineParts(replaceTextPart(settled.parts, Boolean(message.interim)), occurredAt),
+            parts: completeOpenTimelineParts(replaceTextPart(settled.parts), occurredAt),
             ...(completionError ? { error: completionError } : {})
           }
         }
@@ -698,23 +683,7 @@ export function useMessageStream({
         const prev = state.messages
         let nextMessages = prev
 
-        // A new prompt or correction starts another occurrence, even when its
-        // text (or answer) repeats. Hidden user rows are boundaries too.
-        // A projected queued prompt is for the NEXT turn while this response
-        // exists. message.start clears payload/interim ownership so a queued
-        // turn completing without deltas still starts its own occurrence.
-        const hasCurrentResponse = Boolean(streamId || state.sawAssistantPayload || interimBoundaryPending)
-
-        const lastUserIndex = prev.findLastIndex(
-          message => message.role === 'user' && !(hasCurrentResponse && message.id === `user-queued-${sessionId}`)
-        )
-
-        const streamIndex = streamId
-          ? prev.findIndex((message, index) => index > lastUserIndex && message.id === streamId)
-          : -1
-
-        const settleAt = (index: number) =>
-          prev.map((message, messageIndex) => (messageIndex === index ? completeMessage(message) : message))
+        const streamIndex = streamId ? prev.findIndex(message => message.id === streamId) : -1
 
         let collapsed: DuplicateFinalCollapse | null = null
 
@@ -725,20 +694,18 @@ export function useMessageStream({
             hasFailure: Boolean(failure) || Boolean(completionError),
             interimBoundaryPending
           })
-          nextMessages = collapsed?.messages ?? settleAt(streamIndex)
+          nextMessages =
+            collapsed?.messages ??
+            prev.map((message, index) => (index === streamIndex ? completeMessage(message) : message))
         } else {
-          const fallbackIndex = prev.findLastIndex(
-            (message, index) => index > lastUserIndex && message.role === 'assistant' && !message.hidden
-          )
+          const fallbackIndex = [...prev]
+            .reverse()
+            .findIndex(message => message.role === 'assistant' && !message.hidden)
 
           if (fallbackIndex >= 0) {
-            const index = fallbackIndex
+            const index = prev.length - 1 - fallbackIndex
             const existing = prev[index]
-
-            const existingText = chatMessageText({
-              ...existing,
-              parts: existing.interim || keepFailedPartialText ? existing.parts : currentResponseParts(existing.parts)
-            }).trim()
+            const existingText = chatMessageText(existing).trim()
 
             // The last assistant row is a sealed interim (a tool-call turn or a
             // verify-on-stop candidate — `message.interim` fires for BOTH, see
@@ -757,7 +724,9 @@ export function useMessageStream({
             )
 
             if (existing.pending || (!interimBoundaryPending && finalText && existingText === finalText)) {
-              nextMessages = settleAt(index)
+              nextMessages = prev.map((message, messageIndex) =>
+                messageIndex === index ? completeMessage(message) : message
+              )
             } else if ((interimBoundaryPending && responsePreviewed) || finalContinuesInterim) {
               // Settle the interim in place instead of creating a duplicate —
               // the DB has one row, so the live UI must agree. Two distinct
@@ -776,34 +745,19 @@ export function useMessageStream({
               //
               // • finalContinuesInterim (prefix-either-way continuity, same
               //   text or one a prefix of the other) is safe to settle
-              //   flag-free within this user occurrence: a `message.start`
-              //   reset between this turn's interim and completion must not
-              //   force an append of a duplicate bubble (#74560). This also
-              //   closes the non-previewed tool-call gap from #63679.
-              nextMessages = settleAt(index)
+              //   flag-free: continuity can only hold for the SAME message,
+              //   so a `message.start` reset landing between this turn's
+              //   `message.interim` and `message.complete` must not force an
+              //   append of a duplicate bubble (#74560). This also closes the
+              //   non-previewed tool-call gap from #63679.
+              nextMessages = prev.map((message, messageIndex) =>
+                messageIndex === index ? completeMessage(message) : message
+              )
             } else if (finalText) {
               nextMessages = [...prev, newAssistantFromCompletion()]
             }
-          } else {
-            // Nothing streamed after the boundary and no `message.start` since
-            // the seal: a completion whose text IS the sealed pre-boundary reply
-            // is that reply's own completion (a redirect rejected after the row
-            // was painted, or a steer the model absorbed without new output),
-            // not a second occurrence. Anything else respects the boundary.
-            const sealedIndex =
-              !streamId && interimBoundaryPending && finalText
-                ? prev.findLastIndex(
-                    (message, index) => index < lastUserIndex && message.role === 'assistant' && !message.hidden
-                  )
-                : -1
-
-            const sealed = sealedIndex >= 0 ? prev[sealedIndex] : null
-
-            if (sealed?.interim === true && chatMessageText(sealed).trim() === finalText) {
-              nextMessages = settleAt(sealedIndex)
-            } else if (finalText) {
-              nextMessages = [...prev, newAssistantFromCompletion()]
-            }
+          } else if (finalText) {
+            nextMessages = [...prev, newAssistantFromCompletion()]
           }
         }
 
@@ -813,18 +767,15 @@ export function useMessageStream({
         // tool-call parts that never saw their completion event.
         nextMessages = sealOpenToolParts(nextMessages)
 
-        const hasInlineError = nextMessages.some(
-          (m, index) => index > lastUserIndex && m.role === 'assistant' && m.error && !m.hidden
-        )
-
+        const hasInlineError = nextMessages.some(m => m.role === 'assistant' && m.error && !m.hidden)
         const lastVisible = [...nextMessages].reverse().find(m => !m.hidden)
         const unresolvedUserTail = lastVisible?.role === 'user'
 
-        const sameTurnId = collapsed?.keptId ?? (streamIndex >= 0 ? streamId : null)
+        const sameTurnId = collapsed?.keptId ?? streamId
 
         const sameTurnAssistant = sameTurnId
           ? nextMessages.find(m => m.id === sameTurnId)
-          : nextMessages.findLast((m, index) => index > lastUserIndex && m.role === 'assistant' && !m.hidden)
+          : [...nextMessages].reverse().find(m => m.role === 'assistant' && !m.hidden)
 
         const localVisibleText = sameTurnAssistant ? chatMessageText(sameTurnAssistant).trim() : ''
         // Having streamed the reply normally means this window owns the whole

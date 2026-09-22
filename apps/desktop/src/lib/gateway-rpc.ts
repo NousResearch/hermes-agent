@@ -16,10 +16,6 @@ export function isMissingRpcMethod(error: unknown): boolean {
   return /method not found|-32601|unknown method|no such method/i.test(message)
 }
 
-export function isOutOfSyncRpcParams(error: Error | string): boolean {
-  return /out of sync \(different versions\)/i.test(error.toString())
-}
-
 /** REST twin of isMissingRpcMethod: the route does not exist on this backend.
  *  Matches the backend catch-all ('404: {"detail":"No such API endpoint: …}'),
  *  FastAPI's bare 404 on headless serve — directly, or wrapped as "Error

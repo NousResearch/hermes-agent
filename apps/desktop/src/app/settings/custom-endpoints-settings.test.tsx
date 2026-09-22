@@ -107,7 +107,7 @@ describe('CustomEndpointsSettings', () => {
 
     expect(validateCustomEndpoint).toHaveBeenCalledWith(
       expect.objectContaining({ api_mode: 'codex_responses' }),
-      'default'
+      undefined
     )
     expect(notify).toHaveBeenCalledWith({
       kind: 'success',
@@ -122,7 +122,7 @@ describe('CustomEndpointsSettings', () => {
         ]),
         models: ['gpt-5.6-sol', 'gpt-5.6-sol-high']
       }),
-      'default'
+      undefined
     )
   })
 
@@ -158,10 +158,7 @@ describe('CustomEndpointsSettings', () => {
     fireEvent.change(screen.getByPlaceholderText('gpt-5.4'), { target: { value: 'studio-model' } })
     fireEvent.click(screen.getByRole('button', { name: 'Save' }))
 
-    expect(saveCustomEndpoint).toHaveBeenCalledWith(
-      expect.objectContaining({ name: 'Studio gateway' }),
-      'content-studio'
-    )
+    expect(saveCustomEndpoint).toHaveBeenCalledWith(expect.objectContaining({ name: 'Studio gateway' }), 'content-studio')
   })
 
   it('hydrates the API mode from a saved endpoint', async () => {
@@ -212,12 +209,7 @@ describe('CustomEndpointsSettings', () => {
 
   it('Test rewrites the URL field to the base that actually served /models (#65488)', async () => {
     getCustomEndpoints.mockResolvedValue(emptyResponse)
-    validateCustomEndpoint.mockResolvedValue({
-      ok: true,
-      message: '',
-      models: ['model-a'],
-      resolved_base_url: 'http://h.test/v1'
-    })
+    validateCustomEndpoint.mockResolvedValue({ ok: true, message: '', models: ['model-a'], resolved_base_url: 'http://h.test/v1' })
     const { CustomEndpointsSettings } = await import('./custom-endpoints-settings')
     render(<CustomEndpointsSettings onConfigSaved={vi.fn()} onMainModelChanged={vi.fn()} />)
 

@@ -112,7 +112,6 @@ def _notification_event_requires_owner(evt: dict) -> bool:
 # one process can match patterns many times, so their content is part of the key.
 _DEDUP_EXTRA_FIELDS = {
     "watch_match": ("command", "pattern", "output", "suppressed", "message_id"),
-    "heartbeat": ("seq",),
     "watch_disabled": ("command", "message", "suppressed"),
     "watch_overflow_": ("command", "message", "suppressed"),  # prefix match
 }

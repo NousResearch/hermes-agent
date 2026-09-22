@@ -43,30 +43,18 @@ async def restore_heartbeat_watches(runner) -> None:
         if not any(profile_has_active_heartbeat(h) for h in _watched_homes(runner, home)):
             return restored
         with _profile_runtime_scope(home):
-            # Enter each profile's scope once per scan, not once per routed session: a scope entry
-            # hydrates the secret scope and terminal policy, so N sessions cost N parses otherwise.
-            # Sources are read through _restored_source so the persisted receiving bot is re-pinned
-            # before the scope key is derived; the same source object is what gets registered.
-            by_scope: dict = {}
-            for entry in store.list_sessions():
+            entries = store.list_sessions()
+            for entry in entries:
                 if entry.origin is None or not entry.session_id or entry.suspended:
                     continue
                 try:
                     source = runner._restored_source(entry)
-                    by_scope.setdefault(runner._profile_scope_key_for_source(source), []).append((entry, source))
+                    with runner._profile_scope_for_source(source):
+                        manager = HeartbeatManager(entry.session_id)
+                        if manager.is_active():
+                            restored.append((entry.session_key, source, entry.session_id))
                 except Exception:
                     logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
-            for group in by_scope.values():
-                try:
-                    with runner._profile_scope_for_source(group[0][1]):
-                        for entry, source in group:
-                            try:
-                                if HeartbeatManager(entry.session_id).is_active():
-                                    restored.append((entry.session_key, source, entry.session_id))
-                            except Exception:
-                                logger.debug("heartbeat restore for %s failed", entry.session_key, exc_info=True)
-                except Exception:
-                    logger.debug("heartbeat restore scope for %s failed", group[0][0].session_key, exc_info=True)
         return restored
 
     try:

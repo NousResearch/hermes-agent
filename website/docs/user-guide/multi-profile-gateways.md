@@ -64,35 +64,14 @@ automatically on crash and on user login.
 ## Alternative: one gateway for all profiles (multiplexing)
 
 The model above runs **one process per profile**. The alternative is a
-**single multiplexing gateway**: one gateway process — whichever profile
-launched it — becomes the sole inbound process and serves messages for *every*
-profile on the box.
-
-Because there is only ever one of them, the lifecycle verbs target that process
-rather than "this profile's gateway":
-
-- `hermes -p <name> gateway run` while it is live **attaches** instead of
-  starting a second process: it prints the host gateway's PID and served set and
-  exits 0. If `<name>` is not served yet, it asks the host gateway to re-scan
-  `profiles/` and attaches once the answer includes it; it refuses (non-zero)
-  only when the host gateway cannot be made to serve it.
-- `hermes gateway start --all` / `restart --all` mean *the one host
-  multiplexer*. They never sweep every gateway process on the box; a profile
-  that still runs its own gateway is reported, never killed, with the
-  `hermes gateway migrate --multiplex` one-liner.
-- `hermes gateway run --replace` takes the host role over, whichever profile
-  launched the running process; `hermes gateway run --force` starts a separate
-  gateway without asking the host process at all (the escape hatch when it is
-  wedged or answering wrongly).
-- Under a service supervisor the attach exits 75, not 0 — systemd, s6 and
-  launchd all restart a 75 after a short delay, so the unit keeps retrying and
-  takes over by itself the moment the host process goes away.
+**single multiplexing gateway**: the default profile's gateway becomes the sole
+inbound process and serves messages for *every* profile on the box.
 
 Multiplexing is **on by default** (`gateway.multiplex_profiles` defaults to
 `true`), with one safety rule: an *unset* flag is a request the default gateway
 settles at boot, never a verdict. Each start it runs the same preflight as
 [`hermes gateway migrate --multiplex`](#migrating-from-per-profile-gateways) and
-multiplexes only when the fold would have been safe — two
+multiplexes only when the fold would have been safe — the default profile, two
 or more profiles, no secondary still running its own gateway (live process or
 installed service), no duplicate bot credential, no port-binding platform
 without a `/p/<profile>/` ingress, and a host the migration understands (not an
@@ -100,17 +79,14 @@ s6 container or Windows Scheduled Tasks). Otherwise it comes up exactly as
 before — serving the default profile only — and logs the blocker plus the
 `hermes gateway migrate --multiplex` one-liner. Nothing is changed on disk.
 
-An **explicit** `true` is never second-guessed:
+An **explicit** value is never second-guessed:
 
 - `gateway.multiplex_profiles: true` (what the migration writes) multiplexes
   regardless of the preflight — you, or the migration, made the call.
-- `gateway.multiplex_profiles: false` is **retired**. It used to keep
-  per-profile gateways for good; now it resolves exactly like an unset key and
-  the gateway logs a warning pointing at `hermes gateway migrate --multiplex`.
-  One gateway per host serves every profile — the only way to run a separate
-  per-profile gateway is `--force` (below).
-- `GATEWAY_MULTIPLEX_PROFILES` in the process environment overrides the
-  unset-key decision the same way an explicit `true` does.
+- `gateway.multiplex_profiles: false` (what `--standalone` restores) keeps
+  per-profile gateways for good. When it's off, nothing on this page changes —
+  every behavior below is inert.
+- `GATEWAY_MULTIPLEX_PROFILES` in the process environment overrides both.
 
 Other processes (`hermes -p <name> gateway start`, the dashboard, `hermes gateway
 migrate`) never guess how an unset flag was settled: they read the running
@@ -124,22 +100,19 @@ only when no gateway runs.
 - Many low-traffic profiles that don't each justify a full process.
 - You want a single thing to start, monitor, and restart.
 
-One-process-per-profile is no longer a supported topology to *choose*: a named
-profile's `gateway install` / `gateway start` refuses without `--force` (see
-[No new per-profile gateways](#no-new-per-profile-gateways)). It survives only
-where a real boundary blocks the fold — a fleet split across UNIX users, or a
-`HERMES_HOME` outside `<default home>/profiles/` — and there every profile keeps
-`--force` as its stated path.
+Stick with one-process-per-profile when you want hard process-level isolation
+between profiles (separate memory footprints, independent crash domains, the
+ability to restart one profile without touching the others).
 
 ### Pinning the flag
 
 With the flag unset, the default gateway decides at each boot (above). To pin
-it, set it on the profile whose gateway runs as the host process (usually the
-**default profile**) and restart its gateway — `true` forces multiplexing even
-where the boot preflight would have held back (`false` is retired and ignored):
+it, set it on the **default profile** (it owns the multiplexer) and restart its
+gateway — `true` forces multiplexing even where the boot preflight would have
+held back, `false` opts out durably:
 
 ```bash
-hermes config set gateway.multiplex_profiles true
+hermes config set gateway.multiplex_profiles true    # or false
 hermes gateway restart
 ```
 
@@ -160,43 +133,10 @@ keys** — credentials are never shared across profiles.
 You do **not** run `hermes gateway start` for the secondary profiles — the
 default gateway serves them. See the contract changes below.
 
-### No new per-profile gateways
-
-Because one host gateway serves every profile, a named profile never gets a
-gateway of its own. `hermes -p coder gateway install` (or `start`, `run`, and
-the service step of `hermes -p coder setup`) refuses with exit 78 whether or not
-a host gateway is running right now:
-
-```
-❌ Profile 'coder' does not get a gateway of its own.
-  Exactly one gateway per host is the inbound process for every
-  profile. Starting a separate gateway for this profile would
-  double-bind its platforms (two pollers on one bot token, port
-  conflicts).
-
-  Install or start the host gateway from the default profile; it serves this one too:
-
-    hermes gateway install
-
-  Or fold an existing per-profile fleet onto one host gateway:
-
-    hermes gateway migrate --multiplex
-
-  A separate per-profile gateway (for a fleet split across UNIX users or a
-  HERMES_HOME outside profiles/) needs --force:  hermes -p coder gateway install --force
-```
-
-When the host gateway is already running and serves the profile, the first
-line reads `The host gateway already serves profile 'coder'.` with the owner's
-PID and served set, and the pointer is `hermes -p default gateway restart`.
-The dashboard's **Start** button for a named profile returns the same refusal.
-`--force` is the one escape: it installs a real per-profile service, and that
-service (its `ExecStart` carries no `--force`) keeps starting normally afterwards.
-
 ### What changes when multiplexing is on
 
-Multiplexing changes how a few things behave. None of these apply to a profile
-that runs a separate `--force` gateway on a blocked host.
+Enabling the flag changes how a few things behave. All of these revert the
+moment the flag is off.
 
 #### 1. Secondary profiles must not start their own gateway
 
@@ -415,9 +355,7 @@ parent conversation.
 
 There is a single process-level PID and lock (the multiplexer, under the default home). `hermes status` on the default profile reports the multiplexer and lists the profiles it serves (`Serves: coder, research`). `hermes -p coder status` and `hermes -p coder gateway status` report "running via the default-profile multiplexer" instead of "stopped". The dashboard's `/api/status?profile=coder` / Channels page report the multiplexer as coder's running gateway, with coder's own adapters as its platforms. The single `gateway_state.json` lives under the default home: secondary adapters appear there as `<profile>:<platform>` entries beside `served_profiles`; no per-profile gateway status file is written.
 
-`hermes -p coder cron status` names the single host gateway and the profiles it serves — `Scheduler host: the host gateway (PID 4211) serving profiles default, coder` — then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
-
-When no gateway owns the host role, `cron status` tells you to start the **one** host gateway (`hermes --profile default gateway install` / `gateway run`) and to make sure it serves this profile. Installing a per-profile service is shown only under `LEGACY (pre-multiplex topology, not recommended)`: it would start a second gateway process on the host. `hermes doctor` follows the same rule — under s6 it reports `Host gateway: the host gateway (PID 4211) serving profiles default, coder` instead of a per-profile slot count, flags any still-supervised per-profile slot as LEGACY, and checks the host systemd unit's linger even when you run doctor from a served profile. The `state.db` holder lines name the shared host process too, so "3 process(es) holding the DB open" says which gateway and which profiles stopping it would affect.
+`hermes -p coder cron status` prints `Scheduler host: default-profile multiplexer`, then checks coder's own ticker heartbeat and last successful tick. A missing or stale heartbeat produces a warning rather than an unconditional running verdict; the restart hint targets `hermes --profile default gateway restart`. `cron list` and `cron create` also warn when a served profile has no fresh heartbeat. `cron status` adds tick-failure details that those lightweight checks do not read.
 
 #### What does **not** change
 
@@ -509,6 +447,7 @@ profile and never shares with the default or any sibling:
 | Concern | Resolved from | Behaviour when the profile lacks it |
 |---|---|---|
 | Provider keys, bot tokens, `${VAR}` refs in `config.yaml` | The profile's own `.env` (its secret scope) | Unresolved / no adapter — never the default profile's value |
+| Provider logins and the credential pool (`auth.json`: OAuth tokens, `hermes auth add` keys) | The profile's own `auth.json` | "Not connected to any AI provider" with the `hermes -p <name> model` hint — never the default profile's login, and a refresh never writes to the root store |
 | Authorization (`GATEWAY_ALLOW_ALL_USERS`, `GATEWAY_ALLOWED_USERS`, per-platform allowlists and allow-all opt-ins) | The owning profile's `.env` and `config.yaml` | Closed — a default-profile opt-in never opens a secondary's bot |
 | HTTP endpoints (`/p/<profile>/api/...`, `/p/<profile>/webhooks/...`, platform event callbacks) | The named profile's `API_SERVER_KEY`, `profile:`-bound webhook routes, and its own adapter | `401`/`404`; delivery without an adapter is `502`/`503`, never another profile's bot |
 | Inbound-port platforms (`/p/<profile>/webhooks/twilio`, `/p/<profile>/line/webhook`, `/p/<profile>/api/messages`, …) | The named profile's own adapter and its secret (Twilio auth token, LINE channel secret, Teams app, BlueBubbles password, …); replies leave through that adapter | `401`/`403` on a wrong secret, `404` when the profile has no such adapter — never the default profile's adapter |
@@ -524,7 +463,6 @@ profile and never shares with the default or any sibling:
 | Sandbox credential-file mounts (`terminal.credential_files`), `security.redact_secrets`, `browser.*` engine/headed flags, `lsp.*`, auxiliary-provider health marks, `logs/mcp-stderr.log` | The profile's own `config.yaml` / `.env` | Documented default — never the launch profile's cached value |
 | Cloud-SDK credential clients (Bedrock boto3 clients + model discovery, Azure Entra credential), credential-fetched catalogs (DeepInfra, Copilot context limits, Nous reasoning caps, Ramp Router efforts, xAI / OpenRouter image models, custom-endpoint `/models`), Camofox VNC address, computer-use aux-vision routing, skill-sync push, remote-backend probe text, learned image token costs, `display.skin`, guest-mint back-off, banner skills, Yuanbao "active" adapter, Langfuse client | The profile's own `.env` / `config.yaml` / `<home>/cache` | Documented default — never the launch profile's cached value or its credentials |
 | Session-search knobs (`sessions.cjk_fts`, `sessions.search_slow_ms`) | The profile's `config.yaml` | Documented default — never the default profile's bridged value |
-| RoomLink capability catalog and the signed execution policy it advertises to a remote Bot (`approvals.mode`, `agent.max_turns`, `platform_toolsets.api_server`) | The served profile named by the request (`/p/<profile>/v1/room-members/...`, the RPC `profile` param); `target_profile` is **required** on every catalog — there is no `HERMES_PROFILE` fallback | Invitation/capabilities fail with the offending `target_profile` named; a profile that does not exist is refused, never resolved from the launch profile's config |
 | Platform proxies (`TELEGRAM_PROXY`, `DISCORD_PROXY`, `HTTPS_PROXY`, …) | The profile's own `.env` | Direct connection — never the default profile's proxy |
 | MCP discovery in the Desktop/dashboard backend | Once per served profile home | A profile selected after another has already built an agent still discovers its own `mcp_servers` |
 | Settings changed from a Desktop / TUI session (`/busy`, `/verbose`, `/approval`, `/cwd`, theme and display toggles) | The `config.yaml` of the profile that owns the session, even when the RPC carries only the session id | The session's own profile is written; the launch profile's `config.yaml` and its `TERMINAL_CWD` are never touched |
@@ -929,21 +867,17 @@ grep -H 'TELEGRAM_BOT_TOKEN\|DISCORD_BOT_TOKEN' \
 ## Migrating from per-profile gateways
 
 If your profiles each run their own gateway today (one systemd unit or launchd
-agent per profile, from a release before multiplex-only), the default gateway's
-boot preflight keeps it standalone until they are folded (the unset default
-never double-binds a running fleet). `hermes update` folds them for you unless a
-real boundary blocks it (below); the same fold is one command, and re-running it
-on a half-migrated host (flag on, a unit left behind, a crash between the two)
-finishes the job instead of reporting "already multiplexed":
+agent per profile), the default gateway's boot preflight keeps it standalone
+(the unset default never double-binds a running fleet). Fold them into a single
+multiplexed default gateway with one command — and roll back with another.
+Standalone per-profile gateways remain fully supported; this is an optional
+migration, not a removal.
 
 ```bash
 hermes gateway migrate --multiplex --dry-run   # print the plan and any blockers; changes nothing
 hermes gateway migrate --multiplex             # apply (asks for confirmation on a TTY; -y skips)
+hermes gateway migrate --standalone            # roll back to per-profile gateways
 ```
-
-There is no `--standalone` reverse command: a per-profile fleet is not a
-supported target. A blocked fleet keeps running as it is, and each profile
-keeps `hermes -p <name> gateway install --force` as its stated path.
 
 ### What `hermes update` does
 
@@ -978,8 +912,7 @@ A standalone secondary behind any of these boundaries stops the automatic path:
 
 In that case `hermes update` prints the boundary it found plus
 `hermes gateway migrate --multiplex`, and changes nothing — no unit is removed
-and the per-profile gateways keep running (`--force` remains their stated
-path). Collapsing such a fleet replaces a
+and `gateway.multiplex_profiles` stays off. Collapsing such a fleet replaces a
 kernel-enforced boundary (file ownership, `User=`) with in-process isolation,
 which is an operator's decision. The explicit command still makes it: the same
 findings appear as **notices** in `hermes gateway migrate --multiplex --dry-run`
@@ -1006,8 +939,10 @@ behaviour described above.
 
 The explicit command is different: `hermes gateway migrate --multiplex` with
 two or more profiles and **no** standalone secondary gateway still applies the
-one remaining step — it sets `gateway.multiplex_profiles: true` and (re)starts
-the default gateway. You asked for multiplex; you get multiplex.
+one remaining step — it sets `gateway.multiplex_profiles: true`, (re)starts the
+default gateway and writes the same rollback manifest (with an empty
+`secondaries` list), so `--standalone` undoes it. You asked for multiplex; you
+get multiplex.
 
 :::tip Clones do not carry channels
 `hermes profile create --clone` leaves the source's bot tokens and allowlists
@@ -1034,7 +969,7 @@ Older clones that still carry them are flagged by `hermes profile list`.
 | Blocker | Why | Fix |
 |---|---|---|
 | Two profiles configure the same platform credential (e.g. the same `TELEGRAM_BOT_TOKEN`) | Under one process a bot token can only be polled once; the multiplexer would park the duplicate and that profile's bot would go silent | Remove the token from the second profile, or keep it in `default` and route that profile's chats with [`profile_routes`](#routing-shared-bot-chats-to-profiles-profile_routes) |
-| A secondary profile enables a port-binding platform that has **no** `/p/<profile>/` ingress on the default listener | The multiplexer skips that whole profile (see [rule 2](#2-http-inbound-platforms-are-reached-via-a-pprofile-url-prefix)) | Disable the platform in that profile (`platforms.<name>.enabled: false`), or keep the profile on a standalone gateway with `hermes -p <name> gateway install --force` (a served profile's `install`/`start` refuse without it) |
+| A secondary profile enables a port-binding platform that has **no** `/p/<profile>/` ingress on the default listener | The multiplexer skips that whole profile (see [rule 2](#2-http-inbound-platforms-are-reached-via-a-pprofile-url-prefix)) | Disable the platform in that profile (`platforms.<name>.enabled: false`), or keep the profile on a standalone gateway with `hermes -p <name> gateway start --force` |
 
 The credential check reuses the gateway's own conflict detection, so its verdict
 matches what the multiplexer does at startup. Which port-binding platforms have
@@ -1064,9 +999,18 @@ above). `hermes profile create` confirms this when the live multiplexer picked t
 profile up; it prints the `hermes gateway restart` reminder only when it could not
 reach the multiplexer (for example, a gateway started from an older build).
 
-### Failure handling and resuming
+### Rollback
 
-The migration is transactional. Failures it can see
+```bash
+hermes gateway migrate --standalone
+```
+
+reads `gateway_migration.json`, sets `gateway.multiplex_profiles` back to its
+previous value, restarts the default gateway, and reinstalls/starts every
+recorded per-profile service (a system unit comes back with the `User=` it had).
+The manifest is removed once everything is back.
+
+The forward migration is transactional in the same way. Failures it can see
 coming from the plan (a system unit that would have to run as root without a
 recorded `User=`, a config file it cannot rewrite) are refused before any
 per-profile gateway is stopped. Anything that fails after the manifest is
@@ -1076,14 +1020,14 @@ profile is left without a gateway. Should the process die anywhere in that
 window, the next `hermes gateway migrate --multiplex` sees the flag on, the
 manifest, and no live multiplexer serving the migrated profiles (an installed
 but stopped default unit does not count) and resumes from the manifest instead
-of reporting "already multiplexed". A manifest on disk always means
-*unfinished*: it is the resume record, not a rollback command — there is no
-`--standalone` reverse, and the compensator above only ever runs inside a
-single failed apply so that no profile is left without a gateway.
+of reporting "already multiplexed".
+If no manifest exists (you enabled multiplexing by hand), leave multiplex mode
+with `hermes config set gateway.multiplex_profiles false && hermes gateway restart`
+and reinstall the per-profile services you want.
 
-Not covered automatically: s6-supervised containers — they converge on the next
-container start (the per-profile slots are registered down and the root gateway
-multiplexes). Windows Scheduled Tasks are folded by the command. The dashboard's
+Not covered automatically: s6-supervised containers (set the flag on the
+default profile and restart the container) and Windows Scheduled Tasks (set the
+flag, stop the per-profile tasks, `hermes gateway restart`). The dashboard's
 System page offers the same migration as a button when the preflight finds an
 eligible install.
 
@@ -1098,11 +1042,9 @@ hermes-gateways restart
 ```
 
 Running gateways are restarted by the update itself; on an install that still
-runs one gateway per profile, the update then runs the
+runs one gateway per profile, the update then offers the
 [migration to a single multiplexed gateway](#migrating-from-per-profile-gateways)
-— automatically when nothing blocks it, otherwise as a warning naming the
-boundary (different UNIX user, `HERMES_HOME` outside `profiles/`) and the
-one-liner to run yourself.
+— automatically when nothing blocks it, otherwise as a warning with the fixes.
 
 User-modified skills are never overwritten.
 

@@ -1,9 +1,13 @@
+"""Remote connector adapter for tool search and descriptions.
+
+Failures return no connector results so local search behavior is unchanged.
+"""
+
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, Iterable, List, Optional, Tuple
+from typing import Any, Dict, Iterable, List, Optional
 
-from tools.connectors.gateway.bridge import SIGN_IN_EXPIRED, UNREACHABLE
 from tools.connectors.gateway.names import format_connector_name, is_connector_name, vendor_slug_candidates
 from tools.tool_search_catalog import CatalogEntry, _fn, _tokenize
 
@@ -12,18 +16,6 @@ logger = logging.getLogger(__name__)
 
 def connections_in_scope(tool_defs: Iterable[Dict[str, Any]]) -> bool:
     return any(_fn(td).get("name") == "manage_connections" for td in tool_defs)
-
-
-def connectors_unavailable(failure: str, *, verb: str,
-                           names: Optional[List[str]] = None) -> Dict[str, Any]:
-    hint = (f"Hosted connector tools could not be {verb} right now. "
-            "Do not conclude the app is missing.")
-    if failure == SIGN_IN_EXPIRED:
-        hint += " The user must sign in to Nous again."
-    field: Dict[str, Any] = {"status": "unavailable", "reason": failure, "hint": hint}
-    if names:
-        field["names"] = names
-    return field
 
 
 def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any]) -> CatalogEntry:
@@ -40,19 +32,17 @@ def _connector_entry(name: str, connector: str, slug: str, schema: Dict[str, Any
 def connector_entries_by_group(
     queries: List[str],
     connector_search: Optional[Any] = None,
-) -> Tuple[List[List[CatalogEntry]], Optional[str]]:
+) -> List[List[CatalogEntry]]:
+    """Correlate remote response groups by position, never their wire index."""
     per_query: List[List[CatalogEntry]] = [[] for _ in queries]
     try:
         if connector_search is None:
             from tools.connectors.gateway.bridge import connector_search_hits as connector_search
-        leg = connector_search([{"use_case": q} for q in queries])
-        if leg.failure:
-            return per_query, leg.failure
-        hits = leg.payload or {}
+        hits = connector_search([{"use_case": q} for q in queries]) or {}
         schemas = hits.get("schemas")
         groups = hits.get("results")
         if not isinstance(schemas, dict) or not isinstance(groups, list):
-            return per_query, (UNREACHABLE if hits else None)
+            return per_query
         for position, group in enumerate(groups[: len(queries)]):
             if not isinstance(group, dict):
                 continue
@@ -82,29 +72,25 @@ def connector_entries_by_group(
                 picked[name] = (slug, _connector_entry(name, str(schema["connector"]), slug, schema))
             per_query[position] = [entry for _, entry in picked.values()]
     except Exception:
-        logger.debug("connector search merge failed (D32)", exc_info=True)
-        return [[] for _ in queries], UNREACHABLE
-    return per_query, None
+        logger.debug("connector search merge failed silently (D32)", exc_info=True)
+        return [[] for _ in queries]
+    return per_query
 
 
 def remote_schemas_for(
     names: List[str],
     current_tool_defs: List[Dict[str, Any]],
     connector_describe: Optional[Any] = None,
-) -> Tuple[Dict[str, Dict[str, Any]], Optional[str]]:
+) -> Dict[str, Dict[str, Any]]:
     connector_names = [n for n in names if is_connector_name(n)]
     if not connector_names or not connections_in_scope(current_tool_defs):
-        return {}, None
+        return {}
     try:
         if connector_describe is None:
             from tools.connectors.gateway.bridge import connector_describe
-        leg = connector_describe(connector_names)
-        if leg.failure:
-            return {}, leg.failure
-        tools = leg.payload.get("tools")
-        if isinstance(tools, dict):
-            return tools, None
-        return {}, (UNREACHABLE if leg.payload else None)
+        remote = connector_describe(connector_names)
+        if isinstance(remote, dict) and isinstance(remote.get("tools"), dict):
+            return remote["tools"]
     except Exception:
-        logger.debug("connector describe merge failed (D32)", exc_info=True)
-        return {}, UNREACHABLE
+        logger.debug("connector describe merge failed silently (D32)", exc_info=True)
+    return {}

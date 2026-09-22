@@ -1,15 +1,6 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import {
-  $activeTip,
-  $retiredTips,
-  $tipShownAt,
-  agentTipId,
-  dismissTip,
-  resetTips,
-  retireActiveTip,
-  showTip
-} from './tips'
+import { $activeTip, $retiredTips, $tipShownAt, agentTipId, dismissTip, resetTips, retireActiveTip, showTip } from './tips'
 
 const showAgentTip = (selector: string, text: string) => {
   showTip({

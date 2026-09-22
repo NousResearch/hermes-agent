@@ -1,11 +1,7 @@
 import {
-  closeSecondaryGateways,
-  configureGatewayRegistry,
-  openGatewayForAgent,
-  openGatewayForProfile,
-  openSecondaryCount,
-  parkSecondariesForRetiredBackend,
-  reconnectSecondaryGateways
+  closeSecondaryGateways, configureGatewayRegistry, openGatewayForAgent,
+  openGatewayForProfile, openSecondaryCount, parkSecondariesForRetiredBackend,
+  reconnectSecondaryGateways,
 } from '../store/gateway'
 
 const parked: Record<string, string[]> = {}
@@ -36,7 +32,7 @@ const api = {
 
     return { parked, open: openSecondaryCount() }
   },
-  close: closeSecondaryGateways
+  close: closeSecondaryGateways,
 }
 
 Object.assign(window, { poolRetirementRenderer: api })

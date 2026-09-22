@@ -77,8 +77,6 @@ export interface RpcCall {
   params: Record<string, unknown>
   /** Socket refcount after this request released its own lease. */
   refcountAfter: number
-  spawnPriority?: 'background' | 'foreground'
-  timeoutMs?: number
 }
 
 export interface GatewayOptions {
@@ -129,8 +127,6 @@ export interface ScriptedGateway {
   rpc: RpcCall[]
   /** Filter `rpc` by method. */
   rpcFor: (method: string) => RpcCall[]
-  /** Route retentions acquired for explicit multi-RPC member turns. */
-  retains: Array<{ spawnPriority?: 'background' | 'foreground' }>
   /** Live socket refcount — zero between turns, never zero during one. */
   refcount: () => number
   /** Sessions by stored id, so a test can pre-seed a finished transcript. */
@@ -154,7 +150,6 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
   const calls: PromptCall[] = []
   const attaches: AttachCall[] = []
   const rpc: RpcCall[] = []
-  const retains: Array<{ spawnPriority?: 'background' | 'foreground' }> = []
   const timeline: string[] = []
   const storage = new Map<string, unknown>()
   const uiMeta: Record<string, unknown> = {}
@@ -371,13 +366,7 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     notify: vi.fn(),
     notifyError: vi.fn(),
     request: async (method: string, params: Record<string, unknown> = {}) => record(method, params),
-    requestProfile: async (
-      _route: unknown,
-      method: string,
-      params: Record<string, unknown> = {},
-      timeoutMs?: number,
-      options?: { spawnPriority?: 'background' | 'foreground' }
-    ) => {
+    requestProfile: async (_route: unknown, method: string, params: Record<string, unknown> = {}) => {
       refcount += 1
 
       try {
@@ -389,12 +378,11 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
           disposals += 1
         }
 
-        rpc.push({ method, params, refcountAfter: refcount, spawnPriority: options?.spawnPriority, timeoutMs })
+        rpc.push({ method, params, refcountAfter: refcount })
         timeline.push(method)
       }
     },
-    retainProfile: async (_route: unknown, options?: { spawnPriority?: 'background' | 'foreground' }) => {
-      retains.push({ spawnPriority: options?.spawnPriority })
+    retainProfile: async () => {
       timeline.push('retain')
       refcount += 1
       let released = false
@@ -429,7 +417,6 @@ export function createGroupGateway(options: GatewayOptions = {}): ScriptedGatewa
     refcount: () => refcount,
     rpc,
     rpcFor: (method: string) => rpc.filter(entry => entry.method === method),
-    retains,
     sessions,
     storage,
     timeline,

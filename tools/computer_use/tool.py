@@ -551,12 +551,8 @@ def _capture_view(cap: CaptureResult, max_elements: int) -> SimpleNamespace:
     lost_detail = len(cap.elements) > len(visible) or any(len(e.label) > _MAX_ELEMENT_LABEL_CHARS for e in visible)
     too_small = bool(dims) and min(dims) < _MIN_PROVIDER_IMAGE_DIMENSION
     has_image = bool(cap.png_b64) and cap.mode != "ax" and not too_small
-    # The driver's own AX walk may have stopped at the ``max_elements`` the backend sent: then the spill file is
-    # NOT the full tree, and the hint must not promise one.
-    ax_capped = len(cap.elements) >= cap.ax_max_elements > 0
     return SimpleNamespace(cap=cap, visible=visible, total=len(cap.elements), width=width, height=height,
                            truncated=len(cap.elements) - len(visible), bounds_scale=scale, bounds_note=note,
-                           ax_capped=cap.ax_max_elements if ax_capped else 0,
                            elements_file=_spill_elements_to_file(cap) if lost_detail else None,
                            screenshot_path=_persist_capture_image(cap) if has_image else None,
                            dims_omitted=dims if too_small else None, has_image=has_image)
@@ -569,10 +565,8 @@ def _capture_summary_lines(v: SimpleNamespace) -> List[str]:
                                            f"{v.bounds_scale} ≈ native coordinate)" if v.bounds_scale else ""),
         v.screenshot_path and f"shareable screenshot saved to {v.screenshot_path}",
         v.cap.note,
-        v.elements_file and (f"{'' if v.ax_capped else 'full '}element tree with untruncated labels "
-                             f"saved to {v.elements_file} — read_file/search_files it if you need dropped label "
-                             "text or elements beyond the cap"),
-        v.ax_capped and (f"accessibility walk capped at {v.ax_capped} elements; pass app= to narrow"),
+        v.elements_file and (f"full element tree with untruncated labels saved to {v.elements_file} — "
+                             "read_file/search_files it if you need dropped label text or elements beyond the cap"),
     )
     return [
         f"capture mode={v.cap.mode} {v.width}x{v.height}"

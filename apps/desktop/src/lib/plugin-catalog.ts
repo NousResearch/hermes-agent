@@ -33,8 +33,7 @@ export interface PluginCatalogEntry {
 
 export type PluginCatalogLookupError = 'invalid_name' | 'unavailable' | 'unknown'
 
-export type PluginCatalogLookup =
-  { ok: false; error: PluginCatalogLookupError } | { ok: true; entry: PluginCatalogEntry }
+export type PluginCatalogLookup = { ok: false; error: PluginCatalogLookupError } | { ok: true; entry: PluginCatalogEntry }
 
 function asEntry(raw: unknown): null | PluginCatalogEntry {
   if (!raw || typeof raw !== 'object') {

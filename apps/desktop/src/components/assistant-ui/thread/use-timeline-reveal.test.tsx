@@ -10,30 +10,19 @@ vi.mock('@/app/chat/session-view', () => ({ useSessionView: () => view }))
 const view = { $messages: { get: () => [] } }
 
 beforeEach(() => vi.stubGlobal('CSS', { escape: (id: string) => id }))
-afterEach(() => {
-  cleanup()
-  vi.unstubAllGlobals()
-})
+afterEach(() => { cleanup(); vi.unstubAllGlobals() })
 
 function Harness({ fetchPage, signal }: { fetchPage: () => Promise<string | null>; signal: AbortSignal }) {
   const [id, setId] = useState('latest')
 
   return (
-    <TranscriptWindowProvider
-      value={{
-        olderAvailable: true,
-        expandWindow: vi.fn(),
-        revealRow: async () => {
-          const next = await fetchPage()
+    <TranscriptWindowProvider value={{ olderAvailable: true, expandWindow: vi.fn(), revealRow: async () => {
+      const next = await fetchPage()
 
-          if (next && !signal.aborted) {
-            setId(next)
-          }
+      if (next && !signal.aborted) {setId(next)}
 
-          return next
-        }
-      }}
-    >
+      return next
+    } }}>
       <List id={id} />
     </TranscriptWindowProvider>
   )
@@ -41,23 +30,9 @@ function Harness({ fetchPage, signal }: { fetchPage: () => Promise<string | null
 
 function List({ id }: { id: string }) {
   const viewport = useRef<HTMLDivElement>(null)
-  useTimelineReveal({
-    viewport,
-    groups: [{ id, weight: 1 }],
-    hiddenCount: 0,
-    renderBudget: 600,
-    olderAvailable: true,
-    revealBudget: vi.fn(),
-    expandWindow: vi.fn(),
-    prepare: vi.fn(),
-    sessionKey: 'session'
-  })
+  useTimelineReveal({ viewport, groups: [{ id, weight: 1 }], hiddenCount: 0, renderBudget: 600, olderAvailable: true, revealBudget: vi.fn(), expandWindow: vi.fn(), prepare: vi.fn(), sessionKey: 'session' })
 
-  return (
-    <div data-testid="viewport" ref={viewport}>
-      <div data-message-id={id}>{id}</div>
-    </div>
-  )
+  return <div data-testid="viewport" ref={viewport}><div data-message-id={id}>{id}</div></div>
 }
 
 describe('timeline direct reveal', () => {
@@ -67,11 +42,7 @@ describe('timeline direct reveal', () => {
     const complete = vi.fn()
     const ui = render(<Harness fetchPage={fetchPage} signal={controller.signal} />)
     await act(async () => {
-      ui.getByTestId('viewport').dispatchEvent(
-        new CustomEvent(TIMELINE_REVEAL_EVENT, {
-          detail: { id: 'history:42', rowId: 42, signal: controller.signal, complete }
-        })
-      )
+      ui.getByTestId('viewport').dispatchEvent(new CustomEvent(TIMELINE_REVEAL_EVENT, { detail: { id: 'history:42', rowId: 42, signal: controller.signal, complete } }))
     })
     expect(fetchPage).toHaveBeenCalledOnce()
     expect(complete).toHaveBeenCalledWith('old-target')
@@ -82,9 +53,7 @@ describe('timeline direct reveal', () => {
     const complete = vi.fn()
     const ui = render(<Harness fetchPage={async () => null} signal={controller.signal} />)
     await act(async () => {
-      ui.getByTestId('viewport').dispatchEvent(
-        new CustomEvent(TIMELINE_REVEAL_EVENT, { detail: { id: 'history:42', signal: controller.signal, complete } })
-      )
+      ui.getByTestId('viewport').dispatchEvent(new CustomEvent(TIMELINE_REVEAL_EVENT, { detail: { id: 'history:42', signal: controller.signal, complete } }))
     })
     expect(complete).toHaveBeenCalledWith(false)
     expect(ui.getByText('latest')).toBeTruthy()

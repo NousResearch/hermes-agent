@@ -22,11 +22,7 @@ describe('Command screenshot capture', () => {
     expect(await capture.take(8, request)).toEqual({ ok: false, reason: 'expired' })
     expect(sources).not.toHaveBeenCalled()
     expect(await capture.take(7, request)).toEqual({ ok: true, png })
-    expect(sources).toHaveBeenCalledWith({
-      types: ['window'],
-      thumbnailSize: { width: 2400, height: 1600 },
-      fetchWindowIcons: false
-    })
+    expect(sources).toHaveBeenCalledWith({ types: ['window'], thumbnailSize: { width: 2400, height: 1600 }, fetchWindowIcons: false })
     expect(await capture.take(7, request)).toEqual({ ok: false, reason: 'expired' })
 
     sources.mockResolvedValue([{ id: 'window:99:0', thumbnail: { isEmpty: () => false, toPNG: () => png } }])
@@ -41,7 +37,6 @@ describe('Command screenshot capture', () => {
     permission.mockReturnValue(true)
 
     vi.useFakeTimers()
-
     try {
       const expired = capture.request(7, window)!
       vi.advanceTimersByTime(6000)
@@ -51,12 +46,7 @@ describe('Command screenshot capture', () => {
     }
 
     let finish!: (value: Awaited<ReturnType<typeof sources>>) => void
-    sources.mockImplementation(
-      () =>
-        new Promise(resolve => {
-          finish = resolve
-        })
-    )
+    sources.mockImplementation(() => new Promise(resolve => { finish = resolve }))
     const pending = capture.take(7, capture.request(7, window)!)
     expect(capture.request(7, window)).toBeNull()
     capture.clear()

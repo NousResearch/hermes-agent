@@ -150,8 +150,7 @@ export function openSession(
     // routes the saved chat elsewhere while leaving the visible blank tab
     // active. Force the tab path so it first focuses an existing target, then
     // spends the scoped blank draft before stacking a new tab.
-    spendBlankDraft =
-      Boolean(botWorkspaceScope) || mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
+    spendBlankDraft = Boolean(botWorkspaceScope) || mainChatOccupied($activeSessionId.get(), $selectedStoredSessionId.get())
     resolved = spendBlankDraft ? 'tab' : 'in-place'
   }
 

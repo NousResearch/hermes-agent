@@ -132,8 +132,8 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
         "next_run_at": "2020-01-01T00:00:00",
         "deliver": "local",
     }
-    sched._parallel_pools.clear()
-    sched._parallel_pool_max_workers.clear()
+    sched._parallel_pool = None
+    sched._parallel_pool_max_workers = None
     sched._running_job_ids.clear()
 
     try:
@@ -159,5 +159,5 @@ def test_dispatch_guard_releases_after_sessiondb_finalization_hang(tmp_path):
             assert sched.tick(verbose=False) == 1
     finally:
         release.set()
-        sched._running_job_ids.discard(sched._inflight_key("cleanup-guard-hang"))
+        sched._running_job_ids.discard("cleanup-guard-hang")
         sched._shutdown_parallel_pool()

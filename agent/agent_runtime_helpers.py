@@ -1474,8 +1474,7 @@ def prompt_caching_disabled_from_config() -> bool:
 
 def configured_cache_ttl() -> Optional[str]:
     """Configured ``prompt_caching.cache_ttl`` tier (``5m``/``1h``), else None; mirrors
-    ``agent_init`` so stub paths don't regress a configured ``1h`` to 5m. ``auto`` is None here
-    on purpose: stub/auxiliary calls are machine-paced, so they take the 5m tier ``None`` resolves to."""
+    ``agent_init`` so stub paths don't regress a configured ``1h`` to 5m."""
     ttl = _raw_cache_ttl_from_config(None)
     return ttl if ttl in VALID_CACHE_TTLS else None
 
@@ -2370,8 +2369,7 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
     no display logic. Used by the concurrent path; the sequential path keeps its own inline
     invocation for display."""
     from agent.inline_tool_executors import (
-        InlineToolContext, apply_transform_tool_result, emit_terminal_post_tool_call,
-        resolve_invoke_tool_executor, tool_hook_ids
+        InlineToolContext, emit_terminal_post_tool_call, resolve_invoke_tool_executor, tool_hook_ids
     )
     if not isinstance(function_args, dict):
         function_args = {}
@@ -2408,17 +2406,14 @@ def invoke_tool(agent, function_name: str, function_args: dict, effective_task_i
 
         def _execute(next_args: dict) -> Any:
             result = inline_executor(agent, next_args, inline_ctx)
-            call_args = next_args if isinstance(next_args, dict) else function_args
-            duration_ms = int((time.monotonic() - tool_start_time) * 1000)
             emit_terminal_post_tool_call(
-                agent, function_name=function_name, function_args=call_args,
+                agent, function_name=function_name,
+                function_args=next_args if isinstance(next_args, dict) else function_args,
                 result=result, effective_task_id=effective_task_id, tool_call_id=tool_call_id,
-                duration_ms=duration_ms, middleware_trace=_tool_middleware_trace,
+                duration_ms=int((time.monotonic() - tool_start_time) * 1000),
+                middleware_trace=_tool_middleware_trace,
             )
-            return apply_transform_tool_result(
-                agent, function_name=function_name, function_args=call_args, result=result,
-                effective_task_id=effective_task_id, tool_call_id=tool_call_id, duration_ms=duration_ms,
-            )
+            return result
     else:
         def _execute(next_args: dict) -> Any:
             dispatch_kwargs = dict(

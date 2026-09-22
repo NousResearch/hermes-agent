@@ -203,13 +203,6 @@ def _recover_gateway_restart_after_abort(
         return _all_failed()
 
     verified, relaunch_attempted, failed = sorted(verified), sorted(relaunch_attempted), sorted(failed)
-    covered_map = recovery_result.get("covered")
-    for owner, others in (covered_map if isinstance(covered_map, dict) else {}).items():
-        if isinstance(owner, str) and isinstance(others, list) and others:
-            print(
-                f"  • One host gateway serves {owner} and {', '.join(str(o) for o in others)} — "
-                f"restarted once through {owner}; that restart is their outcome."
-            )
     for names, text in (
         (verified, "  ✓ Restarted supervised gateway(s) in a fresh process (systemd-verified active): "),
         (relaunch_attempted, "  ⚠ Relaunch attempted in a fresh process but not"

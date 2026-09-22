@@ -358,19 +358,19 @@ class TestResolveApiKeyProviderCredentials:
 
 
 
-    def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch, tmp_path):
+    def test_try_gh_cli_token_uses_homebrew_path_when_not_on_path(self, monkeypatch):
         from hermes_cli.copilot_auth import _invalidate_gh_cli_token_cache
-        from hermes_platform.resolver import known_dirs
 
         _invalidate_gh_cli_token_cache()
-        brew = tmp_path / "homebrew" / "bin"
-        brew.mkdir(parents=True)
-        gh = brew / "gh"
-        gh.write_text("#!/bin/sh\n", encoding="utf-8")
-        gh.chmod(0o755)
-        monkeypatch.setenv("PATH", str(tmp_path / "empty"))
-        monkeypatch.setattr(known_dirs, "homebrew_dirs", lambda: (str(brew),))
-        monkeypatch.setattr(known_dirs, "user_local_bin", lambda: ())
+        monkeypatch.setattr("hermes_cli.copilot_auth.shutil.which", lambda command: None)
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.os.path.isfile",
+            lambda path: path == "/opt/homebrew/bin/gh",
+        )
+        monkeypatch.setattr(
+            "hermes_cli.copilot_auth.os.access",
+            lambda path, mode: path == "/opt/homebrew/bin/gh" and mode == os.X_OK,
+        )
 
         calls = []
 
@@ -385,7 +385,7 @@ class TestResolveApiKeyProviderCredentials:
         monkeypatch.setattr("hermes_cli.copilot_auth.subprocess.run", _fake_run)
 
         assert _try_gh_cli_token() == "gh-cli-secret"
-        assert calls == [[str(gh), "auth", "token"]]
+        assert calls == [["/opt/homebrew/bin/gh", "auth", "token"]]
 
 
 

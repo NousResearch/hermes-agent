@@ -32,7 +32,9 @@ import type { BotMeta, GroupChat, RosterRow } from './types'
 /** The one section-name dialog's state: New section (optionally filing the
  *  bot or group whose menu opened it) or Rename. */
 export type SectionDialogState =
-  null | { bot?: RosterRow; group?: string; mode: 'create' } | { id: string; mode: 'rename'; name: string }
+  | null
+  | { bot?: RosterRow; group?: string; mode: 'create' }
+  | { id: string; mode: 'rename'; name: string }
 
 export const UNASSIGNED_SECTION_KEY = 'section:unassigned'
 export const BOT_SECTIONS_KEY = 'bot-sections-v1'
@@ -354,7 +356,7 @@ export function groupRowsBySection<TRow extends { bot?: RosterRow } | RosterRow>
 
     const id = group
       ? groupChatSectionId(String((group as { name?: string }).name || ''), groupRooms)
-      : botSectionId(((row as { bot?: RosterRow })?.bot || row) as RosterRow, metaByName)
+      : botSectionId((((row as { bot?: RosterRow })?.bot || row) as RosterRow), metaByName)
 
     if (id && known.has(id)) {
       byId.get(id)!.push(row)

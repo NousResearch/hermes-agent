@@ -1419,11 +1419,11 @@ def step_up_nous_billing_scope(
     prior = get_provider_auth_state("nous") or {}
     pconfig = PROVIDER_REGISTRY["nous"]
     # Step-up scope: existing scopes (if any) + billing:manage, deduped, order-stable. Falls back
-    # to the standard inference+billing set.
+    # to the standard inference+tool+billing set.
     _raw_scope = prior.get("scope")
     prior_scope = _raw_scope.split() if isinstance(_raw_scope, str) else []
     requested = list(dict.fromkeys([
-        *(prior_scope or [NOUS_INFERENCE_INVOKE_SCOPE]), NOUS_BILLING_MANAGE_SCOPE]))
+        *(prior_scope or [NOUS_INFERENCE_INVOKE_SCOPE, "tool:invoke"]), NOUS_BILLING_MANAGE_SCOPE]))
     auth_state = _nous_device_code_login(
         portal_base_url=prior.get("portal_base_url") or None,
         inference_base_url=prior.get("inference_base_url") or None,

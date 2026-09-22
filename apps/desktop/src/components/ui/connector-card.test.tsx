@@ -71,7 +71,6 @@ describe('credentials under a row', () => {
     { default: 'https://api.linear.app', name: 'LINEAR_URL', prompt: 'API URL', required: true, secret: false },
     { default: '', name: 'LINEAR_API_KEY', prompt: 'API key', required: true, secret: true }
   ]
-
   const copy = {
     cancel: 'Cancel',
     connect: 'Connect',
@@ -80,19 +79,7 @@ describe('credentials under a row', () => {
   }
 
   it('stay out of the way until the row asks for them', () => {
-    render(
-      <SetupFormDialog
-        copy={copy}
-        fields={fields}
-        onCancel={vi.fn()}
-        onConnect={vi.fn()}
-        onOpenBrowser={vi.fn()}
-        open={false}
-        pending={false}
-        server="Linear"
-        status="pending"
-      />
-    )
+    render(<SetupFormDialog copy={copy} fields={fields} onCancel={vi.fn()} onConnect={vi.fn()} onOpenBrowser={vi.fn()} open={false} pending={false} server="Linear" status="pending" />)
 
     expect(screen.queryByLabelText('API key')).toBeNull()
   })
@@ -100,19 +87,7 @@ describe('credentials under a row', () => {
   it('renders plain and masked inputs, prefills plain defaults, and reports the complete draft', () => {
     const onConnect = vi.fn()
 
-    render(
-      <SetupFormDialog
-        copy={copy}
-        fields={fields}
-        onCancel={vi.fn()}
-        onConnect={onConnect}
-        onOpenBrowser={vi.fn()}
-        open
-        pending={false}
-        server="Linear"
-        status="pending"
-      />
-    )
+    render(<SetupFormDialog copy={copy} fields={fields} onCancel={vi.fn()} onConnect={onConnect} onOpenBrowser={vi.fn()} open pending={false} server="Linear" status="pending" />)
 
     const plain = screen.getByLabelText('API URL')
     const secret = screen.getByLabelText('API key')

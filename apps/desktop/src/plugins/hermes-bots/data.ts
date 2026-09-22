@@ -67,7 +67,6 @@ const BOT_ATTENTION_CLASSES: ReadonlySet<string> = new Set<AttentionClass>([
  *  active locale; unknown classes fall back to the generic hint. */
 export function botAttentionHint(reason: string): string {
   const text = botsText().bot
-
   const hints: Record<string, string> = {
     provider_auth_or_access: text.attentionProviderAuth,
     provider_quota_limit: text.attentionQuota,
@@ -714,7 +713,9 @@ async function fetchRosterSnapshot(activeConnectionId: null | string | undefined
 
       return {
         ...merged,
-        profiles: (merged?.profiles || []).map(row => (row?.remoteSource ? { ...row, sourceReachable: false } : row)),
+        profiles: (merged?.profiles || []).map(row =>
+          row?.remoteSource ? { ...row, sourceReachable: false } : row
+        ),
         fetchedAt: issuedAt
       }
     }

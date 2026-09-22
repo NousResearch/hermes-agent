@@ -3,7 +3,6 @@
 manifest_version: 1
 
 name: todoist
-connector_slug: todoist
 description: Manage Todoist tasks and projects.
 source: https://www.todoist.com/help/articles/todoist-mcp-server
 

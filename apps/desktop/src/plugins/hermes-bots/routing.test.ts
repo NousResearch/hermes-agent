@@ -316,7 +316,6 @@ describe('requestForBot rides the bot’s own source', () => {
 
 describe('group transcript speaker meta (#96432)', () => {
   const localDefault = { name: 'default' } as RosterRow
-
   const remoteDefault = {
     name: 'default',
     connectionId: 'spark',
@@ -324,16 +323,13 @@ describe('group transcript speaker meta (#96432)', () => {
     remoteSource: true,
     sourceScoped: true
   } as RosterRow
-
   const allMeta = {
     default: { title: 'Local Default', image: 'local.png' },
     'spark::default': { title: 'Remote Default', image: 'remote.png' }
   }
 
   it('gives user lines no bot meta', () => {
-    expect(
-      groupTranscriptSpeakerMeta({ from: { kind: 'user', name: 'You' } }, [localDefault, remoteDefault], allMeta)
-    ).toBeNull()
+    expect(groupTranscriptSpeakerMeta({ from: { kind: 'user', name: 'You' } }, [localDefault, remoteDefault], allMeta)).toBeNull()
   })
 
   it('keeps local meta for a local same-name speaker', () => {

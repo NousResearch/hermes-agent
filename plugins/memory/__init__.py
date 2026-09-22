@@ -202,12 +202,6 @@ def load_memory_provider(name: str, *, register_skills: Optional[bool] = None) -
     if not provider_dir and entry_point is None:
         logger.debug("Memory provider '%s' not found in bundled, user plugins, or entry points", name)
         return None
-    if provider_dir is not None and _explicitly_disabled(name, provider_dir):
-        # The Plugins hub / `hermes plugins disable` park a user-installed provider in
-        # ``plugins.disabled``; the loader must honour it or "disabled" is a lie in the UI.
-        logger.warning("Memory provider '%s' is disabled via plugins.disabled; run `hermes plugins enable %s` "
-                       "or change memory.provider.", name, name)
-        return None
 
     def _load(_dir):
         if provider_dir:
@@ -425,28 +419,6 @@ def _get_active_memory_provider() -> Optional[str]:
         return cfg_get(config, "memory", "provider") or None
     except Exception:
         return None
-
-
-def _explicitly_disabled(name: str, provider_dir: Path) -> bool:
-    """True when a NON-bundled provider is parked in ``plugins.disabled`` under any spelling the
-    plugin commands write: the provider name, its directory name or its manifest ``name:``."""
-    if _MEMORY_PLUGINS_DIR in provider_dir.parents:
-        return False
-    try:
-        from hermes_cli.config import load_config
-        disabled = cfg_get(load_config(), "plugins", "disabled")
-    except Exception:
-        return False
-    if not isinstance(disabled, list):
-        return False
-    names = {name, provider_dir.name}
-    try:
-        import yaml
-        with open(provider_dir / "plugin.yaml", encoding="utf-8-sig") as f:
-            names.add(str((yaml.safe_load(f) or {}).get("name") or ""))
-    except Exception:
-        pass
-    return bool(names & {v for v in disabled if isinstance(v, str)})
 
 
 def _prune_inactive_memory_provider_skills(active_provider: Optional[str] = None) -> None:

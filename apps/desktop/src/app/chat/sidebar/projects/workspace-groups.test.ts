@@ -625,13 +625,11 @@ describe('overlayLiveLanes', () => {
     'entering an ancestor project does not inject a backend-owned sibling worktree session (git_repo_root=%s)',
     gitRepoRoot => {
       const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
-
       const ancestor = projectNode({
         id: 'p_work',
         path: '/work',
         repos: [{ id: '/work', label: 'work', path: '/work', groups: [], sessionCount: 0 }]
       })
-
       const appRepo = {
         id: '/work/repos/app',
         label: 'app',
@@ -639,7 +637,6 @@ describe('overlayLiveLanes', () => {
         groups: [lane({ id: '/work/repos/app-2', label: 'app-2', path: '/work/repos/app-2', sessions: [] })],
         sessionCount: 0
       }
-
       // Overview snapshot: the row sits beyond the preview window, so only the
       // backend's claimed-id set knows the owner.
       const repo = projectNode({ id: 'p_app', path: '/work/repos/app', previewSessions: [], sessionIds: ['sibling'] })
@@ -1134,7 +1131,6 @@ describe('overlayLivePreviews', () => {
     gitRepoRoot => {
       const sibling = makeCwdSession('/work/repos/app-2', { id: 'sibling', git_repo_root: gitRepoRoot })
       const ancestor = projectNode({ id: 'p_work', path: '/work', previewSessions: [], sessionCount: 0 })
-
       const repo = projectNode({
         id: 'p_app',
         path: '/work/repos/app',

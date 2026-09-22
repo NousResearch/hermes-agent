@@ -188,7 +188,9 @@ describe('useSessionStateCache — stored-id rotation provenance', () => {
     setActiveSessionId('runtime-A')
     setSelectedStoredSessionId(null)
     arm()
-    render(<Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />)
+    render(
+      <Harness activeSessionId="runtime-A" onReady={value => (cache = value)} selectedStoredSessionId={null} />
+    )
 
     act(() => {
       cache.updateSessionState('runtime-A', state => state, 'stored-A')

@@ -18,12 +18,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   const expectedUrl = new URL(rendererUrl)
   const monitor = new CommandScreenshotMonitor({ appPath: app.getAppPath() })
   const hasScreenPermission = () => systemPreferences.getMediaAccessStatus('screen') === 'granted'
-
-  const capture = createScreenshotCapture({
-    hasScreenPermission,
-    getSources: options => desktopCapturer.getSources(options)
-  })
-
+  const capture = createScreenshotCapture({ hasScreenPermission, getSources: options => desktopCapturer.getSources(options) })
   const recipients = new Map<number, () => void>()
   let lastRecipient: BrowserWindow | null = null
   let enabled = false
@@ -39,11 +34,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
 
   const status = (): ScreenshotStatus => ({
     enabled,
-    state: !enabled
-      ? 'disabled'
-      : monitorState === 'ready' && !hasScreenPermission()
-        ? 'screen-permission'
-        : monitorState
+    state: !enabled ? 'disabled' : monitorState === 'ready' && !hasScreenPermission() ? 'screen-permission' : monitorState
   })
 
   const trustedWindow = (event: IpcMainEvent | IpcMainInvokeEvent): BrowserWindow | null => {
@@ -56,11 +47,7 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
     try {
       const url = new URL(event.senderFrame.url)
 
-      return url.protocol === expectedUrl.protocol &&
-        url.host === expectedUrl.host &&
-        url.pathname === expectedUrl.pathname
-        ? win
-        : null
+      return url.protocol === expectedUrl.protocol && url.host === expectedUrl.host && url.pathname === expectedUrl.pathname ? win : null
     } catch {
       return null
     }
@@ -76,44 +63,35 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
 
   const start = (requestPermission = false) => {
     const current = ++generation
-    monitor.start(
-      window => {
-        if (disposed || !enabled || current !== generation) {
-          return
-        }
+    monitor.start(window => {
+      if (disposed || !enabled || current !== generation) {
+        return
+      }
 
-        // Retain the last Hermes chat window when another application takes focus.
-        // Closing it cancels this destination; never silently pick another chat.
-        const focused = BrowserWindow.getFocusedWindow()
-        const recipient = focused && recipients.has(focused.webContents.id) ? focused : lastRecipient
+      // Retain the last Hermes chat window when another application takes focus.
+      // Closing it cancels this destination; never silently pick another chat.
+      const focused = BrowserWindow.getFocusedWindow()
+      const recipient = focused && recipients.has(focused.webContents.id) ? focused : lastRecipient
 
-        if (!recipient || recipient.isDestroyed() || !recipients.has(recipient.webContents.id)) {
-          return
-        }
+      if (!recipient || recipient.isDestroyed() || !recipients.has(recipient.webContents.id)) {
+        return
+      }
 
-        const requestId = capture.request(recipient.webContents.id, window)
+      const requestId = capture.request(recipient.webContents.id, window)
 
-        if (requestId) {
-          recipient.webContents.send('hermes:screenshot:request', requestId)
-        }
-      },
-      result => {
-        if (disposed || current !== generation) {
-          return
-        }
+      if (requestId) {
+        recipient.webContents.send('hermes:screenshot:request', requestId)
+      }
+    }, result => {
+      if (disposed || current !== generation) {
+        return
+      }
 
-        monitorState =
-          result.type === 'error'
-            ? result.code === 'permission-required'
-              ? 'input-permission'
-              : 'unavailable'
-            : result.type === 'stopped'
-              ? 'disabled'
-              : result.type
-        publish()
-      },
-      requestPermission
-    )
+      monitorState = result.type === 'error'
+        ? result.code === 'permission-required' ? 'input-permission' : 'unavailable'
+        : result.type === 'stopped' ? 'disabled' : result.type
+      publish()
+    }, requestPermission)
   }
 
   const onFocus = (_event: unknown, win: BrowserWindow) => {
@@ -132,15 +110,12 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
     if (subscribed === true) {
       if (!recipients.has(event.sender.id)) {
         const id = event.sender.id
-
         const onDestroyed = () => {
           recipients.delete(id)
-
           if (lastRecipient === win) {
             lastRecipient = null
           }
         }
-
         event.sender.once('destroyed', onDestroyed)
         recipients.set(id, () => event.sender.removeListener('destroyed', onDestroyed))
       }
@@ -151,7 +126,6 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
     } else if (subscribed === false) {
       recipients.get(event.sender.id)?.()
       recipients.delete(event.sender.id)
-
       if (lastRecipient === win) {
         lastRecipient = null
       }
@@ -159,7 +133,6 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   }
 
   const channels: string[] = []
-
   const handle = (name: string, callback: (event: IpcMainInvokeEvent, value: unknown) => unknown) => {
     const channel = `hermes:screenshot:${name}`
     channels.push(channel)
@@ -189,14 +162,11 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
 
     if (enabled) {
       start(true)
-
       if (!hasScreenPermission()) {
         // Zero-size thumbnails skip content capture and may never request TCC
         // consent. Request the smallest thumbnail only on explicit opt-in;
         // discard it rather than retaining or attaching permission-probe pixels.
-        await desktopCapturer
-          .getSources({ types: ['window'], thumbnailSize: { width: 1, height: 1 }, fetchWindowIcons: false })
-          .catch(() => undefined)
+        await desktopCapturer.getSources({ types: ['window'], thumbnailSize: { width: 1, height: 1 }, fetchWindowIcons: false }).catch(() => undefined)
       }
     } else {
       monitorState = 'disabled'
@@ -208,7 +178,6 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   })
   handle('capture', async (event, requestId) => {
     const result = await capture.take(event.sender.id, requestId)
-
     if (result.ok === false && result.reason === 'screen-permission') {
       publish()
     }
@@ -217,11 +186,9 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   })
   handle('permission', async (_event, kind) => {
     const pane = kind === 'input' ? 'Privacy_ListenEvent' : kind === 'screen' ? 'Privacy_ScreenCapture' : null
-
     if (!pane) {
       throw new Error('Unknown screenshot permission')
     }
-
     await shell.openExternal(`x-apple.systempreferences:com.apple.preference.security?${pane}`)
   })
   ipcMain.on('hermes:screenshot:subscribe', onSubscribe)
@@ -241,7 +208,6 @@ export function installCommandScreenshot({ rendererUrl }: { rendererUrl: string 
   }
 
   app.once('will-quit', dispose)
-
   if (enabled) {
     start()
   }

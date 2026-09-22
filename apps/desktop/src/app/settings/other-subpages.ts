@@ -9,7 +9,6 @@ export const OTHER_SUBPAGES: Record<string, { id: string; labelKey: string }[]> 
   ],
   keybinds: [
     { id: 'shortcuts', labelKey: 'keyboardShortcuts' },
-    { id: 'hud-gesture', labelKey: 'hudGesture' },
     { id: 'screen-capture', labelKey: 'screenCapture' }
   ],
   notifications: [

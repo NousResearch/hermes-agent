@@ -40,7 +40,6 @@ const MAX_RECONNECT_DELAY_MS = 30_000
 function addListener(socket: any, type: string, handler: (event?: any) => void) {
   if (typeof socket?.addEventListener === 'function') {
     socket.addEventListener(type, handler)
-
     return
   }
 
@@ -52,7 +51,6 @@ function addListener(socket: any, type: string, handler: (event?: any) => void) 
 export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepaliveOptions = {}) {
   const WebSocketImpl =
     'WebSocketImpl' in options ? options.WebSocketImpl : (globalThis as { WebSocket?: unknown }).WebSocket
-
   const buildWsUrl = options.buildWsUrl ?? buildGatewayWsUrl
   const log = options.log
   const reconnectDelayMs = options.reconnectDelayMs ?? DEFAULT_RECONNECT_DELAY_MS
@@ -113,7 +111,6 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
     } catch (error) {
       log?.(`[ssh] keep-alive WS failed to open for ${entry.scope}: ${error instanceof Error ? error.message : error}`)
       scheduleReconnect(entry)
-
       return
     }
 
@@ -160,7 +157,6 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
       socket: null,
       target: { baseUrl, token }
     }
-
     entries.set(scope, entry)
     connect(entry)
   }
@@ -189,7 +185,6 @@ export function createSshIsolatedKeepaliveRegistry(options: SshIsolatedKeepalive
 
   function openUrl(scope: string) {
     const url = entries.get(scope)?.socket?.url
-
     return typeof url === 'string' ? url : null
   }
 

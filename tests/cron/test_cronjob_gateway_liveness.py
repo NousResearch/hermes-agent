@@ -329,7 +329,7 @@ class TestCronStatusLockFirst:
     """`hermes cron status` shares the lock-first false-alarm fix (#95947).
 
     Sibling site of `_builtin_gateway_liveness`: it previously declared
-    "No gateway is running on this host — cron jobs will NOT fire" from a bare
+    "Gateway is not running — cron jobs will NOT fire" from a bare
     `find_gateway_pids()` miss even while the runtime lock proved the
     gateway (and its ticker) alive.
     """
@@ -358,12 +358,12 @@ class TestCronStatusLockFirst:
     def test_lock_active_suppresses_not_running_false_alarm(self, hermes_env):
         text = self._run_status(pids=[], lock_active=True, lock_pid=4242)
         # The lock-first contract (#87033): an active runtime lock means the
-        # gateway process is alive, so the RED "No gateway is running" alarm
+        # gateway process is alive, so the RED "Gateway is not running" alarm
         # must never fire. Since #98790 a never-written heartbeat is no longer
         # silently green — the YELLOW first-heartbeat notice (which also says
         # "NOT fire") is expected here, so assert on the red alarm itself
         # rather than the "NOT fire" substring both messages share.
-        assert "No gateway is running on this host" not in text
+        assert "Gateway is not running" not in text
         assert "has not reported a heartbeat" in text
         assert "Gateway is running" in text or "running" in text
 

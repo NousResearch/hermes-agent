@@ -76,7 +76,8 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   // (MissingCatchOrFinally), so no probe may join a handler onto a separate
   // statement. The line-oriented builders join with `;`; the pair must live
   // in one array element.
-  const decode = (command: string) => Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const decode = (command: string) =>
+    Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
 
   const scripts: string[] = []
 
@@ -101,7 +102,6 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   )
 
   assert.equal(scripts.length, 4)
-
   for (const script of scripts) {
     assert.doesNotMatch(script, /}\s*;\s*(?:catch|finally)\b/)
     // `$HOME`, `$HOST`, `$PID`, ... are read-only automatic variables: assigning
@@ -109,10 +109,7 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
     // and the marker gate never observes CLEAR.
     assert.doesNotMatch(script, /\$(?:home|host|pid|profile|pwd|input|args|error)\s*=/i)
   }
-
-  assert.ok(
-    scripts.slice(0, 2).every(script => /}catch \[Management\.Automation\.ItemNotFoundException\]/.test(script))
-  )
+  assert.ok(scripts.slice(0, 2).every(script => /}catch \[Management\.Automation\.ItemNotFoundException\]/.test(script)))
 })
 
 test('Windows relaunch gate refuses live and uncertain markers before executing the remote runtime', async () => {

@@ -8,7 +8,6 @@ model_tools."""
 import ast
 import functools
 import importlib
-import inspect
 import json
 import logging
 import sys
@@ -885,10 +884,6 @@ class ToolRegistry:
         if not entry:
             return tool_error(f"Unknown tool: {name}")
         try:
-            # Plugin contract (plugins/AGENTS.md): optional context kwargs (task_id, session_id, user_task,
-            # parent_agent, ...) are signature-inspected like hook payloads, so a narrow ``handle(args)``
-            # plugin handler is not broken by every field the dispatcher injects (#68318).
-            kwargs = _kwargs_accepted_by(entry.handler, kwargs)
             if entry.is_async:
                 from model_tools import _run_async
                 result = _run_async(entry.handler(args, **kwargs))
@@ -1015,16 +1010,3 @@ def tool_error(message, **extra) -> str:
 def tool_result(data=None, **kwargs) -> str:
     """JSON-encode a dict positional arg *or* keyword arguments (not both)."""
     return json.dumps(data if data is not None else kwargs, ensure_ascii=False)
-
-
-def _kwargs_accepted_by(handler: Callable, kwargs: dict) -> dict:
-    """*kwargs* narrowed to what *handler*'s signature declares; everything when it takes ``**kwargs`` or
-    cannot be introspected (builtins, some C callables)."""
-    try:
-        parameters = inspect.signature(handler).parameters
-    except (TypeError, ValueError):
-        return kwargs
-    if any(p.kind is inspect.Parameter.VAR_KEYWORD for p in parameters.values()):
-        return kwargs
-    keyword_kinds = {inspect.Parameter.POSITIONAL_OR_KEYWORD, inspect.Parameter.KEYWORD_ONLY}
-    return {k: v for k, v in kwargs.items() if k in parameters and parameters[k].kind in keyword_kinds}

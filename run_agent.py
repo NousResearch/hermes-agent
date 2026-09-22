@@ -121,7 +121,6 @@ from model_tools import get_toolset_for_tool
 from tools.terminal_tool_lifecycle import cleanup_vm, get_active_env
 from tools.interrupt import set_interrupt as _set_interrupt
 from tools.browser_tool_lifecycle import cleanup_browser
-from tools.connectors.turn import agent_connection_surface, scoped_connection_surface
 
 from agent.memory_provider import is_trivial_prompt
 from agent.client_lifecycle import ClientLifecycleMixin
@@ -289,7 +288,6 @@ class AIAgent(
         checkpoint_max_total_size_mb: int = 500, checkpoint_max_file_size_mb: int = 10,
         pass_session_id: bool = False, requested_provider: str = None,
         capabilities: Dict[str, bool] | None = None, cwd: str | None = None,
-        side_agent: bool = False,
     ):
         """Forwarder — see ``agent.agent_init.init_agent`` (same keyword parameters, minus ``tool_delay``)."""
         init_kwargs = {k: v for k, v in locals().items() if k not in ("self", "tool_delay")}
@@ -1321,20 +1319,19 @@ class AIAgent(
         args = (assistant_message, messages, effective_task_id, api_call_count)
         self._executing_tools = True  # allow _vprint during tool execution even with stream consumers
         try:
-            with scoped_connection_surface(agent_connection_surface(self)):
-                if len(tool_calls) <= 1:
-                    self._execute_tool_calls_sequential(*args)
+            if len(tool_calls) <= 1:
+                self._execute_tool_calls_sequential(*args)
+            else:
+                from agent.tool_dispatch_helpers import _plan_tool_batch_segments
+                active_env = get_active_env(effective_task_id)
+                exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
+                segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
+                if len(segments) == 1:
+                    run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
+                    run(*args)
                 else:
-                    from agent.tool_dispatch_helpers import _plan_tool_batch_segments
-                    active_env = get_active_env(effective_task_id)
-                    exec_cwd = Path(active_env.cwd) if active_env is not None and active_env.cwd else None
-                    segments = _plan_tool_batch_segments(tool_calls, execution_cwd=exec_cwd)
-                    if len(segments) == 1:
-                        run = self._execute_tool_calls_concurrent if segments[0][0] == "parallel" else self._execute_tool_calls_sequential
-                        run(*args)
-                    else:
-                        from agent.tool_executor import execute_tool_calls_segmented
-                        execute_tool_calls_segmented(self, *args, segments=segments)
+                    from agent.tool_executor import execute_tool_calls_segmented
+                    execute_tool_calls_segmented(self, *args, segments=segments)
         finally:
             self._executing_tools = False
         # getattr: test stubs built without _set_defaults drive this method too

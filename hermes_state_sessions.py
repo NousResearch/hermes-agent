@@ -2,7 +2,6 @@
 flags (end/reopen/archive/pin/hide/read), model_config patching, listing and
 counting, delete cascades, and the auto-archive sweep."""
 
-import glob
 import json
 import logging
 import re
@@ -1503,9 +1502,7 @@ class SessionSessionsMixin:
             return
         targets = [sessions_dir / f"{session_id}{suffix}" for suffix in (".json", ".jsonl")]
         try:
-            # glob.escape: a session id carrying ``[`` / ``?`` / ``*`` is a PATTERN otherwise, so the
-            # dump sweep either matches nothing or matches another session's files.
-            targets.extend(sessions_dir.glob(f"request_dump_{glob.escape(session_id)}_*.json"))
+            targets.extend(sessions_dir.glob(f"request_dump_{session_id}_*.json"))
         except OSError:
             pass
         for p in targets:

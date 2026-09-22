@@ -246,6 +246,12 @@ function writeEmptyConfig(hermesHome: string): void {
 export function buildAppEnv(sandbox: Sandbox, extra: Record<string, string> = {}): Record<string, string> {
   const clean = stripCredentials(process.env)
 
+  // Host Electron apps (e.g. a desktop IDE) can leak ELECTRON_RUN_AS_NODE into
+  // the shells they spawn; under it a launched "Electron" process runs as
+  // plain Node and the app never opens. Electron checks presence, not value,
+  // so it must be removed rather than blanked.
+  delete clean.ELECTRON_RUN_AS_NODE
+
   // XDG_RUNTIME_DIR is needed for Electron on Linux when running in a
   // headless/CI context — without it the zygote may fail to initialize.
   if (!clean.XDG_RUNTIME_DIR && process.env.XDG_RUNTIME_DIR) {

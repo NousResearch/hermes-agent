@@ -121,9 +121,9 @@ describe('describeRpcError', () => {
       expect(describeRpcError(new JsonRpcGatewayError(raw, { code: 4001 }))).toBe(raw)
     }
 
-    expect(
-      describeRpcError(new JsonRpcGatewayError('session not found or not owned by this transport', { code: 4001 }))
-    ).toContain('/resume')
+    expect(describeRpcError(new JsonRpcGatewayError('session not found or not owned by this transport', { code: 4001 }))).toContain(
+      '/resume'
+    )
   })
 
   it('records the raw wire text it replaced in the log sink', () => {

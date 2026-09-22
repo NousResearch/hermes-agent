@@ -87,16 +87,12 @@ function manifestAssetRefs(
   try {
     const manifest = JSON.parse(readFileSync(path.join(path.dirname(indexPath), 'renderer-manifest.json'), 'utf8'))
 
-    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {
-      return null
-    }
+    if (!manifest || typeof manifest !== 'object' || Array.isArray(manifest)) {return null}
 
     const entry = manifest['index.html']
     const normalize = (ref: string) => ref.replace(/^\.?\//, '')
 
-    if (!entry?.isEntry || !bootRefs.map(normalize).includes(entry.file)) {
-      return null
-    }
+    if (!entry?.isEntry || !bootRefs.map(normalize).includes(entry.file)) {return null}
 
     const refs = new Set<string>()
 
@@ -104,9 +100,7 @@ function manifestAssetRefs(
       typeof ref === 'string' && ref.length > 0 && !/^[a-z]+:|^[/\\]/i.test(ref) && !ref.split(/[/\\]/).includes('..')
 
     for (const chunk of Object.values(manifest) as Record<string, unknown>[]) {
-      if (!chunk || typeof chunk !== 'object' || !localRef(chunk.file)) {
-        return null
-      }
+      if (!chunk || typeof chunk !== 'object' || !localRef(chunk.file)) {return null}
 
       refs.add(chunk.file)
 
@@ -121,19 +115,13 @@ function manifestAssetRefs(
       for (const key of ['css', 'assets']) {
         const assets = chunk[key] ?? []
 
-        if (!Array.isArray(assets) || !assets.every(localRef)) {
-          return null
-        }
+        if (!Array.isArray(assets) || !assets.every(localRef)) {return null}
 
-        for (const ref of assets) {
-          refs.add(ref)
-        }
+        for (const ref of assets) {refs.add(ref)}
       }
     }
 
-    if (!bootRefs.every(ref => refs.has(normalize(ref)))) {
-      return null
-    }
+    if (!bootRefs.every(ref => refs.has(normalize(ref)))) {return null}
 
     return [...refs]
   } catch {

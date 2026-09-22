@@ -197,7 +197,6 @@ describe('the Bots pane dock', () => {
     plugin.register(harness.ctx)
 
     const tabTitle = harness.find('pane')!.data!.tabTitle as () => ReactNode
-
     const inLocale = (locale: string) =>
       renderToStaticMarkup(
         <I18nProvider configClient={null} initialLocale={locale}>

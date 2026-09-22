@@ -339,7 +339,7 @@ async def test_failure_exit_still_stops_cron_housekeeping_and_mcp(monkeypatch):
     watcher = threading.Thread(target=watcher_stop.wait, daemon=True)
     watcher.start()
 
-    async def fake_mcp_shutdown(*_args, **_kwargs):
+    async def fake_mcp_shutdown():
         stopped.append("mcp")
 
     monkeypatch.setattr(gateway_run, "_shutdown_mcp_servers_nonblocking", fake_mcp_shutdown)

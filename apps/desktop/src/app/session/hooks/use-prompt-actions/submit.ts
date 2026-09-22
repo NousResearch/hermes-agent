@@ -133,9 +133,7 @@ export function useSubmitPrompt(deps: SubmitPromptDeps) {
         Boolean(a)
       )
 
-      const titlePreview = attachments.find(
-        a => typeof a.titlePreview === 'string' && a.titlePreview.trim()
-      )?.titlePreview
+      const titlePreview = attachments.find(a => typeof a.titlePreview === 'string' && a.titlePreview.trim())?.titlePreview
 
       const terminalContextBlocks = terminalContextBlocksFromDraft(rawText).join('\n\n')
       const hasImage = attachments.some(a => a.kind === 'image')

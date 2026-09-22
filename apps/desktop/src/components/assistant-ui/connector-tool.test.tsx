@@ -12,7 +12,7 @@ import {
   type ConnectionTarget,
   setConnectionRequest
 } from '@/store/connection-request'
-import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
+import { $gateway, setPrimaryGateway } from '@/store/gateway'
 import { $notifications } from '@/store/notifications'
 import { _resetSessionOwnerHintsForTests, setSessionOwnerHint } from '@/store/session'
 
@@ -85,8 +85,6 @@ function view(sessionId: string): SessionView {
 }
 
 function renderOffer(request = REQUEST) {
-  setConnectionRequest(request)
-
   return render(
     <I18nProvider configClient={null} initialLocale="en">
       <ConnectorOffer owner={PRIMARY_OWNER} request={request} />
@@ -141,11 +139,7 @@ describe('ConnectorTool operation card', () => {
       ]
     })
 
-    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual([
-      'Connect',
-      'Try again',
-      'Continue'
-    ])
+    expect(screen.getAllByRole('button').map(button => button.textContent)).toEqual(['Connect', 'Try again', 'Continue'])
     expect(screen.queryByRole('button', { name: 'Not now' })).toBeNull()
   })
 
@@ -188,7 +182,7 @@ describe('ConnectorTool operation card', () => {
     expect(openExternal).not.toHaveBeenCalled()
     expect(request).toHaveBeenCalledWith(
       'connectors.connect',
-      { connectors: ['gmail'], owner: { session_id: SESSION_ID, type: 'session' }, reconnect: true },
+      { connectors: ['gmail'], reconnect: true, session_id: SESSION_ID },
       expect.any(Number),
       undefined
     )
@@ -213,9 +207,8 @@ describe('ConnectorTool operation card', () => {
 
   it('Continue settles the whole operation', async () => {
     const request = vi.fn().mockResolvedValue({ status: 'ok' })
-    // SAFETY: the card calls only `request`; the rest of the client is never touched in this test.
-    setPrimaryGateway({ request } as never)
-    setPrimaryGatewayConnectionId('connection-1')
+    // SAFETY: the store calls only `request`; the rest of the client is never touched in these tests.
+    $gateway.set({ request } as never)
 
     renderConnector()
 
@@ -224,8 +217,8 @@ describe('ConnectorTool operation card', () => {
     await waitFor(() => {
       expect(request).toHaveBeenCalledWith('connection.respond', {
         op_id: 'operation-1',
-        owner: { session_id: SESSION_ID, type: 'session' },
-        result: { settled_by: 'continue' }
+        result: { settled_by: 'continue' },
+        session_id: SESSION_ID
       })
     })
   })
@@ -233,9 +226,7 @@ describe('ConnectorTool operation card', () => {
   it('never binds to a tool row from a different call, even for the same apps', () => {
     // A second connect for gmail opens a new operation on a new tool_call_id. The old row must stay
     // dead: it is matched by id only, never by connector names.
-    expect(
-      connectionRequestOwnsPart(props(), { ...REQUEST, opId: 'operation-2', toolCallId: 'connector-call-2' })
-    ).toBe(false)
+    expect(connectionRequestOwnsPart(props(), { ...REQUEST, opId: 'operation-2', toolCallId: 'connector-call-2' })).toBe(false)
     expect(connectionRequestOwnsPart(props(), REQUEST)).toBe(true)
   })
 

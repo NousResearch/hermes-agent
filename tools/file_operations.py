@@ -581,13 +581,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             hint_parts.append(
                 f"Use offset={end_line + 1} to continue reading "
                 f"(showing {offset}-{end_line} of {total_lines} lines)")
-        from tools.tool_output_limits import get_max_line_length
-        max_line_length = get_max_line_length()
-        truncated_lines = any(len(line) > max_line_length for line in content.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(content, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts),
-            truncated_lines=True if truncated_lines else None)
+            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
 
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination, binary detection, and line numbers.
@@ -728,7 +724,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
         kept = bytearray()      # first ``clamp`` bytes of that line
         have_partial = False    # that line has bytes but no newline yet
         last_byte = b""
-        digest = hashlib.sha256()
         try:
             with open(full, "rb") as fh:
                 sample = fh.read(1000)
@@ -740,7 +735,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     chunk = fh.read(1 << 20)
                     if not chunk:
                         break
-                    digest.update(chunk)
                     last_byte = chunk[-1:]
                     if lineno > end_line:
                         # Past the window: only the line count and trailing byte
@@ -773,12 +767,10 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             page.append(bytes(kept) + b"\n")
 
         read_output = _strip_terminal_fence_leaks(b"".join(page).decode("utf-8", errors="replace"))
-        result = self._assemble_read_result(
+        return self._assemble_read_result(
             read_output, offset=offset, end_line=end_line, total_lines=total_lines,
             file_size=file_size,
             file_ends_with_newline=(last_byte == b"\n") if file_size else None)
-        result._snapshot = (st.st_dev, st.st_ino, st.st_size, st.st_mtime_ns, st.st_ctime_ns, digest.digest())
-        return result
 
     @staticmethod
     def _image_redirect_result(file_size: int) -> ReadResult:
@@ -932,13 +924,9 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
                     f"Note: offset {offset} is beyond the end of the file "
                     f"({total_lines} lines total). Retry with offset <= "
                     f"{total_lines}."))
-        from tools.tool_output_limits import get_max_line_length
-        max_line_length = get_max_line_length()
-        truncated_lines = any(len(line) > max_line_length for line in read_output.split('\n'))
         return ReadResult(
             content=self._add_line_numbers(read_output, offset), total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=hint,
-            truncated_lines=True if truncated_lines else None)
+            file_size=file_size, truncated=truncated, hint=hint)
 
     # Confusable characters seen in real filenames, collapsed after NFC.
     _CONFUSABLES = (
@@ -1307,7 +1295,6 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             lsp_diagnostics = self._maybe_lsp_diagnostics(path, pre_content=pre_content, post_content=content) or None
         return WriteResult(
             bytes_written=len(content_bytes), dirs_created=dirs_created, verified=content_verified,
-            _content_sha256=hashlib.sha256(content_bytes).hexdigest(),
             lint=lint_result.to_dict() if lint_result else None, lsp_diagnostics=lsp_diagnostics)
 
     # --- PATCH (replace mode) -----------------------------------------------

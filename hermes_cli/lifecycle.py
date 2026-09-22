@@ -29,15 +29,6 @@ def invoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
     return _plugin_hooks(hook_name, **kwargs)
 
 
-async def ainvoke_hook(hook_name: str, **kwargs: Any) -> List[Any]:
-    """:func:`invoke_hook` for callers on an event loop: same observers-then-plugins
-    composition, with ``async def`` plugin callbacks awaited on that loop."""
-    _observe(hook_name, **kwargs)
-    from hermes_cli import plugins
-
-    return await plugins.ainvoke_hook(hook_name, **kwargs)
-
-
 def has_hook(hook_name: str) -> bool:
     """Return whether a first-party observer or plugin consumes a hook."""
     try:

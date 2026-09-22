@@ -119,6 +119,12 @@ def operation_session_key(session_id: Optional[str]) -> str:
 
 
 def session_platform() -> str:
+    """The session's surface (``desktop``, ``tui``, ``cli``, a messaging platform, or '').
+
+    Decides whether a card exists for this session. Never infer that from a callback being
+    attached: the GUI bridge attaches callbacks to every backend session, terminal TUI included.
+    Messaging adapters bind the surface as the session platform; the desktop and TUI gateway bind
+    it as the session source (``tui_gateway.server._set_session_context``), so both are read."""
     from gateway.session_context import get_session_env
 
     platform = get_session_env("HERMES_SESSION_PLATFORM", "") or get_session_env("HERMES_SESSION_SOURCE", "")

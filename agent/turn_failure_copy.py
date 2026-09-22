@@ -127,23 +127,6 @@ def exit_reason_failure(turn_exit_reason: Any) -> Optional[ExitFailure]:
     return None
 
 
-def is_max_iteration_handoff(result: Any) -> bool:
-    """A non-failed, non-interrupted ``max_iterations_reached(N/N)`` result that still carries a
-    summary. ``completed`` is False because the work did not finish in that turn, but the turn
-    itself is a resumable boundary — not a failure — so cron delivers the summary and an active
-    ``/goal`` may judge it (#102213). Provider/API failures never match (cf. #63180)."""
-    if not isinstance(result, dict):
-        return False
-    if result.get("failed") is True or result.get("interrupted") is True:
-        return False
-    if result.get("completed") is not False:
-        return False
-    reason = result.get("turn_exit_reason")
-    if not (isinstance(reason, str) and reason.startswith("max_iterations_reached(")):
-        return False
-    return bool(str(result.get("final_response") or "").strip())
-
-
 # ---- chat copy tables -----------------------------------------------------------------------
 
 _NEXT_STEPS_RETRY = "Wait a minute and send /retry, or switch models with /model."

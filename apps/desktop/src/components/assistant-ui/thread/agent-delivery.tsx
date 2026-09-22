@@ -23,15 +23,7 @@ export function deliveryTargetFromCommand(command: string): null | string {
 /** `@Dr. Foo`, `scribe@laptop`, `peer/scribe` → `dr. foo` / `scribe`: the
  *  routing alias a `message_agent` target and a "Message from" signature share. */
 function agentKey(value: unknown): string {
-  return typeof value === 'string'
-    ? value
-        .trim()
-        .replace(/^@/, '')
-        .replace(/@[^@]*$/, '')
-        .split('/')
-        .pop()!
-        .toLowerCase()
-    : ''
+  return typeof value === 'string' ? value.trim().replace(/^@/, '').replace(/@[^@]*$/, '').split('/').pop()!.toLowerCase() : ''
 }
 
 /**
@@ -45,10 +37,7 @@ function agentKey(value: unknown): string {
  * Matching the sender by handle OR display name (either may sign the inbound
  * row) errs towards "expanded": a missed fold shows content, a wrong fold hides it.
  */
-export function dispatchedTo(
-  earlier: readonly { content?: unknown; role?: string }[],
-  sender: (string | undefined)[]
-): boolean {
+export function dispatchedTo(earlier: readonly { content?: unknown; role?: string }[], sender: (string | undefined)[]): boolean {
   const keys = new Set(sender.map(agentKey).filter(Boolean))
 
   if (!keys.size) {

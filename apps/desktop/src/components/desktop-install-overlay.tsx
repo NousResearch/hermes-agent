@@ -171,11 +171,7 @@ export function splitFailureDetails(text: string | null): [string, string | null
   }
 
   const lead = value.slice(0, marker).trim()
-
-  const detail = value
-    .slice(marker)
-    .replace(/^\s*Details:\s*/, '')
-    .trim()
+  const detail = value.slice(marker).replace(/^\s*Details:\s*/, '').trim()
 
   return [lead || value, detail || null]
 }

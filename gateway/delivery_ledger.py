@@ -276,9 +276,7 @@ def record_obligation(*, obligation_id: str, session_key: str, platform: str, ch
                VALUES (?, ?, ?, ?, ?, ?, 'pending', 0, ?, ?, ?, ?, ?)""",
             (obligation_id, session_key, platform, str(chat_id), str(thread_id) if thread_id else None,
              content, now, now, pid, started, str(adapter_profile).strip() if adapter_profile else "default"))
-        # Same transaction, same connection: the cron ledgers prune this way too
-        # (cron/delivery_queue._prune_terminal_unlocked, cron/executions._prune_unlocked).
-        _prune_unlocked(conn, now)
+    _prune()
 
 
 def mark_attempting(obligation_id: str) -> None:
@@ -505,22 +503,26 @@ def pending_retries(now: Optional[float] = None) -> List[Dict[str, Any]]:
             for (platform, profile), due in sorted(earliest.items())]
 
 
-def _prune_unlocked(conn, now: float) -> None:
-    """Retention DELETEs on the caller's open connection — must run inside the caller's transaction."""
-    conn.execute(
-        """DELETE FROM delivery_obligations
-           WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""", (now - _RETENTION_SECONDS,))
-    total = conn.execute("SELECT COUNT(*) FROM delivery_obligations").fetchone()[0]
-    if total > _MAX_ROWS:
-        conn.execute(
-            """DELETE FROM delivery_obligations WHERE obligation_id IN (
-                 SELECT obligation_id FROM delivery_obligations
-                 ORDER BY CASE state
-                            WHEN 'delivered' THEN 0
-                            WHEN 'abandoned' THEN 1
-                            ELSE 2
-                          END, updated_at ASC
-                 LIMIT ?)""", (total - _MAX_ROWS,))
+def _prune(now: Optional[float] = None) -> None:
+    now = now if now is not None else time.time()
+    try:
+        with _transaction() as conn:
+            conn.execute(
+                """DELETE FROM delivery_obligations
+                   WHERE state IN ('delivered', 'abandoned') AND updated_at < ?""", (now - _RETENTION_SECONDS,))
+            total = conn.execute("SELECT COUNT(*) FROM delivery_obligations").fetchone()[0]
+            if total > _MAX_ROWS:
+                conn.execute(
+                    """DELETE FROM delivery_obligations WHERE obligation_id IN (
+                         SELECT obligation_id FROM delivery_obligations
+                         ORDER BY CASE state
+                                    WHEN 'delivered' THEN 0
+                                    WHEN 'abandoned' THEN 1
+                                    ELSE 2
+                                  END, updated_at ASC
+                         LIMIT ?)""", (total - _MAX_ROWS,))
+    except Exception:
+        logger.debug("delivery ledger prune failed", exc_info=True)
 
 
 def ledger_enabled(config: Optional[Dict[str, Any]] = None) -> bool:

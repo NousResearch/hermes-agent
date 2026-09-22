@@ -103,14 +103,7 @@ function ConfigSettingsInner({
   // from — and saved back through — the shared config cache, so edits are visible
   // in the MCP/model surfaces and reopening the page doesn't reload-flash.
   const [config, setConfig] = useState<HermesConfigRecord | null>(null)
-
-  const {
-    data: loadedConfig,
-    isError: configLoadFailed,
-    refetch: refetchConfig,
-    writeScope
-  } = useHermesConfigRecord(scopeProfile)
-
+  const { data: loadedConfig, isError: configLoadFailed, refetch: refetchConfig } = useHermesConfigRecord(scopeProfile)
   // Writes land on the same cache key the query above reads (base key when
   // following the active profile, suffixed when a scope override is set).
   const writeConfigCache = useMemo(() => hermesConfigCacheWriter(scopeProfile), [scopeProfile])
@@ -212,7 +205,7 @@ function ConfigSettingsInner({
       saveQueueRef.current = saveQueueRef.current.then(async () => {
         try {
           const patch = diffConfig(configBaselineRef.current ?? {}, snapshot)
-          const result = await saveHermesConfig(patch, writeScope ?? scopeProfile)
+          const result = await saveHermesConfig(patch, scopeProfile)
 
           if (!result.ok) {
             throw new Error(c.autosaveFailed)
@@ -252,7 +245,7 @@ function ConfigSettingsInner({
 
     return () => window.clearTimeout(t)
     // eslint-disable-next-line react-hooks/exhaustive-deps -- copy is stable; avoid re-scheduling autosave on locale change
-  }, [config, onConfigSaved, saveVersion, writeScope, scopeProfile])
+  }, [config, onConfigSaved, saveVersion])
 
   const applyConfig = (next: HermesConfigRecord) => {
     saveVersionRef.current += 1
@@ -366,7 +359,11 @@ function ConfigSettingsInner({
       <SettingsProfileScope className="mb-5" />
       {activeSectionId === 'model' && (
         <div className={showModelSettings ? 'mb-6' : undefined}>
-          <ModelSettings onMainModelChanged={onMainModelChanged} scopeProfile={scopeProfile} subpage={subpage} />
+          <ModelSettings
+            onMainModelChanged={onMainModelChanged}
+            scopeProfile={scopeProfile}
+            subpage={subpage}
+          />
         </div>
       )}
       {children}
@@ -424,9 +421,7 @@ function ConfigSettingsInner({
 
   const showEmptyState =
     visibleFields.length === 0 &&
-    (subpage === undefined
-      ? activeSectionId !== 'chat'
-      : !showModelSettings && !showDesktopSettings && !showAttachments)
+    (subpage === undefined ? activeSectionId !== 'chat' : !showModelSettings && !showDesktopSettings && !showAttachments)
 
   return renderPage(
     <>

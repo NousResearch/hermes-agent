@@ -25,12 +25,6 @@ _FORBIDDEN: Tuple[Tuple[str, "re.Pattern[str]"], ...] = (
      re.compile(r"(?<![\w$.])eval\(|\bnew\s+Function\(")),
     ("dynamic import outside the SDK",
      re.compile(r"\bimport\(\s*(?!['\"](?:@hermes/plugin-sdk|react)(?:/[\w/-]*)?['\"]\s*\))")),
-    # A static `import 'https://…'` / `import x from 'file:…'` is the same second stage as the
-    # dynamic form above (the renderer would fetch and evaluate it); the loader refuses every
-    # URL-scheme specifier too (runtime-loader.ts::unsupportedImports) — this keeps admission and
-    # the loader in agreement instead of letting review wave through what the app rejects.
-    ("remote import outside the SDK",
-     re.compile(r"\bimport\s+(?:[^;'\"]*?\bfrom\s*)?['\"][a-zA-Z][\w+.-]*:")),
     ("script injection",
      re.compile(r"createElement\(\s*['\"]script['\"]\s*\)|<script\b")),
 )

@@ -67,8 +67,7 @@ import {
   $introDismissed,
   $lanesByProfile,
   boardKey,
-  boardKeyPrefix,
-  boardsKey,
+  BOARDS_KEY,
   bulkTasks,
   createTask,
   deleteTask,
@@ -77,9 +76,7 @@ import {
   fetchBoards,
   fetchProfiles,
   patchTask,
-  profilesKey,
-  taskKey,
-  useKanbanScope
+  PROFILES_KEY
 } from './api'
 import { BoardSwitcher } from './board-switcher'
 import { TaskDrawer } from './drawer'
@@ -549,8 +546,7 @@ function NewTaskDialog({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
-  const scope = useKanbanScope()
-  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
+  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
   // Title-only creates must RUN: "auto" resolves to the orchestration default
   // (ultimately the active profile), applied at create time. Never silently
   // unassigned — parking a card is the explicit choice, not the default.
@@ -561,7 +557,7 @@ function NewTaskDialog({
   // dir) unless the operator overrides it below. Set the board default in the
   // board switcher's "Board settings…".
   const selectedSlug = useValue($boardSlug)
-  const { data: boards } = useQuery({ queryKey: boardsKey(scope), queryFn: fetchBoards, staleTime: 30_000 })
+  const { data: boards } = useQuery({ queryKey: BOARDS_KEY, queryFn: fetchBoards, staleTime: 30_000 })
   const currentBoard = boards?.boards.find(b => b.slug === (selectedSlug || boards.current))
   const boardDefaultKind = currentBoard?.default_workspace_kind || 'scratch'
   const boardDefaultDir = currentBoard?.default_workdir || ''
@@ -661,7 +657,7 @@ function NewTaskDialog({
         host.notify({ kind: 'warning', message: warning })
       }
 
-      await qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+      await qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
       onClose()
     } catch (err) {
       setError(errText(err))
@@ -969,11 +965,10 @@ function SelectionBar({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
-  const scope = useKanbanScope()
-  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
+  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
 
   const finish = (failed: Array<{ error?: string; id: string }>) => {
-    void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+    void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
 
     if (failed.length > 0) {
       host.notify({
@@ -1088,7 +1083,6 @@ function SelectionBar({
 export function KanbanBoardPage() {
   const k = useKanban()
   const qc = useQueryClient()
-  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
   const [archived, setArchived] = useState(false)
 
@@ -1096,7 +1090,7 @@ export function KanbanBoardPage() {
   // slow heartbeat for socketless paths (OAuth remotes, dropped connections).
   const { data: board, error } = useQuery({
     queryFn: () => fetchBoard(archived),
-    queryKey: boardKey(scope, slug, archived),
+    queryKey: boardKey(slug, archived),
     refetchInterval: 60_000
   })
 
@@ -1195,48 +1189,48 @@ export function KanbanBoardPage() {
   const moveMut = useMutation({
     mutationFn: ({ id, status }: { id: string; status: string }) => patchTask(id, { status }),
     onMutate: async ({ id, status }) => {
-      await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
-      const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
+      await qc.cancelQueries({ queryKey: boardKey(slug, archived) })
+      const previous = qc.getQueryData<KanbanBoard>(boardKey(slug, archived))
 
       if (previous) {
-        qc.setQueryData(boardKey(scope, slug, archived), moveCard(previous, id, status))
+        qc.setQueryData(boardKey(slug, archived), moveCard(previous, id, status))
       }
 
       return { previous }
     },
     onError: (err, _vars, context) => {
       if (context?.previous) {
-        qc.setQueryData(boardKey(scope, slug, archived), context.previous)
+        qc.setQueryData(boardKey(slug, archived), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })
     },
     onSettled: (_data, _err, vars) => {
-      void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
-      void qc.invalidateQueries({ queryKey: taskKey(scope, slug, vars.id) })
+      void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+      void qc.invalidateQueries({ queryKey: ['kanban', 'task', slug, vars.id] })
     }
   })
 
   const deleteMut = useMutation({
     mutationFn: (id: string) => deleteTask(id),
     onMutate: async id => {
-      await qc.cancelQueries({ queryKey: boardKey(scope, slug, archived) })
-      const previous = qc.getQueryData<KanbanBoard>(boardKey(scope, slug, archived))
+      await qc.cancelQueries({ queryKey: boardKey(slug, archived) })
+      const previous = qc.getQueryData<KanbanBoard>(boardKey(slug, archived))
 
       if (previous) {
-        qc.setQueryData(boardKey(scope, slug, archived), removeCard(previous, id))
+        qc.setQueryData(boardKey(slug, archived), removeCard(previous, id))
       }
 
       return { previous }
     },
     onError: (err, _id, context) => {
       if (context?.previous) {
-        qc.setQueryData(boardKey(scope, slug, archived), context.previous)
+        qc.setQueryData(boardKey(slug, archived), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })
     },
-    onSettled: () => void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
+    onSettled: () => void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
   })
 
   const onMove = (id: string, status: string) => {

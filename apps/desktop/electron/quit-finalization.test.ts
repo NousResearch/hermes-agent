@@ -14,7 +14,6 @@ import { createQuitFinalization } from './quit-finalization'
 test('forces a single Windows exit once the admitted quit exceeds its deadline; never arms off Windows', () => {
   let onTimeout: (() => void) | undefined
   const hardExit = vi.fn()
-
   const finalization = createQuitFinalization({
     isWindows: true,
     schedule: callback => {
@@ -43,13 +42,11 @@ test('a completed quit cancels the fallback and it never re-arms', () => {
   let onTimeout: (() => void) | undefined
   const cancel = vi.fn()
   const hardExit = vi.fn()
-
   const schedule = vi.fn((callback: () => void) => {
     onTimeout = callback
 
     return 'timer'
   })
-
   const finalization = createQuitFinalization({ isWindows: true, schedule, cancel, hardExit })
 
   finalization.arm()

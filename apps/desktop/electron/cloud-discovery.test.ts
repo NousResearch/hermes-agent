@@ -16,12 +16,10 @@ test('a stale team falls back once to current memberships; unrelated failures re
     requests.push(req.url!)
     const scoped = req.url!.includes('?org=')
     res.writeHead(scoped ? status : fallbackStatus, { 'Content-Type': 'application/json' })
-
     const body =
       fallbackStatus === 200
         ? { agents: [], org: { id: 'new-team' } }
         : { error: 'org_selection_required', orgs: [{ id: 'new-team' }] }
-
     res.end(JSON.stringify(scoped ? { error } : body))
   })
 

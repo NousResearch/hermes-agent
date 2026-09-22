@@ -61,7 +61,6 @@ import { existsSync, rmSync, renameSync } from 'node:fs'
 import path from 'node:path'
 import { Arch } from 'electron-builder'
 import { removeDirSync, stageNodePty, stageGetWindows } from './stage-native-deps.mjs'
-import { buildHudModifierMonitor } from './build-hud-modifier-monitor.mjs'
 
 export function cleanStaleAppOutDir(appOutDir) {
   if (!appOutDir || typeof appOutDir !== 'string') {
@@ -147,7 +146,6 @@ export default async function beforePack(context) {
     const platform = context && context.electronPlatformName
     const archName = context && typeof context.arch === 'number' ? Arch[context.arch] : undefined
     if (platform && archName) {
-      buildHudModifierMonitor({ platform, arch: archName })
       if (archName === 'universal') {
         console.warn(
           '[before-pack] target arch is "universal" — node-pty has no universal prebuild; ' +

@@ -11,9 +11,7 @@ from contextlib import asynccontextmanager
 from functools import partial
 from types import SimpleNamespace
 from typing import Any, Callable, Dict, List, Optional, Tuple
-
-from hermes_platform import declaration
-from tools.registry import invalidate_check_fn_cache, tool_error
+from tools.registry import tool_error
 from tools.ansi_strip import strip_unicode_tags
 from tools.mcp_tool_common import _exc_str, _sanitize_error, mcp_field, _core
 from tools import mcp_tool_loop as _loop
@@ -25,8 +23,6 @@ from tools.mcp_tool_errors import _is_auth_error, _is_session_expired_error
 
 logger = logging.getLogger("tools.mcp_tool")
 _MISSING = object()
-
-declaration.on_change = invalidate_check_fn_cache
 
 _NEEDS_REAUTH_MSG = (
     "MCP server '{s}' requires re-authentication. Run `hermes mcp login {s}` (or delete the tokens file under "
@@ -111,22 +107,6 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
-    from tools.mcp_liveness import unavailable_details
-    details = unavailable_details(server_name)
-    if details is not None:
-        decl, current, sentence = details
-        not_connected = tool_error(
-            sentence,
-            server=server_name,
-            state=current.state,
-            app={
-                "name": decl.name,
-                "version": current.availability.version,
-                "path": current.availability.path,
-            },
-            user_action=current.user_action,
-            retry=current.retry,
-        )
     server = _discovery._get_connected_server_for_call(server_name)
     wait = min(5.0, float(tool_timeout or 5.0))
     if server and (server.session or _loop._wait_for_server_session_ready(server, timeout=wait)):
@@ -687,36 +667,13 @@ _make_get_prompt_handler = _make_utility_handler(
 
 
 def _make_check_fn(server_name: str):
-    """Connection-alive check; lazy (schema-cache registered) servers count as available.
-
-    When the server's owner registered an application declaration (`requires.app`), the
-    application must also be present on this host, or the tools are not offered even while a
-    stale connection lingers. With no declaration registered the check is the connection check
-    alone. Returns a plain bool: the registry caches ``bool(fn())``.
-    """
+    """Connection-alive check; lazy (schema-cache registered) servers count as available."""
     from tools.mcp_tool_scope import _resolve_server_key
 
-    def _connected() -> bool:
+    def _check() -> bool:
         with _core._lock:
             key = _resolve_server_key(server_name)
             server = _core._servers.get(key)
             return ((server is not None and (server.session is not None or server._is_recycled_stdio()))
                     or key in _core._lazy_server_configs)
-
-    def _check() -> bool:
-        if not _connected():
-            return False
-        return _declared_app_offerable(server_name)
     return _check
-
-
-def _declared_app_offerable(server_name: str) -> bool:
-    """True unless the registered declaration is unavailable on this host. Called only for a
-    connected server, so a reachable loopback port outranks the interactive-session rule."""
-    from hermes_platform import declaration
-    from hermes_platform.resolver.availability import availability
-
-    decl = declaration.lookup(server_name)
-    if decl is None:
-        return True
-    return bool(availability(decl).offerable)

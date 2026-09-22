@@ -1,40 +1,64 @@
 import type { ToolCallMessagePartProps } from '@assistant-ui/react'
-import type { ConnectionTargetState, ConnectorsConnectResult } from '@hermes/shared'
+import type { ConnectionTargetState } from '@hermes/shared'
 import { useStore } from '@nanostores/react'
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { useSessionView } from '@/app/chat/session-view'
 import { sessionRoute } from '@/app/routes'
+import { resolveSessionOwner } from '@/app/session/hooks/use-session-actions/utils'
 import { ToolFallback } from '@/components/assistant-ui/tool/fallback'
 import { Button } from '@/components/ui/button'
 import { ConnectorCard, ConnectorRow, type ConnectorRowMark, ConnectorSummary } from '@/components/ui/connector-card'
 import { useI18n } from '@/i18n'
 import {
   connectorAuthorizationUrl,
+  connectorCalls,
   connectorIconUrl,
   connectorText,
   connectorTitle,
-  recordOf,
-  toolLabels,
-  toolLabelTitle
+  connectorToolName,
+  recordOf
 } from '@/lib/connector-tools'
 import {
   $connectionRequests,
-  type ConnectionOwner,
-  connectionOwnerFor,
   type ConnectionRequest,
-  connectionRequestOpen,
   type ConnectionTarget,
   continueConnectionRequest,
   sessionConnectionRequest
 } from '@/store/connection-request'
 import { requestGatewayForAgent } from '@/store/gateway'
 import { notifyError } from '@/store/notifications'
+import { $activeGatewayProfile } from '@/store/profile'
+import { assertSessionOwnerResolved } from '@/store/session-owner-resolution'
+import { isSessionOwnerRoute } from '@/store/session-request-router'
+
+/** Which backend owns the session whose operation this card drives. */
+export interface ConnectorOwner {
+  connectionId: null | string
+  profile: string
+}
+
+/** Resolve that owner for one stored session, or null when it cannot be resolved. */
+async function connectionOwnerFor(sessionId: string, method: string): Promise<ConnectorOwner | null> {
+  const ambientProfile = $activeGatewayProfile.get()
+
+  try {
+    const scope = await resolveSessionOwner(sessionId)
+    assertSessionOwnerResolved(scope, { method, sessionId })
+
+    return {
+      connectionId: isSessionOwnerRoute(scope) ? scope.connectionId : null,
+      profile: isSessionOwnerRoute(scope) ? scope.profile : scope || ambientProfile
+    }
+  } catch {
+    return null
+  }
+}
 
 /** Resolve that owner. Null until it resolves and null when it cannot: a card RPC must reach the
  *  gateway that holds the operation, never whichever one the window happens to have in front. */
-export function useConnectionOwner(sessionId: null | string, active: boolean): ConnectionOwner | null {
-  const [owner, setOwner] = useState<ConnectionOwner | null>(null)
+export function useConnectionOwner(sessionId: null | string, active: boolean): ConnectorOwner | null {
+  const [owner, setOwner] = useState<ConnectorOwner | null>(null)
 
   useEffect(() => {
     if (!sessionId || !active) {
@@ -88,7 +112,7 @@ export async function openConnectionDoneLink(
   try {
     await requestGatewayForAgent(owner.connectionId, owner.profile, 'connectors.operation.wake', {
       op_id: op,
-      owner: { session_id: request.sessionId, type: 'session' }
+      session_id: request.sessionId
     })
   } catch {
     // The wake only shortens the wait. The operation can settle and leave the live registry between
@@ -97,30 +121,26 @@ export async function openConnectionDoneLink(
 }
 
 /** Try again for one target of the open operation: one RPC, and the fresh link when the backend
- *  minted one. The backend re-mints only what is actually dead. A settled operation is dead: the
- *  RPC would open a second one that no card on this row can answer. */
+ *  minted one. The backend re-mints only what is actually dead. */
 export async function reissueConnectionTarget(
-  owner: ConnectionOwner,
+  owner: ConnectorOwner,
   request: ConnectionRequest,
   name: string
 ): Promise<null | string> {
-  if (!connectionRequestOpen(request)) {
-    return null
-  }
-
-  const reply = await requestGatewayForAgent<ConnectorsConnectResult>(
+  const reply = await requestGatewayForAgent<ToolCallMessagePartProps['result']>(
     owner.connectionId,
     owner.profile,
     'connectors.connect',
     {
       connectors: [name],
-      owner: { session_id: request.sessionId, type: 'session' },
-      reconnect: true
+      reconnect: true,
+      session_id: request.sessionId
     },
     45000
   )
 
-  const minted = reply.targets.find(target => target.name === name)
+  const rows = recordOf(reply).targets
+  const minted = Array.isArray(rows) ? rows.map(recordOf).find(row => connectorText(row.name) === name) : undefined
 
   return connectorAuthorizationUrl(minted?.connect_url)
 }
@@ -137,6 +157,17 @@ function requestedConnectorNames(args: ToolCallMessagePartProps['args']): string
 
     return trimmed ? [trimmed] : []
   })
+}
+
+function matchingTargetNames(left: readonly string[], right: readonly string[]): boolean {
+  if (left.length !== right.length) {
+    return false
+  }
+
+  const leftSorted = [...left].sort()
+  const rightSorted = [...right].sort()
+
+  return leftSorted.every((name, index) => name === rightSorted[index])
 }
 
 /** The card lives on the tool row whose id opened the operation and on no other. */
@@ -195,7 +226,8 @@ export const CONNECTOR_CARD_PHASES = {
   initiated: { mark: 'waiting', resolved: false, settled: notConnected, verb: 'open' },
   not_connected: { mark: 'idle', resolved: false, settled: notConnected, verb: 'none' },
   pending: { mark: 'idle', resolved: false, settled: notConnected, verb: 'open' },
-  skipped: { mark: 'idle', resolved: true, settled: skipped, verb: 'none' }
+  skipped: { mark: 'idle', resolved: true, settled: skipped, verb: 'none' },
+  unavailable: { mark: 'idle', resolved: true, settled: notConnected, verb: 'none' }
 } satisfies Record<ConnectionTargetState, ConnectorCardPhase>
 
 // A disabled verb (a working row, a waiting row with no link yet) refuses focus, and the keyboard
@@ -256,7 +288,7 @@ export const MARK_LABEL = {
 } satisfies Record<ConnectorRowMark, (copy: ConnectorCopy) => string>
 
 interface ConnectorOfferProps {
-  owner: ConnectionOwner
+  owner: ConnectorOwner
   request: ConnectionRequest
 }
 
@@ -298,11 +330,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
 
           return (
             <ConnectorSummary
-              connector={{
-                iconUrl: connectorIconUrl(target.name),
-                name: target.name,
-                title: connectorTitle(target.name)
-              }}
+              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
               key={target.name}
               meta={meta}
               tone={tone}
@@ -342,11 +370,7 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
           return (
             <ConnectorRow
               action={action}
-              connector={{
-                iconUrl: connectorIconUrl(target.name),
-                name: target.name,
-                title: connectorTitle(target.name)
-              }}
+              connector={{ iconUrl: connectorIconUrl(target.name), name: target.name, title: connectorTitle(target.name) }}
               cue={phase.mark === 'waiting' ? copy.waiting : undefined}
               key={target.name}
               mark={phase.mark}
@@ -366,44 +390,68 @@ export function ConnectorOffer({ owner, request }: ConnectorOfferProps) {
   )
 }
 
-const MISSING_CALL_RESULT = { error: 'No result for this call.' }
-
-/** Keep execution output in the standard disclosure, with one row per inner call.
- *  The gateway labels every call the tool_search bridge runs — hosted, MCP or local —
- *  so hosted-only, MCP-only and mixed batches all render the same way. */
+/** Keep execution output in the standard disclosure, with one row per app call. */
 export function ConnectorExecution(props: ToolCallMessagePartProps) {
-  const labels = toolLabels(props.args)
-  const output = recordOf(props.result)
-  const results = Array.isArray(output.results) ? output.results : []
-
-  if (labels.length === 0) {
-    return <ToolFallback {...props} />
-  }
-
+  const view = useSessionView()
+  const sessionId = useStore(view.$runtimeId)
+  const $request = useMemo(() => sessionConnectionRequest(sessionId), [sessionId])
+  const request = useStore($request)
+  const calls = connectorCalls(props.toolName, props.args)
   const input = recordOf(props.args)
   const batch = Array.isArray(input.calls) ? input.calls : [input]
 
+  // Mixed remote batches keep their complete disclosure and original result order.
+  if (props.toolName === 'tool_call' && calls.length !== batch.length) {
+    return <ToolFallback {...props} />
+  }
+
+  const output = recordOf(props.result)
+  const results = Array.isArray(output.results) ? output.results : []
+
+  const repair = calls
+    .filter((_call, index) => {
+      const item = recordOf(props.toolName === 'tool_call' ? results[index] : props.result)
+
+      return recordOf(item.error).connect_card_available === true
+    })
+    .map(call => {
+      // SAFETY: connectorCalls includes only names accepted by connectorToolName.
+      return connectorToolName(call.name)!.connector
+    })
+
+  const openRepair =
+    request &&
+    !request.settled &&
+    matchingTargetNames(
+      repair,
+      request.targets.map(target => target.name)
+    )
+
   return (
     <>
-      {labels.map((label, index) => {
-        // A hosted batch answers one result per call; anything else answers once for the
-        // whole call, and every row shows that same outcome (a rejected batch, an error).
-        // A batch that answered short says so on the rows it left out.
-        const item = results[index] ?? (results.length > 0 ? MISSING_CALL_RESULT : props.result)
+      {calls.map((call, index) => {
+        const item =
+          props.toolName === 'tool_call' ? (results[index] ?? (output.error ? output : undefined)) : props.result
+
         const result = recordOf(item)
+        // SAFETY: connectorCalls includes only names accepted by connectorToolName.
+        const identity = connectorToolName(call.name)!
 
         return (
           <ToolFallback
             {...props}
-            args={recordOf(recordOf(batch[index]).arguments ?? props.args)}
+            args={recordOf(call.arguments)}
             isError={Boolean(result.error) || props.isError === true}
             key={`${props.toolCallId}:${index}`}
-            result={item}
+            result={props.result === undefined ? undefined : (item ?? { error: 'Missing connector result' })}
             toolCallId={`${props.toolCallId}:${index}`}
-            toolName={toolLabelTitle(label)}
+            toolName={`${connectorTitle(identity.connector)}: ${identity.action}`}
           />
         )
       })}
+      {openRepair ? (
+        <ConnectorTool {...props} args={{ action: 'status', connectors: repair }} result={undefined} />
+      ) : null}
     </>
   )
 }

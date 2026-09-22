@@ -206,7 +206,9 @@ describe('the id half: group room member sessions', () => {
       }
     }
     lastRoster.value = [{ name: 'alpha' } as RosterRow]
-    hostMock.setPersistedSessionHidden.mockRejectedValue(new Error('404: {"detail":"Session not found"}'))
+    hostMock.setPersistedSessionHidden.mockRejectedValue(
+      new Error('404: {"detail":"Session not found"}')
+    )
 
     await runSweep()
 

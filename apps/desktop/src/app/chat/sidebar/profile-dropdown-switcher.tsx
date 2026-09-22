@@ -21,12 +21,7 @@ import { triggerHaptic } from '@/lib/haptics'
 import { Loader2 } from '@/lib/icons'
 import { resolveProfileColor } from '@/lib/profile-color'
 import { cn } from '@/lib/utils'
-import {
-  $activeConnectionId,
-  $connectionsRegistry,
-  $hasMultipleConnections,
-  selectConnection
-} from '@/store/connections'
+import { $activeConnectionId, $connectionsRegistry, $hasMultipleConnections, selectConnection } from '@/store/connections'
 import { $fleetRoster } from '@/store/fleet-roster'
 import { notifyError } from '@/store/notifications'
 import {
@@ -205,9 +200,7 @@ export function ProfileSwitcher({ compact = false }: { compact?: boolean }) {
               <DropdownMenuLabel className={cn(dropdownMenuSectionLabel, 'flex items-center gap-1.5')}>
                 <ConnectionGlyph connection={group} />
                 <span className="truncate">{group.label}</span>
-                {!group.reachable && (
-                  <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />
-                )}
+                {!group.reachable && <span aria-hidden="true" className="size-1.5 shrink-0 rounded-full bg-amber-500" />}
               </DropdownMenuLabel>
               {[group.defaultAgent, ...group.named].map(agent => (
                 <DropdownMenuItem

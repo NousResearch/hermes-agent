@@ -37,11 +37,7 @@ export function fetchTimelineIndex(id: string, scope: ProfileScope, beyondRowId?
   const cached = cache.get(key)
   const previous = cached?.complete && cached.expires <= Date.now() ? undefined : cached
 
-  if (
-    cached?.complete &&
-    cached.expires > Date.now() &&
-    (beyondRowId === undefined || marksReach(cached.entries, beyondRowId))
-  ) {
+  if (cached?.complete && cached.expires > Date.now() && (beyondRowId === undefined || marksReach(cached.entries, beyondRowId))) {
     return Promise.resolve(cached)
   }
 

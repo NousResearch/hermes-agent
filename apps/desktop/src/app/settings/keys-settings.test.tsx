@@ -54,16 +54,13 @@ function DeepLinkButton({ target }: { target: string }) {
 }
 
 describe('KeysSettings', () => {
-  it('fetches env vars for the displayed profile (the concrete key, never null) when unscoped', async () => {
+  it('fetches env vars for the active profile (undefined, never null) when unscoped', async () => {
     // #90549 class: getEnvVars(null) targets the primary profile's env store,
     // so a non-default profile's Keys page would read (and edit) the wrong
-    // profile. #118432: `undefined` is equally wrong — profileScoped() then
-    // drops `?profile=` entirely and the backend falls back to the home it was
-    // LAUNCHED under, which need not be the profile this page displays. Send
-    // the concrete key the page names.
+    // profile. Unscoped must send undefined so the active profile applies.
     await renderKeysSettings('tools')
 
-    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith('default'))
+    await waitFor(() => expect(getEnvVars).toHaveBeenCalledWith(undefined))
   })
 
   it('lists tools and excludes settings / channel-managed credentials', async () => {

@@ -116,7 +116,7 @@ async function renderMessaging() {
 }
 
 describe('MessagingView profile scope', () => {
-  it('names the active profile explicitly instead of sending an unscoped request', async () => {
+  it('follows the active profile instead of targeting primary when there is no override', async () => {
     const { $settingsScopeOverride } = await import('@/store/settings-scope')
 
     $settingsScopeOverride.set(null)
@@ -124,11 +124,8 @@ describe('MessagingView profile scope', () => {
 
     await renderMessaging()
 
-    // #118432: the backend resolves an omitted profile against the home it was
-    // LAUNCHED under, so "follow the active profile" has to be said out loud
-    // rather than left to the ambient fallback.
-    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith('default'))
-    expect(getPairing).toHaveBeenCalledWith('default')
+    await waitFor(() => expect(getMessagingPlatforms).toHaveBeenCalledWith(undefined))
+    expect(getPairing).toHaveBeenCalledWith(undefined)
   })
 })
 
@@ -185,7 +182,7 @@ describe('MessagingView pairing', () => {
       fireEvent.click(approve)
     })
 
-    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', 'default'))
+    await waitFor(() => expect(approvePairing).toHaveBeenCalledWith('teams', 'a1b2c3d4e5f60718', undefined))
   })
 
   it('restores the pending row when approval fails', async () => {

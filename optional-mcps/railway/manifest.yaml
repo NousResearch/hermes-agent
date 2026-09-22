@@ -3,7 +3,6 @@
 manifest_version: 1
 
 name: railway
-connector_slug: railway
 description: 'Railway: projects, services, deployments, and environments.'
 source: https://docs.railway.com/guides/mcp-server
 

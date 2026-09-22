@@ -54,17 +54,6 @@ class TestSkillManageBatch(unittest.TestCase):
         for rel in ("SKILL.md", "references/a.md", "scripts/r.py"):
             self.assertTrue(os.path.exists(os.path.join(base, rel)), rel)
 
-    def test_advisory_findings_ride_on_the_op_result(self):
-        # operations[] is the only call shape, so a finding the per-op handler attaches must
-        # survive into the batch row or the linter is silent for every model call.
-        from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
-        self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
-        r = self._call("probe", [{"action": "patch", "old_string": "Step 1.",
-                                  "new_string": "- rule; why.\n" * (_BODY_SOFT_BUDGET_CHARS // 12 + 1)}])
-        self.assertTrue(r["success"], r)
-        rules = {w["rule"] for w in r["results"][0]["lint_warnings"]}
-        self.assertIn("oversized-body", rules)
-
     def test_midbatch_failure_rolls_back_existing_skill(self):
         self._call("probe", [{"action": "create", "content": SK.format(n="probe")}])
         r = self._call("probe", [

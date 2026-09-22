@@ -7,14 +7,7 @@ import { ArchiveSkillConfirmDialog } from '@/app/learning/archive-skill-confirm-
 import { CodeEditor } from '@/components/chat/code-editor'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
-import {
-  editLearningNode,
-  getLearningNode,
-  getOfficialSkills,
-  type ProfileScope,
-  profileScopeKey,
-  setSkillEnabled
-} from '@/hermes'
+import { editLearningNode, getLearningNode, getOfficialSkills, type ProfileScope, profileScopeKey, setSkillEnabled } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Loader2 } from '@/lib/icons'
 import { Codecs, persistentAtom } from '@/lib/persisted'
@@ -116,9 +109,7 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
   const installedSkillNames = useMemo(() => new Set(skills.map(s => s.name)), [skills])
 
   const visibleOfficial = useMemo(() => {
-    const catalog = (officialData?.skills ?? []).filter(
-      skill => !skill.installed && !installedSkillNames.has(skill.name)
-    )
+    const catalog = (officialData?.skills ?? []).filter(skill => !skill.installed && !installedSkillNames.has(skill.name))
 
     return filteredOfficial(catalog, query)
   }, [installedSkillNames, officialData, query])
@@ -204,20 +195,12 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
     checked: allEnabled,
     disabled: bulkBusy,
     label: t.skills.all,
-    onToggle: checked =>
-      void bulkApply(
-        skills.filter(row => row.enabled !== checked),
-        checked
-      )
+    onToggle: checked => void bulkApply(skills.filter(row => row.enabled !== checked), checked)
   }
 
   // "Never used" = zero recorded activity. The pruning move for a 100+ skill
   // install: keep the workhorses, shed the noise.
-  const disableUnused = () =>
-    bulkApply(
-      skills.filter(skill => skill.enabled && usageOf(skill) === 0),
-      false
-    )
+  const disableUnused = () => bulkApply(skills.filter(skill => skill.enabled && usageOf(skill) === 0), false)
 
   const openSkillEditor = async (name: string) => {
     try {
@@ -329,7 +312,12 @@ export function SkillsTab({ onRefresh, profile, query, skills }: SkillsTabProps)
               return (
                 <CapRow
                   action={
-                    <Button disabled={installing} onClick={() => handleInstallOfficial(skill)} size="xs" variant="text">
+                    <Button
+                      disabled={installing}
+                      onClick={() => handleInstallOfficial(skill)}
+                      size="xs"
+                      variant="text"
+                    >
                       {installing && <Loader2 className="size-3 animate-spin" />}
                       {installing ? t.skills.hub.installing : t.skills.hub.install}
                     </Button>

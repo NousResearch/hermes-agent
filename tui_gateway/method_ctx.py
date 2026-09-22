@@ -54,9 +54,6 @@ class HandlerRegistry:
             return fn
         return dec
 
-    def names(self) -> set[str]:
-        return {name for name, _ in self._pending}
-
     def profile_scoped(self, fn):
         """Drop-in for server.py's ``@_profile_scoped`` (applied at install)."""
         fn._hermes_profile_scoped = True

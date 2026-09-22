@@ -266,10 +266,6 @@ def compress_after_tool_results(
         )
 
     _compressor = agent.context_compressor
-    # A new checkpoint must reach the provider before stale usage can trigger
-    # local compression, overflow warnings, or destructive tool-result pruning.
-    if bool(getattr(_compressor, "awaiting_real_usage_after_compression", False)):
-        return _verdict(False)
     # Real usage decides: the anchor is the provider's last prompt count plus a rough delta for
     # ONLY the tool results appended since (the raw last_prompt_tokens ignores them). Right after
     # a compaction (-1 sentinel) there is no real count yet: never treat the schema-heavy rough

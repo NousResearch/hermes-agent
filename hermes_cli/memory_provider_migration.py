@@ -60,8 +60,7 @@ def migrate_home(home: Path, *, install: Callable[[str], dict], say: Callable[[s
     update or the agent down with it.
     """
     name = configured_provider(home)
-    from agent.memory_provider import is_core_memory_provider
-    if is_core_memory_provider(name) or provider_present(name, home):
+    if not name or provider_present(name, home):
         return None
     if catalog_source(name) is None:
         say(f"  ⚠ Memory provider '{name}' is configured but not installed and not in the plugin catalog. "

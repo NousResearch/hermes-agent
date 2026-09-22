@@ -240,12 +240,7 @@ export class HubInstallBlockedError extends Error {
 
 /** Toast for a failed hub action: a blocked install explains the scan gate and
  *  offers "View scan"; anything else keeps the generic summary + raw tail. */
-export function notifyHubActionFailed(
-  err: unknown,
-  fallbackTitle: string,
-  skillName?: string,
-  profile?: ProfileScope
-): void {
+export function notifyHubActionFailed(err: unknown, fallbackTitle: string, skillName?: string, profile?: ProfileScope): void {
   if (!(err instanceof HubInstallBlockedError)) {
     notifyError(err, fallbackTitle)
 

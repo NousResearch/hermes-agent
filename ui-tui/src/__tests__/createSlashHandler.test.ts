@@ -937,7 +937,6 @@ describe('createSlashHandler', () => {
 
   it('surfaces the slash worker failure itself instead of the command.dispatch refusal', async () => {
     patchUiState({ sid: 'sid-abc' })
-
     const ctx = buildCtx({
       gateway: {
         gw: {
@@ -947,9 +946,7 @@ describe('createSlashHandler', () => {
               return Promise.reject(new JsonRpcGatewayError('slash worker timed out', { code: 5030 }))
             }
 
-            return Promise.reject(
-              new JsonRpcGatewayError('not a quick/plugin/bundle/skill command: insights', { code: 4018 })
-            )
+            return Promise.reject(new JsonRpcGatewayError('not a quick/plugin/bundle/skill command: insights', { code: 4018 }))
           })
         },
         rpc: vi.fn(() => Promise.resolve({}))
@@ -968,7 +965,6 @@ describe('createSlashHandler', () => {
 
   it('still falls back to command.dispatch on a 4018 "not mine" refusal', async () => {
     patchUiState({ sid: 'sid-abc' })
-
     const ctx = buildCtx({
       gateway: {
         gw: {

@@ -12,8 +12,7 @@ import {
   type ConnectionTarget,
   setConnectionRequest
 } from '@/store/connection-request'
-import { $gateway, setPrimaryGateway, setPrimaryGatewayConnectionId } from '@/store/gateway'
-import { setSessionOwnerHint } from '@/store/session'
+import { $gateway, setPrimaryGateway } from '@/store/gateway'
 
 const SESSION_ID = 'session-1'
 
@@ -110,17 +109,14 @@ afterEach(() => {
 describe('the MCP setup card', () => {
   it('opens required details from the row action and sends the approved environment', async () => {
     const rpc = vi.fn().mockResolvedValue({ status: 'ok', settled: false })
-
     const target = {
       ...LINEAR,
       instructions: 'Create a Linear API key.',
       requiredEnv: [{ default: 'workspace', name: 'LINEAR_TEAM', prompt: 'Team', required: true, secret: false }]
     }
-
-    setSessionOwnerHint(SESSION_ID, { connectionId: 'local', profile: 'default' })
-    // SAFETY: the card calls only `request`; the rest of the client is never touched in this test.
-    setPrimaryGateway({ request: rpc } as never)
-    setPrimaryGatewayConnectionId('local')
+    // SAFETY: the card calls only `request`; no other gateway client surface is exercised here.
+    // respondToConnectionRequest reads $gateway, which only applyActive publishes; set it directly.
+    $gateway.set({ request: rpc } as never)
     setConnectionRequest({ ...REQUEST, targets: [target] })
 
     renderTool()
@@ -133,8 +129,8 @@ describe('the MCP setup card', () => {
     await waitFor(() => expect(rpc).toHaveBeenCalledTimes(1))
     expect(rpc).toHaveBeenCalledWith('connection.respond', {
       op_id: 'operation-1',
-      owner: { session_id: SESSION_ID, type: 'session' },
-      result: { targets: [{ env: { LINEAR_TEAM: 'workspace' }, name: 'linear', status: 'approved' }] }
+      result: { targets: [{ env: { LINEAR_TEAM: 'workspace' }, name: 'linear', status: 'approved' }] },
+      session_id: SESSION_ID
     })
   })
 

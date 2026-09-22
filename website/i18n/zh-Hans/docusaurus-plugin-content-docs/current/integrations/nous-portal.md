@@ -120,7 +120,9 @@ OAuth 需要浏览器，但回调的 loopback 运行在 Hermes 所在的机器�
 
 ### Profile 配置 {#profile-setup}
 
-如果你使用 [Hermes profiles（配置文件）](../user-guide/profiles.md)，Portal 的 refresh token 会通过共享令牌存储自动在所有 profile 间共享。在任意 profile 上登录一次，其余 profile 自动获取——无需为每个 profile 重复 OAuth 流程。
+如果你使用 [Hermes profiles（配置文件）](../user-guide/profiles.md)，Portal 的 refresh token 会通过共享令牌存储在各 profile 间共享——但该存储**只刷新已有的登录，不会创建新登录**。各 profile 是相互独立的孤岛（[#111724](https://github.com/NousResearch/hermes-agent/issues/111724)），因此从未登录过 Portal 的 profile 没有自己的 Nous 凭证：启动时它会直接失败，提示 `Profile '<name>' is not connected to any AI provider yet`，而不会静默采用其他 profile 的会话。
+
+**每个 profile 都需登录一次**，命令为 `hermes -p <name> portal`（即 `hermes -p <name> auth add nous --type oauth` 的别名）。如果机器上已有共享的 Portal 会话，该命令会提示导入——确认一次即可，无需再走浏览器流程。首次导入后该 profile 保留自己的状态，只要任一 profile 刷新或重新登录，共享存储便会让它的令牌保持最新。从已登录的 profile 执行 `hermes profile create <name> --clone-all` 也会一并带上 Portal 登录（克隆时只会剥离 Anthropic/Codex 这类一次性授权）。
 
 ## 日常使用 Portal
 

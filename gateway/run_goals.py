@@ -466,12 +466,8 @@ class GatewayGoalsMixin:
         warned_no_route: set = set()
 
         def _scope(profile_home):
-            # profile_home None = the launch profile's own store; once the process multiplexes it
-            # binds its own scope instead of running on ambient env (see _scope_or_null).
-            if profile_home is not None:
-                return _async_profile_runtime_scope(profile_home)
-            from tui_gateway.launch_profile_policy import async_launch_profile_scope_if_multiplexed
-            return async_launch_profile_scope_if_multiplexed()
+            return (_async_profile_runtime_scope(profile_home) if profile_home is not None
+                    else nullcontext())
 
         async def _scan_one_store(profile_name: Optional[str]) -> None:
             from hermes_cli.loops import list_active_loops

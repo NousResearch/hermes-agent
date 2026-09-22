@@ -247,7 +247,6 @@ describe('ProfileRail fleet mode', () => {
         if (condensed) {
           fireEvent.pointerDown(screen.getByRole('button', { name: 'Profiles' }), { button: 0, ctrlKey: false })
         }
-
         fireEvent.contextMenu(
           screen.getByRole(condensed ? (target.connectionId ? 'menuitem' : 'menuitemradio') : 'button', {
             name: target.label

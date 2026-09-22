@@ -594,12 +594,10 @@ holds a small set of files named by topic (a decision table, a recipe, provider 
 extended in place rather than accumulated one file per session. Skills also do not
 restate what is already loaded every turn (the repo's `AGENTS.md`, tool schemas).
 
-`skill_manage` runs an advisory linter on `create`, on `SKILL.md` patches, and on `references/`
-writes and returns its findings in the tool result. Three rules exist specifically for this shape:
-`incident-log-shape` (a body dense in PR/issue numbers), `references-sprawl` (more
-than 60 reference files), and `oversized-body` (a `SKILL.md` body past ~24k chars — `skill_view`
-loads the whole file and it stays in context for the rest of the session). They warn; they never
-block a write.
+`skill_manage` runs an advisory linter on `create` and on `references/` writes and
+returns its findings in the tool result. Two rules exist specifically for this shape:
+`incident-log-shape` (a body dense in PR/issue numbers) and `references-sprawl` (more
+than 60 reference files). They warn; they never block a write.
 
 ### Actions
 

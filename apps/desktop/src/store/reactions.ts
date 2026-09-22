@@ -86,12 +86,17 @@ export async function toggleMessageReaction(
     // requestForOwnedSession resolves the exact owner route and fails closed;
     // the ambient request stays the fallback for legacy single-profile
     // setups where the owner cannot be named.
-    const result = await requestForOwnedSession<MessageReactResponse>(sessionId, ambientRequest, 'message.react', {
-      session_id: sessionId,
-      ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
-      emoji,
-      author
-    })
+    const result = await requestForOwnedSession<MessageReactResponse>(
+      sessionId,
+      ambientRequest,
+      'message.react',
+      {
+        session_id: sessionId,
+        ...(rowId === undefined ? { newest_role: message.role } : { row_id: rowId }),
+        emoji,
+        author
+      }
+    )
 
     // Learn the row id from the response so later toggles address it directly.
     writeReactions(message.id, result?.reactions ?? [], result?.row_id)

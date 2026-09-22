@@ -30,7 +30,7 @@ def _jwt(**claims) -> str:
     def seg(obj):
         return base64.urlsafe_b64encode(json.dumps(obj).encode()).rstrip(b"=").decode()
     payload = {"sub": "nas_user:1", "client_id": "nas-anonymous", "account_tier": "anonymous",
-               "scope": "inference:invoke", "exp": int(time.time()) + 900, **claims}
+               "scope": "inference:invoke tool:invoke", "exp": int(time.time()) + 900, **claims}
     return f"{seg({'alg': 'RS256'})}.{seg(payload)}.sig"
 
 
@@ -89,7 +89,7 @@ class FakePortal:
             return httpx.Response(200, json={
                 "access_token": _jwt(sub="nas_user:9", client_id="hermes-cli", account_tier="free"),
                 "refresh_token": REFRESH_TOKEN, "token_type": "Bearer", "expires_in": 900,
-                "scope": "inference:invoke", "inference_base_url": INFERENCE})
+                "scope": "inference:invoke tool:invoke", "inference_base_url": INFERENCE})
         return httpx.Response(500, json={"error": f"unexpected {path}"})
 
 

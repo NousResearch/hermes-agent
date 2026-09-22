@@ -56,7 +56,7 @@ vi.mock('@hermes/plugin-sdk', async () => {
     GlyphSpinner: () => null,
     host: hostMock,
     Input: () => null,
-    ConnectorsTab: undefined,
+    McpTab: undefined,
     queryClient: { invalidateQueries: invalidateMock },
     ScrollArea: () => null,
     Select: () => null,

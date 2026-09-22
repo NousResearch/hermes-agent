@@ -1712,12 +1712,9 @@ def _provider_models_cache_path() -> Path:
 
 
 def _credential_fingerprint(provider: str) -> str:
-    """Short hash of the credentials ``provider_model_ids(provider)`` would see right now.
-
-    API-key providers include their configured values and credential-file mtimes. Codex uses the
-    stable principal selected by its read-only resolver: routine token and pool-state writes must
-    not discard an account-scoped catalog, while a real account switch must invalidate it.
-    """
+    """Short hash of the credentials ``provider_model_ids(provider)`` would see right now: api-key /
+    base-url env vars from ``PROVIDER_REGISTRY`` plus the mtimes of ``auth.json`` and external
+    credential files (OAuth re-auth busts the cache without parsing every file shape)."""
     import hashlib
 
     parts: list[str] = []
@@ -1789,21 +1786,16 @@ def _credential_fingerprint(provider: str) -> str:
         except Exception:
             pass
 
-    if provider == "openai-codex":
-        from hermes_cli.codex_models import codex_catalog_credential_identity
-
-        parts.append(f"codex_identity={codex_catalog_credential_identity()}")
-    else:
-        try:
-            from hermes_constants import get_hermes_home
-            for rel in ("auth.json", "credentials.json"):
-                _mtime_part(rel, get_hermes_home() / rel)
-        except Exception:
-            pass
-        for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
-                    "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
-            path = os.path.expanduser(rel)
-            _mtime_part(path, path)
+    try:
+        from hermes_constants import get_hermes_home
+        for rel in ("auth.json", "credentials.json"):
+            _mtime_part(rel, get_hermes_home() / rel)
+    except Exception:
+        pass
+    for rel in ("~/.codex/auth.json", "~/.claude/.credentials.json",
+                "~/.config/github-copilot/hosts.json", "~/.minimax/credentials.json"):
+        path = os.path.expanduser(rel)
+        _mtime_part(path, path)
 
     blob = "|".join(parts).encode("utf-8", errors="replace")
     # blake2b, not sha256: fingerprint only (collisions = a harmless cache miss), and CodeQL's

@@ -34,8 +34,8 @@ const NODE_BIN = process.execPath
 test('execProbe keeps the parent event loop available to the child', async () => {
   let unexpectedSocketError: Error | undefined
 
-  const server = net.createServer(socket => {
-    socket.on('error', error => {
+  const server = net.createServer((socket) => {
+    socket.on('error', (error) => {
       // A successful child exits immediately after reading the sentinel. On
       // Windows that peer close can surface as ECONNRESET on the server side.
       if ((error as NodeJS.ErrnoException).code !== 'ECONNRESET') {
@@ -71,7 +71,7 @@ test('execProbe keeps the parent event loop available to the child', async () =>
     })
   } finally {
     await new Promise<void>((resolve, reject) => {
-      server.close(error => (error ? reject(error) : resolve()))
+      server.close((error) => (error ? reject(error) : resolve()))
     })
   }
 

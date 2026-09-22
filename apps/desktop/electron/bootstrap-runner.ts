@@ -746,9 +746,7 @@ async function fetchManifest({
     // the installer's colour/OSC bytes here too (#112675).
     const tail = stripAnsi(result.stderr || result.stdout).trim()
 
-    throw new Error(
-      `${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`
-    )
+    throw new Error(`${isPosix ? 'install.sh --manifest' : 'install.ps1 -Manifest'} failed: exit ${result.code}\n${tail}`)
   }
 
   // The manifest is the LAST JSON line on stdout (install.ps1 may print

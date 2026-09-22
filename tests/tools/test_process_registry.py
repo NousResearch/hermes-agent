@@ -2044,53 +2044,6 @@ class TestHandleProcessRedaction:
         assert "zzzopaque1234567890abcdef" in out["output"]
 
 
-class TestHandleProcessTransformHook:
-    """Background-process output goes through the same ``transform_terminal_output`` plugin seam
-    as the foreground ``terminal`` result — issue #70760 — hook FIRST, redaction AFTER, so a
-    replacement the plugin returns is still masked (the ordering the foreground path documents)."""
-
-    def _setup(self, monkeypatch, output, *, hook):
-        import agent.redact as _r
-        monkeypatch.setattr(_r, "_REDACT_ENABLED", True)
-        monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", hook)
-        from tools import process_registry as pr
-        reg = ProcessRegistry()
-        sess = _make_session(sid="proc_xform1", command="python app.py")
-        sess.output_buffer = output
-        sess.exited = True
-        sess.exit_code = 3
-        reg._running[sess.id] = sess
-        monkeypatch.setattr(pr, "process_registry", reg)
-        return pr, sess
-
-    def test_poll_wait_log_kill_results_are_transformed(self, monkeypatch):
-        seen = []
-
-        def hook(hook_name, **kw):
-            seen.append((hook_name, kw.get("command"), kw.get("returncode"), kw.get("task_id")))
-            return ["REWRITTEN:" + kw["output"]] if hook_name == "transform_terminal_output" else []
-
-        pr, sess = self._setup(monkeypatch, "raw line\n", hook=hook)
-        for action, key in (("poll", "output_preview"), ("log", "output"), ("wait", "output"), ("kill", "output")):
-            out = json.loads(pr._handle_process({"action": action, "session_id": sess.id}, task_id="task-bg"))
-            assert out[key].startswith("REWRITTEN:raw line"), (action, out)
-        assert [s for s in seen if s[0] == "transform_terminal_output"]
-        # The hook sees the command, the recorded exit code (None while running) and the process
-        # OWNER's task_id (the session's, not the caller's — a sibling polling a handed-off process
-        # is still observing that owner's output).
-        assert ("transform_terminal_output", "python app.py", 3, "t1") in seen
-
-    def test_hook_replacement_is_still_redacted(self, monkeypatch):
-        secret = "sk-proj-abc123def456ghi789jkl012mno345"
-        pr, sess = self._setup(
-            monkeypatch, "plain output",
-            hook=lambda hook_name, **kw: [f"OPENAI_API_KEY={secret}"] if hook_name == "transform_terminal_output" else [],
-        )
-        out = json.loads(pr._handle_process({"action": "log", "session_id": sess.id}))
-        assert secret not in out["output"]
-        assert "OPENAI_API_KEY=" in out["output"]
-
-
 # =========================================================================
 # Reader loop: orphaned grandchild holding the stdout pipe (issue #68915)
 # =========================================================================

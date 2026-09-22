@@ -18,13 +18,9 @@ test('idle and LRU retirement require backend authority, unchanged identity and 
         pool,
         coordinator: new LocalBackendSpawnCoordinator(3),
         prepare: async () => {
-          if (outcome === 'replaced') {
-            pool.set('a', { process: {}, lastActiveAt: 1 })
-          }
+          if (outcome === 'replaced') {pool.set('a', { process: {}, lastActiveAt: 1 })}
 
-          if (outcome === 'fresh') {
-            entry.lastActiveAt = Date.now()
-          }
+          if (outcome === 'fresh') {entry.lastActiveAt = Date.now()}
 
           return outcome === 'busy' || outcome === 'unknown' ? null : 'permit'
         },
@@ -33,35 +29,20 @@ test('idle and LRU retirement require backend authority, unchanged identity and 
 
           return outcome !== 'expired'
         },
-        cancel: async key => {
-          cancelled.push(key)
-        },
-        onRetiring: () => {
-          events.push('park')
-        },
-        stopBackend: async key => {
-          events.push('stop')
-          stopped.push(key)
-          pool.delete(key)
-        }
+        cancel: async key => { cancelled.push(key) },
+        onRetiring: () => { events.push('park') },
+        stopBackend: async key => { events.push('stop'); stopped.push(key); pool.delete(key) },
       })
 
       try {
-        if (path === 'idle') {
-          await retirer.retireIdle('a', 1000)
-        } else {
-          await retirer.evictTo(0, 1000)
-        }
+        if (path === 'idle') {await retirer.retireIdle('a', 1000)}
+        else {await retirer.evictTo(0, 1000)}
 
         assert.deepEqual(stopped, outcome === 'idle' ? ['a'] : [], `${path}: ${outcome}`)
 
-        if (outcome === 'idle') {
-          assert.deepEqual(events, ['commit', 'park', 'stop'])
-        }
+        if (outcome === 'idle') {assert.deepEqual(events, ['commit', 'park', 'stop'])}
 
-        if (['expired', 'replaced', 'fresh'].includes(outcome)) {
-          assert.deepEqual(cancelled, ['a'])
-        }
+        if (['expired', 'replaced', 'fresh'].includes(outcome)) {assert.deepEqual(cancelled, ['a'])}
       } finally {
         retirer.dispose()
       }
@@ -75,11 +56,8 @@ test('candidate selection excludes processless descriptors, renderer-leased work
     ['old', { process: {}, lastActiveAt: 1 }],
     ['busy', { process: {}, lastActiveAt: 0, activeTurn: true }],
     ['descriptor', { process: null }],
-    ['target', { process: {}, lastActiveAt: 0 }]
+    ['target', { process: {}, lastActiveAt: 0 }],
   ])
 
-  assert.deepEqual(
-    selectRetirementCandidates(pool, new Set(['target'])).map(([key]) => key),
-    ['old', 'fresh']
-  )
+  assert.deepEqual(selectRetirementCandidates(pool, new Set(['target'])).map(([key]) => key), ['old', 'fresh'])
 })

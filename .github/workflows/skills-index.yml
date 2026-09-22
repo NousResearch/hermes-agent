@@ -54,20 +54,9 @@ jobs:
       # Plugin-catalog star counts follow the same rule as the index: GitHub is consulted
       # only here, on the schedule (one GraphQL request for every catalog repo), and docs
       # deploys reuse the artifact / live copy without touching the API.
-      #
-      # Fresh token: the App installation token minted at job start lives 1 h, and the
-      # index walk above runs 60-85 min, so the probe used an expired token and 401'd on
-      # every scheduled run from Sep 18 (#118113). Mint again right before the probe.
-      - name: Get GitHub App token for the stars probe
-        id: probe-token
-        uses: ./.github/actions/get-app-token
-        with:
-          client-id: ${{ vars.APP_CLIENT_ID }}
-          private-key: ${{ secrets.APP_PRIVATE_KEY }}
-
       - name: Probe plugin catalog stars
         env:
-          GITHUB_TOKEN: ${{ steps.probe-token.outputs.token }}
+          GITHUB_TOKEN: ${{ steps.app-token.outputs.token }}
         run: python website/scripts/fetch-plugin-stars.py --probe
 
       - name: Upload index artifact

@@ -24,7 +24,7 @@ import {
   closePluginInstallRequest,
   openPluginInstallRequest
 } from '@/store/plugin-install-request'
-import { $activeGatewayProfile, $profiles } from '@/store/profile'
+import { $activeGatewayProfile } from '@/store/profile'
 import { $connection, $gatewayState } from '@/store/session'
 
 import { PluginsTab } from '../capabilities/plugins/plugins-tab'
@@ -46,32 +46,10 @@ const renderFlow = () =>
 
 beforeEach(() => {
   vi.clearAllMocks()
-  Object.defineProperty(Element.prototype, 'scrollIntoView', { configurable: true, value: vi.fn() })
   queryClient.clear()
   closePluginInstallRequest()
   $gatewayState.set('idle')
   $activeGatewayProfile.set('default')
-  $profiles.set([
-    {
-      has_env: false,
-      is_default: true,
-      model: null,
-      name: 'default',
-      path: '/profiles/default',
-      provider: null,
-      skill_count: 0
-    },
-    {
-      display_name: 'Research Bot',
-      has_env: false,
-      is_default: false,
-      model: null,
-      name: 'research',
-      path: '/profiles/research',
-      provider: null,
-      skill_count: 0
-    }
-  ])
   probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: true, warnings: [] })
   vi.stubGlobal('hermesDesktop', { probePluginRepo, installDesktopPlugin })
 })
@@ -145,28 +123,6 @@ describe('Install from Git entry flow', () => {
     expect(probePluginRepo).toHaveBeenCalledTimes(1)
     expect(requestGateway).not.toHaveBeenCalledWith('plugins.manage', expect.objectContaining({ action: 'install' }))
     expect(installDesktopPlugin).not.toHaveBeenCalled()
-  })
-
-  it('installs a deep-linked agent plugin into the selected profile', async () => {
-    probePluginRepo.mockResolvedValue({ ok: true, agent: true, desktop: false, warnings: [] })
-    requestGateway.mockImplementation(async method =>
-      method === 'plugins.manage' ? { ok: true, plugin_name: 'plugin', plugins: [] } : { plugins: [] }
-    )
-    renderFlow()
-    act(() => openPluginInstallRequest({ catalogName: 'plugin', repo: 'https://github.com/example/plugin' }))
-
-    const profile = await screen.findByRole('combobox', { name: 'Install for profile' })
-
-    fireEvent.click(profile)
-    fireEvent.click(await screen.findByRole('option', { name: 'Research Bot' }))
-    fireEvent.click(screen.getByRole('button', { name: 'Install' }))
-
-    await waitFor(() =>
-      expect(requestGateway).toHaveBeenCalledWith(
-        'plugins.manage',
-        expect.objectContaining({ action: 'install', catalog_name: 'plugin', profile: 'research' })
-      )
-    )
   })
 
   it('pins a custom install to a full commit SHA and refuses anything shorter', async () => {

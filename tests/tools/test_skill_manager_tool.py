@@ -254,20 +254,6 @@ class TestPatchSkill:
         content = (tmp_path / "my-skill" / "SKILL.md").read_text()
         assert "Do the new thing." in content
 
-    def test_patch_surfaces_oversized_body_finding_and_stays_quiet_when_clean(self, tmp_path):
-        # SKILL.md grows by patches; the write that crosses the body budget carries the advisory
-        # finding, a small clean patch attaches no lint keys at all.
-        from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
-        filler = "- Prefer the native tool; the shell path loses the structured result.\n"
-        with _skill_dir(tmp_path):
-            _create_skill("my-skill", VALID_SKILL_CONTENT)
-            quiet = _patch_skill("my-skill", "Do the thing.", "Do the new thing.")
-            grown = _patch_skill("my-skill", "Do the new thing.",
-                                 filler * (_BODY_SOFT_BUDGET_CHARS // len(filler) + 1))
-        assert quiet["success"] is True and "lint_warnings" not in quiet
-        assert grown["success"] is True
-        assert "oversized-body" in {w["rule"] for w in grown["lint_warnings"]}
-
 
     def test_patch_ambiguous_match_rejected(self, tmp_path):
         content = """\

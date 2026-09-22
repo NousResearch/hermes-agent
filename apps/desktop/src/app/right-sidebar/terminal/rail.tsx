@@ -121,10 +121,7 @@ function TerminalRailItem({ active, canCloseOthers, index, term, toggleHint }: T
               className="absolute inset-y-0.5 right-0 w-0.5 rounded-l-sm bg-(--ui-stroke-primary)"
             />
           )}
-          <Tip
-            label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />}
-            placement="right-rail"
-          >
+          <Tip label={<TipHintLabel hint={toggleHint && formatCombo(toggleHint)} text={label} />} placement="right-rail">
             <button
               aria-label={label}
               aria-selected={active}

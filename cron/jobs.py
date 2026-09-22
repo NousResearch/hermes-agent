@@ -216,13 +216,10 @@ def _job_running_in_this_process(job_id: str) -> bool:
     "the claiming tick died" from "the run is alive but slow" — a run stalled on network I/O (or a laptop
     that slept mid-run) legitimately outlives the TTL. The in-process ticker and the run share this process,
     so the scheduler's running set settles the common single-gateway case without any claim-age guesswork.
-
-    Home-scoped: one process ticks every profile, so the host-wide union of bare job ids would let
-    profile A's running ``daily-brief`` keep profile B's stale one-shot alive forever.
     """
     try:
-        from cron.scheduler import is_job_running
-        return is_job_running(job_id)
+        from cron.scheduler import get_running_job_ids
+        return job_id in get_running_job_ids()
     except Exception:
         logger.warning(
             "Cron running-set liveness check failed for job %r; keeping the "

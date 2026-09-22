@@ -223,13 +223,6 @@ class TestIsSatisfiedVersionAware:
         self._fake_version(monkeypatch, {"mautrix": "0.20.0"})
         assert ld._is_satisfied("mautrix[encryption]==0.21.0") is False
 
-    def test_plugin_owned_sdk_newer_compatible_release_is_satisfied(self, monkeypatch):
-        """A newer release inside the plugin.yaml range must not be re-pinned downward on refresh
-        (#86992 hindsight-client 0.9.x -> 0.6.1, #98407 mem0ai 2.0.19 -> 2.0.10)."""
-        self._fake_version(monkeypatch, {"hindsight-client": "0.9.2", "mem0ai": "2.0.19"})
-        assert ld.feature_missing("memory.hindsight") == ()
-        assert ld.feature_missing("memory.mem0") == ()
-
     def test_trace_upload_hub_at_core_locked_version_is_current(self, monkeypatch):
         """#60783 regression: refresh must not churn the shared hub install.
 
@@ -433,34 +426,6 @@ class TestRefreshActiveFeatures:
 
 
 class TestInstallSpecs:
-    def test_uv_tier_runs_from_the_checkout_so_exclude_newer_applies(self, monkeypatch, tmp_path):
-        """uv reads ``[tool.uv] exclude-newer`` from the cwd project only; a plugin-dep install launched from
-        $HOME or a gateway service must still run under the checkout's quarantine, so the uv invocation
-        carries the checkout root as cwd (#L1-3 of the 2026-09 plugin audit)."""
-        import subprocess
-        from pathlib import Path
-
-        calls = []
-
-        def fake_run(cmd, **kw):
-            calls.append((cmd, kw))
-            return subprocess.CompletedProcess(cmd, 0, stdout="", stderr="")
-
-        monkeypatch.setattr(ld, "_run_installer", fake_run)
-        monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
-        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
-        monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **kw: None)
-        monkeypatch.chdir(tmp_path)
-        project_root = Path(ld.__file__).resolve().parent.parent
-        assert (project_root / "pyproject.toml").is_file()
-
-        result = ld._venv_pip_install(("requests==2.32.0",))
-
-        assert result.success
-        (cmd, kw), = calls
-        assert cmd[:3] == ["/fake/uv", "pip", "install"]
-        assert kw.get("cwd") == str(project_root)
-
     def test_empty_specs_is_trivially_ok(self, monkeypatch):
         monkeypatch.setattr(
             ld, "_venv_pip_install",

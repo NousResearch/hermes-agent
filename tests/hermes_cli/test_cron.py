@@ -352,7 +352,7 @@ class TestExternalCronProviderStatus:
         assert "managed scheduler" in out
         assert "not firing" not in out.lower()
         assert "STALLED" not in out
-        assert "No gateway is running on this host" not in out
+        assert "Gateway is not running" not in out
         # Still surfaces the active-job summary.
         assert "active job(s)" in out
 
@@ -609,12 +609,7 @@ class TestStatusSurfacesDeadScheduler:
     status` / `cron list` must not present the stale timestamp as an upcoming "Next run":
     flag it as overdue and say when the scheduler last ticked."""
 
-    def _dead_gateway(self, monkeypatch, lock_dir):
-        # No gateway owns the HOST role either: point the rendezvous dir at an empty scratch dir
-        # so an unrelated host record can never make this profile look served. (Superseded by the
-        # tests/conftest.py hook in #118097 once that lands.)
-        lock_dir.mkdir(exist_ok=True)
-        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(lock_dir))
+    def _dead_gateway(self, monkeypatch):
         monkeypatch.setattr("hermes_cli.gateway.find_gateway_pids", lambda: [])
         monkeypatch.setattr(
             "hermes_cli.gateway.named_profile_served_by_running_multiplexer", lambda: None
@@ -630,7 +625,7 @@ class TestStatusSurfacesDeadScheduler:
         self, tmp_cron_dir, capsys, monkeypatch
     ):
         job = create_job(prompt="Hourly", schedule="every 60m")
-        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
+        self._dead_gateway(monkeypatch)
         self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(hours=7))
         (tmp_cron_dir / "cron" / "ticker_heartbeat").write_text(str(time.time() - 25 * 3600))
 
@@ -639,7 +634,7 @@ class TestStatusSurfacesDeadScheduler:
         cron_command(Namespace(cron_command="list", all=False, json=False))
         list_out = capsys.readouterr().out
 
-        assert "No gateway is running on this host" in status_out
+        assert "Gateway is not running" in status_out
         assert "Scheduler last ticked" in status_out
         assert "OVERDUE" in status_out and "7h ago" in status_out
         # The stale timestamp must no longer read as an upcoming run on either surface.
@@ -651,7 +646,7 @@ class TestStatusSurfacesDeadScheduler:
         # a few minutes behind the ticker's own cadence is not an outage yet, and status must
         # not flash OVERDUE while doctor calls the same job healthy.
         job = create_job(prompt="Hourly", schedule="every 60m")
-        self._dead_gateway(monkeypatch, tmp_cron_dir / "locks")
+        self._dead_gateway(monkeypatch)
         self._park_next_run(job["id"], datetime.now(timezone.utc) - timedelta(minutes=5))
 
         cron_command(Namespace(cron_command="status"))

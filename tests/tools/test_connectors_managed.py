@@ -37,12 +37,11 @@ class GatewayFake:
     repair check only; the watcher reads accounts."""
 
     def __init__(self, connected=(), flips=None, rows=None, mint_status="initiated", status_reason=None,
-                 mint_connection_id=True, mint_overrides=None):
+                 mint_connection_id=True):
         self.connected = set(connected)
         self.flips = dict(flips or {})
         self.rows = dict(rows or {})
         self.mint_status = mint_status
-        self.mint_overrides = dict(mint_overrides or {})
         self.status_reason = status_reason
         self.mint_connection_id = mint_connection_id
         self.lists = 0
@@ -58,11 +57,10 @@ class GatewayFake:
         self.mints.append({"connectors": tuple(connectors), "reinitiate": reinitiate, "return_to": return_to, "op": op})
         results = []
         for slug in connectors:
-            status = self.mint_overrides.get(slug, self.mint_status)
-            row = {"connector": slug, "status": status, "reinitiated": reinitiate}
-            if status == "initiated":
+            row = {"connector": slug, "status": self.mint_status, "reinitiated": reinitiate}
+            if self.mint_status == "initiated":
                 row["connect_url"] = f"https://connect.example/{slug}/{len(self.mints)}"
-            if self.mint_connection_id and status in ("initiated", "active"):
+            if self.mint_connection_id and self.mint_status in ("initiated", "active"):
                 connection_id = f"ca_{slug}_{len(self.mints)}"
                 self.slug_of[connection_id] = slug
                 row["connection_id"] = connection_id
@@ -208,45 +206,13 @@ def test_respond_from_the_card_skips_a_target_and_wakes_the_loop():
     assert out["settled_by"] == "all_resolved"
 
 
-def test_mint_failure_detail_survives_and_only_an_unlisted_catalog_name_is_misrouted():
+def test_mint_failure_detail_survives_the_generic_list_copy():
     gw = GatewayFake(mint_status="failed", status_reason="vendor: bad scope")
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value={"gmail", "notion"}):
-        out = _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw,
-                   callback=_desktop_callback(), tick=0.01)
-    by = {t["name"]: t for t in out["targets"]}
-    assert by["gmail"]["state"] == "not_connected"
-    assert by["gmail"]["detail"] == "vendor: bad scope"
-    assert by["notion"]["detail"] == "vendor: bad scope"
-
-    gw = GatewayFake(flips={"gmail": 1}, mint_overrides={"notion": "failed"})
-    card = _desktop_callback()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.2), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value={"gmail"}):
-        out = _run({"action": "connect", "connectors": ["gmail", "notion"]}, gw, callback=card, tick=0.01)
-    by = {t["name"]: t for t in out["targets"]}
-    assert len(gw.mints) == 1 and card.seen
-    assert by["gmail"]["state"] == "connected"
-    assert by["notion"]["detail"].startswith("notion is a local MCP server")
-
-    gw = GatewayFake(mint_status="failed")
-    card = _desktop_callback()
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 30.0), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value=set()):
-        out = _run({"action": "connect", "connectors": ["notion"]}, gw, callback=card, tick=0.01)
-    assert card.seen == [] and out["settled_by"] == "all_resolved"
-    assert out["targets"][0]["detail"].startswith("notion is a local MCP server")
-
-    gw = GatewayFake(mint_status="failed", status_reason="gateway hiccup")
-    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05), \
-         patch("tools.connectors.managed.catalog_names", return_value={"notion"}), \
-         patch("tools.connectors.managed.hosted_names", return_value=None):
-        out = _run({"action": "connect", "connectors": ["notion"]}, gw,
-                   callback=_desktop_callback(), tick=0.01)
-    assert out["targets"][0]["detail"] == "gateway hiccup"
+    with patch("tools.connectors.operation.OPERATION_DEADLINE_SECONDS", 0.05):
+        out = _run({"action": "connect", "connectors": ["gmail"]}, gw, callback=_desktop_callback(), tick=0.01)
+    target = out["targets"][0]
+    assert target["state"] == "not_connected"  # failed is unresolved; deadline stamped it
+    assert target["detail"] == "vendor: bad scope"
 
 
 # ---------------------------------------------------------------------------

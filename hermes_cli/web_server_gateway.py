@@ -529,33 +529,19 @@ def _profile_is_multiplexed(profile: str) -> bool:
 
 
 def multiplexed_profile_refusal(profile: Optional[str], verb: str) -> Optional[str]:
-    """Refusal text for ``gateway start``/``stop`` on a named profile with no gateway of its own (a
-    ``--force``-started separate one is managed normally), else None. ``stop`` is refused only when the
-    live default multiplexer serves the profile; ``start`` is refused for every named profile — one
-    host gateway serves every profile, so a new per-profile gateway is never the answer (the CLI twin
-    ``_named_profile_refused_under_multiplexer`` exits 78 into an action log nobody reads while the UI
-    shows the verb as done)."""
+    """Refusal text for ``gateway start``/``stop`` on a profile the live default multiplexer serves and
+    that has no gateway of its own (a ``--force``-started separate one is managed normally), else None.
+    The spawned ``hermes -p X gateway <verb>`` would only print exit-78 / "no gateway running for this
+    profile" into an action log nobody reads while the UI shows the verb as done."""
     requested = _own_profile_selector(profile) or ""
-    if not requested or requested.lower() in {"current", "default"}:
-        return None
-    served = _profile_is_multiplexed(requested)
-    if not served and verb != "start":
+    if not requested or requested.lower() in {"current", "default"} or not _profile_is_multiplexed(requested):
         return None
     from hermes_cli.profiles import _check_gateway_running
     from hermes_cli.web_server_profiles import _resolve_profile_dir
-    profile_dir = _resolve_profile_dir(requested)
-    if _check_gateway_running(profile_dir):
+    if _check_gateway_running(_resolve_profile_dir(requested)):
         return None
-    if served:
-        return (f"The default gateway already serves profile '{requested}' as a multiplexer; "
-                f"{verb} it from the default profile instead of a separate gateway for this profile.")
-    from hermes_cli.gateway_migrate import _installed_services
-    if _installed_services(profile_dir):
-        return None  # a --force-installed fleet member is not NEW; its own service is started normally
-    return (f"Profile '{requested}' does not get a gateway of its own: one host gateway serves every "
-            f"profile. Install or start it from the default profile (hermes gateway install), or fold an "
-            f"existing per-profile fleet with `hermes gateway migrate --multiplex`; "
-            f"`hermes -p {requested} gateway install --force` starts a separate one anyway.")
+    return (f"The default gateway already serves profile '{requested}' as a multiplexer; "
+            f"{verb} it from the default profile instead of a separate gateway for this profile.")
 
 
 def _restart_gateway_after(profile: Optional[str], *, what: str, label: str) -> dict[str, Any]:

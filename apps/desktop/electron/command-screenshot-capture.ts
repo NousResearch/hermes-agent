@@ -62,7 +62,6 @@ export function createScreenshotCapture({ getSources, hasScreenPermission }: Cap
         // Retina detail, bounded for very large windows. No display fallback:
         // sharing the desktop would expose content the gesture did not select.
         const scale = Math.min(2, 4096 / Math.max(window.width, window.height))
-
         const sources = await getSources({
           types: ['window'],
           thumbnailSize: { width: Math.ceil(window.width * scale), height: Math.ceil(window.height * scale) },
@@ -73,9 +72,7 @@ export function createScreenshotCapture({ getSources, hasScreenPermission }: Cap
           return { ok: false, reason: 'expired' }
         }
 
-        const source = sources.find(
-          item => item.id.split(':')[0] === 'window' && item.id.split(':')[1] === String(window.windowId)
-        )
+        const source = sources.find(item => item.id.split(':')[0] === 'window' && item.id.split(':')[1] === String(window.windowId))
 
         if (!source || source.thumbnail.isEmpty()) {
           return { ok: false, reason: 'unavailable' }

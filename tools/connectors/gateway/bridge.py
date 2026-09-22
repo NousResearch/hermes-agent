@@ -1,45 +1,22 @@
+"""Core boundary for connector search, descriptions, and remote execution.
+
+Search and description failures degrade to no remote results; exceptions cannot escape this bridge because core dispatch bypasses registry error wrapping.
+"""
+
 from __future__ import annotations
 
 import logging
-from dataclasses import dataclass, field, replace as dataclass_replace
+from dataclasses import replace as dataclass_replace
 from typing import Any, Callable, Optional, Sequence
 
 from tools.connectors.gateway.config import connectors_available
-from tools.connectors.gateway.errors import GatewayAuthError, GatewayUnavailable, ToolGatewayError
+from tools.connectors.gateway.errors import GatewayUnavailable, ToolGatewayError
 from tools.connectors.gateway.merge import fill_remote_failure, splice_remote_results
 from tools.connectors.gateway.names import parse_connector_name, vendor_slug_candidates
 
 logger = logging.getLogger(__name__)
 
-SIGN_IN_EXPIRED = "sign_in_expired"
-UNREACHABLE = "unreachable"
-
-__all__ = [
-    "SIGN_IN_EXPIRED",
-    "UNREACHABLE",
-    "ConnectorLeg",
-    "connector_describe",
-    "connector_search_hits",
-    "run_remote",
-]
-
-
-@dataclass(frozen=True)
-class ConnectorLeg:
-
-    payload: dict[str, Any] = field(default_factory=dict)
-    failure: Optional[str] = None
-
-
-_TOKEN_REJECTED_CODES = frozenset({"UNAUTHORIZED", "INVALID_TOKEN", "TOKEN_EXPIRED"})
-
-
-def _leg_failure(exc: Exception) -> Optional[str]:
-    if isinstance(exc, GatewayAuthError):
-        if exc.status == 401 or str(exc.code).upper() in _TOKEN_REJECTED_CODES:
-            return SIGN_IN_EXPIRED
-        return None
-    return UNREACHABLE
+__all__ = ["connector_describe", "connector_search_hits", "run_remote"]
 
 
 def _default_client_factory():
@@ -53,19 +30,20 @@ def connector_search_hits(
     *,
     availability: Optional[Callable[[], bool]] = None,
     client_factory: Optional[Callable[[], Any]] = None,
-) -> ConnectorLeg:
+) -> dict[str, Any]:
+    """Return no hits on failure so local search behavior is unchanged."""
     try:
         available = (availability or connectors_available)()
         if not available or not queries:
-            return ConnectorLeg()
+            return {}
         client = (client_factory or _default_client_factory)()
-        return ConnectorLeg(payload=client.search(list(queries)) or {})
+        return client.search(list(queries)) or {}
     except GatewayUnavailable:
         logger.debug("Connector search skipped: gateway dark")
-        return ConnectorLeg()
+        return {}
     except Exception as exc:
-        logger.debug("Connector search failed (D32): %s", exc)
-        return ConnectorLeg(failure=_leg_failure(exc))
+        logger.debug("Connector search failed silently (D32): %s", exc)
+        return {}
 
 
 def connector_describe(
@@ -73,11 +51,12 @@ def connector_describe(
     *,
     availability: Optional[Callable[[], bool]] = None,
     client_factory: Optional[Callable[[], Any]] = None,
-) -> ConnectorLeg:
+) -> dict[str, Any]:
+    """Return no schemas on failure so local descriptions are unchanged."""
     try:
         available = (availability or connectors_available)()
         if not available:
-            return ConnectorLeg()
+            return {}
         # Resolve each name independently: candidates can overlap across composed names.
         wanted: dict[str, tuple[str, ...]] = {}
         request_slugs: list[str] = []
@@ -91,7 +70,7 @@ def connector_describe(
                 if slug not in request_slugs:
                     request_slugs.append(slug)
         if not wanted:
-            return ConnectorLeg()
+            return {}
         client = (client_factory or _default_client_factory)()
         response = client.schemas(request_slugs) or {}
         schemas = response.get("schemas") if isinstance(response.get("schemas"), dict) else {}
@@ -108,13 +87,13 @@ def connector_describe(
                 "description": str(schema.get("description") or ""),
                 "parameters": schema.get("input_schema") or {},
             }
-        return ConnectorLeg(payload={"tools": tools})
+        return {"tools": tools}
     except GatewayUnavailable:
         logger.debug("Connector describe skipped: gateway dark")
-        return ConnectorLeg()
+        return {}
     except Exception as exc:
-        logger.debug("Connector describe failed (D32): %s", exc)
-        return ConnectorLeg(failure=_leg_failure(exc))
+        logger.debug("Connector describe failed silently (D32): %s", exc)
+        return {}
 
 
 def run_remote(

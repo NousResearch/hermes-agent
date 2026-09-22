@@ -23,39 +23,20 @@ function isolatedEnv(root: string): NodeJS.ProcessEnv {
 
   // Allowlist rather than trying to enumerate provider secrets and overrides.
   for (const name of ['PATH', 'SystemRoot', 'WINDIR', 'DISPLAY', 'WAYLAND_DISPLAY', 'XDG_RUNTIME_DIR']) {
-    if (process.env[name]) {
-      env[name] = process.env[name]
-    }
+    if (process.env[name]) {env[name] = process.env[name]}
   }
 
-  return {
-    ...env,
-    HOME: root,
-    USERPROFILE: root,
-    HERMES_HOME: join(root, '.hermes'),
-    XDG_CONFIG_HOME: join(root, 'config'),
-    XDG_CACHE_HOME: join(root, 'cache'),
-    TMPDIR: root,
-    TEMP: root,
-    TMP: root,
-    TZ: 'UTC',
-    LANG: 'C.UTF-8',
-    HERMES_DESKTOP_CDP_PORT: 'off',
-    HERMES_DESKTOP_USER_DATA_DIR: join(root, 'user-data')
-  }
+  return { ...env, HOME: root, USERPROFILE: root, HERMES_HOME: join(root, '.hermes'),
+    XDG_CONFIG_HOME: join(root, 'config'), XDG_CACHE_HOME: join(root, 'cache'),
+    TMPDIR: root, TEMP: root, TMP: root, TZ: 'UTC', LANG: 'C.UTF-8',
+    HERMES_DESKTOP_CDP_PORT: 'off', HERMES_DESKTOP_USER_DATA_DIR: join(root, 'user-data') }
 }
 
 function waitForExit(child: ChildProcess, timeoutMs: number): Promise<number | null> {
   return new Promise((resolveExit, reject) => {
     const timer = setTimeout(() => reject(new Error('Native retirement fixture timed out')), timeoutMs)
-    child.once('error', error => {
-      clearTimeout(timer)
-      reject(error)
-    })
-    child.once('exit', code => {
-      clearTimeout(timer)
-      resolveExit(code)
-    })
+    child.once('error', error => { clearTimeout(timer); reject(error) })
+    child.once('exit', code => { clearTimeout(timer); resolveExit(code) })
   })
 }
 
@@ -64,7 +45,7 @@ test.skipIf(process.env.HERMES_TEST_REAL_SERVE !== '1' || process.platform === '
   async () => {
     const python = process.env.HERMES_TEST_PYTHON
     assert.ok(python && existsSync(python), 'Set HERMES_TEST_PYTHON to an installed Hermes Python environment')
-    const electron = process.env.HERMES_TEST_ELECTRON || (require('electron') as string)
+    const electron = process.env.HERMES_TEST_ELECTRON || require('electron') as string
     assert.ok(existsSync(electron), 'HERMES_TEST_ELECTRON must name a real native Electron executable')
     const root = mkdtempSync(join(tmpdir(), 'hermes-pool-retirement-live-'))
     const resultPath = join(root, 'result.json')
@@ -74,48 +55,21 @@ test.skipIf(process.env.HERMES_TEST_REAL_SERVE !== '1' || process.platform === '
     try {
       mkdirSync(join(root, '.hermes'))
       const bundle = join(root, 'main.cjs')
-      await build({
-        entryPoints: [join(fixture, 'main.ts')],
-        outfile: bundle,
-        bundle: true,
-        platform: 'node',
-        format: 'cjs',
-        target: 'node22',
-        external: ['electron']
-      })
-      await build({
-        entryPoints: [join(fixture, 'preload.ts')],
-        outfile: join(root, 'preload.cjs'),
-        bundle: true,
-        platform: 'node',
-        format: 'cjs',
-        external: ['electron']
-      })
-      await build({
-        entryPoints: [join(desktop, 'src/test/pool-retirement-renderer.ts')],
-        outfile: join(root, 'renderer.js'),
-        bundle: true,
-        platform: 'browser',
-        format: 'iife',
+      await build({ entryPoints: [join(fixture, 'main.ts')], outfile: bundle,
+        bundle: true, platform: 'node', format: 'cjs', target: 'node22', external: ['electron'] })
+      await build({ entryPoints: [join(fixture, 'preload.ts')], outfile: join(root, 'preload.cjs'),
+        bundle: true, platform: 'node', format: 'cjs', external: ['electron'] })
+      await build({ entryPoints: [join(desktop, 'src/test/pool-retirement-renderer.ts')], outfile: join(root, 'renderer.js'),
+        bundle: true, platform: 'browser', format: 'iife',
         alias: { '@': join(desktop, 'src'), '@hermes/shared': join(repo, 'apps/shared/src') },
-        define: { 'import.meta.env': '{}', 'import.meta.hot': 'undefined' }
-      })
-      writeFileSync(
-        join(root, 'renderer.html'),
-        '<!doctype html><meta charset="utf-8"><title>Retirement seam fixture</title><script src="./renderer.js"></script>'
-      )
+        define: { 'import.meta.env': '{}', 'import.meta.hot': 'undefined' } })
+      writeFileSync(join(root, 'renderer.html'), '<!doctype html><meta charset="utf-8"><title>Retirement seam fixture</title><script src="./renderer.js"></script>')
       child = spawn(electron, [bundle, root, repo, python, fixture], {
-        cwd: root,
-        env: isolatedEnv(root),
-        stdio: ['ignore', 'pipe', 'pipe']
+        cwd: root, env: isolatedEnv(root), stdio: ['ignore', 'pipe', 'pipe'],
       })
       // Capture the OS handle now; do not ask a disposed Electron dispatcher after quit.
-      child.stdout!.on('data', chunk => {
-        output += String(chunk)
-      })
-      child.stderr!.on('data', chunk => {
-        output += String(chunk)
-      })
+      child.stdout!.on('data', chunk => { output += String(chunk) })
+      child.stderr!.on('data', chunk => { output += String(chunk) })
       const code = await waitForExit(child, 180_000)
       assert.ok(existsSync(resultPath), `No native result (exit ${code}):\n${output}`)
       const result = JSON.parse(readFileSync(resultPath, 'utf8'))
@@ -143,6 +97,5 @@ test.skipIf(process.env.HERMES_TEST_REAL_SERVE !== '1' || process.platform === '
 
       rmSync(root, { recursive: true, force: true })
     }
-  },
-  210_000
+  }, 210_000,
 )

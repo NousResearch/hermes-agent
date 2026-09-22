@@ -1,3 +1,12 @@
+"""Managed connectors (Nous tool gateway) on the connection operation.
+
+``connect`` mints a link for every target up front and stores it on the target; ``reconnect``
+reads status first and reinitiates only what is not connected (``force`` always reinitiates).
+On a desktop session the call blocks until the operation settles and the result carries no URL;
+the card owns the links. Off the desktop the result carries the URLs and returns at once, until
+PR3 delivers them as their own message. The watcher hook reads one route per pending target:
+that target's own account row, at 1 Hz."""
+
 from __future__ import annotations
 
 import json
@@ -5,12 +14,11 @@ import logging
 import time
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
-from tools.connectors.contract import Actor, SettleReason, TargetState, allowed
+from tools.connectors.contract import Actor, TargetState, allowed
 from tools.connectors.gateway.config import operation_session_key
 from tools.connectors.gateway.errors import RateLimited
-from tools.connectors.operation import ConnectionOperation, DetachedOperation, IllegalTransition, Target
+from tools.connectors.operation import ConnectionOperation, IllegalTransition, Target
 from tools.connectors.run import Kind, run_operation
-from tools.connectors.targets import catalog_names, hosted_names, misrouted_to_hosted_error
 from tools.registry import tool_error
 
 logger = logging.getLogger(__name__)
@@ -37,19 +45,14 @@ _ACCOUNT_OUTCOME: Dict[str, Tuple[TargetState, Actor]] = {
 
 NOTE = (
     "Settled once. connected → use the app now; skipped → the user chose Not now, do not connect it "
-    "or route around it; not_connected → ask the user what to do, never re-mint on your own. "
-    "A later request from the USER for that same app is not a re-ask — run it."
+    "or route around it; not_connected → ask the user what to do, never re-mint on your own."
 )
 
 
-def managed_client():
+def _default_client():
     from tools.connectors.gateway.client import ConnectorClient
 
     return ConnectorClient()
-
-
-def managed_kind(client: Any, action: str, force: bool) -> Kind:
-    return Kind(prepare=_prepare(client, action, force), observe=lambda operation: _observe(client, operation), note=NOTE)
 
 
 def _status_by_slug(client: Any) -> Dict[str, Dict[str, Any]]:
@@ -73,8 +76,8 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
         if target is None:
             continue
         status = str(entry.get("status") or "")
-        detail = str(entry.get("status_reason") or "")
-        connection_id = entry.get("connection_id")
+        detail = str(entry.get("status_reason") or entry.get("statusReason") or "")
+        connection_id = entry.get("connection_id") or entry.get("connectionId")
         if status == "active":
             operation.transition(name, TargetState.initiated, actor)
             operation.transition(name, TargetState.connected, Actor.backend_watcher, connection_id=connection_id)
@@ -84,7 +87,7 @@ def mint(client: Any, operation: ConnectionOperation, names: List[str], *, reini
                                "only the card or the deadline can end the row", name)
             operation.transition(
                 name, TargetState.initiated, actor,
-                connect_url=entry.get("connect_url"), connection_id=connection_id,
+                connect_url=entry.get("connect_url"), connection_id=connection_id, attempt=entry.get("attempt"),
                 detail=detail,
             )
         elif target.state == TargetState.failed:
@@ -168,37 +171,15 @@ def _observe(client: Any, operation: ConnectionOperation) -> None:
         _apply_read(operation, target, str(row.get("status") or "").lower(), str(row.get("statusReason") or ""))
 
 
-def _mark_misrouted(operation: ConnectionOperation) -> None:
-    unminted = [t for t in operation.targets
-                if t.state == TargetState.failed and not t.connection_id]
-    if not unminted:
-        return
-    catalog = catalog_names()
-    candidates = [t for t in unminted if t.name in catalog]
-    if not candidates:
-        return
-    hosted = hosted_names()
-    if hosted is None:
-        return
-    misrouted = [t for t in candidates if t.name not in hosted]
-    for target in misrouted:
-        operation.refresh(target.name, connect_url=None, actor=Actor.backend_watcher,
-                          detail=misrouted_to_hosted_error(target.name))
-    if misrouted and len(misrouted) == len(operation.targets):
-        operation.settle(SettleReason.all_resolved)
-
-
 def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOperation], None]:
     def prepare(operation: ConnectionOperation) -> None:
         names = [t.name for t in operation.targets]
         if action == "connect":
             mint(client, operation, names, reinitiate=False, actor=Actor.backend_watcher)
-            _mark_misrouted(operation)
             return
         if force:
             # The re-mint names a new account; the watcher reads that one, never the old row.
             mint(client, operation, names, reinitiate=True, actor=Actor.backend_watcher)
-            _mark_misrouted(operation)
             return
         status = _status_by_slug(client)
         repair = []
@@ -209,13 +190,12 @@ def _prepare(client: Any, action: str, force: bool) -> Callable[[ConnectionOpera
             else:
                 repair.append(name)
         mint(client, operation, repair, reinitiate=True, actor=Actor.backend_watcher)
-        _mark_misrouted(operation)
 
     return prepare
 
 
-def _no_card_result(client: Any, action: str, names: List[str], force: bool, session_id: str) -> str:
-    operation = DetachedOperation([Target(n, "connector", action) for n in names], session_key=session_id)
+def _off_desktop_result(client: Any, action: str, names: List[str], force: bool, session_id: str) -> str:
+    operation = ConnectionOperation([Target(n, "connector", action) for n in names], session_key=session_id)
     _prepare(client, action, force)(operation)
     payload = operation.result(with_urls=True)
     payload["status"] = "initiated" if any(t.state == TargetState.initiated for t in operation.targets) else "settled"
@@ -240,7 +220,7 @@ def run_managed_action(
     if connectors_available is not None and not connectors_available():
         return tool_error("Connectors are not available in this session.")
     try:
-        client = (client_factory or managed_client)()
+        client = (client_factory or _default_client)()
         if action == "status":
             items = client.list_connectors()
             if connectors:
@@ -257,10 +237,10 @@ def run_managed_action(
         force = bool(args.get("force", False))
         session_key = operation_session_key(session_id)
         if connection_callback is None:
-            return _no_card_result(client, action, connectors, force, session_key)
+            return _off_desktop_result(client, action, connectors, force, session_key)
         return run_operation(
             [Target(n, "connector", action) for n in connectors],
-            managed_kind(client, action, force),
+            Kind(prepare=_prepare(client, action, force), observe=lambda op: _observe(client, op), note=NOTE),
             session_key=session_key, tool_call_id=tool_call_id, tick_seconds=WATCH_TICK_SECONDS,
             connection_callback=connection_callback, with_urls_in_result=False,
         )

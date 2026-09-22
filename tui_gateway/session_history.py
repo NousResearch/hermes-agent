@@ -15,12 +15,6 @@ _DISCORD_TRIGGERING_NOTE_RE = re.compile(
 )
 
 
-def _bridged_tool_labels(name: str, args: dict) -> list[dict]:
-    from agent.display import tool_labels_for_call
-
-    return [label.as_payload() for label in tool_labels_for_call(name, args)]
-
-
 def _active_image_routing_identity(agent: Any) -> tuple[str, str]:
     """Return the live provider/model, falling back before agent startup."""
     from agent.auxiliary_client import _read_main_model, _read_main_provider
@@ -228,9 +222,7 @@ def _history_to_messages(history: list[dict]) -> list[dict]:
             name = tc_name or m.get("tool_name") or "tool"
             args = tc_args or {}
             # `context` is an 80-char preview; ship args so a full-call renderer isn't truncated.
-            labels = _bridged_tool_labels(name, args)
-            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args),
-                             **({"args": args} if args else {}), **({"labels": labels} if labels else {})})
+            messages.append({"role": "tool", "name": name, "context": _tool_ctx(name, args), **({"args": args} if args else {})})
             continue
         # Assistant detail sidecars can carry the only visible reply or reasoning after resume/reload.
         has_assistant_detail = role == "assistant" and any(m.get(key) for key in _HISTORY_ASSISTANT_DETAIL_KEYS)

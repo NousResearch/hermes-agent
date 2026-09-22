@@ -25,7 +25,6 @@ describe('readPreUpdateBackupEnabled', () => {
     ['an environment-expanded off alias', '"off"', false]
   ])('uses the effective config result for %s', async (_name, stdout, expected) => {
     const run = vi.fn().mockResolvedValue({ stdout })
-
     const runtime = {
       command: '/runtime/python',
       args: ['-m', 'hermes_cli.main', 'config', 'get', 'updates.pre_update_backup', '--json'],

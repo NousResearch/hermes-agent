@@ -77,13 +77,11 @@ describe('live session activation in-flight state', () => {
       user: 'process completed'
     }
 
-    expect(liveSessionInflightMessages(inflight)).toEqual([
-      {
-        kind: 'event',
-        role: 'system',
-        text: 'Finished syncing the workspace'
-      }
-    ])
+    expect(liveSessionInflightMessages(inflight)).toEqual([{
+      kind: 'event',
+      role: 'system',
+      text: 'Finished syncing the workspace'
+    }])
   })
 
   it('ignores empty in-flight payloads', () => {

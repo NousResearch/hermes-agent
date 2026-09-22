@@ -62,11 +62,11 @@ class TestDrainWaitsForCronWork:
         import cron.scheduler as sched
 
         runner, _adapter = make_restart_runner()
-        sched._running_job_ids.add(sched._inflight_key("job-1"))
+        sched._running_job_ids.add("job-1")
 
         async def finish_job():
             await asyncio.sleep(0.12)
-            sched._running_job_ids.discard(sched._inflight_key("job-1"))
+            sched._running_job_ids.discard("job-1")
 
         task = asyncio.create_task(finish_job())
         _snapshot, timed_out = await runner._drain_active_agents(2.0)
@@ -91,8 +91,8 @@ class TestKillToolSubprocessesMarksCronInterrupted:
         runner._cron_drain_timeout = 0.01  # ...past the cron floor too (#82161)
         adapter.disconnect = _make_async_noop()
 
-        sched._running_job_ids.add(sched._inflight_key("job-1"))
-        sched._running_fire_owners[sched._inflight_key("job-1")] = {
+        sched._running_job_ids.add("job-1")
+        sched._running_fire_owners["job-1"] = {
             object(): ("owner-1", sched._get_hermes_home().resolve())
         }
 

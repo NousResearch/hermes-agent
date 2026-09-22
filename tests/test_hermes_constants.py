@@ -8,8 +8,6 @@ from types import SimpleNamespace
 import pytest
 
 import hermes_constants
-from hermes_platform.host import runtime as host_runtime
-from hermes_platform.host import facts as host_facts
 from hermes_constants import (
     VALID_REASONING_EFFORTS,
     agent_browser_runnable,
@@ -83,9 +81,8 @@ class TestGetDefaultHermesRoot:
         """Repeated calls reuse the memo; HERMES_HOME / home changes invalidate.
 
         get_default_hermes_root() resolves HERMES_HOME against the native
-        home (~80us of path resolution) and is called at 31+ sites — every
-        _load_global_auth_store() (per provider row in the /model picker),
-        kanban, backup, gateway, update. The memo is keyed on
+        home (~80us of path resolution) and is called at 31+ sites — kanban,
+        backup, gateway, update, profile enumeration. The memo is keyed on
         (native home, HERMES_HOME) compared for free each call.
         """
         # HERMES_HOME set to a Docker-profile path: every call resolves the
@@ -378,7 +375,7 @@ class TestIsContainer:
 
     def _reset_cache(self, monkeypatch):
         """Reset the cached detection result before each test."""
-        monkeypatch.setattr(host_runtime, "_container_detected", None)
+        monkeypatch.setattr(hermes_constants, "_container_detected", None)
 
     def test_detects_dockerenv(self, monkeypatch, tmp_path):
         """/.dockerenv triggers container detection."""
@@ -402,6 +399,8 @@ class TestIsContainer:
         """#58135: a host that merely RUNS containers exposes each container's overlay lowerdir
         (``lowerdir=/var/lib/containerd/...``) at non-root mount points; only the root ('/') line
         says whether *this* process lives in a runtime overlay."""
+        from hermes_constants import _root_mount_has_marker
+
         markers = ("kubepods", "containerd", "crio")
         host = tmp_path / "host"
         host.write_text(
@@ -415,13 +414,13 @@ class TestIsContainer:
             "rw,lowerdir=/var/lib/containerd/io.containerd.snapshotter.v1.overlayfs/snapshots/9/fs\n"
             "2 1 0:51 / /proc rw,nosuid - proc proc rw\n"
         )
-        assert host_runtime._root_mount_has_marker(str(host), markers) is False
-        assert host_runtime._root_mount_has_marker(str(container), markers) is True
-        assert host_runtime._root_mount_has_marker(str(tmp_path / "missing"), markers) is False
+        assert _root_mount_has_marker(str(host), markers) is False
+        assert _root_mount_has_marker(str(container), markers) is True
+        assert _root_mount_has_marker(str(tmp_path / "missing"), markers) is False
 
     def test_caches_result(self, monkeypatch):
         """Second call uses cached value without re-probing."""
-        monkeypatch.setattr(host_runtime, "_container_detected", True)
+        monkeypatch.setattr(hermes_constants, "_container_detected", True)
         assert is_container() is True
         # Even if we make os.path.exists return False, cached value wins
         monkeypatch.setattr(os.path, "exists", lambda p: False)
@@ -972,8 +971,7 @@ class TestWindowsHealStageSwap:
         import urllib.request
 
         monkeypatch.setattr(hermes_constants.sys, "platform", "win32")
-        # Pin the native architecture to the x64 archive served by the fake index.
-        monkeypatch.setattr(host_facts, "native_arch", lambda: "amd64")
+        monkeypatch.setenv("PROCESSOR_ARCHITECTURE", "AMD64")
         monkeypatch.setenv("HERMES_HOME", str(home))
         monkeypatch.setenv(
             "HERMES_NODE_TARGET_MAJOR",

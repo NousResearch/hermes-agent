@@ -407,7 +407,6 @@ export const ar = defineLocale({
       gatewayManagedUpdatesUnavailable: 'تتطلب التحديثات البعيدة إصدار سطح مكتب يدعم تحديثات SSH المُدارة.',
       gatewayManagedUpdatesEmpty: 'أضف اتصال SSH في الاتصالات المحفوظة لإدارة تحديثاته هنا.',
       keyboardShortcuts: 'تعيينات المفاتيح',
-      hudGesture: 'إيماءة HUD',
       screenCapture: 'التقاط الشاشة',
       notificationAlerts: 'تنبيهات سطح المكتب',
       notificationSounds: 'الأصوات',
@@ -521,7 +520,7 @@ export const ar = defineLocale({
       blurb:
         'امتدادات واجهة تُحمّل داخل هذا التطبيق — إما مضمّنة مع البناء، أو موضوعة في مجلد desktop-plugins (بما فيها التي يكتبها Hermes). تعطيل الإضافة يفرغها مباشرة ويبقى بعد إعادة التشغيل.',
       count: n => `${n} مثبتة`,
-      openFolder: 'فتح مجلد إضافات سطح المكتب',
+      openFolder: 'فتح مجلد الإضافات',
       rescan: 'إعادة الفحص',
       reveal: 'إظهار في مدير الملفات',
       enable: 'تفعيل',
@@ -716,8 +715,7 @@ export const ar = defineLocale({
     },
     fieldLabels: {
       model: 'النموذج الافتراضي',
-      modelContextLength:
-        'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
+      modelContextLength: 'يتجاوز نافذة السياق المكتشفة لنموذج المحادثة الرئيسي فقط (بالرموز). اتركه 0 لاستخدام القيمة المكتشفة للنموذج المحدد. لا يؤثر على النماذج المساعدة أو نماذج MoA.',
       fallbackProviders: 'النماذج الاحتياطية',
       toolsets: 'مجموعات الأدوات المفعلة',
       timezone: 'المنطقة الزمنية',
@@ -832,8 +830,7 @@ export const ar = defineLocale({
       'context.engine': 'استراتيجية إدارة المحادثات الطويلة قرب حد السياق.',
       'compression.enabled': 'يلخص السياق الأقدم عندما تكبر المحادثات.',
       'compression.codexGpt55Autoraise': 'يرفع عتبة الضغط إلى 85٪ لنماذج ChatGPT Codex OAuth المدعومة.',
-      'auxiliary.compression.timeout':
-        'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
+      'auxiliary.compression.timeout': 'عدد الثواني لانتظار نموذج الضغط المساعد في كل استدعاء (الافتراضي 120). ارفعه للنماذج المحلية البطيئة.',
       'voice.autoTts': 'ينطق ردود المساعد تلقائياً.',
       'tts.xai.voiceId': 'معرف صوت xAI مثل eve أو معرف صوت مخصص.',
       'tts.xai.language': 'رمز لغة النطق، مثل en.',
@@ -880,11 +877,6 @@ export const ar = defineLocale({
       daysAgo: count => `قبل ${count} يوم`
     },
     config: {
-      minimizeToTrayTitle: 'التصغير إلى علبة النظام',
-      minimizeToTrayDesc:
-        'تصغير النوافذ أو إغلاق النافذة الرئيسية يخفيها في علبة النظام (شريط القوائم على macOS) مع استمرار Hermes في العمل. استخدم إنهاء Hermes من قائمة العلبة أو Cmd+Q للخروج. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
-      minimizeToTrayUnavailable:
-        'علبة النظام غير متاحة. ستُصغّر النوافذ وتُغلق كالمعتاد. أوقف هذا الخيار ثم فعّله لإعادة المحاولة.',
       none: 'لا شيء',
       noneParen: '(لا شيء)',
       notSet: 'غير مضبوط',
@@ -899,18 +891,6 @@ export const ar = defineLocale({
       autosaveFailed: 'فشل الحفظ التلقائي',
       imported: 'تم استيراد الإعدادات',
       invalidJson: 'JSON غير صالح'
-    },
-    hudModifier: {
-      title: 'استدعاء HUD بضغطة',
-      description:
-        'اضغط ثم حرّر ⌘ + Option على Mac، أو Ctrl + Alt على Windows/Linux، لإظهار HUD من أي تطبيق. معطّل افتراضيًا ويُطبّق على هذا الجهاز فقط.',
-      permission:
-        'اسمح لـ Hermes في إعدادات النظام ← الخصوصية والأمان ← مراقبة الإدخال، ثم أعد المحاولة. لا تسجّل هذه الإيماءة ضغطات المفاتيح ولا تلتقط الشاشة.',
-      unavailable:
-        'تعذّر تشغيل مساعد إيماءة HUD أو توقف بشكل غير متوقع. أعد المحاولة أو أعد تشغيل Hermes. يظل اختصار HUD الحالي يعمل داخل Hermes.',
-      missingHelper: 'مساعد إيماءة HUD غير موجود في تثبيت Hermes هذا. حدّث Hermes أو أعد تثبيته، ثم أعد المحاولة.',
-      unsupportedSession:
-        'جلسة سطح المكتب هذه لا تدعم ضغطات مفاتيح التعديل على مستوى النظام. يتطلب Linux جلسة X11؛ Wayland غير مدعوم.'
     },
     screenshot: {
       enabledTitle: 'اختصار لقطة الشاشة',
@@ -1038,16 +1018,31 @@ export const ar = defineLocale({
     },
     mcp: {
       loading: 'جار تحميل خوادم MCP...',
+      failedLoad: 'فشل تحميل إعدادات MCP',
+      nameRequiredTitle: 'الاسم مطلوب',
+      nameRequiredMessage: 'أعط هذا الخادم مفتاح إعداد.',
+      objectRequired: 'يجب أن تكون إعدادات الخادم كائن JSON',
       invalidJson: 'JSON الخاص بـ MCP غير صالح',
       saveFailed: 'فشل الحفظ',
       removeFailed: 'فشلت الإزالة',
+      gatewayUnavailableTitle: 'البوابة غير متاحة',
+      gatewayUnavailableMessage: 'أعد الاتصال بالبوابة قبل إعادة تحميل MCP.',
+      reloadedTitle: 'تمت إعادة تحميل أدوات MCP',
+      reloadedMessage: 'مخططات الأدوات الجديدة تطبق على الأدوار الجديدة.',
       reloadFailed: 'فشلت إعادة تحميل MCP',
       savedTitle: 'تم حفظ خادم MCP',
       savedMessage: name => `سيطبق ${name} بعد إعادة تحميل MCP.`,
+      newServer: 'خادم جديد',
+      reload: 'إعادة تحميل MCP',
+      reloading: 'جار إعادة التحميل...',
+      emptyTitle: 'لا توجد خوادم MCP',
+      emptyDesc: 'أضف خادم stdio أو HTTP لإتاحة أدوات MCP.',
       disabled: 'معطل',
+      editServer: 'تحرير الخادم',
       name: 'الاسم',
       serverJson: 'JSON الخادم',
       remove: 'إزالة',
+      saveServer: 'حفظ الخادم',
       deepLinkTitle: 'إضافة خادم MCP؟',
       deepLinkDescription:
         'طلب رابط إضافة خادم MCP هذا إلى Hermes. راجع الإعدادات الكاملة أدناه — فهي قادمة من الرابط وليست من Hermes.',
@@ -2237,8 +2232,6 @@ export const ar = defineLocale({
     }
   },
   statusStack: {
-    hideStack: 'إخفاء لوحة الحالة',
-    showStack: 'إظهار لوحة الحالة',
     agents: 'الوكلاء',
     background: count => `${count} في الخلفية`,
     goalActive: 'الهدف نشط',
@@ -3184,8 +3177,7 @@ export const ar = defineLocale({
     sudoSendFailed: 'فشل إرسال كلمة مرور sudo',
     secretSendFailed: 'فشل إرسال السر',
     sudoTitle: 'مطلوب sudo',
-    sudoDesc:
-      'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
+    sudoDesc: 'راجع الأمر قبل إدخال كلمة مرور sudo. تُرسل كلمة المرور إلى الوكيل الذي ينفّذه وتُحفظ مؤقتًا لهذه الجلسة.',
     sudoCommandUnavailable: 'لم يقدّم هذا الوكيل الأمر. ألغِ الطلب إذا لم تتمكن من التحقق منه في المحادثة.',
     sudoPlaceholder: 'كلمة المرور',
     secretTitle: 'مطلوب سر',

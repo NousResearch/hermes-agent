@@ -339,7 +339,9 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                       : ctrl.waitBarrierTitle}
                   </StatusControlRow>
                 )}
-                {!goal.wait_barrier && goal.paused_reason && <StatusControlRow>{goal.paused_reason}</StatusControlRow>}
+                {!goal.wait_barrier && goal.paused_reason && (
+                  <StatusControlRow>{goal.paused_reason}</StatusControlRow>
+                )}
                 {!goal.wait_barrier && !goal.paused_reason && goal.last_reason && (
                   <StatusControlRow>{goal.last_reason}</StatusControlRow>
                 )}
@@ -362,11 +364,7 @@ export const SessionControlGoalSection = memo(function SessionControlGoalSection
                   <StatusRow
                     className="text-[0.68rem] font-medium text-muted-foreground/75"
                     leading={
-                      <span
-                        aria-hidden="true"
-                        className="inline-flex text-muted-foreground/70"
-                        data-slot="criteria-state-marker"
-                      >
+                      <span aria-hidden="true" className="inline-flex text-muted-foreground/70" data-slot="criteria-state-marker">
                         <Codicon name="checklist" size="0.8rem" />
                       </span>
                     }

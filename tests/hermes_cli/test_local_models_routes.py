@@ -8,7 +8,6 @@ from __future__ import annotations
 
 import io
 import json
-import os
 import time
 from pathlib import Path
 
@@ -359,97 +358,3 @@ def test_download_tolerates_stale_catalog_size(client, monkeypatch):
             break
         time.sleep(0.05)
     assert status is not None and status["status"] == "done", status.get("error")
-
-
-def test_download_survives_a_held_finished_file(client, monkeypatch):
-    """The finished .part is often still open to an antivirus scan when the rename runs (Windows),
-    which refuses it with a permission error. The job must wait the hold out and land the file —
-    not copy it, and not report a complete download as failed."""
-
-    body = b"x" * 48
-
-    class FakeResponse(io.BytesIO):
-        headers = {"Content-Length": str(len(body))}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResponse(body))
-
-    real_replace = os.replace
-    refusals = []
-
-    def held_at_first(src, dst):
-        if str(src).endswith(".part") and len(refusals) < 2:
-            refusals.append(src)
-            raise PermissionError(13, "Access is denied")
-        real_replace(src, dst)
-
-    monkeypatch.setattr(os, "replace", held_at_first)
-
-    from hermes_cli.local_runtime.estimator import HardwareBudget
-
-    budget = HardwareBudget(usable_vram_bytes=64 << 30, total_device_bytes=64 << 30,
-                            ram_available_bytes=64 << 30)
-    monkeypatch.setattr("hermes_cli.local_runtime.hardware.probe_budget", lambda **kw: budget)
-    monkeypatch.setattr("hermes_cli.local_runtime.bootstrap.refresh_local_runtime", lambda: False)
-
-    from hermes_cli.local_runtime.bootstrap import models_dir
-    from hermes_cli.local_runtime.catalog import CATALOG
-
-    entry_id = CATALOG[0].id
-    r = client.post("/api/local-models/download", json={"model_id": entry_id})
-    assert r.status_code == 200
-    job_id = r.json()["job_id"]
-
-    deadline = time.time() + 10
-    status = None
-    while time.time() < deadline:
-        status = client.get(f"/api/local-models/jobs/{job_id}").json()
-        if status["status"] in ("done", "error"):
-            break
-        time.sleep(0.05)
-    assert status is not None and status["status"] == "done", status.get("error")
-    assert len(refusals) == 2
-    assert not list(models_dir().glob("*.part"))
-    assert any(p.read_bytes() == body for p in models_dir().glob("*.gguf"))
-
-
-def test_download_failure_is_not_masked_by_a_stuck_leftover(tmp_path, monkeypatch):
-    """When the rename gives up, the user must see that message — not the error from the
-    cleanup that could not remove the still-held .part either."""
-    from hermes_cli.web_routers import local_models
-
-    body = b"x" * 48
-
-    class FakeResponse(io.BytesIO):
-        headers = {"Content-Length": str(len(body))}
-
-        def __enter__(self):
-            return self
-
-        def __exit__(self, *a):
-            return False
-
-    monkeypatch.setattr("urllib.request.urlopen", lambda *a, **k: FakeResponse(body))
-
-    def still_held(tmp, dest, **kw):
-        raise RuntimeError("could not be renamed into place")
-
-    monkeypatch.setattr("hermes_cli.local_runtime.binaries.replace_when_released", still_held)
-    real_unlink = Path.unlink
-
-    def stuck_part(self, missing_ok=False):
-        if self.suffix == ".part":
-            raise PermissionError(13, "Access is denied")
-        return real_unlink(self, missing_ok=missing_ok)
-
-    monkeypatch.setattr(Path, "unlink", stuck_part)
-
-    dest = tmp_path / "models" / "model.gguf"
-    with pytest.raises(RuntimeError, match="could not be renamed"):
-        local_models.download_file("http://example.invalid/model.gguf", dest, {})
-    assert not dest.exists()

@@ -5,13 +5,12 @@ interface RetainedNotification extends EventEmitter {
 }
 
 // Windows emits close on banner timeout even while Action Center keeps the
-// notification clickable. Linux's terminal NotificationClosed can opt into release.
+// notification clickable. Only consumption or failed delivery releases it.
 const RELEASE_EVENTS = ['click', 'action', 'failed']
 const NOTIFICATION_RETENTION_TTL_MS = 10 * 60 * 1000
 
-export function createNotificationRegistry({ ttlMs = NOTIFICATION_RETENTION_TTL_MS, releaseOnClose = false } = {}) {
+export function createNotificationRegistry({ ttlMs = NOTIFICATION_RETENTION_TTL_MS } = {}) {
   const live = new Set<RetainedNotification>()
-  const releaseEvents = releaseOnClose ? [...RELEASE_EVENTS, 'close'] : RELEASE_EVENTS
 
   function retain(notification: RetainedNotification): void {
     live.add(notification)
@@ -20,12 +19,12 @@ export function createNotificationRegistry({ ttlMs = NOTIFICATION_RETENTION_TTL_
       clearTimeout(timer)
       live.delete(notification)
 
-      for (const event of releaseEvents) {
+      for (const event of RELEASE_EVENTS) {
         notification.removeListener(event, release)
       }
     }
 
-    for (const event of releaseEvents) {
+    for (const event of RELEASE_EVENTS) {
       notification.on(event, release)
     }
 

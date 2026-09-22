@@ -48,7 +48,6 @@ describe('ssh-isolated keep-alive registry (#106935)', () => {
   it('holds an open WebSocket per scope until that scope stops, then never reconnects it', async () => {
     const { createSshIsolatedKeepaliveRegistry } = await import('./ssh-isolated-keepalive')
     const { FakeWs, instances } = makeFakeWs()
-
     const registry = createSshIsolatedKeepaliveRegistry({
       WebSocketImpl: FakeWs,
       reconnectDelayMs: 25

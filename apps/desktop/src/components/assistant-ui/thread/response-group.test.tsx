@@ -37,31 +37,22 @@ it('keeps background continuations in one response with one action bar and the o
     const messages = toChatMessages(stored).map(toRuntimeMessage)
 
     const { container, rerender, unmount } = render(
-      <ThreadRuntime messages={messages.slice(0, 2)}>
-        <Thread onBranchInNewChat={branch} />
-      </ThreadRuntime>
+      <ThreadRuntime messages={messages.slice(0, 2)}><Thread onBranchInNewChat={branch} /></ThreadRuntime>
     )
 
     const original = container.querySelector('[data-role="assistant"]')
 
-    rerender(
-      <ThreadRuntime messages={messages}>
-        <Thread onBranchInNewChat={branch} />
-      </ThreadRuntime>
-    )
+    rerender(<ThreadRuntime messages={messages}><Thread onBranchInNewChat={branch} /></ThreadRuntime>)
     await waitFor(() => expect(container.textContent).toContain('The deployment is verified.'))
     expect(container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(1)
     expect(container.querySelectorAll('[data-slot="aui_response-group"]')).toHaveLength(1)
     expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
     expect(container.querySelector('[data-role="assistant"]')).toBe(original)
-    expect(
-      [...container.querySelectorAll('[data-role="assistant"]')].map(e => e.getAttribute('data-message-id'))
-    ).toEqual([messages[1]!.id, messages[3]!.id])
+    expect([...container.querySelectorAll('[data-role="assistant"]')].map(e => e.getAttribute('data-message-id')))
+      .toEqual([messages[1]!.id, messages[3]!.id])
     const actions = container.querySelector('[data-slot="aui_msg-actions"]') as HTMLElement
     fireEvent.click(within(actions).getByRole('button', { name: 'Copy' }))
-    await waitFor(() =>
-      expect(clipboard.writeText).toHaveBeenLastCalledWith('Checking the deployment.\n\nThe deployment is verified.')
-    )
+    await waitFor(() => expect(clipboard.writeText).toHaveBeenLastCalledWith('Checking the deployment.\n\nThe deployment is verified.'))
     fireEvent.click(within(actions).getByRole('button', { name: /branch/i }))
     expect(branch).toHaveBeenLastCalledWith(messages[3]!.id)
 
@@ -70,22 +61,12 @@ it('keeps background continuations in one response with one action bar and the o
       { ...messages[3]!, role: 'assistant', id: 'next', content: [], status: { type: 'running' } } as ThreadMessage
     ]
 
-    rerender(
-      <ThreadRuntime messages={pending}>
-        <Thread onBranchInNewChat={branch} />
-      </ThreadRuntime>
-    )
+    rerender(<ThreadRuntime messages={pending}><Thread onBranchInNewChat={branch} /></ThreadRuntime>)
     await waitFor(() => expect(container.querySelectorAll('[data-role="assistant"]')).toHaveLength(3))
     expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
 
     unmount()
-
-    const reloaded = render(
-      <ThreadRuntime messages={messages}>
-        <Thread />
-      </ThreadRuntime>
-    )
-
+    const reloaded = render(<ThreadRuntime messages={messages}><Thread /></ThreadRuntime>)
     expect(reloaded.container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(1)
     reloaded.unmount()
   }
@@ -101,12 +82,7 @@ it('ends the response at a real user prompt or unrelated system event', () => {
     { role: 'assistant', content: 'Second answer', timestamp: 6 }
   ]).map(toRuntimeMessage)
 
-  const { container } = render(
-    <ThreadRuntime messages={messages}>
-      <Thread />
-    </ThreadRuntime>
-  )
-
+  const { container } = render(<ThreadRuntime messages={messages}><Thread /></ThreadRuntime>)
   expect(container.querySelectorAll('[data-slot="aui_turn-pair"]')).toHaveLength(2)
   expect(container.querySelectorAll('[data-slot="aui_msg-actions"]')).toHaveLength(3)
 })

@@ -735,9 +735,7 @@ describe('assistant-ui streaming renderer', () => {
     body.scrollTop = height - body.clientHeight - 0.5
     fireEvent.scroll(body)
     rerender(
-      <RunningMessageHarness
-        message={assistantReasoningMessage('First thought. More reasoning. Latest thought.', true)}
-      />
+      <RunningMessageHarness message={assistantReasoningMessage('First thought. More reasoning. Latest thought.', true)} />
     )
     height = 1200
     deliverGrowth()

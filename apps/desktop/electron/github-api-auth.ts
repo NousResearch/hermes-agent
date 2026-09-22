@@ -208,9 +208,7 @@ export function githubApiHeaders(base: Record<string, string>, token?: string | 
  * before credentials were wired in. Anonymous 401s and every other status are
  * not the token's fault and are surfaced as-is.
  */
-export function githubTokenRejected(
-  error: { statusCode?: number; authenticated?: boolean } | null | undefined
-): boolean {
+export function githubTokenRejected(error: { statusCode?: number; authenticated?: boolean } | null | undefined): boolean {
   return error?.statusCode === 401 && error?.authenticated === true
 }
 

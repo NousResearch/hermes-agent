@@ -1,6 +1,5 @@
 import { stripAnsi } from '@hermes/shared/ansi'
 import { compactNumber } from '@hermes/shared/format'
-import type { ToolLabel } from '@hermes/shared/gateway-events'
 
 import {
   LIVE_RENDER_MAX_CHARS,
@@ -180,30 +179,18 @@ export const formatToolCall = (name: string, context = '') => {
   return preview ? `${label}("${preview}")` : label
 }
 
-/** One row's worth of a bridged call: the gateway already phrased it, preview included. */
-export const formatToolLabel = (label: ToolLabel) =>
-  `${label.emoji} ${compactPreview(label.preview ? `${label.text}  ${label.preview}` : label.text, 72)}`
-
-export const formatToolLabels = (labels: readonly ToolLabel[]) => {
-  const [first, ...rest] = labels
-
-  if (first === undefined) {
-    return ''
-  }
-
-  return rest.length > 0 ? `${formatToolLabel(first)} +${rest.length}` : formatToolLabel(first)
-}
-
-/** A finished trail row for an already-phrased call. */
-export const toolTrailLine = (call: string, error?: boolean, note?: string, duration?: number) => {
+export const buildToolTrailLine = (
+  name: string,
+  context: string,
+  error?: boolean,
+  note?: string,
+  duration?: number
+) => {
   const detail = compactPreview(note ?? '', 72)
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${call}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
-
-export const buildToolTrailLine = (name: string, context: string, error?: boolean, note?: string, duration?: number) =>
-  toolTrailLine(formatToolCall(name, context), error, note, duration)
 
 const verboseToolBlock = (label: string, text?: string) => {
   const body = (text ?? '').trim()
@@ -220,9 +207,9 @@ const verboseToolBlock = (label: string, text?: string) => {
     : ''
 }
 
-/** The Args and Result blocks for an already-phrased call. */
-export const verboseToolTrailLine = (
-  call: string,
+export const buildVerboseToolTrailLine = (
+  name: string,
+  context: string,
   error?: boolean,
   duration?: number,
   argsText?: string,
@@ -234,17 +221,8 @@ export const verboseToolTrailLine = (
 
   const took = duration !== undefined ? ` (${duration.toFixed(1)}s)` : ''
 
-  return `${call}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
+  return `${formatToolCall(name, context)}${took}${detail ? ` :: ${detail}` : ''} ${error ? '✗' : '✓'}`
 }
-
-export const buildVerboseToolTrailLine = (
-  name: string,
-  context: string,
-  error?: boolean,
-  duration?: number,
-  argsText?: string,
-  resultText?: string
-) => verboseToolTrailLine(formatToolCall(name, context), error, duration, argsText, resultText)
 
 export const isToolTrailResultLine = (line: string) => line.endsWith(' ✓') || line.endsWith(' ✗')
 

@@ -1,10 +1,7 @@
-import type { ToolLabel } from '@hermes/shared'
-
-import { TOOL_LABELS_ARG } from '@/lib/connector-tools'
 import { firstStringField, normalize } from '@/lib/text'
 import { isTodoToolName, parseTodos } from '@/lib/todos'
 import type { ToolResultMetadata } from '@/lib/tool-result-metadata'
-import type { SessionMessage, StoredToolCallLabels } from '@/types/hermes'
+import type { SessionMessage } from '@/types/hermes'
 
 import type { ChatMessage, ChatMessagePart, GatewayEventPayload } from './types'
 
@@ -26,12 +23,6 @@ function normalizeToolMatchValue(value: string): string {
 
 function collectToolMatchValues(query: string, context: string, preview: string): string[] {
   return [...new Set([query, context, preview].map(normalizeToolMatchValue).filter(Boolean))]
-}
-
-/** The gateway names what a bridged `tool_call` actually runs; the row renders those words.
- *  Under a key no tool can take as an argument, so a tool's own `labels` never collides. */
-function labelArgs(labels: ToolLabel[] | undefined): { [TOOL_LABELS_ARG]: ToolLabel[] } | undefined {
-  return labels?.length ? { [TOOL_LABELS_ARG]: labels } : undefined
 }
 
 function recordFromUnknown(value: unknown): Record<string, unknown> | null {
@@ -288,7 +279,6 @@ function toolArgs(payload: GatewayEventPayload | undefined, prevArgs?: unknown):
     ...eventArgs,
     ...(payload?.context ? { context: payload.context } : {}),
     ...(payload?.preview ? { preview: payload.preview } : {}),
-    ...labelArgs(payload?.labels),
     ...carryTodos(payload, prevArgs)
   }
 }
@@ -367,12 +357,7 @@ export function upsertToolPart(
 
   if (index === -1) {
     next.push(base)
-  } else if (
-    phase === 'running' &&
-    prev?.type === 'tool-call' &&
-    prev.completedAt !== undefined &&
-    prev.result === undefined
-  ) {
+  } else if (phase === 'running' && prev?.type === 'tool-call' && prev.completedAt !== undefined && prev.result === undefined) {
     // A settle-time seal (interim boundary, mid-turn user message, lost
     // completion) closed this call without a result. A running event for the
     // same id says the tool is still executing, so the row goes live again
@@ -772,12 +757,7 @@ function parseStoredToolResult(content: unknown): unknown {
   }
 }
 
-export function toolPartFromStoredCall(
-  call: unknown,
-  fallbackIndex: number,
-  timestamp?: number,
-  labels?: StoredToolCallLabels
-): ChatMessagePart {
+export function toolPartFromStoredCall(call: unknown, fallbackIndex: number, timestamp?: number): ChatMessagePart {
   const row = recordFromUnknown(call) ?? {}
   const fn = recordFromUnknown(row.function)
   const id = String(row.id || row.tool_call_id || `stored-tool-${fallbackIndex}`)
@@ -786,10 +766,7 @@ export function toolPartFromStoredCall(
     row.name || row.tool_name || fn?.name || (recordFromUnknown(row.input)?.name as string | undefined) || 'tool'
   )
 
-  const args = {
-    ...firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input),
-    ...labelArgs(labels?.[id])
-  }
+  const args = firstNonEmptyObject(fn?.arguments, row.arguments, row.args, row.input)
 
   return {
     type: 'tool-call',
@@ -831,7 +808,7 @@ export function applyStoredToolResult(messages: ChatMessage[], toolMessage: Sess
       result: parseStoredToolResult(content),
       isError: false
     } as ChatMessagePart
-    messages[i] = { ...message, parts, serverRowSpan: (message.serverRowSpan ?? 1) + 1 }
+    messages[i] = { ...message, parts }
 
     return true
   }
@@ -877,8 +854,7 @@ export function storedToolMessagePart(toolMessage: SessionMessage, fallbackIndex
   // rebuilds the real command from args. Keep `context` alongside as the
   // title-side placeholder.
   const storedArgs = parseMaybeJsonObject(toolMessage.args)
-
-  const args = { ...storedArgs, ...(context ? { context } : {}), ...labelArgs(toolMessage.labels) }
+  const args = { ...storedArgs, ...(context ? { context } : {}) }
 
   return {
     type: 'tool-call',

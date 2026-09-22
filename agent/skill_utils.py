@@ -208,28 +208,6 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
-def skill_matches_apps(frontmatter: Dict[str, Any]) -> bool:
-    """True when every app named in ``requires_apps:`` has a registered declaration this host satisfies.
-
-    Names resolve through ``hermes_platform.declaration`` (registered by whoever owns the server,
-    e.g. the plugin loader); the check is the same ``availability()`` the MCP check_fn uses. An
-    unknown name hides the skill (fail closed). Offer-time filter, like ``environments:``.
-    """
-    names = frontmatter.get("requires_apps")
-    if not names:
-        return True
-    from hermes_platform import declaration
-    from hermes_platform.resolver.availability import availability
-
-    for name in names if isinstance(names, list) else [names]:
-        decl = declaration.lookup(str(name).strip())
-        if decl is None or decl.app is None:
-            return False
-        if not availability(decl).offerable:
-            return False
-    return True
-
-
 _RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
 
 

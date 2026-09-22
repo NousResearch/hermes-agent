@@ -1064,11 +1064,7 @@ function ClarifyToolBatchPending({
 
   const confirmAll = useCallback(async () => {
     if (!request || !gateway) {
-      notifyError(
-        new Error(request ? copy.gatewayDisconnected : copy.notReady),
-        copy.sendFailed,
-        request ? { action: reconnectAction() } : {}
-      )
+      notifyError(new Error(request ? copy.gatewayDisconnected : copy.notReady), copy.sendFailed, request ? { action: reconnectAction() } : {})
 
       return
     }

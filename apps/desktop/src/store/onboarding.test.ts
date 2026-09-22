@@ -881,9 +881,7 @@ describe('setOnboardingModel', () => {
     vi.restoreAllMocks()
   })
 
-  function confirmingModelState(
-    overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}
-  ) {
+  function confirmingModelState(overrides: Partial<Extract<DesktopOnboardingState['flow'], { status: 'confirming_model' }>> = {}) {
     return baseState({
       flow: {
         status: 'confirming_model',

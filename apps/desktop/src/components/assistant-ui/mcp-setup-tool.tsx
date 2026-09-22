@@ -8,6 +8,7 @@ import { useSessionView } from '@/app/chat/session-view'
 import {
   connectionRequestOwnsPart,
   CONNECTOR_CARD_PHASES,
+  type ConnectorOwner,
   MARK_LABEL,
   reissueConnectionTarget,
   useConnectionOwner,
@@ -24,7 +25,6 @@ import { Loader2 } from '@/lib/icons'
 import { prettyName } from '@/lib/text'
 import { cn } from '@/lib/utils'
 import {
-  type ConnectionOwner,
   type ConnectionRequest,
   type ConnectionTarget,
   type ConnectionTargetState,
@@ -72,7 +72,8 @@ const MCP_VERBS = {
   initiated: 'open',
   not_connected: 'none',
   pending: 'approve',
-  skipped: 'none'
+  skipped: 'none',
+  unavailable: 'none'
 } satisfies Record<ConnectionTargetState, McpVerb>
 
 // Two states read differently per action. A pending authorize is the backend still minting the link,
@@ -212,7 +213,7 @@ export function McpSetupPending(props: ToolCallMessagePartProps) {
 interface McpSetupOfferProps {
   action: SetupAction
   /** Null until the session's owner resolves; only Try again needs it, so the rest of the card works. */
-  owner: ConnectionOwner | null
+  owner: ConnectorOwner | null
   request: ConnectionRequest
 }
 
@@ -381,12 +382,7 @@ function McpSetupRow({ action, onReissue, reissueBlocked, reissuing, request, ta
   } satisfies Record<Exclude<McpVerb, 'none'>, ConnectorRowAction>
 
   const displayServer = prettyName(server)
-
-  const rowCue = target.discoveryError
-    ? t.connectors.authorizedToolsUnavailable
-    : verb === 'open'
-      ? t.connectors.waiting
-      : undefined
+  const rowCue = target.discoveryError ? t.connectors.authorizedToolsUnavailable : verb === 'open' ? t.connectors.waiting : undefined
 
   return (
     <>

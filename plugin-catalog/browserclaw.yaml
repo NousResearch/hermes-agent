@@ -1,14 +1,14 @@
 name: browserclaw
 repo: https://github.com/GoldenLoaf24h/browserclaw
-sha: 9678a11460213341ea41b405356f2c5d04be6c37
+sha: 9a0486b0da4cdffbb0c2314d9ed2f24a96b63892
 subdir: "plugins/browserclaw"
-description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev micro-loop, and local MCP bridge. Disclosure — patches Hermes' tool-preview/progress rendering process-wide at load: rebinds the private TurnRunner._progress_build_message, BasePlatformAdapter.format_tool_event for every platform adapter, and every prepare_tool_preview reference found in sys.modules (guarded, fail-open)."
+description: "Ultra-fast dual-brain Chrome browser automation with 1-based DOM indexing, visual fallbacks, Jev micro-loop, and local MCP bridge."
 maintainer: GoldenLoaf24h
 tier: community
 category: web
 requires_hermes: ">=0.19"
 docs_url: "https://github.com/GoldenLoaf24h/browserclaw#readme"
-version: "3.0.0"
+version: "2.9.3"
 capabilities:
   provides_tools:
     - browserclaw_act_toward_goal

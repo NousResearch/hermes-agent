@@ -153,7 +153,7 @@ _runtime_status_state: Optional[dict[str, Any]] = None
 
 def _merge_over_on_disk(path: Path, payload: dict[str, Any]) -> dict[str, Any]:
     """Lay the canonical snapshot over whatever is on disk right before writing. Out-of-process
-    writers (the migration's compensator clearing multiplex-owned status, container_boot
+    writers (``hermes gateway migrate --standalone`` clearing multiplex-owned status, container_boot
     seeding ``desired_state``) stamp this file directly; the gateway's fields win, theirs survive."""
     existing = _read_json_file(path)
     return {**existing, **payload} if isinstance(existing, dict) else payload
@@ -306,21 +306,11 @@ def _get_runtime_status_path() -> Path:
 
 
 def _get_lock_dir() -> Path:
-    """Cross-profile rendezvous dir for machine-local locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides.
-
-    Scope is the **OS user**, not the kernel host: separate users have separate ``$HOME``s,
-    separate ``~/.hermes`` profile roots and separate credentials, so "one gateway per host"
-    means "one per host per OS user". Holds the token-scoped locks (:func:`acquire_scoped_lock`)
-    and the host-role lock + rendezvous record (``gateway/host_rendezvous.py``); the per-home
-    ``gateway.pid``/``gateway.lock`` above deliberately stay under each profile's HERMES_HOME.
-    """
+    """Machine-local dir for token-scoped gateway locks; ``HERMES_GATEWAY_LOCK_DIR`` overrides."""
     override = os.getenv("HERMES_GATEWAY_LOCK_DIR")
     if override:
         return Path(override)
-    # XDG spec: a relative $XDG_STATE_HOME is INVALID and must be ignored. Honouring one made the
-    # lock dir CWD-relative, so two serves started from different directories shared no singleton.
-    state_home_env = os.getenv("XDG_STATE_HOME") or ""
-    state_home = Path(state_home_env) if os.path.isabs(state_home_env) else Path.home() / ".local" / "state"
+    state_home = Path(os.getenv("XDG_STATE_HOME", Path.home() / ".local" / "state"))
     return state_home / "hermes" / _LOCKS_DIRNAME
 
 
@@ -518,10 +508,6 @@ def _gateway_command_subcommand(command: str | None) -> str | None:
     if not tokens:
         return None
     basenames = [t.rsplit("/", 1)[-1] for t in tokens]
-    # The launchd job's osascript wrapper (gateway_launchd.launchd_program_arguments) carries the gateway argv
-    # inside one AppleScript string; the gateway itself is its child and is matched on its own command line.
-    if basenames[0] == "osascript":
-        return None
     # Gateway-dedicated entrypoints carry no subcommand to inspect.
     if any(t == "gateway/run.py" or t.endswith("/gateway/run.py") for t in tokens):
         return "run"
@@ -640,37 +626,17 @@ def _command_line_belongs_to_profile(command: str, profile_home: Path) -> bool:
     return not hermes_home_assignments(command_lc) or command_line_names_hermes_home(command_lc, home_lc)
 
 
-def _host_gateway_serves_home(pid: int, profile_home: Path) -> bool:
-    """Does the ONE host gateway — PID ``pid`` — serve ``profile_home``'s profile?
-
-    Argv cannot answer this: the host singleton runs ONE home's (usually bare/default) command line
-    while multiplexing every profile, so :func:`_command_line_belongs_to_profile` rejects every
-    secondary and the profile reads as "not running" while its messages are being served. The live
-    served set is the only proof; the argv rule stays as the fallback when no record exists.
-    """
-    try:
-        from gateway.host_attach import host_gateway, profile_name_for_home
-
-        owner = host_gateway()
-    except Exception:
-        return False
-    return owner is not None and owner.pid == pid and owner.serves(profile_name_for_home(profile_home))
-
-
 def _record_matches_live_gateway_pid(
     record: dict[str, Any], pid: int, *, expected_home: Optional[Path] = None
 ) -> bool:
     """True when a live PID still identifies as this gateway record. The live command line wins (a
     stale record's argv must not make a recycled PID count as a gateway; with ``expected_home`` it
-    must also belong to that profile — or serve it as the host multiplexer); unreadable cmdline
-    (Windows/EACCES) -> persisted record."""
+    must also belong to that profile); unreadable cmdline (Windows/EACCES) -> persisted record."""
     live_cmdline = _read_process_cmdline(pid)
     if not live_cmdline:
         return _record_looks_like_gateway(record)
     if not looks_like_gateway_runtime_command_line(live_cmdline):
         return False
-    if expected_home is not None and _host_gateway_serves_home(pid, expected_home):
-        return True
     return expected_home is None or _command_line_belongs_to_profile(live_cmdline, expected_home)
 
 
@@ -1239,48 +1205,22 @@ class GatewayLiveness:
     runtime: Optional[dict[str, Any]] = None
 
 
-def profile_name_for_home(profile_home: Path) -> Optional[str]:
-    """Profile id of any Hermes home: ``<root>/profiles/<name>`` → ``<name>``, the default root →
-    ``"default"``, anything else → None. Multiplex-only makes ``default`` an ordinary served
-    profile, so reporting surfaces need a name for it too."""
-    home = Path(profile_home)
-    named = _profile_name_for_home(home)
-    if named:
-        return named
-    try:
-        from hermes_constants import get_default_hermes_root
-        if home.resolve() == Path(get_default_hermes_root()).resolve():
-            return "default"
-    except Exception:
-        return None
-    return None
-
-
 def multiplexer_liveness_for_profile(profile_dir: Path) -> Optional[tuple[int, dict[str, Any]]]:
-    """``(pid, host gateway_state.json)`` when the ONE live host gateway serves the profile whose home
-    is ``profile_dir``; None for a home it does not serve or when no gateway owns the host role.
+    """``(pid, default gateway_state.json)`` when the live default multiplexer serves the named profile at
+    ``profile_dir``; None for the default home itself, an unserved profile, or no live multiplexer.
 
-    Multiplex-only: ``default`` is just another served profile, not the owner of a private topology —
-    resolving from the host rendezvous record (``gateway/host_topology.py``) is what lets it be
-    reported as SERVED rather than only as owner. A served profile owns no
-    ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the dashboard ladder
-    reports it stopped while ``hermes -p X status`` says running — the two must agree.
+    A served profile owns no ``gateway.pid``/``gateway_state.json`` (#97120), so every PID-file rung of the
+    dashboard ladder reports it stopped while ``hermes -p X status`` says running — the two must agree.
     """
-    name = profile_name_for_home(Path(profile_dir))
+    name = _profile_name_for_home(Path(profile_dir))
     if not name:
         return None
-    from gateway.host_topology import host_gateway_topology
     from hermes_cli.gateway import named_profile_served_by_running_multiplexer
     from hermes_cli.gateway_multiplex_served import live_default_gateway_pid
     from hermes_constants import get_default_hermes_root
-    topology = host_gateway_topology()
-    if topology is not None and topology.serves(name):
-        pid: Optional[int] = topology.pid
-    elif name != "default" and named_profile_served_by_running_multiplexer(name):
-        # Config-derived fallback for a record that predates ``served_profiles``.
-        pid = live_default_gateway_pid()
-    else:
+    if not named_profile_served_by_running_multiplexer(name):
         return None
+    pid = live_default_gateway_pid()
     if pid is None:
         return None
     return pid, read_runtime_status(get_default_hermes_root() / "gateway_state.json") or {}

@@ -82,11 +82,6 @@ def test_find_removed_matches_name_or_normalized_repo(tmp_path):
     assert pc.find_removed("evil", tmp_path).reason == "malware"
     assert pc.find_removed("https://github.com/x/EVIL/", tmp_path) is not None
     assert pc.find_removed("https://github.com/x/fine", tmp_path) is None
-    # Scheme/host/user spellings are not identity: every git way of naming the repo is blocked.
-    for spelling in ("git@github.com:x/evil.git", "ssh://git@github.com/x/evil", "http://github.com/x/evil",
-                     "https://www.github.com/x/evil/", "git://github.com/x/evil.git"):
-        assert pc.find_removed(spelling, tmp_path) is not None, spelling
-    assert pc.find_removed("git@gitlab.com:x/evil.git", tmp_path) is None  # different host stays distinct
 
 
 def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkeypatch):
@@ -101,69 +96,3 @@ def test_live_catalog_falls_back_to_in_tree_and_unions_removals(tmp_path, monkey
                                  "removed": [{"name": "pulled-live", "reason": "cve"}]}))
     assert [e.name for e in pc.load_catalog_live()] == ["live-only"]
     assert pc.find_removed("pulled-live").reason == "cve"
-
-
-def _fresh_cache(tmp_path, monkeypatch, doc: dict):
-    cache = tmp_path / "cache" / "plugin-catalog.json"
-    cache.parent.mkdir(parents=True, exist_ok=True)
-    cache.write_text(json.dumps(doc))
-    monkeypatch.setattr(pc, "_live_cache_path", lambda: cache)
-    monkeypatch.setattr(pc, "LIVE_CATALOG_URL", "http://127.0.0.1:9/nope")  # never reached / unreachable
-    return cache
-
-
-def test_newer_in_tree_pin_outranks_a_fresh_live_cache(tmp_path, monkeypatch):
-    """Right after `hermes update` bumps an in-tree pin, a live cache fetched BEFORE the bump must not
-    re-install the old sha: for the same entry the newer catalog wins (checkout catalog commit time vs
-    the doc's generated_at). Live-only entries survive; an older checkout still defers to the doc."""
-    old, new = SHA, "a" * 40
-    _fresh_cache(tmp_path, monkeypatch, {"generated_at": "2026-09-22T10:00:00Z",
-                                         "entries": [_entry("shared", sha=old), _entry("live-only")], "removed": []})
-    monkeypatch.setattr(pc, "load_catalog", lambda catalog_dir=None: [pc.entry_from_mapping(_entry("shared", sha=new), "t")])
-    bump_time = pc._live_generated_time({"generated_at": "2026-09-22T10:00:00Z"}) + 3600
-    monkeypatch.setattr(pc, "in_tree_catalog_time", lambda: bump_time)
-    by_name = {e.name: e for e in pc.load_catalog_live()}
-    assert by_name["shared"].sha == new and "live-only" in by_name
-    # Control: a checkout whose catalog predates the doc takes the live pin.
-    monkeypatch.setattr(pc, "in_tree_catalog_time", lambda: bump_time - 7200)
-    assert {e.name: e.sha for e in pc.load_catalog_live()}["shared"] == old
-
-
-def test_live_cache_past_max_stale_age_stops_supplying_pins_but_keeps_removals(tmp_path, monkeypatch):
-    """Offline for days: a 25-hour-old cache no longer outranks the in-tree catalog (its pins may be
-    older than the checkout's), while its kill-list entries still block."""
-    import os
-    import time
-    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [_entry("live-only")],
-                                                 "removed": [{"name": "pulled-live", "reason": "cve"}]})
-    stale = time.time() - pc.LIVE_CATALOG_MAX_STALE_SECONDS - 3600
-    os.utime(cache, (stale, stale))
-    pc._live_fetch_failed_until = 0.0
-    assert [e.name for e in pc.load_catalog_live()] == [e.name for e in pc.load_catalog()]
-    assert pc.find_removed("pulled-live").reason == "cve"
-    assert pc.cached_removed_entries()[-1].name == "pulled-live"
-
-
-def test_live_cache_write_never_truncates_the_previous_copy(tmp_path, monkeypatch):
-    """The cache is replaced atomically: a reader racing the writer (or a write that dies half-way)
-    sees the whole previous document, never a truncated one."""
-    cache = _fresh_cache(tmp_path, monkeypatch, {"entries": [_entry("previous")], "removed": []})
-    previous = cache.read_text()
-
-    class _Resp:
-        content = json.dumps({"entries": [_entry("fresh")], "removed": []}).encode()
-        def raise_for_status(self): pass
-        def json(self): return json.loads(self.content)
-
-    import httpx
-    import utils
-    monkeypatch.setattr(httpx, "get", lambda *a, **k: _Resp())
-    pc._live_fetch_failed_until = 0.0
-
-    def _dies(*_a, **_k):
-        raise OSError("disk full")
-
-    monkeypatch.setattr(utils, "atomic_replace", _dies)
-    pc.fetch_live_catalog(force=True)  # the failed write is swallowed like any other fetch failure
-    assert cache.read_text() == previous
-    assert not list(cache.parent.glob("*.tmp*"))  # no leftover temp file either

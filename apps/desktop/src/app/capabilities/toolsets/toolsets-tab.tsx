@@ -132,11 +132,7 @@ export function ToolsetsTab({ profile, query, toolsets }: ToolsetsTabProps) {
     checked: bulkToolsets.length > 0 && bulkToolsets.every(ts => ts.enabled),
     disabled: bulkBusy,
     label: t.skills.all,
-    onToggle: checked =>
-      void bulkApply(
-        bulkToolsets.filter(row => row.enabled !== checked),
-        checked
-      )
+    onToggle: checked => void bulkApply(bulkToolsets.filter(row => row.enabled !== checked), checked)
   }
 
   if (visibleToolsets.length === 0) {

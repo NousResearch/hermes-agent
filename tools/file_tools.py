@@ -35,7 +35,6 @@ from tools.file_tools_write_guards import (
     _is_internal_file_tool_content, _stale_overwrite_blocker, _stale_write_refusal)
 from tools.file_tools_read_tracking import (
     _bump_consecutive, _cap_read_tracker_data, _check_file_staleness, _check_not_found_cache,
-    _file_metadata, _file_version,
     _mark_full_write_baseline, _mark_verification_stale, _note_read_coverage, _patch_failure_lock,
     _patch_failure_tracker, _read_tracker, _read_tracker_lock, _record_not_found,
     _record_patch_failure, _reset_patch_failures, _task_data, _update_read_timestamp)
@@ -105,7 +104,6 @@ def _apply_char_budget(result_dict: dict, content: str, offset: int, total_lines
         f"{lines_kept} line(s) (showing lines {offset}-{next_offset - 1} of "
         f"{total_lines}). Use offset={next_offset} to continue.")
     if len(trimmed.split("\n", 1)[0]) >= max_chars:
-        result_dict["truncated_lines"] = True
         result_dict["hint"] += (
             " Note: the first line alone exceeded the budget and was "
             "clamped mid-line; its remainder is not retrievable via offset.")
@@ -457,9 +455,6 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
     total_lines = len(lines)
     end_line = offset + limit - 1
     page_text = "\n".join(lines[offset - 1:end_line])
-    from tools.tool_output_limits import get_max_line_length
-    max_line_length = get_max_line_length()
-    truncated_lines = any(len(line) > max_line_length for line in page_text.split('\n'))
     result_dict = {
         "content": file_ops._add_line_numbers(page_text, offset) if page_text else "",
         "total_lines": total_lines,
@@ -481,8 +476,7 @@ def _read_extracted_document(path: str, _resolved, offset: int, limit: int, task
         redacted = result_dict["content"] != rendered
     else:
         redacted = False
-    if (offset == 1 and not result_dict["truncated"] and not redacted
-            and not truncated_lines and not result_dict.get("truncated_lines")):
+    if offset == 1 and not result_dict["truncated"] and not redacted:
         # The whole document was shown, so a text-authorable format (.ipynb)
         # may later be overwritten by write_file; the binary-container guard
         # keeps refusing .docx/.xlsx/.pdf regardless of this baseline.
@@ -528,7 +522,7 @@ def _dedup_stub_or_block(task_data: dict, dedup_key: tuple, path: str) -> str:
 def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_str: str,
                             offset: int, limit: int, dedup_key: tuple, *, partial: bool,
                             redacted: bool = False, end_line: int | None = None,
-                            total_lines=None, version_before=None, snapshot=None) -> int:
+                            total_lines=None) -> int:
     """Bookkeeping after a real (non-stub) read; returns the consecutive-read count.
 
     Per-task tracker under the lock (stub counter, history, consecutive count,
@@ -541,9 +535,7 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
     background-review read-mark (a FULL read of a skill file counts like
     skill_view so a follow-up skill_manage(patch) is accepted).
     """
-    version = (snapshot or _file_version(resolved_str)) if version_before is not None else None
-    stable = version is not None and version[:-1] == version_before == _file_metadata(resolved_str)
-    complete = False
+    complete = not partial
     with _read_tracker_lock:
         task_data["dedup_hits"].pop(dedup_key, None)
         task_data["dedup_generation_reads"].add(dedup_key)
@@ -551,28 +543,15 @@ def _record_successful_read(task_data: dict, task_id: str, path: str, resolved_s
         count = _bump_consecutive(task_data, ("read", path, offset, limit))
         try:
             _mtime_now = os.path.getmtime(resolved_str)
+            task_data["dedup"][dedup_key] = _mtime_now
             task_data.setdefault("read_timestamps", {})[resolved_str] = _mtime_now
+            if partial and end_line is not None:
+                complete, redacted = _note_read_coverage(
+                    task_data, resolved_str, _mtime_now, offset, end_line, total_lines, redacted)
         except OSError:
             pass
-        baselines = task_data["full_write_baselines"]
-        if stable and version is not None and count < 4:
-            task_data["dedup"][dedup_key] = version_before
-            # A narrower view does not undo knowledge of these same bytes. Do
-            # not revive a baseline after a partial read of a different version.
-            complete = baselines.get(resolved_str) == version
-            if not complete:
-                complete = not partial
-                if partial and end_line is not None:
-                    complete, redacted = _note_read_coverage(
-                        task_data, resolved_str, version, offset, end_line, total_lines, redacted)
-                complete = complete and not redacted
-            if complete:
-                baselines[resolved_str] = version
-        if not complete:
-            baselines.pop(resolved_str, None)
-        if not stable or count >= 4:
-            task_data["dedup"].pop(dedup_key, None)
-            task_data["dedup_generation_reads"].discard(dedup_key)
+        if complete and not redacted:
+            task_data.setdefault("full_write_baselines", set()).add(resolved_str)
         _cap_read_tracker_data(task_data)
 
     try:
@@ -663,27 +642,27 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
         dedup_key = (resolved_str, offset, limit)
         with _read_tracker_lock:
             task_data = _task_data(task_id)
-            cached_version = task_data["dedup"].get(dedup_key)
+            cached_mtime = task_data["dedup"].get(dedup_key)
             # First unchanged read after a compaction boundary serves full content
             # (the summary may have dropped exact bytes); later ones get the stub.
             content_served_in_generation = dedup_key in task_data["dedup_generation_reads"]
         # Same rule as skill_view: the review fork shares the parent's task_id and its
         # read-before-write guard needs a real read, which the stub path never records (#95976).
-        file_ops = _get_file_ops(task_id)
-        version_before = _file_metadata(resolved_str) if _file_ops_uses_host_paths(file_ops) else None
-        if (cached_version is not None and not is_background_review()
-                and version_before == cached_version and content_served_in_generation):
-            return _dedup_stub_or_block(task_data, dedup_key, path)
+        if cached_mtime is not None and not is_background_review():
+            try:
+                if os.path.getmtime(resolved_str) == cached_mtime and content_served_in_generation:
+                    return _dedup_stub_or_block(task_data, dedup_key, path)
+            except OSError:
+                pass  # stat failed — fall through to full read
 
-        result = file_ops.read_file(resolved_str if _file_ops_uses_host_paths(file_ops) else path, offset, limit)
+        result = _get_file_ops(task_id).read_file(path, offset, limit)
         result_dict = result.to_dict()
 
-        # Failed reads cannot establish whole-file knowledge.
+        # Cache a not-found result for retries. Deliberately NO early return:
+        # error results still flow through the tracking below unchanged.
         _err = result_dict.get("error") or ""
         if isinstance(_err, str) and _err.startswith("File not found:"):
             _record_not_found("read", resolved_str, task_id, json.dumps(result_dict, ensure_ascii=False))
-        if _err or result_dict.get("is_binary"):
-            return json.dumps(result_dict, ensure_ascii=False)
 
         # Char budget on the FORMATTED content (what enters context), BEFORE
         # redaction (skip the regex pass on huge content); truncate gracefully
@@ -726,10 +705,7 @@ def read_file_tool(path: str, offset: int = 1, limit: int = DEFAULT_READ_LIMIT, 
                 end_line = min(end_line, total_lines)
         count = _record_successful_read(task_data, task_id, path, resolved_str, offset, limit,
                                         dedup_key, partial=(offset > 1) or bool(result_dict.get("truncated")),
-                                        redacted=redacted or bool(result_dict.get("truncated_lines")),
-                                        end_line=end_line, total_lines=total_lines,
-                                        version_before=version_before,
-                                        snapshot=getattr(result, "_snapshot", None))
+                                        redacted=redacted, end_line=end_line, total_lines=total_lines)
         if count >= 4:
             return tool_error(
                 f"BLOCKED: You have read this exact file region {count} times in a row. "
@@ -889,8 +865,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                 return json.dumps(_stale_write_refusal(path, blocker, _resolved), ensure_ascii=False)
             warnings = _edit_warnings([path], path_to_resolved, task_id)
             rewrite_hint = _whole_file_rewrite_hint(task_id, _resolved, content)
-            result = _get_file_ops(task_id).write_file(_resolved or path, content)
-            result_dict = result.to_dict()
+            result_dict = _get_file_ops(task_id).write_file(_resolved or path, content).to_dict()
             if warnings:
                 result_dict["_warning"] = warnings[0]
             if rewrite_hint and not result_dict.get("error"):
@@ -906,7 +881,7 @@ def write_file_tool(path: str, content: str, task_id: str = "default",
                     result_dict["files_modified"] = [_resolved]
                     # Own write = current whole-file content: consecutive
                     # same-task writes stay unblocked. patch never does this.
-                    _mark_full_write_baseline(_resolved, task_id, getattr(result, "_content_sha256", None))
+                    _mark_full_write_baseline(_resolved, task_id)
                 _note_edited(task_id, [path], path_to_resolved, session_id)
         return json.dumps(result_dict, ensure_ascii=False)
     except Exception as e:

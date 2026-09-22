@@ -13,8 +13,6 @@ import base64
 import json
 import time
 
-import pytest
-
 from agent import credential_pool
 from agent.credential_pool import load_pool
 from hermes_cli.auth import AuthError, DEFAULT_CODEX_BASE_URL, get_codex_auth_status
@@ -94,43 +92,6 @@ def test_status_snapshot_leaves_round_robin_order_and_counts_untouched(tmp_path,
     # Control: a runtime selection still rotates and persists the new order.
     load_pool("openai-codex").select()
     assert _persisted_pool(home) != before
-
-
-def test_read_only_resolver_never_probes_or_mutates_an_exhausted_pool(tmp_path, monkeypatch):
-    import hermes_cli.auth_codex as auth_codex
-    from hermes_cli.auth import resolve_codex_runtime_credentials
-
-    home, _ = _pool_only_codex_home(
-        tmp_path, monkeypatch, access_tokens=[_jwt_with_exp(-3600)])
-    payload = json.loads((home / "auth.json").read_text(encoding="utf-8"))
-    entry = payload["credential_pool"]["openai-codex"][0]
-    entry.update({
-        "last_status": "exhausted",
-        "last_error_code": 429,
-        "last_error_reason": "usage_limit_reached",
-        "last_error_reset_at": time.time() + 3600,
-    })
-    (home / "auth.json").write_text(json.dumps(payload), encoding="utf-8")
-    before = (home / "auth.json").read_bytes()
-    calls = []
-
-    monkeypatch.setattr(
-        auth_codex,
-        "_probe_codex_pool_entry_quota_restored",
-        lambda _entry: calls.append("probe") or True,
-    )
-    monkeypatch.setattr(
-        auth_codex,
-        "clear_codex_pool_quota_cooldowns",
-        lambda: calls.append("clear") or 1,
-    )
-
-    with pytest.raises(AuthError):
-        resolve_codex_runtime_credentials(read_only=True)
-
-    assert calls == []
-    assert (home / "auth.json").read_bytes() == before
-    assert not (home / "auth.lock").exists()
 
 
 def _singleton_only_codex_home(tmp_path, monkeypatch, *, tokens: dict, codex_cli_tokens: dict):

@@ -478,11 +478,10 @@ def _try_dispatch_background_run(
         return None
 
     # Early dedupe so a mid-run job reports in THIS response, not as a delayed error completion
-    # (authoritative check: try_register_running_job). Home-scoped: one process ticks every
-    # profile, so the bare-id union would report another profile's same-named job as running.
+    # (authoritative check: try_register_running_job).
     try:
-        from cron.scheduler import is_job_running
-        if is_job_running(job_id):
+        from cron.scheduler import get_running_job_ids
+        if job_id in get_running_job_ids():
             return {"claimed": False, "success": False, "error": _ALREADY_RUNNING_ERROR}
     except Exception:
         pass

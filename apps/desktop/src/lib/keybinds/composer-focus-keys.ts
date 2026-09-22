@@ -184,6 +184,5 @@ export function composerFocusKeysAllowed(event: KeyboardEvent, combo: string): b
     return false
   }
 
-  // Space activates focused buttons too; it must not become a composer draft.
-  return !((combo === 'enter' || event.key === ' ') && isActivateOnEnterTarget(event.target))
+  return !(combo === 'enter' && isActivateOnEnterTarget(event.target))
 }

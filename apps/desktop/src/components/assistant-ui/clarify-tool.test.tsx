@@ -752,16 +752,8 @@ describe('ClarifyTool batch card', () => {
 
     await waitFor(() => expect(request).toHaveBeenCalledTimes(2))
     // Locks ride the live qids, never the preview's synthetic ones.
-    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', {
-      answer: 'red',
-      question_id: 'q0',
-      request_id: 'request-batch'
-    })
-    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', {
-      answer: 'packet',
-      question_id: 'q1',
-      request_id: 'request-batch'
-    })
+    expect(request).toHaveBeenNthCalledWith(1, 'clarify.lock', { answer: 'red', question_id: 'q0', request_id: 'request-batch' })
+    expect(request).toHaveBeenNthCalledWith(2, 'clarify.lock', { answer: 'packet', question_id: 'q1', request_id: 'request-batch' })
   })
 
   it('stages locally and keeps the single confirm disabled until all answered', async () => {

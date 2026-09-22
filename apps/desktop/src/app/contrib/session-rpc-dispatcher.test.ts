@@ -149,7 +149,7 @@ describe('createSessionRpcDispatcher: exact owner rungs', () => {
     expect(probe.resolveSessionOwner).not.toHaveBeenCalled()
   })
 
-  it("routes a freshly recovered runtime id to its session's owner only once the binding is published", async () => {
+  it('routes a freshly recovered runtime id to its session\'s owner only once the binding is published', async () => {
     // A session-scoped retry after withSessionNotFoundResume: the new runtime id is
     // known to nobody until the recovering caller publishes stored → runtime. Before
     // that, the dispatcher cannot translate it and fails closed; after, it reaches the

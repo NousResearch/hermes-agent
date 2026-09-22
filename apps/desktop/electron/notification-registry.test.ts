@@ -25,30 +25,6 @@ it('retains a dismissed banner until its later click or action is consumed', () 
   expect(vi.getTimerCount()).toBe(0)
 })
 
-it('releases terminal closes immediately when opted in without expiring unrelated notifications early', () => {
-  vi.useFakeTimers()
-  const registry = createNotificationRegistry({ ttlMs: 1000, releaseOnClose: true })
-  const closed = Object.assign(new EventEmitter(), { close: vi.fn() })
-  const active = Object.assign(new EventEmitter(), { close: vi.fn() })
-  registry.retain(closed)
-  registry.retain(active)
-  const timersBeforeClose = vi.getTimerCount()
-
-  closed.emit('close')
-  expect(registry.has(closed)).toBe(false)
-  expect(registry.has(active)).toBe(true)
-  expect(vi.getTimerCount()).toBe(timersBeforeClose - 1)
-  expect(closed.eventNames()).toEqual([])
-
-  closed.emit('close')
-  vi.advanceTimersByTime(1000)
-  expect(closed.close).not.toHaveBeenCalled()
-  expect(active.close).toHaveBeenCalledOnce()
-  expect(registry.has(active)).toBe(false)
-  expect(active.eventNames()).toEqual([])
-  expect(vi.getTimerCount()).toBe(0)
-})
-
 it('dismisses an expired notification before releasing it and releases failed delivery immediately', () => {
   vi.useFakeTimers()
   const registry = createNotificationRegistry({ ttlMs: 1000 })

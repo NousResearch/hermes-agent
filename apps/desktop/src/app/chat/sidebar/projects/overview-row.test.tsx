@@ -14,8 +14,7 @@ afterEach(cleanup)
 const workspaceOpen = vi.hoisted(() => ({ value: false }))
 
 const projectsStore = vi.hoisted(() => ({
-  fetchProjectSessions:
-    vi.fn<(id: string, options?: { supersedable?: boolean }) => Promise<null | SidebarProjectTree>>(),
+  fetchProjectSessions: vi.fn<(id: string, options?: { supersedable?: boolean }) => Promise<null | SidebarProjectTree>>(),
   projectProfile: vi.fn<() => null | string>(() => 'default')
 }))
 

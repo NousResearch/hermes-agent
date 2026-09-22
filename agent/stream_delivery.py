@@ -52,8 +52,6 @@ class StreamDeliveryMixin:
         """
         think_scrubber = getattr(self, "_stream_think_scrubber", None)
         ctx_scrubber = getattr(self, "_stream_context_scrubber", None)
-        # Next stream re-reads plugins.stream_reasoning_deltas (config edits land per request).
-        self._stream_reasoning_hooks_enabled = None
 
         def deliver(tail: str) -> None:
             if tail:
@@ -325,18 +323,13 @@ class StreamDeliveryMixin:
             self._note_dropped_stream_writer("_fire_reasoning_delta")
             return
         self._call_quietly(self.reasoning_callback, text)
-        # Resolve the opt-in once per stream, not per token: each lookup took _CONFIG_LOCK and
-        # serialized every streaming thread in the process behind a config cache hit.
-        enabled = getattr(self, "_stream_reasoning_hooks_enabled", None)
-        if enabled is None:
-            try:
-                from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
+        try:
+            from agent.plugin_stream_hooks import stream_reasoning_deltas_enabled
 
-                enabled = stream_reasoning_deltas_enabled()
-            except Exception:
-                logger.debug("reasoning on_stream_delta plugin hook enqueue failed", exc_info=True)
-                return
-            self._stream_reasoning_hooks_enabled = enabled
+            enabled = stream_reasoning_deltas_enabled()
+        except Exception:
+            logger.debug("reasoning on_stream_delta plugin hook enqueue failed", exc_info=True)
+            return
         if enabled:
             self._enqueue_stream_hook("on_stream_delta", label="reasoning on_stream_delta", delta=text, kind="reasoning")
 

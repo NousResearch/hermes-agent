@@ -200,7 +200,6 @@ describe('TreeGroup', () => {
       title: 'Browser',
       render: () => <input data-live-page defaultValue="original" />
     })
-
     const disposePlain = registry.register({
       area: 'panes',
       id: 'plain',

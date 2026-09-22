@@ -80,9 +80,6 @@ class CaptureResult:
     # Guidance appended to the summary by capture lanes that intentionally return no elements (e.g.
     # full-screen composited grabs) to point the model at an interactive lane.
     note: str = ""
-    # ``max_elements`` the backend asked the driver's AX walk to stop at (0 = unbounded / not applicable);
-    # ``len(elements) >= ax_max_elements > 0`` means the tree may be truncated.
-    ax_max_elements: int = 0
 
 
 @dataclass

@@ -25,7 +25,9 @@ const OPEN_REASONING_BLOCK_RE = new RegExp(`(^|\\n)[ \\t]*<(${REASONING_TAGS})>[
 // agent/think_scrubber.py `_hold_partial`/`_max_partial_suffix` does, but only
 // for prefixes of the known tag names so `<div` at a line start still renders.
 const REASONING_TAG_PREFIXES = Array.from(
-  new Set(REASONING_TAGS.split('|').flatMap(tag => Array.from({ length: tag.length }, (_, i) => tag.slice(0, i + 1))))
+  new Set(
+    REASONING_TAGS.split('|').flatMap((tag) => Array.from({ length: tag.length }, (_, i) => tag.slice(0, i + 1))),
+  ),
 ).join('|')
 
 const PARTIAL_OPEN_REASONING_TAG_RE = new RegExp(`(^|\\n)[ \\t]*<(?:${REASONING_TAG_PREFIXES})?$`, 'i')

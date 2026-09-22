@@ -94,7 +94,7 @@ describe('task attachment compatibility', () => {
 
       // A later backend response restores the capability without remounting.
       detail = { ...legacyDetail, attachments: [] }
-      await act(() => client.invalidateQueries({ queryKey: taskKey('local', '', legacyDetail.task.id) }))
+      await act(() => client.invalidateQueries({ queryKey: taskKey('', legacyDetail.task.id) }))
       expect(await screen.findByRole('button', { name: en.uploadAttachment })).toBeTruthy()
       expect(screen.getByText(en.noAttachments)).toBeTruthy()
     }

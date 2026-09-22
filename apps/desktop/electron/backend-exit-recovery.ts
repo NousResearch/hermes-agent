@@ -39,28 +39,6 @@ export function createBackendExitRecoveryLatch({
   let respawnedAt: number[] = []
   let crashLooping = false
 
-  const blocked = (state: BackendExitRecoveryState) =>
-    state.hasCurrentOwner || state.hasPendingStart || state.intentionalTeardown
-
-  const claim = (state: BackendExitRecoveryState): boolean => {
-    if (claimed || blocked(state)) {
-      return false
-    }
-
-    const at = now()
-    respawnedAt = respawnedAt.filter(t => at - t < windowMs)
-    crashLooping = respawnedAt.length >= maxRespawns
-
-    if (crashLooping) {
-      return false
-    }
-
-    respawnedAt.push(at)
-    claimed = true
-
-    return true
-  }
-
   return {
     /**
      * True exactly once per empty slot; `reset()` when a backend becomes ready
@@ -69,24 +47,25 @@ export function createBackendExitRecoveryLatch({
      * within `windowMs` is a crash loop, and the supervisor stops respawning
      * (`isCrashLooping()`) instead of cycling child + error toast forever.
      */
-    claim,
-    /**
-     * Re-arm only the recovery attempt that already owns this latch and failed
-     * before reaching ready. A concurrent owner/start or intentional teardown
-     * keeps the existing claim intact; its eventual ready transition owns the
-     * normal reset. A real retry consumes the same crash-loop budget as every
-     * other supervisor respawn.
-     */
-    retryAfterFailedStart(state: BackendExitRecoveryState): boolean {
-      if (!claimed || blocked(state)) {
+    claim(state: BackendExitRecoveryState): boolean {
+      if (claimed || state.hasCurrentOwner || state.hasPendingStart || state.intentionalTeardown) {
         return false
       }
 
-      claimed = false
+      const at = now()
+      respawnedAt = respawnedAt.filter(t => at - t < windowMs)
+      crashLooping = respawnedAt.length >= maxRespawns
 
-      return claim(state)
+      if (crashLooping) {
+        return false
+      }
+
+      respawnedAt.push(at)
+      claimed = true
+
+      return true
     },
-    /** True when the last claim attempt was refused because the respawn budget for the window is spent. */
+    /** True when the last `claim` was refused because the respawn budget for the window is spent. */
     isCrashLooping(): boolean {
       return crashLooping
     },

@@ -10,7 +10,7 @@ from dataclasses import replace as dataclass_replace
 
 import pytest
 
-from tools.connectors.gateway.bridge import ConnectorLeg, connector_search_hits
+from tools.connectors.gateway.bridge import connector_search_hits
 from tools.connectors.gateway.client import ConnectorClient
 from tools.connectors.gateway.errors import (
     GatewayAuthError,
@@ -237,10 +237,10 @@ def test_connection_required_stays_inside_the_200_envelope():
 # ---------------------------------------------------------------------------
 
 
-def test_search_hits_empty_on_unavailable_dark_gateway_and_names_a_real_failure():
+def test_search_hits_empty_on_unavailable_dark_gateway_and_exploding_client():
     assert connector_search_hits(
         [{"use_case": "send mail"}], availability=lambda: False
-    ) == ConnectorLeg()
+    ) == {}
 
     def dark_factory():
         raise GatewayUnavailable("dark", code="NOT_FOUND", status=404)
@@ -251,7 +251,7 @@ def test_search_hits_empty_on_unavailable_dark_gateway_and_names_a_real_failure(
             availability=lambda: True,
             client_factory=dark_factory,
         )
-        == ConnectorLeg()
+        == {}
     )
 
     def boom_factory():
@@ -263,31 +263,7 @@ def test_search_hits_empty_on_unavailable_dark_gateway_and_names_a_real_failure(
             availability=lambda: True,
             client_factory=boom_factory,
         )
-        == ConnectorLeg(failure="unreachable")
-    )
-
-    def rejected_factory():
-        raise GatewayAuthError("token rejected", code="UNAUTHORIZED", status=401)
-
-    assert (
-        connector_search_hits(
-            [{"use_case": "send mail"}],
-            availability=lambda: True,
-            client_factory=rejected_factory,
-        )
-        == ConnectorLeg(failure="sign_in_expired")
-    )
-
-    def forbidden_factory():
-        raise GatewayAuthError("no entitlement", code="FORBIDDEN", status=403)
-
-    assert (
-        connector_search_hits(
-            [{"use_case": "send mail"}],
-            availability=lambda: True,
-            client_factory=forbidden_factory,
-        )
-        == ConnectorLeg()
+        == {}
     )
 
 
@@ -297,13 +273,12 @@ def test_search_hits_pass_through_on_success():
             assert queries == [{"use_case": "send mail"}]
             return {"results": [{"index": 1, "use_case": "send mail"}]}
 
-    leg = connector_search_hits(
+    hits = connector_search_hits(
         [{"use_case": "send mail"}],
         availability=lambda: True,
         client_factory=lambda: FakeClient(),
     )
-    assert leg.failure is None
-    assert leg.payload["results"][0]["use_case"] == "send mail"
+    assert hits["results"][0]["use_case"] == "send mail"
 
 
 # ---------------------------------------------------------------------------

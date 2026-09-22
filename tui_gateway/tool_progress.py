@@ -188,12 +188,6 @@ def _todo_state_from_history(history) -> dict | None:
         return None
 
 
-def _tool_labels(name: str, args: dict) -> list[dict] | None:
-    from agent.display import tool_labels_for_call
-
-    return [label.as_payload() for label in tool_labels_for_call(name, args)] or None
-
-
 def _connector_tool_lifecycle(name: str, args: dict) -> bool:
     from tools.connectors import is_connector_name
 
@@ -249,8 +243,6 @@ def _on_tool_start(sid: str, tool_call_id: str, name: str, args: dict):
     if (_tool_progress_enabled(sid) or _tool_lifecycle_required_for_ui(name)
             or _connector_tool_lifecycle(name, args)):
         payload: dict[str, object] = {"tool_id": tool_call_id, "name": name, "context": _tool_ctx(name, args)}
-        if (labels := _tool_labels(name, args)) is not None:
-            payload["labels"] = labels
         # Full args (not just the 80-char `context` preview) so the desktop's expanded tool row is complete
         # while the tool runs. args.todos may be a partial merge — tool.complete is the truth.
         if args:
@@ -264,8 +256,6 @@ def _on_tool_complete(sid: str, tool_call_id: str, name: str, args: dict, result
     if _connector_lifecycle_is_stale(sid, name, args):
         return
     payload = {"tool_id": tool_call_id, "name": name, "args": args}
-    if (labels := _tool_labels(name, args)) is not None:
-        payload["labels"] = labels
     session = _sessions.get(sid)
     snapshot = session.setdefault("edit_snapshots", {}).pop(tool_call_id, None) if session is not None else None
     started_at = session.setdefault("tool_started_at", {}).pop(tool_call_id, None) if session is not None else None

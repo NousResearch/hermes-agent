@@ -78,7 +78,7 @@ def _run_native_windows_gateway_start_diag(
 
         import hermes_cli.gateway as gateway_cli
 
-        async def start_gateway(**kwargs):
+        async def start_gateway(*, replace, verbosity):
             assert "_HERMES_GATEWAY_BREAKAWAY" not in os.environ
             return True
 
@@ -89,7 +89,6 @@ def _run_native_windows_gateway_start_diag(
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
-        gateway_cli._attach_to_host_gateway_or_guard = lambda **kwargs: None
         gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
         gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
         gateway_cli.supports_systemd_services = lambda: False
@@ -193,7 +192,7 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
 
         outcome = os.environ["HERMES_TEST_GATEWAY_OUTCOME"]
 
-        async def start_gateway(**kwargs):
+        async def start_gateway(*, replace, verbosity):
             if outcome == "failure":
                 return False
             raise SystemExit(int(outcome.split(":", 1)[1]))
@@ -205,7 +204,6 @@ def test_gateway_run_subprocess_preserves_daemon_exit_codes(
 
         gateway_cli._guard_official_docker_root_gateway = lambda: None
         gateway_cli._guard_named_profile_under_multiplexer = lambda force=False: None
-        gateway_cli._attach_to_host_gateway_or_guard = lambda **kwargs: None
         gateway_cli._guard_supervised_gateway_conflict = lambda force=False: None
         gateway_cli._guard_existing_gateway_process_conflict = lambda replace=False: None
         gateway_cli.supports_systemd_services = lambda: False

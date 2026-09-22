@@ -51,13 +51,7 @@ import { botNeedsHandleLabel, rosterGatewayOptions } from './roster-sections'
 import { botWorkspaceOwnerKey, setBotsWorkspaceOwner } from './routing'
 import { activeBots, useTurnBusy } from './row-helpers'
 import type { BotMeta, GatewaySource, GroupMember, RosterActivityFilter, RosterKindFilter, RosterRow } from './types'
-import {
-  $botSections,
-  $draggingBot,
-  adoptBotSectionsFromMeta,
-  backfillBotSectionNames,
-  type SectionDialogState
-} from './user-sections'
+import { $botSections, $draggingBot, adoptBotSectionsFromMeta, backfillBotSectionNames, type SectionDialogState } from './user-sections'
 import { useEscapeCancelsBotDrag } from './user-sections-ui'
 
 // ── roster pane ──────────────────────────────────────────────────────────────

@@ -163,12 +163,12 @@ class ConnectorListItem(_Wire):
     connected: bool = False
     connection_status: Optional[ConnectionStatus] = Field(default=None, alias="connectionStatus")
     status_reason: Optional[str] = Field(default=None, alias="statusReason")
-    gateway_disabled_tools: list[str] = Field(default_factory=list, alias="disabledTools")
+    disabled_tools: list[str] = Field(default_factory=list, alias="disabledTools")
 
 
 class ConnectorListResponse(_Wire):
     items: list[ConnectorListItem]
-    next_cursor: Optional[str] = Field(default=None, alias="nextCursor")
+    next_cursor: Optional[str] = Field(alias="nextCursor")
 
 
 class ConnectorAccount(_Wire):
@@ -186,12 +186,6 @@ class ConnectorAccount(_Wire):
 
 class ConnectorAccountsResponse(_Wire):
     accounts: list[ConnectorAccount]
-
-
-class RemovedConnectorAccount(_Wire):
-    connection_id: str = Field(alias="connectionId")
-    connector: str
-    status: Literal["removed"]
 
 
 class ConnectorConnectionsSummary(_Wire):

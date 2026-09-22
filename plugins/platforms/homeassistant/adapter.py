@@ -4,10 +4,8 @@ Requires aiohttp, HASS_TOKEN (Long-Lived Access Token) and HASS_URL (default htt
 """
 
 import asyncio
-import errno
 import json
 import logging
-import sys
 import time
 import uuid
 from datetime import datetime
@@ -20,7 +18,6 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     aiohttp = None  # type: ignore[assignment]
 
-from gateway.restart import is_supervised_gateway_launch
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
@@ -65,24 +62,6 @@ _DOMAIN_TEMPLATES = {
 }
 _DEFAULT_TEMPLATE = "[Home Assistant] {name} ({entity_id}): changed from '{old}' to '{new}'"
 _TRIGGERED = ("cleared", "triggered")  # binary_sensor wording, indexed by ``state == "on"``
-
-
-def _connect_error_detail(exc: BaseException) -> str:
-    """Annotate macOS Local Network Privacy denials so launchd HA failures are actionable (#71206).
-
-    Only a supervised (launchd) gateway on macOS can be denied this way; the same errno from a
-    Terminal-run gateway or on another OS is a genuinely unreachable host.
-    """
-    text = str(exc)
-    os_error = getattr(exc, "os_error", None) or exc.__cause__ or exc
-    if (sys.platform == "darwin" and is_supervised_gateway_launch()
-            and getattr(os_error, "errno", None) == errno.EHOSTUNREACH):
-        return (
-            f"{text} — macOS Local Network Privacy is blocking this launchd gateway from the LAN. "
-            "Run `hermes gateway install` to regenerate the launchd job, then `hermes gateway restart`. "
-            "https://github.com/NousResearch/hermes-agent/issues/71206"
-        )
-    return text
 
 
 class HomeAssistantAdapter(BasePlatformAdapter):
@@ -144,7 +123,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             self._wire_plugin_handlers(None)
             return True
         except Exception as e:
-            logger.error("[%s] Failed to connect: %s", self.name, _connect_error_detail(e))
+            logger.error("[%s] Failed to connect: %s", self.name, e)
             return False
 
     async def _ws_connect(self) -> bool:
@@ -206,7 +185,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.warning("[%s] WebSocket error: %s", self.name, _connect_error_detail(e))
+                logger.warning("[%s] WebSocket error: %s", self.name, e)
             if not self._running:
                 return
             delay = self._BACKOFF_STEPS[min(backoff_idx, len(self._BACKOFF_STEPS) - 1)]
@@ -219,7 +198,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     backoff_idx = 0
                     logger.info("[%s] Reconnected", self.name)
             except Exception as e:
-                logger.warning("[%s] Reconnection failed: %s", self.name, _connect_error_detail(e))
+                logger.warning("[%s] Reconnection failed: %s", self.name, e)
 
     async def _read_events(self) -> None:
         """Read events from WebSocket until disconnected."""

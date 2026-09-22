@@ -114,7 +114,7 @@ def test_cleanup_terminal_temp_cache(tmp_path, monkeypatch):
         f.write_text("x")
         os.utime(f, (old, old))
 
-    removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=24)
+    removed = local_mod.cleanup_terminal_temp_cache(max_age_hours=72)
     assert removed == 4  # stale snap + 3 dead-group files
     assert keep.exists()
     assert live_pid.exists() and live_log.exists()

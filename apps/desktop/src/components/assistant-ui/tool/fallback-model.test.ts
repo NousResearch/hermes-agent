@@ -155,7 +155,10 @@ describe('buildToolView calls sealed without a result', () => {
   })
 
   it('shows a call the user interrupted as a neutral notice', () => {
-    const view = buildToolView(part({ completedAt: 5, interrupted: true, result: undefined, toolName: 'terminal' }), '')
+    const view = buildToolView(
+      part({ completedAt: 5, interrupted: true, result: undefined, toolName: 'terminal' }),
+      ''
+    )
 
     expect(view.status).toBe('notice')
     expect(view.title).toBe('Interrupted')

@@ -406,9 +406,6 @@ describe('cutSentences', () => {
     // Historical 24-char floor (older backend, no key): the opener rides with sentence two.
     expect(cutSentences(text, false).sentences).toEqual(['记得，叫团团。 然后我们再说第二句话，这一句要长一些才行。'])
     // tts.streaming.min_len = 6 (the CJK voice setup from #96927): spoken on its own.
-    expect(cutSentences(text, false, 6).sentences).toEqual([
-      '记得，叫团团。',
-      '然后我们再说第二句话，这一句要长一些才行。'
-    ])
+    expect(cutSentences(text, false, 6).sentences).toEqual(['记得，叫团团。', '然后我们再说第二句话，这一句要长一些才行。'])
   })
 })

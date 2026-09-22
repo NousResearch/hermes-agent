@@ -456,7 +456,7 @@ class TestCanonicalHistoryIsolation:
         )
         assert block is not None, "image_corrupt recovery branch not found"
         body = block.group(1)
-        assert "_strip_request_images_and_retry(agent, api_messages)" in body, (
+        assert "_strip_images_from_messages(api_messages)" in body, (
             "recovery must strip the per-call api_messages copy"
         )
         assert "_strip_images_from_messages(messages)" not in body, (

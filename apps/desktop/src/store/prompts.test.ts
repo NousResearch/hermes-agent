@@ -183,7 +183,6 @@ describe('approval prompt store', () => {
         .map(request => request.requestId)
     ).toEqual(['r1', 'r2'])
     let finish!: (result: unknown) => void
-
     const replay = replayPendingApproval(
       {
         request: () =>
@@ -193,7 +192,6 @@ describe('approval prompt store', () => {
       },
       's1'
     )
-
     clearApprovalRequest('s1', 'r1')
     finish({
       approvals: [

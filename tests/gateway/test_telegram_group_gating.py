@@ -515,6 +515,30 @@ def test_gating_forum_general_topic_normalizes_to_one():
     assert adapter2._should_process_message(general) is False
 
 
+def test_bot_created_forum_topic_anchor_is_not_a_reply_to_bot():
+    """Topic creation anchors must not bypass the group mention requirement."""
+    adapter = _make_adapter(require_mention=True)
+    topic_message = _forum_message(
+        chat_id=-100, thread_id=73, is_topic_message=True, is_forum=True
+    )
+    topic_message.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=999),
+        message_id=73,
+        forum_topic_created=SimpleNamespace(name="Bot-created topic"),
+    )
+
+    assert adapter._is_reply_to_bot(topic_message) is False
+    assert adapter._should_process_message(topic_message) is False
+
+    genuine_reply = _forum_message(
+        chat_id=-100, thread_id=73, is_topic_message=True, is_forum=True
+    )
+    genuine_reply.reply_to_message = SimpleNamespace(
+        from_user=SimpleNamespace(id=999), message_id=72
+    )
+    assert adapter._is_reply_to_bot(genuine_reply) is True
+
+
 def test_bot_self_messages_are_ignored_in_dm_and_group():
     """Bot-authored messages must not re-enter as fresh user turns (issue #11905).
 

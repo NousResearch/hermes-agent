@@ -5843,9 +5843,19 @@ class TelegramAdapter(BasePlatformAdapter):
     _BOT_IDENTITY_PROBE_TIMEOUT = 15.0
 
     def _is_reply_to_bot(self, message: Message) -> bool:
-        if not self._bot or not getattr(message, "reply_to_message", None):
+        reply_to_message = getattr(message, "reply_to_message", None)
+        if not self._bot or not reply_to_message:
             return False
-        reply_user = getattr(message.reply_to_message, "from_user", None)
+        # Telegram makes every message in a forum topic reply to its creation
+        # service message. That anchor has the same id as message_thread_id,
+        # so it is not a user reply even when the bot created the topic.
+        if (
+            getattr(message, "message_thread_id", None) is not None
+            and getattr(reply_to_message, "message_id", None)
+            == getattr(message, "message_thread_id", None)
+        ):
+            return False
+        reply_user = getattr(reply_to_message, "from_user", None)
         return bool(reply_user and getattr(reply_user, "id", None) == getattr(self._bot, "id", None))
 
     @staticmethod

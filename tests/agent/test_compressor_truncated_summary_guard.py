@@ -206,7 +206,7 @@ class TestGenerateSummaryTruncationGuard:
         assert result == msgs
         assert c._last_summary_empty_content_failure is True
         assert c._last_compress_aborted is True
-        assert c._previous_summary is None or refusal not in (c._previous_summary or "")
+        assert c._previous_summary is None
 
     def test_provider_refusal_field_is_rejected_even_with_summary_shaped_content(self):
         """An explicit ``message.refusal`` wins over plausible-looking content (#118406)."""

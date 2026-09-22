@@ -4,6 +4,7 @@ import asyncio
 import importlib
 import json
 import threading
+import weakref
 from types import SimpleNamespace
 from unittest.mock import AsyncMock
 from urllib.parse import unquote
@@ -11,11 +12,23 @@ from urllib.parse import unquote
 import pytest
 
 from gateway.session_context import clear_session_vars, set_session_vars
+from gateway.session_identity import RoutingIdentity
 from hermes_cli.tools_config import _get_platform_tools
 from tools.interrupt import is_thread_interrupted, set_interrupt
 from tools.registry import registry
 
-matrix_pin_tool = importlib.import_module("tools.matrix_pin_tool")
+importlib.import_module("tools.matrix_pin_tool")
+matrix_tool_runtime = importlib.import_module("tools.matrix_tool_runtime")
+
+
+def _identity(adapter, home):
+    return RoutingIdentity("default", "default", home, home, multiplexed=False, transport=weakref.ref(adapter))
+
+
+def _admin_config(home):
+    from hermes_cli.config import atomic_config_write
+    home.mkdir(parents=True, exist_ok=True)
+    atomic_config_write(home / "config.yaml", {"platform_toolsets": {"matrix": ["matrix_admin"]}})
 
 
 def _matrix_adapter(pins, send):
@@ -25,9 +38,12 @@ def _matrix_adapter(pins, send):
         errcode = "M_NOT_FOUND"
 
     async def request(_method, path, *, query_params=None, **_kwargs):
-        room_id, event_type = unquote(str(path)).removeprefix("/_matrix/client/v3/rooms/").rstrip("/").split("/state/")
+        room_id, state = unquote(str(path)).removeprefix("/_matrix/client/v3/rooms/").split("/state/")
+        event_type = state.partition("/")[0]
         if event_type == "m.room.pinned_events":
             return await pins(room_id, event_type)
+        if event_type == "m.room.member":
+            return {"membership": "join"}
         if event_type == "m.room.power_levels":
             return {"users": {"@alice:server": 50}}
         if event_type == "m.room.create" and query_params == {"format": "event"}:
@@ -40,6 +56,8 @@ def _matrix_adapter(pins, send):
     adapter._joined_rooms = {"!room:server"}
     adapter._allowed_room_ids = set()
     adapter._user_id = "@bot:server"
+    adapter._owner_profile = None
+    adapter._allowed_room_ids = set()
     adapter._is_allowed_matrix_room_event = AsyncMock(return_value=True)
     adapter._is_dm_room = AsyncMock(return_value=False)
     adapter._is_sender_authorized = lambda user, **kw: user == "@alice:server"
@@ -85,7 +103,7 @@ async def test_aborted_pin_waits_until_owner_cannot_begin_a_write(
     owner_released = asyncio.Event()
     operation_finished = asyncio.Event()
     now = [0.0]
-    monkeypatch.setattr(matrix_pin_tool, "_monotonic", lambda: now[0])
+    monkeypatch.setattr(matrix_tool_runtime, "_monotonic", lambda: now[0])
     worker = SimpleNamespace()
     agent = SimpleNamespace(
         _tool_worker_threads=set(), _tool_worker_threads_lock=threading.Lock(),
@@ -137,10 +155,12 @@ async def test_aborted_pin_waits_until_owner_cannot_begin_a_write(
         finally:
             worker.owner_stopped_before_report = operation_finished.is_set()
 
+    _admin_config(profile_home)
     home_token = set_hermes_home_override(profile_home)
     tokens = set_session_vars(
         platform="matrix", chat_id="!room:server", user_id="@alice:server",
         transport_adapter=adapter, transport_loop=asyncio.get_running_loop(),
+        routing_identity=_identity(adapter, profile_home),
     )
     task = asyncio.create_task(asyncio.to_thread(dispatch))
     try:
@@ -221,9 +241,12 @@ async def test_repeated_cancellation_waits_for_owning_task_cleanup(action, same_
             return await pin_entry.handler(args)
         return await asyncio.to_thread(registry.dispatch, "matrix_pin", args)
 
+    from hermes_constants import get_hermes_home
+    _admin_config(get_hermes_home())
     tokens = set_session_vars(
         platform="matrix", chat_id="!room:server", user_id="@alice:server",
         transport_adapter=adapter, transport_loop=asyncio.get_running_loop(),
+        routing_identity=_identity(adapter, get_hermes_home()),
     )
     task = asyncio.create_task(dispatch())
     try:
@@ -295,10 +318,12 @@ async def test_interrupted_pin_never_writes_after_pending_work_resumes(
         assert pin_entry is not None
         return await pin_entry.handler({"action": action, "event_id": "$event"})
 
+    _admin_config(profile_home)
     home_token = set_hermes_home_override(profile_home)
     tokens = set_session_vars(
         platform="matrix", chat_id="!room:server", user_id="@alice:server",
         transport_adapter=adapter, transport_loop=asyncio.get_running_loop(),
+        routing_identity=_identity(adapter, profile_home),
     )
     if stage != "reading":
         await adapter._pin_state_lock.acquire()

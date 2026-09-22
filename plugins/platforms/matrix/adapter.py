@@ -97,7 +97,8 @@ from plugins.platforms.matrix.reply_context import (
 )
 from plugins.platforms.matrix.thread_context import NON_CONVERSATIONAL_KEY
 from plugins.platforms.matrix.read_context import read_matrix_context
-from plugins.platforms.matrix.room_inspection import change_matrix_pin, inspect_matrix_room
+from plugins.platforms.matrix.room_admin import administer_matrix_pin, administer_matrix_room
+from plugins.platforms.matrix.room_inspection import inspect_matrix_room
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -3190,11 +3191,18 @@ class MatrixAdapter(MatrixContextMixin, BasePlatformAdapter):
     ) -> dict:
         return await inspect_matrix_room(self, kind, room_id, limit, requester=requester)
 
+    async def administer_matrix_room(
+        self, args: dict, *, interrupt_check: Callable[[], bool], before_write: Callable[[], None],
+    ) -> dict:
+        return await administer_matrix_room(
+            self, args, interrupt_check=interrupt_check, before_write=before_write,
+        )
+
     async def change_matrix_pin(
         self, action: str, room_id: str, event_id: str, *, requester: str,
         interrupt_check: Callable[[], bool], before_write: Callable[[], None],
     ) -> dict:
-        return await change_matrix_pin(
+        return await administer_matrix_pin(
             self, action, room_id, event_id, requester=requester,
             interrupt_check=interrupt_check, before_write=before_write,
         )

@@ -228,7 +228,7 @@ def _build_child_agent(
         override_acp_args=override_acp_args,
         routing_cfg=routing_cfg,
     )
-    if managed_resolution is not None:
+    if managed_resolution is not None and managed_resolution.get("routing_mode") != "shadow":
         rt["fallback_model"] = []
     if override_request_overrides is not None:
         # honored whenever set, incl. the inherit branch where
@@ -371,6 +371,7 @@ def _build_children(
     top_role: str, max_iterations: int, parent_agent, routing_cfg: Dict[str, Any],
     live_deleg_id: Optional[str], live_writers: list, task_images: Optional[List[Optional[List[str]]]] = None,
     allowed_toolsets: Optional[List[str]] = None,
+    blocked_results: Optional[list] = None,
 ) -> tuple[List[tuple], Optional[str]]:
     """Build every child on the main thread (construction is not thread-safe);
     ``(children, None)`` or ``([], error)`` on an explicit-pin preflight failure."""
@@ -401,7 +402,14 @@ def _build_children(
         )
         try:
             _routing_resolution = resolve_delegation_route(t, parent_agent, task_index=i)
-        except (_RoutingBlocked, ValueError) as exc:
+        except _RoutingBlocked as exc:
+            if blocked_results is None:
+                raise
+            entry = _fabricated_entry(i, "error", str(exc), None)
+            entry["routing_reason"] = exc.reason
+            blocked_results.append(entry)
+            continue
+        except ValueError as exc:
             return [], f"Task {i} routing: {exc}"
         _task_overrides = dict(overrides)
         _routing_enforced = bool(
@@ -428,7 +436,13 @@ def _build_children(
                     None,
                 )
             except ValueError as exc:
-                return [], f"Task {i} routing: managed route provider could not be resolved: {exc}"
+                blocked = _RoutingBlocked("provider_unavailable", "managed route provider could not be resolved")
+                if blocked_results is None:
+                    raise blocked from exc
+                entry = _fabricated_entry(i, "error", str(blocked), None)
+                entry.update(routing_reason=blocked.reason, routing_receipt_id=_routing_resolution["receipt_id"])
+                blocked_results.append(entry)
+                continue
             _task_overrides["override_api_key"] = _managed_runtime_creds["api_key"]
             _task_overrides["override_api_mode"] = _managed_runtime_creds["api_mode"]
             _task_overrides["override_acp_command"] = _managed_runtime_creds.get("command")
@@ -563,15 +577,18 @@ def delegate_task(
     _announce_batch(parent_agent, len(task_list), live_deleg_id)
     origin = _capture_origin()
 
+    blocked_results = []
     children, err = _build_children(
         task_list, task_schemas, creds, top_role=top_role, max_iterations=default_max_iter, parent_agent=parent_agent,
         routing_cfg=routing_cfg, live_deleg_id=live_deleg_id, live_writers=live_writers, task_images=task_images,
+        blocked_results=blocked_results,
     )
     if err:
         return tool_error(err)
     batch = _Batch(
         task_list, children, parent_agent, creds, context, top_role, max_children,
         live_deleg_id, live_writers, live_paths, *origin, overall_start,
+        blocked_results=blocked_results,
     )
     return _run_batch(batch, background)
 

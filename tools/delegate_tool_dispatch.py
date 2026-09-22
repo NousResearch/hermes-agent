@@ -10,7 +10,7 @@ import json
 import logging
 import time
 from concurrent.futures import FIRST_COMPLETED, wait as _cf_wait
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Any, Dict, List, Optional
 
 from tools.async_delegation import _new_delegation_id, record_unit_child
@@ -48,6 +48,7 @@ class _Batch:
     # Set on per-group units carved out by ``_dispatch_background``; None for the whole batch / ungrouped units.
     group: Optional[str] = None
     unit_id: Optional[str] = None  # the async registry id this unit runs under (``<call_id>-k`` for split calls)
+    blocked_results: list = field(default_factory=list)
 
     def owner_kwargs(self) -> Dict[str, Any]:
         """Steer/stop authority of the originating session, passed to every child run."""
@@ -171,6 +172,8 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     else:
         _run_children_parallel(batch, results, honor_parent_interrupt=honor_parent_interrupt)
 
+    results.extend(batch.blocked_results)
+    results.sort(key=lambda entry: entry["task_index"])
     _finalize_child_results(results, batch.task_list, batch.children, batch.parent_agent)
     total_duration = round(time.monotonic() - batch.overall_start, 2)
     for entry in results:
@@ -183,6 +186,8 @@ def _execute_and_aggregate(batch: _Batch, *, honor_parent_interrupt: bool = True
     update_manifest_statuses(batch.live_deleg_id, results)
 
     combined: Dict[str, Any] = {"results": results, "total_duration_seconds": total_duration}
+    if not batch.children and batch.blocked_results:
+        combined["error"] = "All delegation members were blocked by routing"
     # Runtime truth about children's background processes, as prose the parent can't miss inside the JSON.
     from tools.process_registry_notifications import _process_accounting_lines
     process_notes = [line for entry in results for line in _process_accounting_lines(entry)]
@@ -322,7 +327,7 @@ _BACKGROUND_NOTES = {
 
 def _dispatched_payload(batch: _Batch, units: List[tuple[_Batch, str]]) -> dict:
     """Model-facing handle for an accepted background call: one entry per async unit."""
-    goals = [t["goal"] for t in batch.task_list]
+    goals = [t["goal"] for _, t, _ in batch.children]
     n = len(goals)
     payload = {
         "status": "dispatched", "mode": "background", "count": n,
@@ -404,7 +409,9 @@ def _dispatch_background(batch: _Batch) -> str:
         parent_session_id=getattr(parent_agent, "session_id", None), max_async_children=_get_max_async_children(),
     )
 
-    units = _units_of(batch)
+    # Denied members have no child lifetime. Return their typed outcomes now,
+    # rather than duplicating them in each independently completing unit.
+    units = _units_of(replace(batch, blocked_results=[]))
     dispatched: List[tuple[_Batch, str]] = []
     inline_results: List[dict] = []
     slot_key: Optional[str] = None
@@ -434,12 +441,14 @@ def _dispatch_background(batch: _Batch) -> str:
         logger.warning("delegate_task: unit %d/%d not accepted (%s); running it inline.", k + 1, len(units), dispatch.get("error"))
         inline_results.extend(_execute_and_aggregate(unit)["results"])
     payload = _dispatched_payload(batch, dispatched)
+    if batch.blocked_results:
+        payload["results"] = batch.blocked_results
     if inline_results:
         payload["inline_results"] = inline_results
     return json.dumps(payload, ensure_ascii=False)
 
 def _run_batch(batch: _Batch, background: bool) -> str:
     """Tool result JSON: a dispatch handle (background) or the joined combined results."""
-    if background:
+    if background and batch.children:
         return _dispatch_background(batch)
     return json.dumps(_execute_and_aggregate(batch), ensure_ascii=False)

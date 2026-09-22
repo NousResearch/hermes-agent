@@ -192,6 +192,105 @@ def test_managed_delegation_task_reaches_real_child_and_pins_receipt(routed_home
     assert "Summarize the managed routing design" in sent
 
 
+@pytest.mark.parametrize("denied_first", [True, False])
+@pytest.mark.parametrize("denial", ["policy", "credentials"])
+def test_policy_denial_does_not_cancel_eligible_batch_member(routed_home, monkeypatch, denied_first, denial):
+    from tools.delegate_tool import delegate_task
+    from agent.model_selection_store import get_receipt
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _patch_custom_provider(monkeypatch, url)
+    if denial == "credentials":
+        import tools.delegate_tool_config as config
+        from agent.model_selection_store import activate_policy, publish_policy
+        policy = _policy(url)
+        policy["routes"].append({**policy["routes"][0], "route_id": "unavailable",
+                                 "model": "unavailable", "allowed_roles": ["unapproved-role"]})
+        policy["rankings"]["unapproved-role"] = {"deep": ["unavailable"]}
+        publish_policy(home, policy, approval_ref=policy["approval_ref"])
+        activate_policy(home, policy["policy_id"], 1)
+        resolve = config._runtime_provider_credentials
+        def missing_credentials(cfg, parent):
+            if cfg.get("model") == "unavailable":
+                raise ValueError("fixture credential unavailable")
+            return resolve(cfg, parent)
+        monkeypatch.setattr(config, "_runtime_provider_credentials", missing_credentials)
+    else:
+        _publish_active(home, url)
+    parent = _make_parent(home)
+    eligible = {"goal": "eligible content", "routing_role": "builder",
+                "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
+    denied = {"goal": "denied content", "routing_role": "unapproved-role",
+              "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192}}
+    tasks = [denied, eligible] if denied_first else [eligible, denied]
+    try:
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent))
+        assert "results" in result, result
+        assert [entry["task_index"] for entry in result["results"]] == [0, 1]
+        blocked, completed = (result["results"] if denied_first else reversed(result["results"]))
+        assert blocked["status"] == "error"
+        assert blocked["routing_reason"] == ("no_qualified_route" if denial == "policy" else "provider_unavailable")
+        assert completed["status"] == "completed"
+        receipt = get_receipt(home, completed["routing_receipt_id"])
+        assert receipt is not None
+        assert receipt["requirements"]["role"] == "builder"
+        assert len(handler.requests) == 1
+        assert handler.requests[0]["model"] == receipt["selected"]["model"]
+        assert "eligible content" in json.dumps(handler.requests)
+        assert "denied content" not in json.dumps(handler.requests)
+        assert getattr(parent, "_active_children") == []
+    finally:
+        parent.close()
+
+
+@pytest.mark.parametrize("independent", [False, True])
+def test_mixed_background_batch_delivers_each_member_once(routed_home, monkeypatch, independent):
+    import queue
+    from gateway.session_context import set_session_vars
+    from tools import async_delegation
+    from tools.delegate_tool import delegate_task
+    from tools.process_registry import process_registry
+    import tools.delegate_tool_config as config
+
+    home, handler, url = routed_home["hermes_home"], routed_home["handler"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    monkeypatch.setattr(config, "_get_independent_completions", lambda: independent)
+    completions = queue.Queue()
+    monkeypatch.setattr(process_registry, "completion_queue", completions)
+    async_delegation._reset_for_tests()
+    set_session_vars(platform="cli", session_id="mixed-background", async_delivery=True)
+    parent = _make_parent(home)
+    tasks = [
+        {"goal": "eligible first", "routing_role": "builder"},
+        {"goal": "denied content", "routing_role": "unapproved-role"},
+        {"goal": "eligible last", "routing_role": "builder"},
+    ]
+    for task in tasks:
+        task["routing_requirements"] = {"input_tokens": 1000, "reserve_tokens": 8192}
+    try:
+        result = json.loads(delegate_task(tasks=tasks, parent_agent=parent, background=True))
+        assert result["status"] == "dispatched", result
+        assert result["count"] == 2
+        assert result["goals"] == ["eligible first", "eligible last"]
+        assert [(entry["task_index"], entry["routing_reason"]) for entry in result["results"]] == [
+            (1, "no_qualified_route"),
+        ]
+        events = [completions.get(timeout=30) for _ in range(2 if independent else 1)]
+        entries = [entry for event in events for entry in event["results"]]
+        assert sorted(entry["task_index"] for entry in entries) == [0, 2]
+        assert all(entry["status"] == "completed" for entry in entries)
+        assert len({entry["routing_receipt_id"] for entry in entries}) == 2
+        assert len(handler.requests) == 2
+        assert "denied content" not in json.dumps(handler.requests)
+        assert parent._active_children == []
+    finally:
+        if async_delegation._executor is not None:
+            async_delegation._executor.shutdown(wait=True)
+        async_delegation._reset_for_tests()
+        parent.close()
+
+
 def test_managed_delegation_denied_route_reaches_zero_endpoints(routed_home, monkeypatch):
     """No active policy published -> RoutingBlocked -> the spawn must fail BEFORE any child is
     constructed or any content transmitted. Zero requests at the endpoint, ever."""
@@ -210,7 +309,8 @@ def test_managed_delegation_denied_route_reaches_zero_endpoints(routed_home, mon
     assert len(handler.requests) == 0, "a denied managed route must never reach the endpoint"
 
 
-def test_shadow_delegation_records_decision_but_keeps_legacy_child_route(routed_home, monkeypatch):
+@pytest.mark.parametrize("fault", [None, "provenance", "store", "outcome"])
+def test_shadow_delegation_records_decision_but_keeps_legacy_child_route(routed_home, monkeypatch, fault):
     """A shadow task is observational only: selection may recommend the
     policy route, but construction and inference stay on the legacy parent
     route and no managed receipt is stamped on the child."""
@@ -220,10 +320,23 @@ def test_shadow_delegation_records_decision_but_keeps_legacy_child_route(routed_
     _publish_active(hermes_home, url)
     parent = _make_parent(hermes_home, endpoint=url)
 
+    if fault in ("store", "outcome"):
+        import sqlite3
+        import agent.model_selection_store as store
+        def fail(*args, **kwargs):
+            raise sqlite3.OperationalError("private storage failure")
+        if fault == "store":
+            from pathlib import Path
+            database = Path(hermes_home) / "model_routing.db"
+            database.rename(database.with_suffix(".saved"))
+            database.mkdir()
+        else:
+            monkeypatch.setattr(store, "append_outcome", fail)
+
     result = json.loads(delegate_task(
         tasks=[{
             "goal": "Run through the legacy route while recording the recommendation.",
-            "routing_role": "builder", "routing_mode": "shadow",
+            "routing_role": "reviewquality" if fault == "provenance" else "builder", "routing_mode": "shadow",
             "routing_requirements": {"input_tokens": 1000, "reserve_tokens": 8192},
         }],
         parent_agent=parent,
@@ -232,7 +345,41 @@ def test_shadow_delegation_records_decision_but_keeps_legacy_child_route(routed_
     assert result["results"][0]["status"] == "completed", result
     assert handler.requests[0]["model"] == "parent-model"
     assert result["results"][0].get("routing_receipt_id") is None
-    assert result["results"][0]["routing_shadow_receipt_id"].startswith("rr_")
+    if fault:
+        assert result["results"][0]["routing_shadow_error"]
+        assert "private storage failure" not in str(result)
+    else:
+        assert result["results"][0]["routing_shadow_receipt_id"].startswith("rr_")
+
+
+def test_shadow_lifecycle_constructor_retains_legacy_fallback(routed_home, monkeypatch):
+    from agent.subagent_lifecycle import SubagentLaunchRequest
+    from tools.delegate_tool_routing import build_lifecycle_child
+    import tools.delegate_tool as dt
+
+    home, url = routed_home["hermes_home"], routed_home["url"]
+    _publish_active(home, url)
+    _patch_custom_provider(monkeypatch, url)
+    parent = _make_parent(home, endpoint=url)
+    original = dt._resolve_child_runtime
+    def with_fallback(*args, **kwargs):
+        runtime = original(*args, **kwargs)
+        runtime["fallback_model"] = [{"provider": "custom", "model": "fallback", "base_url": url}]
+        return runtime
+    monkeypatch.setattr(dt, "_resolve_child_runtime", with_fallback)
+    children = []
+    try:
+        for mode in (None, "shadow", "enforced"):
+            request = SubagentLaunchRequest(goal="construct", routing_role="builder" if mode else None,
+                routing_mode=mode, routing_requirements={"input_tokens": 1000, "reserve_tokens": 8192} if mode else None)
+            children.append(build_lifecycle_child(request, parent))
+        assert children[0]._fallback_chain
+        assert children[1]._fallback_chain == children[0]._fallback_chain
+        assert children[2]._fallback_chain == []
+    finally:
+        for child in children:
+            child.close()
+        parent.close()
 
 
 def test_nested_managed_delegation_cannot_widen_role(routed_home, monkeypatch):

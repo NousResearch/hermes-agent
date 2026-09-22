@@ -171,34 +171,34 @@ def resolve_delegation_route(
             raise DelegationRoutingBlocked("unsupported_executor", "nested delegation cannot replace parent provenance")
         task_requirements["provenance"] = parent_provenance
 
-    requirements = _build_requirements(
-        task, task_requirements, role=role, task_index=task_index, attempt_id=attempt_id,
-    )
-    if parent_decision is not None:
-        requirements["allowed_route_ids"] = [parent_decision["selected"]["route_id"], *parent_decision["alternates"]]
     try:
+        requirements = _build_requirements(
+            task, task_requirements, role=role, task_index=task_index, attempt_id=attempt_id,
+        )
+        if parent_decision is not None:
+            requirements["allowed_route_ids"] = [parent_decision["selected"]["route_id"], *parent_decision["alternates"]]
         decision_kwargs = resolve_route(
             hermes_home, policy_id, requirements, now=int(time.time()),
             policy_revision=parent_decision["policy_revision"] if parent_decision else None,
         )
-    except RoutingBlocked as exc:
+        if mode == "shadow":
+            from agent.model_selection_store import append_outcome, get_receipt
+
+            shadow_decision = get_receipt(hermes_home, decision_kwargs["receipt_id"])
+            append_outcome(hermes_home, decision_kwargs["receipt_id"], "routing_shadow", {
+                "execution_kind": "delegation", "execution_id": requirements["execution_id"],
+                "recommended_route_id": shadow_decision["selected"]["route_id"] if shadow_decision else None,
+            })
+            return {
+                "routing_mode": "shadow", "routing_home": hermes_home,
+                "receipt_id": decision_kwargs["receipt_id"],
+            }
+    except Exception as exc:
         if mode != "shadow":
             raise
         return {
             "routing_mode": "shadow", "routing_home": hermes_home,
-            "shadow_error": exc.reason,
-        }
-    if mode == "shadow":
-        from agent.model_selection_store import append_outcome, get_receipt
-
-        shadow_decision = get_receipt(hermes_home, decision_kwargs["receipt_id"])
-        append_outcome(hermes_home, decision_kwargs["receipt_id"], "routing_shadow", {
-            "execution_kind": "delegation", "execution_id": requirements["execution_id"],
-            "recommended_route_id": shadow_decision["selected"]["route_id"] if shadow_decision else None,
-        })
-        return {
-            "routing_mode": "shadow", "routing_home": hermes_home,
-            "receipt_id": decision_kwargs["receipt_id"],
+            "shadow_error": exc.reason if isinstance(exc, RoutingBlocked) else "observation_failed",
         }
     if task.get("model") and task["model"] != decision_kwargs["model"]:
         raise DelegationRoutingBlocked("unsupported_executor", "model preference is outside the selected managed route")

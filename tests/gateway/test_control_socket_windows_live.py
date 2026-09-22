@@ -130,14 +130,39 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
 
     assert identify_gateway(home, timeout=2.0) is None
 
-    # Consumer falls back to the state file (live pid = this test process)
+    # Consumer falls back to the state file (live pid = this test process).
+    #
+    # The record must carry the launch argv a real gateway stamps
+    # (``write_runtime_status`` writes ``sys.argv``), and the pid must be the
+    # one ``live_gateway_pid_for_home`` verifies. Without either half
+    # ``collect_fleet_versions`` refuses to classify the row at all: the
+    # resolver sees this pytest process, whose command line is not a gateway
+    # launch, and on Windows the cmdline probe can fail outright (EACCES) and
+    # fall back to ``_record_looks_like_gateway``, which is False for a record
+    # with no ``argv``. The row then reads ``unknown`` with no ``code_sha``,
+    # never ``stale`` — the assertion below could not hold.
+    #
+    # ``argv`` is pinned to the checkout the code under test was imported
+    # from, not to the test file's own directory: a stray checkout would make
+    # ``_gateway_code_root`` resolve another code root and the row would be
+    # labelled ``external`` before the stale classification is reached.
     import hermes_cli.update_receipt as ur
+
+    checkout = Path(ur.__file__).resolve().parent.parent
 
     (home / "gateway_state.json").write_text(
         json.dumps(
-            {"pid": os.getpid(), "code_sha": "OLD", "kind": "hermes-gateway"}
+            {
+                "pid": os.getpid(),
+                "code_sha": "OLD",
+                "kind": "hermes-gateway",
+                "argv": [str(checkout / "hermes_cli" / "main.py")],
+            }
         ),
         encoding="utf-8",
+    )
+    monkeypatch.setattr(
+        "gateway.status.live_gateway_pid_for_home", lambda h: os.getpid()
     )
     monkeypatch.setattr(
         "hermes_cli.build_info.get_code_identity",
@@ -150,4 +175,8 @@ def test_pipe_gone_after_kill_falls_back(live_server, monkeypatch):
     fleet = ur.collect_fleet_versions()
     assert len(fleet) == 1, fleet
     assert "source" not in fleet[0]
+    assert fleet[0]["pid"] == os.getpid()
     assert fleet[0]["state"] == "stale"
+    assert fleet[0]["code_sha"] == "OLD"
+    # The row reports the checkout the argv points at: the one under test.
+    assert fleet[0]["code_root"] == str(checkout)

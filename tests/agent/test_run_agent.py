@@ -3640,6 +3640,7 @@ class TestRunConversation:
     def test_reasoning_only_local_clean_stop_returns_immediately(self, agent):
         """A clean-stop reasoning answer returns without compression or recovery."""
         self._setup_agent(agent)
+        agent.runtime_capabilities["answer_in_reasoning"] = True
         agent.base_url = "http://127.0.0.1:1234/v1"
         agent.compression_enabled = True
         empty_resp = _mock_response(
@@ -3670,6 +3671,8 @@ class TestRunConversation:
     def test_reasoning_only_response_returns_on_first_call(self, agent):
         """Structured reasoning-only clean stops bypass the empty-response ladder."""
         self._setup_agent(agent)
+        agent.runtime_capabilities["answer_in_reasoning"] = True
+        agent.base_url = "http://127.0.0.1:1234/v1"
         empty_resp = _mock_response(
             content=None,
             finish_reason="stop",

@@ -107,7 +107,10 @@ class TestFallbackReasoningOverride:
         assert result is True
         # reasoning_config should be restored to primary's value (medium)
         assert agent.reasoning_config == {"enabled": True, "effort": "medium"}
-        assert agent.runtime_capabilities == {"native_compaction": True}
+        assert agent.runtime_capabilities == {
+            "native_compaction": True,
+            "answer_in_reasoning": False,
+        }
 
     def test_fallback_global_fallback_with_yaml_false(self):
         """Fallback global fallback must not coerce YAML boolean False.
@@ -135,3 +138,55 @@ class TestFallbackReasoningOverride:
 
         assert result is not None
         assert result.get("enabled") is False
+
+
+@pytest.mark.parametrize("primary_answer, fallback_answer", [(False, True), (True, False)])
+def test_fallback_restore_preserves_primary_answer_capability(primary_answer, fallback_answer):
+    """Restoring a route must restore its own reasoning capability, not the fallback's."""
+    from agent.agent_runtime_helpers import restore_primary_runtime
+
+    agent = MagicMock()
+    agent._primary_runtime = {
+        "model": "primary-model",
+        "provider": "primary-provider",
+        "base_url": "",
+        "api_mode": "openai",
+        "api_key": "key",
+        "client_kwargs": {},
+        "use_prompt_caching": False,
+        "use_native_cache_layout": False,
+        "runtime_capabilities": {
+            "native_compaction": True,
+            "answer_in_reasoning": primary_answer,
+        },
+        "reasoning_config": {"enabled": True, "effort": "medium"},
+        "compressor_model": "primary-model",
+        "compressor_base_url": "",
+        "compressor_api_key": "",
+        "compressor_provider": "primary-provider",
+        "compressor_context_length": 0,
+        "compressor_api_mode": "",
+        "compressor_threshold_tokens": 0,
+    }
+    agent._fallback_activated = True
+    agent._fallback_index = 0
+    agent._fallback_chain = []
+    agent._fallback_model = None
+    agent._transport_cache = {}
+    agent._config_context_length = None
+    agent._rate_limited_until = 0
+    agent.model = "fallback-model"
+    agent.provider = "fallback-provider"
+    agent.reasoning_config = {"enabled": True, "effort": "xhigh"}
+    agent.runtime_capabilities = {
+        "native_compaction": False,
+        "answer_in_reasoning": fallback_answer,
+    }
+    agent.context_compressor = MagicMock()
+    agent.base_url = ""
+    agent._anthropic_prompt_cache_policy = MagicMock(return_value=(False, False))
+    agent._create_openai_client = MagicMock(return_value=MagicMock())
+    agent._ensure_lmstudio_runtime_loaded = MagicMock()
+
+    assert restore_primary_runtime(agent) is True
+    assert agent.runtime_capabilities["answer_in_reasoning"] is primary_answer

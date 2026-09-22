@@ -28,9 +28,9 @@ def loop_agent():
     ):
         agent = AIAgent(
             api_key="test-key-1234567890",
-            base_url="https://api.deepseek.com/v1",
-            model="deepseek-reasoner",
-            provider="deepseek",
+            base_url="http://127.0.0.1:8000/v1",
+            model="nvidia/NVIDIA-Nemotron-3.5-Lightning-30B-A3B-NVFP4",
+            provider="vllm",
             quiet_mode=True,
             skip_context_files=True,
             skip_memory=True,
@@ -117,7 +117,7 @@ def test_reasoning_only_clean_stop_logs_warning_with_route(loop_agent, caplog):
     assert len(hits) == 1
     assert hits[0].levelno == logging.WARNING
     assert f"model={loop_agent.model}" in hits[0].getMessage()
-    assert "provider=deepseek" in hits[0].getMessage()
+    assert "provider=vllm" in hits[0].getMessage()
     assert "tool_turns=0" in hits[0].getMessage()
 
 

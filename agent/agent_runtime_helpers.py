@@ -1146,6 +1146,7 @@ def _restore_runtime_capabilities(agent, rt: Dict[str, Any]) -> None:
     raw = rt["runtime_capabilities"] if "runtime_capabilities" in rt else rt.get("capabilities")
     if isinstance(raw, dict):
         agent.runtime_capabilities = dict(raw)
+        _ensure_answer_in_reasoning_capability(agent)
     elif "runtime_capabilities" in rt:
         logger.warning("Ignoring malformed runtime capabilities snapshot")
 
@@ -1361,6 +1362,70 @@ def extract_reasoning(agent, assistant_message) -> Optional[str]:
             for block in pattern.findall(content):
                 _add(block.strip())
     return "\n\n".join(parts) if parts else None
+
+
+_ANSWER_IN_REASONING_CAPABILITY = "answer_in_reasoning"
+_NEMOTRON_PARSER_MODEL_MARKER = "nemotron-3.5-lightning"
+
+
+def answer_in_reasoning_capability(agent: Any) -> bool:
+    """Return whether a clean-stop reasoning payload is allowed to become the answer.
+
+    A field name is not provenance: OpenRouter, Bedrock, and several adapters can all put
+    private reasoning in ``reasoning``. The compatibility fallback is deliberately narrow to
+    the local Nemotron-3.5-Lightning chat route from #109205. A custom provider can opt in
+    an exact model through its existing per-model capability map, or a trusted caller can
+    pass the same capability in ``runtime_capabilities``.
+    """
+    base_url = str(getattr(agent, "base_url", "") or "")
+    provider = str(getattr(agent, "provider", "") or "").strip().lower()
+    if provider == "openrouter" or base_url_host_matches(base_url, "openrouter.ai"):
+        return False
+
+    api_mode = str(getattr(agent, "api_mode", "") or "").strip().lower()
+    if api_mode and api_mode != "chat_completions":
+        return False
+
+    runtime_capabilities = getattr(agent, "runtime_capabilities", None)
+    if isinstance(runtime_capabilities, dict):
+        configured = runtime_capabilities.get(_ANSWER_IN_REASONING_CAPABILITY)
+        if isinstance(configured, bool):
+            return configured
+
+    # Custom model maps already support exact per-route boolean capabilities. Keep the
+    # lookup best-effort: a malformed optional config must not break response handling.
+    try:
+        from hermes_cli.config import get_custom_provider_model_capability
+
+        configured = get_custom_provider_model_capability(
+            model=str(getattr(agent, "model", "") or ""),
+            base_url=base_url,
+            capability=_ANSWER_IN_REASONING_CAPABILITY,
+            custom_providers=getattr(agent, "_custom_providers", None),
+        )
+        if configured is not None:
+            return configured
+    except Exception:
+        logger.debug("answer-in-reasoning capability lookup failed", exc_info=True)
+
+    model = str(getattr(agent, "model", "") or "").strip().lower()
+    if _NEMOTRON_PARSER_MODEL_MARKER not in model:
+        return False
+    from agent.model_metadata import is_local_endpoint
+
+    return is_local_endpoint(base_url)
+
+
+def _ensure_answer_in_reasoning_capability(agent: Any) -> None:
+    """Keep the answer-in-reasoning decision in the live route capability map.
+
+    Runtime capability maps are rebuilt during startup, fallback activation, restore, and
+    model switches. Add the decision only when the caller did not provide an explicit value,
+    so a trusted route opt-in survives those rebuilds without carrying it to another route.
+    """
+    capabilities = getattr(agent, "runtime_capabilities", None)
+    if isinstance(capabilities, dict) and _ANSWER_IN_REASONING_CAPABILITY not in capabilities:
+        capabilities[_ANSWER_IN_REASONING_CAPABILITY] = answer_in_reasoning_capability(agent)
 
 
 def _api_error_debug_info(error: Exception) -> Dict[str, Any]:
@@ -2331,6 +2396,7 @@ def switch_model(
     # Publish the destination capability map only after every runtime setup above has succeeded.
     # Failed switches must leave the old map intact.
     agent.runtime_capabilities = destination_capabilities
+    _ensure_answer_in_reasoning_capability(agent)
     # Reset the cross-turn stale-call circuit breaker; otherwise the latched streak keeps
     # short-circuiting the freshly selected healthy provider.
     from agent.chat_completion_helpers import _reset_stale_streak
@@ -3539,6 +3605,7 @@ __all__ = [
     "convert_to_trajectory_format", "sanitize_tool_call_arguments", "repair_message_sequence",
     "strip_think_blocks", "recover_with_credential_pool", "try_recover_primary_transport",
     "drop_thinking_only_and_merge_users", "restore_primary_runtime", "extract_reasoning",
+    "answer_in_reasoning_capability",
     "dump_api_request_debug", "prompt_caching_disabled_from_config", "blank_cache_policy_stub",
     "plan_cache_sections_for_destination", "anthropic_prompt_cache_policy", "create_openai_client",
     "switch_model", "invoke_tool", "repair_tool_call", "sanitize_api_messages",

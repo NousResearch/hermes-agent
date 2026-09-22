@@ -1992,6 +1992,11 @@ def _build_context_engine(agent, _agent_cfg, cs, _custom_providers, _effective_c
         model=agent.model, base_url=agent.base_url, provider=agent.provider,
         is_codex_backend=(agent.provider or "").strip().lower() == "openai-codex",
     )
+    from agent.agent_runtime_helpers import _ensure_answer_in_reasoning_capability
+    explicit_answer_capability = getattr(agent, "capabilities", {}).get("answer_in_reasoning")
+    if isinstance(explicit_answer_capability, bool):
+        agent.runtime_capabilities["answer_in_reasoning"] = explicit_answer_capability
+    _ensure_answer_in_reasoning_capability(agent)
     agent.max_compression_attempts = cs.max_attempts
     agent.compression_idle_compact_after_seconds = cs.idle_compact_after_seconds
 
@@ -2229,6 +2234,7 @@ def _snapshot_primary_runtime(agent):
         "use_prompt_caching": agent._use_prompt_caching,
         "use_native_cache_layout": agent._use_native_cache_layout,
         "reasoning_echo_flag": getattr(agent, "_reasoning_echo_flag", False),
+        "runtime_capabilities": dict(getattr(agent, "runtime_capabilities", {}) or {}),
         # Engine state _try_activate_fallback() overwrites (getattr: plugin engines may lack them).
         "compressor_model": getattr(_cc, "model", agent.model),
         "compressor_base_url": getattr(_cc, "base_url", agent.base_url),

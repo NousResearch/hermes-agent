@@ -160,6 +160,17 @@ class TestReactionActions:
         request = mock_urlopen_fn.call_args[0][0]
         assert request.get_header("Authorization") == "Bearer profile-token"
 
+    @patch("tools.discord_tool._discord_request", return_value={"parent_id": "1550141272243707914"})
+    @patch("tools.discord_tool.urllib.request.urlopen", side_effect=urllib.error.HTTPError("https://api.github.com/x", 404, "not found", {}, None))
+    def test_complete_demand_404_never_mutates_reactions(self, _urlopen, discord_request, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")
+        result = json.loads(discord_core(
+            action="complete_demand", channel_id="12", message_id="34",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="457", epic_number="456"))
+
+        assert result == {"success": False, "completed": False, "reason": "issue_or_epic_open"}
+        assert [call.args[0] for call in discord_request.call_args_list] == ["GET"]
+
     @patch("tools.discord_tool.urllib.request.urlopen")
     def test_reaction_actions_use_the_bot_reaction_endpoint(self, mock_urlopen_fn, monkeypatch):
         monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")

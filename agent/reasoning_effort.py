@@ -35,8 +35,8 @@ CODEX_LEGACY_EFFORTS: tuple[str, ...] = ("none", "low", "medium", "high", "xhigh
 # wire level; callers normalize those requests to ``low`` at the transport boundary.
 CODEX_ASTRA_EFFORTS: tuple[str, ...] = ("low", "medium", "high", "xhigh", "max")
 ASTRA_MODEL_IDS: frozenset[str] = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
-#: GPT-6 Sol/Terra/Luna (the 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
-GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-terra", "gpt-6-luna")
+#: GPT-6 Sol/Luna (the released 5.6 successors; ``-pro``/``-900k``/dated snapshots share the prefix).
+GPT6_TIER_PREFIXES: tuple[str, ...] = ("gpt-6-sol", "gpt-6-luna")
 DAYBREAK_MODEL_IDS: frozenset[str] = frozenset(
     {"gpt-daybreak-blue-latest", "gpt-daybreak-blue-latest-900k"}
 )

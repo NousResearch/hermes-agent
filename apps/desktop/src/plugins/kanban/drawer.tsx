@@ -586,7 +586,7 @@ export function TaskDrawer({
 
   const invalidate = () => {
     void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
-    void qc.invalidateQueries({ queryKey: ['kanban', 'board', slug] })
+    void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
   }
 
   // Optimistic status change against the task cache; rolls back + toasts on a

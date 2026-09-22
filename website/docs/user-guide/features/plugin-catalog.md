@@ -72,12 +72,18 @@ The catalog is designed so you know exactly what you're installing:
   catalog install checked out at exactly the pinned SHA does not stop to ask
   about `caution` again; `dangerous` still blocks, and anything installed from
   a raw URL or at another revision gets the normal prompt.
-- **Desktop plugins stay inside the SDK.** A plugin's `desktop/plugin.js` runs
-  inside the Desktop app with the app's own authority, so listed ones may only
-  use the plugin SDK: no patching of built-in prototypes, no `eval`, no
-  importing the app's own bundle chunks or remote scripts. Admission refuses
-  these (`desktop surface` check) so a marketplace install cannot quietly
-  rewire the app around you.
+- **Desktop plugins run with the app's authority — review is the boundary.**
+  A plugin's `desktop/plugin.js` is evaluated inside the Desktop app itself,
+  in the same realm as the app's own code: there is no sandbox, and it can
+  do anything the app can (gateway RPC, the full `window.hermesDesktop`
+  bridge, storage of other plugins). What protects you is the trust model
+  above — a human read the exact pinned commit, and the install is that
+  commit — plus two tripwires: admission's `desktop surface` lint refuses
+  the obvious moves outside the plugin SDK (patching built-in prototypes,
+  `eval`, importing anything other than `@hermes/plugin-sdk`/`react`,
+  including remote scripts), and the app's loader refuses every non-SDK
+  import again at load time. Treat the lint as a review aid, not a
+  guarantee; give Desktop halves the same scrutiny you'd give a Python half.
 - **Capability declarations.** Entries state up front which tools, hooks, and
   middleware the plugin provides and which environment variables (API keys
   etc.) it needs, so you can judge its blast radius before installing.

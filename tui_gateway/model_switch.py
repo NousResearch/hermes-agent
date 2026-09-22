@@ -78,14 +78,17 @@ def _profile_runtime_scope_tokens(profile_home, *, hydrate_secrets: bool = True)
         overlay = None
         scopes.home = set_hermes_home_override(str(home))
     else:
-        # No home override: the launch home IS get_hermes_home() (``_profile_home`` answers None for
-        # "already the launch profile"); only its secrets (+ terminal policy under multiplex) need binding.
+        # The launch home IS get_hermes_home() (``_profile_home`` answers None for "already the
+        # launch profile"); single-profile, only its secrets need binding. Once multiplexing is
+        # active the override is bound too: an unset override is the "unbound context" signal
+        # plugin runtime bindings and per-home slots fail closed on (#118538).
         from tui_gateway.launch_profile_policy import launch_secret_scope, launch_terminal_env
         home = Path(_hermes_home)
         secrets = launch_secret_scope(home)
         scopes.secret = set_secret_scope(secrets)
         if not is_multiplex_active():
             return scopes
+        scopes.home = set_hermes_home_override(str(home))
         overlay = launch_terminal_env()
     if scopes.secret is None:
         scopes.secret = set_secret_scope(secrets)

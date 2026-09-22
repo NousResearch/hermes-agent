@@ -70,39 +70,33 @@ def _declare_packages(repo, include):
     _commit(repo, "declare packages")
 
 
-def test_missing_new_top_level_package_forces_reinstall(repo, monkeypatch):
+@pytest.mark.parametrize("annotated", [False, True])
+def test_stale_map_refuses_the_skip(repo, monkeypatch, annotated):
+    """A missing top-level name refuses the skip for both finder spellings."""
     _declare_packages(repo, ["agent", "agent.*", "newpkg", "newpkg.*"])
     before = _head(repo)
     (repo / "newpkg").mkdir()
     (repo / "newpkg" / "__init__.py").write_text("")
     _commit(repo, "add package")
-    _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, annotated=True)
+    _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, annotated=annotated)
     monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
     assert _editable_install_is_current(GIT, repo, before) is False
 
 
-def test_covered_annotated_finder_allows_source_churn(repo, monkeypatch):
-    """A current setuptools map uses annotated assignment and module stems, not cli.py."""
+@pytest.mark.parametrize("annotated", [False, True])
+@pytest.mark.parametrize("layout", ["lib/python3.11/site-packages", "Lib/site-packages"])
+def test_covered_map_skips_source_churn(repo, monkeypatch, layout, annotated):
+    """A map that already names the checkout still skips source edits."""
     _declare_packages(repo, ["agent", "agent.*"])
     _finder(
         repo,
         {"agent": str(repo / "agent"), "cli": str(repo / "cli")},
-        annotated=True,
+        layout=layout,
+        annotated=annotated,
     )
     monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
     before = _head(repo)
     (repo / "agent" / "loop.py").write_text("y = 2\n")
-    _commit(repo, "source churn")
-    assert _editable_install_is_current(GIT, repo, before) is True
-
-
-@pytest.mark.parametrize("layout", ["lib/python3.11/site-packages", "Lib/site-packages"])
-def test_windows_and_posix_site_packages_are_both_read(repo, monkeypatch, layout):
-    _declare_packages(repo, ["agent", "agent.*"])
-    _finder(repo, {"agent": str(repo / "agent"), "cli": str(repo / "cli")}, layout=layout, annotated=True)
-    monkeypatch.setattr("hermes_cli.update_cmd_deps.project_venv_dir", lambda _: repo / "venv")
-    before = _head(repo)
-    (repo / "agent" / "loop.py").write_text("y = 3\n")
     _commit(repo, "source churn")
     assert _editable_install_is_current(GIT, repo, before) is True
 

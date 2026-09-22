@@ -1754,12 +1754,8 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             client = self._client
             if not self._running or client is None or self._disconnecting:
                 # The probe must never disappear silently (#118487): an exit here leaves the
-                # gateway alive with no watchdog, so say why before going away. Teardown
-                # (stopped or disconnecting) is expected; a still-running adapter losing
-                # its client mid-flight is not, and an operator must be able to spot it.
-                expected_exit = not self._running or self._disconnecting
-                logger.log(
-                    logging.INFO if expected_exit else logging.WARNING,
+                # gateway with no watchdog, so say why before going away.
+                logger.info(
                     "[%s] Discord liveness probe exiting (running=%s, client=%s, disconnecting=%s)",
                     self.name, self._running, client is not None, self._disconnecting,
                 )

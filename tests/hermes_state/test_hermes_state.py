@@ -3059,6 +3059,59 @@ class TestListSessionsRich:
 
 
 
+class TestSessionListPreviewHydration:
+    def test_preview_subquery_only_runs_for_limited_rows(self, db, monkeypatch):
+        """Recent sidebar hydration must not inspect every session's messages."""
+        import hermes_state_sessions
+
+        for i in range(12):
+            session_id = f"session-{i}"
+            db.create_session(session_id, "cli")
+            db.append_message(session_id, "user", f"preview-{i}")
+            db._conn.execute(
+                "UPDATE sessions SET last_activity_at = ? WHERE id = ?", (i, session_id),
+            )
+        db.set_session_pinned("session-0", True)
+        db._conn.commit()
+
+        preview_calls: list[str] = []
+        db._conn.create_function(
+            "preview_probe", 1, lambda content: preview_calls.append(content) or content,
+        )
+        monkeypatch.setattr(
+            hermes_state_sessions,
+            "_sql_session_last_active_by_id",
+            lambda session_id: """(
+                (SELECT last_activity_at FROM sessions _act_s WHERE _act_s.id = {session_id})
+                + 0 * COALESCE((SELECT preview_probe(m.content) IS NOT NULL FROM messages m
+                                WHERE m.session_id = {session_id}
+                                ORDER BY m.timestamp, m.id LIMIT 1), 0)
+            )""".format(session_id=session_id),
+        )
+        monkeypatch.setattr(
+            hermes_state_sessions,
+            "_PREVIEW_COL_SQL",
+            """COALESCE(
+                        (SELECT preview_probe(m.content)
+                         FROM messages m
+                         WHERE m.session_id = s.id AND m.role = 'user'
+                         ORDER BY m.timestamp, m.id LIMIT 1),
+                        ''
+                    ) AS _preview_raw""",
+        )
+
+        rows = db.list_sessions_rich(
+            limit=2, offset=1, order_by_last_active=True, include_pinned=True,
+            project_compression_tips=False,
+        )
+
+        assert {row["id"] for row in rows} == {"session-10", "session-9", "session-0"}
+        # Three recent candidates cover the offset page; each pays activity and
+        # preview lookup, while the pinned back-fill pays one preview lookup
+        # for its one returned candidate.
+        assert len(preview_calls) == 7
+
+
 class TestCompressionChainProjection:
     """Tests for lineage-aware list_sessions_rich — compressed conversations
     surface as their live continuation tip, not the dead parent root.

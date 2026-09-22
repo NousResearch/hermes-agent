@@ -1285,16 +1285,25 @@ class SessionSessionsMixin:
         )
         from_sessions = f"FROM sessions s\n                {prompt_join}"
         if order_by_last_active:
-            # The CTE walks compression-continuation edges forward from the admitted
-            # rows; MAX over the chain gives effective_last_active in SQL. Do NOT
-            # require child.started_at >= parent.ended_at: races insert the
-            # continuation before ended_at is written.
+            # First admit the requested page from the indexed, durable activity
+            # timestamp.  The exact activity expression reads messages, so using
+            # it to seed ``chain`` would pay a message subquery for every visible
+            # session before LIMIT.  The outer query still computes and orders by
+            # exact activity for this bounded candidate page.  Searches retain
+            # their complete-chain semantics rather than applying this fast path.
             outer_where, id_params = self._chain_search_where(
                 where_sql, (id_query or "").strip().lower(), (search_query or "").strip().lower(),
             )
+            candidate_limit = -1 if (id_query or search_query or limit < 0) else limit + offset
             query = f"""
-                WITH RECURSIVE chain(root_id, cur_id) AS (
-                    SELECT s.id, s.id FROM sessions s {where_sql}
+                WITH RECURSIVE recent_candidates(id) AS MATERIALIZED (
+                    SELECT s.id FROM sessions s {where_sql}
+                    ORDER BY COALESCE(s.last_activity_at, s.started_at) DESC,
+                             s.started_at DESC, s.id DESC
+                    LIMIT ?
+                ),
+                chain(root_id, cur_id) AS (
+                    SELECT id, id FROM recent_candidates
                     UNION ALL
                     SELECT c.root_id, child.id
                     FROM chain c
@@ -1316,13 +1325,14 @@ class SessionSessionsMixin:
                 {select_head}{_sql_session_last_active("s")} AS last_active,
                     COALESCE(cm.effective_last_active, s.started_at) AS _effective_last_active
                 FROM sessions s
+                JOIN recent_candidates rc ON rc.id = s.id
                 LEFT JOIN chain_max cm ON cm.root_id = s.id
                 {prompt_join}
                 {outer_where}
                 ORDER BY _effective_last_active DESC, s.started_at DESC, s.id DESC
                 LIMIT ? OFFSET ?
             """
-            params = params + params + id_params + [limit, offset]  # WHERE binds twice (seed + outer)
+            params = params + [candidate_limit] + params + id_params + [limit, offset]
         else:
             query = f"""
                 {select_head}{_sql_session_last_active("s")} AS last_active

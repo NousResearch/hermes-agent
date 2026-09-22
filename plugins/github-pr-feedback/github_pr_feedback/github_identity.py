@@ -28,7 +28,13 @@ class GitHubAutomationIdentity:
         cls, environ: Mapping[str, str] | None = None
     ) -> "GitHubAutomationIdentity":
         source = os.environ if environ is None else environ
-        login = source.get("HERMES_GITHUB_BOT_LOGIN", "").strip()
+        if environ is None:
+            from agent.secret_scope import get_github_automation_secret
+
+            login = get_github_automation_secret("HERMES_GITHUB_BOT_LOGIN")
+        else:
+            login = source.get("HERMES_GITHUB_BOT_LOGIN", "")
+        login = login.strip()
         if not _LOGIN.fullmatch(login):
             raise GitHubIdentityError("HERMES_GITHUB_BOT_LOGIN is required")
         return cls(login)
@@ -39,12 +45,18 @@ class GitHubAutomationIdentity:
         if self.token_env in _SHARED_TOKEN_ENVS or not _TOKEN_ENV.fullmatch(self.token_env):
             raise GitHubIdentityError("a dedicated Hermes GitHub token variable is required")
         source = os.environ if environ is None else environ
-        token = source.get(self.token_env, "")
+        if environ is None:
+            from agent.secret_scope import get_github_automation_secret
+
+            token = get_github_automation_secret(self.token_env)
+        else:
+            token = source.get(self.token_env, "")
         if not token:
             raise GitHubIdentityError(f"{self.token_env} is required")
         child = dict(source)
         child.pop("GH_TOKEN", None)
         child.pop("GITHUB_TOKEN", None)
+        child[self.token_env] = token
         child["GH_TOKEN"] = token
         return child
 

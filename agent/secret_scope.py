@@ -252,6 +252,14 @@ _MODEL_PROVIDER_SECRET_FALLBACKS = frozenset({
     "LM_API_KEY", "LM_BASE_URL",
 })
 _MODEL_PROVIDER_SECRET_NAMES: frozenset[str] | None = None
+
+# The installation-wide GitHub automation credential is intentionally shared
+# only with profiles that have a narrowly governed GitHub write workflow.
+_GITHUB_AUTOMATION_PROFILES = frozenset({
+    "hermes-pr-feedback",
+    "lunabot-issue-reporter",
+    "publication-curator",
+})
 _MODEL_PROVIDER_SECRET_NAMES_LOCK = threading.Lock()
 
 
@@ -314,6 +322,67 @@ def _shared_model_provider_secrets(hermes_home: Path) -> Dict[str, str]:
         return shared
     except Exception:
         return {}
+
+
+def _shared_github_automation_secrets(hermes_home: Path) -> Dict[str, str]:
+    """Share the central bot identity only with profiles authorized to publish."""
+    try:
+        from hermes_constants import get_default_hermes_root, hermes_home_key, named_profile_home
+
+        profile_home = named_profile_home(hermes_home)
+        if profile_home is None or profile_home.name not in _GITHUB_AUTOMATION_PROFILES:
+            return {}
+        root = get_default_hermes_root()
+        if hermes_home_key(root) == hermes_home_key(hermes_home):
+            return {}
+        return {
+            key: value
+            for key, value in load_env_file(root / ".env").items()
+            if key in {"HERMES_GITHUB_BOT_LOGIN", "HERMES_GITHUB_BOT_TOKEN"}
+        }
+    except Exception:
+        return {}
+
+
+def get_github_automation_secret(name: str, default: str = "") -> str:
+    """Resolve the centralized GitHub identity without bypassing profile isolation.
+
+    Gateway work reads from the installed profile scope. A standalone Hermes CLI
+    process has no turn scope, so it may read the root store only for the default
+    home and the explicitly authorized automation profiles.
+    """
+    if name not in {"HERMES_GITHUB_BOT_LOGIN", "HERMES_GITHUB_BOT_TOKEN"}:
+        raise ValueError("unsupported GitHub automation credential")
+    scope = current_secret_scope()
+    if scope is not None:
+        return scope.get(name, default)
+    # A gateway without a bound profile must fail closed even though the
+    # standalone CLI below is allowed to resolve its explicitly named home.
+    if os.environ.get("_HERMES_GATEWAY"):
+        return default
+    try:
+        from hermes_constants import (
+            get_default_hermes_root,
+            get_hermes_home,
+            hermes_home_key,
+            named_profile_home,
+        )
+
+        root = get_default_hermes_root()
+        home = get_hermes_home()
+        profile_home = named_profile_home(home)
+        authorized = (
+            hermes_home_key(home) == hermes_home_key(root)
+            or (profile_home is not None and profile_home.name in _GITHUB_AUTOMATION_PROFILES)
+        )
+        if authorized:
+            value = load_env_file(root / ".env").get(name)
+            if value:
+                return value
+            return os.environ.get(name, default)
+    except Exception:
+        return default
+    return default
 
 
 def invalidate_env_file_cache(env_path: Optional[Path] = None) -> None:
@@ -403,6 +472,7 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
     that are authorized for this profile.
     """
     secrets = _shared_model_provider_secrets(Path(hermes_home))
+    secrets.update(_shared_github_automation_secrets(Path(hermes_home)))
     secrets.update(load_env_file(Path(hermes_home) / ".env"))
     try:
         from hermes_cli.env_loader import get_secret_source_values

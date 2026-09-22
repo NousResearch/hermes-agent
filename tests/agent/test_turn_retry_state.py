@@ -37,6 +37,7 @@ EXPECTED_FIELDS = {
     "auto_recovery_cycles_used",
     "restart_with_compressed_messages",
     "restart_with_length_continuation",
+    "restart_with_chunking_nudge",
     "restart_with_rebuilt_messages",
     "restart_with_redirected_messages",
 }

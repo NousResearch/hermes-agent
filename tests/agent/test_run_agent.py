@@ -4832,7 +4832,12 @@ class TestRunConversation:
         bad_resp = _mock_response(
             content="", finish_reason="tool_calls", tool_calls=[bad_tc],
         )
-        agent.client.chat.completions.create.side_effect = [good_resp, bad_resp]
+        recovered_resp = _mock_response(
+            content="recovered", finish_reason="stop",
+        )
+        agent.client.chat.completions.create.side_effect = [
+            good_resp, bad_resp, recovered_resp,
+        ]
 
         with (
             patch("model_tools.handle_function_call", return_value='{"success":true}'),
@@ -4842,10 +4847,14 @@ class TestRunConversation:
         ):
             result = agent.run_conversation("write then truncate")
 
-        assert result.get("partial") is True
+        assert result.get("completed") is True
+        assert not result.get("partial")
+        assert result.get("final_response") == "recovered"
+        assert agent.client.chat.completions.create.call_count == 3
+
         msgs = result.get("messages") or []
         assert msgs[-1].get("role") == "assistant"
-        assert "cut off" in (msgs[-1].get("content") or "").lower()
+        assert msgs[-1].get("content") == "recovered"
         assert any(isinstance(m, dict) and m.get("role") == "tool" for m in msgs)
 
 

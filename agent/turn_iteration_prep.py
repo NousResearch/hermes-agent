@@ -501,6 +501,15 @@ def apply_retry_restarts(
         _preflight_compression_blocked = False
         return _verdict("continue")
 
+    if _retry.restart_with_chunking_nudge:
+        # An output-limit cut off a tool call mid-arguments: re-issue the call WITHOUT a
+        # max_tokens boost. The larger budget only feeds the same oversized generation
+        # (regenerate → truncate → retry), so the chunking guidance appended as the user-row
+        # nudge is the only thing that changes the outcome. The bound lives in the turn-scoped
+        # ``_ChunkingProgress``, not in this flag.
+        _retry.restart_with_chunking_nudge = False
+        return _verdict("continue")
+
     if _retry.restart_with_length_continuation:
         # Boost output budget per retry: 2×, 4×, 8×, 16× base, capped at 32 768, via
         # _ephemeral_max_output_tokens. Keep a larger original provider/model

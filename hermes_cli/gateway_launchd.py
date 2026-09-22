@@ -806,7 +806,18 @@ def launchd_restart():
                     return
                 print("⚠ launchd did not revive the gateway after its graceful exit — forcing restart")
             else:
+                # The graceful drain did not complete within the budget: if the health probe
+                # already classified the loop as wedged we escalated to a bounded stop there;
+                # otherwise fall through to the SIGKILL escalation here. Either way, do NOT reach
+                # the `launchctl kickstart -k` below while the old PID is still alive — launchd
+                # would block on an undying process and `hermes update` hangs (#81642). Force-kill
+                # the residual PID first so the kickstart can start the replacement.
                 print(f"⚠ Gateway drain timed out after {wait_budget:.0f}s — forcing launchd restart")
+                try:
+                    _gw().terminate_pid(pid, force=True)
+                except (ProcessLookupError, PermissionError, OSError):
+                    pass
+                _gw()._wait_for_pid_exit(pid, max(wait_budget, 1.0))
         if not refresh_ok and _gw().get_launchd_plist_path().exists() and not _gw().launchd_plist_is_current():
             # The refresh attempted a reload and launchd never re-registered
             # the (rewritten) job: kickstart would hang on the same wall. The

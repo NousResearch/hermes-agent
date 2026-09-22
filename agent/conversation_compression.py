@@ -1742,12 +1742,14 @@ def _compression_lock_holder(agent: Any) -> str:
 
 def _supported_compression_kwargs(
     compress_fn: Any, *, current_tokens: Optional[int], focus_topic: Optional[str], force: bool,
-    memory_context: str, bypass_cooldown: bool = False,
+    memory_context: str, bypass_cooldown: bool = False, task_id: str = "",
 ) -> dict:
     """Return only compression kwargs accepted by an engine callable.
     Inspecting first keeps older plugin signatures compatible without catching ``TypeError`` and running a
     stateful compressor twice."""
     candidates = {"current_tokens": current_tokens, "focus_topic": focus_topic, "force": force}
+    if task_id:
+        candidates["task_id"] = task_id
     if bypass_cooldown:
         candidates["bypass_cooldown"] = True
     if memory_context:
@@ -2955,13 +2957,13 @@ def _pre_compress_memory_context(agent: Any, messages: list, checkpoint_required
 
 def _resolve_compress_call(
     agent: Any, *, approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, memory_context: str,
-    bypass_cooldown: bool,
+    bypass_cooldown: bool, task_id: str = "",
 ) -> Tuple[Callable[..., Any], dict[str, Any]]:
     """Bind ``compress()`` and only the kwargs its signature accepts."""
     compress_fn = agent.context_compressor.compress
     compress_kwargs = _supported_compression_kwargs(
         compress_fn, current_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-        bypass_cooldown=bypass_cooldown,
+        bypass_cooldown=bypass_cooldown, task_id=task_id,
     )
     if memory_context.strip() and "memory_context" not in compress_kwargs:
         engine_name = getattr(agent.context_compressor, "name", type(agent.context_compressor).__name__)
@@ -3734,7 +3736,7 @@ def _run_summary_phase(
     agent: Any, messages: list, *, lease: _CompressionLease, in_place: bool, checkpoint_required: bool,
     approx_tokens: Optional[int], focus_topic: Optional[str], force: bool, bypass_cooldown: bool,
     commit_fence: Optional[CompressionCommitFence], hard_cancel_event: Any, system_message: str,
-    attempt: _Attempt,
+    attempt: _Attempt, task_id: str = "",
 ) -> _SummaryPhase:
     """Adopt a grown durable parent, gather memory context and run the summarizer.
     A hard cancel restores the compressor snapshot + live list, records a stall backoff while the lease is
@@ -3764,7 +3766,7 @@ def _run_summary_phase(
         memory_context = _pre_compress_memory_context(agent, messages, checkpoint_required)
         compress_fn, compress_kwargs = _resolve_compress_call(
             agent, approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, memory_context=memory_context,
-            bypass_cooldown=bypass_cooldown,
+            bypass_cooldown=bypass_cooldown, task_id=task_id,
         )
         messages_before_compression = copy.deepcopy(messages)
         _activity_heartbeat = _CompressionActivityHeartbeat(
@@ -4011,6 +4013,7 @@ def compress_context(
         agent, messages, lease=lease, in_place=in_place, checkpoint_required=checkpoint_required,
         approx_tokens=approx_tokens, focus_topic=focus_topic, force=force, bypass_cooldown=bypass_cooldown,
         commit_fence=commit_fence, hard_cancel_event=_hard_cancel_event, system_message=system_message, attempt=attempt,
+        task_id=task_id,
     )
     if phase.abort_prompt is not None:
         return phase.messages, phase.abort_prompt

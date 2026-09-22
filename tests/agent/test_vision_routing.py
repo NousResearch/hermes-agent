@@ -215,6 +215,39 @@ model:
         # Bogus provider/model — capability lookup returns None → permissive.
         assert _main_model_supports_vision("nonexistent-provider", "nonexistent-model") is True
 
+    def test_kimi_coding_main_not_skipped_by_stale_denylist(self, isolated_home, monkeypatch):
+        """kimi-coding main provider must be attempted by the vision auto chain.
+
+        The ``_PROVIDERS_WITHOUT_VISION`` entry for kimi-coding predates the
+        Moonshot coding endpoint accepting image input; ``api.kimi.com/coding``
+        now serves multimodal content (verified 2026-09-20: HTTP 200 with a
+        correct description of a test image, prompt tokens billed for the
+        image). The model is also not cataloged as text-only, so after
+        removing the stale entry, auto-detect step 1 must build a client for
+        the main provider instead of falling through to the (unconfigured)
+        aggregator chain and returning None.
+        """
+        _write_config(isolated_home, """
+model:
+  provider: kimi-coding
+  default: kimi-for-coding
+""")
+        monkeypatch.setenv("KIMI_API_KEY", "sk-test")
+        _fresh_modules()
+
+        from agent.auxiliary_client import resolve_vision_provider_client
+        provider, client, model = resolve_vision_provider_client(
+            provider="auto",
+            main_runtime={"provider": "kimi-coding", "model": "kimi-for-coding"},
+        )
+        assert client is not None, (
+            "Vision auto-detect must attempt the kimi-coding main provider; "
+            "the endpoint accepts image input and the model is not cataloged "
+            "as text-only"
+        )
+        assert provider == "kimi-coding"
+        assert model == "kimi-for-coding"
+
 
 # ---------------------------------------------------------------------------
 # Fix 3: check_vision_requirements + check_browser_vision_requirements parity

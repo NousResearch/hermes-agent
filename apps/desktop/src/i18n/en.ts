@@ -2059,6 +2059,15 @@ export const en: Translations = {
       toggleFailed: (name: string) => `Could not toggle ${name}`,
       legacyBackend: 'This backend predates key-addressed plugin toggles — update Hermes to manage it here.',
       portableBadge: 'portable',
+      serverStates: {
+        connected: 'connected',
+        app_not_running: 'app not running',
+        endpoint_unavailable: 'endpoint unavailable',
+        no_interactive_session: 'no interactive session',
+        version_too_old: 'version too old',
+        missing_app: 'app missing',
+        unknown: 'status unknown'
+      },
       catalogTitle: 'Plugin catalog',
       catalogBrowse: 'Browse',
       catalogHide: 'Hide the catalog browser',

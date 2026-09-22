@@ -1764,6 +1764,15 @@ export interface Translations {
       toggleFailed: (name: string) => string
       legacyBackend: string
       portableBadge: string
+      serverStates: {
+        connected: string
+        app_not_running: string
+        endpoint_unavailable: string
+        no_interactive_session: string
+        version_too_old: string
+        missing_app: string
+        unknown: string
+      }
       catalogTitle: string
       catalogBrowse: string
       catalogHide: string

@@ -43,7 +43,7 @@ def test_hidden_declared_server_appears_in_listing_and_empty_summary(tmp_path, m
         result = json.loads(dispatch_tool_search(
             {"queries": ["inspect"]},
             current_tool_defs=[],
-            config=ToolSearchConfig(enabled=True, defer=[tool_name]),
+            config=ToolSearchConfig(enabled="on", threshold_pct=50.0, search_default_limit=10, max_search_limit=50, defer_tools=frozenset({tool_name})),
         ))
     finally:
         registry.deregister(tool_name)

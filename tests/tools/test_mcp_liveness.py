@@ -148,14 +148,13 @@ def test_missing_runtime_file_never_falls_back(tmp_path, monkeypatch):
 
 def test_hydrated_error_shape_for_registered_declaration(tmp_path, monkeypatch):
     import hermes_cli.agent_plugins as agent_plugins
-    from tools import mcp_tool_handlers
-    from tools import mcp_tool_discovery
+    from tools import mcp_tool, mcp_tool_discovery, mcp_tool_handlers
 
     decl = _decl(tmp_path)
     declaration.register("example-server", decl)
     monkeypatch.setattr(agent_plugins, "liveness_for", lambda name: {"kind": "static"}, raising=False)
     monkeypatch.setattr(mcp_tool_discovery, "_get_connected_server_for_call", lambda name: None)
-    monkeypatch.setattr(mcp_tool_handlers._core, "_bump_server_error", lambda name: None)
+    monkeypatch.setattr(mcp_tool, "_bump_server_error", lambda name, **kwargs: None)
     try:
         server, error = mcp_tool_handlers._acquire_call_server("example-server", 0)
     finally:
@@ -184,9 +183,9 @@ def test_connected_interactive_session_server_is_offerable_from_a_service_sessio
 
 
 def test_undeclared_error_text_is_unchanged(monkeypatch):
-    from tools import mcp_tool_discovery, mcp_tool_handlers
+    from tools import mcp_tool, mcp_tool_discovery, mcp_tool_handlers
 
     monkeypatch.setattr(mcp_tool_discovery, "_get_connected_server_for_call", lambda name: None)
-    monkeypatch.setattr(mcp_tool_handlers._core, "_bump_server_error", lambda name: None)
+    monkeypatch.setattr(mcp_tool, "_bump_server_error", lambda name, **kwargs: None)
     _server, error = mcp_tool_handlers._acquire_call_server("plain-server", 0)
     assert json.loads(error)["error"] == "MCP server 'plain-server' is not connected"

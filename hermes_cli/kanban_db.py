@@ -3096,6 +3096,76 @@ def suspend_task_for_watchdog(
     return True
 
 
+def defer_task_for_watchdog(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    expected_run_id: int,
+    reason: str,
+    finding: dict[str, Any],
+    termination_fn=None,
+) -> bool:
+    """Stop an unhealthy worker and park its task in dependency-gated ``todo``.
+
+    Watchdog recovery is an internal handoff, not a human block.  Keeping the
+    original task in ``todo`` lets the repair child gate it without exposing a
+    ``blocked`` card or consuming the operator's blocked-card workflow.
+    """
+    row = conn.execute(
+        "SELECT status, current_run_id, claim_lock, worker_pid "
+        "FROM tasks WHERE id = ?", (task_id,)
+    ).fetchone()
+    if (
+        row is None or row["status"] != "running" or row["current_run_id"] is None
+        or int(row["current_run_id"]) != int(expected_run_id)
+    ):
+        return False
+
+    terminate = termination_fn or (
+        lambda pid, lock: _terminate_reclaimed_worker(pid, lock, task_id=task_id)
+    )
+    termination = terminate(row["worker_pid"], row["claim_lock"])
+    if not (
+        isinstance(termination, dict)
+        and termination.get("host_local")
+        and termination.get("termination_attempted")
+        and termination.get("terminated")
+    ):
+        return False
+
+    with write_txn(conn):
+        current = conn.execute(
+            "SELECT status, current_run_id, claim_lock FROM tasks WHERE id = ?",
+            (task_id,),
+        ).fetchone()
+        if (
+            current is None or current["status"] != "running"
+            or current["current_run_id"] is None
+            or int(current["current_run_id"]) != int(expected_run_id)
+            or current["claim_lock"] != row["claim_lock"]
+        ):
+            return False
+        cur = conn.execute(
+            "UPDATE tasks SET status = 'todo', claim_lock = NULL, "
+            "claim_expires = NULL, worker_pid = NULL, worker_started_at = NULL, "
+            "current_run_id = NULL, block_kind = NULL "
+            "WHERE id = ? AND status = 'running' AND current_run_id = ?",
+            (task_id, int(expected_run_id)),
+        )
+        if cur.rowcount != 1:
+            return False
+        metadata = {"watchdog_finding": finding, "termination": termination}
+        run_id = _end_run(
+            conn, task_id, outcome="watchdog_deferred", status="todo",
+            summary=reason, metadata=metadata,
+        )
+        _append_event(
+            conn, task_id, "watchdog_deferred",
+            {**finding, "reason": reason, "termination": termination}, run_id=run_id,
+        )
+    return True
+
+
 def reassign_task(
     conn: sqlite3.Connection, task_id: str, profile: Optional[str], *, reclaim_first: bool = False,
     reason: Optional[str] = None,

@@ -761,6 +761,63 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
   })
 
+  // #71733: a repeated prompt ("continue" after "continue") matched the EARLIER
+  // committed prompt's text, was taken for its own commit and dropped, so the
+  // reply streamed in with no prompt above it.
+  it('keeps a repeated optimistic prompt while the server is behind the turn', () => {
+    const next = [msg('1-user', 'user', 'continue'), msg('2-assistant', 'assistant', 'first answer')]
+
+    const previous = [
+      ...next,
+      msg('user-optimistic', 'user', 'continue'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      '2-assistant',
+      'user-optimistic',
+      'assistant-stream-1'
+    ])
+  })
+
+  it('recognizes the earlier prompt by row id when a tail reload re-indexes its id', () => {
+    const next = [
+      msg('900-0-user', 'user', 'continue', { rowId: 41 }),
+      msg('900-1-assistant', 'assistant', 'first answer', { rowId: 42 })
+    ]
+
+    const previous = [
+      msg('900-5-user', 'user', 'continue', { rowId: 41 }),
+      msg('900-6-assistant', 'assistant', 'first answer', { rowId: 42 }),
+      msg('user-optimistic', 'user', 'continue')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '900-0-user',
+      '900-1-assistant',
+      'user-optimistic'
+    ])
+  })
+
+  it('drops a repeated optimistic prompt once the server has stored it', () => {
+    const previous = [
+      msg('1-user', 'user', 'continue'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('user-optimistic', 'user', 'continue'),
+      msg('assistant-stream-1', 'assistant', 'partial answer', { pending: true })
+    ]
+
+    const next = [
+      msg('1-user', 'user', 'continue'),
+      msg('2-assistant', 'assistant', 'first answer'),
+      msg('3-user', 'user', 'continue'),
+      msg('4-assistant', 'assistant', 'second answer')
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous)).toBe(next)
+  })
+
   it('drops stale optimistic history after compression and keeps only the live tail', () => {
     const compressedAuthority = [
       msg('stored-user', 'user', 'first turn that survived compression'),

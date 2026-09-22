@@ -659,6 +659,22 @@ export function preserveLocalPendingTurnMessages(
   }
 
   const latestAuthoritativeUser = [...nextMessages].reverse().find(message => message.role === 'user')
+
+  // The text guard below treats a same-text latest authoritative user as this
+  // optimistic row's commit. That only holds when the authoritative row is new
+  // to this view: one already on screen is an EARLIER prompt, and the optimistic
+  // row is a repeat of it ("continue", "go on") that the server has not stored
+  // yet. Dropping it there left the reply with no prompt above it (#71733).
+  const latestAuthoritativeUserAlreadyShown =
+    latestAuthoritativeUser !== undefined &&
+    previousMessages.some(
+      message =>
+        message.role === 'user' &&
+        !message.id.startsWith('user-') &&
+        (message.id === latestAuthoritativeUser.id ||
+          (message.rowId !== undefined && message.rowId === latestAuthoritativeUser.rowId))
+    )
+
   const preserved: ChatMessage[] = []
   // Authoritative id → richer local pending row. Replacing (not appending)
   // avoids painting both the empty inflight shell and the full stream bubble.
@@ -703,6 +719,7 @@ export function preserveLocalPendingTurnMessages(
     if (
       isOptimisticUser &&
       latestAuthoritativeUser &&
+      !latestAuthoritativeUserAlreadyShown &&
       textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
         textWithoutReferenceLines(chatMessageText(message))
     ) {

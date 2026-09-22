@@ -1,5 +1,59 @@
 # Architecture Decision Records
 
+## 2026-09-21: Agente `hermes-ops` para administrar profiles de Hermes desde Telegram
+
+Status: Accepted
+
+Context:
+Se quiere que, desde el bot orquestador de Telegram, se puedan crear y mantener otros
+agentes Hermes (perfiles persistentes en la M1) sin tocar la CLI a mano.
+
+Decision:
+- La unidad de "agente" es el **profile** nativo de Hermes (`~/.hermes/profiles/<nombre>`),
+  no un concepto paralelo. Se reutiliza `--clone` y el aislamiento existente entre profiles.
+- El experto vive en **su propio profile** (`hermes-ops`), invocado **on-demand** por el
+  orquestador vía subproceso (`hermes -p hermes-ops ...`) — no corre un gateway propio 24/7
+  por default. El orquestador mantiene un único bot/canal de Telegram; no se crean bots
+  nuevos por cada agente (routing interno, no un token por agente).
+- Los agentes que `hermes-ops` crea siguen el mismo patrón: persistentes en config/estado,
+  pero **sin gateway propio corriendo** salvo que el usuario pida explícitamente algo que
+  requiera reacción autónoma (cron/eventos), caso en el que sí se registra como servicio
+  vía `LaunchdServiceManager` (`hermes_cli/service_manager.py`).
+- Toda operación de `hermes-ops` sobre otro profile pasa **exclusivamente por CLI**
+  (`hermes -p <perfil> <comando>`) — nunca edición directa de archivos de otro profile.
+  Si falta un comando para algo puntual, eso es un gap de CLI a resolver como ticket propio,
+  no una excusa para romper el aislamiento entre profiles.
+- **Gate de confirmación:**
+  - Operaciones simples (agregar una skill, ajustes menores de config) → autónomo, sin preguntar.
+  - **Creación de un agente nuevo** → obligatorio pasar por una entrevista estilo `grill-me`
+    antes de aplicar cualquier cambio.
+  - **Cambios grandes** de comportamiento en un agente existente (rol, personalidad,
+    system-prompt, modelo/proveedor) → también obligatorio `grill-me`.
+  - Cambios menores en agentes existentes → sin gate.
+- Las notas de contexto por agente viven **del lado de `hermes-ops`, no del perfil
+  administrado**: `~/.hermes/profiles/hermes-ops/notes/<nombre-agente>.md`, escritas/
+  actualizadas por `hermes-ops` al cerrar cada `grill-me`, con las decisiones de diseño
+  vigentes (rol, tono, límites, integraciones). Antes de volver a interrogar sobre un agente
+  existente, `hermes-ops` lee esa nota primero. Se descartó guardarlas dentro de la carpeta
+  del perfil administrado (`~/.hermes/profiles/<otro>/AGENT_CONTEXT.md`) porque ese mecanismo
+  no existe hoy en Hermes (requeriría discovery/inyección al prompt nuevos, tocando el core) y
+  porque escribir ahí directo violaría la regla de "solo CLI, nunca archivo directo" sobre
+  perfiles ajenos.
+
+Alternativas descartadas:
+- `hermes-ops` como skill del orquestador (sin profile propio): más simple pero mezcla la
+  identidad "recepción de mensajes" con "operación de infraestructura"; se prefirió aislarlo.
+- Un bot de Telegram por agente nuevo: agrega superficie de secrets (`.env`) por cada agente
+  creado, sin necesidad real dado que la invocación es on-demand vía el orquestador.
+- Acceso directo a archivos de otros profiles: rompe el aislamiento por diseño de profiles y
+  no queda auditado como los comandos CLI.
+
+Consequences:
+- Requiere que la CLI de profiles/gateway cubra todo lo que `hermes-ops` necesita hacer;
+  cualquier gap se convierte en un ticket de CLI, no en un atajo de archivos.
+- El criterio "cambio grande vs chico" para disparar `grill-me` queda definido en la skill de
+  `hermes-ops`, no en este ADR — es una regla operativa que puede iterar sin nueva decisión.
+
 ## 2026-07-13: Scope plugin manager state by Hermes home/profile (keyed cache)
 
 Status: Accepted

@@ -280,7 +280,10 @@ export async function loadRuntimePlugin(
         import(/* @vite-ignore */ url) as Promise<{ default?: HermesPlugin }>,
         new Promise<never>((_, reject) => {
           deadline = setTimeout(
-            () => reject(new Error(`import timed out after ${IMPORT_TIMEOUT_MS / 1000}s — module evaluation never settled`)),
+            () =>
+              reject(
+                new Error(`import timed out after ${IMPORT_TIMEOUT_MS / 1000}s — module evaluation never settled`)
+              ),
             IMPORT_TIMEOUT_MS
           )
         })

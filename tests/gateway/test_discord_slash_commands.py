@@ -398,6 +398,44 @@ def test_build_slash_event_preserves_thread_context(adapter):
     assert "TestGuild" in event.source.chat_name
 
 
+def test_build_slash_event_marks_verified_role_grant(adapter):
+    """A slash event carries the adapter-verified Discord role grant."""
+    adapter._allowed_user_ids = set()
+    adapter._allowed_role_ids = {99}
+    guild = SimpleNamespace(id=1, name="TestGuild", get_member=lambda _id: None)
+    user = SimpleNamespace(
+        display_name="Jezza", id=42, guild=guild,
+        roles=[SimpleNamespace(id=99)],
+    )
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=100, name="general", guild=guild, topic=None),
+        channel_id=100, guild_id=1, user=user,
+    )
+
+    event = adapter._build_slash_event(interaction, "/reset")
+
+    assert event.source.role_authorized is True
+
+
+def test_build_slash_event_does_not_delegate_unverified_role(adapter):
+    """A user-ID grant remains valid without being mislabeled as a role grant."""
+    adapter._allowed_user_ids = {"42"}
+    adapter._allowed_role_ids = {99}
+    guild = SimpleNamespace(id=1, name="TestGuild", get_member=lambda _id: None)
+    user = SimpleNamespace(
+        display_name="Jezza", id=42, guild=guild,
+        roles=[SimpleNamespace(id=7)],
+    )
+    interaction = SimpleNamespace(
+        channel=SimpleNamespace(id=100, name="general", guild=guild, topic=None),
+        channel_id=100, guild_id=1, user=user,
+    )
+
+    event = adapter._build_slash_event(interaction, "/reset")
+
+    assert event.source.role_authorized is False
+
+
 # ------------------------------------------------------------------
 # Auto-thread: _auto_create_thread
 # ------------------------------------------------------------------

@@ -3932,6 +3932,22 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             return True
         if not has_roles:
             return False
+        return self._is_role_authorized_user(
+            user_id, author, guild=guild, is_dm=is_dm, allowed_roles=allowed_roles,
+        )
+
+    def _is_role_authorized_user(
+        self, user_id: str, author=None, *, guild=None, is_dm: bool = False,
+        allowed_roles: Optional[set] = None,
+    ) -> bool:
+        """Return whether this user has a configured Discord role grant.
+
+        This intentionally excludes user-ID, pairing, and channel grants: callers use the
+        result to delegate only a role authorization to the gateway.
+        """
+        roles = allowed_roles if allowed_roles is not None else getattr(self, "_allowed_role_ids", set())
+        if not roles:
+            return False
         # DM path: roles need explicit opt-in via ``discord.dm_role_auth_guild`` (else cross-guild leakage).
         if is_dm or guild is None:
             dm_guild_id = _read_dm_role_auth_guild()
@@ -3942,15 +3958,15 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
             dm_guild = self._client.get_guild(dm_guild_id)
             if dm_guild is None:
                 return False
-            return self._guild_member_has_role(dm_guild, user_id, allowed_roles)
+            return self._guild_member_has_role(dm_guild, user_id, roles)
         # Guild path: scoped to THIS guild. 1) Prefer the passed Member (correct guild by construction).
         direct_roles = getattr(author, "roles", None) if author is not None else None
         author_guild = getattr(author, "guild", None)
         if direct_roles and (author_guild is None or author_guild.id == guild.id):
-            if any(getattr(r, "id", None) in allowed_roles for r in direct_roles):
+            if any(getattr(r, "id", None) in roles for r in direct_roles):
                 return True
         # 2) Fallback: resolve Member in this guild only — NEVER scan other mutual guilds.
-        return self._guild_member_has_role(guild, user_id, allowed_roles)
+        return self._guild_member_has_role(guild, user_id, roles)
 
     @staticmethod
     def _guild_member_has_role(guild, user_id: str, allowed_roles: set) -> bool:
@@ -4672,11 +4688,17 @@ class DiscordAdapter(DiscordMediaMixin, BasePlatformAdapter):
         # them — without them a guild- or channel-routed profile never matches a native slash command
         # (#69178).
         parent_id = (self._get_parent_channel_id(interaction.channel) if is_thread else None) or ""
+        role_authorized = self._is_role_authorized_user(
+            str(interaction.user.id), interaction.user,
+            guild=getattr(interaction, "guild", None) or getattr(interaction.channel, "guild", None),
+            is_dm=is_dm,
+        )
         source = self.build_source(
             chat_id=str(interaction.channel_id), chat_name=chat_name, chat_type=chat_type,
             user_id=str(interaction.user.id), user_name=interaction.user.display_name,
             thread_id=thread_id, chat_topic=chat_topic,
             guild_id=self._interaction_guild_id(interaction), parent_chat_id=parent_id or None,
+            role_authorized=role_authorized,
         )
         msg_type = MessageType.COMMAND if text.startswith("/") else MessageType.TEXT
         channel_id = str(interaction.channel_id)

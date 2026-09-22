@@ -45,6 +45,15 @@ from hermes_cli.profiles import (
     backfill_profile_envs,
     profiles_to_serve,
 )
+
+
+@pytest.mark.parametrize("value, expected", [(True, True), ("yes", True), (False, False), (None, False), ("garbage", False)])
+def test_read_profile_meta_retired_is_conservative(tmp_path, value, expected):
+    profile_dir = tmp_path / "profile"
+    profile_dir.mkdir()
+    payload = {} if value is None else {"retired": value}
+    (profile_dir / "profile.yaml").write_text(yaml.safe_dump(payload), encoding="utf-8")
+    assert profiles.read_profile_meta(profile_dir)["retired"] is expected
 from hermes_cli.config import DEFAULT_CONFIG
 
 

@@ -1769,6 +1769,44 @@ def _display_mouse_tracking(display: dict) -> str:
     return "off" if raw is False or raw == 0 else "all"
 
 
+def _load_prefill_messages() -> list[dict]:
+    """Prefill messages from the active profile's config, or ``[]`` when unset.
+
+    The Desktop/TUI agents are built here and never run the CLI's config bootstrap, so a
+    configured ``prefill_messages_file`` was silently ignored on that path (#60456). Same
+    precedence as the CLI: ``HERMES_PREFILL_MESSAGES_FILE`` > top-level ``prefill_messages_file``
+    > legacy ``agent.prefill_messages_file``; relative paths resolve against the active hermes
+    home (resolved per call, so a profile switched at runtime reads that profile's file).
+    """
+    cfg = _load_cfg()
+    agent_cfg = cfg.get("agent") if isinstance(cfg.get("agent"), dict) else {}
+    rel = (
+        os.environ.get("HERMES_PREFILL_MESSAGES_FILE", "").strip()
+        or str(cfg.get("prefill_messages_file") or "").strip()
+        or str((agent_cfg or {}).get("prefill_messages_file") or "").strip()
+    )
+    if not rel:
+        return []
+    try:
+        from hermes_constants import get_hermes_home
+
+        path = Path(rel).expanduser()
+        if not path.is_absolute():
+            path = get_hermes_home() / path
+        if not path.exists():
+            logger.warning("Prefill messages file not found: %s", path)
+            return []
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+        if not isinstance(data, list):
+            logger.warning("Prefill messages file must contain a JSON array: %s", path)
+            return []
+        return data
+    except Exception as e:
+        logger.warning("Failed to load prefill messages from %s: %s", rel, e)
+        return []
+
+
 def _load_reasoning_config(model: str = "") -> dict | None:
     """Via the shared chokepoint :func:`hermes_constants.resolve_reasoning_config` (per-model override >
     global ``agent.reasoning_effort``; YAML False = disabled).
@@ -2436,6 +2474,7 @@ def _make_agent(
         checkpoints_enabled=is_truthy_value(os.environ.get("HERMES_TUI_CHECKPOINTS")),
         pass_session_id=is_truthy_value(os.environ.get("HERMES_TUI_PASS_SESSION_ID")),
         skip_context_files=ignore_rules, skip_memory=ignore_rules, fallback_model=_load_fallback_model(),
+        prefill_messages=_load_prefill_messages(),
         **_agent_cbs(sid))
     if context_cwd_is_launch_artifact is None:
         context_cwd_is_launch_artifact = _context_cwd_is_launch_artifact(session)

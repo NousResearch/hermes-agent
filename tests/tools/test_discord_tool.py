@@ -348,6 +348,58 @@ class TestFetchMessages:
 
 
 # ---------------------------------------------------------------------------
+# Action: prepare_milestone_link
+# ---------------------------------------------------------------------------
+
+class TestPrepareMilestoneLink:
+    @pytest.mark.parametrize(("resource_type", "url"), [
+        ("issue", "https://github.com/gabrielcerteiro/certeiroone/issues/498"),
+        ("pr", "https://github.com/CerteiroDevTeam/hermes-agent/pull/4"),
+        ("post", "https://discord.com/channels/1548370346883686512/1552029061029822549/1552029061029822549"),
+        ("trello", "https://trello.com/c/abc12345/498-links-seguros"),
+        ("storybook", "https://storybook.example.com/?path=/story/devteam-marco"),
+    ])
+    def test_returns_direct_markdown_for_each_supported_resource(self, monkeypatch, resource_type, url):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(
+            action="prepare_milestone_link", resource_type=resource_type, url=url, label="Abrir",
+        ))
+        assert result == {
+            "status": "ready", "resource_type": resource_type, "url": url,
+            "markdown": f"[Abrir]({url})",
+        }
+
+    @pytest.mark.parametrize("url", [
+        "http://github.com/gabrielcerteiro/certeiroone/issues/498",
+        "https://github.com/gabrielcerteiro/certeiroone/issues/498?token=secret",
+        "https://github.com/gabrielcerteiro/certeiroone/issues/498#access_token=abc",
+        "https://github.com/gabrielcerteiro/certeiroone/issues/498#token=abc",
+        "https://token@example.com/gabrielcerteiro/certeiroone/issues/498",
+        "https://github.com/gabrielcerteiro/certeiroone/pull/4",
+    ])
+    def test_refuses_unsafe_or_wrong_resource_url(self, monkeypatch, url):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(action="prepare_milestone_link", resource_type="issue", url=url))
+        assert result["status"] == "pending"
+        assert result["url"] is None
+
+    def test_escapes_markdown_syntax_in_label(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        url = "https://github.com/gabrielcerteiro/certeiroone/issues/498"
+        result = json.loads(discord_core(
+            action="prepare_milestone_link", resource_type="issue", url=url,
+            label="safe](https://evil.example)",
+        ))
+        assert result["markdown"] == "[safe\\](https://evil.example)](https://github.com/gabrielcerteiro/certeiroone/issues/498)"
+
+    def test_missing_url_is_an_explicit_pending_fallback(self, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "test-token")
+        result = json.loads(discord_core(action="prepare_milestone_link", resource_type="storybook"))
+        assert result["status"] == "pending"
+        assert "pendente" in result["fallback"]
+
+
+# ---------------------------------------------------------------------------
 # Action: create_thread
 # ---------------------------------------------------------------------------
 

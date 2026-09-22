@@ -11,6 +11,7 @@ import hashlib
 import json
 import logging
 import os
+import re
 import threading
 import time
 import urllib.error
@@ -346,6 +347,90 @@ def _fetch_messages(
     return _listing("messages", [_message_summary(msg) for msg in messages])
 
 
+_MILESTONE_RESOURCE_TYPES = frozenset({"issue", "pr", "post", "trello", "storybook"})
+_GITHUB_RESOURCE_PATHS = {
+    "issue": re.compile(r"^/[^/]+/[^/]+/issues/\d+/?$"),
+    "pr": re.compile(r"^/[^/]+/[^/]+/pull/\d+/?$"),
+}
+_DISCORD_POST_PATH = re.compile(r"^/channels/\d+/\d+(?:/\d+)?/?$")
+_TRELLO_CARD_PATH = re.compile(r"^/c/[A-Za-z0-9]+(?:/[^/?#]+)?/?$")
+_STORYBOOK_QUERY_KEYS = frozenset({"id", "path", "viewMode"})
+
+
+def _milestone_link_error(resource_type: str, detail: str) -> str:
+    return json.dumps({
+        "status": "pending", "resource_type": resource_type,
+        "url": None,
+        "fallback": f"{resource_type} pendente — {detail}",
+    })
+
+
+def _validate_milestone_url(resource_type: str, url: str) -> Optional[str]:
+    """Return an explicit rejection reason, or ``None`` for a public direct permalink.
+
+    This is deliberately a formatter, not a network verifier: the caller must obtain an
+    existing URL from the authoritative API/CLI before publishing it. It prevents a human
+    milestone from turning an identifier into an invented, credential-bearing link.
+    """
+    if resource_type not in _MILESTONE_RESOURCE_TYPES:
+        return f"unknown resource_type '{resource_type}'"
+    try:
+        parsed = urllib.parse.urlsplit(url.strip())
+        _ = parsed.port  # malformed ports raise ValueError
+    except (TypeError, ValueError):
+        return "URL is malformed"
+    host = (parsed.hostname or "").lower().rstrip(".")
+    if parsed.scheme.lower() != "https" or not host:
+        return "URL must use HTTPS and name a public host"
+    if parsed.username is not None or parsed.password is not None:
+        return "URL must not contain credentials"
+    if parsed.fragment:
+        return "URL must not contain a fragment"
+    if resource_type in _GITHUB_RESOURCE_PATHS:
+        if host != "github.com" or not _GITHUB_RESOURCE_PATHS[resource_type].fullmatch(parsed.path):
+            return f"{resource_type} must be a direct github.com permalink"
+    elif resource_type == "post":
+        if host not in {"discord.com", "www.discord.com"} or not _DISCORD_POST_PATH.fullmatch(parsed.path):
+            return "post must be a direct discord.com channel, thread, or message permalink"
+    elif resource_type == "trello":
+        if host != "trello.com" or not _TRELLO_CARD_PATH.fullmatch(parsed.path):
+            return "trello must be a direct trello.com card permalink"
+    else:
+        if parsed.query:
+            keys = {key for key, _value in urllib.parse.parse_qsl(parsed.query, keep_blank_values=True)}
+            if not keys <= _STORYBOOK_QUERY_KEYS:
+                return "storybook URL may only use id, path, or viewMode query parameters"
+    from tools.url_safety import sensitive_query_param_name
+    if sensitive_query_param_name(url):
+        return "URL contains a credential-bearing query parameter"
+    return None
+
+
+def _escape_markdown_link_label(label: str) -> str:
+    """Keep a human label inside Markdown link text, never link syntax."""
+    return label.replace("\\", "\\\\").replace("[", "\\[").replace("]", "\\]")
+
+
+def _prepare_milestone_link(
+    token: str, resource_type: str, url: str = "", label: str = "", **_kwargs: Any,
+) -> str:
+    """Prepare one safe, direct link for a human DevTeam milestone.
+
+    Empty URLs intentionally become visible pending fallbacks; the tool never invents a
+    destination from an issue number, title, or display name.
+    """
+    resource_type = resource_type.strip().lower()
+    if not url.strip():
+        return _milestone_link_error(resource_type, "a direct URL has not been created or verified yet")
+    if error := _validate_milestone_url(resource_type, url):
+        return _milestone_link_error(resource_type, error)
+    text = _escape_markdown_link_label(label.strip() or resource_type)
+    return json.dumps({
+        "status": "ready", "resource_type": resource_type, "url": url.strip(),
+        "markdown": f"[{text}]({url.strip()})",
+    })
+
+
 def _list_pins(token: str, channel_id: str, **_kwargs: Any) -> str:
     """Pinned messages (content truncated for overview)."""
     messages = _discord_request("GET", f"/channels/{channel_id}/pins", token)
@@ -590,6 +675,7 @@ _ACTION_MANIFEST = [
     ("member_info", _member_info, "(guild_id, user_id)", "lookup a specific member"),
     ("search_members", _search_members, "(guild_id, query)", "find members by name prefix"),
     ("fetch_messages", _fetch_messages, "(channel_id)", "recent messages; optional before/after snowflakes"),
+    ("prepare_milestone_link", _prepare_milestone_link, "(resource_type)", "prepare a safe direct issue, PR, Discord post, Trello card, or Storybook link; optional URL gives an explicit pending fallback"),
     ("add_reaction", _add_reaction, "(channel_id, message_id, emoji)", "add this bot's reaction to a message"),
     ("remove_own_reaction", _remove_own_reaction, "(channel_id, message_id, emoji)", "remove this bot's matching reaction from a message"),
     ("complete_demand", _complete_demand, "(channel_id, message_id, issue_repo, issue_number, epic_number)", "after GitHub verifies closure, replace ⌛ with ✅ in #demandas"),
@@ -609,7 +695,7 @@ _REQUIRED_PARAMS: Dict[str, List[str]] = {
 
 # Two tools share one action table: ``discord`` (core, the participation trio every bot
 # user wants) and ``discord_admin`` (everything else).
-_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "create_thread", "ensure_subissue_context", "add_reaction", "remove_own_reaction", "complete_demand"})
+_CORE_ACTION_NAMES = frozenset({"fetch_messages", "search_members", "prepare_milestone_link", "create_thread", "ensure_subissue_context", "add_reaction", "remove_own_reaction", "complete_demand"})
 _CORE_ACTIONS = {k: v for k, v in _ACTIONS.items() if k in _CORE_ACTION_NAMES}
 _ADMIN_ACTIONS = {k: v for k, v in _ACTIONS.items() if k not in _CORE_ACTION_NAMES}
 
@@ -675,6 +761,9 @@ _SCHEMA_PROPERTIES: Dict[str, Any] = {
     "emoji": {"type": "string", "description": "Unicode emoji reaction."},
     "issue_repo": {"type": "string", "description": "GitHub owner/repository for the technical issue and epic."},
     "issue_number": {"type": "string", "description": "Technical GitHub issue number."},
+    "resource_type": {"type": "string", "enum": ["issue", "pr", "post", "trello", "storybook"], "description": "Concrete resource named by a human milestone."},
+    "url": {"type": "string", "description": "Existing direct URL. Omit only to produce an explicit pending fallback; URLs with credentials are refused."},
+    "label": {"type": "string", "description": "Optional human-readable link label."},
     "handoff": {"type": "string", "description": "Initial handoff sent only when ensure_subissue_context creates its thread."},
     "epic_number": {"type": "string", "description": "GitHub epic issue number."},
     "query": {"type": "string", "description": "Member name prefix to search for (search_members)."},
@@ -780,7 +869,7 @@ def check_discord_tool_requirements() -> bool:
 # ── handlers ─────────────────────────────────────────────────────────────────
 _HANDLER_DEFAULTS = {
     "guild_id": "", "channel_id": "", "user_id": "", "role_id": "", "message_id": "", "query": "",
-    "name": "", "emoji": "", "issue_repo": "", "issue_number": "", "handoff": "", "epic_number": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
+    "name": "", "emoji": "", "issue_repo": "", "issue_number": "", "resource_type": "", "url": "", "label": "", "handoff": "", "epic_number": "", "limit": 50, "before": "", "after": "", "auto_archive_duration": 1440}
 
 
 def _run_discord_action(action: str, valid_actions: Dict[str, Any], tool_label: str, **params: Any) -> str:

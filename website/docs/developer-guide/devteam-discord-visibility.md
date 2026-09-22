@@ -11,6 +11,11 @@ removing technical evidence.
 
 - The epic post contains only decisions, human-readable state transitions,
   short summaries, and direct GitHub issue/PR URLs.
+- Every concrete issue, PR, Discord post/thread, Trello card, or Storybook
+  reference in a human milestone uses its existing HTTPS permalink. If the
+  resource does not exist yet, say that it is pending rather than deriving or
+  guessing a URL. Milestone links never include credentials, secret query
+  parameters, or personal data.
 - Each sub-issue uses one durable operational context for handoff and follow-up.
   In the approved pilot, `#demandas` is the operational parent and the existing
   dedicated context ID recorded as `Thread: <id>` in the GitHub issue is the
@@ -37,6 +42,10 @@ For each of the two participating sub-issues:
    message. Do not replace these links with tool-output excerpts.
 4. Put the command and test receipt in the GitHub issue, then post only the
    review milestone and PR URL to Discord.
+5. Use `prepare_milestone_link` for each concrete reference before composing a
+   milestone. It accepts direct GitHub, Discord, Trello, and Storybook links;
+   a missing or unsafe URL produces an explicit pending fallback instead of a
+   clickable but invented destination.
 
 The default is intentionally quiet for all Discord conversations because a
 platform-only setting cannot safely infer whether a message is a private

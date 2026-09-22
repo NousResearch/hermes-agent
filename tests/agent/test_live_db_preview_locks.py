@@ -7,12 +7,18 @@ import subprocess
 import sys
 
 import pytest
-from fastapi import HTTPException
+from fastapi import HTTPException, Request
 
 from agent.context_references import _expand_path_reference, parse_context_references
 from hermes_state import SessionDB
 from hermes_cli.web_routers.files import fs_download, fs_read_text
 from tests.posix_lock_probe import own_posix_locks
+
+
+def _download(path):
+    # fs_download takes the caller's Request (session-scoped ownership check); a bare one is the
+    # cookie/session operator's unrestricted scope.
+    return fs_download(Request(scope={"type": "http", "headers": []}), path)
 
 
 @pytest.mark.platforms("linux")
@@ -58,7 +64,7 @@ def test_preview_preserves_live_database_locks(tmp_path, route, target_kind):
         if route == "desktop":
             # FileResponse opens/closes in-process too, so a download must be refused as well,
             # with the same (sidecar-aware) refusal text as the read.
-            for route_fn in (fs_read_text, fs_download):
+            for route_fn in (fs_read_text, _download):
                 with pytest.raises(HTTPException) as refused:
                     asyncio.run(route_fn(str(target)))
                 assert refused.value.status_code == 409
@@ -109,4 +115,4 @@ def test_closed_database_can_still_be_previewed(tmp_path):
     assert warning is None and block is not None and "binary file" in block
     preview = asyncio.run(fs_read_text(str(path)))
     assert preview["binary"] is True and preview["byteSize"] == path.stat().st_size
-    assert asyncio.run(fs_download(str(path))).path == str(path)
+    assert asyncio.run(_download(str(path))).path == str(path)

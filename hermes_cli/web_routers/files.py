@@ -879,13 +879,15 @@ async def fs_write_text(payload: FsWriteText, profile: Optional[str] = None):
     return {"ok": True, "path": str(target), "byteSize": len(text.encode("utf-8"))}
 
 
-async def _fs_download_path(path: str, profile: Optional[str], session_id: Optional[str]) -> Path:
+async def _fs_download_path(
+    request: Request, path: str, profile: Optional[str], session_id: Optional[str]
+) -> Path:
     if session_id is not None:
         from hermes_cli.web_routers.sessions import get_session_detail
 
         if not session_id.strip():
             raise HTTPException(status_code=404, detail="Session not found")
-        session = await get_session_detail(session_id, profile)
+        session = await get_session_detail(request, session_id, profile)
         # Validate ownership even for absolute paths; never trust a client cwd.
         return _fs_path(path, cwd=session.get("cwd") or "")
     if profile is not None:
@@ -897,7 +899,7 @@ async def _fs_download_path(path: str, profile: Optional[str], session_id: Optio
 
 @router.get("/api/fs/read-data-url")
 async def fs_read_data_url(
-    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+    request: Request, path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     from hermes_cli.web_server import _FS_DATA_URL_MAX_BYTES
     backend = await asyncio.to_thread(_fs_backend, profile)
@@ -910,7 +912,7 @@ async def fs_read_data_url(
             _raise_fs_backend_error(exc)
         encoded = base64.b64encode(data).decode("ascii")
         return {"dataUrl": f"data:{_fs_mime_type(Path(target))};base64,{encoded}"}
-    target, st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    target, st = _fs_regular_file(await _fs_download_path(request, path, profile, session_id))
     if st.st_size > _FS_DATA_URL_MAX_BYTES:
         raise HTTPException(status_code=413, detail="File too large")
     encoded = await asyncio.to_thread(
@@ -921,7 +923,7 @@ async def fs_read_data_url(
 
 @router.get("/api/fs/download")
 async def fs_download(
-    path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
+    request: Request, path: str, profile: Optional[str] = None, session_id: Optional[str] = None,
 ):
     backend = await asyncio.to_thread(_fs_backend, profile)
     if backend is not None:
@@ -938,7 +940,7 @@ async def fs_download(
             media_type=_fs_mime_type(target_path),
             headers={"Content-Disposition": f"attachment; filename*=UTF-8''{filename}"},
         )
-    target, _st = _fs_regular_file(await _fs_download_path(path, profile, session_id))
+    target, _st = _fs_regular_file(await _fs_download_path(request, path, profile, session_id))
     await asyncio.to_thread(_refuse_live_database, target)
     return FileResponse(
         path=str(target),

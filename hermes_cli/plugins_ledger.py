@@ -60,6 +60,9 @@ class PluginRegistration:
 
 
 class PluginLedgerMixin:
+    if TYPE_CHECKING:
+        _hook_callback_owners: Dict[int, list[tuple[Callable, str, object]]]
+
     def _track_registration(
         self, manifest: PluginManifest, kind: str, key: str, release: Callable[[], None], *,
         persistent: bool = False,
@@ -299,5 +302,6 @@ class PluginLedgerMixin:
             self._hook_running_callbacks.clear()
             self._hook_abandoned.clear()
             self._hook_timeout_suppressed_until.clear()
+        self._hook_callback_owners.clear()
         self._hook_failures_reported.clear()
         self._discovered = False

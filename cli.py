@@ -4285,7 +4285,7 @@ def _enforce_kanban_routing_receipt(cli) -> bool:
             )
             return False
     from agent.model_selection_types import RoutingBlocked
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
     from hermes_constants import get_hermes_home
 
     # Authoritative origin: the profile whose model_routing.db actually holds

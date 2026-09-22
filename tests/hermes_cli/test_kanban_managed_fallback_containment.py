@@ -89,7 +89,7 @@ class _FakeAgent:
 
 def test_matched_route_with_inherited_fallback_chain_is_cleared(routing_home):
     from cli import _disable_inherited_fallback_for_managed_run
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     receipt_id = _persist_receipt(routing_home)
     inherited_chain = [{"provider": "anthropic", "model": "claude-unapproved-fallback"}]

@@ -67,7 +67,7 @@ def enforce_managed_route_per_request(
         return "missing_routing_origin_home"
 
     from agent.model_selection_types import RoutingBlocked
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     # Same field derivation cli.py's startup check uses (see
     # ``requested_provider`` comment in ``_enforce_kanban_routing_receipt``):

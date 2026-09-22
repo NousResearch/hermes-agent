@@ -440,13 +440,21 @@ def test_nested_managed_delegation_cannot_omit_role_to_demote(routed_home, monke
     }
     parent = _make_parent(hermes_home, endpoint=url)
     parent.model = "test-model"
-    receipt_id = persist_receipt(
-        hermes_home, select(requirements, policy, {}, now=1000),
-    )
+    from hermes_cli import kanban_db as kb
+    from hermes_cli.kanban_db_connect import connect_closing
+
+    kb.init_db()
+    with connect_closing() as conn:
+        tid = kb.create_task(conn, title="managed-parent", assignee="test", routing_role="builder")
+        claimed = kb.claim_task(conn, tid, claimer="test")
+        assert claimed is not None and claimed.current_run_id is not None
+        requirements.update(execution_id=tid, attempt_id=str(claimed.current_run_id))
+        receipt_id = persist_receipt(hermes_home, select(requirements, policy, {}, now=1000))
+        assert kb.set_routing_receipt(conn, tid, receipt_id, expected_run_id=claimed.current_run_id)
     monkeypatch.setenv("HERMES_KANBAN_ROUTING_RECEIPT", receipt_id)
     monkeypatch.setenv("HERMES_KANBAN_ROUTING_ORIGIN_HOME", hermes_home)
-    monkeypatch.delenv("HERMES_KANBAN_TASK", raising=False)
-    monkeypatch.delenv("HERMES_KANBAN_RUN_ID", raising=False)
+    monkeypatch.setenv("HERMES_KANBAN_TASK", tid)
+    monkeypatch.setenv("HERMES_KANBAN_RUN_ID", str(claimed.current_run_id))
     import cli as cli_module
 
     cli = type("ManagedWorkerCLI", (), {"agent": parent, "reasoning_config": "medium"})()

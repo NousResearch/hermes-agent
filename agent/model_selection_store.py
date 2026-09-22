@@ -369,14 +369,6 @@ def is_route_revoked(hermes_home, policy_id: str, route_id: str) -> Optional[dic
     return dict(row)
 
 
-def find_active_revocation(hermes_home, policy_id: str, route_id: str) -> Optional[dict]:
-    """Back-compat alias for ``is_route_revoked`` (same durable-state contract,
-    no ``since_ts``/receipt-timestamp parameter -- revocation is authorization
-    state about the route, not something scoped to when any one receipt was
-    persisted)."""
-    return is_route_revoked(hermes_home, policy_id, route_id)
-
-
 def append_outcome(hermes_home, receipt_id: str, kind: str, payload: dict) -> None:
     """Append-only outcome event (design §3.C: never rewrite the original
     decision to match what happened)."""

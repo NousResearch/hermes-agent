@@ -329,7 +329,7 @@ def resolve_task_route(
     kwargs = managed_child_kwargs(decision)
     # The worker process cannot re-run select(); it validates its own
     # actually-constructed route against this SAME receipted decision right
-    # before its first inference (see ``enforce_worker_route`` below). Carried
+    # before its first inference (agent.managed_route_runtime). Carried
     # through the dispatcher's env, never re-derived.
     kwargs["receipt_id"] = receipt_id
     return kwargs
@@ -372,11 +372,3 @@ def observe_task_route(
         "recommended_route_id": decision["selected"]["route_id"],
     })
     return receipt_id
-
-
-# The worker-side half of the guard now lives in `agent.managed_route_runtime` (design §6: "shared
-# managed_route_guard currently imports hermes_cli.kanban_model_routing.enforce_worker_route ->
-# factor neutral implementation if needed"). Re-exported here UNCHANGED so every existing Kanban
-# call site, `unittest.mock.patch("hermes_cli.kanban_model_routing.enforce_worker_route", ...)`
-# target and test keeps passing byte-for-byte -- this is a wrapper, not a reimplementation.
-from agent.managed_route_runtime import enforce_worker_route  # noqa: F401,E402

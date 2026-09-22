@@ -5,7 +5,7 @@ persisted at claim time, immediately before its first real inference call.
 
 Isolated: real temp HERMES_HOME, real model_routing.db sqlite file (via
 agent.model_selection_store), no provider clients, no network. This exercises
-``hermes_cli.kanban_model_routing.enforce_worker_route`` — the exact function
+``agent.managed_route_runtime.enforce_worker_route`` — the exact function
 ``cli.py``'s single-query worker bootstrap calls — not a stand-in mock of the
 enforcement boundary.
 """
@@ -117,7 +117,7 @@ def test_bootstrap_binds_receipt_and_registers_before_inference(routing_home, mo
 
 
 def test_worker_matching_actual_route_enforces_cleanly(routing_home):
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     receipt_id = _persist_receipt(routing_home)
     enforce_worker_route(
@@ -131,7 +131,7 @@ def test_worker_constructed_a_different_model_is_blocked(routing_home):
     """The core integration gap the parent flagged: a worker that actually got
     constructed with a different model than the receipted decision must be
     stopped here, not merely have the dispatcher's kwargs recorded."""
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     receipt_id = _persist_receipt(routing_home)
     with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
@@ -146,7 +146,7 @@ def test_worker_missing_receipt_fails_closed_not_silently(routing_home):
     """A receipt id that does not resolve (bad env, wrong profile scope, a
     revoked/never-persisted decision) must block, never silently proceed with
     whatever the worker happened to construct."""
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     with pytest.raises(RoutingBlocked, match="stale_or_revoked_decision"):
         enforce_worker_route(
@@ -163,7 +163,8 @@ def test_resolve_task_route_carries_receipt_id_for_worker_enforcement(routing_ho
     from agent.model_selection_store import activate_policy, publish_policy
     from hermes_cli import kanban_db as kb
     from hermes_cli import kanban_db_connect as kbc
-    from hermes_cli.kanban_model_routing import enforce_worker_route, resolve_task_route
+    from agent.managed_route_runtime import enforce_worker_route
+    from hermes_cli.kanban_model_routing import resolve_task_route
 
     kb._INITIALIZED_PATHS.clear()
     kb.init_db()
@@ -207,7 +208,7 @@ def test_routine_policy_edit_does_not_block_a_matching_worker(routing_home):
     receipted in-flight one (design §12: "Routine policy edits affect new attempts, not active
     conversations")."""
     from agent.model_selection_store import activate_policy, publish_policy
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     receipt_id = _persist_receipt(routing_home)
     edited = _policy()
@@ -227,7 +228,7 @@ def test_explicit_revocation_blocks_worker_even_with_matching_route(routing_home
     route must still block a worker even though its actual construction matches the receipted
     route byte-for-byte (design §12 "Availability, budget, reasoning and revocation")."""
     from agent.model_selection_store import revoke_route
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     receipt_id = _persist_receipt(routing_home)
     revoke_route(

@@ -134,7 +134,7 @@ def test_worker_validates_under_origin_authority_not_own_default_home(tmp_path, 
     flagged as unproven."""
     from agent.model_selection_store import persist_receipt
     from agent.model_selection import select
-    from hermes_cli.kanban_model_routing import enforce_worker_route
+    from agent.managed_route_runtime import enforce_worker_route
 
     origin = _make_home(tmp_path, "profile_a_home")
     worker_default = _make_home(tmp_path, "profile_b_home")

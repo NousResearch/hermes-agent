@@ -117,7 +117,7 @@ def test_worker_rejects_stale_claim_before_receipt_check(monkeypatch, tmp_path):
 
     calls = []
     monkeypatch.setattr(
-        "hermes_cli.kanban_model_routing.enforce_worker_route",
+        "agent.managed_route_runtime.enforce_worker_route",
         lambda *a, **kw: calls.append((a, kw)),
     )
 
@@ -152,7 +152,7 @@ def test_live_claim_without_linked_receipt_cannot_authorize_worker(monkeypatch, 
 
     calls = []
     monkeypatch.setattr(
-        "hermes_cli.kanban_model_routing.enforce_worker_route",
+        "agent.managed_route_runtime.enforce_worker_route",
         lambda *a, **kw: calls.append((a, kw)),
     )
     cli = SimpleNamespace(agent=SimpleNamespace(

@@ -1,12 +1,6 @@
 """Neutral (non-Kanban-owned) managed-routing runtime seam (design §5, §6, §12).
 
-Moved out of ``hermes_cli.kanban_model_routing`` so a non-Kanban adapter (delegation, MoA) does
-not have to import through the Kanban CLI layer to reach the common guard -- the design calls
-this out explicitly: "shared managed_route_guard currently imports
-hermes_cli.kanban_model_routing.enforce_worker_route -> factor neutral implementation if needed,
-preserve Kanban wrapper paths/tests." ``hermes_cli.kanban_model_routing.enforce_worker_route``
-re-exports this function unchanged so every existing Kanban call site, patch target and test
-keeps working byte-for-byte.
+All adapters import the shared guard here without depending on the Kanban CLI layer.
 
 Pure orchestration: no provider clients, no credentials, no network. Delegates to
 ``agent.model_selection_store`` (receipt/policy storage) and ``agent.model_selection_guard``
@@ -20,7 +14,7 @@ from typing import Optional
 from agent.model_selection import select
 from agent.model_selection_guard import managed_child_kwargs, validate_actual_route
 from agent.model_selection_store import (
-    append_outcome, find_active_revocation, get_active_policy, get_policy_revision, get_receipt, persist_receipt,
+    append_outcome, is_route_revoked, get_active_policy, get_policy_revision, get_receipt, persist_receipt,
 )
 from agent.model_selection_types import RoutingBlocked
 from agent.model_selection_integrity import content_hash
@@ -116,7 +110,7 @@ def enforce_worker_route(
             f"policy {decision['policy_id']!r} has no active revision in this store; "
             "refusing to launch under a route with no current admission",
         )
-    revocation = find_active_revocation(
+    revocation = is_route_revoked(
         hermes_home, decision["policy_id"], decision["selected"]["route_id"],
     )
     if revocation is not None:

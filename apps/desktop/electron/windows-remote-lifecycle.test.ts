@@ -16,7 +16,8 @@ import {
   psLiteral,
   reusableWindowsLock,
   terminateOwnedWindowsDashboardForUpdate,
-  validLock
+  validLock,
+  windowsUpdateMarkerProbeCommand
 } from './windows-remote-lifecycle'
 
 const ownershipId = '0123456789abcdef0123456789abcdef'
@@ -65,10 +66,36 @@ function sshWith(exec) {
   return { exec }
 }
 
+// Decodes the PowerShell script carried by an exec call: the update-marker
+// probe (#118987) ships its script as base64 over the SSH stdin channel, so
+// prefer stdinData and fall back to the argv EncodedCommand token.
+function decodeExec(command: string, { stdinData }: any = {}) {
+  return Buffer.from(String(stdinData ?? command.split(' ').at(-1) ?? ''), 'base64').toString('utf16le')
+}
+
 test('PowerShell transport uses UTF-16LE encoded commands and literal escaping', () => {
   assert.equal(Buffer.from(encodedPowerShell("'ok'"), 'base64').toString('utf16le'), "'ok'")
   assert.equal(psLiteral("a'b"), "'a''b'")
   assert.match(powerShellCommand('Write-Output ok'), /^powershell\.exe -NoProfile -NonInteractive .* -EncodedCommand /)
+})
+
+test('update-marker probe ships its script over SSH stdin, not the argv command (#118987)', () => {
+  const { command, stdinData } = windowsUpdateMarkerProbeCommand('C:\\Users\\alice\\.hermes')
+
+  // The argv command must stay far below the ~2.5k base64-char exec-channel
+  // limit; only the tiny base64-of-stdin runner lives in argv.
+  assert.match(command, /powershell\.exe .*-EncodedCommand /)
+  const argvEncoded = command.match(/-EncodedCommand\s+([^\s]+)$/)?.[1] || ''
+  assert.ok(argvEncoded.length < 1024, `argv payload is ${argvEncoded.length} base64 chars`)
+
+  // The full probe script — and only the probe script — rides stdin.
+  const runner = Buffer.from(argvEncoded, 'base64').toString('utf16le')
+  assert.match(runner, /FromBase64String/)
+  assert.match(runner, /Invoke-Expression/)
+
+  const script = Buffer.from(stdinData, 'base64').toString('utf16le')
+  assert.match(script, /\.hermes-update-in-progress/)
+  assert.match(script, /GetProcessById/)
 })
 
 test('every emitted PowerShell script keeps try blocks attached to their catch/finally handlers', async () => {
@@ -81,15 +108,15 @@ test('every emitted PowerShell script keeps try blocks attached to their catch/f
   const scripts: string[] = []
 
   await probeWindowsRemote(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command, opts) => {
+      scripts.push(decodeExec(command, opts))
 
       return JSON.stringify({ os: 'Windows' })
     })
   )
   await assertWindowsRemoteInstallUpdateClear(
-    sshWith(async command => {
-      scripts.push(decode(command))
+    sshWith(async (command, opts) => {
+      scripts.push(decodeExec(command, opts))
 
       return 'CLEAR'
     }),
@@ -119,8 +146,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
   for (const observation of ['LIVE:4242', 'UNCERTAIN']) {
     const scripts: string[] = []
 
-    const ssh = sshWith(async command => {
-      const script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+    const ssh = sshWith(async (command, opts) => {
+      const script = decodeExec(command, opts)
       scripts.push(script)
 
       if (script.includes('Get-Command hermes.exe')) {
@@ -163,8 +190,8 @@ test('Windows relaunch gate refuses live and uncertain markers before executing 
 test('Windows relaunch gate uses strict install-wide marker parsing and fail-closed PID probing', async () => {
   let script = ''
 
-  const ssh = sshWith(async command => {
-    script = Buffer.from(command.split(' ').at(-1) || '', 'base64').toString('utf16le')
+  const ssh = sshWith(async (command, opts) => {
+    script = decodeExec(command, opts)
 
     return 'CLEAR'
   })

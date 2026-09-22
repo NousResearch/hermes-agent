@@ -100,7 +100,7 @@ _TOPLEVEL_BRIDGE: tuple = (
         "filter_silence_narration",
     ),
     ("unauthorized_dm_behavior", "unauthorized_dm_behavior", "presence", None, _dm_behavior_choice),
-    *_presence("unauthorized_dm_decline_message"),
+    *_presence("unauthorized_dm_decline_message", "pairing_message"),
 )
 
 
@@ -207,6 +207,7 @@ def _plain(*keys: str) -> tuple:
 # ``"dm"`` defers to the global unauthorized_dm_behavior.
 _SHARED_KEYS: tuple = (
     ("unauthorized_dm_behavior", None, "dm"),
+    *_plain("pairing_message"),
     ("notice_delivery", None, lambda v: _normalize_choice(v, {"public", "private"}, "public")),
     *_plain("reply_prefix", "reply_in_thread", "cron_continuable_surface", "require_mention", "send_read_receipts"),
     ("allowed_chats", _TELEGRAM, None),

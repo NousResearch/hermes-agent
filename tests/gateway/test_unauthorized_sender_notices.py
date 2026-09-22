@@ -27,6 +27,14 @@ def test_pairing_reply_pins_profile_in_approve_command():
     assert "`hermes -p work pairing approve discord ZZZZ9999`" in reply
 
 
+def test_pairing_reply_renders_configured_code_and_platform_placeholders():
+    reply = pairing_code_reply(
+        "telegram", "ABCD1234", pairing_message="Your access code is {code}; approve it in the {platform} dashboard."
+    )
+
+    assert reply == "Your access code is ABCD1234; approve it in the telegram dashboard."
+
+
 def test_owner_hint_names_sender_allowlist_and_pairing_switch():
     hint = unauthorized_owner_hint("telegram", "4242", "Ada", hermes_home="~/.hermes")
     assert "Ada (4242)" in hint

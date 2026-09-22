@@ -2605,6 +2605,19 @@ whatsapp:
 - Email defaults to `ignore` unless `platforms.email.unauthorized_dm_behavior: pair` is set, because inboxes can contain unrelated unread mail.
 - Platform sections override the global default, so you can keep pairing enabled broadly while making one platform quieter.
 
+### Pairing Challenge Message
+
+By default, a pairing challenge tells the recipient how to approve the code with the Hermes CLI. Hosted or managed deployments can replace that text globally or for one platform. Use `{code}` and `{platform}` to include the generated code and platform name:
+
+```yaml
+pairing_message: "Your access code is {code}. Ask the owner to approve it in their dashboard."
+
+whatsapp:
+  pairing_message: "Your WhatsApp code is {code}. The owner can approve it in the mobile app."
+```
+
+The platform message overrides the global message. Leaving `pairing_message` empty keeps the default CLI guidance.
+
 ## Quick Commands
 
 Define custom commands that either run shell commands without invoking the LLM, or alias one slash command to another. Exec quick commands are zero-token and useful from messaging platforms (Telegram, Discord, etc.) for quick server checks or utility scripts.

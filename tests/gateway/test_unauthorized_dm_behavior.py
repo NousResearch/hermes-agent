@@ -243,6 +243,30 @@ async def test_unauthorized_dm_pairs_by_default(monkeypatch):
 
 
 @pytest.mark.asyncio
+async def test_unauthorized_dm_uses_platform_pairing_message(monkeypatch):
+    _clear_auth_env(monkeypatch)
+    config = GatewayConfig(
+        pairing_message="Global code: {code} on {platform}",
+        platforms={
+            Platform.WHATSAPP: PlatformConfig(
+                enabled=True,
+                extra={"pairing_message": "Approve {code} in the WhatsApp dashboard."},
+            ),
+        },
+    )
+    runner, adapter = _make_runner(Platform.WHATSAPP, config)
+    runner.pairing_store.generate_code.return_value = "ABC12DEF"
+
+    assert await runner._handle_message(
+        _make_event(Platform.WHATSAPP, "15551234567@s.whatsapp.net", "15551234567@s.whatsapp.net")
+    ) is None
+
+    adapter.send.assert_awaited_once_with(
+        "15551234567@s.whatsapp.net", "Approve ABC12DEF in the WhatsApp dashboard."
+    )
+
+
+@pytest.mark.asyncio
 async def test_unauthorized_bot_dm_is_never_offered_a_pairing_code(monkeypatch):
     """A bot cannot pair, and a reply during a loop-guard cooldown would be outbound traffic."""
     _clear_auth_env(monkeypatch)

@@ -245,6 +245,22 @@ class TestGatewayConfigRoundtrip:
         assert restored.unauthorized_dm_behavior == "ignore"
         assert restored.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
 
+    def test_pairing_message_roundtrip_uses_platform_override(self):
+        config = GatewayConfig(
+            pairing_message="Global approval: {code} on {platform}",
+            platforms={
+                Platform.WHATSAPP: PlatformConfig(
+                    enabled=True,
+                    extra={"pairing_message": "Open the dashboard and approve {code}"},
+                ),
+            },
+        )
+
+        restored = GatewayConfig.from_dict(config.to_dict())
+
+        assert restored.get_pairing_message(Platform.TELEGRAM) == "Global approval: {code} on {platform}"
+        assert restored.get_pairing_message(Platform.WHATSAPP) == "Open the dashboard and approve {code}"
+
     def test_email_defaults_to_ignore_for_unauthorized_dm_behavior(self):
         config = GatewayConfig(
             platforms={Platform.EMAIL: PlatformConfig(enabled=True)},
@@ -1022,6 +1038,27 @@ class TestLoadGatewayConfig:
 
         assert config.unauthorized_dm_behavior == "ignore"
         assert config.platforms[Platform.WHATSAPP].extra["unauthorized_dm_behavior"] == "pair"
+
+
+    def test_bridges_global_and_platform_pairing_messages_from_config_yaml(self, tmp_path, monkeypatch):
+        hermes_home = tmp_path / ".hermes"
+        hermes_home.mkdir()
+        config_path = hermes_home / "config.yaml"
+        config_path.write_text(
+            "gateway:\n"
+            "  pairing_message: 'Global code: {code} ({platform})'\n"
+            "platforms:\n"
+            "  whatsapp:\n"
+            "    pairing_message: 'Approve {code} in the dashboard'\n",
+            encoding="utf-8",
+        )
+
+        monkeypatch.setenv("HERMES_HOME", str(hermes_home))
+
+        config = load_gateway_config()
+
+        assert config.get_pairing_message(Platform.TELEGRAM) == "Global code: {code} ({platform})"
+        assert config.get_pairing_message(Platform.WHATSAPP) == "Approve {code} in the dashboard"
 
 
     def test_loads_telegram_rich_messages_from_gateway_platform_extra(self, tmp_path, monkeypatch):

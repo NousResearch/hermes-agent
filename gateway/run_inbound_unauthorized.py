@@ -36,9 +36,16 @@ def pairing_profile_arg(pairing_store) -> str:
     return ""
 
 
-def pairing_code_reply(platform_name: str, code: str, profile_arg: str = "") -> str:
+def pairing_code_reply(
+    platform_name: str, code: str, profile_arg: str = "", pairing_message: str = ""
+) -> str:
     """The DM a first-time sender receives: what happened, how long the code lives, what to do
     whether they are the owner or a guest, and that they must message again after approval."""
+    if pairing_message:
+        # Deliberately replace only the documented placeholders.  A managed deployment's prose
+        # can contain other braces without making an unauthorized DM fail to receive its code.
+        return pairing_message.replace("{code}", code).replace("{platform}", platform_name)
+
     hours = max(1, CODE_TTL_SECONDS // 3600)
     validity = f"{hours} hour" if hours == 1 else f"{hours} hours"
     approve_cmd = f"hermes {profile_arg}pairing approve {platform_name} {code}"

@@ -1082,6 +1082,30 @@ def _run_system_player(cmd: List[str]) -> bool:
     return False
 
 
+def _convert_to_wav_for_sounddevice(file_path: str) -> Optional[str]:
+    """Convert non-WAV audio to a temp WAV via ffmpeg so the sounddevice path can play it.
+
+    On Linux the first system-player fallback is ffplay, which can hang indefinitely on
+    SDL2 video init even with ``-nodisp``; routing through sounddevice avoids it. Returns
+    the temp path (caller deletes it), or None when conversion is unavailable or failed.
+    """
+    if not (shutil.which("ffmpeg") and _sounddevice_output_allowed()):
+        return None
+    tmp_path = None
+    try:
+        import tempfile
+        tmp_path = tempfile.NamedTemporaryFile(suffix=".wav", delete=False).name
+        subprocess.run(["ffmpeg", "-i", file_path, "-f", "wav", tmp_path, "-loglevel", "quiet", "-y"],
+                       stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=10, check=True)
+        return tmp_path
+    except Exception as e:
+        logger.debug("ffmpeg WAV conversion failed for %s: %s", file_path, e)
+        if tmp_path and os.path.isfile(tmp_path):
+            with suppress(OSError):
+                os.unlink(tmp_path)
+        return None
+
+
 def _play_audio_file_impl(file_path: str) -> bool:
     if not os.path.isfile(file_path):
         logger.warning("Audio file not found: %s", file_path)
@@ -1089,9 +1113,20 @@ def _play_audio_file_impl(file_path: str) -> bool:
     # macOS skips sounddevice output (TCC media-library prompt); afplay handles all formats.
     if file_path.endswith(".wav") and _sounddevice_output_allowed() and _play_wav_via_sounddevice(file_path):
         return True
-    for cmd in _system_player_candidates(file_path):
-        if shutil.which(cmd[0]) and _run_system_player(cmd):
+    # Non-WAV on Linux: convert to a temp WAV first and use the reliable sounddevice path —
+    # ffplay (the first system-player fallback) can hang on SDL2 video init, even with
+    # -nodisp. Any failure falls through to the system players unchanged.
+    converted_wav = _convert_to_wav_for_sounddevice(file_path) if not file_path.endswith(".wav") else None
+    try:
+        if converted_wav and _play_wav_via_sounddevice(converted_wav):
             return True
+        for cmd in _system_player_candidates(file_path):
+            if shutil.which(cmd[0]) and _run_system_player(cmd):
+                return True
+    finally:
+        if converted_wav and os.path.isfile(converted_wav):
+            with suppress(OSError):
+                os.unlink(converted_wav)
     logger.warning("No audio player available for %s", file_path)
     return False
 

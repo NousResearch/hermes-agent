@@ -294,14 +294,11 @@ def _drop_repeated_recall_lines(text: str) -> str:
     kept: list[str] = []
     for index, line in enumerate(lines):
         stripped = line.strip()
-        # Dedupe is scoped per section: any non-bullet line at column 0 — a ``## …`` / ``**…**`` /
-        # ``Profile:`` prose heading, a ``---`` rule, a paragraph — opens a fresh scope. Only bullets
-        # and indented continuation lines stay inside the current one. Without it, identical
-        # placeholder bullets under different headings (``- (none recorded)`` twice) collapse into
-        # the first section and the second heading is left claiming nothing.
-        if stripped and not line[0].isspace() and not _RECALL_BULLET_RE.match(stripped):
+        is_bullet = bool(_RECALL_BULLET_RE.match(stripped))
+        # Any column-0 non-bullet line (heading, rule, paragraph) opens a fresh dedupe scope.
+        if stripped and not line[0].isspace() and not is_bullet:
             seen.clear()
-        if _RECALL_BULLET_RE.match(stripped):
+        if is_bullet:
             following = lines[index + 1] if index + 1 < len(lines) else ""
             indent = len(line) - len(line.lstrip())
             carries_continuation = bool(following.strip()) and (

@@ -176,6 +176,51 @@ def cua_daemon_listening(driver_cmd: str, socket_path: Optional[str] = None, *, 
         return True
     return False if "not running" in f"{proc.stdout}\n{proc.stderr}".lower() else None
 
+
+def _require_reused_daemon_mode(driver_cmd: str, requested_mode: str) -> None:
+    """Require an explicitly reused daemon to be live in the requested mode.
+
+    Remote wrappers commonly proxy ``mcp`` into an interactive Windows daemon.
+    Starting a private replacement through that wrapper would land in SSH
+    Session 0, so the transport may opt into reuse instead. Reuse is safe only
+    when the existing daemon reports the exact immutable mode Hermes requested.
+    """
+    proc = _run_driver(
+        driver_cmd,
+        "status",
+        timeout=5.0,
+        swallow=(OSError, subprocess.SubprocessError),
+    )
+    if proc is None or proc.returncode != 0:
+        raise RuntimeError("configured existing cua-driver daemon is unavailable")
+    fields: Dict[str, str] = {}
+    for line in f"{proc.stdout}\n{proc.stderr}".splitlines():
+        key, separator, value = line.strip().partition(":")
+        if separator:
+            fields[key.strip().casefold()] = value.strip()
+    reported_mode = fields.get("permission mode", "").split(None, 1)[0].casefold()
+    if reported_mode != requested_mode:
+        observed = reported_mode or "unknown"
+        raise RuntimeError(
+            "configured existing cua-driver daemon mode mismatch: "
+            f"requested {requested_mode}, observed {observed}"
+        )
+    if requested_mode == "bounded":
+        manifest_status = {
+            key.strip().casefold(): value.strip().casefold()
+            for item in fields.get("capability manifest", "").split(",")
+            for key, separator, value in [item.partition("=")]
+            if separator
+        }
+        if any(
+            manifest_status.get(key) != "true"
+            for key in ("configured", "approved_at_startup", "valid")
+        ):
+            raise RuntimeError(
+                "configured existing bounded cua-driver daemon does not report "
+                "a valid approved capability manifest"
+            )
+
 def _linux_session_locked() -> Optional[bool]:
     """Is the graphical session locked? (Linux; best-effort.) A locked KDE/GNOME session freezes renderers and
     half-disables the AX tree, so discovery legitimately returns nothing — which otherwise reads as a driver bug.
@@ -255,8 +300,17 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
         if permission_mode not in {"standard", "bounded", "unrestricted"}:
             raise ValueError(f"unsupported cua-driver permission mode: {permission_mode}")
         self.permission_mode = permission_mode
+        self._reuse_existing_daemon = bool(
+            permission_mode != "standard"
+            and _computer_use_cfg().get("reuse_existing_daemon", False)
+        )
+        if self._reuse_existing_daemon and not os.environ.get(_CUA_DRIVER_CMD_ENV, "").strip():
+            raise ValueError(
+                "computer_use.reuse_existing_daemon requires an explicit "
+                "HERMES_CUA_DRIVER_CMD transport"
+            )
         self._embedded_daemon: Optional[_EmbeddedCuaDaemon] = None
-        if permission_mode != "standard":
+        if permission_mode != "standard" and not self._reuse_existing_daemon:
             # Manifest: mandatory for bounded (the daemon validates it), optional for unrestricted where it still
             # caps what an approval-bypassed run may touch.
             raw = _computer_use_cfg().get("capability_manifest")
@@ -264,7 +318,17 @@ class CuaDriverBackend(_CaptureMixin, _InputMixin, ComputerUseBackend):
                 resolve_cua_driver_cmd() or "", permission_mode,
                 capability_manifest=raw.strip() if isinstance(raw, str) and raw.strip() else None)
         self._bridge = _AsyncBridge()
-        self._session = _CuaDriverSession(self._bridge, self._embedded_daemon)
+        transport_start_validator = None
+        if self._reuse_existing_daemon:
+            transport_start_validator = lambda: _require_reused_daemon_mode(
+                resolve_cua_driver_cmd() or "",
+                self.permission_mode,
+            )
+        self._session = _CuaDriverSession(
+            self._bridge,
+            self._embedded_daemon,
+            transport_start_validator=transport_start_validator,
+        )
         # Sticky target (set by capture()/focus_app(), used by actions): `_active_pid`, `_active_window_id`, `_last_app`,
         # `_last_target` (exact identity for capture_after — Linux app names may be generic, e.g. several unrelated Qt
         # windows all say Qt6Application), `_snapshot_tokens` (element_index -> element_token, attached to actions so

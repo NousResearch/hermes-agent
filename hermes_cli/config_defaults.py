@@ -2467,6 +2467,10 @@ DEFAULT_CONFIG = {
         # CUA_DRIVER_RS_TELEMETRY_ENABLED=0 in every child env unless this is true.
         "cua_telemetry": False,
         "native_wayland": False,
+        # Reuse a daemon owned by an explicit HERMES_CUA_DRIVER_CMD transport for
+        # non-standard modes instead of spawning a private daemon. Intended for
+        # remote Windows Session-1 wrappers; startup verifies mode and bounded manifest.
+        "reuse_existing_daemon": False,
         # Cap driver screenshot longest edge (pixels) via set_config at session start; shrinks SOM
         # multimodal payloads. 0 disables.
         "max_image_dimension": 1456,

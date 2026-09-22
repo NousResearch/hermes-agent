@@ -478,6 +478,25 @@ Override the driver binary path (tests / CI / local builds):
 HERMES_CUA_DRIVER_CMD=/path/to/your/cua-driver
 ```
 
+For a remote Windows wrapper that already proxies an interactive Session-1
+daemon, Hermes can reuse that daemon instead of starting a private replacement
+through the SSH/Session-0 transport:
+
+```yaml
+computer_use:
+  permission_mode: bounded
+  reuse_existing_daemon: true
+```
+
+This is an explicit opt-in and requires `HERMES_CUA_DRIVER_CMD`. Startup fails
+closed unless `cua-driver status` reports a live daemon in exactly the requested
+immutable permission mode; bounded reuse also requires a configured, startup-
+approved, valid capability manifest. Hermes repeats those checks before every
+replacement transport after a disconnect. An approval bypass requests
+`unrestricted`, so the external daemon must already be running in `unrestricted`
+for that session to connect; `unrestricted` is not accepted as a persistent
+config value. Restart a running gateway after changing the setting.
+
 Swap the backend entirely (for testing):
 
 ```

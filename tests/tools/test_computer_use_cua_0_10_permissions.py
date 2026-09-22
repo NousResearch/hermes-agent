@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, MagicMock, Mock, patch
 
 import pytest
 
+import hermes_cli.config as hermes_config
 from tools.computer_use import cua_backend_driver
 
 
@@ -211,6 +212,128 @@ def test_standard_backend_does_not_spawn_an_embedded_daemon():
 
     assert standard._embedded_daemon is None
     assert unrestricted._embedded_daemon is not None
+
+
+def test_existing_daemon_reuse_is_explicit_mode_matched_and_revalidated(monkeypatch):
+    """A remote Session-1 daemon is trusted only through the explicit, immutable-mode gate."""
+    from tools.computer_use import cua_backend
+    from tools.computer_use.cua_backend_session import _CuaDriverSession
+
+    monkeypatch.delenv("HERMES_CUA_DRIVER_CMD", raising=False)
+    with patch.object(
+        cua_backend,
+        "_computer_use_cfg",
+        return_value={"reuse_existing_daemon": True},
+    ), pytest.raises(ValueError, match="HERMES_CUA_DRIVER_CMD"):
+        cua_backend.CuaDriverBackend(permission_mode="unrestricted")
+
+    monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/opt/remote-cua-wrapper")
+    with patch.object(
+        cua_backend,
+        "_computer_use_cfg",
+        return_value={"reuse_existing_daemon": True},
+    ):
+        backend = cua_backend.CuaDriverBackend(permission_mode="unrestricted")
+    assert backend._reuse_existing_daemon is True
+    assert backend._embedded_daemon is None
+    assert backend._session._transport_start_validator is not None
+
+    status = SimpleNamespace(
+        returncode=0,
+        stdout="Cua Driver daemon is running\n  permission mode: unrestricted (trusted_startup_configuration)\n",
+        stderr="",
+    )
+    with patch.object(cua_backend, "_run_driver", return_value=status):
+        backend._session._transport_start_validator()
+        with pytest.raises(RuntimeError, match="requested bounded"):
+            cua_backend._require_reused_daemon_mode("/opt/remote-cua-wrapper", "bounded")
+
+    bounded_without_manifest = SimpleNamespace(
+        returncode=0,
+        stdout="Cua Driver daemon is running\n  permission mode: bounded\n",
+        stderr="",
+    )
+    bounded_with_manifest = SimpleNamespace(
+        returncode=0,
+        stdout=(
+            "Cua Driver daemon is running\n"
+            "  permission mode: bounded\n"
+            "  capability manifest: configured=true, approved_at_startup=true, valid=true\n"
+        ),
+        stderr="",
+    )
+    with patch.object(cua_backend, "_run_driver", return_value=bounded_without_manifest):
+        with pytest.raises(RuntimeError, match="valid approved capability manifest"):
+            cua_backend._require_reused_daemon_mode("/opt/remote-cua-wrapper", "bounded")
+    with patch.object(cua_backend, "_run_driver", return_value=bounded_with_manifest):
+        cua_backend._require_reused_daemon_mode("/opt/remote-cua-wrapper", "bounded")
+
+    checks = []
+    session = _CuaDriverSession.__new__(_CuaDriverSession)
+    session._bridge = SimpleNamespace(_loop=object())
+    session._setup_error = None
+    session._shutdown_event = None
+    session._transport_generation = 0
+    session._transport_reset_callback = None
+    session._transport_start_validator = lambda: checks.append("checked")
+
+    class ReadyEvent:
+        def wait(self, timeout=None):
+            return True
+
+    with patch(
+        "tools.computer_use.cua_backend_session.threading.Event",
+        return_value=ReadyEvent(),
+    ), patch(
+        "tools.computer_use.cua_backend_session.asyncio.run_coroutine_threadsafe",
+        return_value=Mock(),
+    ), patch.object(
+        _CuaDriverSession,
+        "_lifecycle_coro",
+        new=lambda self: None,
+    ):
+        session._start_lifecycle_locked()
+        session._start_lifecycle_locked()
+
+    assert checks == ["checked", "checked"]
+
+
+def test_reuse_existing_daemon_config_is_isolated_by_hermes_home(tmp_path, monkeypatch):
+    """A multiplexed process must not leak one profile's remote-daemon opt-in."""
+    from tools.computer_use import cua_backend
+
+    enabled_home = tmp_path / "enabled"
+    disabled_home = tmp_path / "disabled"
+    enabled_home.mkdir()
+    disabled_home.mkdir()
+    (enabled_home / "config.yaml").write_text(
+        "computer_use:\n  reuse_existing_daemon: true\n",
+        encoding="utf-8",
+    )
+    (disabled_home / "config.yaml").write_text(
+        "computer_use:\n  reuse_existing_daemon: false\n",
+        encoding="utf-8",
+    )
+    monkeypatch.setenv("HERMES_CUA_DRIVER_CMD", "/opt/remote-cua-wrapper")
+
+    monkeypatch.setenv("HERMES_HOME", str(enabled_home))
+    hermes_config._LOAD_CONFIG_CACHE.clear()
+    enabled = cua_backend.CuaDriverBackend(permission_mode="unrestricted")
+    assert enabled._reuse_existing_daemon is True
+    assert enabled._embedded_daemon is None
+
+    monkeypatch.setenv("HERMES_HOME", str(disabled_home))
+    hermes_config._LOAD_CONFIG_CACHE.clear()
+    disabled = cua_backend.CuaDriverBackend(permission_mode="unrestricted")
+    assert disabled._reuse_existing_daemon is False
+    assert disabled._embedded_daemon is not None
+
+    monkeypatch.setenv("HERMES_HOME", str(enabled_home))
+    hermes_config._LOAD_CONFIG_CACHE.clear()
+    enabled_again = cua_backend.CuaDriverBackend(permission_mode="unrestricted")
+    assert enabled_again._reuse_existing_daemon is True
+    assert enabled_again._embedded_daemon is None
+    hermes_config._LOAD_CONFIG_CACHE.clear()
 
 
 def test_retired_browser_grant_cannot_change_standard_runtime(tmp_path, monkeypatch):

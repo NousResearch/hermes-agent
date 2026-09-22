@@ -140,9 +140,16 @@ def _hydrate_profile_secret_sources(home: Path) -> dict[str, str]:
 
     try:
         from agent.secret_scope import _is_global_env, load_env_file
-        from agent.secret_sources.registry import apply_all
+        from agent.secret_sources.registry import apply_all, source_bootstrap_env_vars
 
         local_env = {name: value for name, value in os.environ.items() if _is_global_env(name)}
+        # External sources may require a non-global bootstrap credential.  Copy
+        # only names declared by enabled sources through the existing protected
+        # variable contract; ordinary provider credentials remain excluded.
+        for name in source_bootstrap_env_vars(cfg, home):
+            value = os.environ.get(name)
+            if value is not None:
+                local_env[name] = value
         local_env.update(load_env_file(home / ".env"))
         # Mirror load_hermes_dotenv()'s .op.env bootstrap (1Password token lives in gitignored .op.env)
         # or cold profiles fail 1Password hydration. .env wins.

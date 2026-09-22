@@ -284,6 +284,33 @@ def _ordered_enabled_sources(secrets_cfg: dict, *, scope: Optional[str] = None) 
     return enabled
 
 
+def source_bootstrap_env_vars(secrets_cfg: dict, home_path: Path) -> frozenset[str]:
+    """Bootstrap env-var names declared by configured, enabled sources.
+
+    ``SecretSource.token_env()`` is the existing source contract for the
+    credential used to reach that source. Routed profiles may selectively copy
+    only these names from the inherited process environment into their private
+    hydration mapping.
+    """
+    secrets_cfg = secrets_cfg if isinstance(secrets_cfg, dict) else {}
+    names: set[str] = set()
+    for source in _ordered_enabled_sources(
+        secrets_cfg, scope=hermes_home_key(home_path)
+    ):
+        try:
+            name = source.token_env(_section(secrets_cfg, source.name))
+        except Exception:  # noqa: BLE001 — a broken source must not block routing
+            logger.warning(
+                "Secret source '%s' token_env() raised; ignoring bootstrap variable",
+                source.name,
+                exc_info=True,
+            )
+            continue
+        if name and is_valid_env_name(name):
+            names.add(name)
+    return frozenset(names)
+
+
 def _active_profile_name(home_path: Optional[Path]) -> str:
     """Active profile name (``~/.hermes/profiles/<name>``); "" for the default profile."""
     if home_path is not None:

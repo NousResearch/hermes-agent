@@ -127,3 +127,46 @@ describe('task attachment compatibility', () => {
     expect(screen.queryByText(en.noAttachments)).toBeNull()
   })
 })
+
+describe('dependency chips resolve titles', () => {
+  const linkedDetail = {
+    ...legacyDetail,
+    attachments: [] as [],
+    links: { parents: ['t_parent'], children: ['t_child'] },
+    link_tasks: [
+      { id: 't_parent', title: 'Parent title', status: 'todo' },
+      { id: 't_child', title: 'Child title', status: 'running' }
+    ]
+  }
+
+  it('renders linked task titles, not raw ids, and opens on click', async () => {
+    detail = linkedDetail
+    const onOpen = vi.fn()
+    render(
+      <QueryClientProvider client={client}>
+        <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={onOpen} />
+      </QueryClientProvider>
+    )
+
+    expect(await screen.findByRole('heading', { name: legacyDetail.task.title })).toBeTruthy()
+    expect(screen.getByText('Parent title')).toBeTruthy()
+    expect(screen.getByText('Child title')).toBeTruthy()
+    expect(screen.queryByText('parent')).toBeNull()
+
+    fireEvent.click(screen.getByText('Parent title'))
+    expect(onOpen).toHaveBeenCalledWith('t_parent')
+  })
+
+  it('falls back to short ids when the backend omits link_tasks', async () => {
+    const { link_tasks: _omit, ...withoutTitles } = linkedDetail
+    detail = withoutTitles
+    render(
+      <QueryClientProvider client={client}>
+        <TaskDrawer columns={['todo', 'ready', 'done']} id="t_example" onClose={vi.fn()} onOpen={vi.fn()} />
+      </QueryClientProvider>
+    )
+
+    expect(await screen.findByText('parent')).toBeTruthy()
+    expect(screen.getByText('child')).toBeTruthy()
+  })
+})

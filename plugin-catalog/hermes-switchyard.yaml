@@ -1,0 +1,32 @@
+name: hermes-switchyard
+repo: https://github.com/bgrablin/hermes-switchyard
+sha: 6a719e128315be899ff39f03e8d71bcb0fe6ad6c
+subdir: ""
+description: "Jev-powered Hermes plugin for skill/model routing, typed assess, DOM/Cua computer-use with dual-gate goal_verified, adaptive reasoning_effort (default on; disable via adaptive_reasoning_effort false), and jev_session_search_rerank over FTS shortlists. Hosted automatic skill routing defaults on with standing ack; model route stays advisory (applied: false). Direct TypeSafe or OpenRouter."
+maintainer: bgrablin
+tier: community
+category: tools
+requires_hermes: ">=0.21.3"
+docs_url: https://github.com/bgrablin/hermes-switchyard/blob/6a719e128315be899ff39f03e8d71bcb0fe6ad6c/docs/SETUP.md
+version: "0.5.1"
+image: https://raw.githubusercontent.com/bgrablin/hermes-switchyard/6a719e128315be899ff39f03e8d71bcb0fe6ad6c/docs/assets/hermes-switchyard-overview.png
+readme: true
+platforms:
+  - linux
+  - macos
+  - windows
+capabilities:
+  provides_tools:
+    - jev_assess
+    - jev_computer_use
+    - jev_skill_select
+    - jev_skill_select_many
+    - jev_model_route
+    - jev_model_route_approved
+    - jev_session_search_rerank
+  provides_hooks:
+    - pre_llm_call
+    - post_tool_call
+  provides_middleware:
+    - llm_request
+  requires_env: []

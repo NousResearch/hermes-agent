@@ -1,0 +1,159 @@
+name: Install & Update E2E (reusable)
+
+# Runs ONE {install-method, update-method} combination against ONE starting
+# commit, with a real install (uv, a managed Python, Node, the venv) behind
+# it.
+#
+# Reusable so callers can fan out over the combinations that matter --
+# update from the tip vs. from an older release, `hermes update` vs.
+# re-running the installer -- without duplicating the runner setup. Each leg
+# is independent: its own isolated HOME, its own install, nothing rewound
+# or shared.
+#
+# No sandbox: tests/install/installer-script-e2e.sh points every git
+# process at a local bare clone (url.<file://serve.git>.insteadOf in a
+# driver-owned GIT_CONFIG_GLOBAL) and isolates HOME, so the installer and
+# updater run byte-for-byte against their real URLs on the bare runner --
+# which is disposable, and therefore IS the sandbox. That also makes this
+# workflow OS-agnostic: the same driver runs on ubuntu and macos runners.
+#
+# Method ids come from scripts/sandbox/generate-e2e-matrix.mjs. Supported
+# today: install via installer-script, update via hermes-update or
+# installer-script (re-run the one-liner).
+# Anything else NATIVELY SKIPS (grey check, no runner): capability
+# knowledge lives here, next to the driver, so the caller can dispatch
+# every declared combination without knowing which ones work.
+#
+# Call it:
+#
+#   jobs:
+#     tip:
+#       uses: ./.github/workflows/install-e2e-run.yml
+#       with:
+#         install-method: installer-script
+#         update-method: hermes-update
+#         install-ref: refs/heads/main
+
+on:
+  workflow_call:
+    inputs:
+      install-method:
+        description: 'How the starting version gets installed. Supported: installer-script (the real curl | install.sh one-liner) and installer-script+desktop (the same one-liner with --include-desktop).'
+        required: true
+        type: string
+      update-method:
+        description: 'How the install updates to HEAD. Supported: hermes-update (the updater), installer-script (re-run the one-liner), installer-script+desktop (re-run with --include-desktop), hermes-desktop-app-update (launch via hermes desktop under Playwright, click Update now). open-app-update runs only where an OS entry point exists (see the per-OS run workflows); pairs without one skip.'
+        required: true
+        type: string
+      install-ref:
+        description: 'What to install before updating: a branch, a tag (v2026.7.7), or a SHA reachable from main.'
+        required: false
+        type: string
+        default: refs/heads/main
+      leg-id:
+        description: 'Artifact-safe matrix leg id (from generate-e2e-matrix.mjs legId). Names this leg''s logs + player artifacts so the report job can link a row to its zip.'
+        required: true
+        type: string
+      tag-has-desktop:
+        description: "Whether install-ref ships the desktop app (apps/desktop). The caller annotates this from the tag's own tree; desktop-method legs from pre-desktop releases natively skip."
+        required: false
+        type: boolean
+        default: true
+      runner:
+        description: 'Runner label.'
+        required: false
+        type: string
+        default: ubuntu-latest
+      timeout-minutes:
+        description: 'Job timeout. A cold run installs real toolchains twice, and app-update legs add a full Electron build + launch.'
+        required: false
+        type: number
+        default: 60
+
+permissions:
+  contents: read
+
+jobs:
+  e2e:
+    name: install & update
+    # The pairs the driver can run today; anything else natively skips.
+    # Desktop-surface methods (+desktop installs,
+    # hermes-desktop-app-update) also need the starting tag to ship
+    # apps/desktop (their flags shipped with it).
+    if: >-
+      (inputs.install-method == 'installer-script'
+        || (inputs.install-method == 'installer-script+desktop' && inputs.tag-has-desktop))
+      && (contains(fromJSON('["hermes-update", "installer-script"]'), inputs.update-method)
+        || (contains(fromJSON('["installer-script+desktop", "hermes-desktop-app-update"]'), inputs.update-method) && inputs.tag-has-desktop))
+    runs-on: ${{ inputs.runner }}
+    timeout-minutes: ${{ inputs.timeout-minutes }}
+
+    steps:
+      # Full history: the driver bare-clones this checkout as the repo the
+      # installer/updater talk to, and both OLD and HEAD must be reachable
+      # in that clone. A shallow clone cannot serve either need.
+      - uses: actions/checkout@de0fac2e4500dabe0009e67214ff5f5447ce83dd # v6.0.2
+        with:
+          fetch-depth: 0
+
+      # One recording mechanism on every OS (Xvfb gives headless linux a
+      # display; the same display serves any app the driver launches).
+      - name: Start screen recording
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: start
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
+
+      - name: Run install + update E2E
+        run: |
+          set -euo pipefail
+          tests/install/installer-script-e2e.sh \
+            --install-method '${{ inputs.install-method }}' \
+            --update-method '${{ inputs.update-method }}' \
+            --install-ref '${{ inputs.install-ref }}'
+        env:
+          # Outside the workspace on purpose: logs written into the repo
+          # would trip the driver's own dirty-tree guard.
+          HERMES_E2E_LOG_DIR: ${{ runner.temp }}/e2e-logs
+
+      - name: Stop screen recording
+        if: always()
+        uses: ./.github/actions/e2e-screen-record
+        with:
+          mode: stop
+          output: ${{ runner.temp }}/e2e-logs/recording.mkv
+
+      # Browsers cannot play Matroska: remux (copy codec, no re-encode) so
+      # the artifact zip feeds the static playback.html leg player directly.
+      - name: Remux recording for browser playback
+        if: always()
+        run: |
+          set -euo pipefail
+          if [ -f "${{ runner.temp }}/e2e-logs/recording.mkv" ]; then
+            ffmpeg -y -hide_banner -loglevel error -i "${{ runner.temp }}/e2e-logs/recording.mkv" \
+              -c copy "${{ runner.temp }}/e2e-logs/recording.mp4"
+          fi
+
+      # The leg player: ONE static HTML per run, uploaded up front by the
+      # leg-player job in install-e2e.yml (archive: false, so GitHub names
+      # the artifact after the file: playback.html). The report job links
+      # every ran leg to it with the leg's zip as a #zip= hash param.
+      - name: Build artifact name
+        if: always()
+        id: artifact
+        run: |
+          set -euo pipefail
+          echo "name=install-e2e-logs-${{ inputs.leg-id }}" >> "$GITHUB_OUTPUT"
+
+      # The installer's own transcripts say far more than the assertion that
+      # tripped when a real install breaks.
+      - name: Upload installer logs
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7.0.1
+        with:
+          # Unique per leg: a matrix over releases runs this workflow several
+          # times per route, and same-named artifacts collide.
+          name: ${{ steps.artifact.outputs.name }}-${{ github.sha }}
+          path: ${{ runner.temp }}/e2e-logs
+          retention-days: 14
+          if-no-files-found: ignore

@@ -4,13 +4,33 @@
   "version": "0.0.0",
   "type": "module",
   "exports": {
-    ".": "./src/index.ts"
+    ".": "./src/index.ts",
+    "./ansi": "./src/ansi.ts",
+    "./billing": "./src/billing-types.ts",
+    "./billing-policy": "./src/billing-policy.ts",
+    "./charge-settlement": "./src/charge-settlement.ts",
+    "./color": "./src/color.ts",
+    "./format": "./src/format.ts",
+    "./fuzzy": "./src/fuzzy.ts",
+    "./gateway-events": "./src/gateway-events.ts",
+    "./i18n": "./src/i18n.ts",
+    "./json-rpc-channel": "./src/json-rpc-channel.ts",
+    "./model-search-text": "./src/model-search-text.ts",
+    "./reasoning-effort": "./src/reasoning-effort.ts",
+    "./reconnect-backoff": "./src/reconnect-backoff.ts",
+    "./skin": "./src/skin.ts",
+    "./slash": "./src/slash.ts",
+    "./theme-presets": "./src/theme-presets.ts"
   },
   "types": "./src/index.ts",
   "scripts": {
-    "typecheck": "tsc -p . --noEmit"
+    "lint": "eslint src/",
+    "lint:fix": "eslint src/ --fix",
+    "fix": "npm run lint:fix",
+    "typecheck": "tsc -p . --noEmit",
+    "check": "npm run typecheck && npm run lint"
   },
   "devDependencies": {
-    "typescript": "^6.0.3"
+    "typescript": "6.0.3"
   }
 }

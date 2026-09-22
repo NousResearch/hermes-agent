@@ -68,7 +68,7 @@ def verify_output(run_name):
         print(f"❌ No batch files found in: {output_dir}")
         return False
     
-    print(f"✅ Output verification passed:")
+    print("✅ Output verification passed:")
     print(f"   - Checkpoint: {checkpoint_file}")
     print(f"   - Statistics: {stats_file}")
     print(f"   - Batch files: {len(batch_files)}")
@@ -77,13 +77,13 @@ def verify_output(run_name):
     with open(stats_file) as f:
         stats = json.load(f)
     
-    print(f"\n📊 Statistics Summary:")
+    print("\n📊 Statistics Summary:")
     print(f"   - Total prompts: {stats['total_prompts']}")
     print(f"   - Total batches: {stats['total_batches']}")
     print(f"   - Duration: {stats['duration_seconds']}s")
     
     if stats.get('tool_statistics'):
-        print(f"   - Tool calls:")
+        print("   - Tool calls:")
         for tool, tool_stats in stats['tool_statistics'].items():
             print(f"     • {tool}: {tool_stats['count']} calls, {tool_stats['success_rate']:.1f}% success")
     
@@ -103,19 +103,19 @@ def main():
     # Create test dataset
     test_file = create_test_dataset()
     
-    print(f"\n📝 To run the test manually:")
-    print(f"   python batch_runner.py \\")
+    print("\n📝 To run the test manually:")
+    print("   python batch_runner.py \\")
     print(f"       --dataset_file={test_file} \\")
-    print(f"       --batch_size=2 \\")
+    print("       --batch_size=2 \\")
     print(f"       --run_name={run_name} \\")
-    print(f"       --distribution=minimal \\")
-    print(f"       --num_workers=2")
+    print("       --distribution=minimal \\")
+    print("       --num_workers=2")
     
-    print(f"\n💡 Or test with different distributions:")
-    print(f"   python batch_runner.py --list_distributions")
+    print("\n💡 Or test with different distributions:")
+    print("   python batch_runner.py --list_distributions")
     
-    print(f"\n🔍 After running, you can verify output with:")
-    print(f"   python tests/test_batch_runner.py --verify")
+    print("\n🔍 After running, you can verify output with:")
+    print("   python tests/test_batch_runner.py --verify")
     
     # Note: We don't actually run the batch runner here to avoid API calls during testing
     # Users should run it manually with their API keys configured

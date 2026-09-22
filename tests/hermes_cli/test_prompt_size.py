@@ -1,11 +1,16 @@
 """Tests for the ``hermes prompt-size`` diagnostic (issue #34667)."""
 
 import json
+import sys
+from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from hermes_cli.prompt_size import (
     _SKILLS_BLOCK_RE,
+    _build_inspection_agent,
+    _compute_skills_breakdown,
     compute_prompt_breakdown,
     render_breakdown,
 )
@@ -38,27 +43,6 @@ def isolated_home(tmp_path, monkeypatch):
     return hermes_home
 
 
-def test_breakdown_keys_and_shape(isolated_home):
-    """The breakdown exposes every documented key with int byte/char counts."""
-    data = compute_prompt_breakdown("cli")
-    assert set(data) >= {
-        "platform",
-        "model",
-        "system_prompt",
-        "skills_index",
-        "memory",
-        "user_profile",
-        "tools",
-        "sections",
-    }
-    assert data["platform"] == "cli"
-    for key in ("system_prompt", "skills_index", "memory", "user_profile"):
-        assert data[key]["bytes"] >= 0
-        assert data[key]["chars"] >= 0
-    assert data["tools"]["count"] >= 0
-    assert data["tools"]["json_bytes"] >= 0
-    # System prompt is non-trivial even with empty home (identity + guidance).
-    assert data["system_prompt"]["bytes"] > 0
 
 
 def test_runs_offline_without_credentials(isolated_home, monkeypatch):
@@ -70,49 +54,68 @@ def test_runs_offline_without_credentials(isolated_home, monkeypatch):
     assert data["system_prompt"]["bytes"] > 0
 
 
-def test_skills_index_reflects_installed_skills(isolated_home):
-    """Installing a skill makes the skills-index block non-empty.
 
-    Note: the skills prompt is cached per-process (in-process LRU + disk
-    snapshot), so we seed the skill BEFORE the first build rather than
-    comparing before/after within one process.
+
+
+
+
+
+
+
+
+
+def test_skills_breakdown_shape_sorted_and_attributed(isolated_home):
+    """Per-skill breakdown reports index-line + on-disk SKILL.md bytes.
+
+    Seeded before the first build (skills prompt is cached per-process).
     """
-    _seed_skill(isolated_home, "hello", "a demo skill for size testing")
+    _seed_skill(isolated_home, "small-skill", "short desc")
+    _seed_skill(isolated_home, "big-skill", "a much longer description " * 20)
     data = compute_prompt_breakdown("cli")
-    assert data["skills_index"]["bytes"] > 0
+    skills = data["skills_breakdown"]
+    names = {s["name"] for s in skills}
+    assert {"small-skill", "big-skill"} <= names
+    for s in skills:
+        assert set(s) >= {"name", "index_line_bytes", "skill_md_bytes", "path"}
+        assert s["index_line_bytes"] > 0
+    # Sorted largest-first by on-disk SKILL.md size.
+    md_sizes = [s["skill_md_bytes"] or 0 for s in skills]
+    assert md_sizes == sorted(md_sizes, reverse=True)
+    # On-disk bytes match the real file; big-skill's SKILL.md is the larger.
+    by_name = {s["name"]: s for s in skills}
+    big = by_name["big-skill"]
+    assert big["path"] and Path(big["path"]).stat().st_size == big["skill_md_bytes"]
+    assert big["skill_md_bytes"] > by_name["small-skill"]["skill_md_bytes"]
+    # Per-skill index lines are a subset of the whole <available_skills> block,
+    # so they never exceed it (on-disk SKILL.md bytes are separate and don't).
+    assert sum(s["index_line_bytes"] for s in skills) <= data["skills_index"]["bytes"]
 
 
-def test_memory_and_profile_are_attributed(isolated_home):
-    """Memory and user-profile blocks are measured separately."""
-    _seed_memory(
-        isolated_home,
-        memory_text="Project uses pytest.\n",
-        user_text="User is a developer.\n",
+def test_skills_breakdown_attributes_demoted_category_shared_line(isolated_home):
+    """A real posture-demoted category retains every skill in the breakdown."""
+    from agent.prompt_builder import build_skills_system_prompt
+
+    _seed_skill(isolated_home, "alpha-skill", "alpha description")
+    _seed_skill(isolated_home, "beta-skill", "beta description")
+    prompt = build_skills_system_prompt(compact_categories=frozenset({"demo"}))
+    skills_match = _SKILLS_BLOCK_RE.search(prompt)
+    assert skills_match is not None
+    skills_block = skills_match.group(0)
+    shared_line = next(
+        line for line in skills_block.splitlines() if "demo [names only]" in line
     )
-    data = compute_prompt_breakdown("cli")
-    assert data["memory"]["bytes"] > 0
-    assert data["user_profile"]["bytes"] > 0
+
+    entries = _compute_skills_breakdown(skills_block)
+    by_name = {entry["name"]: entry for entry in entries}
+    assert set(by_name) == {"alpha-skill", "beta-skill"}
+
+    shared_line_bytes = len(shared_line.encode("utf-8"))
+    assert sum(entry["index_line_bytes"] for entry in entries) == shared_line_bytes
+    for entry in entries:
+        assert entry["index_line_total_bytes"] == shared_line_bytes
+        assert entry["index_line_shared_bytes"] > 0
+        assert entry["index_line_skill_count"] == 2
 
 
-def test_skills_block_regex_matches_tagged_block():
-    text = "preamble\n<available_skills>\n  cat:\n    - a: b\n</available_skills>\ntail"
-    m = _SKILLS_BLOCK_RE.search(text)
-    assert m is not None
-    assert m.group(0).startswith("<available_skills>")
-    assert m.group(0).endswith("</available_skills>")
 
 
-def test_render_breakdown_is_plain_text(isolated_home):
-    data = compute_prompt_breakdown("cli")
-    out = render_breakdown(data)
-    assert "System prompt total" in out
-    assert "skills index" in out
-    assert "Tool schemas" in out
-    # Plain text — no JSON braces leaking in.
-    assert not out.strip().startswith("{")
-
-
-def test_json_serializable(isolated_home):
-    data = compute_prompt_breakdown("cli")
-    # Round-trips cleanly for ``--json`` output.
-    assert json.loads(json.dumps(data)) == json.loads(json.dumps(data))

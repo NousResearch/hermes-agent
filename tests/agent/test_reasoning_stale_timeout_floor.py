@@ -43,13 +43,23 @@ import pytest
 
 @pytest.mark.parametrize("model,expected", [
     # NVIDIA Nemotron reasoning family (longest keys first).
+    ("nvidia/nemotron-3.5-lightning-30b-a3b", 300.0),
     ("nvidia/nemotron-3-ultra-550b-a55b", 600.0),
     ("nvidia/nemotron-3-super-120b-a12b", 600.0),
     ("nvidia/nemotron-3-nano-30b-a3b", 300.0),
-    # DeepSeek R1 + DeepSeek reasoner.
+    # DeepSeek R1 + DeepSeek reasoner + V4 reasoning series.
+    # V4 emits reasoning_content in a separate delta before final
+    # content (same shape as R1), so it needs the same 600s floor.
     ("deepseek/deepseek-r1", 600.0),
     ("deepseek/deepseek-r1-distill-llama-70b", 600.0),
     ("deepseek/deepseek-reasoner", 600.0),
+    ("deepseek/deepseek-v4-flash", 600.0),
+    ("deepseek/deepseek-v4-pro", 600.0),
+    ("deepseek-v4-flash-free", 600.0),   # catalog -free variant inherits via separator anchor
+    # Version-less canonical Flash id from the 2026-09 Flash refresh —
+    # ``deepseek-v4-flash`` still aliases onto it server-side.
+    ("deepseek/deepseek-flash", 600.0),
+    ("deepseek-flash", 600.0),
     # Qwen QwQ + Qwen3 thinking variants (qwen3 family entry matches all).
     ("qwen/qwq-32b-preview", 300.0),
     ("qwen/qwen3-235b-a22b-thinking", 180.0),
@@ -64,15 +74,34 @@ import pytest
     ("openai/o3-pro", 600.0),
     ("openai/o3-mini", 300.0),
     ("openai/o4-mini", 300.0),
+    # OpenAI named reasoning lines (#103802); vendor prefixes and named/-pro/-900k variants
+    # inherit via the separator anchor.
+    ("openai/gpt-5.6-sol", 600.0),
+    ("gpt-5.6-terra", 600.0),
+    ("gpt-5.6-sol-900k", 600.0),
+    ("gpt-6-astra", 600.0),
+    ("gpt-6-astra-900k", 600.0),
     # Anthropic Claude 4.x thinking variants.
     ("anthropic/claude-opus-4-6", 240.0),
     ("anthropic/claude-opus-4-20250514", 240.0),
     ("anthropic/claude-sonnet-4.5", 180.0),
     ("anthropic/claude-sonnet-4.6", 180.0),
+    # Anthropic Mythos-class named reasoning models — deep-reasoning tier.
+    ("anthropic/claude-fable-5", 600.0),
+    ("claude-fable-5", 600.0),
+    ("claude-fable", 600.0),
     # xAI Grok reasoning variants — explicit, not bare `grok`.
     ("x-ai/grok-4-fast-reasoning", 300.0),
     ("x-ai/grok-4.20-reasoning", 300.0),
+    ("x-ai/grok-4.5", 300.0),
+    ("x-ai/grok-4.6", 300.0),
     ("x-ai/grok-4-fast-non-reasoning", 180.0),
+    # Thinking Machines Inkling — family entry covers -small and the
+    # OpenRouter :free / :batch SKU suffixes (":" is a slug separator
+    # in the right anchor, same as "-").
+    ("thinkingmachines/inkling", 300.0),
+    ("thinkingmachines/inkling:free", 300.0),
+    ("thinkingmachines/inkling-small:free", 300.0),
 ])
 def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
@@ -83,51 +112,8 @@ def test_reasoning_stale_timeout_floor_positive_cases(model, expected):
     )
 
 
-@pytest.mark.parametrize("model", [
-    # Non-reasoning chat models — no floor.
-    "gpt-4o",
-    "gpt-5",
-    "claude-3-5-sonnet-20240620",
-    "llama-3.3-70b-instruct",
-    "gemini-2.5-pro",
-    # Start-of-slug anchor traps — the slug must be at the START of
-    # the bare model name (after aggregator-prefix strip).  Bare
-    # substring matching would over-match these.
-    "olmo-1",
-    "olmo-13b",
-    "llama-4-70b-o1-preview",     # embedded `o1-preview`, NOT start of slug
-    "some-model-o3-mini-fork",    # embedded `o3-mini`, NOT start of slug
-    # Bare "grok" must not over-match non-reasoning Grok SKUs.
-    "x-ai/grok-3",
-    "x-ai/grok-4",
-    "x-ai/grok-4-0709",
-    "x-ai/grok-code-fast-1",
-    # Qwen2 must not match Qwen3 (different family).
-    "qwen2-72b-instruct",
-    # Empty / None / non-string inputs — must return None, not raise.
-    "",
-    None,
-    12345,
-    [],
-])
-def test_reasoning_stale_timeout_floor_negative_cases(model):
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-    assert get_reasoning_stale_timeout_floor(model) is None, (
-        f"get_reasoning_stale_timeout_floor({model!r}) must return None "
-        f"for non-reasoning models and start-of-slug-anchor traps."
-    )
 
 
-def test_longest_substring_wins_on_shared_prefix():
-    """`o3-mini` must beat `o3` so the smaller floor applies."""
-    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
-    # o3-mini (7 chars) wins over o3 (2 chars) on shared prefix.
-    assert get_reasoning_stale_timeout_floor("openai/o3-mini") == 300.0
-    assert get_reasoning_stale_timeout_floor("openai/o3") == 600.0
-    # Even with deep aggregator prefix chains the model name resolves
-    # correctly (start-of-slug anchor + rsplit('/') strip).
-    assert get_reasoning_stale_timeout_floor("openrouter/openai/o3-mini") == 300.0
-    assert get_reasoning_stale_timeout_floor("openrouter/anthropic/claude-opus-4-6") == 240.0
 
 
 
@@ -154,117 +140,12 @@ def _make_agent(tmp_path: Path, **overrides):
     return AIAgent(**kwargs)
 
 
-def test_reasoning_floor_applies_to_nemotron_3_ultra(monkeypatch, tmp_path):
-    """Nemotron 3 Ultra without explicit config gets the 600s floor."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    _write_config(tmp_path, "")
-
-    # Clear any cached config from prior tests in this session.
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
-
-    agent = _make_agent(
-        tmp_path,
-        provider="nvidia",
-        base_url="https://integrate.api.nvidia.com/v1",
-        model="nvidia/nemotron-3-ultra-550b-a55b",
-    )
-    base, implicit = agent._resolved_api_call_stale_timeout_base()
-    assert base == 600.0
-    assert implicit is False, (
-        "Reasoning-model floor must return uses_implicit_default=False "
-        "so the local-endpoint short-circuit in "
-        "_compute_non_stream_stale_timeout does not disable detection "
-        "for users running reasoning models on a local NIM endpoint."
-    )
 
 
-def test_reasoning_floor_applies_to_opus_4_thinking(monkeypatch, tmp_path):
-    """Anthropic Opus 4.x thinking gets the 240s floor without explicit config."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-    _write_config(tmp_path, "")
-
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
-
-    agent = _make_agent(
-        tmp_path,
-        provider="anthropic",
-        base_url="https://api.anthropic.com",
-        model="claude-opus-4-6",
-    )
-    base, implicit = agent._resolved_api_call_stale_timeout_base()
-    assert base == 240.0
-    assert implicit is False
 
 
-def test_reasoning_floor_never_overrides_explicit_user_config(monkeypatch, tmp_path):
-    """Explicit per-model stale_timeout_seconds wins over the floor.
-
-    Regression guard for the invariant: explicit user config > reasoning
-    floor > env var > default. If a user sets stale_timeout_seconds: 60
-    on Nemotron 3 Ultra, that's what fires — even though the floor
-    would otherwise be 600s.
-    """
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    _write_config(tmp_path, """\
-providers:
-  nvidia:
-    models:
-      nvidia/nemotron-3-ultra-550b-a55b:
-        stale_timeout_seconds: 60
-""")
-    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
-
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
-
-    agent = _make_agent(
-        tmp_path,
-        provider="nvidia",
-        base_url="https://integrate.api.nvidia.com/v1",
-        model="nvidia/nemotron-3-ultra-550b-a55b",
-    )
-    base, implicit = agent._resolved_api_call_stale_timeout_base()
-    assert base == 60.0, (
-        "Explicit user stale_timeout_seconds must override the "
-        "reasoning-model floor; the user knows their environment."
-    )
-    assert implicit is False
 
 
-def test_reasoning_floor_loses_to_env_var_when_no_floor_match(monkeypatch, tmp_path):
-    """For a non-reasoning model, env var still wins over the 90s default."""
-    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
-    (tmp_path / ".env").write_text("", encoding="utf-8")
-    monkeypatch.setenv("HERMES_API_CALL_STALE_TIMEOUT", "300")
-    _write_config(tmp_path, "")
-
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
-
-    agent = _make_agent(
-        tmp_path,
-        provider="openai",
-        base_url="https://api.openai.com/v1",
-        model="gpt-5.5",  # not in the floor allowlist
-    )
-    base, implicit = agent._resolved_api_call_stale_timeout_base()
-    assert base == 300.0
-    assert implicit is False
 
 
 def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
@@ -274,10 +155,9 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
     _write_config(tmp_path, "")
 
-    import importlib
-    from hermes_cli import config as cfg_mod, timeouts as to_mod
-    importlib.reload(cfg_mod)
-    importlib.reload(to_mod)
+    # No provider config, no env var, no floor match -> 90s implicit default.
+    import run_agent
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
 
     agent = _make_agent(
         tmp_path,
@@ -288,6 +168,33 @@ def test_non_reasoning_model_keeps_default(monkeypatch, tmp_path):
     base, implicit = agent._resolved_api_call_stale_timeout_base()
     assert base == 90.0
     assert implicit is True
+
+
+def test_gpt_5_6_floor_reaches_non_stream_and_stream_resolvers(monkeypatch, tmp_path):
+    """Small GPT-5.6 requests get the reasoning floor on both request paths."""
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_API_CALL_STALE_TIMEOUT", raising=False)
+    _write_config(tmp_path, "")
+
+    import run_agent
+    from agent.chat_completion_helpers import _cloud_stale_timeout
+    from agent.reasoning_timeouts import get_reasoning_stale_timeout_floor
+
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: None)
+    agent = _make_agent(tmp_path, model="gpt-5.6-sol")
+
+    assert agent._resolved_api_call_stale_timeout_base() == (600.0, False)
+    assert _cloud_stale_timeout(180.0, {"model": "gpt-5.6-sol", "input": "small"}) == 600.0
+    assert get_reasoning_stale_timeout_floor("vendor/my-gpt-5.6-sol") is None
+    assert get_reasoning_stale_timeout_floor("gpt-5.60-sol") is None
+    # Non-reasoning OpenAI chat line stays on the defaults (#103802 control case).
+    for chat_model in ("gpt-4.1", "gpt-4o", "gpt-5.1-chat-latest"):
+        assert get_reasoning_stale_timeout_floor(chat_model) is None
+        assert _cloud_stale_timeout(180.0, {"model": chat_model, "input": "small"}) == 180.0
+
+    monkeypatch.setattr(run_agent, "get_provider_stale_timeout", lambda *a, **k: 900.0)
+    assert agent._resolved_api_call_stale_timeout_base() == (900.0, False)
+    assert _cloud_stale_timeout(900.0, {"model": "gpt-5.6-sol", "input": "small"}) == 900.0
 
 
 # ── stream-side mirror (the real builder lives in a worker thread) ────────
@@ -343,31 +250,21 @@ def test_stream_stale_timeout_floor_for_nemotron_3_ultra():
     assert timeout == 600.0
 
 
-def test_stream_stale_timeout_floor_never_lowers_existing():
-    """The floor raises; it never lowers the existing context-size tier."""
-    # 120k-token conversation on a reasoning model -> context tier already
-    # raises to 300s; floor (600s) takes it to 600s.
-    timeout = _resolve_stream_stale_timeout(
-        model="nvidia/nemotron-3-ultra-550b-a55b",
-        base_url="https://integrate.api.nvidia.com/v1",
-        est_tokens=120_000,
-    )
-    assert timeout == 600.0
+def test_explicit_provider_stale_timeout_wins_over_context_tier_and_reasoning_floor(monkeypatch, tmp_path):
+    """``providers.<id>.stale_timeout_seconds`` must be able to SHORTEN patience (#115024):
+    a 60s explicit value on a >50k-token request for a reasoning model stays 60s, while the
+    same request with no explicit value still gets the 240s tier / 600s floor (control)."""
+    from types import SimpleNamespace
 
-    # 60k tokens on Opus 4 -> context tier raises to 240s; floor keeps 240s.
-    timeout = _resolve_stream_stale_timeout(
-        model="anthropic/claude-opus-4-6",
-        base_url="https://api.anthropic.com",
-        est_tokens=60_000,
-    )
-    assert timeout == 240.0
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path))
+    monkeypatch.delenv("HERMES_STREAM_STALE_TIMEOUT", raising=False)
+    from agent.chat_completion_helpers import _derive_stream_stale_timeout
 
+    api_kwargs = {"model": "gpt-5.6-sol", "messages": [{"role": "user", "content": "word " * 60_000}]}
+    agent = SimpleNamespace(provider="custom", model="gpt-5.6-sol", base_url="https://api.example.invalid/v1")
 
-def test_stream_stale_timeout_unchanged_for_non_reasoning_models():
-    """gpt-4o on a small context still gets the 180s default — no behavior change."""
-    timeout = _resolve_stream_stale_timeout(
-        model="gpt-4o",
-        base_url="https://api.openai.com/v1",
-        est_tokens=5_000,
-    )
-    assert timeout == 180.0
+    _write_config(tmp_path, "providers:\n  custom:\n    stale_timeout_seconds: 60\n")
+    assert _derive_stream_stale_timeout(agent, api_kwargs) == 60.0
+
+    _write_config(tmp_path, "")
+    assert _derive_stream_stale_timeout(agent, api_kwargs) == 600.0

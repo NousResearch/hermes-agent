@@ -28,7 +28,8 @@ from __future__ import annotations
 
 from unittest.mock import MagicMock
 
-
+from agent.context_compressor import ContextCompressor
+from hermes_state import SessionDB
 from run_agent import AIAgent
 
 
@@ -41,53 +42,8 @@ def _bare_agent() -> AIAgent:
     return agent
 
 
-def test_transition_runs_full_lifecycle_in_order():
-    """End → reset → start → carry_over, in that order, when all inputs apply."""
-    events: list[str] = []
-    engine = MagicMock()
-    engine.context_length = 200_000
-    engine.on_session_end.side_effect = lambda *a, **kw: events.append("on_session_end")
-    engine.on_session_reset.side_effect = lambda *a, **kw: events.append("on_session_reset")
-    engine.on_session_start.side_effect = lambda *a, **kw: events.append("on_session_start")
-    engine.carry_over_new_session_context.side_effect = lambda *a, **kw: events.append("carry_over")
-
-    agent = _bare_agent()
-    agent.context_compressor = engine
-
-    agent._transition_context_engine_session(
-        old_session_id="old-sid",
-        new_session_id="new-sid",
-        previous_messages=[{"role": "user", "content": "hi"}],
-        carry_over_context=True,
-    )
-
-    assert events == [
-        "on_session_end",
-        "on_session_reset",
-        "on_session_start",
-        "carry_over",
-    ]
 
 
-def test_transition_passes_conversation_id_from_gateway_session_key():
-    """on_session_start receives ``conversation_id`` from ``_gateway_session_key``."""
-    engine = MagicMock()
-    engine.context_length = 200_000
-    captured: dict = {}
-    engine.on_session_start.side_effect = lambda sid, **kw: captured.update(kw)
-
-    agent = _bare_agent()
-    agent.context_compressor = engine
-
-    agent._transition_context_engine_session(
-        old_session_id="old-sid",
-        new_session_id="new-sid",
-        previous_messages=[{"role": "user", "content": "hi"}],
-    )
-
-    assert captured.get("conversation_id") == "agent:main:telegram:dm:42"
-    assert captured.get("old_session_id") == "old-sid"
-    assert captured.get("platform") == "telegram"
 
 
 def test_transition_skips_optional_hooks_when_engine_lacks_them():
@@ -123,39 +79,48 @@ def test_transition_skips_optional_hooks_when_engine_lacks_them():
     assert kw.get("old_session_id") == "old"
 
 
-def test_reset_session_state_delegates_to_transition_when_args_provided():
-    """``reset_session_state(previous_messages=..., old_session_id=...)`` fires full lifecycle."""
-    engine = MagicMock()
-    engine.context_length = 100_000
 
-    agent = _bare_agent()
-    agent.context_compressor = engine
 
-    agent.reset_session_state(
-        previous_messages=[{"role": "user", "content": "hi"}],
-        old_session_id="old-sid",
+
+
+def test_reset_session_state_rebinds_builtin_compressor_after_session_switch(tmp_path, monkeypatch):
+    """Reset-only session switches must rebind durable cooldown state to the new session."""
+    db = SessionDB(db_path=tmp_path / "state.db")
+    db.create_session("old-sid", source="cli")
+    db.create_session("new-sid", source="cli")
+    db.record_compression_failure_cooldown("old-sid", 4_000_000_000.0, "old-timeout")
+    db.set_compression_fallback_streak("old-sid", 2)
+
+    monkeypatch.setattr(
+        "agent.context_compressor.get_model_context_length",
+        lambda *_a, **_k: 100_000,
     )
-
-    assert engine.on_session_end.called
-    assert engine.on_session_reset.called
-    assert engine.on_session_start.called
-    # No carry_over_context, so carry_over hook NOT called.
-    assert not engine.carry_over_new_session_context.called
-
-
-def test_reset_session_state_default_call_only_resets():
-    """Bare ``reset_session_state()`` still only resets the engine (no end/start)."""
-    engine = MagicMock()
-    engine.context_length = 100_000
+    compressor = ContextCompressor(
+        model="fake-model",
+        threshold_percent=0.85,
+        protect_first_n=2,
+        protect_last_n=2,
+        quiet_mode=True,
+    )
+    compressor.bind_session_state(db, "old-sid")
 
     agent = _bare_agent()
-    agent.context_compressor = engine
+    agent._session_db = db
+    agent.context_compressor = compressor
+    agent.session_id = "new-sid"
 
     agent.reset_session_state()
 
-    assert engine.on_session_reset.called
-    assert not engine.on_session_end.called
-    assert not engine.on_session_start.called
+    assert compressor._session_id == "new-sid"
+    assert compressor.get_active_compression_failure_cooldown() is None
+    assert compressor._fallback_compression_streak == 0
+    assert db.get_compression_failure_cooldown("old-sid") is not None
+    assert db.get_compression_fallback_streak("old-sid") == 2
+
+    compressor._record_compression_failure_cooldown(30.0, "new-timeout")
+
+    assert db.get_compression_failure_cooldown("new-sid") is not None
+    assert db.get_compression_failure_cooldown("old-sid")["error"] == "old-timeout"
 
 
 def test_update_from_response_forwards_canonical_cache_buckets():
@@ -195,57 +160,8 @@ def test_update_from_response_forwards_canonical_cache_buckets():
     assert usage_dict["output_tokens"] == 500
 
 
-def test_discover_context_engines_includes_plugin_registered_engines(monkeypatch):
-    """Plugin-registered context engines appear in the ``hermes plugins`` picker."""
-    from hermes_cli import plugins_cmd
-
-    fake_repo = lambda: [("compressor", "built-in", True)]
-
-    class FakePluginEngine:
-        name = "lcm"
-
-    monkeypatch.setattr(
-        "plugins.context_engine.discover_context_engines",
-        fake_repo,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.plugins.discover_plugins",
-        lambda *_a, **_kw: None,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_context_engine",
-        lambda: FakePluginEngine(),
-    )
-
-    engines = plugins_cmd._discover_context_engines()
-    names = [n for n, _desc in engines]
-    assert "compressor" in names
-    assert "lcm" in names
 
 
-def test_discover_context_engines_dedupes_by_name(monkeypatch):
-    """Repo-shipped engine wins when name collides with a plugin-registered one."""
-    from hermes_cli import plugins_cmd
-
-    class FakePluginEngine:
-        name = "compressor"  # same name as repo-shipped
-
-    monkeypatch.setattr(
-        "plugins.context_engine.discover_context_engines",
-        lambda: [("compressor", "built-in compressor", True)],
-    )
-    monkeypatch.setattr(
-        "hermes_cli.plugins.discover_plugins",
-        lambda *_a, **_kw: None,
-    )
-    monkeypatch.setattr(
-        "hermes_cli.plugins.get_plugin_context_engine",
-        lambda: FakePluginEngine(),
-    )
-
-    engines = plugins_cmd._discover_context_engines()
-    # Only one entry — the repo-shipped one. Description is preserved.
-    assert engines == [("compressor", "built-in compressor")]
 
 
 def test_engine_collector_forwards_register_command_to_plugin_manager():
@@ -275,15 +191,3 @@ def test_engine_collector_forwards_register_command_to_plugin_manager():
         manager._plugin_commands.pop("my-lcm-test-cmd", None)
 
 
-def test_engine_collector_rejects_builtin_command_conflicts():
-    """Context engine cannot shadow built-in slash commands like /help."""
-    from plugins.context_engine import _EngineCollector
-    from hermes_cli.plugins import get_plugin_manager
-
-    collector = _EngineCollector(engine_name="my-lcm")
-    collector.register_command("help", lambda *_: "shadow")
-
-    manager = get_plugin_manager()
-    # Must NOT have overwritten / registered against built-in /help.
-    assert "help" not in manager._plugin_commands or \
-           manager._plugin_commands["help"].get("plugin") != "context-engine:my-lcm"

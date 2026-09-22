@@ -58,24 +58,6 @@ def test_local_embedded_skips_daemon_as_root(monkeypatch, caplog):
     assert any("cannot run as root" in r.message for r in caplog.records)
 
 
-def test_local_embedded_starts_daemon_as_non_root(monkeypatch):
-    """As a non-root user, the daemon-start thread IS spawned."""
-    provider = _make_local_embedded_provider(monkeypatch)
-    monkeypatch.setattr(hindsight.os, "geteuid", lambda: 1000, raising=False)
-
-    started = threading.Event()
-    monkeypatch.setattr(
-        hindsight.threading,
-        "Thread",
-        _fake_thread_factory(started),
-    )
-
-    provider.initialize(session_id="s1")
-
-    assert provider._mode == "local_embedded"
-    assert started.is_set()
-
-
 def _fake_thread_factory(started: threading.Event):
     """Return a Thread replacement that records start() without running work."""
     real_thread = threading.Thread
@@ -92,3 +74,29 @@ def _fake_thread_factory(started: threading.Event):
         return real_thread(*args, **kwargs)
 
     return _factory
+
+
+def test_root_warning_uses_gated_warning_callback_when_wired(monkeypatch, capsys):
+    """CLI wiring passes agent._emit_warning: the notice goes through that gated sink, not raw stderr."""
+    provider = _make_local_embedded_provider(monkeypatch)
+    monkeypatch.setattr(hindsight.os, "geteuid", lambda: 0, raising=False)
+    seen = []
+    provider.initialize(session_id="s1", warning_callback=seen.append, platform="cli")
+    assert provider._mode == "disabled"
+    assert len(seen) == 1 and "cannot run as root" in seen[0]
+    assert "cannot run as root" not in capsys.readouterr().err
+
+
+@pytest.mark.parametrize("setting", (None, False, True))
+def test_root_warning_stderr_fallback_honors_policy(tmp_path, monkeypatch, capsys, setting):
+    """No warning_callback (gateway/TUI wiring): the stderr fallback follows the shared boundary;
+    the logger.warning is always recorded."""
+    import json
+    home = tmp_path / f"home-{setting}"; home.mkdir()
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    (home / "config.yaml").write_text(json.dumps({"display": {} if setting is None else {"suppress_warning_notifications": setting}}))
+    provider = _make_local_embedded_provider(monkeypatch)
+    monkeypatch.setattr(hindsight.os, "geteuid", lambda: 0, raising=False)
+    provider.initialize(session_id="s1", platform="cli")
+    assert provider._mode == "disabled"
+    assert ("cannot run as root" in capsys.readouterr().err) is (setting is not True)

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useCallback, useRef, useEffect } from "react";
 import Layout from "@theme/Layout";
+import Link from "@docusaurus/Link";
 import styles from "./styles.module.css";
 
 interface Skill {
@@ -125,13 +126,6 @@ const SOURCE_CONFIG: Record<
     border: "rgba(96, 165, 250, 0.2)",
     icon: "\u{25CB}",
   },
-  "Claude Marketplace": {
-    label: "Marketplace",
-    color: "#a78bfa",
-    bg: "rgba(167, 139, 250, 0.08)",
-    border: "rgba(167, 139, 250, 0.2)",
-    icon: "\u{25A0}",
-  },
   "skills.sh": {
     label: "skills.sh",
     color: "#34d399",
@@ -223,7 +217,6 @@ const SOURCE_ORDER = [
   "ClawHub",
   "browse.sh",
   "LobeHub",
-  "Claude Marketplace",
   "VoltAgent",
   "Well-Known",
   "GitHub",
@@ -293,6 +286,7 @@ function SkillCard({
   onCategoryClick,
   onTagClick,
   style,
+  onPick,
 }: {
   skill: Skill;
   query: string;
@@ -301,6 +295,8 @@ function SkillCard({
   onCategoryClick: (cat: string) => void;
   onTagClick: (tag: string) => void;
   style?: React.CSSProperties;
+  /** Picker embed mode: render "+ Add to this Agent" and call this. */
+  onPick?: (skill: Skill) => void;
 }) {
   const src = SOURCE_CONFIG[skill.source] || SOURCE_CONFIG["optional"];
   const icon = CATEGORY_ICONS[skill.category] || "\u{1F4E6}";
@@ -428,6 +424,17 @@ function SkillCard({
                 text={skill.installCmd || `hermes skills install ${skill.name}`}
               />
             </div>
+            {onPick ? (
+              <button
+                className={styles.pickBtn}
+                onClick={(e) => {
+                  e.stopPropagation();
+                  onPick(skill);
+                }}
+              >
+                + Add to this Agent
+              </button>
+            ) : null}
             <div className={styles.cardLinks}>
               {skill.docsPath ? (
                 <a
@@ -475,6 +482,8 @@ const PAGE_SIZE = 60;
 // place that needs to follow.
 const SKILLS_URL = "/docs/api/skills.json";
 const META_URL = "/docs/api/skills-meta.json";
+/** Mirrors the `max-width: 600px` blocks in styles.module.css. */
+const MOBILE_FILTER_QUERY = "(max-width: 600px)";
 
 function buildSearchHaystack(s: Skill): string {
   // Pre-compute the lowercase blob the search filter scans. Done once at
@@ -494,6 +503,36 @@ function buildSearchHaystack(s: Skill): string {
 }
 
 export default function SkillsDashboard() {
+  // Picker embed mode (?embed=picker): the page is being iframed by a host
+  // app (Hermes desktop's Bot Mode agent editor) as a skill PICKER. Site
+  // chrome is hidden via a CSS class and every card gains an
+  // "+ Add to this Agent" button that posts
+  //   { type: 'hermes-skill-pick', name, identifier, installCmd, source }
+  // to the parent window. The HOST performs the actual install through its
+  // own gateway (skills.manage) — the page never installs anything, so
+  // there is no origin to trust in this direction; parents must validate
+  // event.origin themselves before acting on the message.
+  const pickerMode =
+    typeof window !== "undefined" &&
+    new URLSearchParams(window.location.search).get("embed") === "picker";
+
+  const pickSkill = useCallback(
+    (skill: Skill) => {
+      if (typeof window === "undefined" || window.parent === window) return;
+      window.parent.postMessage(
+        {
+          type: "hermes-skill-pick",
+          name: skill.name,
+          identifier: skill.identifier || skill.name,
+          installCmd: skill.installCmd || `hermes skills install ${skill.name}`,
+          source: skill.source,
+        },
+        "*"
+      );
+    },
+    []
+  );
+
   // Lazy-loaded data. Was bundled into the JS chunk (~22 MB at 50k skills,
   // which made the initial page load unusable on mobile). Now fetched on
   // mount from the same CDN that serves the docs.
@@ -511,8 +550,12 @@ export default function SkillsDashboard() {
   const [expandedCard, setExpandedCard] = useState<string | null>(null);
   const [visibleCount, setVisibleCount] = useState(PAGE_SIZE);
   const [sidebarOpen, setSidebarOpen] = useState(false);
+  const [mobileFiltersActive, setMobileFiltersActive] = useState(false);
   const searchRef = useRef<HTMLInputElement>(null);
   const gridRef = useRef<HTMLDivElement>(null);
+  const filterToggleRef = useRef<HTMLButtonElement>(null);
+  const filterDialogRef = useRef<HTMLElement>(null);
+  const filterCloseRef = useRef<HTMLButtonElement>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -552,18 +595,94 @@ export default function SkillsDashboard() {
 
   useEffect(() => {
     const handler = (e: KeyboardEvent) => {
-      if (e.key === "/" && document.activeElement?.tagName !== "INPUT") {
+      const target = e.target instanceof HTMLElement ? e.target : null;
+      const isEditable =
+        target?.matches("input, textarea, select") ||
+        target?.isContentEditable ||
+        Boolean(target?.closest("[contenteditable='true']"));
+      if (e.key === "/" && !isEditable) {
         e.preventDefault();
+        e.stopImmediatePropagation();
         searchRef.current?.focus();
       }
       if (e.key === "Escape") {
         searchRef.current?.blur();
         setExpandedCard(null);
+        setSidebarOpen(false);
       }
     };
     window.addEventListener("keydown", handler);
     return () => window.removeEventListener("keydown", handler);
   }, []);
+
+  useEffect(() => {
+    const media = window.matchMedia(MOBILE_FILTER_QUERY);
+    const sync = () => {
+      setMobileFiltersActive(media.matches);
+      // Leaving the mobile band hides the drawer, so its state has to go with
+      // it: otherwise a resize leaves aria-expanded="true" on a hidden toggle
+      // and coming back reopens the drawer and re-locks body scroll.
+      if (!media.matches) setSidebarOpen(false);
+    };
+    sync();
+    media.addEventListener("change", sync);
+    return () => media.removeEventListener("change", sync);
+  }, []);
+
+  useEffect(() => {
+    if (!sidebarOpen || !mobileFiltersActive) return;
+
+    const dialog = filterDialogRef.current;
+    const previouslyFocused = document.activeElement instanceof HTMLElement
+      ? document.activeElement
+      : filterToggleRef.current;
+    const previousOverflow = document.body.style.overflow;
+    document.body.style.overflow = "hidden";
+    filterCloseRef.current?.focus();
+
+    const trapFocus = (e: KeyboardEvent) => {
+      if (!dialog) return;
+      if (e.key === "Escape") {
+        e.preventDefault();
+        e.stopPropagation();
+        setSidebarOpen(false);
+        return;
+      }
+      if (e.key !== "Tab") {
+        if (!dialog.contains(e.target as Node)) {
+          e.preventDefault();
+          e.stopPropagation();
+        }
+        return;
+      }
+
+      const focusable = Array.from(
+        dialog.querySelectorAll<HTMLElement>(
+          "button:not([disabled]), select:not([disabled]), input:not([disabled]), [href], [tabindex]:not([tabindex='-1'])"
+        )
+      ).filter((element) => element.offsetParent !== null);
+      if (focusable.length === 0) {
+        e.preventDefault();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) {
+        e.preventDefault();
+        last.focus();
+      } else if (!e.shiftKey && document.activeElement === last) {
+        e.preventDefault();
+        first.focus();
+      }
+    };
+
+    document.addEventListener("keydown", trapFocus, true);
+    return () => {
+      document.removeEventListener("keydown", trapFocus, true);
+      document.body.style.overflow = previousOverflow;
+      previouslyFocused?.focus();
+    };
+  }, [sidebarOpen, mobileFiltersActive]);
 
   const sources = useMemo(() => {
     const set = new Set(allSkillsLocal.map((s) => s.source));
@@ -644,12 +763,20 @@ export default function SkillsDashboard() {
       title="Skills Hub"
       description="Browse all skills and plugins available for Hermes Agent"
     >
-      <div className={styles.page}>
+      <div className={`${styles.page} ${pickerMode ? styles.pickerMode : ""}`}>
         <header className={styles.hero}>
           <div className={styles.heroGlow} />
           <div className={styles.heroContent}>
             <p className={styles.heroEyebrow}>Hermes Agent</p>
             <h1 className={styles.heroTitle}>Skills Hub</h1>
+            <nav className={styles.crossNav} aria-label="Catalog pages">
+              <span className={`${styles.crossNavLink} ${styles.crossNavActive}`}>
+                Skills
+              </span>
+              <Link className={styles.crossNavLink} to="/plugins">
+                Plugins
+              </Link>
+            </nav>
             <p className={styles.heroSub}>
               Discover, search, and install from{" "}
               <strong className={styles.heroAccent}>
@@ -704,6 +831,7 @@ export default function SkillsDashboard() {
         </header>
 
         <div className={styles.controlsBar}>
+          <div className={styles.controlsTopRow}>
           <div className={styles.searchWrap}>
             <svg className={styles.searchIcon} viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
               <path
@@ -715,7 +843,7 @@ export default function SkillsDashboard() {
             <input
               ref={searchRef}
               type="text"
-              placeholder='Search skills... (press "/" to focus)'
+              placeholder="Search skills"
               value={search}
               onChange={(e) => setSearch(e.target.value)}
               className={styles.searchInput}
@@ -731,6 +859,40 @@ export default function SkillsDashboard() {
                 </svg>
               </button>
             )}
+          </div>
+
+          <button
+            ref={filterToggleRef}
+            type="button"
+            className={styles.filterToggle}
+            aria-expanded={sidebarOpen}
+            aria-controls="skills-directory-filters"
+            onClick={() => setSidebarOpen((open) => !open)}
+          >
+            Filters
+            {(sourceFilter !== "all" || categoryFilter !== "all") && (
+              <span className={styles.activeFilterCount}>
+                {Number(sourceFilter !== "all") + Number(categoryFilter !== "all")}
+              </span>
+            )}
+          </button>
+
+          <label className={styles.compactSelect}>
+            <span>Source</span>
+            <select value={sourceFilter} onChange={(e) => handleSourceChange(e.target.value)}>
+              {sources.map((src) => (
+                <option key={src} value={src}>{src === "all" ? "All sources" : SOURCE_CONFIG[src]?.label || src}</option>
+              ))}
+            </select>
+          </label>
+
+          <label className={styles.compactSelect}>
+            <span>Category</span>
+            <select value={categoryFilter} onChange={(e) => setCategoryFilter(e.target.value)}>
+              <option value="all">All categories</option>
+              {categoryEntries.map((cat) => <option key={cat.key} value={cat.key}>{cat.label}</option>)}
+            </select>
+          </label>
           </div>
 
           <div className={styles.sourcePills}>
@@ -765,34 +927,39 @@ export default function SkillsDashboard() {
         </div>
 
         <div className={styles.layout}>
-          <button
-            className={styles.sidebarToggle}
-            onClick={() => setSidebarOpen(!sidebarOpen)}
+          <aside
+            id="skills-directory-filters"
+            ref={filterDialogRef}
+            role={mobileFiltersActive && sidebarOpen ? "dialog" : undefined}
+            aria-modal={mobileFiltersActive && sidebarOpen ? true : undefined}
+            aria-labelledby="skills-directory-filters-title"
+            className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}
           >
-            <svg viewBox="0 0 20 20" fill="currentColor" width="18" height="18">
-              <path
-                fillRule="evenodd"
-                d="M3 5a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 10a1 1 0 011-1h12a1 1 0 110 2H4a1 1 0 01-1-1zM3 15a1 1 0 011-1h6a1 1 0 110 2H4a1 1 0 01-1-1z"
-                clipRule="evenodd"
-              />
-            </svg>
-            Categories
-            {categoryFilter !== "all" && (
-              <span className={styles.activeCatBadge}>
-                {categoryEntries.find((c) => c.key === categoryFilter)?.label}
-              </span>
-            )}
-          </button>
-
-          <aside className={`${styles.sidebar} ${sidebarOpen ? styles.sidebarOpen : ""}`}>
             <div className={styles.sidebarHeader}>
-              <h2 className={styles.sidebarTitle}>Categories</h2>
+              <h2 id="skills-directory-filters-title" className={styles.sidebarTitle}>Categories</h2>
               {categoryFilter !== "all" && (
                 <button className={styles.sidebarClear} onClick={() => setCategoryFilter("all")}>
                   Clear
                 </button>
               )}
+              <button
+                ref={filterCloseRef}
+                type="button"
+                className={styles.sidebarClose}
+                aria-label="Close skill filters"
+                onClick={() => setSidebarOpen(false)}
+              >
+                <span aria-hidden="true">×</span>
+              </button>
             </div>
+            <label className={styles.sidebarSourceSelect}>
+              <span>Source</span>
+              <select value={sourceFilter} onChange={(e) => handleSourceChange(e.target.value)}>
+                {sources.map((src) => (
+                  <option key={src} value={src}>{src === "all" ? "All sources" : SOURCE_CONFIG[src]?.label || src}</option>
+                ))}
+              </select>
+            </label>
             <nav className={styles.catList}>
               <button
                 className={`${styles.catItem} ${categoryFilter === "all" ? styles.catItemActive : ""}`}
@@ -877,6 +1044,7 @@ export default function SkillsDashboard() {
                         onCategoryClick={handleCategoryClick}
                         onTagClick={handleTagClick}
                         style={{ animationDelay: `${Math.min(i, 20) * 25}ms` }}
+                        onPick={pickerMode ? pickSkill : undefined}
                       />
                     );
                   })}

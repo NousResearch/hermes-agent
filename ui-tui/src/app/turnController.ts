@@ -1,3 +1,5 @@
+import type { MessageCompletePayload, SubagentEventPayload } from '@hermes/shared/gateway-events'
+
 import {
   REASONING_PULSE_MS,
   STREAM_BATCH_MS,
@@ -5,7 +7,7 @@ import {
   STREAM_SCROLL_BATCH_MS,
   STREAM_TYPING_BATCH_MS
 } from '../config/timing.js'
-import type { SessionInterruptResponse, SubagentEventPayload } from '../gatewayTypes.js'
+import type { SessionInterruptResponse } from '../gatewayTypes.js'
 import { appendToolShelfMessage, isToolShelfMessage } from '../lib/liveProgress.js'
 import { hasReasoningTag, splitReasoning } from '../lib/reasoning.js'
 import {
@@ -66,10 +68,14 @@ const parseTodos = (value: unknown): null | TodoItem[] => {
         return null
       }
 
+      const id = String(row.id ?? '').trim()
+      const parent = String(row.parent ?? '').trim()
+
       return {
         content: String(row.content ?? '').trim(),
-        id: String(row.id ?? '').trim(),
-        status
+        id,
+        status,
+        ...(parent && parent !== id ? { parent } : {})
       }
     })
     .filter((item): item is TodoItem => Boolean(item?.id && item.content))
@@ -126,12 +132,12 @@ class TurnController {
   private activeTools: ActiveTool[] = []
   private activeReasoningText = ''
   private reasoningSegmentIndex: null | number = null
+  private interimBoundaryIndex: null | number = null
   private activityId = 0
   private reasoningStreamingTimer: Timer = null
   private reasoningTimer: Timer = null
   private streamTimer: Timer = null
   private streamDelay = STREAM_IDLE_BATCH_MS
-  private toolProgressTimer: Timer = null
 
   // ── Credits notice machinery (Strategy B) ───────────────────────────
   //
@@ -265,6 +271,14 @@ class TurnController {
 
   endReasoningPhase() {
     this.reasoningStreamingTimer = clear(this.reasoningStreamingTimer)
+
+    // Seal any open reasoning segment so its isLiveReasoning flag drops the
+    // moment the reasoning phase ends — the panel must stop tracking the
+    // turn's global reasoningActive, not stay "live" for the rest of the turn.
+    if (this.reasoningSegmentIndex !== null) {
+      this.syncReasoningSegment(false)
+    }
+
     patchTurnState({ reasoningActive: false, reasoningStreaming: false })
   }
 
@@ -284,7 +298,7 @@ class TurnController {
       tools: [],
       turnTrail: []
     })
-    patchUiState({ busy: false })
+    patchUiState({ busy: false, compacting: false })
     resetFlowOverlays()
   }
 
@@ -358,7 +372,7 @@ class TurnController {
     })
   }
 
-  private syncReasoningSegment() {
+  private syncReasoningSegment(live = true) {
     const thinking = this.activeReasoningText.trim()
 
     if (!thinking) {
@@ -371,7 +385,8 @@ class TurnController {
       text: '',
       thinking,
       thinkingTokens: estimateTokensRough(thinking),
-      toolTokens: this.toolTokenAcc || undefined
+      toolTokens: this.toolTokenAcc || undefined,
+      ...(live ? { isLiveReasoning: true } : {})
     }
 
     if (this.reasoningSegmentIndex === null) {
@@ -385,7 +400,7 @@ class TurnController {
   }
 
   private closeReasoningSegment() {
-    this.syncReasoningSegment()
+    this.syncReasoningSegment(false)
     this.activeReasoningText = ''
     this.reasoningSegmentIndex = null
   }
@@ -554,7 +569,7 @@ class TurnController {
     this.flushPendingNotice()
   }
 
-  recordMessageComplete(payload: { rendered?: string; reasoning?: string; text?: string }) {
+  recordMessageComplete(payload: MessageCompletePayload) {
     this.closeReasoningSegment()
 
     // Ink renders markdown via <Md>; the gateway's Rich-rendered ANSI
@@ -563,9 +578,19 @@ class TurnController {
     // `display.final_response_markdown: render` because raw ANSI escapes
     // pass through into the React tree.  Prefer raw text and fall back
     // only when the gateway elected not to send any (#16391).
-    const rawText = (payload.text ?? payload.rendered ?? this.bufRef).trimStart()
+    // `text` is `str | JsonValue` on the wire (structured parts stay possible); only a string renders here.
+    const wireText = typeof payload.text === 'string' ? payload.text : undefined
+    const rawText = (wireText ?? payload.rendered ?? this.bufRef).trimStart()
     const split = splitReasoning(rawText)
-    const finalText = finalTail(split.text, this.segmentMessages)
+    // Only dedupe segments AFTER the interim boundary — interim-sealed
+    // segments are preserved even if the final text includes them.
+    // Exception: when response_previewed is true, the final text is the
+    // same model response that was published provisionally as an interim
+    // message. Dedupe against ALL segments (including sealed interims) so
+    // the identical text doesn't render as a duplicate message. (#65919
+    // review: duplicate-message blocker)
+    const dedupeStart = payload.response_previewed ? 0 : (this.interimBoundaryIndex ?? 0)
+    const finalText = finalTail(split.text, this.segmentMessages.slice(dedupeStart))
     const existingReasoning = this.reasoningText.trim() || String(payload.reasoning ?? '').trim()
     const savedReasoning = [existingReasoning, existingReasoning ? '' : split.reasoning].filter(Boolean).join('\n\n')
     const savedToolTokens = this.toolTokenAcc
@@ -652,7 +677,7 @@ class TurnController {
     return { finalMessages, finalText, wasInterrupted }
   }
 
-  recordMessageDelta({ text }: { rendered?: string; text?: string }) {
+  recordMessageDelta({ text }: { rendered?: string | null; text?: string }) {
     if (this.interrupted || !text) {
       return
     }
@@ -672,6 +697,32 @@ class TurnController {
     }
   }
 
+  recordInterimMessage(text: string) {
+    if (this.interrupted) {
+      return
+    }
+
+    const authoritativeText = text.trimStart()
+
+    if (!authoritativeText) {
+      return
+    }
+
+    // If the streaming buffer hasn't caught up to the authoritative interim
+    // text (e.g. the backend didn't stream every token), sync it so the
+    // sealed segment matches what the user should see.
+    if (this.bufRef.trimStart() !== authoritativeText) {
+      this.bufRef = authoritativeText
+    }
+
+    // Flush the current streaming buffer into a sealed segment — this is the
+    // TUI equivalent of the desktop's finalizeInterimAssistantMessage. The
+    // segment survives message.complete's finalTail dedupe because
+    // interimBoundaryIndex marks it as interim-sealed.
+    this.flushStreamingSegment()
+    this.interimBoundaryIndex = this.segmentMessages.length
+  }
+
   recordReasoningAvailable(text: string, force = false) {
     if (this.interrupted || (!force && !getUiState().showReasoning)) {
       return
@@ -688,6 +739,39 @@ class TurnController {
     this.scheduleReasoning()
     this.syncReasoningSegment()
     this.pulseReasoningStreaming()
+  }
+
+  /**
+   * Render one MoA reference model's output as a committed labelled block
+   * before the aggregator responds. Unlike reasoning, references are shown
+   * regardless of showReasoning (they ARE the mixture-of-agents process the
+   * user opted into by selecting a MoA preset). Each becomes its own
+   * thinking-style segment tagged with the source model, so a multi-reference
+   * preset builds a stack the user can scroll.
+   */
+  recordMoaReference(label: string, text: string, index?: number, count?: number) {
+    if (this.interrupted) {
+      return
+    }
+
+    // Close any open reasoning segment so the reference block lands as its own
+    // committed entry rather than merging into streaming reasoning.
+    this.closeReasoningSegment()
+
+    const header = index && count ? `◇ Reference ${index}/${count} — ${label}` : `◇ Reference — ${label}`
+
+    const body = text.trim()
+    const thinking = body ? `${header}\n${body}` : header
+
+    this.pushSegment({
+      kind: 'trail',
+      role: 'system',
+      text: '',
+      thinking,
+      isMoaReference: true,
+      thinkingTokens: estimateTokensRough(thinking)
+    })
+    patchTurnState({ streamSegments: this.segmentMessages })
   }
 
   recordReasoningDelta(text: string, force = false) {
@@ -714,7 +798,6 @@ class TurnController {
   recordToolComplete(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
     todos?: unknown,
@@ -725,7 +808,7 @@ class TurnController {
     }
 
     this.recordTodos(todos)
-    const line = this.completeTool(toolId, fallbackName, error, summary, duration, resultText)
+    const line = this.completeTool(toolId, fallbackName, summary, duration, resultText)
 
     this.pendingSegmentTools = [...this.pendingSegmentTools, line]
     this.flushPendingToolsIntoLastSegment()
@@ -736,7 +819,6 @@ class TurnController {
     diffText: string,
     toolId: string,
     fallbackName?: string,
-    error?: string,
     duration?: number,
     resultText?: string
   ) {
@@ -745,14 +827,15 @@ class TurnController {
     }
 
     this.flushStreamingSegment()
-    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, error, '', duration, resultText)])
+    this.pushInlineDiffSegment(diffText, [this.completeTool(toolId, fallbackName, '', duration, resultText)])
     this.publishToolState()
   }
 
+  // `tool.complete` carries no error flag on the wire (tui_gateway/tool_progress.py::_on_tool_complete);
+  // a failed tool surfaces through its result text, so every trail line renders as non-error.
   private completeTool(
     toolId: string,
     fallbackName?: string,
-    error?: string,
     summary?: string,
     duration?: number,
     resultText?: string
@@ -767,18 +850,12 @@ class TurnController {
         ? buildVerboseToolTrailLine(
             name,
             done?.context || '',
-            Boolean(error),
+            false,
             duration ?? fallbackDuration,
             done?.verboseArgs,
-            error || resultText || summary || ''
+            resultText || summary || ''
           )
-        : buildToolTrailLine(
-            name,
-            done?.context || '',
-            Boolean(error),
-            error || summary || '',
-            duration ?? fallbackDuration
-          )
+        : buildToolTrailLine(name, done?.context || '', false, summary || '', duration ?? fallbackDuration)
 
     this.activeTools = this.activeTools.filter(tool => tool.id !== toolId)
 
@@ -799,29 +876,6 @@ class TurnController {
       tools: this.activeTools,
       turnTrail: this.turnTools
     })
-  }
-
-  recordToolProgress(toolName: string, preview: string) {
-    if (this.interrupted) {
-      return
-    }
-
-    const index = this.activeTools.findIndex(tool => tool.name === toolName)
-
-    if (index < 0) {
-      return
-    }
-
-    this.activeTools = this.activeTools.map((tool, i) => (i === index ? { ...tool, context: preview } : tool))
-
-    if (this.toolProgressTimer) {
-      return
-    }
-
-    this.toolProgressTimer = setTimeout(() => {
-      this.toolProgressTimer = null
-      patchTurnState({ tools: [...this.activeTools] })
-    }, STREAM_BATCH_MS)
   }
 
   recordToolStart(toolId: string, name: string, context: string, verboseArgs?: string) {
@@ -853,6 +907,7 @@ class TurnController {
     this.pendingSegmentTools = []
     this.protocolWarned = false
     this.reasoningSegmentIndex = null
+    this.interimBoundaryIndex = null
     this.segmentMessages = []
     this.turnTools = []
     this.toolTokenAcc = 0
@@ -909,6 +964,7 @@ class TurnController {
     this.activeTools = []
     this.activeReasoningText = ''
     this.reasoningSegmentIndex = null
+    this.interimBoundaryIndex = null
     this.turnTools = []
     this.toolTokenAcc = 0
     this.interrupted = false
@@ -952,11 +1008,12 @@ class TurnController {
       }
 
       const base: SubagentProgress = existing ?? {
+        delegationId: p.delegation_id ?? undefined,
         depth: p.depth ?? 0,
         goal: p.goal,
         id,
         index: p.task_index,
-        model: p.model,
+        model: p.model ?? undefined,
         notes: [],
         parentId: p.parent_id ?? null,
         startedAt: Date.now(),
@@ -965,7 +1022,7 @@ class TurnController {
         thinking: [],
         toolCount: p.tool_count ?? 0,
         tools: [],
-        toolsets: p.toolsets
+        toolsets: p.toolsets ?? undefined
       }
 
       // Map snake_case payload keys onto camelCase state.  Only overwrite
@@ -982,13 +1039,12 @@ class TurnController {
       const next: SubagentProgress = {
         ...base,
         apiCalls: p.api_calls ?? base.apiCalls,
-        costUsd: p.cost_usd ?? base.costUsd,
+        delegationId: p.delegation_id ?? base.delegationId,
         depth: p.depth ?? base.depth,
         filesRead: p.files_read ?? base.filesRead,
         filesWritten: p.files_written ?? base.filesWritten,
         goal: p.goal || base.goal,
         inputTokens: p.input_tokens ?? base.inputTokens,
-        iteration: p.iteration ?? base.iteration,
         model: p.model ?? base.model,
         outputTail,
         outputTokens: p.output_tokens ?? base.outputTokens,

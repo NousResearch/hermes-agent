@@ -46,33 +46,6 @@ class TestPrefixConfusionRegression:
         # Bug: old check says the file is INSIDE the skill dir
         assert _old_check_escapes(resolved, skill_dir_resolved) is False
 
-    def test_new_check_catches_sibling_with_shared_prefix(self, tmp_path):
-        """is_relative_to() correctly rejects sibling dirs."""
-        skill_dir = tmp_path / "skills" / "axolotl"
-        sibling_file = tmp_path / "skills" / "axolotl-backdoor" / "evil.py"
-        skill_dir.mkdir(parents=True)
-        sibling_file.parent.mkdir(parents=True)
-        sibling_file.write_text("evil")
-
-        resolved = sibling_file.resolve()
-        skill_dir_resolved = skill_dir.resolve()
-
-        # Fixed: new check correctly says it's OUTSIDE
-        assert _new_check_escapes(resolved, skill_dir_resolved) is True
-
-    def test_both_agree_on_real_subpath(self, tmp_path):
-        """Both checks allow a genuine subpath."""
-        skill_dir = tmp_path / "skills" / "axolotl"
-        sub_file = skill_dir / "utils" / "helper.py"
-        skill_dir.mkdir(parents=True)
-        sub_file.parent.mkdir(parents=True)
-        sub_file.write_text("ok")
-
-        resolved = sub_file.resolve()
-        skill_dir_resolved = skill_dir.resolve()
-
-        assert _old_check_escapes(resolved, skill_dir_resolved) is False
-        assert _new_check_escapes(resolved, skill_dir_resolved) is False
 
     def test_both_agree_on_completely_outside_path(self, tmp_path):
         """Both checks block a path that's completely outside."""

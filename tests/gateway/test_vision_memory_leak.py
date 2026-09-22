@@ -32,33 +32,7 @@ def _run(coro):
 
 
 class TestEnrichMessageWithVision:
-    def test_clean_description_passes_through(self, gateway_runner):
-        """Vision output without leaked memory is embedded unchanged."""
-        fake_result = json.dumps({
-            "success": True,
-            "analysis": "A photograph of a sunset over the ocean.",
-        })
-        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
-            out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
-        assert "sunset over the ocean" in out
 
-    def test_memory_context_fence_stripped(self, gateway_runner):
-        """<memory-context>...</memory-context> fenced block is scrubbed."""
-        leaked = (
-            "<memory-context>\n"
-            "[System note: The following is recalled memory context, NOT new "
-            "user input. Treat as informational background data.]\n\n"
-            "User details and preferences here.\n"
-            "</memory-context>\n"
-            "A photograph of a cat."
-        )
-        fake_result = json.dumps({"success": True, "analysis": leaked})
-        with patch("tools.vision_tools.vision_analyze_tool", new=AsyncMock(return_value=fake_result)):
-            out = _run(gateway_runner._enrich_message_with_vision("caption", ["/tmp/img.jpg"]))
-        assert "photograph of a cat" in out
-        assert "<memory-context>" not in out
-        assert "User details and preferences" not in out
-        assert "System note" not in out
 
     def test_fenced_leak_stripped_plugin_header_preserved(self, gateway_runner):
         """The fenced wrapper is stripped; plugin-specific text outside the

@@ -12,22 +12,18 @@ const CLI = 'C:\\Users\\x\\hermes\\hermes-agent\\venv\\Scripts\\hermes.exe'
 const HOME = 'C:\\Users\\x\\hermes'
 
 function fakeExec(ok: boolean) {
-  return (_command: string, _args: string[], _options: unknown) => {
-    if (!ok) {
-      throw new Error('spawn ENOENT')
-    }
-
-    return Buffer.from('')
+  return (_command: string, _args: string[], _options: unknown, callback: (error: Error | null) => void) => {
+    callback(ok ? null : new Error('spawn ENOENT'))
   }
 }
 
-test('non-Windows is a no-op and never invokes the CLI', () => {
+test('non-Windows is a no-op and never invokes the CLI', async () => {
   const calls: Array<[string, string[]]> = []
 
-  const ran = stopGatewayBeforeUpdate(CLI, HOME, {
+  const ran = await stopGatewayBeforeUpdate(CLI, HOME, {
     isWindows: false,
     existsSync: () => true,
-    execFileSync: fakeExec(true) as never,
+    execFile: fakeExec(true),
     spy: (c, a) => calls.push([c, a])
   })
 
@@ -35,13 +31,13 @@ test('non-Windows is a no-op and never invokes the CLI', () => {
   assert.deepEqual(calls, [])
 })
 
-test('Windows with missing CLI shim returns false and does not exec', () => {
+test('Windows with missing CLI shim returns false and does not exec', async () => {
   const calls: Array<[string, string[]]> = []
 
-  const ran = stopGatewayBeforeUpdate(CLI, HOME, {
+  const ran = await stopGatewayBeforeUpdate(CLI, HOME, {
     isWindows: true,
     existsSync: () => false,
-    execFileSync: fakeExec(true) as never,
+    execFile: fakeExec(true),
     spy: (c, a) => calls.push([c, a])
   })
 
@@ -49,19 +45,18 @@ test('Windows with missing CLI shim returns false and does not exec', () => {
   assert.deepEqual(calls, [[CLI, ['gateway', 'stop', '--all']]])
 })
 
-test('Windows with live CLI invokes "gateway stop --all" and returns true', () => {
+test('Windows with live CLI invokes "gateway stop --all" and returns true', async () => {
   let seenCommand = ''
   let seenArgs: string[] = []
 
-  const ran = stopGatewayBeforeUpdate(CLI, HOME, {
+  const ran = await stopGatewayBeforeUpdate(CLI, HOME, {
     isWindows: true,
     existsSync: () => true,
-    execFileSync: ((command: string, args: string[]) => {
+    execFile: ((command: string, args: string[], _options: unknown, callback: (error: Error | null) => void) => {
       seenCommand = command
       seenArgs = args
-
-      return Buffer.from('')
-    }) as never
+      callback(null)
+    })
   })
 
   assert.equal(ran, true)
@@ -69,59 +64,94 @@ test('Windows with live CLI invokes "gateway stop --all" and returns true', () =
   assert.deepEqual(seenArgs, ['gateway', 'stop', '--all'])
 })
 
-test('Windows with failing CLI returns false (best-effort, never throws)', () => {
-  const ran = stopGatewayBeforeUpdate(CLI, HOME, {
+test('Windows with failing CLI returns false (best-effort, never throws)', async () => {
+  const ran = await stopGatewayBeforeUpdate(CLI, HOME, {
     isWindows: true,
     existsSync: () => true,
-    execFileSync: fakeExec(false) as never
+    execFile: fakeExec(false)
   })
 
   assert.equal(ran, false)
 })
 
-test('passes a generous timeout with hidden console (taskkill window suppression)', () => {
-  let seenOptions: unknown
-  stopGatewayBeforeUpdate(CLI, HOME, {
+test('Windows gateway-stop timeout returns false without throwing', async () => {
+  const timeout = Object.assign(new Error('Command failed: timed out'), { code: 'ETIMEDOUT' })
+
+  const ran = await stopGatewayBeforeUpdate(CLI, HOME, {
     isWindows: true,
     existsSync: () => true,
-    execFileSync: ((_c: string, _a: string[], options: unknown) => {
-      seenOptions = options
+    execFile: (_command, _args, _options, callback) => {
+      callback(timeout)
+    }
+  })
 
-      return Buffer.from('')
-    }) as never
+  assert.equal(ran, false)
+})
+
+test('passes a generous timeout with hidden console (taskkill window suppression)', async () => {
+  let seenOptions: unknown
+  await stopGatewayBeforeUpdate(CLI, HOME, {
+    isWindows: true,
+    existsSync: () => true,
+    execFile: ((_c: string, _a: string[], options: unknown, callback: (error: Error | null) => void) => {
+      seenOptions = options
+      callback(null)
+    })
   })
   assert.deepEqual(seenOptions, {
     timeout: GATEWAY_STOP_TIMEOUT_MS,
     windowsHide: true,
-    stdio: 'ignore',
     encoding: 'utf8'
   })
 })
 
-test('abort-path counterpart invokes "gateway start --all" (drain-semantics restore)', () => {
-  let seenArgs: string[] = []
+test('does not block the event loop while the gateway stop drains', async () => {
+  let release: ((error: Error | null) => void) | undefined
+  let invoked = false
 
-  const ran = startGatewaysAfterUpdateAbort(CLI, {
+  const pending = stopGatewayBeforeUpdate(CLI, HOME, {
     isWindows: true,
     existsSync: () => true,
-    execFileSync: ((_c: string, args: string[]) => {
-      seenArgs = args
+    execFile: ((_c: string, _a: string[], _options: unknown, callback: (error: Error | null) => void) => {
+      invoked = true
+      release = callback
+    })
+  })
 
-      return Buffer.from('')
-    }) as never
+  assert.equal(invoked, true)
+  let settled = false
+  void pending.then(() => {
+    settled = true
+  })
+  await Promise.resolve()
+  assert.equal(settled, false)
+  release!(null)
+  assert.equal(await pending, true)
+})
+
+test('abort-path counterpart invokes "gateway start --all" (drain-semantics restore)', async () => {
+  let seenArgs: string[] = []
+
+  const ran = await startGatewaysAfterUpdateAbort(CLI, {
+    isWindows: true,
+    existsSync: () => true,
+    execFile: ((_c: string, args: string[], _options: unknown, callback: (error: Error | null) => void) => {
+      seenArgs = args
+      callback(null)
+    })
   })
 
   assert.equal(ran, true)
   assert.deepEqual(seenArgs, ['gateway', 'start', '--all'])
 })
 
-test('abort-path counterpart is a no-op off Windows', () => {
+test('abort-path counterpart is a no-op off Windows', async () => {
   const calls: Array<[string, string[]]> = []
 
-  const ran = startGatewaysAfterUpdateAbort(CLI, {
+  const ran = await startGatewaysAfterUpdateAbort(CLI, {
     isWindows: false,
     existsSync: () => true,
-    execFileSync: fakeExec(true) as never,
+    execFile: fakeExec(true),
     spy: (c, a) => calls.push([c, a])
   })
 

@@ -20,7 +20,7 @@
  * behavior is assertable without booting Electron.
  */
 
-import { execFileSync, type ExecFileSyncOptionsWithStringEncoding } from 'node:child_process'
+import { execFile, type ExecFileOptionsWithStringEncoding } from 'node:child_process'
 import fs from 'node:fs'
 
 export interface StopGatewayBeforeUpdateDeps {
@@ -28,8 +28,13 @@ export interface StopGatewayBeforeUpdateDeps {
   isWindows?: boolean
   /** Defaults to fs.existsSync; injectable for tests. */
   existsSync?: (p: string) => boolean
-  /** Defaults to execFileSync from node:child_process; injectable for tests. */
-  execFileSync?: (command: string, args: string[], options: ExecFileSyncOptionsWithStringEncoding) => Buffer | string
+  /** Defaults to async execFile from node:child_process; injectable for tests. */
+  execFile?: (
+    command: string,
+    args: string[],
+    options: ExecFileOptionsWithStringEncoding,
+    callback: (error: Error | null) => void
+  ) => unknown
   /** Observability hook for tests. */
   spy?: (command: string, args: string[]) => void
 }
@@ -43,12 +48,12 @@ export const GATEWAY_STOP_TIMEOUT_MS = 20_000
  * if the venv stays held). Returns true when the CLI ran (or was invoked
  * with the injected spy), false when skipped (non-Windows / missing CLI).
  */
-export function stopGatewayBeforeUpdate(
+export async function stopGatewayBeforeUpdate(
   hermesCliPath: string,
   hermesHome: string,
   deps: StopGatewayBeforeUpdateDeps = {}
-): boolean {
-  return runGatewayLifecycleCommand(hermesCliPath, ['gateway', 'stop', '--all'], deps)
+): Promise<boolean> {
+  return await runGatewayLifecycleCommand(hermesCliPath, ['gateway', 'stop', '--all'], deps)
 }
 
 /**
@@ -59,11 +64,18 @@ export function stopGatewayBeforeUpdate(
  * must mirror that on its abort paths, or a failed update strands every
  * profile's gateway stopped. Best-effort, never throws.
  */
-export function startGatewaysAfterUpdateAbort(hermesCliPath: string, deps: StopGatewayBeforeUpdateDeps = {}): boolean {
-  return runGatewayLifecycleCommand(hermesCliPath, ['gateway', 'start', '--all'], deps)
+export async function startGatewaysAfterUpdateAbort(
+  hermesCliPath: string,
+  deps: StopGatewayBeforeUpdateDeps = {}
+): Promise<boolean> {
+  return await runGatewayLifecycleCommand(hermesCliPath, ['gateway', 'start', '--all'], deps)
 }
 
-function runGatewayLifecycleCommand(hermesCliPath: string, args: string[], deps: StopGatewayBeforeUpdateDeps): boolean {
+async function runGatewayLifecycleCommand(
+  hermesCliPath: string,
+  args: string[],
+  deps: StopGatewayBeforeUpdateDeps
+): Promise<boolean> {
   const isWindows = deps.isWindows ?? process.platform === 'win32'
 
   if (!isWindows) {
@@ -71,7 +83,7 @@ function runGatewayLifecycleCommand(hermesCliPath: string, args: string[], deps:
   }
 
   const existsSync = deps.existsSync ?? fs.existsSync
-  const exec = deps.execFileSync ?? execFileSync
+  const run = deps.execFile ?? execFile
 
   if (deps.spy) {
     deps.spy(hermesCliPath, args)
@@ -82,11 +94,20 @@ function runGatewayLifecycleCommand(hermesCliPath: string, args: string[], deps:
   }
 
   try {
-    exec(hermesCliPath, args, {
-      timeout: GATEWAY_STOP_TIMEOUT_MS,
-      windowsHide: true,
-      stdio: 'ignore',
-      encoding: 'utf8'
+    await new Promise<void>((resolve, reject) => {
+      run(hermesCliPath, args, {
+        timeout: GATEWAY_STOP_TIMEOUT_MS,
+        windowsHide: true,
+        encoding: 'utf8'
+      }, error => {
+        if (error) {
+          reject(error)
+
+          return
+        }
+
+        resolve()
+      })
     })
 
     return true

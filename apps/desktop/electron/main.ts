@@ -4110,7 +4110,7 @@ async function releaseBackendLock(updateRoot, tag) {
   // taskkill /T from the worker never reaches its parent), drains in-flight
   // agents, and force-kills survivors. Best-effort; abort paths restore via
   // startGatewaysAfterUpdateAbort. No-op off Windows.
-  stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
+  await stopGatewayBeforeUpdate(venvHermesShimPath(updateRoot), HERMES_HOME)
 
   // Reap Hermes-OWNED venv daemons the tree-kill above cannot reach: the
   // memory plugin's hindsight daemon is spawned DETACHED (it outlives the
@@ -4316,7 +4316,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
       if (IS_WINDOWS) {
         // The pre-gate `gateway stop --all` (#70337) took every profile's
         // gateway down for an update that never happened — bring them back.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+        await startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
       }
 
       return { ok: false, error: message }
@@ -4370,7 +4370,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         startHermes().catch(() => {})
         // Restore the gateways the pre-gate stop took down (#70337 drain
         // semantics): the update aborted, so nothing else will relaunch them.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+        await startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
 
         return { ok: false, error: 'venv-blocked', message, blockers: scanOutcome.result.processes }
       }
@@ -4382,7 +4382,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
         emitUpdateProgress({ stage: 'error', message, percent: null })
         startHermes().catch(() => {})
         // Same drain-semantics restore as the venv-blocked abort above.
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+        await startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
 
         return { ok: false, error: 'venv-probe-failed', message }
       }
@@ -4524,7 +4524,7 @@ async function applyUpdates(opts: { stopSafeBlockers?: boolean } = {}) {
 
       if (IS_WINDOWS) {
         // Same drain-semantics restore as the earlier abort paths (#70337).
-        startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
+        await startGatewaysAfterUpdateAbort(venvHermesShimPath(updateRoot))
       }
 
       return { ok: false, error: 'updater-spawn-failed', message }

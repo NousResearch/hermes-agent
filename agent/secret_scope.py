@@ -62,11 +62,13 @@ def serves_routed_profile() -> bool:
     multiplexing, else when a HERMES_HOME override names another home (dashboard/desktop backend,
     per-profile cron ticker) or a secret scope stamped with a foreign home is bound. The MCP
     registry scope and the check_fn cache key both follow this predicate so a served profile's
-    view never aliases the launch profile's (#111151)."""
+    view never aliases the launch profile's (#111151). A host that mirrors the turn's profile into
+    ``HERMES_HOME`` pins its own home with ``hermes_constants.pin_process_hermes_home`` so the
+    mirror cannot flip this predicate."""
     if is_multiplex_active():
         return True
-    from hermes_constants import get_hermes_home_override, get_process_hermes_home, hermes_home_key
-    own = hermes_home_key(get_process_hermes_home())
+    from hermes_constants import get_hermes_home_override, get_routing_process_hermes_home, hermes_home_key
+    own = hermes_home_key(get_routing_process_hermes_home())
     bound = _SECRET_SCOPE.get()
     if bound is not None and bound.profile_home and hermes_home_key(bound.profile_home) != own:
         return True
@@ -375,8 +377,11 @@ def build_profile_secret_scope(hermes_home: Path) -> Dict[str, str]:
 
 
 def _is_process_home(hermes_home: Path) -> bool:
-    from hermes_constants import get_process_hermes_home
+    """Is *hermes_home* the profile this process serves as its own? Same launch-home identity as
+    ``serves_routed_profile()``: a host that mirrors a served profile into ``HERMES_HOME`` would
+    otherwise seed the launch profile's bridged allow-all grant into that profile's scope."""
+    from hermes_constants import get_routing_process_hermes_home
     try:
-        return Path(hermes_home).resolve() == get_process_hermes_home().resolve()
+        return Path(hermes_home).resolve() == get_routing_process_hermes_home().resolve()
     except OSError:
         return False

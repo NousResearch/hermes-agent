@@ -1411,7 +1411,9 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
         if not quiet:
             print(f"  ⚠ {msg}")
     else:
+        warnings_before_migrations = len(results["warnings"])
         run_migrations(current_ver, results, quiet)
+        migration_ladder_completed = len(results["warnings"]) == warnings_before_migrations
 
     _disable_suspicious_mcp_servers(results, quiet)
     _warn_invalid_platform_toolsets(results, quiet)
@@ -1440,7 +1442,7 @@ def migrate_config(interactive: bool = True, quiet: bool = False) -> Dict[str, A
     # read time); this list only feeds the "N new config option(s)" display.
     results["config_added"].extend(field["key"] for field in get_missing_config_fields())
 
-    if current_ver < latest_ver and not floor_refused:
+    if current_ver < latest_ver and not floor_refused and migration_ladder_completed:
         config = read_raw_config()
         config["_config_version"] = latest_ver
         _persist_migration(config)

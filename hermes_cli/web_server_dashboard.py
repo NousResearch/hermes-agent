@@ -712,7 +712,14 @@ def _merged_plugins_hub(force_refresh: bool = False) -> Dict[str, Any]:
 
     agent_names = {r["name"] for r in rows}
     orphan_dashboard = [_strip_dashboard_manifest(p) for p in dashboard_list if str(p["name"]) not in agent_names]
-    memory_providers = _discover_memory_provider_statuses()
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_cli.config import get_process_hermes_home
+
+    _scope_token = set_secret_scope(build_profile_secret_scope(get_process_hermes_home()))
+    try:
+        memory_providers = _discover_memory_provider_statuses()
+    finally:
+        reset_secret_scope(_scope_token)
     try:
         context_engines = [{"name": n, "description": desc} for n, desc in _discover_context_engines()]
     except Exception:

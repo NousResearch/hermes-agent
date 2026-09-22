@@ -20,11 +20,11 @@ from typing import Any, Dict, List, Optional
 from fastapi import APIRouter, File, Form, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 
-from hermes_cli.config import redact_key
+from hermes_cli.config import get_process_hermes_home, redact_key
 from hermes_cli.web_deps import late
 from hermes_cli.web_server_files import _path_is_under
 from hermes_cli.web_server_gateway import _restart_gateway_after
-from hermes_cli.web_server_memory import _normalize_memory_provider_name, _require_memory_provider_ready
+from hermes_cli.web_server_memory import _memory_provider_scoped, _normalize_memory_provider_name, _require_memory_provider_ready
 from hermes_cli.web_models import (
     BackupRequest, CredentialPoolAdd, HookCreate, HookDelete, ImportRequest, MemoryProviderSelect,
     MemoryReset, PairingApprove, PairingRevoke, WebhookCreate, WebhookEnabledToggle,
@@ -444,7 +444,7 @@ async def get_memory_status():
             files[key] = path.stat().st_size if path.exists() else 0
         return {"active": active, "providers": _discover_memory_provider_statuses(), "builtin_files": files}
 
-    return await asyncio.to_thread(_run)
+    return await _memory_provider_scoped(_run)
 
 
 @router.put("/api/memory/provider")
@@ -461,7 +461,7 @@ async def set_memory_provider(body: MemoryProviderSelect):
             save_config(cfg)
         return {"ok": True, "active": provider}
 
-    return await asyncio.to_thread(_run)
+    return await _memory_provider_scoped(_run)
 
 
 @router.post("/api/memory/reset")

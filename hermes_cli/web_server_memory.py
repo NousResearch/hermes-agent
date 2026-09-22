@@ -23,6 +23,32 @@ _MEMORY_PROVIDER_IMPORT_NAMES = {
 }
 
 
+async def _memory_provider_scoped(fn):
+    """Run a memory-provider route body under the launch profile's secret scope.
+
+    Provider status/schema discovery calls ``get_config_schema()``/``is_available()``,
+    which read credentials via ``get_secret``. Under multiplexing an unscoped read
+    raises ``UnscopedSecretError`` (fail-closed); ``probe_availability`` swallows it
+    and the provider silently renders 'unavailable'. Bind the launch profile's own
+    secrets (the dashboard serves the launch home) so these reads resolve.
+    ``fn`` may be sync (run via ``asyncio.to_thread``) or async (awaited directly).
+    """
+    import asyncio
+
+    from agent.secret_scope import build_profile_secret_scope, reset_secret_scope, set_secret_scope
+    from hermes_cli.config import get_process_hermes_home
+    from pathlib import Path
+
+    token = set_secret_scope(build_profile_secret_scope(Path(get_process_hermes_home())))
+    try:
+        result = fn()
+        if asyncio.iscoroutine(result):
+            return await result
+        return result
+    finally:
+        reset_secret_scope(token)
+
+
 def _normalize_memory_provider_name(name: Any) -> str:
     provider = str(name or "").strip()
     return "" if provider.lower() in {"built-in", "builtin", "none"} else provider

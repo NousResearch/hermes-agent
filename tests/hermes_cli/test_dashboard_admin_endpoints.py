@@ -217,8 +217,9 @@ class TestCredentialPoolEndpoints:
 
 class TestMemoryEndpoints:
     @pytest.fixture(autouse=True)
-    def _setup(self, _isolate_hermes_home):
+    def _setup(self, _isolate_hermes_home, monkeypatch):
         self.client, _ = _client()
+        self.monkeypatch = monkeypatch
         from hermes_constants import get_hermes_home
 
         (get_hermes_home() / "memories").mkdir(parents=True, exist_ok=True)
@@ -249,6 +250,64 @@ class TestMemoryEndpoints:
         assert self.client.post(
             "/api/memory/reset", json={"target": "bogus"}
         ).status_code == 400
+
+    def test_status_and_select_under_multiplex_fail_closed(self):
+        """Multiplex activation makes unscoped credential reads raise; the
+        memory provider routes must still bind the launch profile's scope.
+
+        Regression: the memory-provider status/schema discovery ran without a
+        secret scope, so once the process started hosting secondary profiles,
+        mem0's ``get_config_schema`` -> ``get_secret`` raised
+        ``UnscopedSecretError`` (swallowed by ``probe_availability``) and the
+        dashboard rendered the provider 'unavailable'.
+        """
+        import agent.secret_scope as _ss
+
+        # The dashboard serves the launch profile: the fix binds the launch
+        # home's .env scope so get_secret resolves instead of fail-closing.
+        # Emulate the launch home carrying a mem0 credential.
+        from hermes_constants import get_hermes_home
+        from pathlib import Path
+
+        _env = Path(get_hermes_home()) / ".env"
+        _env.write_text("MEM0_API_KEY=sk-test-mem0-key\n")
+        _ss.set_multiplex_active(True)
+        try:
+            # GET /api/memory: discovery + schema read now fail-closed; the
+            # launch scope must be bound so these reads resolve instead of
+            # raising UnscopedSecretError.
+            data = self.client.get("/api/memory").json()
+            assert "active" in data and "providers" in data and "builtin_files" in data
+
+            # Without the fix, the route never binds a secret scope, get_secret
+            # raises UnscopedSecretError, probe_availability swallows it, and
+            # mem0 renders 'unavailable'. With it, at least the configured
+            # provider (or any discovered one) must not be 'unavailable' from
+            # the fail-closed read.
+            mem0 = next((p for p in data["providers"] if p["name"] == "mem0"), None)
+            if mem0 is not None:
+                assert mem0["status"] != "unavailable", mem0
+
+            # The plugins page (which the user reloaded) builds its provider
+            # picker through /api/dashboard/plugins/hub -> _merged_plugins_hub
+            # -> _discover_memory_provider_statuses. It must not fail-closed
+            # under multiplex either.
+            hub = self.client.get("/api/dashboard/plugins/hub")
+            assert hub.status_code == 200, hub.text
+            hub_providers = hub.json().get("providers", {}).get("memory_options", [])
+            hub_mem0 = next((p for p in hub_providers if p["name"] == "mem0"), None)
+            if hub_mem0 is not None:
+                assert hub_mem0["status"] != "unavailable", hub_mem0
+
+            r = self.client.put("/api/memory/provider", json={"provider": "built-in"})
+            assert r.status_code == 200 and r.json()["active"] == ""
+
+            r = self.client.put(
+                "/api/memory/provider", json={"provider": "no-such-provider-xyz"}
+            )
+            assert r.status_code == 400
+        finally:
+            _ss.set_multiplex_active(False)
 
 
 class TestPairingEndpoints:

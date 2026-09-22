@@ -3510,7 +3510,13 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         })
 
     def _sample_summary_records(self, records: list[str]) -> tuple[str, Dict[str, int]]:
-        """Evenly sample complete serialized records and identify every elided record range."""
+        """Evenly sample complete serialized records using one global character budget.
+
+        Anchors choose representative regions; they do not impose a per-anchor
+        eligibility limit.  This matters for an assistant turn with several tool
+        calls: it can be larger than one nominal slice while still fitting in the
+        aggregate prompt budget.
+        """
         content = "\n\n".join(records)
         total_chars = len(content)
         record_count = len(records)
@@ -3522,62 +3528,103 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             self._record_summary_input_coverage(coverage)
             return content, coverage
 
-        slice_count = min(max(2, self._SAMPLED_INPUT_SLICES), record_count)
-        # Reserve enough room for one explicit marker per sampled slice. The remaining budget selects only
-        # whole records; no record may be cut merely to fill the character cap.
-        record_budget = max(self._SUMMARY_INPUT_MAX_CHARS - (slice_count * 96), slice_count)
-        slice_budget = max(1, record_budget // slice_count)
         offsets: list[tuple[int, int]] = []
         cursor = 0
         for record in records:
             offsets.append((cursor, cursor + len(record)))
             cursor += len(record) + 2
 
-        selected: list[int] = []
-        stride = total_chars / slice_count
-        for slice_index in range(slice_count):
-            start = int(slice_index * stride)
-            if slice_index == slice_count - 1:
-                start = max(start, total_chars - slice_budget)
-            end = min(start + slice_budget, total_chars)
-            candidates = [
-                index for index, (record_start, record_end) in enumerate(offsets)
-                if record_start >= start and record_end <= end
-            ]
-            if not candidates:
-                candidates = [
-                    index for index, (record_start, record_end) in enumerate(offsets)
-                    if record_start >= start and len(records[index]) <= slice_budget
-                ][:1]
-            selected.extend(candidates)
-        selected = list(dict.fromkeys(selected))
+        cap = self._SUMMARY_INPUT_MAX_CHARS
+        eligible = [index for index, record in enumerate(records) if len(record) <= cap]
 
-        def marker(start: int, end: int) -> str:
-            omitted_chars = sum(len(records[index]) for index in range(start, end + 1))
+        def marker(start: int, end: int, omitted_chars: int) -> str:
             return (
                 f"...[{end - start + 1:,} serialized records elided (records {start + 1:,}-{end + 1:,}; "
                 f"{omitted_chars:,} chars) — recover via session_search]..."
             )
 
-        parts: list[str] = []
-        previous = -1
-        for index in selected:
-            if index > previous + 1:
-                parts.append(marker(previous + 1, index - 1))
-            parts.append(records[index])
-            previous = index
-        if previous < record_count - 1:
-            parts.append(marker(previous + 1, record_count - 1))
-        sampled_chars = sum(len(records[index]) for index in selected)
+        def render(selected_indices: list[int]) -> tuple[str, int]:
+            """Return rendered text and omitted *source* chars, never marker chars."""
+            selected_indices = sorted(selected_indices)
+            if not selected_indices:
+                if record_count == 1 and len(records[0]) > cap:
+                    rendered = (
+                        f"...[1 serialized record exceeds aggregate cap (record 1; {total_chars:,} chars "
+                        "elided) — recover via session_search]..."
+                    )
+                else:
+                    rendered = marker(0, record_count - 1, total_chars)
+                # A deliberately tiny test cap must still be safe; no source is
+                # represented in this fallback, so a compact explicit marker is enough.
+                return rendered[:cap], total_chars
+
+            parts: list[str] = []
+            omitted_chars = 0
+            previous = -1
+            for index in selected_indices:
+                if index > previous + 1:
+                    span_start = 0 if previous < 0 else offsets[previous][1]
+                    span_end = offsets[index][0]
+                    omitted = span_end - span_start
+                    omitted_chars += omitted
+                    parts.append(marker(previous + 1, index - 1, omitted))
+                parts.append(records[index])
+                previous = index
+            if previous < record_count - 1:
+                omitted = total_chars - offsets[previous][1]
+                omitted_chars += omitted
+                parts.append(marker(previous + 1, record_count - 1, omitted))
+            return "\n\n".join(parts), omitted_chars
+
+        # Protect the newest eligible record first.  It is then never removed
+        # before lower-value anchors when marker text needs more space.
+        selected: list[int] = []
+        priority: dict[int, int] = {}
+        used_record_chars = 0
+
+        def consider(index: int, value: int) -> None:
+            nonlocal used_record_chars
+            if index in selected or used_record_chars + len(records[index]) > cap:
+                return
+            selected.append(index)
+            priority[index] = value
+            used_record_chars += len(records[index])
+
+        if eligible:
+            consider(eligible[-1], 1_000_000)
+        slice_count = min(max(2, self._SAMPLED_INPUT_SLICES), record_count)
+        # Raw source offsets make anchors uniform even when records vary wildly.
+        for anchor_rank, anchor in enumerate(
+            int(total_chars * position / max(slice_count - 1, 1)) for position in range(slice_count)
+        ):
+            nearest = min(
+                eligible,
+                key=lambda index: (abs(((offsets[index][0] + offsets[index][1]) // 2) - anchor), index),
+                default=None,
+            )
+            if nearest is not None:
+                # Head and interior anchors rank below the protected newest tail.
+                consider(nearest, slice_count - anchor_rank)
+
+        sampled, omitted_chars = render(selected)
+        # Marker text is dynamic (including comma widths), so enforce the hard
+        # cap with actual rendering rather than a brittle fixed reserve.
+        while len(sampled) > cap and selected:
+            discard = min(selected, key=lambda index: (priority[index], index))
+            selected.remove(discard)
+            sampled, omitted_chars = render(selected)
+
+        if len(sampled) > cap:
+            # This can only happen when the explicit fallback marker itself is
+            # wider than an unusually tiny configured cap.  It is safe because
+            # ``render`` bounded it and no partial source record is emitted.
+            sampled, omitted_chars = render([])
+
         coverage = {
-            "input_chars": total_chars, "sampled_chars": sampled_chars,
-            "omitted_chars": total_chars - sampled_chars, "record_count": record_count,
+            "input_chars": total_chars, "sampled_chars": total_chars - omitted_chars,
+            "omitted_chars": omitted_chars, "record_count": record_count,
             "sampled_record_count": len(selected), "omitted_record_count": record_count - len(selected),
         }
-        sampled = "\n\n".join(parts)
-        # The fixed reserve above leaves headroom for marker widths and separators. This protects callers
-        # if a future marker gains fields without allowing a partial serialized record.
-        assert len(sampled) <= self._SUMMARY_INPUT_MAX_CHARS
         self._record_summary_input_coverage(coverage)
         return sampled, coverage
 

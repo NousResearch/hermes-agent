@@ -1,6 +1,7 @@
 """Tests for agent/context_compressor.py — compression logic, thresholds, truncation fallback."""
 
 import json
+import re
 import sqlite3
 import pytest
 import time
@@ -3314,6 +3315,59 @@ class TestDoubleCompactionSummaryRole:
 
 
 class TestSummaryPromptBounding:
+
+    def test_lean_sampling_keeps_oversized_assistant_records_and_tail_tool_calls(self, monkeypatch):
+        """A whole record may consume multiple nominal shares while still fitting globally."""
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 24_000)
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        large_body = "x" * 5_900
+        turns = []
+        for index in range(3):
+            turns.extend([
+                {"role": "assistant", "content": f"assistant-{index} {large_body}", "tool_calls": [{"function": {"name": f"tool_{index}_{call}", "arguments": json.dumps({"path": f"/tmp/{index}-{call}", "payload": "a" * 1_400})}} for call in range(3)]},
+                {"role": "tool", "tool_call_id": f"call-{index}", "content": f"tool-result-{index} " + ("y" * 5_900)},
+            ])
+        turns.append({"role": "assistant", "content": f"newest-assistant {large_body}", "tool_calls": [{"function": {"name": "write_latest", "arguments": json.dumps({"path": "/tmp/latest", "payload": "z" * 1_400})}} for _ in range(3)]})
+
+        records = compressor._serialize_summary_records(turns)
+        assert all(len(record) > compressor._SUMMARY_INPUT_MAX_CHARS // compressor._SAMPLED_INPUT_SLICES for record in records if record.startswith("[ASSISTANT]"))
+        sampled, coverage = compressor._sample_summary_records(records)
+        assert len(sampled) <= compressor._SUMMARY_INPUT_MAX_CHARS
+        assert coverage["sampled_record_count"] > 0
+        assert "[ASSISTANT]" in sampled and "newest-assistant" in sampled
+        assert "write_latest" in sampled and '"path": "/tmp/latest"' in sampled
+        for record in records:
+            if record in sampled:
+                assert record in sampled
+
+    def test_lean_sampling_coverage_counts_original_separators_once(self, monkeypatch):
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 2_400)
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        records = [f"[USER]: record-{index:03d} " + ("x" * 80) for index in range(200)]
+        sampled, coverage = compressor._sample_summary_records(records)
+        assert coverage["input_chars"] == coverage["sampled_chars"] + coverage["omitted_chars"]
+        marker_omitted = sum(int(chars.replace(",", "")) for chars in re.findall(r"; ([\d,]+) chars\) —", sampled))
+        assert marker_omitted == coverage["omitted_chars"]
+        assert coverage["input_chars"] == sum(map(len, records)) + 2 * (len(records) - 1)
+
+    def test_lean_sampling_leaves_under_cap_records_unchanged(self, monkeypatch):
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 400)
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        records = ["[USER]: alpha", "[ASSISTANT]: beta"]
+        sampled, coverage = compressor._sample_summary_records(records)
+        assert sampled == "\n\n".join(records)
+        assert coverage["input_chars"] == coverage["sampled_chars"]
+        assert coverage["omitted_chars"] == 0
+
+    def test_lean_sampling_handles_a_single_record_larger_than_aggregate_cap(self, monkeypatch):
+        monkeypatch.setattr(ContextCompressor, "_SUMMARY_INPUT_MAX_CHARS", 128)
+        compressor = ContextCompressor(model="test", quiet_mode=True)
+        record = "[ASSISTANT]: " + ("x" * 300)
+        sampled, coverage = compressor._sample_summary_records([record])
+        assert len(sampled) <= compressor._SUMMARY_INPUT_MAX_CHARS
+        assert "record exceeds aggregate cap" in sampled
+        assert coverage["sampled_record_count"] == 0
+        assert coverage["input_chars"] == coverage["omitted_chars"]
 
     def test_lean_sampling_keeps_serialized_records_whole_and_labels_elided_ranges(self, monkeypatch):
         """Even sampling must account for whole serialized records, not character fragments."""

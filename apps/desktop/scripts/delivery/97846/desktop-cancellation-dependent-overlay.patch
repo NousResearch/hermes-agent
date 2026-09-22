@@ -758,16 +758,29 @@ index 6a3f6868f9..ffb8a2594c 100644
      const room = await loadRoom()
      seedRoom(room, null)
 diff --git a/apps/desktop/src/plugins/hermes-bots/group-rounds.ts b/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
-index 3ebf668934..2f646701b9 100644
+index 3ebf668934..f9d4603949 100644
 --- a/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
 +++ b/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
-@@ -471,12 +471,14 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+@@ -471,12 +471,27 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  
    const roster = Array.isArray(members) && members.length ? members : room.members || []
    const onTurn = room.turn || null
 -  groupChatDrives.get(groupChatRoomKey(group, room))?.pending.clear()
 +  const drive = liveGroupChatDrive(group, room)
 +  const activeThread = drive?.active?.thread || thread
++
++  // Stop retires the command itself, not just its presentation epoch. It must
++  // not become a fresh retry when its interrupted backend finally unwinds.
++  if (drive?.active?.fence) {
++    cancelGroupCommandFence(drive.active.fence)
++  }
++
++  for (const pending of drive?.pending.values() || []) {
++    if (pending.fence) {
++      cancelGroupCommandFence(pending.fence)
++    }
++  }
++
 +  drive?.pending.clear()
  
    const stamp: GroupHoldStamp = {
@@ -778,7 +791,7 @@ index 3ebf668934..2f646701b9 100644
    }
  
    updateGroupChat(group, (r: GroupChatRoom) => {
-@@ -512,7 +514,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+@@ -512,7 +527,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
    recordGroupActivity(group, {
      kind: 'stopped',
      member: 'You',
@@ -787,7 +800,7 @@ index 3ebf668934..2f646701b9 100644
    })
  
    // The captured descriptor owns routing even if the roster has changed.
-@@ -522,7 +524,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+@@ -522,7 +537,7 @@ export async function stopGroupThread(group: string, thread: null | string, memb
    const onTurnKey = onTurn ? groupMemberKey(onTurn) : ''
  
    const sessionId = onTurn
@@ -796,14 +809,12 @@ index 3ebf668934..2f646701b9 100644
        (hasThreadScopedGroupSession(sessions, onTurnKey) ? null : sessions[onTurnKey])
      : null
  
-@@ -543,9 +545,19 @@ export async function stopGroupThread(group: string, thread: null | string, memb
+@@ -543,9 +558,19 @@ export async function stopGroupThread(group: string, thread: null | string, memb
  export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMember[] | null, fence: GroupCommandFence) {
    cancelGroupCommandFence(fence)
    const room = $groupChats.get()[group] || {}
 +  const drive = liveGroupChatDrive(group, room)
- 
--  // A later user send or replacement room owns a different drive. Cancelling
--  // this command must not interrupt it or change its running/hold state.
++
 +  // A fence waiting behind another queue item owns no live room state. Remove
 +  // only its exact pending item; the active local/mailbox turn keeps its epoch,
 +  // turn descriptor and backend session.
@@ -812,13 +823,15 @@ index 3ebf668934..2f646701b9 100644
 +  if (removedPending || !drive?.active || drive.active.fence !== fence) {
 +    return
 +  }
-+
+ 
+-  // A later user send or replacement room owns a different drive. Cancelling
+-  // this command must not interrupt it or change its running/hold state.
 +  // Only the exact active queue item may invalidate room execution state. A
 +  // rename keeps this drive binding live; replacement/disband retires it.
    if (
      (fence.roomValid && !fence.roomValid()) ||
      desktopRoomIdentity(group, room) !== fence.roomId ||
-@@ -556,6 +568,7 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
+@@ -556,6 +581,7 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
    }
  
    const onTurn = room.turn || null
@@ -826,7 +839,7 @@ index 3ebf668934..2f646701b9 100644
  
    updateGroupChat(group, current => ({
      ...current,
-@@ -564,7 +577,13 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
+@@ -564,7 +590,13 @@ export function cancelGroupThreadForLeaseLoss(group: string, members: GroupMembe
      turn: null
    }))
  
@@ -841,7 +854,7 @@ index 3ebf668934..2f646701b9 100644
  
    if (onTurn && sessionId) {
      void Promise.resolve()
-@@ -1032,21 +1051,21 @@ export function sendToGroupChat(
+@@ -1032,21 +1064,21 @@ export function sendToGroupChat(
  
        const existingThread = existing.thread || 'legacy'
  
@@ -871,7 +884,7 @@ index 3ebf668934..2f646701b9 100644
  
        return existingThread
      }
-@@ -1111,6 +1130,7 @@ export function sendToGroupChat(
+@@ -1111,6 +1143,7 @@ export function sendToGroupChat(
  }
  
  interface GroupChatDrive {
@@ -879,7 +892,7 @@ index 3ebf668934..2f646701b9 100644
    failedMembers: Set<string>
    pending: Map<string, { fence?: GroupCommandFence; members: GroupMember[] }>
    binding: ReturnType<typeof followGroupChat>
-@@ -1120,6 +1140,34 @@ interface GroupChatDrive {
+@@ -1120,6 +1153,34 @@ interface GroupChatDrive {
  // rename follows the room identity; disband retires the binding permanently.
  const groupChatDrives = new Map<string, GroupChatDrive>()
  
@@ -914,7 +927,7 @@ index 3ebf668934..2f646701b9 100644
  function queueGroupChatDrive(group: string, members: GroupMember[], thread: string, fence?: GroupCommandFence) {
    let key = groupChatRoomKey(group, $groupChats.get()[group])
    const active = groupChatDrives.get(key)
-@@ -1141,6 +1189,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
+@@ -1141,6 +1202,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
    })
  
    const drive: GroupChatDrive = {
@@ -922,7 +935,7 @@ index 3ebf668934..2f646701b9 100644
      pending: new Map([[thread, { fence, members }]]),
      failedMembers: new Set(),
      binding
-@@ -1160,8 +1209,29 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
+@@ -1160,8 +1222,35 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
          const [nextThread, next] = drive.pending.entries().next().value!
          currentThread = nextThread
          drive.pending.delete(nextThread)
@@ -933,7 +946,8 @@ index 3ebf668934..2f646701b9 100644
 +
 +        // Lease loss invalidates the predecessor's epoch, not later claimants.
 +        // Explicit Stop removes pending items before they can be rebound here.
-+        bindGroupCommandFence(next.fence, nextThread, $groupChats.get()[group]?.epoch || 0)
++        const activeEpoch = $groupChats.get()[group]?.epoch || 0
++        bindGroupCommandFence(next.fence, nextThread, activeEpoch)
 +        const active = { ...next, thread: nextThread }
 +        drive.active = active
          updateGroupChat(group, room => ({ ...room, running: true }))
@@ -943,7 +957,12 @@ index 3ebf668934..2f646701b9 100644
 +          await runGroupChatRounds(group, next.members, nextThread, next.fence, drive.failedMembers)
 +        } finally {
 +          if (drive.active === active) {
-+            if (binding.isLive() && groupChatDrives.get(key) === drive) {
++            if (
++              binding.isLive() &&
++              groupChatDrives.get(key) === drive &&
++              (!next.fence?.roomValid || next.fence.roomValid()) &&
++              ($groupChats.get()[group]?.epoch || 0) === activeEpoch
++            ) {
 +              updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
 +            }
 +
@@ -953,7 +972,7 @@ index 3ebf668934..2f646701b9 100644
        }
      } catch {
        if (binding.isLive()) {
-@@ -1169,6 +1239,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
+@@ -1169,6 +1258,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
          updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
        }
      } finally {

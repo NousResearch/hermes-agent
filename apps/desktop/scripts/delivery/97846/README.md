@@ -7,9 +7,9 @@ This directory keeps the #97846-owned correction for Desktop Group Chat cancella
 `desktop-cancellation-dependent-overlay.patch` is an exact six-path contextual Git patch. Its preimage is the runtime/lower composition **before any Files changes**:
 
 - preimage tree: `e76b349554ed86a02f2470c31d3912fcd9b5b332`
-- corrected lower-only tree: `edbc90bd4477937f7807dc8a3f269f9766e46ea9`
-- patch SHA-256: `b07fd866d1bf569554ce9bdb51a2d8ffa5a59a21fb48aa9da6aede9a5cae9e65`
-- patch size: 43,188 bytes, 963 lines
+- corrected lower-only tree: `74868e3bd713445e192eb19efa298785c63fc616`
+- patch SHA-256: `a25a14f89aa0961b38318ccd5f08d2237d329805eb75f42cafed7bf6900d775f`
+- patch size: 43,806 bytes, 982 lines
 
 Apply with `git apply --index` after composing the pinned runtime/lower inputs and **before** the Files owner/dependent overlays. The executable recipe in `apps/desktop/scripts/delivery/104199/compose.sh` verifies the preimage, digest and corrected lower tree. There is no production dependency on Files: this patch includes only the dependent cancellation/identity behavior and its regressions, not a runtime-owned whole source body. Three lines of context anchor test hunks instead of relying on offsets from a different composition.
 
@@ -28,4 +28,4 @@ The patch also carries focused mailbox, Stop, session-migration, rename, retirem
 
 ## Lower-first verification
 
-Reproduce the lower-only intermediate state with `DESKTOP_FILES_VERIFY=lower` using the existing #104199 recipe. Its selection includes the four additional queue-overlap cases alongside the prior recovery/rename/isolation controls, all three Desktop TypeScript projects, and six-path ESLint with zero warnings required. `focused` composes Files afterward and runs the same affected-path checks plus renderer build. The recipe README records executed results and scope. Native desktop acceptance is separate.
+The corrected lower-only state passed 19 focused cases (99 excluded by name filter), all three Desktop TypeScript projects and changed-source ESLint with zero warnings. This includes four queue-overlap cases alongside the prior recovery/rename/isolation controls. Reproduce with `DESKTOP_FILES_VERIFY=lower` using the existing #104199 recipe. `focused` composes Files afterward and runs the same affected-path checks plus renderer build. The recipe README records executed results and scope. Native desktop acceptance is separate.

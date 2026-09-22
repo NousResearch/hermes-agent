@@ -42,9 +42,10 @@ def _save_cache(cache: dict) -> None:
     atomic_json_write(_resolve_cache_path(), cache)
 
 
-# Serializes the read-modify-write in ``cache_sticker_description``. Re-entrant
-# because the async wrapper dispatches straight into the sync form.
-_CACHE_LOCK = threading.RLock()
+# Serializes the read-modify-write in ``cache_sticker_description``. Nothing
+# re-acquires it while held (the async wrapper only dispatches the sync form
+# to a worker thread), so a plain Lock suffices.
+_CACHE_LOCK = threading.Lock()
 
 
 def get_cached_description(file_unique_id: str) -> Optional[dict]:

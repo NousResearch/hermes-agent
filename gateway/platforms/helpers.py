@@ -181,7 +181,8 @@ class ThreadParticipationTracker:
             return thread_id in self._threads
 
     def clear(self) -> None:
-        self._threads.clear()
+        with self._lock:
+            self._threads.clear()
 
 
 def redact_phone(phone: str) -> str:

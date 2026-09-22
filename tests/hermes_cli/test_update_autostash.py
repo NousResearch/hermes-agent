@@ -231,7 +231,7 @@ def _make_update_side_effect(
 # ---------------------------------------------------------------------------
 
 def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, capsys):
-    """When reset --hard fails, stash restore is skipped with a helpful message."""
+    """When reset --hard fails (orphan divergence), stash restore is skipped with a helpful message."""
     _setup_update_mocks(monkeypatch, tmp_path)
     # Re-enable stash so it actually returns a ref
     monkeypatch.setattr(
@@ -244,7 +244,10 @@ def test_cmd_update_skips_stash_restore_when_reset_fails(monkeypatch, tmp_path, 
         lambda *a, **kw: restore_calls.append(1) or True,
     )
 
-    side_effect, _ = _make_update_side_effect(ff_only_fails=True, reset_fails=True)
+    # reset --hard now runs only for orphan divergence (no common ancestor), so the
+    # reset-failure path has to be exercised there.
+    side_effect, _ = _make_update_side_effect(
+        ff_only_fails=True, merge_base_exists=False, reset_fails=True)
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit, match="1"):
@@ -402,7 +405,7 @@ def test_prune_orphan_rescue_refs_leaves_unparseable_names_alone():
 
 def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, capsys):
     """Common ancestor still exists (e.g. upstream force-push) → no rescue
-    ref, no orphan messaging, behavior identical to before #87694."""
+    ref, no orphan messaging; related history is merged so local commits survive."""
     _setup_update_mocks(monkeypatch, tmp_path)
 
     side_effect, recorded = _make_update_side_effect(
@@ -417,7 +420,7 @@ def test_cmd_update_ordinary_divergence_skips_rescue_ref(monkeypatch, tmp_path, 
 
     out = capsys.readouterr().out
     assert "orphan divergence" not in out
-    assert "Fast-forward not possible (history diverged), resetting to match remote" in out
+    assert "diverged from origin/main — merging so local commits survive" in out
 
 
 def test_cmd_update_orphan_rescue_ref_write_failure_is_non_fatal(monkeypatch, tmp_path, capsys):
@@ -598,7 +601,10 @@ def test_update_keep_stash_failure_path_still_preserves(monkeypatch, tmp_path, c
     """--keep-stash + failed update: neither restore nor park runs; the
     existing preserved-in-stash message fires (working tree unknown)."""
     restore_calls, discard_calls, park_calls = _setup_keep_stash_test(monkeypatch, tmp_path)
-    side_effect, _ = _make_update_side_effect(ff_only_fails=True, reset_fails=True)
+    # A failed update now requires orphan divergence plus a failing reset (related history is
+    # merged instead), so exercise the reset fallback there.
+    side_effect, _ = _make_update_side_effect(
+        ff_only_fails=True, merge_base_exists=False, reset_fails=True)
     monkeypatch.setattr(hermes_main.subprocess, "run", side_effect)
 
     with pytest.raises(SystemExit, match="1"):

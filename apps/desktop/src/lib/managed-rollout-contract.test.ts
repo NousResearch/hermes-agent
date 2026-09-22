@@ -5,6 +5,7 @@ import {
   validateReceiptSummary,
   validateRolloutCapabilities,
   validateRolloutPlan,
+  validateReviewedSourceBinding,
   validateScopeEvidence,
   validateTargetIdentity
 } from './managed-rollout-contract'
@@ -12,6 +13,18 @@ import {
 const SHA = 'a'.repeat(40)
 const INSTALL = '1'.repeat(32)
 const FINGERPRINT = 'f'.repeat(64)
+
+function reviewedSource() {
+  return {
+    repositoryRoot: 'C:/reviewed/hermes',
+    originUrl: 'https://github.com/acme/hermes.git',
+    resolvedRef: 'refs/remotes/origin/main',
+    targetSha: SHA,
+    assuranceProfile: 'managed-ssh',
+    assuranceEvidenceSha256: FINGERPRINT,
+    assuranceGeneration: 7
+  }
+}
 
 function plan() {
   return {
@@ -54,6 +67,14 @@ function health() {
 }
 
 describe('managed rollout runtime contract', () => {
+  it('validates the exact Python reviewed source shape without accepting missing fields', () => {
+    expect(validateReviewedSourceBinding(reviewedSource())).toEqual(reviewedSource())
+    expect(() => validateReviewedSourceBinding({ ...reviewedSource(), assuranceEvidenceSha256: undefined })).toThrow()
+    expect(() => validateReviewedSourceBinding({ ...reviewedSource(), trustedByRenderer: true })).toThrow('unknown field')
+    expect(() => validateReviewedSourceBinding({ ...reviewedSource(), targetSha: 'a'.repeat(39) })).toThrow()
+    expect(() => validateReviewedSourceBinding({ ...reviewedSource(), repositoryRoot: 'relative/repo' })).toThrow()
+  })
+
   it('rejects missing authority fields and unknown fields', () => {
     const value = plan() as Record<string, unknown>
     delete value.target

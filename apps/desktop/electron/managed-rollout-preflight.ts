@@ -12,6 +12,11 @@ import type {
 } from '../src/lib/managed-rollout-contract'
 import { validateRolloutPlan, validateRolloutTarget } from '../src/lib/managed-rollout-contract'
 import { canonicalRepositoryId } from './managed-rollout-identity'
+import {
+  isVerifiedAssurance, isVerifiedGitSource,
+  type VerifiedAssuranceEvidence
+} from './managed-rollout-assurance'
+import type { ReviewedSourceBinding } from '../src/lib/managed-rollout-contract'
 
 export const PROTOCOL_RESOURCE_PATH = 'hermes_cli/update_rollout_protocol.json'
 export const SUPPORTED_PROTOCOL_VERSION = 1
@@ -873,7 +878,8 @@ export function canonicalPlanTuple(value: RolloutPlan): readonly unknown[] {
       row.sourceFingerprint,
       row.admittedHead,
       row.requiredScopeIds === null ? null : row.requiredScopeIds.slice().sort(),
-      row.eligible
+      row.eligible,
+      row.reviewedSource ?? null
     ]),
     plan.retryOf,
     plan.exclusions.slice().sort()
@@ -944,7 +950,8 @@ export function diffRolloutPlans(beforeValue: RolloutPlan, afterValue: RolloutPl
     const fields: Array<[PlanChange['field'], unknown, unknown]> = [
       ['membership', membership(before, installId), membership(after, installId)],
       ['identity', identityBefore, identityAfter],
-      ['source', left?.sourceFingerprint, right?.sourceFingerprint],
+      ['source', left ? left.reviewedSource ? [left.sourceFingerprint, left.reviewedSource] : left.sourceFingerprint : undefined,
+        right ? right.reviewedSource ? [right.sourceFingerprint, right.reviewedSource] : right.sourceFingerprint : undefined],
       ['head', left?.admittedHead, right?.admittedHead],
       ['scopes', left?.requiredScopeIds, right?.requiredScopeIds],
       ['eligibility', left?.eligible, right?.eligible]
@@ -1069,6 +1076,8 @@ export function createPreflightReview(input: {
   reviewTokens: ReviewTokenStore
   now?: number
   blockers?: string[]
+  verifiedSources?: ReadonlyMap<string, ReviewedSourceBinding>
+  verifiedAssurance?: ReadonlyMap<string, VerifiedAssuranceEvidence>
 }): {
   token: string | null
   expiresAt: number | null
@@ -1098,6 +1107,38 @@ export function createPreflightReview(input: {
   }
   if (canonicalPlan.rows.some(row => !row.eligible)) blockers.push('ineligible-target')
   if (canonicalPlan.rows.some(row => row.requiredScopeIds === null)) blockers.push('scope-evidence-missing')
+  for (const row of canonicalPlan.rows) {
+    const source = row.reviewedSource
+    const verifiedSource = input.verifiedSources?.get(row.installId)
+    const assurance = input.verifiedAssurance?.get(row.installId)
+    if (!source || !isVerifiedGitSource(verifiedSource) || JSON.stringify(source) !== JSON.stringify(verifiedSource)) {
+      blockers.push('reviewed-source-unverified')
+      continue
+    }
+    let canonicalOrigin: string | null = null
+    try {
+      canonicalOrigin = canonicalRepositoryId(source.originUrl)
+    } catch {
+      // A credential-bearing or unsupported origin cannot be a reviewed source.
+    }
+    if (
+      source.targetSha !== canonicalPlan.target.sha ||
+      source.resolvedRef !== `refs/remotes/origin/${canonicalPlan.target.branch}` ||
+      canonicalOrigin !== canonicalPlan.target.repositoryId
+    ) blockers.push('reviewed-source-mismatch')
+    if (!isVerifiedAssurance(assurance)) {
+      blockers.push('assurance-evidence-unverified')
+      continue
+    }
+    if (
+      assurance.expiresAt <= now || assurance.profile !== source.assuranceProfile ||
+      assurance.evidenceSha256 !== source.assuranceEvidenceSha256 ||
+      assurance.generation !== source.assuranceGeneration ||
+      assurance.repositoryId !== canonicalPlan.target.repositoryId ||
+      assurance.targetSha !== canonicalPlan.target.sha ||
+      assurance.sourceFingerprint !== row.sourceFingerprint
+    ) blockers.push('assurance-evidence-stale-or-mismatched')
+  }
 
   if (blockers.length) {
     return {

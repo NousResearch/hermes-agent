@@ -1,3 +1,5 @@
+import crypto from 'node:crypto'
+
 import type { RolloutSnapshot, TargetAttempt } from '../src/lib/managed-rollout-contract'
 
 export interface PromotionProof {
@@ -5,6 +7,9 @@ export interface PromotionProof {
   rolloutId: string
   revision: number
   queueGeneration: number
+  processGeneration: number
+  evidenceGeneration: number
+  contextDigest: string
   wave: number
   sweepStartedMono: number
   sweepFinishedMono: number
@@ -14,6 +19,20 @@ export interface PromotionProof {
 
 export const SWEEP_DEADLINE_MS = 5 * 60 * 1000
 export const PROMOTION_PROOF_MAX_AGE_MS = 10 * 1000
+
+/** Bind the sweep to the exact reviewed policy, source, installation and scopes. */
+export function promotionContextDigest(snapshot: RolloutSnapshot): string {
+  return crypto.createHash('sha256').update(JSON.stringify([
+    snapshot.id, snapshot.revision, snapshot.activeWave, snapshot.promotionPolicy,
+    snapshot.canaryApproved, snapshot.target,
+    snapshot.attempts.map(attempt => [
+      attempt.identity.installId, attempt.identity.installationFingerprint,
+      attempt.identity.sourceFingerprint, attempt.identity.admittedSha,
+      attempt.wave, attempt.requiredScopeIds === null ? null : [...attempt.requiredScopeIds].sort(),
+      attempt.recoveryRequired
+    ])
+  ])).digest('hex')
+}
 
 function unique(values: readonly string[]): boolean {
   return new Set(values).size === values.length
@@ -98,11 +117,17 @@ export function canPromote(
   snapshot: RolloutSnapshot,
   proof: PromotionProof,
   nowMono: number,
-  queueGeneration: number
+  queueGeneration: number,
+  context?: { processGeneration: number; evidenceGeneration: number }
 ): boolean {
+  if (!context || !Number.isSafeInteger(context.processGeneration) || !Number.isSafeInteger(context.evidenceGeneration))
+    return false
   if (snapshot.phase !== 'awaiting-promotion' || snapshot.continuationRequired) return false
   if (!proof.observationId || proof.rolloutId !== snapshot.id || proof.revision !== snapshot.revision) return false
   if (proof.wave !== snapshot.activeWave || proof.queueGeneration !== queueGeneration) return false
+  if (proof.processGeneration !== context.processGeneration || proof.evidenceGeneration !== context.evidenceGeneration)
+    return false
+  if (proof.contextDigest !== promotionContextDigest(snapshot)) return false
   if (snapshot.activeWave === 0 && !snapshot.canaryApproved) return false
   if (snapshot.activeWave === 0 && proof.approval !== 'manual') return false
   if (snapshot.activeWave > 0 && snapshot.promotionPolicy === 'manual' && proof.approval !== 'manual') return false

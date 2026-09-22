@@ -309,7 +309,9 @@ describe('managed rollout preflight', () => {
         now: 50
       }).blockers
     ).toContain('scope-evidence-missing')
-    expect(createPreflightReview({ plan: plan(), resolution, reviewTokens, now: 50 }).token).toBe('[REDACTED]')
+    const unverified = createPreflightReview({ plan: plan(), resolution, reviewTokens, now: 50 })
+    expect(unverified.token).toBeNull()
+    expect(unverified.blockers).toContain('reviewed-source-unverified')
   })
 
   it('returns deterministic exact row diffs for a changed source binding', () => {

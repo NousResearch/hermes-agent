@@ -6,6 +6,7 @@ import {
   canContinueAfterRestart,
   isExcluded,
   needsManualPromotion,
+  promotionContextDigest,
   targetHealthy
 } from './managed-rollout-policy'
 
@@ -173,6 +174,9 @@ describe('managed rollout policy', () => {
       rolloutId: current.id,
       revision: current.revision,
       queueGeneration: 4,
+      processGeneration: 2,
+      evidenceGeneration: 3,
+      contextDigest: promotionContextDigest(current),
       wave: current.activeWave,
       sweepStartedMono: 1_000,
       sweepFinishedMono: 2_000,
@@ -181,15 +185,21 @@ describe('managed rollout policy', () => {
     }
 
     expect(needsManualPromotion(current)).toBe(true)
-    expect(canPromote(current, proof, 2_500, 4)).toBe(true)
-    expect(canPromote({ ...current, canaryApproved: false }, proof, 2_500, 4)).toBe(false)
-    expect(canPromote(current, { ...proof, approval: 'automatic' }, 2_500, 4)).toBe(false)
-    expect(canPromote({ ...current, continuationRequired: true }, proof, 2_500, 4)).toBe(false)
-    expect(canPromote(current, { ...proof, observationId: 'stale' }, 2_500, 4)).toBe(false)
-    expect(canPromote(current, { ...proof, revision: current.revision + 1 }, 2_500, 4)).toBe(false)
-    expect(canPromote(current, { ...proof, queueGeneration: 5 }, 2_500, 4)).toBe(false)
-    expect(canPromote(current, proof, 12_001, 4)).toBe(false)
-    expect(canPromote(current, { ...proof, sweepFinishedMono: 301_001 }, 301_500, 4)).toBe(false)
+    const context = { processGeneration: 2, evidenceGeneration: 3 }
+    expect(canPromote(current, proof, 2_500, 4, context)).toBe(true)
+    expect(canPromote(current, proof, 2_500, 4)).toBe(false)
+    expect(canPromote(current, proof, 2_500, 4, { ...context, processGeneration: 4 })).toBe(false)
+    expect(canPromote(current, proof, 2_500, 4, { ...context, evidenceGeneration: 4 })).toBe(false)
+    expect(canPromote(current, { ...proof, contextDigest: 'stale' }, 2_500, 4, context)).toBe(false)
+    expect(canPromote({ ...current, promotionPolicy: 'auto-if-healthy' }, proof, 2_500, 4, context)).toBe(false)
+    expect(canPromote({ ...current, canaryApproved: false }, proof, 2_500, 4, context)).toBe(false)
+    expect(canPromote(current, { ...proof, approval: 'automatic' }, 2_500, 4, context)).toBe(false)
+    expect(canPromote({ ...current, continuationRequired: true }, proof, 2_500, 4, context)).toBe(false)
+    expect(canPromote(current, { ...proof, observationId: 'stale' }, 2_500, 4, context)).toBe(false)
+    expect(canPromote(current, { ...proof, revision: current.revision + 1 }, 2_500, 4, context)).toBe(false)
+    expect(canPromote(current, { ...proof, queueGeneration: 5 }, 2_500, 4, context)).toBe(false)
+    expect(canPromote(current, proof, 12_001, 4, context)).toBe(false)
+    expect(canPromote(current, { ...proof, sweepFinishedMono: 301_001 }, 301_500, 4, context)).toBe(false)
   })
 
   it('requires explicit continuation after restart reconciliation', () => {

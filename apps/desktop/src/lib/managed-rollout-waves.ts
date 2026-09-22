@@ -6,6 +6,35 @@ import {
   type RolloutCapabilities
 } from './managed-rollout-contract'
 
+export const MAX_EFFECTIVE_WAVE_SIZE = 120
+export const MAX_SWEEP_PROBES = MAX_EFFECTIVE_WAVE_SIZE * 2
+export const WAVE_SIZE_EXCEEDS_SWEEP_BUDGET = 'wave-size-exceeds-sweep-budget'
+
+export interface SweepFeasibility {
+  ok: boolean
+  canaryCount: number
+  successorCount: number
+  probeBudget: number
+  reason: string | null
+}
+
+export function promotionSweepFeasibility(canaryCount: number, successorCount: number): SweepFeasibility {
+  const valid =
+    Number.isSafeInteger(canaryCount) &&
+    Number.isSafeInteger(successorCount) &&
+    canaryCount >= 1 &&
+    successorCount >= 1
+  const ok = valid && canaryCount <= MAX_EFFECTIVE_WAVE_SIZE && successorCount <= MAX_EFFECTIVE_WAVE_SIZE
+
+  return {
+    ok,
+    canaryCount,
+    successorCount,
+    probeBudget: MAX_SWEEP_PROBES,
+    reason: ok ? null : WAVE_SIZE_EXCEEDS_SWEEP_BUDGET
+  }
+}
+
 function invalid(message: string): never {
   throw new Error(message)
 }
@@ -23,7 +52,8 @@ function uniqueNonEmpty(values: readonly string[], label: string): string[] {
 }
 
 function validateWaveSize(size: number): number {
-  if (!Number.isInteger(size) || size < 1 || size > MAX_ROLLOUT_INSTALLATIONS) invalid('invalid-wave-size')
+  if (!Number.isInteger(size) || size < 1) invalid('invalid-wave-size')
+  if (size > MAX_EFFECTIVE_WAVE_SIZE) invalid(WAVE_SIZE_EXCEEDS_SWEEP_BUDGET)
 
   return size
 }
@@ -44,6 +74,8 @@ export function makeWaves(selected: readonly string[], canaries: readonly string
   if (new Set(normalizedCanaries).size !== normalizedCanaries.length) invalid('invalid-canaries')
   if (normalizedCanaries.some(value => !normalizedSelection.includes(value))) invalid('invalid-canaries')
 
+  if (normalizedCanaries.length > MAX_EFFECTIVE_WAVE_SIZE) invalid(WAVE_SIZE_EXCEEDS_SWEEP_BUDGET)
+
   if (normalizedSelection.length === 1) {
     if (normalizedCanaries.length && normalizedCanaries[0] !== normalizedSelection[0]) invalid('invalid-canaries')
 
@@ -55,6 +87,12 @@ export function makeWaves(selected: readonly string[], canaries: readonly string
 
   const canarySet = new Set(normalizedCanaries)
   const remaining = normalizedSelection.filter(value => !canarySet.has(value))
+  if (
+    remaining.length > 0 &&
+    !promotionSweepFeasibility(normalizedCanaries.length, Math.min(size, remaining.length)).ok
+  ) {
+    invalid(WAVE_SIZE_EXCEEDS_SWEEP_BUDGET)
+  }
   const waves = [normalizedCanaries.slice()]
 
   for (let index = 0; index < remaining.length; index += size) {

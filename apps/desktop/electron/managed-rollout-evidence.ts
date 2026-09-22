@@ -1,6 +1,7 @@
 import type { HealthEvidence, ScopeEvidence, ScopeCapture } from '../src/lib/managed-rollout-contract'
 import { validateHealthEvidence } from '../src/lib/managed-rollout-contract'
 import { probeRemoteHermesHome, readRemoteInstallId } from './remote-lifecycle'
+import { MAX_EFFECTIVE_WAVE_SIZE, MAX_SWEEP_PROBES } from '../src/lib/managed-rollout-waves'
 
 export const MAX_PROBE_CONCURRENCY = 8
 export const PROBE_DEADLINE_MS = 10_000
@@ -78,6 +79,14 @@ export interface EvidenceSweepOptions {
   freshnessMs?: number
 }
 
+export interface EvidenceSweepMetrics {
+  requestedProbes: number
+  completedProbes: number
+  timedOutProbes: number
+  retryCount: number
+  queueDelayMs: number
+}
+
 export interface EvidenceSweepResult {
   ok: boolean
   epochId: string
@@ -88,6 +97,7 @@ export interface EvidenceSweepResult {
   completeScope: boolean
   fresh: boolean
   nextAdmissionInstallIds: string[]
+  metrics: EvidenceSweepMetrics
 }
 
 function boundedReason(error: unknown): string {
@@ -152,6 +162,13 @@ function validateTargets(targets: readonly SweepTarget[]): void {
   if (targets.some(target => target.requiredScopeIds !== null && !unique(target.requiredScopeIds))) {
     throw new Error('invalid-sweep-targets')
   }
+  const included = targets.filter(target => !target.excluded)
+  const waveCounts = new Map<number, number>()
+  for (const target of included) waveCounts.set(target.wave, (waveCounts.get(target.wave) ?? 0) + 1)
+  if (
+    included.length > MAX_SWEEP_PROBES || waveCounts.size > 2 ||
+    [...waveCounts.values()].some(count => count > MAX_EFFECTIVE_WAVE_SIZE)
+  ) throw new Error('sweep-budget-exceeded')
 }
 
 /**
@@ -173,6 +190,8 @@ export async function runEvidenceSweep(
   const concurrency = Math.min(Math.max(1, requestedConcurrency), MAX_PROBE_CONCURRENCY)
   const observationsByIndex = new Map<number, SweepObservation>()
   const errors: Array<{ installId: string; reason: string }> = []
+  const requestedProbes = targets.filter(target => !target.excluded).length
+  let firstProbeStartedMono: number | undefined
   let cursor = 0
 
   const worker = async (): Promise<void> => {
@@ -191,6 +210,7 @@ export async function runEvidenceSweep(
 
       try {
         const now = nowMono()
+        firstProbeStartedMono ??= now
         const sweepDeadlineMono = startedMono + deadlineMs
         const probeDeadlineMono = Math.min(sweepDeadlineMono, now + PROBE_DEADLINE_MS)
         const result = await runBoundedProbe(
@@ -230,6 +250,9 @@ export async function runEvidenceSweep(
     .filter(target => !target.excluded)
     .sort((left, right) => left.wave - right.wave || left.installId.localeCompare(right.installId))
     .map(target => target.installId)
+  const timedOutProbes = errors.filter(
+    error => error.reason === 'probe-timeout' || error.reason === 'sweep-deadline-exceeded'
+  ).length
 
   return {
     ok: completeScope && fresh,
@@ -240,7 +263,14 @@ export async function runEvidenceSweep(
     errors: errors.sort((left, right) => left.installId.localeCompare(right.installId)),
     completeScope,
     fresh,
-    nextAdmissionInstallIds
+    nextAdmissionInstallIds,
+    metrics: {
+      requestedProbes,
+      completedProbes: observations.length,
+      timedOutProbes,
+      retryCount: 0,
+      queueDelayMs: firstProbeStartedMono === undefined ? 0 : Math.max(0, firstProbeStartedMono - startedMono)
+    }
   }
 }
 

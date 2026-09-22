@@ -103,6 +103,37 @@ describe('managed rollout evidence', () => {
     expect(result.completeScope).toBe(true)
     expect(result.fresh).toBe(true)
     expect(result.observations).toHaveLength(10)
+    expect(result.metrics).toMatchObject({
+      requestedProbes: 10,
+      completedProbes: 10,
+      timedOutProbes: 0,
+      retryCount: 0
+    })
+  })
+
+  it('accepts a settled wave and its successor at the 240-probe sweep ceiling', async () => {
+    const targets = Array.from({ length: 240 }, (_, index) => ({
+      installId: index.toString(16).padStart(32, '0'),
+      requiredScopeIds: ['default'],
+      wave: index < 120 ? 0 : 1,
+      excluded: false
+    }))
+
+    const result = await runEvidenceSweep(
+      targets,
+      async target => ({ health: healthy('epoch-240', ['default'], target.installId) }),
+      { epochId: 'epoch-240', nowMono: () => 1000, maxConcurrency: MAX_PROBE_CONCURRENCY }
+    )
+
+    expect(result.ok).toBe(true)
+    expect(result.observations).toHaveLength(240)
+    expect(result.metrics).toEqual({
+      requestedProbes: 240,
+      completedProbes: 240,
+      timedOutProbes: 0,
+      retryCount: 0,
+      queueDelayMs: 0
+    })
   })
 
   it('rejects stale epoch, missing scope and partial probe evidence', async () => {
@@ -149,6 +180,26 @@ describe('managed rollout evidence', () => {
     expect(result.ok).toBe(false)
     expect(result.fresh).toBe(false)
     expect(result.errors).toEqual([{ installId: INSTALL, reason: 'probe-timeout' }])
+    expect(result.metrics).toMatchObject({
+      requestedProbes: 1,
+      completedProbes: 0,
+      timedOutProbes: 1,
+      retryCount: 0
+    })
+  })
+
+  it('rejects a promotion sweep beyond 120 installations per wave or 240 total probes', async () => {
+    const targets = (count: number, wave: number) => Array.from({ length: count }, (_, index) => ({
+      installId: `${wave}-${index}`,
+      requiredScopeIds: [] as string[],
+      wave,
+      excluded: false
+    }))
+    const probe = async () => ({ health: healthy('epoch-1') })
+    await expect(runEvidenceSweep(targets(121, 0), probe, { epochId: 'epoch-1' }))
+      .rejects.toThrow('sweep-budget-exceeded')
+    await expect(runEvidenceSweep([...targets(120, 0), ...targets(120, 1), ...targets(1, 2)], probe,
+      { epochId: 'epoch-1' })).rejects.toThrow('sweep-budget-exceeded')
   })
 
   it('uses the existing lifecycle readers without mutating a remote install', async () => {
@@ -199,5 +250,11 @@ describe('managed rollout evidence', () => {
     expect(result.ok).toBe(false)
     expect(result.fresh).toBe(false)
     expect(result.errors).toEqual([{ installId: INSTALL, reason: 'sweep-deadline-exceeded' }])
+    expect(result.metrics).toMatchObject({
+      requestedProbes: 1,
+      completedProbes: 0,
+      timedOutProbes: 1,
+      retryCount: 0
+    })
   })
 })

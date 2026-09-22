@@ -157,6 +157,17 @@ export interface RolloutTarget {
   protocol: 1
 }
 
+/** Wire identity consumed by the pinned Python updater. Review is separate. */
+export interface ReviewedSourceBinding {
+  repositoryRoot: string
+  originUrl: string
+  resolvedRef: string
+  targetSha: string
+  assuranceProfile: string
+  assuranceEvidenceSha256: string
+  assuranceGeneration: number
+}
+
 export interface ScopeEvidence {
   scopeId: string
   profile: string
@@ -267,6 +278,7 @@ export interface RolloutPlanRow {
   admittedHead: string | null
   requiredScopeIds: string[] | null
   eligible: boolean
+  reviewedSource?: ReviewedSourceBinding
 }
 
 /** The main-owned canonical plan used by preflight/revalidation. */
@@ -491,6 +503,34 @@ export function validateRolloutTarget(value: unknown, path = 'target'): RolloutT
   }
 }
 
+export function validateReviewedSourceBinding(value: unknown, path = 'reviewedSource'): ReviewedSourceBinding {
+  if (!isRecord(value)) fail(path, 'expected object')
+  exactKeys(value, [
+    'repositoryRoot', 'originUrl', 'resolvedRef', 'targetSha',
+    'assuranceProfile', 'assuranceEvidenceSha256', 'assuranceGeneration'
+  ], path)
+  const root = stringValue(value.repositoryRoot, `${path}.repositoryRoot`)
+  const origin = stringValue(value.originUrl, `${path}.originUrl`)
+  const ref = stringValue(value.resolvedRef, `${path}.resolvedRef`)
+  const profile = stringValue(value.assuranceProfile, `${path}.assuranceProfile`)
+  if (!(/^(?:[A-Za-z]:[\\/]|\/)/.test(root)) || /[\x00-\x1f\x7f]/.test(root))
+    fail(`${path}.repositoryRoot`, 'expected absolute path')
+  if (/\s|[\x00-\x1f\x7f]|[?#]/.test(origin)) fail(`${path}.originUrl`, 'credential-free remote required')
+  if (!ref.startsWith('refs/remotes/origin/') || ref.endsWith('/') || ref.includes('..') || ref.includes('//'))
+    fail(`${path}.resolvedRef`, 'expected resolved origin ref')
+  if (/\s|[\x00-\x1f\x7f]/.test(ref) || /\s|[\x00-\x1f\x7f]/.test(profile))
+    fail(path, 'source contains control or whitespace')
+  return {
+    repositoryRoot: root,
+    originUrl: origin,
+    resolvedRef: ref,
+    targetSha: shaValue(value.targetSha, `${path}.targetSha`) as string,
+    assuranceProfile: profile,
+    assuranceEvidenceSha256: fingerprintValue(value.assuranceEvidenceSha256, `${path}.assuranceEvidenceSha256`),
+    assuranceGeneration: integerValue(value.assuranceGeneration, `${path}.assuranceGeneration`)
+  }
+}
+
 export function validateScopeEvidence(value: unknown, path = 'scope'): ScopeEvidence {
   if (!isRecord(value)) fail(path, 'expected object')
   exactKeys(value, ['scopeId', 'profile', 'restored', 'ready', 'codeSha', 'processIdentityVerified'], path)
@@ -700,7 +740,8 @@ function validatePlanRow(value: unknown, path: string): RolloutPlanRow {
       'sourceFingerprint',
       'admittedHead',
       'requiredScopeIds',
-      'eligible'
+      'eligible',
+      ...(Object.prototype.hasOwnProperty.call(value, 'reviewedSource') ? ['reviewedSource'] : [])
     ],
     path
   )
@@ -712,7 +753,10 @@ function validatePlanRow(value: unknown, path: string): RolloutPlanRow {
     sourceFingerprint: fingerprintValue(value.sourceFingerprint, `${path}.sourceFingerprint`),
     admittedHead: shaValue(value.admittedHead, `${path}.admittedHead`, true),
     requiredScopeIds: nullableStringArray(value.requiredScopeIds, `${path}.requiredScopeIds`),
-    eligible: booleanValue(value.eligible, `${path}.eligible`)
+    eligible: booleanValue(value.eligible, `${path}.eligible`),
+    ...(Object.prototype.hasOwnProperty.call(value, 'reviewedSource')
+      ? { reviewedSource: validateReviewedSourceBinding(value.reviewedSource, `${path}.reviewedSource`) }
+      : {})
   }
 }
 

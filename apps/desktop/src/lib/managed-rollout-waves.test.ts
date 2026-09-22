@@ -4,6 +4,9 @@ import {
   estimateCapabilityBoundOperationalMs,
   estimateOperationalMs,
   makeWaves,
+  MAX_EFFECTIVE_WAVE_SIZE,
+  MAX_SWEEP_PROBES,
+  promotionSweepFeasibility,
   requiredApprovalCount
 } from './managed-rollout-waves'
 
@@ -22,6 +25,30 @@ describe('managed rollout wave helpers', () => {
     expect(makeWaves(['only'], [], 1)).toEqual([['only']])
     expect(makeWaves(['only'], ['only'], 1)).toEqual([['only']])
     expect(() => makeWaves(['only'], ['other'], 1)).toThrow('invalid-canaries')
+  })
+
+  it('accepts 120 canaries plus 120 successors and refuses 121 with a named reason', () => {
+    const selected = Array.from({ length: MAX_SWEEP_PROBES }, (_, index) => `install-${index}`)
+    const canaries = selected.slice(0, MAX_EFFECTIVE_WAVE_SIZE)
+    const waves = makeWaves(selected, canaries, MAX_EFFECTIVE_WAVE_SIZE)
+
+    expect(waves[0]).toHaveLength(MAX_EFFECTIVE_WAVE_SIZE)
+    expect(waves[1]).toHaveLength(MAX_EFFECTIVE_WAVE_SIZE)
+    expect(promotionSweepFeasibility(120, 120)).toMatchObject({ ok: true, probeBudget: 240, reason: null })
+    expect(promotionSweepFeasibility(121, 120)).toMatchObject({
+      ok: false,
+      reason: 'wave-size-exceeds-sweep-budget'
+    })
+    expect(() => makeWaves(selected, selected.slice(0, 121), 120)).toThrow('wave-size-exceeds-sweep-budget')
+    expect(() => makeWaves(selected, ['install-0'], 121)).toThrow('wave-size-exceeds-sweep-budget')
+  })
+
+  it('keeps the 500 target selection ceiling separate from the effective wave bound', () => {
+    const selected = Array.from({ length: 500 }, (_, index) => `install-${index}`)
+    const waves = makeWaves(selected, ['install-0'], MAX_EFFECTIVE_WAVE_SIZE)
+
+    expect(waves.flat()).toEqual(selected)
+    expect(Math.max(...waves.map(wave => wave.length))).toBeLessThanOrEqual(MAX_EFFECTIVE_WAVE_SIZE)
   })
 
   it('counts the mandatory canary approval and later manual boundaries', () => {

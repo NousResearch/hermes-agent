@@ -1328,7 +1328,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         Windows pipes don't support select(); the blocking path is kept there and the lazy reconcile in
         poll()/wait() remains the safety net. See #68915, #8340.
         """
-        first_chunk = True
+        # ``bash -lic`` without a tty writes its startup warnings one write() per line, so the
+        # reader can wake between them; strip leading noise from every chunk until the
+        # process has produced real output, not just from the first read.
+        head_noise = True
         # A split multibyte UTF-8 char would become U+FFFD with stateless decoding; the
         # incremental decoder holds the partial sequence until the rest arrives.
         decoder = codecs.getincrementaldecoder("utf-8")(errors="replace")
@@ -1339,10 +1342,10 @@ class ProcessRegistry(ProcessCheckpointMixin):
         # same treatment the foreground path already has in
         # ``tools/environments/base.py::_wait_for_process``. (Ported from openclaw/openclaw#112325.)
         def _append_chunk(chunk: str):
-            nonlocal first_chunk
-            if first_chunk:
+            nonlocal head_noise
+            if head_noise:
                 chunk = self._clean_shell_noise(chunk)
-                first_chunk = False
+                head_noise = not chunk.strip()
             self._ingest_output(session, chunk)
         try:
             proc = session.process

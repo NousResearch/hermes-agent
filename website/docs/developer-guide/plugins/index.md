@@ -1470,7 +1470,7 @@ re-discovery. Every one of those paths runs a **real forced rescan** (`discover_
 ```python
 {"name": "late-mcp", "key": "late-mcp",
  "activated_now": {"gateway_commands": ["late"], "callbacks": ["telegram"]},
- "deferred": {"tools": ["late_tool"], "prompt": ["late.section"], "mcp_servers": ["late_mcp__worker"]}}
+ "deferred": {"tools": ["late_tool"], "prompt": ["late.section"], "mcp_servers": ["worker"]}}
 ```
 
 - **Active immediately** — gateway slash commands, gateway transform hooks / other hooks, and platform
@@ -1481,7 +1481,7 @@ re-discovery. Every one of those paths runs a **real forced rescan** (`discover_
   `CallbackQueryHandler` (PTB dispatches the first match per group), exactly as they would sit at connect.
 - **Deferred** — `tools` and `prompt` sections apply from the **next session** (the running session's
   prompt/tool schema is cache-stable, same rule as `/skills install`); `mcp_servers` (the plugin's
-  `mcp.json` servers, named `<namespace>__<server>`) connect on `mcp.reload` or the next session.
+  `mcp.json` servers, by their mcp.json names) connect on `mcp.reload` or the next session.
 - There is no un-wire: disabling a plugin mid-run keeps its already-wired handlers until the gateway
   restarts, and the surfaces say so.
 

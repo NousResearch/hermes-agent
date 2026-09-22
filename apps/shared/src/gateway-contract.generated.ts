@@ -3926,7 +3926,7 @@ export interface PluginSettingField {
   has_value?: boolean | null
 }
 export type PluginSettingFieldType = 'string' | 'number' | 'boolean' | 'enum' | 'secret' | 'json'
-/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}`` with only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and ``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server names (``<namespace>__<server>``, as ``mcp.servers.*`` know them) — not connected until ``mcp.reload``. The Desktop "Installed. Connect its servers now" card reads exactly ``deferred.mcp_servers``. */
+/** What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}`` with only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) — live in the running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and ``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server names (exactly as ``mcp.servers.*`` know them) — not connected until ``mcp.reload``. The Desktop "Installed. Connect its servers now" card reads exactly ``deferred.mcp_servers``. */
 export interface PluginActivation {
   name: string
   key: string

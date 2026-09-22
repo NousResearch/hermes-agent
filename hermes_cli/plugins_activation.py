@@ -31,8 +31,7 @@ def plugin_activation_summary(manager: Any, plugin_key: str) -> Dict[str, Any]:
     ``activated_now``: ``gateway_commands`` (slash names), ``gateway_transforms`` / ``hooks`` (hook names),
     ``callbacks`` (platforms with a ``register_platform_handler`` factory / Slack action ids).
     ``deferred``: ``tools`` (tool names; next session), ``prompt`` (section ids; next session),
-    ``mcp_servers`` (the plugin's mcp.json server names as registered — ``<namespace>__<server>``;
-    until ``mcp.reload``)."""
+    ``mcp_servers`` (the plugin's mcp.json server names exactly as registered; until ``mcp.reload``)."""
     loaded = manager._plugins.get(plugin_key)
     manifest = getattr(loaded, "manifest", None)
     name = getattr(manifest, "name", None) or plugin_key

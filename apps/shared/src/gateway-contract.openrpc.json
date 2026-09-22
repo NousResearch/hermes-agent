@@ -19378,7 +19378,7 @@
       },
       "PluginActivation": {
         "additionalProperties": false,
-        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}``\nwith only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names),\n``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in\nthe running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and\n``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server\nnames (``<namespace>__<server>``, as ``mcp.servers.*`` know them) \u2014 not connected until ``mcp.reload``.\nThe Desktop \"Installed. Connect its servers now\" card reads exactly ``deferred.mcp_servers``.",
+        "description": "What a plugin loaded mid-run does NOW vs later (``hermes_cli.plugins_activation``), ``{kind: [names]}``\nwith only non-empty kinds present. ``activated_now`` kinds: ``gateway_commands`` (slash names),\n``gateway_transforms`` / ``hooks`` (hook names), ``callbacks`` (platforms / ``slack:<action_id>``) \u2014 live in\nthe running gateway once it reloaded (``gateway_reloaded``). ``deferred`` kinds: ``tools`` (tool names) and\n``prompt`` (section ids) apply from the next session; ``mcp_servers`` lists the plugin's mcp.json server\nnames (exactly as ``mcp.servers.*`` know them) \u2014 not connected until ``mcp.reload``.\nThe Desktop \"Installed. Connect its servers now\" card reads exactly ``deferred.mcp_servers``.",
         "properties": {
           "name": {
             "title": "Name",

@@ -334,7 +334,11 @@ def _marker_only_restart_obsolete() -> bool:
     that died before its inventory was recorded, #115638) clears once every live gateway is
     current on the checkout — there is no recorded owed set, so the fleet running the code on disk
     is the whole of the evidence the marker's warning can be about, even after HEAD moved past
-    ``expected_sha`` by an out-of-band pull.
+    ``expected_sha`` by an out-of-band HEAD move, provided that the recorded
+    update is still contained in the checkout. A local cherry-pick or commit
+    after an update changes HEAD without creating a replacement obligation;
+    comparing the live fleet to that checkout is the only useful recovery
+    evidence. An unrelated or older checkout remains fail-closed.
 
     A serve/dashboard row whose supervisor owns the restart (Desktop backend, systemd/launchd
     unit, Windows service) is outside the gateway matrix's evidence, not evidence against it —
@@ -388,8 +392,9 @@ def _marker_only_restart_obsolete() -> bool:
         return False
     checkout_sha = _current_checkout_sha()
     if owed is not None and checkout_sha != expected_sha:
-        return False  # a newer pull moved HEAD; it owns a fresh obligation
-    target_sha = expected_sha if owed is not None else checkout_sha
+        if not _expected_sha_is_ancestor_of_checkout(expected_sha):
+            return False
+    target_sha = checkout_sha
     if not target_sha:
         return False
     try:
@@ -416,6 +421,25 @@ def _marker_only_restart_obsolete() -> bool:
         len(fleet), target_sha[:10],
     )
     return True
+
+
+def _expected_sha_is_ancestor_of_checkout(expected_sha: str) -> bool:
+    """True when the current checkout contains an obligation's expected SHA.
+
+    A successful probe distinguishes a local-ahead checkout from an unrelated
+    or older one. Probe failures deliberately retain the obligation.
+    """
+    try:
+        from hermes_cli.update_cmd import _m
+
+        result = subprocess.run(
+            ["git", "merge-base", "--is-ancestor", expected_sha, "HEAD"],
+            cwd=str(_m().PROJECT_ROOT), capture_output=True, text=True, timeout=10,
+        )
+        return result.returncode == 0
+    except Exception:
+        logger.debug("Could not verify obligation SHA ancestry for %s", expected_sha, exc_info=True)
+        return False
 
 
 def _receipt_restart_phase_completed(receipt: dict) -> str | None:

@@ -744,6 +744,50 @@ def test_startup_warn_discharged_when_fleet_current(monkeypatch, capsys):
     assert not update_cmd_fleet._fleet_restart_obligation_armed()
 
 
+def test_startup_warn_discharged_when_checkout_contains_inventoried_obligation(monkeypatch, capsys):
+    """A carried cherry-pick moves HEAD but does not create a replacement obligation (#119367)."""
+    expected_sha, checkout_sha = "e" * 40, "f" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=expected_sha, runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, checkout_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_expected_sha_is_ancestor_of_checkout", lambda sha: sha == expected_sha)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout_sha,
+             "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert capsys.readouterr().err == ""
+    assert not update_cmd_fleet._fleet_restart_obligation_armed()
+
+
+def test_startup_warn_kept_when_inventoried_obligation_is_not_ancestor(monkeypatch, capsys):
+    """Control: an unrelated checkout is not proof that the recorded update ran."""
+    expected_sha, checkout_sha = "e" * 40, "f" * 40
+    update_cmd._write_fleet_restart_pending_marker(
+        expected_sha=expected_sha, runtimes=[{"kind": "gateway", "profile": "default"}],
+    )
+    _patch_marker_sha(monkeypatch, checkout_sha)
+    monkeypatch.setattr(update_cmd_fleet, "_expected_sha_is_ancestor_of_checkout", lambda sha: False)
+    monkeypatch.setattr(
+        "hermes_cli.update_receipt.collect_fleet_versions",
+        lambda **kwargs: [
+            {"profile": "default", "pid": 42, "code_sha": checkout_sha,
+             "code_version": "0.21.0", "state": "current"}
+        ],
+    )
+
+    update_cmd._warn_pending_fleet_restart_on_startup()
+
+    assert "did not restart running gateways" in capsys.readouterr().err
+    assert update_cmd_fleet._fleet_restart_obligation_armed()
+
+
 def test_startup_warn_discharged_when_multiplexer_covers_owed_profiles(monkeypatch, capsys):
     """A current multiplexer discharges every profile named in its live record (#113350)."""
     disk_sha = "e" * 40

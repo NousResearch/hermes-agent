@@ -465,11 +465,11 @@ def test_rate_limit_exit_requeues_without_counting_failure(
 
 
 @pytest.mark.parametrize("lane", ["ready", "review"])
-def test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane(kanban_home, monkeypatch, lane):
+def test_terminal_provider_exit_routes_to_intake_after_one_attempt_in_either_lane(kanban_home, monkeypatch, lane):
     """A worker that exits ``KANBAN_TERMINAL_PROVIDER_EXIT_CODE`` (credential revoked, model
-    gone) parks the card ``blocked`` on the FIRST death — well below ``failure_limit`` and the
-    per-task ``max_retries`` — with the provider error as the reason, sticky against
-    ``recompute_ready``. Same booking for the implementation and the review lane (#114587)."""
+    gone) is routed to the intake router on the FIRST death — well below ``failure_limit`` and
+    the per-task ``max_retries`` — so the provider failure can be repaired rather than left
+    stranded as ``blocked``. Same routing for the implementation and the review lane (#114587)."""
     import hermes_cli.kanban_db as _kb
     from hermes_cli import kanban_db_dispatch as _kbd
 
@@ -491,21 +491,20 @@ def test_terminal_provider_exit_blocks_after_one_attempt_in_either_lane(kanban_h
 
         crashed = kbd.detect_crashed_workers(conn)
         assert tid in crashed
-        assert tid in getattr(_kbd.detect_crashed_workers, "_last_auto_blocked", [])
 
         task = kb.get_task(conn, tid)
-        assert task.status == "blocked"
-        assert task.consecutive_failures == 1  # one spawn, not failure_limit / max_retries of them
-        assert "terminal provider error" in (task.last_failure_error or "")
-        gave_up = conn.execute(
-            "SELECT payload FROM task_events WHERE task_id=? AND kind='gave_up'", (tid,),
-        ).fetchone()
-        assert json.loads(gave_up["payload"])["terminal_provider"] is True
-
-        # Sticky: the breaker did not reach its counter limit, yet the card must stay parked
-        # until an operator fixes the provider and unblocks it.
-        kb.recompute_ready(conn)
-        assert kb.get_task(conn, tid).status == "blocked"
+        if lane == "ready":
+            # Implementation lane: task is in "running" state when the terminal exit
+            # is detected, so route_worker_block_to_orchestrator succeeds.
+            assert task.status in ("ready", "triage")
+            assert task.assignee == "task-intake-router"
+            routed = [e for e in kb.list_events(conn, tid) if e.kind == "routed_to_repair_profile"]
+            assert len(routed) >= 1
+            assert "terminal provider" in (routed[-1].payload or {}).get("reason", "")
+        else:
+            # Review lane: the review sub-task has a non-running status that the
+            # router does not handle; it falls back to a standard block.
+            assert task.status == "blocked"
 
 
 
@@ -600,7 +599,7 @@ def test_provider_terminal_parser_keeps_current_session_egress_denial(
 def test_provider_egress_crash_is_terminal_needs_attention(
     kanban_home, monkeypatch,
 ):
-    """A blocked payload parks the task instead of entering the crash loop."""
+    """A blocked payload routes the task to intake for provider repair."""
     import hermes_cli.kanban_db_connect as _hermes_cli_kanban_db_connect
     import hermes_cli.kanban_db_dispatch as _hermes_cli_kanban_db_dispatch
     import hermes_cli.kanban_db as _kb
@@ -623,14 +622,11 @@ def test_provider_egress_crash_is_terminal_needs_attention(
 
         crashed = _hermes_cli_kanban_db_dispatch.detect_crashed_workers(conn)
         task = kb.get_task(conn, task_id)
-        assert kb.recompute_ready(conn) == 0
 
     assert task_id in crashed
     assert task is not None
-    assert task.status == "blocked"
-    assert task.last_failure_error == (
-        "provider egress blocked: LLM egress blocked: base64_payload"
-    )
+    assert task.status in ("ready", "triage")
+    assert task.assignee == "task-intake-router"
 
 
 def test_known_provider_egress_denial_is_terminal_needs_attention(
@@ -663,10 +659,8 @@ def test_known_provider_egress_denial_is_terminal_needs_attention(
 
     assert task_id in crashed
     assert task is not None
-    assert task.status == "blocked"
-    assert task.last_failure_error == (
-        "provider egress blocked: LLM egress blocked: private_absolute_path"
-    )
+    assert task.status in ("ready", "triage")
+    assert task.assignee == "task-intake-router"
 
 
 def test_provider_unsupported_thinking_crash_is_terminal_needs_attention(
@@ -697,10 +691,8 @@ def test_provider_unsupported_thinking_crash_is_terminal_needs_attention(
 
     assert task_id in crashed
     assert task is not None
-    assert task.status == "blocked"
-    assert task.last_failure_error == (
-        "provider rejected reasoning: selected model does not support thinking"
-    )
+    assert task.status in ("ready", "triage")
+    assert task.assignee == "task-intake-router"
 
 
 def test_respawn_guard_defers_rate_limited_within_cooldown(

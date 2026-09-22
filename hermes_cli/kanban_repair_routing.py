@@ -13,8 +13,11 @@ _REPAIR_RULES: tuple[tuple[tuple[str, ...], str], ...] = (
     # "not a hermes command" as fail-closed guidance; those phrases must not
     # divert them to maintenance instead of the fixed PR-feedback worker.
     (("local pr ci", "audit pr", "audit this pull request"), "pr-local-ci-auditor"),
-    (("github pr feedback", "complete-feedback", "inspect-pr"), "pr-repair-steward"),
+    # Maintenance conditions take priority over generic PR-feedback routing: a card
+    # with "GitHub PR feedback" in the title but "usage limits" in the body failed
+    # because of quota exhaustion, not a PR-feedback logic error.
     (("usage limits", "untrusted receipt", "missing hermes_cli", "audit-pr unavailable", "inspect-pr unavailable", "audit_deferred"), "hermes-maintenance-steward"),
+    (("github pr feedback", "complete-feedback", "inspect-pr"), "pr-repair-steward"),
     (("federated runner", "federation", "federated"), "federation-steward"),
     (("pytest suite", "test suite", "test coverage"), "test-contract-steward"),
     (("content discovery", "useful content", "community discovery"), "nerdy-content-scout"),

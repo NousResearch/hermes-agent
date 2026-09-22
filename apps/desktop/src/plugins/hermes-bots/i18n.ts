@@ -104,6 +104,12 @@ type BotsMessages = {
     helpPromptPlaceholder: string
     descriptionHint: string
     newChatWith: string
+    clearChat: string
+    clearChatTitle: string
+    clearChatDescription: string
+    clearChatAction: string
+    clearingChat: string
+    chatCleared: string
     /** Re-opens the forever-chat on purpose. A plain row click only returns to
      *  the tabs already open, so a closed Bot Chat needs an explicit ask. */
     openBotChat: string
@@ -379,6 +385,13 @@ const en: BotsMessages = {
     helpPromptPlaceholder: 'What should this bot help with?',
     descriptionHint: 'Leave blank to generate from the bot’s name and description.',
     newChatWith: 'New chat with this bot',
+    clearChat: 'Clear chat…',
+    clearChatTitle: 'Clear this chat?',
+    clearChatDescription:
+      "This removes this conversation's messages and resets its working context. Your bot's saved memories, personality, skills, settings, files, and routines remain. Saved memories may still influence future replies.",
+    clearChatAction: 'Clear chat',
+    clearingChat: 'Clearing…',
+    chatCleared: 'Chat cleared',
     openBotChat: 'Open Bot Chat',
     pinToTop: 'Pin to top',
     unpin: 'Unpin',
@@ -638,6 +651,13 @@ const ja: BotsMessages = {
     helpPromptPlaceholder: 'このボットは何を手伝いますか？',
     descriptionHint: '空欄のままにすると、ボットの名前と説明から生成します。',
     newChatWith: 'このボットと新しいチャット',
+    clearChat: 'チャットを消去…',
+    clearChatTitle: 'このチャットを消去しますか？',
+    clearChatDescription:
+      'この会話のメッセージを削除し、作業コンテキストをリセットします。ボットの保存済みメモリ、パーソナリティ、スキル、設定、ファイル、ルーチンは保持されます。保存済みメモリは今後の返信に影響する場合があります。',
+    clearChatAction: 'チャットを消去',
+    clearingChat: '消去中…',
+    chatCleared: 'チャットを消去しました',
     openBotChat: 'ボットチャットを開く',
     pinToTop: '先頭にピン留め',
     unpin: 'ピン留めを解除',
@@ -893,6 +913,13 @@ const zh: BotsMessages = {
     helpPromptPlaceholder: '这个机器人应该帮你做什么？',
     descriptionHint: '留空则根据机器人的名称和描述生成。',
     newChatWith: '与此机器人开新聊天',
+    clearChat: '清除聊天…',
+    clearChatTitle: '清除此聊天？',
+    clearChatDescription:
+      '这会删除此对话的消息并重置其工作上下文。机器人的已保存记忆、个性、技能、设置、文件和例程将保留。已保存记忆仍可能影响未来的回复。',
+    clearChatAction: '清除聊天',
+    clearingChat: '正在清除…',
+    chatCleared: '聊天已清除',
     openBotChat: '打开机器人聊天',
     pinToTop: '置顶',
     unpin: '取消置顶',
@@ -1145,6 +1172,13 @@ const zhHant: BotsMessages = {
     helpPromptPlaceholder: '這個機器人應該幫你做什麼？',
     descriptionHint: '留空則依機器人的名稱和描述產生。',
     newChatWith: '與此機器人開新聊天',
+    clearChat: '清除聊天…',
+    clearChatTitle: '清除此聊天？',
+    clearChatDescription:
+      '這會刪除此對話的訊息並重設其工作情境。機器人的已儲存記憶、個性、技能、設定、檔案和例行工作將保留。已儲存記憶仍可能影響未來的回覆。',
+    clearChatAction: '清除聊天',
+    clearingChat: '正在清除…',
+    chatCleared: '聊天已清除',
     openBotChat: '開啟機器人聊天',
     pinToTop: '釘選到頂端',
     unpin: '取消釘選',

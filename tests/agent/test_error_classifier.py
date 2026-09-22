@@ -1032,6 +1032,28 @@ class TestClassifyApiError:
         """Only a positive-value rejection of ``reasoning.max_tokens`` spends the reasoning-strip retry."""
         assert is_reasoning_field_rejection(msg) is expected
 
+    def test_venice_reasoning_max_tokens_rejection_takes_main_loop_rung(self):
+        """The main-loop verdict (not just the raw helper) routes the Venice ``reasoning.max_tokens
+        must be positive`` 400 to the drop-the-disable retry rung: the reasoning wire control was
+        present and rejected, even though the wording is a value constraint rather than an
+        \"unsupported\" marker. This is the exact regression for the shared
+        ``is_reasoning_field_rejection()`` path — an unrelated top-level output-cap 400 that merely
+        mentions reasoning must NOT enter the reasoning retry path."""
+        venice = classify_api_error(
+            MockAPIError("Error code: 400 - {'error': 'reasoning.max_tokens must be positive'}", status_code=400),
+            provider="venice", model="relay-model",
+        )
+        assert venice.reason == FailoverReason.reasoning_mandatory
+        assert venice.retryable is True and venice.should_fallback is False
+
+        for msg in (
+            "Error code: 400 - max_tokens must be positive (reasoning is enabled for this model)",
+            "invalid request: max_tokens must be at least 1; note reasoning.effort is supported",
+            "max_tokens must be positive",
+        ):
+            unrelated = classify_api_error(MockAPIError(msg, status_code=400), provider="custom", model="m")
+            assert unrelated.reason != FailoverReason.reasoning_mandatory, msg
+
     # ── Provider-specific: llama.cpp grammar-parse ──
 
     def test_llama_cpp_unable_to_generate_parser_template(self):

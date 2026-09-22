@@ -24,7 +24,7 @@ import threading
 import types
 from contextlib import suppress
 from dataclasses import dataclass, field
-from functools import cached_property
+from functools import cached_property, wraps
 from pathlib import Path
 from typing import Any, Callable, Dict, List, Mapping, Optional, Set, Tuple, Union
 
@@ -47,7 +47,7 @@ from hermes_cli.plugins_discovery import (  # noqa: F401 — re-exported
 )
 from hermes_cli.plugins_loader import (
     PluginLoaderMixin, _BARE_MODULE_SCOPE, _MODULE_NAMESPACE_LOCK, _NS_PARENT, _evict_modules,
-    _plugin_home_scope, _serialized_replacement,
+    _plugin_home_scope, _serialized_replacement, in_plugin_load_worker,
 )
 from hermes_cli.plugins_dispatch import (  # noqa: F401 — re-exported
     DEFAULT_SYSTEM_PROMPT_SECTION_MAX_CHARS, HERMES_EVENT_NAMESPACE, MAX_SYSTEM_PROMPT_SECTION_CHARS,
@@ -229,6 +229,13 @@ class PluginContext:
         self.manifest = manifest
         self._manager = manager
         self._llm: Any = None  # lazy; tests preseed it (see ``llm``)
+        # Set when this context's load overran ``plugins.load_timeout_seconds``: the abandoned worker may
+        # still be running register(), and nothing it registers from then on may reach a registry.
+        self._load_abandoned = False
+
+    def _abandon_load(self) -> None:
+        """Mark this load as timed out; every later ``register_*``/``subscribe``/``on_unload`` is ignored."""
+        self._load_abandoned = True
 
     @property
     def plugin_id(self) -> str:
@@ -1110,6 +1117,31 @@ for _row in _SCOPED_PROVIDER_REGISTRARS:
 del _row
 
 
+def _ignore_after_abandoned_load(method):
+    """Turn a registrar into a no-op once the context's load timed out: the abandoned worker thread may
+    still be executing register(), and a late registration would land in registries that the failure
+    path already swept (#108139)."""
+    @wraps(method)
+    def wrapped(self, *args, **kwargs):
+        if getattr(self, "_load_abandoned", False):
+            logger.warning(
+                "Plugin '%s' called %s() after its load timed out; ignored", self.manifest.name,
+                method.__name__,
+            )
+            return None
+        return method(self, *args, **kwargs)
+
+    return wrapped
+
+
+# Every mutating entry point plugins reach through ``ctx`` during register(); applied by name so the
+# guard cannot drift from the surface as registrars are added.
+for _name, _method in list(vars(PluginContext).items()):
+    if callable(_method) and (_name.startswith("register_") or _name in {"subscribe", "on_unload"}):
+        setattr(PluginContext, _name, _ignore_after_abandoned_load(_method))
+del _name, _method
+
+
 def _resolve_hook_callback_timeout() -> float:
     """Effective hook-callback timeout from ``plugins.hook_callback_timeout`` (default 30s; ``<= 0``
     disables the threaded path; clamped to ``_MAX_HOOK_CALLBACK_TIMEOUT_SECS``)."""
@@ -1232,6 +1264,11 @@ class PluginManager(PluginLoaderMixin, PluginDispatchMixin, PluginLedgerMixin):
     def discover_and_load(self, force: bool = False) -> None:
         """Scan all plugin sources and load each plugin found; ``force`` unloads first so config
         changes / new bundled backends become visible in long-lived sessions."""
+        if self._discovered and not force and in_plugin_load_worker():
+            # A plugin whose register() re-enters discovery (importing model_tools does) runs on a
+            # deadline worker that cannot re-acquire the sweep's RLock; the flag is already set for the
+            # whole sweep, so return where the locked re-entry used to. Every other caller still waits.
+            return
         with self._discovery_lock, _plugin_home_scope(self.home_path):
             if self._discovered and not force:
                 return
@@ -1631,9 +1668,10 @@ def start_background_plugin_discovery() -> None:
 
 
 def _join_background_discovery(timeout: float = 30.0) -> None:
-    """Wait for an in-flight background discovery (no-op from its own thread)."""
+    """Wait for an in-flight background discovery (no-op from its own thread or a plugin-load worker it
+    spawned — that worker's parent is blocked waiting on it)."""
     t = _background_discovery_thread
-    if t is None or not t.is_alive() or t is threading.current_thread():
+    if t is None or not t.is_alive() or t is threading.current_thread() or in_plugin_load_worker():
         return
     t.join(timeout=timeout)
 

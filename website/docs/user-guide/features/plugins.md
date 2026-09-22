@@ -168,6 +168,13 @@ plugins:
   # subagent_stop are never moved onto a timeout worker.
   # Shell hooks keep their own per-entry timeout under the top-level hooks: key.
   hook_callback_timeout: 30
+  # Optional: deadline (seconds) for one plugin's import + register() at load.
+  # A plugin that overruns it is skipped with the reason "load timed out after
+  # Ns" (reported like any other load failure: the startup warning and the
+  # in-session `/plugins` listing) and the remaining plugins keep loading; the
+  # stuck thread is abandoned. Default 10; set 0 to disable; values above 600
+  # are clamped.
+  load_timeout_seconds: 10
 ```
 
 Three ways to flip state:

@@ -1683,6 +1683,10 @@ DEFAULT_CONFIG = {
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,
+        # Deadline (seconds) for one plugin's import + register() at load. A plugin that overruns it is
+        # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
+        # abandoned. 0 = no deadline (load inline). Max 600.
+        "load_timeout_seconds": 10,
         # Keep loading external plugins that still import pre-decomposition module paths after the
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.

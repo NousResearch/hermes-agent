@@ -479,6 +479,53 @@ class TestLoadIsolation:
         with pytest.raises(KeyboardInterrupt):
             PluginManager().discover_and_load()
 
+    def test_register_overrunning_load_timeout_skips_only_that_plugin(self, hermes_home, caplog):
+        """A register() that never returns used to hang startup forever (#108139). Under
+        ``plugins.load_timeout_seconds`` that plugin alone is recorded as failed with a named reason, its
+        pre-hang registrations are disposed, later plugins still load, and anything the abandoned worker
+        registers afterwards is ignored."""
+        import sys
+        import threading
+        sys._deadline_gate, sys._deadline_done = threading.Event(), threading.Event()
+        _write_plugin(hermes_home / "plugins", "b_slow", register_body=(
+            "import sys; ctx.register_hook('pre_tool_call', lambda **kw: None); sys._deadline_gate.wait(5); "
+            "ctx.register_hook('post_tool_call', lambda **kw: None); sys._deadline_done.set()"))
+        _write_plugin(hermes_home / "plugins", "c_after")
+        _enable(hermes_home, ["b_slow", "c_after"])
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": ["b_slow", "c_after"], "load_timeout_seconds": 0.3}}))
+        mgr = PluginManager()
+        try:
+            with caplog.at_level(logging.WARNING, logger="hermes_cli.plugins"):
+                mgr.discover_and_load()
+                assert mgr._plugins["c_after"].enabled
+                assert not mgr._plugins["b_slow"].enabled
+                assert "load timed out after 0.3s" in (mgr._plugins["b_slow"].error or "")
+                assert mgr._hooks.get("pre_tool_call", []) == []  # registered before the hang → disposed
+                sys._deadline_gate.set()  # release the abandoned worker; its late registration must bounce
+                assert sys._deadline_done.wait(5)
+            assert mgr._hooks.get("post_tool_call", []) == []
+            assert "called register_hook() after its load timed out; ignored" in caplog.text
+        finally:
+            del sys._deadline_gate, sys._deadline_done
+
+    def test_load_timeout_zero_runs_register_inline(self, hermes_home):
+        """``plugins.load_timeout_seconds: 0`` disables the deadline: register() runs on the calling thread."""
+        import sys
+        import threading
+        _write_plugin(hermes_home / "plugins", "inline",
+                      register_body="import sys, threading; sys._load_thread = threading.current_thread()")
+        (hermes_home / "config.yaml").write_text(yaml.safe_dump(
+            {"plugins": {"enabled": ["inline"], "load_timeout_seconds": 0}}))
+        try:
+            mgr = PluginManager()
+            mgr.discover_and_load()
+            assert mgr._plugins["inline"].enabled
+            assert sys._load_thread is threading.current_thread()
+        finally:
+            if hasattr(sys, "_load_thread"):
+                del sys._load_thread
+
 
 class TestBundledKeyShadowing:
     def test_impostor_dir_cannot_claim_a_bundled_key(self, tmp_path, monkeypatch, caplog):

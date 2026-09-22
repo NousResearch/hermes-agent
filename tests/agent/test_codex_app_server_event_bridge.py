@@ -193,6 +193,18 @@ class TestToolProgressDispatch:
         assert call.args[1] == "exec_command"
         assert "ls /tmp" in call.args[2]  # preview
         assert call.args[3] == {"command": "ls /tmp", "cwd": "/tmp"}
+        assert call.kwargs["call_id"]
+
+    def test_idless_command_keeps_legacy_progress_dedup(self):
+        """An absent upstream ID must not make unrelated Codex calls collide."""
+        agent = _make_stub_agent()
+        bridge = make_codex_app_server_event_bridge(agent)
+
+        bridge(_item_started({"type": "commandExecution", "command": "first"}))
+        bridge(_item_started({"type": "commandExecution", "command": "second"}))
+
+        assert agent.tool_progress_callback.call_count == 2
+        assert all(not call.kwargs for call in agent.tool_progress_callback.call_args_list)
 
     def test_command_completed_fires_tool_completed_with_result(self):
         agent = _make_stub_agent()
@@ -399,3 +411,4 @@ class TestBridgeWiredInRuntime:
         agent.tool_progress_callback.assert_called_once()
         assert agent.tool_progress_callback.call_args.args[0] == "tool.started"
         assert agent.tool_progress_callback.call_args.args[1] == "exec_command"
+        assert agent.tool_progress_callback.call_args.kwargs["call_id"]

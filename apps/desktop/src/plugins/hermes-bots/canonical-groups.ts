@@ -8,6 +8,8 @@ export interface CanonicalGroupRoute {
 }
 
 export interface CanonicalGroupBinding extends CanonicalGroupRoute {
+  /** Optional dependency-owned lease fence captured by adopted room bindings. */
+  isCurrent?: () => boolean
   roomId: string
 }
 

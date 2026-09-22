@@ -1,5 +1,5 @@
 
-// oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- `isServerShape` is main's exported name, shared with mcp-tab.tsx; it is bound to a domain name here instead of renaming the export.
+// oxlint-disable-next-line anti-slop/no-shape-in-symbol-names -- `isServerShape` is main's exported name; it is bound to a domain name here instead of renaming the export.
 import { type McpServerEntry, type McpServers, isServerShape as namesAServer, normalizeEntry } from '@/lib/mcp-servers'
 
 export const STARTER_ENTRY = { command: 'npx', args: ['-y', '@modelcontextprotocol/server-filesystem', '/path/to/dir'] }

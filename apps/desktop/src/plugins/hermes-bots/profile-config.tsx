@@ -33,7 +33,7 @@ import type { RosterRow } from './types'
 // Keep optional exports feature-detected; test harnesses may strip the SDK namespace.
 // The Partial is the point: both are guarded at every use site because an older
 // build (or a stripped harness namespace) simply doesn't export them.
-const { McpTab, ToolsetConfigPanel }: Partial<Pick<typeof sdk, 'McpTab' | 'ToolsetConfigPanel'>> = sdk
+const { ConnectorsTab, ToolsetConfigPanel }: Partial<Pick<typeof sdk, 'ConnectorsTab' | 'ToolsetConfigPanel'>> = sdk
 export const CapabilitiesView = typeof sdk === 'undefined' ? undefined : sdk.CapabilitiesView
 // TRUE only on builds whose CapabilitiesView routes `fixedConnection` to the pinned
 // registry connection's backend. Older builds export CapabilitiesView WITHOUT the
@@ -433,14 +433,15 @@ export function AdvancedProfileConfig({ bot, state, setState }: AdvancedProfileC
       {labeled(
         'MCP servers',
         <div className="overflow-hidden rounded-md border border-(--ui-stroke-secondary)">
-          {McpTab && typeof host.getGateway === 'function' ? (
+          {ConnectorsTab && typeof host.getGateway === 'function' ? (
             <div
+              className="overflow-y-auto overscroll-contain"
               style={{
                 minHeight: 220,
                 maxHeight: 360
               }}
             >
-              <McpTab gateway={host.getGateway()} profile={backendScope} />
+              <ConnectorsTab gateway={host.getGateway()} profile={backendScope} />
             </div>
           ) : mcpList.length === 0 ? (
             <div className="px-1 py-2 text-center text-xs text-(--ui-text-tertiary)">{b.tools.noMcpServers}</div>

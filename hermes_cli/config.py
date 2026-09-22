@@ -1962,6 +1962,20 @@ def cfg_get(cfg: Optional[Dict[str, Any]], *keys: str, default: Any = None) -> A
 
 
 def _read_raw_config_impl(*, want_deepcopy: bool) -> Dict[str, Any]:
+    # Lock-free fast path for cache hits — same shape as `_load_config_impl`. `_RAW_CONFIG_CACHE`
+    # publishes each entry as ONE `(*sig, data)` tuple replaced wholesale, so a reader sees either
+    # the complete old entry or the complete new one; `_CONFIG_LOCK` only serializes the re-parse
+    # and the writers (`save_config()` holds it across an atomic YAML write, which used to stall
+    # every cached read for the duration). A lost race just falls through to the locked re-check.
+    try:
+        config_path = get_config_path()
+        cache_key = file_signature(config_path.stat())
+        cached = _RAW_CONFIG_CACHE.get(str(config_path))
+        if cached is not None and cached[:len(cache_key)] == cache_key:
+            return copy.deepcopy(cached[len(cache_key)]) if want_deepcopy else cached[len(cache_key)]
+    except Exception:
+        pass
+
     with _CONFIG_LOCK:
         try:
             config_path = get_config_path()

@@ -270,6 +270,24 @@ class TestGenerate:
         assert len(payload["image_style_references"]) == 10  # capped at 10
         assert payload["creativity"] == "high"
 
+    def test_sliders_reach_payload_and_out_of_range_values_are_dropped(self):
+        from plugins.image_gen.krea import KreaImageGenProvider
+
+        submit = _submit_response()
+        poll = _poll_response(_completed_job())
+
+        with patch("plugins.image_gen.krea.requests.post", return_value=submit) as mock_post, \
+             patch("plugins.image_gen.krea.requests.get", return_value=poll), \
+             patch("plugins.image_gen.krea.save_url_image", return_value=Path("/tmp/x.png")), \
+             patch("plugins.image_gen.krea.time.sleep"):
+            KreaImageGenProvider().generate(
+                prompt="test", intensity=80, complexity=-100, movement=150, upscale=False)
+
+        payload = mock_post.call_args.kwargs["json"]
+        assert payload["intensity"] == 80
+        assert payload["complexity"] == -100
+        assert "movement" not in payload
+
     def test_string_style_references_converted_to_objects(self):
         """Krea requires {url, strength} objects; bare URL strings must be
         converted (a string yields a 422 'Expected object, received string')."""

@@ -241,6 +241,12 @@ export async function reconcileTileTranscripts({
         continue
       }
 
+      // Same rule as the active pane below: a transient zero-row page must not
+      // blank a populated tile, and leaves no signature behind.
+      if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+        continue
+      }
+
       const signature = sessionMessagesSignature(latest.messages)
 
       if (signatureRef.current.get(signatureKey) === signature) {
@@ -292,6 +298,10 @@ export async function hydrateStoredSessionTranscript({
     transcriptChangedDuringRead(messagesAtRequest, $sessionStates.get()[runtimeSessionId]?.messages)
 
   for (let index = 0; index < Math.max(1, attempts); index += 1) {
+    if (index > 0) {
+      await new Promise(resolve => window.setTimeout(resolve, 250))
+    }
+
     if (superseded()) {
       return
     }
@@ -303,6 +313,12 @@ export async function hydrateStoredSessionTranscript({
       // that ran during the read or retry delay. Its todo restore is stale too.
       if (superseded()) {
         return
+      }
+
+      // A zero-row page over the populated turn is a transient read, not the
+      // answer.
+      if (emptyPageOverPopulatedTranscript(latest.messages, $sessionStates.get()[runtimeSessionId], storedSessionId)) {
+        continue
       }
 
       const messages = toChatMessages(latest.messages)
@@ -329,10 +345,6 @@ export async function hydrateStoredSessionTranscript({
       return
     } catch {
       // Best-effort fallback when live stream payloads are empty.
-    }
-
-    if (index < attempts - 1) {
-      await new Promise(resolve => window.setTimeout(resolve, 250))
     }
   }
 }

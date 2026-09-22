@@ -1036,6 +1036,10 @@ export interface ProfileInfo {
   path: string
   provider: null | string
   skill_count: number
+  /** Client-owned presentation state from profile.yaml, absent when the profile declares
+   *  none. Carries the roster group: `ui_meta['hermes-bots'].sectionId` (same blob the
+   *  gateway's `profiles.list` row and the bot roster already read). */
+  ui_meta?: Record<string, unknown>
 }
 
 export interface ProfileSetupCommand {

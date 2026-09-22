@@ -440,7 +440,10 @@ def _compact_ledger_locked() -> Tuple[int, int, int]:
             line = json.dumps(row, ensure_ascii=False)
         out.append(line)
         kept += 1
-    data = _rewrite_ledger(path, [line.encode("utf-8") for line in out], "compact")
+    lines = [line.encode("utf-8") for line in out]
+    if (b"\n".join(lines) + b"\n" if lines else b"") == raw:
+        return kept, len(raw), len(raw)  # already compact (append-time _delta): no rewrite to pay
+    data = _rewrite_ledger(path, lines, "compact")
     return kept, len(raw), len(data)
 
 

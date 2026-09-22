@@ -398,8 +398,12 @@ def _model_flow_xai_oauth(_config, current_model="", *, args=None):
         DEFAULT_XAI_OAUTH_BASE_URL, PROVIDER_REGISTRY)
     from hermes_cli.models import provider_model_ids
     login_args = argparse.Namespace(no_browser=bool(getattr(args, "no_browser", False)), timeout=getattr(args, "timeout", None))
+    status = get_xai_oauth_auth_status()
+    if not status.get("logged_in") and status.get("error"):
+        print(f"  xAI Grok OAuth status: {status['error']}")
+        print()
     if not _oauth_gate(
-        bool(get_xai_oauth_auth_status().get("logged_in")), "xAI Grok OAuth (SuperGrok / Premium+)", _login_xai_oauth,
+        bool(status.get("logged_in")), "xAI Grok OAuth (SuperGrok / Premium+)", _login_xai_oauth,
         login_args, PROVIDER_REGISTRY["xai-oauth"], fresh_name="xAI OAuth"):
         return
 

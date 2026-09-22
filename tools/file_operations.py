@@ -555,6 +555,18 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             encoding = str(data.get("encoding", "utf-16"))
         except (ValueError, KeyError, TypeError):
             return None
+        if not content:
+            end_line = offset + limit - 1
+            truncated = total_lines > end_line
+            hint_parts = [f"Transcoded from {encoding.upper()} to UTF-8 for display. "
+                          "Text edits via patch/write_file would re-encode as UTF-8."]
+            if truncated:
+                hint_parts.append(
+                    f"Use offset={end_line + 1} to continue reading "
+                    f"(showing {offset}-{end_line} of {total_lines} lines)")
+            return ReadResult(
+                content="", total_lines=total_lines,
+                file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
         end_line = offset + limit - 1
         truncated = total_lines > end_line
         hint_parts = [f"Transcoded from {encoding.upper()} to UTF-8 for display. "
@@ -563,10 +575,13 @@ class ShellFileOperations(LintMixin, SearchMixin, FileOperations):
             hint_parts.append(
                 f"Use offset={end_line + 1} to continue reading "
                 f"(showing {offset}-{end_line} of {total_lines} lines)")
+        from tools.tool_output_limits import get_max_line_length
+        max_line_length = get_max_line_length()
+        truncated_lines = any(len(line) > max_line_length for line in content.split('\n'))
         return ReadResult(
-            content=self._add_line_numbers(content, offset) if content else "",
-            total_lines=total_lines,
-            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts))
+            content=self._add_line_numbers(content, offset), total_lines=total_lines,
+            file_size=file_size, truncated=truncated, hint=" ".join(hint_parts),
+            truncated_lines=True if truncated_lines else None)
 
     def read_file(self, path: str, offset: int = 1, limit: int = 2000) -> ReadResult:
         """Read a file with pagination, binary detection, and line numbers.

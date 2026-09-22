@@ -17,6 +17,7 @@ class ReadResult:
     total_lines: int = 0
     file_size: int = 0
     truncated: bool = False
+    truncated_lines: Optional[bool] = None
     hint: Optional[str] = None
     is_binary: bool = False
     is_image: bool = False

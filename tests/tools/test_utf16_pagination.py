@@ -8,6 +8,7 @@ from tools import file_tools
 from tools.environments.local import LocalEnvironment
 from tools.file_operations import ShellFileOperations
 from tools.registry import registry
+from tools.tool_output_limits import get_max_line_length
 
 
 @pytest.fixture
@@ -65,3 +66,27 @@ def test_utf16_page_preserves_a_selected_blank_line(
     assert actual["content"] == expected["content"] == "1|first\n2|"
     assert actual["total_lines"] == expected["total_lines"]
     assert actual.get("truncated", False) == expected.get("truncated", False)
+
+
+def test_utf16_overlong_line_keeps_current_truncation_metadata(
+    tmp_path, monkeypatch, read_tool,
+):
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+    text = "x" * (get_max_line_length() + 1) + "\n"
+    encoded = tmp_path / "overlong.txt"
+    encoded.write_bytes(("\ufeff" + text).encode("utf-16-le"))
+
+    result = read_tool(encoded, limit=1)
+
+    assert result.get("truncated_lines") is True
+
+
+def test_utf16_page_beyond_eof_stays_empty(tmp_path, monkeypatch, read_tool):
+    monkeypatch.setenv("HERMES_NATIVE_FILE_READ", "0")
+    encoded = tmp_path / "short.txt"
+    encoded.write_bytes(("\ufefffirst\nlast\n").encode("utf-16-le"))
+
+    result = read_tool(encoded, offset=4, limit=2)
+
+    assert result["content"] == ""
+    assert result["total_lines"] == 2

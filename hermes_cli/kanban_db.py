@@ -932,6 +932,15 @@ class Task:
         )
 
 
+def is_federated_task(task: Task) -> bool:
+    """Return whether a task belongs to the remote runner lane.
+
+    ``created_by='fleet'`` is a reserved durable marker. Federated cards stay
+    unassigned locally so the host dispatcher cannot spawn them by accident.
+    """
+    return (task.created_by or "").strip().lower() == "fleet"
+
+
 # Columns every schema version has (KeyError if the SELECT omitted them).
 _TASK_REQUIRED_COLUMNS = (
     "id", "title", "body", "assignee", "status", "priority", "created_by", "created_at",

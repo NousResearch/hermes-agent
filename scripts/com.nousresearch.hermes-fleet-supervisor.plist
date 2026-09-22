@@ -1,0 +1,28 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+    <key>Label</key>
+    <string>com.nousresearch.hermes-fleet-supervisor</string>
+    <key>ProgramArguments</key>
+    <array>
+        <string>/bin/zsh</string>
+        <string>/Users/mikedemott/.codex/worktrees/7c54/Hermes-agent/scripts/fleet_mac_desktop_supervisor.sh</string>
+        <string>/Applications/Hermes.app/Contents/MacOS/Hermes</string>
+        <string>/Users/mikedemott/.hermes</string>
+        <string>/Users/mikedemott/.codex/worktrees/7c54/Hermes-agent/.venv/bin/python</string>
+        <string>/Users/mikedemott/.codex/worktrees/7c54/Hermes-agent</string>
+        <string>2</string>
+    </array>
+    <key>RunAtLoad</key>
+    <true/>
+    <key>KeepAlive</key>
+    <true/>
+    <key>ProcessType</key>
+    <string>Background</string>
+    <key>StandardOutPath</key>
+    <string>/Users/mikedemott/.hermes/fleet/mac-supervisor.stdout.log</string>
+    <key>StandardErrorPath</key>
+    <string>/Users/mikedemott/.hermes/fleet/mac-supervisor.stderr.log</string>
+</dict>
+</plist>

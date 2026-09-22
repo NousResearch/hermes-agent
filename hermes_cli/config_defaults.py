@@ -1875,6 +1875,14 @@ DEFAULT_CONFIG = {
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
     # claimable task. Run ONE dispatcher per profile; two on the same kanban.db race for claims.
     "kanban": {
+        # Cross-machine Kanban admission is deliberately opt-in. The coordinator URL is
+        # non-secret config; the bearer token remains in the profile/root .env as a secret.
+        "federated": {
+            "enabled": False,
+            "coordinator_url": "",
+            "heartbeat_ttl_seconds": 30,
+            "lease_seconds": 900,
+        },
         "worker_watchdog": {"enabled": True},
         # Auto-subscribe the originating gateway/TUI session to completion + block events when
         # kanban_create is called from a session with a persistent delivery channel. Disable for

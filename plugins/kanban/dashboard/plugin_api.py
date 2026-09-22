@@ -1057,6 +1057,72 @@ def list_active_workers(board: Optional[str] = _BOARD_Q):
         return {"workers": workers, "count": len(workers), "checked_at": int(time.time())}
 
 
+# --- Federated runner pool ---------------------------------------------------
+
+@router.get("/fleet/status")
+def fleet_status():
+    """Read-only status for the shared Mac/Windows runner pool.
+
+    The coordinator remains authoritative for runner liveness and task claims;
+    the dashboard backend only proxies a sanitized snapshot through the normal
+    authenticated plugin route.  The bearer token never crosses into the
+    renderer.
+    """
+    try:
+        from hermes_cli.config import get_env_value_prefer_dotenv, load_config_readonly
+        from hermes_cli.fleet_client import FleetClient
+
+        config = load_config_readonly() or {}
+        kanban_config = config.get("kanban") if isinstance(config, dict) else None
+        federated = kanban_config.get("federated") if isinstance(kanban_config, dict) else None
+        if not isinstance(federated, dict) or federated.get("enabled") is not True:
+            return {"enabled": False, "reachable": False, "runners": [], "tasks": []}
+
+        url = str(federated.get("coordinator_url") or "").strip()
+        token = (get_env_value_prefer_dotenv("HERMES_FLEET_TOKEN") or "").strip()
+        if not url or not token:
+            return {
+                "enabled": True,
+                "reachable": False,
+                "error": "coordinator URL or fleet token is not configured",
+                "runners": [],
+                "tasks": [],
+            }
+
+        client = FleetClient(url, token=token, timeout=2.0)
+        client.health()
+        tasks = client.list_tasks()
+        return {
+            "enabled": True,
+            "reachable": True,
+            "runners": client.list_runners(),
+            "tasks": [
+                {
+                    "task_id": task.task_id,
+                    "title": task.title,
+                    "status": task.status,
+                    "node_id": task.node_id,
+                    "runner_profile": task.runner_profile,
+                    "attempt": task.attempt,
+                    "updated_at": task.updated_at,
+                    "error": task.error,
+                }
+                for task in tasks
+            ],
+        }
+    except Exception as exc:
+        # Status is an observability surface. A sleeping Windows machine or a
+        # briefly restarting coordinator should render as degraded instead of
+        # taking the Kanban page down with a 500.
+        return {
+            "enabled": True,
+            "reachable": False,
+            "error": str(exc)[:240],
+            "runners": [],
+            "tasks": [],
+        }
+
+
 @router.get("/runs/{run_id}")
 def get_run_endpoint(run_id: int, board: Optional[str] = _BOARD_Q):
     """``{run: {...}}`` with the same serialisation as ``GET /tasks/{id}``; 404 if unknown."""

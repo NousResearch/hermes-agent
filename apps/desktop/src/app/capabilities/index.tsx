@@ -187,7 +187,6 @@ export function CapabilitiesView({
         { id: 'plugins', label: t.skills.tabPlugins }
       ]}
     >
-      
       <div className="flex h-full flex-col">
         {mode !== 'plugins' && <CapabilityScopeSelector scope={scope} />}
         <div className="flex min-h-0 flex-1 flex-col">

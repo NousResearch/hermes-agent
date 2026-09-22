@@ -226,13 +226,7 @@ const targetOf = (entry: McpServers[string]): string => {
   return [text(command) ?? '', ...parts].join(' ').trim()
 }
 
-export function joinLocalServers({
-  catalog,
-  servers,
-  status,
-  toolCounts,
-  usage
-}: LocalJoinInput): LocalServerInput[] {
+export function joinLocalServers({ catalog, servers, status, toolCounts, usage }: LocalJoinInput): LocalServerInput[] {
   return Object.entries(servers).map(([name, entry]) => {
     const bundled = catalog.find(candidate => candidate.name === name)
     const counts = toolCounts?.[name]

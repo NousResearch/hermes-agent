@@ -326,11 +326,7 @@ function descriptionOf({ bundled, hosted, local }: CardParts): string | undefine
 }
 
 // An install must not rename the app: the bundled entry and the server it becomes read the same way.
-function nameOf(
-  { bundled, hosted, local }: CardParts,
-  titles: Readonly<Record<string, string>>,
-  slug: string
-): string {
+function nameOf({ bundled, hosted, local }: CardParts, titles: Readonly<Record<string, string>>, slug: string): string {
   const key = hosted?.slug ?? local?.connectorSlug ?? bundled?.connectorSlug ?? slug
 
   return titles[key] ?? local?.title ?? connectorTitle(local?.name ?? bundled?.name ?? slug)

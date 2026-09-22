@@ -1,4 +1,3 @@
-
 import { compactNumber } from '@hermes/shared'
 
 import { getUsageAnalytics, type McpTestResult, type ProfileScope } from '@/hermes'

@@ -1,4 +1,3 @@
-
 import { type RefObject, useEffect, useMemo, useRef, useState } from 'react'
 
 import { type ProfileScope, testMcpServer } from '@/hermes'

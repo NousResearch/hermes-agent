@@ -100,6 +100,30 @@ const sessionScopeByRuntimeId = new Map<string, string>()
 // (approval.respond) when every durable binding (tile / hint / row) is absent
 // — while durable stored identity keeps outranking it (#97511).
 const sessionOwnerByRuntimeId = new Map<string, SessionOwnerScope>()
+export const $sessionRuntimeOwnerRevision = atom(0)
+
+function sameRuntimeOwner(left: SessionOwnerScope, right: SessionOwnerScope): boolean {
+  if (typeof left === 'string' || typeof right === 'string') {
+    return left === right
+  }
+
+  return left?.connectionId === right?.connectionId && left?.profile === right?.profile && left?.mode === right?.mode
+}
+
+function setRuntimeSessionOwner(runtimeId: string, owner: Exclude<SessionOwnerScope, undefined>): void {
+  if (sameRuntimeOwner(sessionOwnerByRuntimeId.get(runtimeId), owner)) {
+    return
+  }
+
+  sessionOwnerByRuntimeId.set(runtimeId, owner)
+  $sessionRuntimeOwnerRevision.set($sessionRuntimeOwnerRevision.get() + 1)
+}
+
+function forgetRuntimeSessionOwner(runtimeId: string): void {
+  if (sessionOwnerByRuntimeId.delete(runtimeId)) {
+    $sessionRuntimeOwnerRevision.set($sessionRuntimeOwnerRevision.get() + 1)
+  }
+}
 
 export function recordSessionEventScope(event: { connectionId?: string; profile?: string; session_id?: string }): void {
   if (!event.session_id) {
@@ -108,7 +132,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
 
   if (event.connectionId) {
     sessionScopeByRuntimeId.set(event.session_id, registryBackendScopeKey(event.connectionId, event.profile))
-    sessionOwnerByRuntimeId.set(event.session_id, {
+    setRuntimeSessionOwner(event.session_id, {
       connectionId: event.connectionId,
       profile: String(event.profile ?? '').trim() || 'default'
     })
@@ -125,7 +149,7 @@ export function recordSessionEventScope(event: { connectionId?: string; profile?
   const profile = secondaryProfileOwnerForEvent(event as GatewayEvent)
 
   if (profile) {
-    sessionOwnerByRuntimeId.set(event.session_id, profile)
+    setRuntimeSessionOwner(event.session_id, profile)
   }
 
   syncPreviewScope()
@@ -148,11 +172,17 @@ export function runtimeSessionOwner(sessionId: null | string | undefined): Sessi
  * profile's local delete/rename. */
 export function forgetProfileOnlyRuntimeOwners(profile: string): void {
   const retired = normalizeProfileKey(profile)
+  let changed = false
 
   for (const [runtimeId, owner] of sessionOwnerByRuntimeId) {
     if (typeof owner === 'string' && normalizeProfileKey(owner) === retired) {
       sessionOwnerByRuntimeId.delete(runtimeId)
+      changed = true
     }
+  }
+
+  if (changed) {
+    $sessionRuntimeOwnerRevision.set($sessionRuntimeOwnerRevision.get() + 1)
   }
 }
 
@@ -673,7 +703,7 @@ export function dropSessionState(runtimeId: string) {
   clearWatchdog(runtimeId)
   clearSessionProviderWait(runtimeId)
   sessionScopeByRuntimeId.delete(runtimeId)
-  sessionOwnerByRuntimeId.delete(runtimeId)
+  forgetRuntimeSessionOwner(runtimeId)
 
   const current = $sessionStates.get()
   setSessionStalled(current[runtimeId]?.storedSessionId, false)
@@ -701,7 +731,12 @@ export function clearAllSessionStates() {
   unconfirmedReconnectSettles.clear()
   clearAllProviderWaits()
   sessionScopeByRuntimeId.clear()
-  sessionOwnerByRuntimeId.clear()
+
+  if (sessionOwnerByRuntimeId.size > 0) {
+    sessionOwnerByRuntimeId.clear()
+    $sessionRuntimeOwnerRevision.set($sessionRuntimeOwnerRevision.get() + 1)
+  }
+
   $stalledSessionIds.set([])
   $sessionStates.set({})
 }

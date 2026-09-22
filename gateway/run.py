@@ -1787,17 +1787,30 @@ def _terminal_scope_cwd(default: str = "") -> str:
     return _ts_env("TERMINAL_CWD", default)
 
 
-def _load_profile_secret_scope(profile_home: "Path") -> dict:
-    """Hydrate and load one profile's secrets under its home override."""
-    from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+def _load_profile_secret_scope(profile_home: "Path", *, hydrate_secrets: bool = True) -> dict:
+    """Load one profile's secrets under its home override.
+
+    The launch profile owns the environment captured before multiplexing began; named profiles
+    remain file/source-only.  This is the same isolation policy used by ``hermes serve`` and keeps
+    credentials injected by systemd, Compose, or ``op run`` available to the default gateway
+    profile without exposing them to a secondary profile.
+    """
+    from hermes_constants import (
+        get_process_hermes_home, reset_hermes_home_override, set_hermes_home_override,
+    )
     # Caller already hydrated external sources off-loop (#99519).
     from agent.secret_scope import build_profile_secret_scope
     from hermes_cli.env_loader import hydrate_profile_secret_sources
 
-    home_token = set_hermes_home_override(str(profile_home))
+    home = Path(profile_home)
+    home_token = set_hermes_home_override(str(home))
     try:
-        hydrate_profile_secret_sources(Path(profile_home))
-        return build_profile_secret_scope(Path(profile_home))
+        if hydrate_secrets:
+            hydrate_profile_secret_sources(home)
+        if home.resolve() == Path(get_process_hermes_home()).resolve():
+            from tui_gateway.launch_profile_policy import launch_secret_scope
+            return launch_secret_scope(home)
+        return build_profile_secret_scope(home)
     finally:
         reset_hermes_home_override(home_token)
 
@@ -1821,8 +1834,7 @@ def _profile_runtime_scope(
         elif hydrate_secrets:
             secrets = _load_profile_secret_scope(Path(profile_home))
         else:
-            from agent.secret_scope import build_profile_secret_scope  # caller already hydrated off-loop
-            secrets = build_profile_secret_scope(Path(profile_home))
+            secrets = _load_profile_secret_scope(Path(profile_home), hydrate_secrets=False)
         secret_token = set_secret_scope(secrets, profile_home=str(profile_home))
         # Install the routed profile's COMPLETE terminal policy, never ambient TERMINAL_* a prior turn set.
         # Without it terminal_tool reads the process-global TERMINAL_* vars a previous profile's turn may have
@@ -3493,11 +3505,17 @@ class GatewayRunner(
             decision = standalone_launcher_decision(self.config)
             if decision is not None:
                 log_multiplex_decision(decision)
-        # Multiplexer flag flips agent.secret_scope.get_secret() to fail-closed on unscoped credential
-        # reads, so a missed migration crashes loudly instead of leaking a cross-profile value.
+        # Freeze the launch profile's environment before the multiplexer flag makes every unscoped
+        # credential read fail closed.  Default-profile scopes can then preserve container/systemd
+        # injected credentials while secondary profiles remain file/source-only.
         try:
-            from agent.secret_scope import set_multiplex_active
-            set_multiplex_active(bool(getattr(self.config, "multiplex_profiles", False)))
+            multiplex = bool(getattr(self.config, "multiplex_profiles", False))
+            if multiplex:
+                from tui_gateway.launch_profile_policy import activate_multi_profile_hosting
+                activate_multi_profile_hosting()
+            else:
+                from agent.secret_scope import set_multiplex_active
+                set_multiplex_active(False)
         except Exception:
             logger.debug("could not set multiplex-active flag", exc_info=True)
         self.adapters: Dict[Platform, BasePlatformAdapter] = {}

@@ -31,6 +31,7 @@ DEFAULT_IDLE_TIMEOUT = 600  # seconds; servers idle for >10min get reaped
 _DELTA_BASELINE_CAP = 256  # per-file pre-write snapshots; paths never written again would otherwise live forever (#62950)
 MIN_IDLE_TIMEOUT = 30  # floor for config values; must exceed any per-op wait budget
 DEFAULT_MAX_HEAP_MB = 2048  # V8 old-space cap for Node-based servers; 0 = inherit parent env (#116446)
+DEFAULT_CGROUP_MEMORY_MB = 4096  # memory.max (MB) for the dedicated LSP cgroup; 0 = separate cgroup, no cap
 
 _Key = Tuple[str, str]
 _Diags = List[Dict[str, Any]]
@@ -161,6 +162,8 @@ class LSPService:
         warmup_timeout: float = 0.0,
         exclude_roots: Any = None,
         max_heap_mb: int = DEFAULT_MAX_HEAP_MB,
+        cgroup_isolate: bool = True,
+        cgroup_memory_mb: int = DEFAULT_CGROUP_MEMORY_MB,
     ) -> None:
         self._enabled = enabled
         self._wait_mode = wait_mode if wait_mode in {"document", "full"} else "document"
@@ -180,6 +183,10 @@ class LSPService:
         self._exclude_roots: Optional[List[str]] = _parse_exclude_roots(exclude_roots)
         # V8 heap cap for spawned Node servers; 0 = leave the inherited env untouched.
         self._max_heap_mb = max(0, _int_or(max_heap_mb, DEFAULT_MAX_HEAP_MB))
+        # cgroup v2 isolation: best-effort split so an LSP memory spike can't OOM
+        # the gateway; falls back silently (one warning) where unavailable.
+        self._cgroup_isolate = bool(cgroup_isolate)
+        self._cgroup_memory_mb = max(0, _int_or(cgroup_memory_mb, DEFAULT_CGROUP_MEMORY_MB))
 
         self._loop = _BackgroundLoop()
         if self._enabled:
@@ -238,6 +245,8 @@ class LSPService:
             warmup_timeout=_float_or(lsp_cfg.get("warmup_timeout"), 0.0),
             exclude_roots=lsp_cfg.get("exclude_roots"),
             max_heap_mb=_int_or(lsp_cfg.get("max_heap_mb"), DEFAULT_MAX_HEAP_MB),
+            cgroup_isolate=bool(lsp_cfg.get("cgroup_isolate", True)),
+            cgroup_memory_mb=_int_or(lsp_cfg.get("cgroup_memory_mb"), DEFAULT_CGROUP_MEMORY_MB),
         )
 
     def _server_for(self, file_path: str) -> Optional[ServerDef]:
@@ -450,7 +459,8 @@ class LSPService:
         with self._state_lock:
             clients = [
                 {"server_id": c.server_id, "workspace_root": c.workspace_root,
-                 "workspace_folders": list(c.workspace_folders), "state": c.state, "running": c.is_running}
+                 "workspace_folders": list(c.workspace_folders), "state": c.state, "running": c.is_running,
+                 "cgroup_isolated": c.cgroup_isolated}
                 for c in self._clients.values()
             ]
             broken = [key for key, deadline in self._broken.items() if time.monotonic() < deadline]
@@ -461,6 +471,8 @@ class LSPService:
             "broken_retry_seconds": self._broken_retry, "warmup_timeout": self._warmup_timeout,
             "exclude_roots": list(self._exclude_roots) if self._exclude_roots is not None else "INVALID",
             "max_heap_mb": self._max_heap_mb,
+            "cgroup_isolate": self._cgroup_isolate,
+            "cgroup_memory_mb": self._cgroup_memory_mb,
         }
 
     # ---- async internals ----
@@ -593,6 +605,7 @@ class LSPService:
             server_id=srv.server_id, workspace_root=spec.workspace_root, command=spec.command, env=spec.env,
             cwd=spec.cwd, initialization_options=spec.initialization_options,
             seed_diagnostics_on_first_push=spec.seed_diagnostics_on_first_push or srv.seed_first_push,
+            isolate_cgroup=self._cgroup_isolate, cgroup_memory_mb=self._cgroup_memory_mb,
         )
         try:
             await client.start()

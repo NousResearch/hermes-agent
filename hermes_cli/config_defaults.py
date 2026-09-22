@@ -2371,6 +2371,16 @@ DEFAULT_CONFIG = {
         # cap lets a large-workspace server grow until it degrades the shared host, #116446).
         # Raise for big monorepos where tsserver needs more; 0 = leave the inherited env untouched.
         "max_heap_mb": 2048,
+        # Move each spawned server into a dedicated cgroup v2 (<cgroup root>/hermes-lsp)
+        # with its own memory.max, so a large-workspace server's memory spike can't push
+        # the shared gateway cgroup into the kernel OOM killer. Requires Linux + a writable
+        # cgroup v2 mount (root, or a delegated/systemd user scope); anywhere else
+        # (non-Linux, cgroup v1, read-only container mounts) the attach fails closed:
+        # servers keep the gateway's cgroup and one warning is logged. false = never try.
+        "cgroup_isolate": True,
+        # memory.max (MB) for that cgroup; 0 = separate cgroup without a memory cap.
+        # The effective ceiling is min(this, the parent cgroup's limit).
+        "cgroup_memory_mb": 4096,
         # Per-server overrides keyed by registry server_id (pyright, gopls...): disabled: true;
         # command: ["path/to/server", "--stdio"] (bypasses auto- install); env: {...};
         # initialization_options: {...} (merged into LSP initializationOptions).

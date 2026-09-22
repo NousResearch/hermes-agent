@@ -138,7 +138,8 @@ class LSPClient:
     def __init__(self, *, server_id: str, workspace_root: str, command: List[str],
                  env: Optional[Dict[str, str]] = None, cwd: Optional[str] = None,
                  initialization_options: Optional[Dict[str, Any]] = None,
-                 seed_diagnostics_on_first_push: bool = False) -> None:
+                 seed_diagnostics_on_first_push: bool = False,
+                 isolate_cgroup: bool = False, cgroup_memory_mb: int = 0) -> None:
         self.server_id = server_id
         self.workspace_root = workspace_root
         # Roots this server serves.  Single-root servers only ever hold ``workspace_root``;
@@ -149,6 +150,11 @@ class LSPClient:
         self._cwd = cwd or workspace_root
         self._init_options = initialization_options or {}
         self._seed_first_push = seed_diagnostics_on_first_push
+        # cgroup isolation is best-effort: False here means "unavailable / fell back
+        # to the gateway's cgroup", surfaced per client via `hermes lsp status`.
+        self._isolate_cgroup = isolate_cgroup
+        self._cgroup_memory_mb = cgroup_memory_mb
+        self.cgroup_isolated = False
 
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._stderr_task: Optional[asyncio.Task] = None
@@ -260,6 +266,11 @@ class LSPClient:
             )
         except FileNotFoundError as e:
             raise LSPProtocolError(f"LSP server binary not found: {cmd[0]} ({e})") from e
+        if self._isolate_cgroup:
+            from agent.lsp.cgroup import attach
+            # After spawn on purpose: attach() needs the live PID. Best effort —
+            # on read-only/absent cgroup v2 the server keeps the gateway's cgroup.
+            self.cgroup_isolated = attach(self._proc.pid, self._cgroup_memory_mb)
         # stderr must be drained or the pipe buffer fills and the server hangs.
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         self._reader_task = asyncio.create_task(self._reader_loop())

@@ -94,10 +94,13 @@ def _cmd_status(emit_json: bool) -> int:
     if svc is not None:
         out += [f"  wait_mode:       {info.get('wait_mode')}",
                 f"  wait_timeout:    {info.get('wait_timeout')}s",
-                f"  install_strategy:{info.get('install_strategy')}"]
+                f"  install_strategy:{info.get('install_strategy')}",
+                f"  cgroup_isolate:  {info.get('cgroup_isolate')} "
+                f"(memory_max={info.get('cgroup_memory_mb')}MB)"]
         clients = info.get("clients") or []
         out.append(f"  active clients:  {len(clients)}" if clients else "  active clients:  none")
-        out += [f"    - {c['server_id']:20s} state={c['state']:10s} root={c['workspace_root']}" for c in clients]
+        out += [f"    - {c['server_id']:20s} state={c['state']:10s} isolated={c.get('cgroup_isolated', False)} "
+                f"root={c['workspace_root']}" for c in clients]
         broken = info.get("broken") or []
         if broken:
             out.append(f"  broken pairs:    {len(broken)}")

@@ -527,8 +527,19 @@ def _plugin_command_handler(name: str):
         return None
 
 
-def _run_plugin_command(handler, arg: str) -> str:
-    return str(_tools_mod("hermes_cli.plugins").resolve_plugin_command_result(handler(arg)) or "")
+def _run_plugin_command(handler, arg: str, session=None) -> str:
+    """Run a plugin slash-command handler under the session's ``HERMES_SESSION_*`` binding.
+
+    Plugin handlers read ``get_session_env()`` for the chat/session they serve; these RPCs run on
+    the socket/worker thread where nothing upstream binds it (only the turn path does), so a handler
+    saw ``""`` or the launch process's inherited values. Same class as the messaging gateway's
+    #108698; ``_set_session_context`` is the turn path's own seam."""
+    plugins = _tools_mod("hermes_cli.plugins")
+    tokens = _set_session_context(session.get("session_key", "") or "", cwd=str(session.get("cwd") or "")) if session else []
+    try:
+        return str(plugins.resolve_plugin_command_result(handler(arg)) or "")
+    finally:
+        _clear_session_context(tokens)
 
 
 @contextlib.contextmanager
@@ -569,7 +580,7 @@ def _is_profile_skill_command(session: dict, base: str) -> bool:
 def _dispatch_plugin(rid, params, session, name, arg):
     if handler := _plugin_command_handler(name):
         with contextlib.suppress(Exception):
-            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg)})
+            return _ok(rid, {"type": "plugin", "output": _run_plugin_command(handler, arg, session)})
     return None
 
 
@@ -905,7 +916,7 @@ def _(rid, params: dict) -> dict:
         return _err(rid, 4018, f"skill command: use command.dispatch for /{base}")
     if plugin_handler := _plugin_command_handler(base) if base else None:
         try:
-            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg) or "(no output)"})
+            return _ok(rid, {"output": _run_plugin_command(plugin_handler, arg, session) or "(no output)"})
         except Exception as e:
             return _ok(rid, {"output": f"Plugin command error: {e}"})
     worker = session.get("slash_worker")
@@ -1435,12 +1446,11 @@ def _plugin_rows() -> list[dict]:
     versions = cat.catalog_versions()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
+    active = pc._category_active_names()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
-        status = pc._plugin_status(name, enabled, disabled, key=key)
-        # Bundled backends/platforms/providers run without an explicit enable: report the
-        # truthful default instead of "not enabled" (reads as OFF).
-        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
-            status = "enabled"
+        # Bundled backends/platforms/providers and the live memory provider run without an explicit
+        # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
+        status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
@@ -1450,6 +1460,8 @@ def _plugin_rows() -> list[dict]:
             "source": source, "status": status, "portable": pc._is_portable_plugin_dir(_dir),
             "install_dir": str(_dir_path) if _dir_path else "",
             "has_desktop_half": bool(_dir_path and (_dir_path / "desktop" / "plugin.js").is_file()),
+            # Manifest ``config_schema`` + current values: the Plugins hub renders these as a form.
+            "settings_schema": _tools_mod("hermes_cli.plugins_settings").plugin_settings_fields(key, _dir_path),
             **cat.catalog_row_fields(_dir, pins, versions),
             **({"pinned_sha": sha} if (sha := pc.pinned_revision(name, ref_pins)) else {})})
     return out
@@ -1470,8 +1482,11 @@ def _plugins_toggle(rid, params):
     result = toggle(ident, enabled=bool(params.get("enable")))
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "toggle failed")
-    row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
-    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row})
+    # The toggle resolves a bare leaf / manifest name to the canonical key it wrote; report that key.
+    key = result.get("name") or ident
+    row = next((r for r in _plugin_rows() if key in (r["key"], r["name"])), None)
+    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")),
+                     "restart_required": bool(result.get("restart_required")), "name": key, "plugin": row})
 
 
 def _plugins_install(rid, params):
@@ -1488,7 +1503,10 @@ def _plugins_install(rid, params):
 
 
 def _plugins_update(rid, params):
-    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI)."""
+    """Catalog installs only: re-pin to the current catalog SHA (non-catalog installs update via the CLI).
+    A pin that widens the plugin (new tools/hooks/deps/capabilities/Desktop half) answers
+    ``{ok: false, consent_required: true, delta, delta_lines}`` with nothing changed; the client shows the
+    delta and retries with ``accept_capabilities: true``."""
     name = (params.get("name") or "").strip()
     if not name:
         return _err(rid, 4019, "plugins.update requires a 'name'")
@@ -1498,10 +1516,15 @@ def _plugins_update(rid, params):
     if not sidecar:
         return _err(rid, 4020, f"'{name}' is not a catalog install — update it via the CLI")
     try:
-        sha, changed = cat.repin_catalog_plugin(target, sidecar)
+        result = cat.repin_catalog_plugin(
+            target, sidecar, consent_cb=(lambda _delta: True) if params.get("accept_capabilities") else None)
+    except cat.RepinConsentRequired as e:
+        return _ok(rid, {"ok": False, "consent_required": True, "name": e.name, "sha": e.sha, "delta": e.delta,
+                         "delta_lines": cat.surface_delta_lines(e.delta), "error": str(e)})
     except pc.PluginOperationError as e:
         return _err(rid, 4021, str(e))
-    return _ok(rid, {"ok": True, "unchanged": not changed, "sha": sha})
+    return _ok(rid, {"ok": True, "unchanged": not result.changed, "sha": result.sha, "name": result.installed_name,
+                     "warnings": list(result.warnings)})
 
 
 def _plugins_remove(rid, params):
@@ -1514,8 +1537,29 @@ def _plugins_remove(rid, params):
     return _ok(rid, result) if result.get("ok") else _err(rid, 5026, result.get("error") or "remove failed")
 
 
+def _plugins_settings(rid, params):
+    """Write manifest-declared settings (``values`` = ``{key: value}``) through the same writer as
+    ``ctx.set_config``; secrets are refused here (the client stores them via the ``.env`` route)."""
+    key = (params.get("key") or params.get("name") or "").strip()
+    values = params.get("values")
+    if not key or not isinstance(values, dict):
+        return _err(rid, 4019, "plugins.settings requires a 'key' and a 'values' mapping")
+    pc = _tools_mod("hermes_cli.plugins_cmd")
+    found = next((p for p in pc._discover_all_plugins() if key in (p[5], p[0])), None)
+    if found is None:
+        return _err(rid, 4020, f"plugin '{key}' not found")
+    _name, _version, _desc, _source, plugin_dir, canonical = found
+    try:
+        written = _tools_mod("hermes_cli.plugins_settings").save_plugin_settings(
+            canonical, Path(str(plugin_dir)) if plugin_dir else None, values)
+    except (ValueError, PermissionError) as e:
+        return _err(rid, 4021, str(e))
+    row = next((r for r in _plugin_rows() if r["key"] == canonical), None)
+    return _ok(rid, {"ok": True, "name": canonical, "written": written, "plugin": row})
+
+
 _PLUGINS_ACTIONS = {"list": _plugins_list, "toggle": _plugins_toggle, "install": _plugins_install,
-                    "update": _plugins_update, "remove": _plugins_remove}
+                    "update": _plugins_update, "remove": _plugins_remove, "settings": _plugins_settings}
 
 
 @_scoped_rpc("plugins.manage", 5026, catch_resolve=False)
@@ -1524,7 +1568,7 @@ def _(rid, params: dict) -> dict:
     ``list`` → {plugins, user_count, bundled_count}; ``toggle`` flips ``key``/``name`` per ``enable``;
     ``install`` git-clones ``identifier``/``repo`` or a curated ``catalog_name`` (``force``, ``enable``
     default True); ``update`` re-pins a catalog install to the current catalog SHA; ``remove`` deletes
-    a user install by ``name``."""
+    a user install by ``name``; ``settings`` writes manifest-declared ``values`` for ``key``."""
     return _run_action(rid, params, _PLUGINS_ACTIONS, "plugins")
 
 

@@ -9,6 +9,7 @@ import {
   useState
 } from 'react'
 
+import { setEnvVar } from '@/api/config'
 import { useGatewayRequest } from '@/app/gateway/hooks/use-gateway-request'
 import { Button } from '@/components/ui/button'
 import { Codicon } from '@/components/ui/codicon'
@@ -28,10 +29,12 @@ import {
   $agentPluginsError,
   $agentPluginsStatus,
   type AgentPluginRow,
+  type AgentPluginUpdateOutcome,
   type GatewayRequest,
   isDesktopRelevantPlugin,
   loadAgentPlugins,
   removeAgentPlugin,
+  saveAgentPluginSettings,
   toggleAgentPlugin,
   updateAgentPlugin
 } from '@/store/agent-plugins'
@@ -47,6 +50,7 @@ import { Pill } from '../../settings/primitives'
 import { useDeepLinkHighlight } from '../../settings/use-deep-link-highlight'
 
 import { mergePluginPackages, type PackageKind, type PluginPackage } from './plugin-packages'
+import { PluginSettingsForm } from './plugin-settings-form'
 
 // The REAL Plugin Catalog page (docs site) embedded as a one-click picker —
 // the same pattern as the Skills tab's EmbeddedHubPicker. `?embed=picker`
@@ -221,8 +225,10 @@ function Dash() {
 function PackageRow({
   pkg,
   scope,
+  profile,
   scopeLabel,
   busy,
+  request,
   onAgentToggle,
   onAgentUpdate,
   onAgentRemove,
@@ -230,8 +236,10 @@ function PackageRow({
 }: {
   pkg: PluginPackage
   scope: null | string
+  profile: ProfileScope
   scopeLabel: string
   busy: boolean
+  request: GatewayRequest
   onAgentToggle: (row: AgentPluginRow, enable: boolean) => void
   onAgentUpdate: (row: AgentPluginRow) => void
   onAgentRemove: (row: AgentPluginRow) => void
@@ -242,6 +250,10 @@ function PackageRow({
   const d = t.settings.plugins
   const desktop = pkg.desktop
   const agent = pkg.agent
+  // Manifest `config_schema` → an inline settings form under the row (#46600, #87934).
+  const settingsFields = agent?.settings_schema ?? []
+  const hasSettings = Boolean(agent?.key) && settingsFields.length > 0
+  const [settingsOpen, setSettingsOpen] = useState(false)
   const desktopOn = desktop ? desktop.status !== 'disabled' : false
   const agentOn = agent?.status === 'enabled'
   const agentToggleable = Boolean(agent?.key)
@@ -258,151 +270,199 @@ function PackageRow({
   const remoteBackend = useStore($connection)?.mode === 'remote'
 
   return (
-    <div
-      className="flex items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2.5 last:border-b-0"
-      data-testid={`plugin-row-${pkg.key}`}
-      id={pluginElementId(agent?.key ?? agent?.name ?? desktop?.id ?? pkg.key)}
-      role="row"
-    >
-      <div className="flex min-w-0 flex-1 items-start gap-2" role="cell">
-        <div className="min-w-0 flex-1">
-          <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
-            <span>{pkg.name}</span>
-            {agent?.version && <span className="text-(--ui-text-quaternary)">v{agent.version}</span>}
-            <KindBadge kind={pkg.kind} />
-            <ProvenancePill pkg={pkg} />
-            {agent?.portable && <Pill>{p.portableBadge}</Pill>}
-            {desktop?.status === 'error' && <Pill tone="primary">{d.failed}</Pill>}
-          </div>
-          {(desktop?.status === 'error' ? desktop.error : pkg.description) && (
-            <div
-              className={cn(
-                'mt-0.5 text-[length:var(--conversation-caption-font-size)] break-words',
-                desktop?.status === 'error' ? 'text-(--ui-danger,#f87171)' : 'text-(--ui-text-tertiary)'
-              )}
-            >
-              {desktop?.status === 'error' ? desktop.error : pkg.description}
+    <>
+      <div
+        className={cn(
+          'flex items-center gap-3 border-b border-(--ui-stroke-tertiary) px-3 py-2.5',
+          !settingsOpen && 'last:border-b-0'
+        )}
+        data-testid={`plugin-row-${pkg.key}`}
+        id={pluginElementId(agent?.key ?? agent?.name ?? desktop?.id ?? pkg.key)}
+        role="row"
+      >
+        <div className="flex min-w-0 flex-1 items-start gap-2" role="cell">
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-2 text-[length:var(--conversation-text-font-size)] font-medium text-foreground">
+              <span>{pkg.name}</span>
+              {agent?.version && <span className="text-(--ui-text-quaternary)">v{agent.version}</span>}
+              <KindBadge kind={pkg.kind} />
+              <ProvenancePill pkg={pkg} />
+              {agent?.portable && <Pill>{p.portableBadge}</Pill>}
+              {desktop?.status === 'error' && <Pill tone="primary">{d.failed}</Pill>}
             </div>
-          )}
-        </div>
-        {/* Fixed slot so the switch column stays straight whether or not
+            {(desktop?.status === 'error' ? desktop.error : pkg.description) && (
+              <div
+                className={cn(
+                  'mt-0.5 text-[length:var(--conversation-caption-font-size)] break-words',
+                  desktop?.status === 'error' ? 'text-(--ui-danger,#f87171)' : 'text-(--ui-text-tertiary)'
+                )}
+              >
+                {desktop?.status === 'error' ? desktop.error : pkg.description}
+              </div>
+            )}
+          </div>
+          {/* Fixed slot so the switch column stays straight whether or not
             this row has a folder to reveal (bundled plugins have none). */}
-        <span className="flex size-7 shrink-0 items-center justify-center">
-          {desktop?.file && (
-            <Tip label={d.reveal}>
-              <Button onClick={() => reveal(desktop.file!)} size="icon" variant="ghost">
-                <Codicon name="folder-opened" size="0.85rem" />
-              </Button>
-            </Tip>
-          )}
-        </span>
-        {/* Same fixed-slot treatment for Uninstall: present on every row so the
+          <span className="flex size-7 shrink-0 items-center justify-center">
+            {desktop?.file && (
+              <Tip label={d.reveal}>
+                <Button onClick={() => reveal(desktop.file!)} size="icon" variant="ghost">
+                  <Codicon name="folder-opened" size="0.85rem" />
+                </Button>
+              </Tip>
+            )}
+          </span>
+          {/* Fixed slot for the settings gear: only plugins whose manifest declares
+            a config_schema get one. */}
+          <span className="flex size-7 shrink-0 items-center justify-center">
+            {hasSettings && (
+              <Tip label={p.settingsToggle(pkg.name)}>
+                <Button
+                  aria-expanded={settingsOpen}
+                  aria-label={p.settingsToggle(pkg.name)}
+                  className={cn(settingsOpen && 'text-foreground')}
+                  onClick={() => setSettingsOpen(open => !open)}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <Codicon name="settings-gear" size="0.85rem" />
+                </Button>
+              </Tip>
+            )}
+          </span>
+          {/* Same fixed-slot treatment for Uninstall: present on every row so the
             halves line up, populated when the agent half is a user install or
             the row is a standalone desktop plugin. */}
-        <span className="flex size-7 shrink-0 items-center justify-center">
-          {agent && agentRemovable ? (
-            <Tip label={p.uninstallTip(pkg.name, scopeLabel)}>
-              <Button
-                aria-label={`${p.uninstall}: ${pkg.name}`}
-                className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
-                disabled={busy}
-                onClick={() => onAgentRemove(agent)}
-                size="icon"
-                variant="ghost"
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
-            </Tip>
-          ) : desktop && desktopRemovable ? (
-            <Tip label={p.uninstallDesktopTip(pkg.name)}>
-              <Button
-                aria-label={`${p.uninstall}: ${pkg.name}`}
-                className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
-                onClick={() => onDesktopRemove(desktop)}
-                size="icon"
-                variant="ghost"
-              >
-                <Trash2 className="size-3.5" />
-              </Button>
-            </Tip>
-          ) : null}
-        </span>
-      </div>
+          <span className="flex size-7 shrink-0 items-center justify-center">
+            {agent && agentRemovable ? (
+              <Tip label={p.uninstallTip(pkg.name, scopeLabel)}>
+                <Button
+                  aria-label={`${p.uninstall}: ${pkg.name}`}
+                  className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
+                  disabled={busy}
+                  onClick={() => onAgentRemove(agent)}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </Tip>
+            ) : desktop && desktopRemovable ? (
+              <Tip label={p.uninstallDesktopTip(pkg.name)}>
+                <Button
+                  aria-label={`${p.uninstall}: ${pkg.name}`}
+                  className="text-(--ui-text-tertiary) hover:text-(--ui-danger,#f87171)"
+                  onClick={() => onDesktopRemove(desktop)}
+                  size="icon"
+                  variant="ghost"
+                >
+                  <Trash2 className="size-3.5" />
+                </Button>
+              </Tip>
+            ) : null}
+          </span>
+        </div>
 
-      {/* The two halves. Desktop is app-level and reads the same whichever
+        {/* The two halves. Desktop is app-level and reads the same whichever
           profile is selected; Agent follows the selector. A half the package
           lacks shows a dash; a half it has but which is missing on this side
           shows the install affordance. */}
-      <HalfCell label={p.halfDesktop}>
-        {desktop ? (
-          <Switch
-            aria-label={`${p.halfDesktop}: ${pkg.name}`}
-            checked={desktopOn}
-            onCheckedChange={on => {
-              triggerHaptic('selection')
-              void setPluginEnabled(desktop.id, on)
+        <HalfCell label={p.halfDesktop}>
+          {desktop ? (
+            <Switch
+              aria-label={`${p.halfDesktop}: ${pkg.name}`}
+              checked={desktopOn}
+              onCheckedChange={on => {
+                triggerHaptic('selection')
+                void setPluginEnabled(desktop.id, on)
+              }}
+            />
+          ) : pkg.desktopMissing ? (
+            <Tip label={remoteBackend ? p.desktopHalfRemoteTip : p.desktopHalfPendingTip}>
+              <span className="text-[0.65rem] text-(--ui-text-tertiary)">
+                {remoteBackend ? p.desktopHalfRemote : p.desktopHalfPending}
+              </span>
+            </Tip>
+          ) : (
+            <Dash />
+          )}
+        </HalfCell>
+
+        <HalfCell label={p.halfAgentIn(scopeLabel)}>
+          {agent ? (
+            <>
+              {agent.update_available && (
+                <Button
+                  className="h-5 px-1.5 text-[0.65rem]"
+                  disabled={busy}
+                  onClick={() => onAgentUpdate(agent)}
+                  size="xs"
+                  variant="outline"
+                >
+                  {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
+                </Button>
+              )}
+              {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
+              {agentToggleable ? (
+                <Switch
+                  aria-label={`${p.halfAgent}: ${pkg.name}`}
+                  checked={agentOn}
+                  disabled={busy}
+                  onCheckedChange={on => onAgentToggle(agent, on)}
+                />
+              ) : (
+                <Tip label={p.legacyBackend}>
+                  <span>
+                    <Switch aria-label={`${p.halfAgent}: ${pkg.name}`} checked={agentOn} disabled />
+                  </span>
+                </Tip>
+              )}
+            </>
+          ) : pkg.agentMissingInProfile && desktop ? (
+            <Tip label={desktop.packageOrigin?.repo ? p.installAgentHereTip(scopeLabel) : p.installAgentHereNoOrigin}>
+              <span>
+                <Button
+                  className="h-5 px-1.5 text-[0.65rem]"
+                  disabled={!desktop.packageOrigin?.repo}
+                  onClick={() => installAgentHalfHere(desktop, scope)}
+                  size="xs"
+                  variant="outline"
+                >
+                  {p.installAgentHere}
+                </Button>
+              </span>
+            </Tip>
+          ) : (
+            <Dash />
+          )}
+        </HalfCell>
+      </div>
+      {hasSettings && settingsOpen && agent?.key && (
+        <div className="border-b border-(--ui-stroke-tertiary) bg-(--ui-bg-secondary,transparent) px-3 py-3 last:border-b-0">
+          <PluginSettingsForm
+            disabled={busy}
+            fields={settingsFields}
+            idPrefix={`plugin-settings-${agent.key}`}
+            onSave={async changes => {
+              const ok = await saveAgentPluginSettings(request, {
+                key: agent.key!,
+                values: changes.values,
+                secrets: changes.secrets,
+                writeSecret: (env, value) => setEnvVar(env, value, profile),
+                failMessage: p.settingsForm.saveFailed(pkg.name),
+                profile: scope
+              })
+
+              if (ok) {
+                notify({ kind: 'success', message: p.settingsForm.saved(pkg.name) })
+              }
+
+              return ok
             }}
           />
-        ) : pkg.desktopMissing ? (
-          <Tip label={remoteBackend ? p.desktopHalfRemoteTip : p.desktopHalfPendingTip}>
-            <span className="text-[0.65rem] text-(--ui-text-tertiary)">
-              {remoteBackend ? p.desktopHalfRemote : p.desktopHalfPending}
-            </span>
-          </Tip>
-        ) : (
-          <Dash />
-        )}
-      </HalfCell>
-
-      <HalfCell label={p.halfAgentIn(scopeLabel)}>
-        {agent ? (
-          <>
-            {agent.update_available && (
-              <Button
-                className="h-5 px-1.5 text-[0.65rem]"
-                disabled={busy}
-                onClick={() => onAgentUpdate(agent)}
-                size="xs"
-                variant="outline"
-              >
-                {p.updateToPin(agent.catalog_version ?? agent.catalog_sha?.slice(0, 8) ?? '')}
-              </Button>
-            )}
-            {busy && <Loader2 className="size-3.5 animate-spin text-(--ui-text-tertiary)" />}
-            {agentToggleable ? (
-              <Switch
-                aria-label={`${p.halfAgent}: ${pkg.name}`}
-                checked={agentOn}
-                disabled={busy}
-                onCheckedChange={on => onAgentToggle(agent, on)}
-              />
-            ) : (
-              <Tip label={p.legacyBackend}>
-                <span>
-                  <Switch aria-label={`${p.halfAgent}: ${pkg.name}`} checked={agentOn} disabled />
-                </span>
-              </Tip>
-            )}
-          </>
-        ) : pkg.agentMissingInProfile && desktop ? (
-          <Tip label={desktop.packageOrigin?.repo ? p.installAgentHereTip(scopeLabel) : p.installAgentHereNoOrigin}>
-            <span>
-              <Button
-                className="h-5 px-1.5 text-[0.65rem]"
-                disabled={!desktop.packageOrigin?.repo}
-                onClick={() => installAgentHalfHere(desktop, scope)}
-                size="xs"
-                variant="outline"
-              >
-                {p.installAgentHere}
-              </Button>
-            </span>
-          </Tip>
-        ) : (
-          <Dash />
-        )}
-      </HalfCell>
-    </div>
+        </div>
+      )}
+    </>
   )
 }
 
@@ -636,12 +696,34 @@ export const PluginsTab = memo(function PluginsTab({
                   void toggleAgentPlugin(requestGateway, row.key, enable, p.toggleFailed(row.name), scope)
                 }}
                 onAgentUpdate={row => {
-                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(applied => {
-                    if (applied) {
+                  const finish = (outcome: AgentPluginUpdateOutcome) => {
+                    if (outcome.kind === 'applied') {
                       notify({ kind: 'success', message: p.updated(row.name) })
                       void rescanAll(requestGateway, scope)
                     }
-                  })
+                  }
+
+                  void updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope).then(
+                    async outcome => {
+                      if (outcome.kind !== 'consent') {
+                        finish(outcome)
+
+                        return
+                      }
+
+                      // The new pin widens the plugin (tools, hooks, deps, capabilities, a Desktop
+                      // half); the backend changed nothing until the user confirms the delta.
+                      const ok = await confirm({
+                        confirmLabel: p.updateConsentConfirm,
+                        description: [p.updateConsentBody(row.name, outcome.sha), ...outcome.deltaLines].join('\n'),
+                        title: p.updateConsentTitle(row.name)
+                      })
+
+                      if (ok) {
+                        finish(await updateAgentPlugin(requestGateway, row.name, p.updateFailed(row.name), scope, true))
+                      }
+                    }
+                  )
                 }}
                 onDesktopRemove={record => {
                   void confirm({
@@ -664,6 +746,8 @@ export const PluginsTab = memo(function PluginsTab({
                   })
                 }}
                 pkg={pkg}
+                profile={profile}
+                request={requestGateway}
                 scope={scope}
                 scopeLabel={label}
               />

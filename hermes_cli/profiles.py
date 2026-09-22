@@ -659,13 +659,12 @@ def _seed_model_config(profile_dir: Path) -> None:
     if config_path.exists():
         return
     with contextlib.suppress(Exception):  # creation must not fail over this; `hermes model` sets it later
-        import yaml
         from hermes_constants import get_hermes_home
-        from hermes_cli.config import read_user_config_raw
+        from hermes_cli.config import atomic_config_write, read_user_config_raw
         source = get_hermes_home() / "config.yaml"
         seed = launch_model_seed(read_user_config_raw(source)) if source.is_file() else {}
         if seed:
-            config_path.write_text(yaml.safe_dump(seed, sort_keys=False), encoding="utf-8")
+            atomic_config_write(config_path, seed)
 
 
 def _check_gateway_running(profile_dir: Path) -> bool:
@@ -1053,13 +1052,14 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
     # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
-    # refresh revokes the pair for every sibling. Drop the copies; the clone signs in itself.
+    # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root
+    # grant through the credential-pool fallback.
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants
     stripped = strip_cloned_single_use_oauth_grants(profile_dir)
     if any(stripped.values()):
         logger.info(
             "profile %s: dropped cloned single-use OAuth grants %s "
-            "(run `hermes -p %s auth add <provider>` to sign in)", canon, stripped, canon,
+            "(inherits the root grant instead)", canon, stripped,
         )
 
 

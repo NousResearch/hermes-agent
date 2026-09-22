@@ -672,9 +672,10 @@ DEFAULT_CONFIG = {
         # guards. Example: 1800 = 30 min.
         "idle_compact_after_seconds": 0,
     },
-    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h"; other
-    # non-falsy values are ignored; falsy (false, null, "off", "disabled", "no", "none") disables
-    # caching.
+    # Anthropic prompt caching (Claude via OpenRouter or native API). cache_ttl: "5m" | "1h" | "auto"
+    # (auto = 1h for human-paced sessions — cli/tui/desktop/messaging — and 5m for subagent, cron,
+    # oneshot, webhook, kanban, api, tool, batch); other non-falsy values are ignored; falsy (false, null, "off",
+    # "disabled", "no", "none") disables caching.
     "prompt_caching": {"cache_ttl": "5m"},
     # OpenRouter settings. response_cache: X-OpenRouter-Cache header — identical requests return
     # cached responses at zero billing; independent of Anthropic prompt caching. response_cache_ttl:
@@ -1682,6 +1683,10 @@ DEFAULT_CONFIG = {
         # Wall-clock cap (seconds) for one in-process Python plugin hook callback; shell hooks keep
         # their own per-entry `timeout`. 0 = no cap (sync call on agent thread). Max 600.
         "hook_callback_timeout": 30,
+        # Deadline (seconds) for one plugin's import + register() at load. A plugin that overruns it is
+        # skipped with the reason "load timed out" and the rest keep loading; the stuck worker thread is
+        # abandoned. 0 = no deadline (load inline). Max 600.
+        "load_timeout_seconds": 10,
         # Keep loading external plugins that still import pre-decomposition module paths after the
         # 2026-09-14 removal date (see COMPAT_MANIFEST.md, `hermes plugins compat`). Stopgap only: the
         # old paths raise ImportError once the compat layer is actually removed.
@@ -2095,12 +2100,25 @@ DEFAULT_CONFIG = {
         "write_sessions_json": True,
         # One gateway for every profile on this host: the DEFAULT profile's gateway also connects
         # each named profile's bots (their own .env / config.yaml, per-profile secret scope) and
-        # stamps the profile into session keys. On by default. An UNSET key is a request, not a
-        # verdict: at boot the default gateway runs the migration preflight and stays standalone
-        # (logging why) when a secondary still runs its own gateway or a blocker exists — an
-        # explicit `true` (config or GATEWAY_MULTIPLEX_PROFILES) is honoured as before, an explicit
-        # `false` keeps per-profile gateways for good. `hermes gateway migrate --multiplex` folds a
-        # per-profile fleet (records a rollback manifest; `--standalone` undoes it and pins false).
+        # stamps the profile into session keys. This is the ONLY supported topology — there is no
+        # `false` opt-out any more: an explicit `false` still parses (it is the runtime mode flag
+        # every scoped code path reads) but is warned about and IGNORED for process topology, and
+        # `hermes gateway migrate --multiplex` folds any per-profile fleet that is left.
+        # An UNSET key is a request, not a verdict: at boot the gateway runs the migration
+        # preflight and stays standalone (logging why) while a secondary still runs its own
+        # gateway or a blocker exists, then converges once that is resolved.
+        # TWO things DO change on a host that had pinned `false`, and neither is a process:
+        #   • INGRESS — `/p/<profile>/` on the default listener goes 404 -> served
+        #     (gateway/api_server.py::_resolve_request_profile, gateway/webhook.py). A host that
+        #     opted out GAINS that HTTP surface; it is authenticated exactly like the default
+        #     profile's, but it is new reachable surface, so audit any reverse proxy that assumed
+        #     /p/ was dead.
+        #   • SECRET SCOPE — eager multi-profile activation no longer consults the flag
+        #     (tui_gateway/launch_profile_policy.py), so a host with a leftover servable profile
+        #     dir flips eager=false/reads-open -> eager=true/fail-closed: an UNSCOPED `get_secret`
+        #     now raises UnscopedSecretError, and a key that lives ONLY in the unit's
+        #     `Environment=` (no .env) disappears from file-built scopes. A genuinely
+        #     single-profile host never activates and is byte-identical.
         # Two profiles configuring the same bot token cannot be served together — the duplicate
         # adapter is parked; `hermes profile create --clone` therefore leaves messaging channels
         # behind unless --clone-channels is passed.
@@ -2108,9 +2126,9 @@ DEFAULT_CONFIG = {
         # May `hermes update` fold this install onto a multiplexed default gateway by itself?
         # True (the default) keeps today's behaviour: a multi-profile install whose secondaries run
         # their own gateways is migrated automatically after an update when nothing blocks it.
-        # Set to False to stay on per-profile gateways — a durable opt-out that survives updates, so
-        # the decision is not re-litigated on every release. Only the AUTOMATIC path reads this:
-        # `hermes gateway migrate --multiplex` is an explicit request and always proceeds.
+        # Set to False to choose WHEN you converge, not whether: the fold is left to you to run by
+        # hand (it is not an opt-out from the one-gateway-per-host model, which has none). Only the
+        # AUTOMATIC path reads this: `hermes gateway migrate --multiplex` is explicit and proceeds.
         "auto_multiplex_migration": True,
         # Route inbound chats of the default profile's bots to another profile
         # (gateway/profile_routing.py): [{profile, platform, chat_id|user_id|guild_id|...}].

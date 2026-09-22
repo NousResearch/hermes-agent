@@ -25,7 +25,8 @@ from tools.tool_search_catalog import (
 from tools.tool_search_validation import (
     local_batch_error, normalize_tool_call_entries, not_deferrable_error, validate_deferred_call_args)
 from tools.connectors import CONNECTOR_BATCH_SENTINEL, is_connector_name
-from tools.connectors.search import connections_in_scope, connector_entries_by_group, remote_schemas_for
+from tools.connectors.search import (
+    connections_in_scope, connector_entries_by_group, connectors_unavailable, remote_schemas_for)
 
 logger = logging.getLogger("tools.tool_search")
 # Bound the work one bridge call requests. Search is capped at the gateway's
@@ -437,13 +438,6 @@ def _string_list_arg(args: Dict[str, Any], key: str, *, dedupe: bool, max_items:
 def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
                          config: Optional[ToolSearchConfig] = None,
                          connector_search: Optional[Any] = None) -> str:
-    """Execute the ``tool_search`` bridge tool -> JSON ``{queries, total_available,
-    results: [{query, matches: [names]}], tools: {name: {source, source_name, description,
-    required}}}``. ``limit`` is the total PER QUERY across local and connector tools: the
-    gateway's hits for a query join the local catalog as documents and one BM25 pass ranks
-    them together, so a connector tool that answers the query is never starved by local
-    tools that share one word with it. Empty groups get ``available_sources`` + ``hint`` so
-    a lexical miss is not mistaken for a missing capability."""
     config = config or load_config()
     queries, err = _string_list_arg(args, "queries", dedupe=False, max_items=_MAX_QUERIES_PER_CALL,
                                     retry_hint="Retry with fewer, more targeted queries.")
@@ -454,8 +448,10 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
              else _clamped_int(raw_limit, config.search_default_limit, 1, config.max_search_limit))
     catalog = build_catalog(_deferrable_in(current_tool_defs))
     remote_entries: List[List[CatalogEntry]] = [[] for _ in queries]
+    hosted_failure: Optional[str] = None
     if connections_in_scope(current_tool_defs):
-        remote_entries = connector_entries_by_group(queries, connector_search=connector_search)
+        remote_entries, hosted_failure = connector_entries_by_group(
+            queries, connector_search=connector_search)
     results: List[Dict[str, Any]] = []
     tools_map: Dict[str, Dict[str, Any]] = {}
     available_sources = _available_source_summary(catalog) if catalog else []
@@ -475,16 +471,16 @@ def dispatch_tool_search(args: Dict[str, Any], *, current_tool_defs: List[Dict[s
                 "object before concluding the capability is unavailable.")
         results.append(group)
     remote_count = sum(1 for name in tools_map if is_connector_name(name))
-    return json.dumps({"queries": queries, "total_available": len(catalog) + remote_count, "results": results,
-                       "tools": tools_map}, ensure_ascii=False)
+    payload: Dict[str, Any] = {"queries": queries, "total_available": len(catalog) + remote_count,
+                               "results": results, "tools": tools_map}
+    if hosted_failure:
+        payload["connectors"] = connectors_unavailable(hosted_failure, verb="searched")
+    return json.dumps(payload, ensure_ascii=False)
 
 
 def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict[str, Any]],
                            config: Optional[ToolSearchConfig] = None,
                            connector_describe: Optional[Any] = None) -> str:
-    """Execute the ``tool_describe`` bridge tool -> JSON ``{tools: {name: {description,
-    parameters}}, not_found: [...]  (unknown / not in this assembly; never fails the call),
-    errors: {name: msg}  (registered but non-deferrable)}``. Duplicates dedupe silently."""
     config = config or load_config_readonly()
     names, err = _string_list_arg(
         args, "names", dedupe=True, max_items=_MAX_DESCRIBE_NAMES_PER_CALL,
@@ -493,10 +489,11 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         return err
     deferrable = _deferrable_in(current_tool_defs)
     by_name = {name: _fn(td) for td, name in zip(deferrable, _tool_def_names(deferrable)) if name}
-    remote_schemas = remote_schemas_for(names, current_tool_defs, connector_describe)
+    remote_schemas, hosted_failure = remote_schemas_for(names, current_tool_defs, connector_describe)
 
     tools: Dict[str, Dict[str, Any]] = {}
     not_found: List[str] = []
+    undescribed: List[str] = []
     errors: Dict[str, str] = {}
     for name in names:
         fn = by_name.get(name)
@@ -508,7 +505,7 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
             tools[name] = {"description": str(remote_fn.get("description", "")),
                            "parameters": remote_fn.get("parameters", {})}
         elif is_connector_name(name):
-            not_found.append(name)
+            (undescribed if hosted_failure else not_found).append(name)
         elif _registry_entry(name) is not None and not is_deferrable_tool_name(
             name, load_config_readonly().effective_defer_tools):
             # Registered but bridge/core/GUI-surface: a real name, wrong door.
@@ -521,6 +518,8 @@ def dispatch_tool_describe(args: Dict[str, Any], *, current_tool_defs: List[Dict
         result["hint"] = "Names in not_found are not currently available. Re-run tool_search to refresh."
     if errors:
         result["errors"] = errors
+    if hosted_failure:
+        result["connectors"] = connectors_unavailable(hosted_failure, verb="described", names=undescribed)
     return json.dumps(result, ensure_ascii=False)
 
 

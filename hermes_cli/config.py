@@ -16,6 +16,7 @@ import logging
 import os
 import platform
 import re
+import shlex
 import shutil
 import stat
 import subprocess
@@ -45,7 +46,7 @@ from hermes_constants import (  # noqa: F401
     apply_secure_dir_policy, get_managed_system)
 # Re-export from hermes_constants — canonical definition lives there.
 from hermes_constants import get_hermes_home, get_process_hermes_home  # noqa: F401
-from utils import atomic_replace, atomic_yaml_write, fast_safe_load, file_signature
+from utils import atomic_replace, fast_safe_load, file_signature
 
 logger = logging.getLogger(__name__)
 
@@ -233,14 +234,14 @@ _CONFIG_LOCK = threading.RLock()
 _LAST_EXPANDED_CONFIG_BY_PATH: Dict[str, Any] = {}
 # path -> (user_mtime_ns, user_size, managed_mtime_ns, managed_size, merged, env_ref_snapshot).
 # load_config() returns a deepcopy of the cached value while the signature matches (skips
-# safe_load + merge + normalize + expand, ~13 ms). Writers use atomic_yaml_write (fresh inode
+# safe_load + merge + normalize + expand, ~13 ms). Writers use atomic_config_write (fresh inode
 # -> new mtime_ns) so no explicit invalidation is needed. The managed-file signature is folded
 # in so editing the managed-scope config.yaml invalidates, and the env snapshot invalidates
 # when a referenced ${VAR} changes value (late .env load, in-process rotation).
 # (path, mtime_ns, size) -> cached expanded config dict. load_config() returns a deepcopy of the cached
 # value when the file hasn't changed since the last load, skipping yaml.safe_load + _deep_merge +
 # _normalize_* + _expand_env_vars (~13 ms/call). save_config() + migrate_config() write via
-# atomic_yaml_write which produces a fresh inode, so stat() sees a new signature and the next load
+# atomic_config_write which produces a fresh inode, so stat() sees a new signature and the next load
 # repopulates automatically — no explicit invalidation hook. See #58514.
 _LOAD_CONFIG_CACHE: Dict[str, Tuple[int, ...]] = {}
 # path -> (mtime_ns, size, ino, ctime_ns, raw yaml dict) for read_raw_config() (no defaults merged in).
@@ -934,7 +935,7 @@ def _format_config_get_value(value, *, as_json: bool) -> str:
     if value is None:
         return "null"
     if isinstance(value, (dict, list)):
-        return yaml.safe_dump(value, sort_keys=False).rstrip()
+        return yaml.safe_dump(value, sort_keys=False).rstrip()  # config-writer: ok — renders a value for display, never written to disk
     return str(value)
 
 
@@ -1217,6 +1218,48 @@ def _validate_web_backends(config: Dict[str, Any], issues: List[ConfigIssue]) ->
                    "Run 'hermes tools' and pick a different Web Search & Extract provider")
 
 
+def _container_slots() -> Dict[str, str]:
+    """Dotted key -> ``"list"``/``"mapping"`` for every slot the schema fixes to a container:
+    ``DEFAULT_CONFIG`` (sections included) plus the known-container table for roots it omits."""
+    slots: Dict[str, str] = {}
+
+    def walk(node: Dict[str, Any], prefix: str) -> None:
+        for key, value in node.items():
+            path = f"{prefix}.{key}" if prefix else key
+            if isinstance(value, dict):
+                slots[path] = "mapping"
+                walk(value, path)
+            elif isinstance(value, list):
+                slots[path] = "list"
+
+    walk(DEFAULT_CONFIG, "")
+    slots.update(_KNOWN_CONTAINER_TYPES)
+    return slots
+
+
+def _validate_quoted_containers(config: Dict[str, Any], issues: List[ConfigIssue]) -> None:
+    """A container slot holding ONE quoted string (``enabled: '["a","b"]'``) is skipped by every
+    isinstance-gated reader while ``config get`` echoes it back, so plugins silently unmount and
+    exclusions silently lapse (#83308, #105706). Finding only — the file is never rewritten."""
+    for key, kind in _container_slots().items():
+        # ``parse_config_string_list`` readers accept the quoted form; nothing is ignored there.
+        if key in _SCALAR_AS_ONE_ITEM_LIST_KEYS:
+            continue
+        value = cfg_get(config, *key.split("."))
+        if not isinstance(value, str) or not _looks_structured_value(value):
+            continue
+        try:
+            parsed = yaml.safe_load(value)
+        except yaml.YAMLError:
+            continue
+        if isinstance(parsed, (list, dict)):
+            _issue(issues, "warning",
+                   f"{key} is the quoted string {value!r} — Hermes expects a YAML {kind} here "
+                   "and every reader ignores the string",
+                   f"Run: hermes config set {key} {shlex.quote(value)}  (stores a real {kind}), "
+                   "or remove the quotes in config.yaml")
+
+
 def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["ConfigIssue"]:
     """Validate config.yaml structure and return detected issues (accepts a pre-loaded dict).
     Catches common YAML mistakes that otherwise surface as confusing runtime errors."""
@@ -1256,6 +1299,7 @@ def validate_config_structure(config: Optional[Dict[str, Any]] = None) -> List["
                    f"Move '{key}' under the appropriate section")
 
     _validate_web_backends(config, issues)
+    _validate_quoted_containers(config, issues)
     return issues
 
 
@@ -2029,10 +2073,15 @@ def require_readable_config_before_write(config_path: Optional[Path] = None) -> 
     return loaded
 
 
-def atomic_config_write(config_path: Path, data: Any, **kwargs: Any) -> None:
-    """Fail-closed atomic write for ``config.yaml`` (``require_readable_config_before_write`` first)."""
-    require_readable_config_before_write(config_path)
-    atomic_yaml_write(config_path, data, **kwargs)
+def atomic_config_write(config_path: Path, data: Dict[str, Any], *, extra_content_on_create: Optional[str] = None) -> None:
+    """THE ``config.yaml`` writer: fail-closed (``require_readable_config_before_write``) and
+    comment-preserving (ruamel round-trip merge of *data* onto the on-disk document). Every code
+    path that persists a config.yaml — ``save_config``, ``config set``, migrations, plugin
+    bookkeeping, gateway/TUI RPCs, auth resets — goes through here; a PyYAML dump of a config
+    path anywhere else is rejected by ``scripts/check_config_yaml_writers.py`` (#92554)."""
+    from utils import atomic_roundtrip_yaml_save
+
+    atomic_roundtrip_yaml_save(config_path, data, extra_content_on_create=extra_content_on_create)
 
 
 def load_config() -> Dict[str, Any]:
@@ -2407,7 +2456,7 @@ def save_config(
             effective_preserve_keys = _explicit_config_paths(_raw_for_paths) | set(preserve_keys or ())
             normalized = _strip_default_values(normalized, DEFAULT_CONFIG, preserve_keys=effective_preserve_keys)
 
-        atomic_yaml_write(config_path, normalized, extra_content=_commented_sections_for_save(normalized))
+        atomic_config_write(config_path, normalized, extra_content_on_create=_commented_sections_for_save(normalized))
         _secure_file(config_path)
         _RAW_CONFIG_CACHE.pop(str(config_path), None)
         _LAST_EXPANDED_CONFIG_BY_PATH[str(config_path)] = copy.deepcopy(current_normalized)
@@ -3254,6 +3303,11 @@ _KNOWN_CONTAINER_TYPES = {
     "providers": "mapping",
     "model.aliases": "mapping",
     "model_aliases": "mapping",
+    # Omitted from DEFAULT_CONFIG on purpose (an empty default would clobber a user allow-list),
+    # so without these rows `config set plugins.enabled foo` stored a string every reader ignored.
+    "plugins.enabled": "list",
+    "plugins.disabled": "list",
+    "model_catalog.excluded_providers": "list",
 }
 # List slots whose readers go through ``parse_config_string_list``: a bare name is one entry.
 _SCALAR_AS_ONE_ITEM_LIST_KEYS = frozenset({"agent.disabled_toolsets", "skills.disabled"})
@@ -3411,7 +3465,7 @@ def _exit_invalid(msg: str) -> None:
 def _write_user_config(config_path: Path, user_config: Dict[str, Any]) -> None:
     """Write only the user's raw config back (never the merged defaults)."""
     ensure_hermes_home()
-    atomic_yaml_write(config_path, user_config, sort_keys=False)
+    atomic_config_write(config_path, user_config)
 
 
 def _print_unknown_key_notice(key: str, suggestion: Optional[str]) -> None:
@@ -3870,26 +3924,37 @@ _inject_profile_env_vars()
 
 
 def _platform_plugin_manifests():
-    """Yield ``(dir_name, manifest_dict)`` for every bundled ``plugins/platforms/*/plugin.y(a)ml``."""
-    platforms_dir = get_project_root() / "plugins" / "platforms"
-    if not platforms_dir.is_dir():
-        return
-    for child in platforms_dir.iterdir():
-        manifest_path = next(
-            (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
-        if manifest_path is None:
+    """Yield ``(dir_name, manifest_dict)`` for every platform plugin manifest: bundled
+    ``plugins/platforms/*``, the user's ``<HERMES_HOME>/plugins/platforms/*`` category dir, and flat
+    user installs ``<HERMES_HOME>/plugins/*`` that declare ``kind: platform`` (#46600)."""
+    user_plugins = get_hermes_home() / "plugins"
+    roots = (
+        (get_project_root() / "plugins" / "platforms", False),
+        (user_plugins / "platforms", False),
+        (user_plugins, True),  # flat layout: only manifests that say they are platforms
+    )
+    for root, require_kind in roots:
+        if not root.is_dir():
             continue
-        try:
-            with open(manifest_path, "r", encoding="utf-8") as f:
-                manifest = fast_safe_load(f) or {}
-        except Exception:
-            continue
-        yield child.name, manifest
+        for child in root.iterdir():
+            manifest_path = next(
+                (p for p in (child / "plugin.yaml", child / "plugin.yml") if child.is_dir() and p.exists()), None)
+            if manifest_path is None:
+                continue
+            try:
+                with open(manifest_path, "r", encoding="utf-8") as f:
+                    manifest = fast_safe_load(f) or {}
+            except Exception:
+                continue
+            if not isinstance(manifest, dict) or (require_kind and manifest.get("kind") != "platform"):
+                continue
+            yield child.name, manifest
 
 
 def _inject_platform_plugin_env_vars() -> None:
-    """Populate OPTIONAL_ENV_VARS from bundled platform plugin manifests so Teams / IRC / Google
-    Chat etc. are configurable in ``hermes config`` UI without the core knowing they exist.
+    """Populate OPTIONAL_ENV_VARS from platform plugin manifests (bundled AND user-installed) so
+    Teams / IRC / Google Chat and third-party platforms are configurable in the ``hermes config`` /
+    Desktop Gateway form without the core knowing they exist.
 
     ``requires_env`` / ``optional_env`` entries are a bare name or a dict with ``name`` plus
     optional ``description``/``url``/``password``/``prompt``/``category``. Failures are swallowed

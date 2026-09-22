@@ -46,10 +46,18 @@ SANDBOX_ALLOWED_TOOLS = frozenset([
 # Resource limit defaults (overridable via config.yaml → code_execution.*)
 DEFAULT_TIMEOUT = 300        # 5 minutes
 DEFAULT_MAX_TOOL_CALLS = 50
-MAX_STDOUT_BYTES = 50_000    # 50 KB
+MAX_STDOUT_BYTES = 50_000    # 50 KB default; user override via tool_output.max_bytes
 MAX_STDERR_BYTES = 10_000    # 10 KB
 # Hard ceiling on the spilled file (as web_tools' MAX_STORED_TEXT_CHARS): a runaway print loop must not fill the disk.
 MAX_SPILLED_STDOUT_BYTES = 5_000_000
+
+
+def _resolve_stdout_cap() -> int:
+    """Execute_code stdout cap in bytes: the user-facing ``tool_output.max_bytes`` knob
+    (the same one terminal output honors), 50 KB default when unset. Late-bound module
+    import so tests can patch ``tool_output_limits.get_max_bytes``."""
+    from tools.tool_output_limits import get_max_bytes
+    return get_max_bytes()
 
 
 def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
@@ -58,12 +66,13 @@ def _truncate_stdout_text(stdout_text: str) -> Tuple[str, Dict[str, Any]]:
     omitted middle is spilled to cache/exec and the result carries the path (recover-don't-rerun)."""
     stdout_bytes = stdout_text.encode("utf-8", errors="replace")
     total = len(stdout_bytes)
-    captured = min(total, MAX_STDOUT_BYTES)
+    cap = _resolve_stdout_cap()
+    captured = min(total, cap)
     metadata: Dict[str, Any] = {"stdout_truncated": total > captured, "stdout_bytes_captured": captured,
                                 "stdout_bytes_total": total, "stdout_bytes_omitted": total - captured}
-    if total <= MAX_STDOUT_BYTES:
+    if total <= cap:
         return stdout_bytes.decode("utf-8", errors="replace"), metadata
-    head_bytes, tail_bytes = head_tail_split(MAX_STDOUT_BYTES)
+    head_bytes, tail_bytes = head_tail_split(cap)
     text = (stdout_bytes[:head_bytes].decode("utf-8", errors="replace")
             + truncation_notice(total - captured, total, unit="bytes")
             + stdout_bytes[-tail_bytes:].decode("utf-8", errors="replace"))

@@ -1061,7 +1061,7 @@ def get_managed_system(home: str | Path | None = None) -> str | None:
     (:func:`apply_secure_dir_policy` at boot, before ``--profile`` re-homes the process).
     Defaults to the effective home."""
     marker = os.getenv("HERMES_MANAGED", "").strip().lower() or None
-    managed_marker = (Path(home) if home else get_hermes_home()) / ".managed"
+    managed_marker = (Path(home) if home is not None else get_hermes_home()) / ".managed"
     if marker is None and managed_marker.exists():
         try:
             marker = managed_marker.read_text(encoding="utf-8", errors="replace").strip().lower()

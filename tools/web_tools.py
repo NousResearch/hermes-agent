@@ -157,8 +157,29 @@ def _get_search_backend() -> str:
 
 
 def _get_extract_backend() -> str:
-    """Backend for web_extract: ``web.extract_backend`` (strict, no probe) > ``web.backend`` > autodetect."""
-    return _configured_backend("extract_backend") or _get_backend()
+    """Backend for web_extract, preserving explicit selections but filtering autodetect by capability.
+
+    ``ddgs`` is a valid last-resort search backend, but it cannot extract pages. On an unconfigured
+    install, resolve a capability-eligible provider through the registry instead of returning a
+    search-only autodetect result. Explicit ``web.extract_backend`` and shared ``web.backend`` values
+    remain strict so a user's chosen backend still produces its precise configuration error.
+    """
+    configured = _configured_backend("extract_backend")
+    if configured:
+        return configured
+    if _configured_backend() or read_selection("web") is not None:
+        return _get_backend()
+
+    backend = _get_backend()
+    _ensure_web_plugins_loaded()
+    provider = _registered_web_provider(backend)
+    if provider is None or provider.supports_extract():
+        return backend
+
+    # The shared autodetect ladder selected a search-only provider (currently ddgs). The registry
+    # applies the extract capability filter and then its keyless free-tier fallback.
+    active_extract = _registry_call("get_active_extract_provider", None)
+    return active_extract.name if active_extract is not None else backend
 
 
 def _ddgs_package_importable() -> bool:

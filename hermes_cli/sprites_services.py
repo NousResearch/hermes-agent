@@ -1,7 +1,20 @@
 """Per-profile gateways supervised by Sprites Services, including sticky stop."""
 from __future__ import annotations
 
+import json
+
 from hermes_cli import sprites_api
+
+
+def gateway_is_deliberately_stopped(name: str) -> bool:
+    """Read operator intent, not the volatile state left by a killed gateway."""
+    from hermes_cli.service_manager import _profile_dir_for_gateway_service
+    state_file = _profile_dir_for_gateway_service(name) / 'gateway_state.json'
+    try:
+        state = json.loads(state_file.read_text(encoding='utf-8'))
+    except FileNotFoundError:
+        return False
+    return state.get('desired_state') == 'stopped'
 
 
 class SpritesServiceManager:
@@ -44,6 +57,8 @@ class SpritesServiceManager:
 
     def is_running(self, name: str) -> bool:
         self._profile(name)
+        if gateway_is_deliberately_stopped(name):
+            return False
         try:
             service = sprites_api.request('GET', f'/services/{name}')
             return service.get('state', {}).get('status') == 'running'

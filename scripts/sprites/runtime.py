@@ -13,6 +13,7 @@ import time
 
 ROOT = Path('/opt/hermes')
 CONFIG = Path('/etc/hermes-sprites/environment.json')
+STOPPED = Path('/etc/hermes-sprites-state/stopped')
 
 
 def private_replace(path: Path, data: str) -> None:
@@ -63,10 +64,6 @@ def configure() -> None:
 
 
 def run(service: str, profile: str = 'default') -> None:
-    while Path('/etc/hermes-sprites-state/stopped').exists():
-        # A cold boot also starts Services. Exiting would cause a restart loop.
-        # An explicit NAS start clears the fence, including for parked Services.
-        time.sleep(1)
     env = environment()
     executable = str(ROOT / '.venv/bin/hermes')
     commands = {
@@ -80,6 +77,15 @@ def run(service: str, profile: str = 'default') -> None:
     os.setgid(owner.pw_gid)
     os.setuid(owner.pw_uid)
     os.chdir('/opt/data')
+    os.environ.update(env)
+    sys.path.insert(0, str(ROOT))
+    from hermes_cli.sprites_services import gateway_is_deliberately_stopped
+    while STOPPED.exists() or (
+        service == 'gateway' and gateway_is_deliberately_stopped(f'gateway-{profile}')
+    ):
+        # Cold boot starts native Services, including individually stopped profiles.
+        # Park until explicit start clears the applicable intent; do not crash-loop.
+        time.sleep(1)
     os.execve(command[0], command, env)
 
 

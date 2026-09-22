@@ -131,7 +131,7 @@ index d5bb8a71da..5ef72582b0 100644
        localAbort.signal.removeEventListener('abort', cancelTurn)
        signal?.removeEventListener('abort', onLeaseAbort)
 diff --git a/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts b/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts
-index 6ee1688e19..eb8b05c1ac 100644
+index 6ee1688e19..027004b728 100644
 --- a/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts
 +++ b/apps/desktop/src/plugins/hermes-bots/desktop-room-mailbox-integration.test.ts
 @@ -994,28 +994,71 @@ describe('classic Desktop mailbox with the real room engine', () => {
@@ -166,20 +166,17 @@ index 6ee1688e19..eb8b05c1ac 100644
 +      loaded.client.desktopRoomDescriptors({ Workshop: room }),
 +      { consumerId: 'desktop:one', request: async () => ({}), route, signal: controller.signal }
 +    )
- 
--    const turns = await import('./group-turns')
++
 +    const outcome = result.catch(error => error as { retryable: boolean })
- 
--    const turn = vi
--      .spyOn(turns, 'runGroupChatMemberTurn')
--      .mockImplementation(async (_group, _member, _prompt, _thread, _images, fence) => (fence ? late : '(pass)'))
++
 +    await vi.advanceTimersByTimeAsync(0)
 +    const beforeLoss = loaded.chat.$groupChats.get().Workshop
 +    expect(beforeLoss.turn).toEqual(members[0])
 +    expect(beforeLoss.sessions?.[`thread:${activeThread}::reviewer`]).toBe(activeSession)
 +    const activeEpoch = beforeLoss.epoch
 +    const activeSessions = structuredClone(beforeLoss.sessions)
-+
+ 
+-    const turns = await import('./group-turns')
 +    controller.abort('lease-lost')
 +    await vi.advanceTimersByTimeAsync(0)
 +    const afterLoss = loaded.chat.$groupChats.get().Workshop
@@ -194,7 +191,10 @@ index 6ee1688e19..eb8b05c1ac 100644
 +    for (let index = 0; index < 120 && loaded.chat.$groupChats.get().Workshop.running; index += 1) {
 +      await vi.advanceTimersByTimeAsync(250)
 +    }
-+
+ 
+-    const turn = vi
+-      .spyOn(turns, 'runGroupChatMemberTurn')
+-      .mockImplementation(async (_group, _member, _prompt, _thread, _images, fence) => (fence ? late : '(pass)'))
 +    expect(await outcome).toMatchObject({ retryable: true })
 +    expect(loaded.gateway.calls).toHaveLength(1)
 +    expect(loaded.chat.$groupChats.get().Workshop.running).toBe(false)
@@ -218,7 +218,7 @@ index 6ee1688e19..eb8b05c1ac 100644
        },
        loaded.client.desktopRoomDescriptors({ Workshop: room }),
        { consumerId: 'desktop:one', request: async () => ({}), route, signal: controller.signal }
-@@ -1023,23 +1066,300 @@ describe('classic Desktop mailbox with the real room engine', () => {
+@@ -1023,23 +1066,365 @@ describe('classic Desktop mailbox with the real room engine', () => {
  
      const outcome = result.catch(error => error as { retryable: boolean })
  
@@ -283,6 +283,71 @@ index 6ee1688e19..eb8b05c1ac 100644
 +    expect(afterLoss.holds || {}).toEqual({})
 +    expect(afterLoss.running).toBe(true)
 +    expect(afterLoss.turn).toEqual(members[0])
++  })
++
++  it.each(['local first', 'recovery first'] as const)('preserves independent same-thread owners with %s', async ordering => {
++    let release!: (text: string) => void
++    const held = new Promise<string>(resolve => { release = resolve })
++    const loaded = await load({ turn: ({ n }) => n === 1 ? held : '(pass)' })
++    seed(loaded)
++    const descriptors = loaded.client.desktopRoomDescriptors(loaded.chat.$groupChats.get())
++
++    const command = {
++      action: 'send' as const, command_id: 'telegram:same-thread-recovery', room_id: 'room-1',
++      payload: { message: 'Original same-thread work', recipients: members }
++    }
++
++    const firstLease = new AbortController()
++
++    const first = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
++      consumerId: 'desktop:one', request: async () => ({}), route, signal: firstLease.signal
++    }).catch(error => error)
++
++    await vi.advanceTimersByTimeAsync(0)
++    expect(loaded.gateway.calls).toHaveLength(1)
++    const thread = loaded.chat.$groupChats.get().Workshop.log.find(entry => entry.id === command.command_id)!.thread!
++    firstLease.abort('lease-lost')
++    expect(await settle(first)).toMatchObject({ retryable: true })
++
++    if (ordering === 'local first') {
++      expect(loaded.rounds.sendToGroupChat('Workshop', members, 'Local reply on the same thread', thread)).toBe(thread)
++    }
++
++    const recoveryLease = new AbortController()
++
++    const recovery = loaded.runtime.executeDesktopRoomCommand(command, descriptors, {
++      consumerId: 'desktop:two', request: async () => ({}), route, signal: recoveryLease.signal
++    }).catch(error => error)
++
++    await vi.advanceTimersByTimeAsync(0)
++
++    if (ordering === 'local first') {
++      recoveryLease.abort('lease-lost')
++    } else {
++      expect(loaded.rounds.sendToGroupChat('Workshop', members, 'Local reply on the same thread', thread)).toBe(thread)
++      await loaded.rounds.stopGroupThread('Workshop', thread, members)
++    }
++
++    await vi.advanceTimersByTimeAsync(1_000)
++    release('ABANDONED_SAME_THREAD')
++    const outcome = await settle(recovery)
++    await vi.advanceTimersByTimeAsync(5_000)
++
++    const room = loaded.chat.$groupChats.get().Workshop
++    expect(room.running).toBe(false)
++    expect(room.turn).toBeNull()
++    expect(room.log.filter(entry => entry.id === command.command_id)).toHaveLength(1)
++    expect(room.log.map(entry => entry.text)).not.toContain('ABANDONED_SAME_THREAD')
++    expect(loaded.gateway.rpcFor('session.interrupt')).toHaveLength(1)
++    expect(outcome).toMatchObject({ retryable: true })
++
++    if (ordering === 'local first') {
++      expect(loaded.gateway.calls).toHaveLength(2)
++      expect(loaded.gateway.calls[1].prompt).toContain('Local reply on the same thread')
++    } else {
++      expect(loaded.gateway.calls).toHaveLength(1)
++      expect(room.desktopCommandSettled?.[command.command_id]).toBeUndefined()
++    }
 +  })
 +
 +  it.each(['completion', 'lease abort', 'expired lease'] as const)('keeps recovery queued behind a cancelled predecessor through %s', async completion => {
@@ -758,7 +823,7 @@ index 6a3f6868f9..ffb8a2594c 100644
      const room = await loadRoom()
      seedRoom(room, null)
 diff --git a/apps/desktop/src/plugins/hermes-bots/group-rounds.ts b/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
-index 3ebf668934..f9d4603949 100644
+index 3ebf668934..a9c3134f99 100644
 --- a/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
 +++ b/apps/desktop/src/plugins/hermes-bots/group-rounds.ts
 @@ -471,12 +471,27 @@ export async function stopGroupThread(group: string, thread: null | string, memb
@@ -884,15 +949,27 @@ index 3ebf668934..f9d4603949 100644
  
        return existingThread
      }
-@@ -1111,6 +1143,7 @@ export function sendToGroupChat(
+@@ -1110,9 +1142,18 @@ export function sendToGroupChat(
+   return target
  }
  
++interface GroupChatQueueItem {
++  fence?: GroupCommandFence
++  members: GroupMember[]
++  thread: string
++}
++
  interface GroupChatDrive {
-+  active: null | { fence?: GroupCommandFence; members: GroupMember[]; thread: string }
++  active: null | GroupChatQueueItem
    failedMembers: Set<string>
-   pending: Map<string, { fence?: GroupCommandFence; members: GroupMember[] }>
+-  pending: Map<string, { fence?: GroupCommandFence; members: GroupMember[] }>
++  // Local replies coalesce by thread; mailbox claims coalesce only by their
++  // fence generation. Neither owner may overwrite the other on the same thread.
++  pending: Map<string | symbol, GroupChatQueueItem>
    binding: ReturnType<typeof followGroupChat>
-@@ -1120,6 +1153,34 @@ interface GroupChatDrive {
+ }
+ 
+@@ -1120,15 +1161,45 @@ interface GroupChatDrive {
  // rename follows the room identity; disband retires the binding permanently.
  const groupChatDrives = new Map<string, GroupChatDrive>()
  
@@ -914,9 +991,9 @@ index 3ebf668934..f9d4603949 100644
 +  const drive = liveGroupChatDrive(group, $groupChats.get()[group] || {})
 +  let removed = false
 +
-+  for (const [thread, pending] of drive?.pending || []) {
++  for (const [owner, pending] of drive?.pending || []) {
 +    if (pending.fence === fence) {
-+      drive?.pending.delete(thread)
++      drive?.pending.delete(owner)
 +      removed = true
 +    }
 +  }
@@ -927,18 +1004,38 @@ index 3ebf668934..f9d4603949 100644
  function queueGroupChatDrive(group: string, members: GroupMember[], thread: string, fence?: GroupCommandFence) {
    let key = groupChatRoomKey(group, $groupChats.get()[group])
    const active = groupChatDrives.get(key)
-@@ -1141,6 +1202,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
++  const owner = fence?.generation ?? thread
++  const item = { fence, members, thread }
+ 
+   if (active?.binding.isLive()) {
+     // Only a new user action AFTER failure authorizes another attempt.
+     active.failedMembers.clear()
+     bindGroupCommandFence(fence, thread, $groupChats.get()[group]?.epoch || 0)
+-    active.pending.set(thread, { fence, members })
++    active.pending.set(owner, item)
+ 
+     return
+   }
+@@ -1141,7 +1212,8 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
    })
  
    const drive: GroupChatDrive = {
+-    pending: new Map([[thread, { fence, members }]]),
 +    active: null,
-     pending: new Map([[thread, { fence, members }]]),
++    pending: new Map([[owner, item]]),
      failedMembers: new Set(),
      binding
-@@ -1160,8 +1222,35 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
-         const [nextThread, next] = drive.pending.entries().next().value!
+   }
+@@ -1157,11 +1229,39 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
+ 
+     try {
+       while (binding.isLive() && drive.pending.size) {
+-        const [nextThread, next] = drive.pending.entries().next().value!
++        const [nextOwner, next] = drive.pending.entries().next().value!
++        const nextThread = next.thread
          currentThread = nextThread
-         drive.pending.delete(nextThread)
+-        drive.pending.delete(nextThread)
++        drive.pending.delete(nextOwner)
 +
 +        if (!groupCommandFenceMatches(next.fence, desktopRoomIdentity(group, $groupChats.get()[group]), nextThread)) {
 +          continue
@@ -948,7 +1045,7 @@ index 3ebf668934..f9d4603949 100644
 +        // Explicit Stop removes pending items before they can be rebound here.
 +        const activeEpoch = $groupChats.get()[group]?.epoch || 0
 +        bindGroupCommandFence(next.fence, nextThread, activeEpoch)
-+        const active = { ...next, thread: nextThread }
++        const active = next
 +        drive.active = active
          updateGroupChat(group, room => ({ ...room, running: true }))
 -        await runGroupChatRounds(group, next.members, nextThread, next.fence, drive.failedMembers)
@@ -972,7 +1069,7 @@ index 3ebf668934..f9d4603949 100644
        }
      } catch {
        if (binding.isLive()) {
-@@ -1169,6 +1258,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
+@@ -1169,6 +1269,7 @@ function queueGroupChatDrive(group: string, members: GroupMember[], thread: stri
          updateGroupChat(group, room => ({ ...room, running: false, turn: null }))
        }
      } finally {

@@ -385,6 +385,7 @@ class HindsightMemoryProvider(MemoryProvider):
         self._opportunistic_generation = 0
         self._opportunistic_inflight: _RecallRequest | None = None
         self._opportunistic_pending: _RecallRequest | None = None
+        self._opportunistic_retired_sessions: set[str] = set()
         self._last_recall_returned, self._last_recall_count = False, 0
         self._apply_recall_settings({})
 
@@ -1041,6 +1042,8 @@ class HindsightMemoryProvider(MemoryProvider):
                     active_generation = current_generation
 
         with self._prefetch_lock:
+            if request.session_id in self._opportunistic_retired_sessions:
+                return
             if (
                 self._opportunistic_inflight is not None
                 and self._opportunistic_inflight[:3] == key
@@ -1303,9 +1306,17 @@ class HindsightMemoryProvider(MemoryProvider):
 
         # 2. Legacy warm prefetch is bounded here. Opportunistic recall must not
         # delay the turn; generation invalidation below makes its live result stale.
-        if not self._recall_async:
+        if not bool(getattr(self, "_recall_async", False)):
             self._join_prefetch(3.0)
         with self._prefetch_lock:
+            retired_sessions = getattr(
+                self, "_opportunistic_retired_sessions", set()
+            )
+            if new_id != self._session_id:
+                if self._session_id:
+                    retired_sessions.add(self._session_id)
+                retired_sessions.discard(new_id)
+            self._opportunistic_retired_sessions = retired_sessions
             self._prefetch_result = ""
             self._prefetch_count = 0
             prefetch_alive = bool(

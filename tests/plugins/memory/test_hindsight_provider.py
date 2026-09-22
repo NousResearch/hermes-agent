@@ -22,6 +22,7 @@ from zoneinfo import ZoneInfo
 
 import pytest
 
+from agent.memory_manager import MemoryManager
 from hermes_cli.memory_setup import _CANCELLED
 import plugins.memory.hindsight as hindsight_module
 from plugins.memory.hindsight import (
@@ -757,6 +758,52 @@ class TestPrefetch:
         release_old.set()
 
         assert new_completed.wait(timeout=2.0)
+
+    def test_recall_async_rejects_delayed_manager_kickoff_after_session_boundary(
+        self, provider_with_config
+    ):
+        p = provider_with_config(recall_async=True)
+        manager = MemoryManager()
+        manager.add_provider(p)
+        old_callback_entered = threading.Event()
+        release_old_callback = threading.Event()
+        new_completed = threading.Event()
+        original_start_prefetch = p.start_prefetch
+
+        def _delayed_start(query, *, session_id="", turn_number=0):
+            if query == "old query":
+                old_callback_entered.set()
+                release_old_callback.wait(timeout=2.0)
+            original_start_prefetch(
+                query, session_id=session_id, turn_number=turn_number
+            )
+
+        async def _recall(**kwargs):
+            if kwargs["query"] == "new query":
+                new_completed.set()
+            return SimpleNamespace(results=[SimpleNamespace(text=kwargs["query"])])
+
+        p.start_prefetch = _delayed_start
+        p._client.arecall = AsyncMock(side_effect=_recall)
+        manager.start_prefetch_all(
+            "old query", session_id="test-session", turn_number=1
+        )
+        assert old_callback_entered.wait(timeout=2.0)
+
+        p.on_session_switch("new-session")
+        manager.start_prefetch_all(
+            "new query", session_id="new-session", turn_number=1
+        )
+        release_old_callback.set()
+
+        assert new_completed.wait(timeout=2.0)
+        p._prefetch_thread.join(timeout=2.0)
+        p.on_session_switch("test-session")
+
+        assert p.prefetch("old query", session_id="test-session") == ""
+        assert [call.kwargs["query"] for call in p._client.arecall.call_args_list] == [
+            "new query"
+        ]
 
     def test_recall_async_preserves_new_session_inflight_before_deferred_switch(
         self, provider_with_config

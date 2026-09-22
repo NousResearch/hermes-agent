@@ -34,31 +34,12 @@
 //     (POST /api/auth/ws-ticket), so the session is still LIVE even with no
 //     AT cookie. A liveness check that looked only at the AT cookie would
 //     force a needless full re-login every ~15 min — hence cookiesHaveLiveSession.
+import { readStatusCode } from './api-transport'
+import { sharesHostBackend } from './host-backend-singleton'
+
 const AT_COOKIE_VARIANTS = ['__Host-hermes_session_at', '__Secure-hermes_session_at', 'hermes_session_at']
 const RT_COOKIE_VARIANTS = ['__Host-hermes_session_rt', '__Secure-hermes_session_rt', 'hermes_session_rt']
 
-// The Nous portal (NAS) does NOT use Hermes gateway session cookies — it is a
-// Privy-authed Next.js app. NAS `auth()` (src/server/auth/session.ts) reads the
-// `privy-token` access-token cookie (with `privy-id-token` alongside), which is
-// also exactly what the `/api/agents` cookie-auth path validates. So portal
-// sign-in / discovery liveness must look for the Privy cookie, NOT the gateway
-// cookies above. `privy-token` is the access token (the required signal);
-// variants cover the secured-prefix forms and the older `privy-session` name.
-const PRIVY_SESSION_COOKIE_VARIANTS = [
-  '__Host-privy-token',
-  '__Secure-privy-token',
-  'privy-token',
-  'privy-session',
-  'privy-refresh-token'
-]
-
-// The short-lived Privy ACCESS token only — the credential `/api/agents`
-// actually validates. `privy-session` / `privy-refresh-token` are long-lived
-// renewal material: their presence means the session is RENEWABLE (signed in,
-// no interactive login needed), but discovery still 401s until a fresh
-// `privy-token` is minted. Distinguishing the two is what lets a cold start
-// silently renew instead of demanding a re-login (#73495).
-const PRIVY_ACCESS_COOKIE_VARIANTS = ['__Host-privy-token', '__Secure-privy-token', 'privy-token']
 // Keep this aligned with hermes_cli.profiles.validate_profile_name(). `default`
 // is the built-in root alias; these names cannot be created as profiles.
 const RESERVED_REMOTE_PROFILES = new Set(['hermes', 'test', 'tmp', 'root', 'sudo'])
@@ -121,7 +102,7 @@ function isGatewayAuthRejection(error) {
     return true
   }
 
-  const statusCode = Number(error && typeof error === 'object' ? (error as any).statusCode : NaN)
+  const statusCode = readStatusCode(error)
 
   return statusCode === 401 || statusCode === 403
 }
@@ -132,11 +113,69 @@ function gatewayTicketFailure(error, authMessage, transportMessage) {
 
   if (needsOauthLogin) {
     ;(err as any).needsOauthLogin = true
+    // A rejected ticket mint is a CONFIRMED reauth failure, not a hint. The
+    // cookie path only sees a 401/403 after the gateway's transparent AT/RT
+    // rotation has already failed, and the native-bearer path only after
+    // mintGatewayWsTicket's forced /auth/native/refresh has. Nothing will
+    // change until the user signs in, so tag it the way startHermes latches
+    // (isReauthRequiredError): the boot is marked non-retryable and the
+    // overlay's Sign in button stops flickering away under the renderer's
+    // transient-boot retry loop (#95701).
+    ;(err as any).isReauthRequired = true
+  }
+
+  // Preserve structured HTTP context when the source error carried an integer
+  // statusCode (the fetch layer attaches err.statusCode). Downstream Cloud
+  // classification (isServerSideHttpError / makeNousCloudBackendDownError) and
+  // the renderer overlay depend on it surviving the ticket-error wrapper. Auth
+  // semantics are unchanged: 401/403 route to reauth, 5xx stays a transport
+  // failure, everything else keeps current behavior.
+  const sourceStatus = readStatusCode(error)
+
+  if (Number.isInteger(sourceStatus)) {
+    ;(err as any).statusCode = sourceStatus
   }
 
   err.cause = error
 
   return err
+}
+
+/**
+ * Retry a one-shot mint/fetch that can flap on brief network blips.
+ * Auth rejections (401/403 / needsOauthLogin) fail immediately — retrying those
+ * just hammers a dead session. Transport/server failures retry with short delays.
+ */
+async function withTransientRetries(run, options: any = {}) {
+  const attempts = Number.isInteger(options.attempts) && options.attempts > 0 ? options.attempts : 3
+  const delaysMs = Array.isArray(options.delaysMs) && options.delaysMs.length > 0 ? options.delaysMs : [250, 750]
+
+  const sleep =
+    typeof options.sleep === 'function'
+      ? options.sleep
+      : (ms: number) => new Promise(resolve => setTimeout(resolve, ms))
+
+  const isRetryable =
+    typeof options.isRetryable === 'function' ? options.isRetryable : (error: unknown) => !isGatewayAuthRejection(error)
+
+  let lastError: unknown
+
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
+    try {
+      return await run()
+    } catch (error) {
+      lastError = error
+
+      if (!isRetryable(error) || attempt >= attempts - 1) {
+        throw error
+      }
+
+      const delay = delaysMs[Math.min(attempt, delaysMs.length - 1)]
+      await sleep(delay)
+    }
+  }
+
+  throw lastError
 }
 
 /** Serialize a fresh-WS-URL attempt across Electron's IPC boundary. */
@@ -258,6 +297,23 @@ const FORBIDDEN_REMOTE_HEADER_NAMES = new Set([
   'x-hermes-session-token'
 ])
 
+/**
+ * Strip CR/LF from a header VALUE. Clipboard pastes of access-proxy service
+ * tokens routinely carry a trailing newline, and a bare CR/LF inside a header
+ * value is a request-splitting vector once it reaches setHeader/extraHeaders.
+ * Header NAMES are already constrained by REMOTE_HEADER_NAME_RE above, which
+ * admits no whitespace, so values are the only gap.
+ *
+ * Applied at BOTH ends because a safeStorage envelope stores ciphertext: this
+ * call sanitizes plaintext on the way in, and decryptRemoteHeaders sanitizes
+ * again on the way out so encrypted-at-rest values get the same treatment.
+ */
+function sanitizeRemoteHeaderValue(value) {
+  return String(value || '')
+    .replace(/[\r\n]+/g, '')
+    .trim()
+}
+
 function normalizeRemoteHeaders(raw) {
   if (!raw || typeof raw !== 'object' || Array.isArray(raw)) {
     return {}
@@ -274,7 +330,7 @@ function normalizeRemoteHeaders(raw) {
     }
 
     if (typeof secret === 'string') {
-      const value = secret.trim()
+      const value = sanitizeRemoteHeaderValue(secret)
 
       if (value) {
         out[headerName] = { encoding: 'plain', value }
@@ -506,6 +562,8 @@ export interface ProfileRouteOptions {
   primaryRemoteActive?: boolean
   /** A stored per-profile entry exists for this profile (local or remote). */
   ownEntry?: boolean
+  /** `HERMES_DESKTOP_ISOLATED_BACKEND=1`: opt out of the host singleton. */
+  isolatedBackend?: boolean
   requestMethod?: null | string
   requestPath?: null | string
 }
@@ -543,6 +601,7 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   'GET /api/skills/content',
   'PUT /api/skills/toggle',
   'POST /api/skills/hub/install',
+  'GET /api/skills/hub/official',
   'GET /api/skills/hub/preview',
   'GET /api/skills/hub/scan',
   'GET /api/skills/hub/search',
@@ -552,7 +611,35 @@ const LOCAL_PRIMARY_SCOPED_ROUTES = new Set([
   // Spawns a background action polled via /api/actions/{name}/status — must
   // live on the SAME backend as that poll family (below), or the poll asks a
   // backend that never registered the dynamic action name and 404s.
-  'POST /api/mcp/catalog/install'
+  'POST /api/mcp/catalog/install',
+  // Gateway lifecycle: the handlers take `?profile=` and already decide, per
+  // profile, whether X has its own gateway or is served by the default
+  // multiplexer (409 / restart the multiplexer). Spawning from the primary keeps
+  // the action on the backend the status poll asks AND outside the pooled
+  // backend's own shutdown, which SIGTERMs its gateway-restart child.
+  'POST /api/gateway/restart',
+  'POST /api/gateway/start',
+  'POST /api/gateway/stop',
+  // Profile-owned state that used to ride a per-profile backend: with one backend
+  // per host these handlers take `?profile=` and resolve the home per request.
+  // Destructive ones (memory reset, curator run, hook delete, checkpoint prune,
+  // import) REFUSE an unnamed profile while several are served, so the query is
+  // not optional here.
+  'GET /api/memory',
+  'PUT /api/memory/provider',
+  'POST /api/memory/reset',
+  'GET /api/curator',
+  'PUT /api/curator/paused',
+  'POST /api/curator/run',
+  'GET /api/logs',
+  'GET /api/portal',
+  'GET /api/hermes/update/check',
+  'POST /api/local-models/activate',
+  'GET /api/dashboard/themes',
+  'PUT /api/dashboard/theme',
+  'GET /api/dashboard/font',
+  'PUT /api/dashboard/font',
+  'GET /api/dashboard/plugins'
 ])
 
 function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
@@ -586,6 +673,14 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return true
   }
 
+  // Session reads already accept `profile` and open that profile's state.db
+  // read-only. Keep ownership probes and transcript reads on the shared primary
+  // instead of spawning one local backend per profile. Writes remain pooled so
+  // their process-level profile scope and side effects are unchanged.
+  if (method === 'GET' && (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/'))) {
+    return true
+  }
+
   // Every current /api/tools handler accepts `profile`; every /api/profiles
   // handler either aggregates profiles or names its target in the path/body.
   // These are the only whole families safe to route through the primary.
@@ -597,24 +692,83 @@ function localPrimaryRequestScope(opts: ProfileRouteOptions): boolean | null {
     return false
   }
 
+  // Whole families whose every handler now takes `?profile=` and resolves the
+  // profile's home per request: webhook subscriptions (`{name}` in the path) and
+  // the /api/ops maintenance routes (doctor, backup/import, hooks, checkpoints,
+  // diagnostics). Their action spawns pass `-p <profile>` to the child, and the
+  // /api/actions poll family above already pins to this same backend.
+  if (pathname === '/api/webhooks' || pathname.startsWith('/api/webhooks/')) {
+    return true
+  }
+
+  if (pathname.startsWith('/api/ops/')) {
+    return true
+  }
+
+  // Session WRITES are scoped by `body.profile` (`rename_session_endpoint` ->
+  // `_with_db(body.profile, ...)`), not by the query. They ARE scopable — just
+  // not through the URL — so they belong on the shared backend with the path
+  // left alone; `apps/desktop/src/api/sessions.ts` always names the owner in
+  // the body. Returning `true` here would append a `?profile=` the handler
+  // ignores and advertise a scope that is not doing the work.
+  if (method !== 'GET' && (pathname === '/api/sessions' || pathname.startsWith('/api/sessions/'))) {
+    return false
+  }
+
   return null
+}
+
+const SAFE_REQUEST_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
+
+/**
+ * True when this is a REST request that CHANGES something and the server cannot
+ * vouch for its profile scope (`localPrimaryRequestScope` → null: no
+ * `?profile=`, no `body.profile`, no target named in the path).
+ *
+ * Such a route has exactly one scope left — the backend process's own
+ * `HERMES_HOME` — so it keeps a pooled, profile-scoped backend even though every
+ * other local request now shares the host one. Mechanical on purpose: the day a
+ * handler learns to read `profile` it joins `LOCAL_PRIMARY_SCOPED_ROUTES` (or a
+ * family above), `localPrimaryRequestScope` stops returning null, and this
+ * predicate stops seeing it — there is no second list to keep in sync.
+ *
+ * A call with no `requestPath` is a BACKEND/descriptor resolution (WebSocket
+ * dial, pool bookkeeping), not a REST call, and is never held back.
+ */
+export function unscopableMutatingRequest(opts: ProfileRouteOptions = {}): boolean {
+  if (!String(opts.requestPath || '')) {
+    return false
+  }
+
+  if (SAFE_REQUEST_METHODS.has(String(opts.requestMethod || 'GET').toUpperCase())) {
+    return false
+  }
+
+  return localPrimaryRequestScope(opts) === null
 }
 
 /**
  * The one place that answers "which backend serves profile P, and does its
  * REST path need a profile scope?". Six routes, in precedence order:
  *
- *  1. The primary profile owns the window backend outright.
+ *  1. The primary profile owns a local/window backend outright; on a global
+ *     remote its label is still carried per request because launch home can
+ *     differ from the selected profile.
  *  2. A profile with its own remote override gets a pooled descriptor for that
  *     host, which is already scoped to it.
  *  3. A profile inheriting the app-global remote shares the primary backend —
  *     one host serves every profile — so it is scoped per request instead.
  *  4. An unknown profile under a remote primary shares that remote backend.
- *     A stored local profile remains isolated in its own backend.
- *  5. A local profile REST request that the primary backend can safely scope
- *     reuses that backend, with `?profile=` when the handler accepts it.
- *  6. Any other local profile gets its own pooled backend, spawned with
- *     `--profile`, so its `HERMES_HOME` scopes it.
+ *     A stored local profile keeps its own pooled backend instead.
+ *  5. A local profile REST request the primary backend can scope reuses that
+ *     backend, with `?profile=` when the handler reads the query (handlers that
+ *     name their target in the path or `body.profile` get no query).
+ *  6. Every other LOCAL profile also shares the one host backend
+ *     (multiplex-only: one `hermes serve` per HOST). The two ways out are
+ *     `HERMES_DESKTOP_ISOLATED_BACKEND=1`, which gives this app a private
+ *     backend, and a MUTATING request the server cannot scope at all — that
+ *     one keeps a pooled backend whose HERMES_HOME does the scoping, so a
+ *     destructive call can never fall through to the primary's home.
  *
  * Routing used to be spread across three overlapping predicates that each
  * re-derived part of this table, which is how case 3 ended up registering
@@ -624,8 +778,30 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
   const scopedProfile = connectionScopeKey(profile)
   const primaryProfile = connectionScopeKey(opts.primaryProfile) || 'default'
 
-  if (!scopedProfile || scopedProfile === primaryProfile) {
+  if (!scopedProfile) {
     return { backend: 'primary', descriptorProfile: null, scopePath: false }
+  }
+
+  if (scopedProfile === primaryProfile) {
+    // A global remote is a multi-profile dashboard, not a backend process
+    // launched for this Desktop label. Even its "primary" label must travel on
+    // the wire: the dashboard's process HERMES_HOME can belong to a different
+    // launch profile, so a bare request silently reads that profile instead.
+    if (opts.globalRemote) {
+      return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+    }
+
+    // The same holds for the LOCAL host backend: with one `hermes serve` per
+    // host the app attaches to whatever backend is running, and that process
+    // was launched under some OTHER profile's home whenever another app (or an
+    // earlier boot) registered it. A bare request the server can scope then
+    // resolves to that launch home, not this primary — the Settings → Models
+    // write that landed on the wrong profile's config.yaml (#118431/#118432).
+    // Naming the primary on a scopable route is a no-op for a backend that
+    // did launch as it (current-profile semantics server-side).
+    return localPrimaryRequestScope(opts) === true
+      ? { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+      : { backend: 'primary', descriptorProfile: null, scopePath: false }
   }
 
   if (opts.profileRemoteOverride) {
@@ -660,6 +836,15 @@ function resolveProfileBackendRoute(profile, opts: ProfileRouteOptions = {}): Pr
     }
   }
 
+  // 6. Multiplex-only: every other LOCAL profile shares the one host backend
+  //    too, carrying `?profile=` / the `profile` RPC param instead of getting
+  //    a `hermes serve` child of its own — UNLESS this request mutates state
+  //    the server cannot scope, in which case the pooled backend's own
+  //    HERMES_HOME is the only scope left and it keeps one.
+  if (sharesHostBackend({ isolated: opts.isolatedBackend, unscopableRequest: unscopableMutatingRequest(opts) })) {
+    return { backend: 'primary', descriptorProfile: scopedProfile, scopePath: true }
+  }
+
   return { backend: 'pool', descriptorProfile: null, scopePath: false }
 }
 
@@ -686,14 +871,23 @@ function pathWithGlobalRemoteProfile(path, profile, opts: ProfileRouteOptions = 
   return pathWithProfileScope(path, profile)
 }
 
+/** Extra profile-valued query keys, beyond `profile`, that name the same
+ *  self-scope on a given path. The sidebar batches recents/cron/messaging
+ *  behind `recents_profile` instead of `profile`, so an SSH alias rewrite
+ *  that only looks at `?profile=` leaves those reads on the remote default. */
+const SELF_PROFILE_QUERY_KEYS_BY_PATH: Record<string, string[]> = {
+  '/api/profiles/sessions/sidebar': ['recents_profile']
+}
+
 /**
  * Translate an explicit self-profile query from a Desktop routing alias to the
  * backend's own profile namespace (a managed SSH `remoteProfile` can map local
- * `mara` to remote `default`). Only a `?profile=` equal to the alias itself is
- * rewritten; cross-profile selectors (`all`, another concrete profile) and
- * unfiltered paths pass through untouched. Used by the v1 profile route above
- * and by the registry SSH branch of the `hermes:api` handler — both routes
- * reach a backend whose namespace is the remote profile, not the alias.
+ * `mara` to remote `default`). Only endpoint-declared profile-valued params
+ * equal to the alias itself are rewritten; cross-profile selectors (`all`,
+ * another concrete profile) and unfiltered paths pass through untouched. Used
+ * by the v1 profile route above and by the registry SSH branch of the
+ * `hermes:api` handler — both routes reach a backend whose namespace is the
+ * remote profile, not the alias.
  */
 function translateSelfProfileQuery(path, profile, backendProfile) {
   const scopedProfile = connectionScopeKey(profile)
@@ -717,11 +911,21 @@ function translateSelfProfileQuery(path, profile, backendProfile) {
     return path
   }
 
-  if (connectionScopeKey(parsed.searchParams.get('profile')) !== scopedProfile) {
-    return path
+  const profileQueryKeys = ['profile', ...(SELF_PROFILE_QUERY_KEYS_BY_PATH[parsed.pathname] || [])]
+  let changed = false
+
+  for (const key of profileQueryKeys) {
+    if (connectionScopeKey(parsed.searchParams.get(key)) !== scopedProfile) {
+      continue
+    }
+
+    parsed.searchParams.set(key, backend)
+    changed = true
   }
 
-  parsed.searchParams.set('profile', backend)
+  if (!changed) {
+    return path
+  }
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
 }
@@ -760,6 +964,23 @@ function pathWithProfileScope(path, profile) {
   parsed.searchParams.set('profile', scopedProfile)
 
   return `${parsed.pathname}${parsed.search}${parsed.hash}`
+}
+
+export interface RegistryBackendRequestScope {
+  remoteProfile?: null | string
+  sharedRemote?: boolean
+}
+
+/**
+ * Scope a REST path for a resolved registry backend. Shared remotes serve
+ * multiple profiles from one process and need an explicit profile query;
+ * isolated SSH backends already own one profile but may translate a Desktop
+ * alias in an existing self-profile filter.
+ */
+function pathForRegistryBackendRequest(path, profile, backend: RegistryBackendRequestScope) {
+  return backend.sharedRemote
+    ? pathWithProfileScope(path, profile)
+    : translateSelfProfileQuery(path, profile, backend.remoteProfile)
 }
 
 /**
@@ -883,38 +1104,6 @@ function cookiesHaveLiveSession(cookies) {
   return cookies.some(c => c && c.value && (AT_COOKIE_VARIANTS.includes(c.name) || RT_COOKIE_VARIANTS.includes(c.name)))
 }
 
-/**
- * True if the cookie jar holds a live Nous PORTAL (Privy) session — a non-empty
- * `privy-token` (access-token) cookie, or a variant. This is the portal
- * analogue of `cookiesHaveLiveSession`: the portal authenticates via Privy, not
- * the Hermes gateway session cookies, so cloud sign-in / discovery liveness
- * must check THIS, not the gateway helpers. (NAS `auth()` and the `/api/agents`
- * cookie path both key off `privy-token`.)
- */
-function cookiesHavePrivySession(cookies) {
-  if (!Array.isArray(cookies)) {
-    return false
-  }
-
-  return cookies.some(c => c && c.value && PRIVY_SESSION_COOKIE_VARIANTS.includes(c.name))
-}
-
-/**
- * True only when the short-lived Privy ACCESS token (`privy-token`) is present
- * — the exact cookie `/api/agents` validates. A jar can satisfy
- * `cookiesHavePrivySession` (renewable session: `privy-session` /
- * `privy-refresh-token`) while failing this check; that gap is the cold-start
- * "Signed in" + "No agents found" contradiction, and the signal that a silent
- * renewal (not an interactive re-login) is the right recovery (#73495).
- */
-function cookiesHavePrivyAccessToken(cookies) {
-  if (!Array.isArray(cookies)) {
-    return false
-  }
-
-  return cookies.some(c => c && c.value && PRIVY_ACCESS_COOKIE_VARIANTS.includes(c.name))
-}
-
 export {
   apiRequestRegistryConnectionId,
   AT_COOKIE_VARIANTS,
@@ -923,8 +1112,6 @@ export {
   buildGatewayWsUrlWithTicket,
   connectionScopeKey,
   cookiesHaveLiveSession,
-  cookiesHavePrivyAccessToken,
-  cookiesHavePrivySession,
   cookiesHaveSession,
   gatewayTicketFailure,
   gatewayWsUrlIpcResult,
@@ -936,10 +1123,9 @@ export {
   normalizeRemoteHeaders,
   normalizeSshConfig,
   normAuthMode,
+  pathForRegistryBackendRequest,
   pathWithGlobalRemoteProfile,
   pathWithProfileScope,
-  PRIVY_ACCESS_COOKIE_VARIANTS,
-  PRIVY_SESSION_COOKIE_VARIANTS,
   profileHasRemoteConnection,
   profileRemoteOverride,
   profileSshOverride,
@@ -950,7 +1136,9 @@ export {
   resolveRemoteSshDashboardProfile,
   resolveTestWsUrl,
   RT_COOKIE_VARIANTS,
+  sanitizeRemoteHeaderValue,
   savedProfileSsh,
   tokenPreview,
-  translateSelfProfileQuery
+  translateSelfProfileQuery,
+  withTransientRetries
 }

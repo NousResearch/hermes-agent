@@ -52,7 +52,7 @@ export const GLASS_SCOPES = ['window', 'sidebar'] as const
 
 export type GlassScope = (typeof GLASS_SCOPES)[number]
 
-export const DEFAULT_GLASS_SCOPE: GlassScope = 'window'
+export const DEFAULT_GLASS_SCOPE: GlassScope = 'sidebar'
 
 /**
  * Electron `setBackgroundMaterial` values. `'auto'` is deliberately absent —
@@ -110,6 +110,64 @@ export interface TranslucencyState {
   mode: TranslucencyMode
   material: GlassMaterial
   scope: GlassScope
+}
+
+/**
+ * The half of the state that is scoped to the light/dark appearance.
+ *
+ * A tint that reads as a whisper over a dark palette is a milky sheet over a
+ * light one, so one shared number cannot serve both — the same setting has to
+ * mean a different amount in each appearance. `mode` stays global: clear vs
+ * glass is a choice about the window, not about the palette.
+ */
+export type TranslucencyValues = Omit<TranslucencyState, 'mode'>
+
+export type Appearance = 'light' | 'dark'
+
+/**
+ * Glass starts at 29% tint, confined to the sidebar in both appearances.
+ * Fade stays off so the content column and text remain fully opaque.
+ * Frost keeps its platform/appearance tuning: macOS uses header/titlebar,
+ * while Windows uses under-window, the live acrylic backdrop.
+ */
+const DEFAULT_VALUES: Record<'mac' | 'windows', Record<Appearance, TranslucencyValues>> = {
+  mac: {
+    light: { intensity: 29, fade: 0, material: 'header', scope: DEFAULT_GLASS_SCOPE },
+    dark: { intensity: 29, fade: 0, material: 'titlebar', scope: DEFAULT_GLASS_SCOPE }
+  },
+  windows: {
+    light: { intensity: 29, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE },
+    dark: { intensity: 29, fade: 0, material: 'under-window', scope: DEFAULT_GLASS_SCOPE }
+  }
+}
+
+/**
+ * The untouched values for an appearance on this platform. Linux never reaches
+ * here — translucency is unsupported there, so nothing resolves.
+ */
+export function defaultTranslucencyValues(appearance: Appearance, isWindows: boolean): TranslucencyValues {
+  return DEFAULT_VALUES[isWindows ? 'windows' : 'mac'][appearance]
+}
+
+/**
+ * The renderer's book of translucency settings.
+ *
+ * `base` is the shared rung: a value the user set before appearances were
+ * split (a migrated v1 state), or one they have never touched. An appearance
+ * slot only carries the keys edited WHILE that appearance was painted, so
+ * changing the tint in light mode leaves dark's alone and an untouched dark
+ * still inherits whatever base says. That is the ladder — appearance over base
+ * over default, per key, so \"unset\" keeps carrying over.
+ *
+ * The book is renderer-owned. The main process is handed the RESOLVED state
+ * (see `resolveTranslucency`) because a window's backing, vibrancy and opacity
+ * only ever concern the appearance actually on screen.
+ */
+export interface TranslucencyBook {
+  mode: TranslucencyMode
+  base: Partial<TranslucencyValues>
+  light: Partial<TranslucencyValues>
+  dark: Partial<TranslucencyValues>
 }
 
 export const TRANSLUCENCY_MIN = 0
@@ -194,7 +252,7 @@ export function normalizeMaterial(value: unknown): GlassMaterial {
   return GLASS_MATERIALS.includes(value as GlassMaterial) ? (value as GlassMaterial) : DEFAULT_GLASS_MATERIAL
 }
 
-/** Unknown or unsupported values fall back to whole-window glass. */
+/** Unknown or unsupported values fall back to sidebar glass. */
 export function normalizeScope(value: unknown): GlassScope {
   return GLASS_SCOPES.includes(value as GlassScope) ? (value as GlassScope) : DEFAULT_GLASS_SCOPE
 }
@@ -213,6 +271,114 @@ export function normalizeState(payload: unknown, glassSupported: boolean): Trans
   }
 }
 
+/**
+ * The resolved state a surface should assume before anyone has said otherwise.
+ *
+ * Main needs this at window CREATION on a first launch: the renderer has not
+ * reported yet, and a window created with the opaque backing cannot reliably
+ * be swapped to glass moments later (see `windowBackingOptions`). Guessing the
+ * appearance from `nativeTheme` is close enough — the renderer's first resolved
+ * send corrects any mismatch while the window is still young, and every launch
+ * after the first reads the persisted state instead.
+ */
+export function defaultTranslucencyState(
+  appearance: Appearance,
+  glassSupported: boolean,
+  isWindows: boolean
+): TranslucencyState {
+  return {
+    ...defaultTranslucencyValues(appearance, isWindows),
+    mode: normalizeMode(undefined, glassSupported)
+  }
+}
+
+/** Keep only the value keys actually present, each normalized. Unknown keys drop. */
+function normalizeValues(payload: unknown): Partial<TranslucencyValues> {
+  const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+  const out: Partial<TranslucencyValues> = {}
+
+  if (record.intensity !== undefined) {
+    out.intensity = clampIntensity(record.intensity)
+  }
+
+  if (record.fade !== undefined) {
+    out.fade = clampIntensity(record.fade)
+  }
+
+  if (record.material !== undefined) {
+    out.material = normalizeMaterial(record.material)
+  }
+
+  if (record.scope !== undefined) {
+    out.scope = normalizeScope(record.scope)
+  }
+
+  return out
+}
+
+/**
+ * Parse a persisted book, or migrate a flat v1 state into one.
+ *
+ * A v1 payload is a window someone already tuned, so its values land in `base`
+ * — every appearance inherits exactly what was on screen before the upgrade,
+ * and the new per-appearance defaults apply only where nothing was ever set.
+ * The legacy clear rule rides along: a non-zero v1 intensity with no mode was
+ * rendering as clear and keeps doing so.
+ */
+export function normalizeBook(payload: unknown, glassSupported: boolean): TranslucencyBook {
+  const record = payload && typeof payload === 'object' ? (payload as Record<string, unknown>) : {}
+  const migrating = record.base === undefined && record.light === undefined && record.dark === undefined
+
+  const base = normalizeValues(migrating ? record : record.base)
+  const legacyIntensity = migrating ? clampIntensity(record.intensity) : 0
+
+  return {
+    mode: normalizeMode(record.mode, glassSupported, legacyIntensity),
+    base,
+    light: normalizeValues(migrating ? null : record.light),
+    dark: normalizeValues(migrating ? null : record.dark)
+  }
+}
+
+/**
+ * Flatten the book for one appearance: appearance slot → base → default.
+ *
+ * This is the only thing outside the renderer's settings surface that should
+ * ever be handed around — main, the CSS field surfaces, and every consumer of
+ * `$translucency` all want the resolved answer for what is painted right now.
+ */
+export function resolveTranslucency(
+  book: TranslucencyBook,
+  appearance: Appearance,
+  isWindows: boolean
+): TranslucencyState {
+  const fallback = defaultTranslucencyValues(appearance, isWindows)
+  const slot = book[appearance]
+
+  return {
+    mode: book.mode,
+    intensity: slot.intensity ?? book.base.intensity ?? fallback.intensity,
+    fade: slot.fade ?? book.base.fade ?? fallback.fade,
+    material: slot.material ?? book.base.material ?? fallback.material,
+    scope: slot.scope ?? book.base.scope ?? fallback.scope
+  }
+}
+
+/**
+ * Record an edit against the appearance being painted.
+ *
+ * The edit is written to the appearance slot rather than to base, so tuning
+ * light mode is scoped to light mode. Base is left intact as the inheritance
+ * rung for whichever appearance has not been touched.
+ */
+export function setTranslucencyValues(
+  book: TranslucencyBook,
+  appearance: Appearance,
+  patch: Partial<TranslucencyValues>
+): TranslucencyBook {
+  return { ...book, [appearance]: { ...book[appearance], ...normalizeValues(patch) } }
+}
+
 /** Lever percent → native window opacity, floored so it stays usable. */
 function opacityRamp(lever: number): number {
   const ratio = clampIntensity(lever) / TRANSLUCENCY_MAX
@@ -227,9 +393,19 @@ function opacityRamp(lever: number): number {
  * and only the separate `fade` reaches the window, so a glass window stays at
  * 1 until the user opts into fading it — which is what keeps a tint drag from
  * touching anything native.
+ *
+ * Fade is gated on glass being ACTIVE, not merely selected. The light default
+ * carries a single point of it so the window edge reads as glass rather than
+ * as paint, and without this gate that point would follow someone who had
+ * turned the tint to zero — leaving a window that asked to be opaque sitting
+ * at 0.9999. Off has to mean off.
  */
-export function windowOpacityFor({ intensity, fade, mode }: TranslucencyState): number {
-  return opacityRamp(mode === 'glass' ? fade : intensity)
+export function windowOpacityFor(state: TranslucencyState): number {
+  if (state.mode !== 'glass') {
+    return opacityRamp(state.intensity)
+  }
+
+  return opacityRamp(glassActive(state) ? state.fade : 0)
 }
 
 /**

@@ -147,7 +147,7 @@ Setting `addToSystemPackages = true` does two things: puts the `hermes` CLI on y
 :::info
 When `container.enable = true` and `addToSystemPackages = true`, **every** `hermes` command on the host automatically routes into the managed container. This means your interactive CLI session runs inside the same environment as the gateway service — with access to all container-installed packages and tools.
 
-- The routing is transparent: `hermes chat`, `hermes sessions list`, `hermes version`, etc. all exec into the container under the hood
+- The routing is transparent: `hermes chat`, `hermes sessions list`, `hermes --version`, etc. all exec into the container under the hood
 - All CLI flags are forwarded as-is
 - If the container isn't running, the CLI retries briefly (5s with a spinner for interactive use, 10s silently for scripts) then fails with a clear error — no silent fallback
 - For developers working on the hermes codebase, set `HERMES_DEV=1` to bypass container routing and run the local checkout directly
@@ -191,7 +191,7 @@ systemctl status hermes-agent
 journalctl -u hermes-agent -f
 
 # If addToSystemPackages is true, test the CLI
-hermes version
+hermes --version
 hermes config       # shows the generated config
 ```
 
@@ -221,6 +221,10 @@ To enable container mode, add one line:
 
 :::info
 Container mode auto-enables `virtualisation.docker.enable` via `mkDefault`. If you use Podman instead, set `container.backend = "podman"` and `virtualisation.docker.enable = false`.
+:::
+
+:::note Cron on a native install needs a lingering service user
+Scheduled cron jobs are launched in a transient `systemd-run --user --scope` so a gateway restart cannot kill a running job. That needs a systemd user manager for the service uid, which a system service only gets when the uid lingers. With `createUser = true` the module sets `users.users.<user>.linger = true` (nixpkgs ≥ 25.05), orders the gateway after `linger-users.service`, and waits briefly for `/run/user/<uid>/bus` before starting. If you declare the user yourself (`createUser = false`), set `linger = true` on it or run `sudo loginctl enable-linger <user>` once; otherwise cron degrades to unscoped workers (or fails closed under `cron.require_restart_safe_scope: true`).
 :::
 
 ---
@@ -600,7 +604,8 @@ The option set is the same set that the NixOS module uses. It is `services.herme
 | Runs as | a system user that you declare, with `user`, `group` and `createUser` | you |
 | State directory | `stateDir` and `/.hermes` | `hermesHome`, set directly. The default is `~/.hermes`. |
 | Service | `systemd.services` | `systemd.user.services` on Linux, `launchd.agents` on macOS |
-| CLI on the PATH | `addToSystemPackages`, which exports `HERMES_HOME` for the full system | `installPackage`, which exports it for your session only |
+| CLI on the PATH | `addToSystemPackages`, which exports `HERMES_HOME` for the full system | `programs.hermes-agent.enable`, which exports it for your session only |
+| Desktop application | not supported, because a system service cannot own a user session | `programs.hermes-agent.desktop.enable` |
 | Container mode | supported | not supported, because it needs root and the Docker socket |
 
 ### Add the Flake Input
@@ -681,7 +686,7 @@ journalctl --user -u hermes-agent -f
 launchctl list | grep hermes
 tail -f ~/Library/Logs/hermes-agent.log
 
-hermes version
+hermes --version
 hermes config     # shows the configuration that Nix wrote
 ```
 
@@ -937,7 +942,7 @@ nix build .#checks.x86_64-linux.config-roundtrip    # merge script preserves use
 
 | Check | What it tests |
 |---|---|
-| `package-contents` | `hermes` and `hermes-agent` binaries exist and `hermes version` runs |
+| `package-contents` | `hermes` and `hermes-agent` binaries exist and `hermes --version` runs |
 | `entry-points-sync` | Every `[project.scripts]` entry in `pyproject.toml` has a wrapped binary in the Nix package |
 | `cli-commands` | `hermes --help` exposes `gateway` and `config` subcommands |
 | `managed-guard` | `HERMES_MANAGED=true hermes config set ...` prints the NixOS error |
@@ -1031,8 +1036,49 @@ This option runs the process that Hermes Desktop and the web dashboard connect t
 | Option | Type | Default | Description |
 |---|---|---|---|
 | `hermesHome` | `str` | `"${config.home.homeDirectory}/.hermes"` | `HERMES_HOME` directly. The NixOS module builds it from `stateDir`. |
-| `installPackage` | `bool` | `true` | Add the `hermes` CLI to `home.packages`, and export `HERMES_HOME` for your shells |
 | `gateway.enable` | `bool` | `false` | Run the messaging gateway. On the NixOS module the gateway is the service, so that module has no such option. |
+
+### `programs.hermes-agent` (Home Manager only)
+
+Home Manager separates "install this application for me" from "run this
+daemon". `services.hermes-agent` keeps the state, the configuration and the
+daemons. `programs.hermes-agent` installs what you use, and reads
+`hermesHome` and the backend address from the services.
+
+| Option | Type | Default | Description |
+|---|---|---|---|
+| `enable` | `bool` | `false` | Add the `hermes` CLI to `home.packages`, and export `HERMES_HOME` for your shells |
+| `package` | `package` | `services.hermes-agent.package` | The package to install. The default applies `extraPythonPackages` and `extraDependencyGroups` from the services, so both are one build. |
+| `desktop.enable` | `bool` | `false` | Add the Hermes Desktop application, with a launcher entry on Linux |
+| `desktop.package` | `package` | `package.hermesDesktop` | The desktop package. The default follows `package`, so the application and the services run one Hermes runtime. |
+
+```nix
+programs.hermes-agent = {
+  enable = true;
+  desktop.enable = true;
+};
+
+services.hermes-agent = {
+  enable = true;
+  backend.mode = "serve";
+  backend.sessionTokenFile = config.sops.secrets."hermes/desktop-token".path;
+};
+```
+
+The launcher carries `HERMES_HOME` itself. A desktop menu reads no shell
+profile, so the value that `programs.hermes-agent.enable` exports with
+`home.sessionVariables` reaches an interactive shell only. Without the
+value in the launcher, the application opens `~/.hermes` while the
+services use `hermesHome`, and you see no sessions and no keys.
+
+With `backend.sessionTokenFile`, the application connects to the backend
+of the service instead of starting one of its own. Both sides read the
+file at start time, so the token enters no Nix store path. Without the
+option, each side runs its own backend.
+
+`services.hermes-agent.installPackage` was removed by this split. A
+configuration that still sets it gets an error that names the
+replacement.
 
 ### Container (NixOS only)
 
@@ -1098,7 +1144,7 @@ Same layout, mounted into the container:
 | `/nix/store` | `/nix/store` | `ro` | Hermes binary + all Nix deps |
 | `/data` | `/var/lib/hermes` | `rw` | All state, config, workspace |
 | `/home/hermes` | `${stateDir}/home` | `rw` | Persistent agent home — `pip install --user`, tool caches |
-| `/usr`, `/usr/local`, `/tmp` | (writable layer) | `rw` | `apt`/`pip`/`npm` installs — persists across restarts, lost on recreation |
+| `/usr`, `/usr/local`, `/tmp` | (writable layer) | `rw` | `apt`/`pip`/`npm` installs — persists across restarts, lost on recreation | <!-- no-tmp: ok — documents the container's own writable layer -->
 
 ---
 
@@ -1180,7 +1226,7 @@ nix-store --query --roots $(docker exec hermes-agent readlink /data/current-pack
 | `Cannot save configuration: managed by NixOS` | CLI guards active | Edit `configuration.nix` and `nixos-rebuild switch` |
 | `No adapter available for discord` (or telegram/slack) | Messaging deps missing from the sealed Nix venv | Install `#messaging` variant: `nix profile install ...#messaging`. For NixOS module: `extraDependencyGroups = [ "messaging" ]`. Check `journalctl -u hermes-agent` for `FeatureUnavailable` or `requirements not met` for the underlying error. |
 | Container recreated unexpectedly | `extraVolumes`, `extraOptions`, or `image` changed | Expected — writable layer resets. Reinstall packages or use a custom image |
-| `hermes version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
+| `hermes --version` shows old version | Container not restarted | `systemctl restart hermes-agent` |
 | Permission denied on `/var/lib/hermes` | State dir is `0750 hermes:hermes` | Use `docker exec` or `sudo -u hermes` |
 | `nix-collect-garbage` removed hermes | GC root missing | Restart the service (preStart recreates the GC root) |
 | `no container with name or ID "hermes-agent"` (Podman) | Podman rootful container not visible to regular user | Add passwordless sudo for podman (see [Container Mode](#container-mode) section) |

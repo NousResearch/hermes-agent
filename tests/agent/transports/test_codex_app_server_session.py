@@ -7,18 +7,22 @@ deadline timeouts. These tests pin all of that without spawning real codex.
 
 from __future__ import annotations
 
+import itertools
+import logging
 import time
+from types import SimpleNamespace
 from unittest.mock import patch
 from typing import Any, Optional
 
 import pytest
 
 import agent.transports.codex_app_server_session as session_mod
+from agent.transports.codex_app_server import CodexAppServerTransportError
 from agent.transports.codex_app_server_session import (
     CodexAppServerSession,
     _ServerRequestRouting,
     _approval_choice_to_codex_decision,
-    _coerce_turn_input_text,
+    _build_turn_input,
 )
 
 
@@ -141,12 +145,25 @@ class TestApprovalChoiceMapping:
 
 
 class TestTurnInputCoercion:
-    def test_list_content_keeps_text_and_marks_images(self):
-        text = _coerce_turn_input_text([
+    def test_image_parts_ride_natively_in_turn_start(self):
+        """#51053: image attachments must reach the model as app-server image inputs, not a text marker."""
+        items, text = _build_turn_input([
             {"type": "text", "text": "caption"},
             {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+            {"type": "image_url", "image_url": {"url": "/tmp/shot.png"}},
         ])
-        assert text == "caption\n\n[image attached]"
+        assert items == [
+            {"type": "text", "text": "caption"},
+            {"type": "image", "url": "data:image/png;base64,abc"},
+            {"type": "localImage", "path": "/tmp/shot.png"},
+        ]
+        assert text == "caption"
+
+    def test_image_only_turn_gets_default_prompt_and_plain_text_is_unchanged(self):
+        items, text = _build_turn_input([{"type": "image_url", "image_url": {"url": "https://x/a.png"}}])
+        assert items == [{"type": "text", "text": "What do you see in this image?"}, {"type": "image", "url": "https://x/a.png"}]
+        assert text == "What do you see in this image?"
+        assert _build_turn_input("hi") == ([{"type": "text", "text": "hi"}], "hi")
 
 
 # ---- lifecycle ----
@@ -162,17 +179,81 @@ class TestLifecycle:
         method_calls = [m for (m, _) in client.requests if m == "thread/start"]
         assert len(method_calls) == 1
 
-    def test_thread_start_passes_cwd_only(self):
-        """thread/start carries cwd. We intentionally do NOT pass `permissions`
-        on this codex version (experimentalApi-gated + requires matching
-        config.toml [permissions] table). Letting codex use its default
-        (read-only unless user configures otherwise) is the documented path."""
+    def test_thread_start_carries_hermes_prompt_and_disables_codex_personality(self):
+        """thread/start carries cwd, Hermes' composed prompt as developerInstructions and
+        personality "none" (#74712, #72104, #26035). We intentionally do NOT pass `permissions`
+        (experimentalApi-gated + requires a matching config.toml [permissions] table)."""
         client = FakeClient()
-        s = make_session(client, permission_profile="workspace-write")
+        s = make_session(client, permission_profile="workspace-write", developer_instructions="SOUL: be terse")
         s.ensure_started()
         method, params = next(r for r in client.requests if r[0] == "thread/start")
-        assert params["cwd"] == "/tmp"
-        assert "permissions" not in params  # see session.ensure_started() comment
+        assert params == {"cwd": "/tmp", "developerInstructions": "SOUL: be terse", "personality": "none"}
+
+    def test_thread_start_omits_developer_instructions_when_prompt_empty(self):
+        """No prompt (or a blank one) never sends an empty developerInstructions field."""
+        client = FakeClient()
+        make_session(client, developer_instructions="   ").ensure_started()
+        method, params = next(r for r in client.requests if r[0] == "thread/start")
+        assert "developerInstructions" not in params
+        assert params["personality"] == "none"
+
+    def test_named_custom_provider_selects_codex_model_provider(self, monkeypatch):
+        """#75186: for ``provider=custom`` + a configured ``providers.<name>`` entry, the session built by
+        ``_ensure_codex_session`` sends ``model`` + ``modelProvider=<name>`` on thread/start and never the
+        API key; openai/openai-codex agents keep codex's defaults (cwd only)."""
+        import hermes_cli.runtime_provider as rp
+        from agent.codex_runtime import _ensure_codex_session
+        from agent.transports import codex_app_server_session as sess_mod
+        monkeypatch.setattr(rp, "load_config", lambda: {
+            "providers": {"my-gateway": {"api": "https://gateway.example.com/v1", "api_key": "sk-secret"}}})
+        clients: list[FakeClient] = []
+
+        def build(**kw):
+            clients.append(FakeClient())
+            return CodexAppServerSession(**{**kw, "client_factory": lambda **_: clients[-1]})
+        monkeypatch.setattr(sess_mod, "CodexAppServerSession", build)
+
+        def thread_start_params(**agent_attrs):
+            agent = SimpleNamespace(_codex_session=None, session_cwd="/tmp", api_key="sk-secret", **agent_attrs)
+            _ensure_codex_session(agent)
+            agent._codex_session.ensure_started()
+            return next(p for (m, p) in clients[-1].requests if m == "thread/start")
+
+        named = thread_start_params(provider="custom", requested_provider="custom:my-gateway", model="gpt-5.4")
+        # ``personality: "none"`` rides on every thread/start (#72104); only the provider selection varies.
+        base = {"cwd": "/tmp", "personality": "none"}
+        assert named == {**base, "modelProvider": "my-gateway", "model": "gpt-5.4"}
+        assert "sk-secret" not in repr(named)
+        assert thread_start_params(provider="openai-codex", requested_provider="openai-codex", model="gpt-5.4") == base
+        assert thread_start_params(provider="custom", requested_provider="custom", model="gpt-5.4") == base
+
+    def test_stored_thread_is_resumed_and_an_unresumable_one_falls_back_to_a_fresh_start(self):
+        """#100531: a stored id goes out as ``thread/resume`` (same params as thread/start, never a
+        second ``thread/start``); when codex cannot hand it back the failure is typed and the NEXT
+        ensure_started() starts a fresh thread on the same handshaken client."""
+        from agent.transports.codex_app_server import CodexAppServerError
+        from agent.transports.codex_app_server_session import CodexThreadResumeError
+
+        client = FakeClient()
+        client._request_handler = lambda method, params: (
+            {"thread": {"id": params["threadId"]}} if method == "thread/resume" else {"thread": {"id": "fresh-1"}})
+        s = make_session(client, resume_thread_id="stored-1", developer_instructions="SOUL")
+        assert s.ensure_started() == s.ensure_started() == "stored-1"
+        assert [m for m, _ in client.requests] == ["thread/resume"]
+        assert client.requests[0][1] == {"threadId": "stored-1", "cwd": "/tmp", "personality": "none", "developerInstructions": "SOUL"}
+
+        def refuse(method, params):
+            if method == "thread/resume":
+                raise CodexAppServerError(code=-32600, message=f"no rollout found for thread id {params['threadId']}")
+            return {"thread": {"id": "fresh-2"}}
+        client = FakeClient()
+        client._request_handler = refuse
+        s = make_session(client, resume_thread_id="gone-1")
+        with pytest.raises(CodexThreadResumeError) as exc_info:
+            s.ensure_started()
+        assert exc_info.value.thread_id == "gone-1"
+        assert s.ensure_started() == "fresh-2"
+        assert [m for m, _ in client.requests] == ["thread/resume", "thread/start"]
 
     def test_close_idempotent(self):
         client = FakeClient()
@@ -210,6 +291,21 @@ class TestRunTurn:
         assert r.turn_id == "turn-fake-001"
 
 
+
+    def test_result_records_the_exact_submitted_input(self):
+        client = FakeClient()
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "turn-fake-001", "status": "completed", "error": None},
+        )
+        rich_input = [
+            {"type": "text", "text": "caption"},
+            {"type": "image_url", "image_url": {"url": "data:image/png;base64,abc"}},
+        ]
+        result = make_session(client).run_turn(rich_input, turn_timeout=2.0)
+        _, params = next(request for request in client.requests if request[0] == "turn/start")
+        assert result.submitted_user_text == params["input"][0]["text"]
+        assert result.submitted_user_text != rich_input
 
     def test_foreign_completion_in_server_request_drain_is_ignored(self):
         """Approval draining must not project a child result into the parent."""
@@ -366,7 +462,28 @@ class TestRunTurn:
         assert "sk-stalled-secret-abc123" not in r.error
         assert r.should_retire is True
 
+    @pytest.mark.parametrize("op", ["run_turn", "compact_thread"])
+    def test_plugin_401_stderr_keeps_primary_rpc_error_visible(self, op):
+        """#75167: an ambient ChatGPT plugin prewarm 401 in codex stderr must not rewrite an
+        unrelated RPC error into the `codex login` hint (turn and compaction paths alike)."""
+        from agent.transports.codex_app_server import CodexAppServerError
 
+        client = FakeClient()
+        client.set_stderr_tail(["WARN ChatGPT plugin prewarm failed: HTTP 401 Unauthorized"])
+
+        def boom(method, params):
+            if method in ("turn/start", "thread/compact/start"):
+                raise CodexAppServerError(code=-32603, message="internal error: workspace initialization failed")
+            return {"thread": {"id": "t"}, "activePermissionProfile": {"id": "x"}}
+
+        client._request_handler = boom
+        s = make_session(client)
+        r = getattr(s, op)(*(["hi"] if op == "run_turn" else []), turn_timeout=2.0)
+        assert r.error is not None
+        assert "workspace initialization failed" in r.error
+        assert "plugin prewarm failed" in r.error  # stderr tail still attached for debugging
+        assert "codex login" not in r.error
+        assert r.should_retire is False
 
 
     def test_steer_appends_input_to_active_turn(self):
@@ -693,8 +810,8 @@ class TestApprovalPromptEnrichment:
 class TestSessionRetirement:
     """Mirrors openclaw beta.8's resilience fixes:
       - retire timed-out app-server clients (should_retire on deadline)
-      - post-tool completion watchdog (don't burn the full deadline after a
-        tool result if codex goes silent)
+      - post-tool silence is a warning, never a retirement: only a dead
+        subprocess or the turn deadline retires (#112928)
       - <turn_aborted> raw marker as terminal (don't wait for turn/completed
         that never comes)
       - OAuth refresh failure classification (suggest `codex login` instead
@@ -732,7 +849,11 @@ class TestSessionRetirement:
         assert not any(method == "turn/interrupt" for method, _ in client.requests)
 
 
-    def test_post_tool_watchdog_uses_monotonic_clock(self):
+    def test_post_tool_silence_warns_but_does_not_retire_a_healthy_turn(self, caplog):
+        """#112928: codex can reason for minutes after a large tool result without
+        emitting a single wire event while the process stays alive. Silence past
+        the quiet threshold must only warn; a later turn/completed ends the turn
+        normally with no turn/interrupt and no retirement."""
         client = FakeClient()
         client.queue_notification(
             "item/completed",
@@ -744,9 +865,15 @@ class TestSessionRetirement:
             },
             threadId="t", turnId="tu1",
         )
+        client.queue_notification(
+            "turn/completed", threadId="t",
+            turn={"id": "tu1", "status": "completed", "error": None},
+        )
         s = make_session(client)
-        monotonic_values = iter([1000.0, 999.0, 999.0, 999.0, 1000.2])
-        with patch.object(
+        # Clock: deadline arm, tool item at 999.0, then every later poll sits
+        # well past the 0.15s quiet threshold until turn/completed is drained.
+        monotonic_values = itertools.chain([1000.0, 999.0, 999.0, 999.0], itertools.repeat(1000.2))
+        with caplog.at_level(logging.WARNING, logger=session_mod.logger.name), patch.object(
             session_mod.time,
             "monotonic",
             side_effect=lambda: next(monotonic_values),
@@ -757,13 +884,16 @@ class TestSessionRetirement:
                 notification_poll_timeout=0.0,
                 post_tool_quiet_timeout=0.15,
             )
-        assert r.interrupted is True
-        assert r.should_retire is True
-        assert r.error and "silent" in r.error
+        assert r.interrupted is False
+        assert r.should_retire is False
+        assert r.error is None
+        assert r.tool_iterations == 1
+        assert not any(method == "turn/interrupt" for method, _ in client.requests)
+        assert any("no events for" in rec.getMessage() for rec in caplog.records)
 
-    def test_post_tool_watchdog_resets_on_further_activity(self):
-        """A tool completion followed by an agent message should NOT trip
-        the watchdog — further activity = codex still alive."""
+    def test_post_tool_activity_clears_the_quiet_timer_and_never_retires(self):
+        """A tool completion followed by an agent message completes normally: further activity clears
+        the post-tool quiet timer, and even when it expires it only warns, never retires."""
         client = FakeClient()
         client.queue_notification(
             "item/completed",
@@ -775,7 +905,7 @@ class TestSessionRetirement:
             },
             threadId="t", turnId="tu1",
         )
-        # Non-tool activity immediately after — resets watchdog.
+        # Non-tool activity immediately after — clears the quiet timer.
         client.queue_notification(
             "item/completed",
             item={"type": "agentMessage", "id": "m1", "text": "tool finished"},
@@ -791,7 +921,7 @@ class TestSessionRetirement:
             notification_poll_timeout=0.01,
             post_tool_quiet_timeout=0.05,
         )
-        # Tool ran, then text reset the watchdog, then turn/completed.
+        # Tool ran, then text cleared the quiet timer, then turn/completed.
         # Should NOT be a retirement case.
         assert r.tool_iterations == 1
         assert r.final_text == "tool finished"
@@ -894,5 +1024,130 @@ class TestClassifyOAuthFailure:
         )
         assert _classify_oauth_failure() is None
         assert _classify_oauth_failure("") is None
-        assert _classify_oauth_failure("", None) is None  # type: ignore[arg-type]
+        assert _classify_oauth_failure("", stderr=None) is None  # type: ignore[arg-type]
 
+    @pytest.mark.parametrize(
+        "primary, stderr, expected",
+        [
+            ("internal error: workspace initialization failed", "ChatGPT plugin prewarm failed: HTTP 401 Unauthorized", False),
+            ("", "plugin discovery: oauth handshake returned 401 unauthorized", False),
+            ("HTTP 401 Unauthorized", "", True),
+            ("request body exceeded limit by 401 bytes", "", False),
+            ("internal error", "token refresh failed: invalid_grant", True),
+        ],
+        ids=["plugin-401-stderr-keeps-rpc-error", "plugin-401-stderr-keeps-timeout", "primary-401", "bare-401-token-is-not-auth", "strong-stderr-signal"],
+    )
+    def test_generic_auth_words_count_only_in_primary_error(self, primary, stderr, expected):
+        """#75167: ambient plugin 401/oauth stderr must not become the re-login hint; the
+        primary error's own 401 Unauthorized and strong stderr credential signals still do,
+        while a bare `401` token in an unrelated primary error does not."""
+        from agent.transports.codex_app_server_session import _classify_oauth_failure
+
+        assert (_classify_oauth_failure(primary, stderr=stderr) is not None) is expected
+
+
+# ---- transport loss / close() racing a turn (#87422, #83127) ----
+
+class TransportLossClient(FakeClient):
+    """FakeClient whose writes fail the way the real client fails on a dead pipe."""
+
+    def __init__(self, fail_on: str, **kwargs) -> None:
+        super().__init__(**kwargs)
+        self.fail_on = fail_on
+
+    def _lost(self):
+        raise CodexAppServerTransportError(code=-32000, message="codex app-server stdin closed unexpectedly: Broken pipe")
+
+    def request(self, method, params=None, timeout=30.0):
+        if method == self.fail_on:
+            self._lost()
+        return super().request(method, params, timeout)
+
+    def respond(self, request_id, result):
+        if self.fail_on == "respond":
+            self._lost()
+        super().respond(request_id, result)
+
+
+class TestTransportLoss:
+    def test_close_racing_turn_loop_ends_turn_as_interrupted(self):
+        """#87422: close() landing between poll iterations must end run_turn()/compact_thread()
+        with interrupted+should_retire, never an AttributeError on the nulled client."""
+        import threading
+
+        for run in ("run_turn", "compact_thread"):
+            ready = threading.Event()
+            client = FakeClient()
+            client._closed = False
+            polled = client.take_notification
+
+            def take_notification(timeout=0.0, _polled=polled, _ready=ready):
+                _ready.set()
+                time.sleep(0.02)  # window for close() to land mid-iteration
+                return _polled(timeout)
+
+            client.take_notification = take_notification
+            client.is_alive = lambda: True  # the fake stays "alive": only the session's own close() ends the turn
+            session = make_session(client)
+            out: dict = {}
+
+            def worker():
+                if run == "run_turn":
+                    out["r"] = session.run_turn("hi", turn_timeout=5, notification_poll_timeout=0.001)
+                else:
+                    out["r"] = session.compact_thread(turn_timeout=5, notification_poll_timeout=0.001)
+
+            t = threading.Thread(target=worker)
+            t.start()
+            assert ready.wait(timeout=5)
+            session.close()
+            t.join(timeout=5)
+            assert not t.is_alive(), run
+            result = out["r"]
+            assert result.interrupted and result.should_retire, run
+            assert "closed" in (result.error or ""), run
+
+    def test_close_before_turn_loop_reports_session_closed_not_timeout(self):
+        """close() landing after turn/start was accepted but before _drive_turn snapshots the
+        client must retire as 'session closed', not be mislabelled a turn timeout."""
+        client = FakeClient()
+        client._closed = False
+        session = make_session(client)
+        started = session._run_started_turn
+
+        def close_then_run(result, ts, *args):
+            session.close()
+            return started(result, ts, *args)
+
+        session._run_started_turn = close_then_run
+        result = session.run_turn("hi", turn_timeout=3, notification_poll_timeout=0.001)
+        assert result.interrupted and result.should_retire
+        assert "session closed" in (result.error or "")
+        assert "timed out" not in (result.error or "")
+
+    @pytest.mark.parametrize("run,fail_on", [
+        ("run_turn", "turn/start"),
+        ("compact_thread", "thread/compact/start"),
+        ("run_turn", "respond"),
+    ])
+    def test_write_failure_returns_retiring_result_and_control_paths_stay_non_fatal(self, run, fail_on):
+        """#83127: a transport write failure during turn/start, compaction start or an approval
+        response returns a retiring TurnResult instead of escaping; steer/interrupt stay non-fatal."""
+        client = TransportLossClient(fail_on)
+        if fail_on == "respond":
+            client.queue_server_request("item/commandExecution/requestApproval", command="ls")
+        session = make_session(client, approval_callback=lambda *a, **k: "once")
+        if run == "run_turn":
+            result = session.run_turn("hi", turn_timeout=2, notification_poll_timeout=0.001)
+        else:
+            result = session.compact_thread(turn_timeout=2, notification_poll_timeout=0.001)
+        assert result.should_retire
+        assert "stdin closed unexpectedly" in result.error
+
+        control = TransportLossClient("turn/steer")
+        steer_session = make_session(control)
+        steer_session.ensure_started()
+        steer_session._active_turn_id = "turn-fake-001"
+        assert steer_session.request_steer("more") is False
+        control.fail_on = "turn/interrupt"
+        steer_session._issue_interrupt("turn-fake-001")  # must not raise

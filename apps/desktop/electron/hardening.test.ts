@@ -14,10 +14,12 @@ import {
   DEFAULT_FETCH_TIMEOUT_MS,
   enableBasicPasswordStoreEncryption,
   encryptDesktopSecret,
+  homeRelativeAttachmentCandidates,
   readFileDataUrlForIpc,
   resolveDirectoryForIpc,
   resolvePersistedRemoteToken,
   resolveReadableFileForIpc,
+  resolveRemoteTokenPlainText,
   resolveRequestedPathForIpc,
   resolveTimeoutMs,
   SAFE_STORAGE_ENCODING,
@@ -379,6 +381,66 @@ test('resolvePersistedRemoteToken keeps the existing token when no new token is 
     existingToken
   )
   assert.equal(called, false, 'an empty incoming token must not re-encrypt anything')
+})
+
+test('resolveRemoteTokenPlainText stays silent in the keychain-opt-out default', () => {
+  // #117269: with encryption opted out (the default), plain text is the CHOSEN
+  // mode and probeSecureTokenStorage reports availability on purpose — every
+  // saved token is plain here, so warning off the encoding alone would fire for
+  // every default user.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: false,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: true
+    }),
+    false
+  )
+})
+
+test('resolveRemoteTokenPlainText warns only when the token is plain and the machine cannot secure it', () => {
+  // The genuine degraded state the banner is for: the keyring has gone away
+  // (secureTokenStorage false) while a plain token sits on disk.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: false,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: false
+    }),
+    true
+  )
+
+  // An encrypted token never warns, whatever availability reports.
+  for (const secureTokenStorage of [true, false]) {
+    assert.equal(
+      resolveRemoteTokenPlainText({
+        envOverride: false,
+        token: { encoding: 'safeStorage', value: 'blob' },
+        secureTokenStorage
+      }),
+      false
+    )
+  }
+
+  // A missing token, or an absent availability signal, never manufactures a
+  // warning — the strict `=== false` match.
+  assert.equal(resolveRemoteTokenPlainText({ envOverride: false, token: undefined, secureTokenStorage: false }), false)
+  assert.equal(
+    resolveRemoteTokenPlainText({ envOverride: false, token: { encoding: 'plain' }, secureTokenStorage: undefined }),
+    false
+  )
+  assert.equal(resolveRemoteTokenPlainText({}), false)
+
+  // The env override supplies its token from the environment, never the saved
+  // block, so a plain stored blob must not warn while the override is active.
+  assert.equal(
+    resolveRemoteTokenPlainText({
+      envOverride: true,
+      token: { encoding: 'plain', value: 'token' },
+      secureTokenStorage: false
+    }),
+    false
+  )
 })
 
 test('writeSecretFileAtomic does not inherit loose bits from a stale temp file', () => {
@@ -974,7 +1036,7 @@ test('connection-config save and apply IPC handlers route payloads through coerc
     const handlerBody = source.slice(handlerStart, handlerStart + 400)
     assert.match(
       handlerBody,
-      /coerceDesktopConnectionConfig\(payload\)/,
+      /coerceDesktopConnectionConfig\(payload(?:, previousConfig)?\)/,
       `${channel} must coerce its payload (the propagation seam) before persisting`
     )
   }
@@ -1016,4 +1078,108 @@ test('sanitizeDesktopConnectionConfig exposes secureTokenStorage and remoteToken
   const returned = body.slice(returnIndex)
   assert.match(returned, /\bsecureTokenStorage\b/, 'the renderer needs the secure-storage availability signal')
   assert.match(returned, /\bremoteTokenPlainText\b/, 'the renderer needs the plain-text token signal')
+})
+
+// #117269: the plain-text signal must be gated on the machine actually being
+// unable to secure the token — an inline encoding check would warn every
+// keychain-opt-out user, whose chosen mode is plain text. The signal flows
+// through resolveRemoteTokenPlainText (behavior tests above); this pins the
+// main-process wiring so the gate cannot be dropped at the call site.
+test('sanitizeDesktopConnectionConfig routes remoteTokenPlainText through the gated helper', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('async function sanitizeDesktopConnectionConfig(')
+  assert.notEqual(fnStart, -1, 'sanitizeDesktopConnectionConfig must exist in main.ts')
+  const fnEnd = source.indexOf('\nfunction ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+
+  assert.match(
+    body,
+    /const remoteTokenPlainText = resolveRemoteTokenPlainText\(\{/,
+    'remoteTokenPlainText must be computed by resolveRemoteTokenPlainText (gated on secure storage) (#117269)'
+  )
+})
+
+// #95393: connections.save succeeded but the switcher menu (renderer
+// $connectionsRegistry snapshot) never refreshed until reload. The registry
+// push (broadcastConnectionsChanged) fired only on the dial-material-edit
+// branch, so a brand-new connection or a label rename never reached other
+// windows — or the switcher's onChanged re-pull. Mirrors the live repro at
+// /tmp/mg-ab/w2_95393.py: save → menu (no reload) must include the new row.
+test('saveRegistryConnection republishes the registry to renderers on EVERY successful save (#95393)', () => {
+  const source = readMain()
+  const fnStart = source.indexOf('async function saveRegistryConnection(')
+  assert.notEqual(fnStart, -1, 'saveRegistryConnection must exist in main.ts')
+  const fnEnd = source.indexOf('\nasync function ', fnStart + 1)
+  const body = source.slice(fnStart, fnEnd === -1 ? undefined : fnEnd)
+
+  // The dial-material edit branch keeps its dispose+redial semantics…
+  assert.match(
+    body,
+    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'updated' \}\)/,
+    'a dial-material edit must still push the dispose+redial signal'
+  )
+  // …and every OTHER save (new connection, label rename) must still push a
+  // registry refresh, or the switcher menu paints stale until reload.
+  assert.match(
+    body,
+    /broadcastConnectionsChanged\(\{ connectionId: entry\.id, reason: 'saved' \}\)/,
+    'a non-dial-material save must republish the registry snapshot (#95393)'
+  )
+})
+
+// ---------------------------------------------------------------------------
+// homeRelativeAttachmentCandidates (#115609)
+// ---------------------------------------------------------------------------
+
+test('homeRelativeAttachmentCandidates tries the home dir and the HERMES_HOME attachments dir', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData/Local/hermes/attachments/foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/AppData/Local/hermes'
+  )
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'),
+    path.join('/Users/alice/AppData/Local/hermes', 'attachments', 'foo.xlsx')
+  ])
+})
+
+test('homeRelativeAttachmentCandidates normalizes Windows backslashes before joining', () => {
+  const candidates = homeRelativeAttachmentCandidates(
+    'AppData\\Local\\hermes\\attachments\\foo.xlsx',
+    '/Users/alice',
+    '/Users/alice/.hermes'
+  )
+
+  assert.equal(candidates[0], path.join('/Users/alice', 'AppData/Local/hermes/attachments/foo.xlsx'))
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for an absolute path', () => {
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('/already/absolute/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
+  )
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for a file: URL', () => {
+  assert.deepEqual(
+    homeRelativeAttachmentCandidates('file:///already/resolved/foo.xlsx', '/Users/alice', '/Users/alice/.hermes'),
+    []
+  )
+})
+
+test('homeRelativeAttachmentCandidates returns nothing for empty input', () => {
+  assert.deepEqual(homeRelativeAttachmentCandidates('', '/Users/alice', '/Users/alice/.hermes'), [])
+  assert.deepEqual(homeRelativeAttachmentCandidates('   ', '/Users/alice', '/Users/alice/.hermes'), [])
+})
+
+test('homeRelativeAttachmentCandidates second candidate falls back to basename only', () => {
+  // A ref that lost its directory prefix entirely still has a shot via the
+  // well-known attachments dir + basename, matching the reported repro shape.
+  const candidates = homeRelativeAttachmentCandidates('foo.xlsx', '/Users/alice', '/Users/alice/.hermes')
+
+  assert.deepEqual(candidates, [
+    path.join('/Users/alice', 'foo.xlsx'),
+    path.join('/Users/alice/.hermes', 'attachments', 'foo.xlsx')
+  ])
 })

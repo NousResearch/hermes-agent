@@ -332,6 +332,8 @@ export const ga: Translations = {
     disableRuntime: "Díchumasaigh",
     enableAfterInstall: "Cumasaigh tar éis suiteála",
     enableRuntime: "Cumasaigh",
+    toggleTakesEffectAfterRestart:
+      "Sábháilte — atosaigh an gateway chun an t-athrú a chur i bhfeidhm.",
     forceReinstall: "Cuir iallach ar athshuiteáil (scrios an fillteán atá ann ar dtús)",
     headline:
       "Faigh, suiteáil, cumasaigh agus nuashonraigh plugins Hermes (paireacht le `hermes plugins`).",
@@ -477,6 +479,8 @@ export const ga: Translations = {
     copyCliCommand: "Cóipeáil ordú CLI (le haghaidh úsáide seachtraí / cúltaca)",
     connect: "Ceangail",
     sessionExpires: "Téann an seisiún as feidhm i {time}",
+    sessionExpiredNoError:
+      "Chuaigh an síniú isteach in éag gan an soláthraí a bhaint amach. De ghnáth ciallaíonn sé seo gur stop leathanach an tsínithe isteach sa chluaisín oscailte (fadhb ar thaobh an fhreastalaí) — críochnaigh an síniú isteach ansin, ansin cliceáil Atriail. Má theipeann air i gcónaí, úsáid eochair API nó an CLI ina ionad.",
     initiatingLogin: "Ag tosú an tsreabha logála isteach…",
     exchangingCode: "Ag malartú an chóid ar tokens…",
     connectedClosing: "Ceangailte! Á dhúnadh…",

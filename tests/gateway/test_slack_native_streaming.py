@@ -1,8 +1,9 @@
 """Tests: SlackAdapter native streaming (chat.startStream/appendStream/stopStream).
 
 Behaviour contract:
-  * supports_draft_streaming: True when connected, False after a cached
-    feature-gate failure or when disconnected.
+  * supports_draft_streaming: True when connected with default unfurl behavior;
+    False after a cached feature-gate failure, when disconnected, or when an
+    explicit unfurl control requires the chat.postMessage fallback.
   * send_draft first frame: chat_startStream with thread_ts + initial text;
     returns the stream ts as message_id.
   * send_draft subsequent frames: chat_appendStream with only the delta;
@@ -48,6 +49,22 @@ class TestSupportsDraftStreaming:
     def test_supported_when_connected(self):
         adapter, _ = _make_adapter()
         assert adapter.supports_draft_streaming(chat_type="dm") is True
+
+    @pytest.mark.parametrize(
+        ("unfurl_key", "configured_value"),
+        [
+            ("unfurl_links", False),
+            ("unfurl_links", True),
+            ("unfurl_media", False),
+            ("unfurl_media", True),
+        ],
+    )
+    def test_explicit_unfurl_control_disables_native_streaming(
+        self, unfurl_key, configured_value
+    ):
+        adapter, _ = _make_adapter({unfurl_key: configured_value})
+
+        assert adapter.supports_draft_streaming(chat_type="dm") is False
 
     def test_unsupported_when_disconnected(self):
         adapter, _ = _make_adapter()

@@ -592,8 +592,13 @@ def forget(skill_name: str) -> None:
 def _relocate(src: Path, dest: Path, skill_name: str, action: str, **capture_kwargs: Any) -> Tuple[bool, str]:
     """Move *src* to *dest* for *action* ("archive" | "restore") inside a best-effort audit-ledger entry, then apply
     suppression + state side effects; rename falls back to shutil.move across devices."""
+    from tools import skill_ledger as _ledger
+    with _ledger.ledger_mutation():
+        return _relocate_locked(src, dest, skill_name, action, _ledger, **capture_kwargs)
+
+
+def _relocate_locked(src: Path, dest: Path, skill_name: str, action: str, _ledger, **capture_kwargs: Any) -> Tuple[bool, str]:
     try:
-        from tools import skill_ledger as _ledger
         _ledger_before = _ledger.capture_before(src, **capture_kwargs)
     except Exception:
         _ledger = _ledger_before = None  # type: ignore[assignment]

@@ -6,6 +6,7 @@ file in both lists is dead weight; a 4,000-file skill cost 1.5 MB of ledger per 
 
 import json
 import os
+import threading
 from pathlib import Path
 
 import pytest
@@ -92,6 +93,53 @@ def test_append_trims_ledger_to_recent_complete_entries(ledger_home, monkeypatch
     assert ids[0] not in {row["id"] for row in rows}
     assert all(isinstance(json.loads(line), dict) for line in path.read_text(encoding="utf-8").splitlines())
     assert skill_ledger.get_entry(ids[-1])["id"] == ids[-1]
+
+
+def test_trim_collects_only_blobs_owned_by_removed_entries(ledger_home, monkeypatch):
+    from tools import skill_ledger
+
+    monkeypatch.setattr(skill_ledger, "_LEDGER_MAX_BYTES", 1_200)
+    monkeypatch.setattr(skill_ledger, "_LEDGER_TRIM_BYTES", 700)
+    skills = ledger_home / "skills"
+    old = _manifest(skills, "old", **{"SKILL.md": "old"})[0]
+    kept = _manifest(skills, "kept", **{"SKILL.md": "kept"})[0]
+    skill_ledger.append_entry("patch", "old", before=[old], evidence={"detail": "x" * 900})
+    skill_ledger.append_entry("patch", "kept", before=[kept], evidence={"detail": "y" * 900})
+
+    assert not (skill_ledger.blobs_dir() / old["sha256"]).exists()
+    assert (skill_ledger.blobs_dir() / kept["sha256"]).exists()
+
+
+def test_gc_waits_for_blob_capture_to_be_published(ledger_home, monkeypatch):
+    from tools import skill_ledger
+
+    monkeypatch.setattr(skill_ledger, "_LEDGER_MAX_BYTES", 1_200)
+    monkeypatch.setattr(skill_ledger, "_LEDGER_TRIM_BYTES", 700)
+    skills = ledger_home / "skills"
+    captured = _manifest(skills, "pending", **{"SKILL.md": "pending"})
+    entered = threading.Event()
+    release = threading.Event()
+
+    def publish():
+        with skill_ledger.ledger_mutation():
+            entered.set()
+            assert release.wait(timeout=5)
+            skill_ledger.append_entry("patch", "pending", before=captured)
+
+    worker = threading.Thread(target=publish)
+    worker.start()
+    assert entered.wait(timeout=5)
+    contender = threading.Thread(
+        target=lambda: skill_ledger.append_entry(
+            "patch", "trim", evidence={"detail": "z" * 1_500}))
+    contender.start()
+    assert contender.is_alive()
+    release.set()
+    worker.join(timeout=5)
+    contender.join(timeout=5)
+
+    assert not worker.is_alive() and not contender.is_alive()
+    assert skill_ledger.read_blob(captured[0]["sha256"]) == b"pending"
 
 
 def test_gc_blobs_removes_only_unreferenced(ledger_home):

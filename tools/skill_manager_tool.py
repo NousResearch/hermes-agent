@@ -778,26 +778,27 @@ def skill_manage(
     # to a helper: guards, ledger capture, patch matching, validation, rollback,
     # and the atomic replacement all belong to the same ownership window.
     with _skill_mutation_lock(name):
-        # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
-        # destroys the whole package (consolidation may have re-homed support files first), so
-        # complete it from the newest curator backup or a restore is hollow.
-        # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
-        # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
-        _ledger_before = None
-        with suppress(Exception):
-            from tools import skill_ledger as _ledger
-            _pre = _find_skill(name)
-            _ledger_before = _ledger.capture_before(
-                _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
-        handler = _ACTION_HANDLERS.get(action, lambda a: _err(
-            f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
-        result = handler({"name": name, **args})
-        if isinstance(result, str):
-            return result  # tool_error JSON for argument-shape problems (patch)
-        if result.get("success"):
-            _record_success(
-                action, name, result, file_path=file_path, absorbed_into=absorbed_into,
-                task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
+        from tools import skill_ledger as _ledger
+        with _ledger.ledger_mutation():
+            # Ledger pre-capture: telemetry, not a gate — failures must NEVER block the mutation. delete
+            # destroys the whole package (consolidation may have re-homed support files first), so
+            # complete it from the newest curator backup or a restore is hollow.
+            # Audit ledger (tracker #79686 P3): capture the pre-mutation state of the skill directory so every
+            # mutation — any actor — lands in the append-only JSONL ledger with before/after blobs.
+            _ledger_before = None
+            with suppress(Exception):
+                _pre = _find_skill(name)
+                _ledger_before = _ledger.capture_before(
+                    _pre["path"] if _pre else None, complete_package=(action == "delete"), skill=name)
+            handler = _ACTION_HANDLERS.get(action, lambda a: _err(
+                f"Unknown action '{action}'. Use: create, edit, patch, delete, write_file, remove_file"))
+            result = handler({"name": name, **args})
+            if isinstance(result, str):
+                return result  # tool_error JSON for argument-shape problems (patch)
+            if result.get("success"):
+                _record_success(
+                    action, name, result, file_path=file_path, absorbed_into=absorbed_into,
+                    task_id=task_id, session_id=session_id, ledger_before=_ledger_before)
     return json.dumps(result, ensure_ascii=False)
 
 

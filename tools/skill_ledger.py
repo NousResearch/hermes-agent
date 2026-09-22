@@ -56,6 +56,8 @@ _SNAPSHOT_EXCLUDE_DIRS = TRANSIENT_DIRS
 # Explicit actor override: the CLI sets "user", the curator walk sets "curator".
 _actor_override: contextvars.ContextVar[Optional[str]] = contextvars.ContextVar(
     "skill_ledger_actor", default=None)
+_ledger_lock_depth: contextvars.ContextVar[int] = contextvars.ContextVar(
+    "skill_ledger_lock_depth", default=0)
 
 
 def set_ledger_actor(actor: Optional[str]) -> contextvars.Token:
@@ -94,6 +96,14 @@ def blobs_dir() -> Path:
 @contextmanager
 def _ledger_lock():
     """Serialize append/rewrite operations across processes for the active profile."""
+    depth = _ledger_lock_depth.get()
+    if depth:
+        token = _ledger_lock_depth.set(depth + 1)
+        try:
+            yield
+        finally:
+            _ledger_lock_depth.reset(token)
+        return
     path = _skills_dir() / ".locks" / "curator_ledger.lock"
     path.parent.mkdir(parents=True, exist_ok=True)
     with open(path, "a+b") as fh:
@@ -104,9 +114,11 @@ def _ledger_lock():
         else:
             import fcntl
             fcntl.flock(fh.fileno(), fcntl.LOCK_EX)
+        token = _ledger_lock_depth.set(1)
         try:
             yield
         finally:
+            _ledger_lock_depth.reset(token)
             with suppress(Exception):
                 if os.name == "nt":
                     fh.seek(0)
@@ -115,10 +127,10 @@ def _ledger_lock():
                     fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
 
 
-def _trim_ledger_if_needed(path: Path) -> None:
+def _trim_ledger_if_needed(path: Path) -> bool:
     """Atomically retain the newest complete JSONL rows at the trim watermark."""
     if path.stat().st_size <= _LEDGER_MAX_BYTES:
-        return
+        return False
     lines = path.read_bytes().splitlines(keepends=True)
     kept: List[bytes] = []
     size = 0
@@ -139,6 +151,14 @@ def _trim_ledger_if_needed(path: Path) -> None:
     tmp = path.with_name(path.name + ".trim.tmp")
     tmp.write_bytes(data)
     os.replace(tmp, path)
+    return True
+
+
+@contextmanager
+def ledger_mutation():
+    """Keep blob capture, the owning mutation, and ledger publication atomic against GC."""
+    with _ledger_lock():
+        yield
 
 
 def ledger_enabled() -> bool:
@@ -191,16 +211,17 @@ def snapshot_paths(root: Optional[Path], *, complete_package: bool = False) -> L
     excluded wherever they appear under *root*. Raises on I/O failure — callers decide
     whether that is fatal (rollback safety capture) or swallowed (telemetry).
     ``complete_package`` unions in the newest curator tarball's files (disk hashes win)."""
-    if root is None:
-        return []
-    root = Path(root)  # gone from disk -> []; the complete_package fill may still recover it
-    files = ([root] if root.is_file()
-             else sorted(p for p in root.rglob("*") if p.is_file()
-                         and not any(part in _SNAPSHOT_EXCLUDE_DIRS
-                                     for part in p.relative_to(root).parts[:-1]))
-             if root.is_dir() else [])
-    out = [{"path": str(f), "sha256": _store_blob(f.read_bytes())} for f in files]
-    return fill_snapshot_from_curator_backup(root, out) if complete_package else out
+    with _ledger_lock():
+        if root is None:
+            return []
+        root = Path(root)  # gone from disk -> []; the complete_package fill may still recover it
+        files = ([root] if root.is_file()
+                 else sorted(p for p in root.rglob("*") if p.is_file()
+                             and not any(part in _SNAPSHOT_EXCLUDE_DIRS
+                                         for part in p.relative_to(root).parts[:-1]))
+                 if root.is_dir() else [])
+        out = [{"path": str(f), "sha256": _store_blob(f.read_bytes())} for f in files]
+        return fill_snapshot_from_curator_backup(root, out) if complete_package else out
 
 
 def _package_rel(root: Path) -> Optional[str]:
@@ -352,7 +373,8 @@ def append_entry(
                     fh.seek(-1, os.SEEK_END)
                 separator = b"\n" if size and fh.read(1) != b"\n" else b""
                 fh.write(separator + encoded)
-            _trim_ledger_if_needed(path)
+            if _trim_ledger_if_needed(path):
+                _gc_blobs_unlocked()
         return entry["id"]
     except Exception as e:
         logger.warning("skill_ledger: failed to append entry (%s) — mutation unaffected", e)
@@ -391,7 +413,7 @@ def compact_ledger() -> Tuple[int, int, int]:
     return kept, len(raw), len(data)
 
 
-def gc_blobs() -> Tuple[int, int]:
+def _gc_blobs_unlocked() -> Tuple[int, int]:
     """Delete blobs no ledger entry references; returns ``(deleted, bytes_freed)``. The store was
     write-only: on one install 98.9% of 47k blobs (1.18 GB) were unreachable after a venv walk
     (#107539). Malformed ledger lines abort the sweep (nothing deleted) — an unreadable entry
@@ -426,6 +448,12 @@ def gc_blobs() -> Tuple[int, int]:
     return deleted, freed
 
 
+def gc_blobs() -> Tuple[int, int]:
+    """Delete unreferenced blobs while excluding concurrent ledger mutations."""
+    with _ledger_lock():
+        return _gc_blobs_unlocked()
+
+
 def record_mutation(
     action: str, skill: str, before_root: Optional[Path] = None,
     before: Optional[List[Dict[str, str]]] = None, after_root: Optional[Path] = None,
@@ -436,13 +464,14 @@ def record_mutation(
     if not ledger_enabled():
         return None
     try:
-        _complete = action in _PACKAGE_RESTORE_ACTIONS
-        if before is None:
-            before = snapshot_paths(before_root, complete_package=_complete)
-        elif _complete:
-            before = fill_snapshot_from_curator_backup(before_root, before, skill=skill)
-        return append_entry(action, skill, before=before, after=snapshot_paths(after_root),
-                            actor=actor, evidence=evidence)
+        with _ledger_lock():
+            _complete = action in _PACKAGE_RESTORE_ACTIONS
+            if before is None:
+                before = snapshot_paths(before_root, complete_package=_complete)
+            elif _complete:
+                before = fill_snapshot_from_curator_backup(before_root, before, skill=skill)
+            return append_entry(action, skill, before=before, after=snapshot_paths(after_root),
+                                actor=actor, evidence=evidence)
     except Exception as e:
         logger.warning("skill_ledger: record_mutation failed (%s) — mutation unaffected", e)
         return None
@@ -496,6 +525,11 @@ def _validate_entry_paths(entry: Dict[str, Any]) -> Optional[str]:
 
 
 def rollback_entry(entry_id: str) -> Tuple[bool, str]:
+    with _ledger_lock():
+        return _rollback_entry_locked(entry_id)
+
+
+def _rollback_entry_locked(entry_id: str) -> Tuple[bool, str]:
     """Restore the before-state of mutation *entry_id*. Fail-closed (mirrors
     agent/curator_backup.rollback): every before-blob must exist BEFORE any change, and a
     pre-rollback safety entry of every touched path's CURRENT state is appended first.

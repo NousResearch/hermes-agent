@@ -962,7 +962,7 @@ class SessionMessagesMixin:
                 JOIN messages AS chosen ON chosen.id = (
                     SELECT candidate.id FROM messages AS candidate
                     WHERE candidate.session_id = ?
-                      AND candidate.display_order = page.display_order
+                      AND candidate.display_order IS page.display_order
                       AND (candidate.active = 1 OR candidate.compacted = 1)
                     ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
                 )

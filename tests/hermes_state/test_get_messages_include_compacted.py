@@ -596,6 +596,32 @@ class TestDisplayDedupe:
         assert [m["id"] for m in page] == all_ids[2:]
         assert len(page) == 2
 
+    def test_null_display_order_group_survives_paging(self, db, monkeypatch):
+        """A partially backfilled group still joins its representative.
+
+        The duplicate group keeps its normal display identity, but its order
+        is NULL while a concurrent backfill is incomplete.  It must retain
+        the usual live-row preference and remain reachable from both paging
+        directions.
+        """
+        sid = "null-display-order"
+        db.create_session(sid, source="cli")
+        db.append_messages_batch(sid, [
+            {"role": "user", "content": "q1"},
+            {"role": "assistant", "content": "a1"},
+        ])
+        original_ids = _row_ids(db, sid)
+        self._copy_tail_as_new_generation(db, sid, [original_ids[0]])
+        db._execute_write(lambda conn: conn.execute(
+            "UPDATE messages SET display_order = NULL WHERE session_id = ? AND content = ?",
+            (sid, "q1"),
+        ))
+        monkeypatch.setattr(db, "_ensure_display_order", lambda _sid: True)
+
+        assert _row_ids(db, sid, include_compacted=True) == original_ids
+        assert _row_ids(db, sid, include_compacted=True, limit=1, offset=0) == original_ids[:1]
+        assert _row_ids(db, sid, include_compacted=True, latest=True, limit=1, offset=1) == original_ids[:1]
+
     def test_distinct_tool_calls_with_same_content_are_not_merged(self, db):
         """Two real tool messages that happen to share role/content/timestamp
         must stay separate: the dedupe key includes the tool fields, so only

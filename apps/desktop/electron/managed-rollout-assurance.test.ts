@@ -8,6 +8,8 @@ import { describe, expect, it } from 'vitest'
 
 import type { ReviewedSourceBinding } from '../src/lib/managed-rollout-contract'
 import { createPreflightReview, ReviewTokenStore } from './managed-rollout-preflight'
+import { installationFingerprint, sourceFingerprint } from './managed-rollout-identity'
+import { verifyTrustedInventory } from './managed-rollout-inventory'
 import {
   isVerifiedAssurance,
   isVerifiedGitSource,
@@ -96,25 +98,46 @@ describe('managed rollout source and assurance admission', () => {
       expect(verified.targetSha).toBe(reviewed)
       expect(verified.targetSha).not.toBe(tip)
       const installId = '1'.repeat(32)
+      const installation = installationFingerprint({ installId, codeRoot: root, repositoryId: REPOSITORY })
+      const sourceConfig = {
+        connectionId: 'ssh-a', connectionConfigRevision: 1,
+        verifiedHostKeyFingerprint: 'SHA256:host-key', remoteUser: 'operator', port: 22,
+        configuredProfile: 'default', configuredCodePath: root
+      }
+      const sshSource = sourceFingerprint({ ...sourceConfig, installationFingerprint: installation })
       const plan = {
-        target: expected.target, waves: [[installId]], concurrency: 1,
+        target: expected.target, inventoryRevision: 'inventory-7', waves: [[installId]], concurrency: 1,
         promotionPolicy: 'manual' as const,
         rows: [{
-          installId, connectionId: 'ssh-a', installationFingerprint: 'a'.repeat(64),
-          sourceFingerprint: FINGERPRINT, admittedHead: reviewed, requiredScopeIds: [],
+          installId, connectionId: 'ssh-a', installationFingerprint: installation,
+          sourceFingerprint: sshSource, admittedHead: reviewed, requiredScopeIds: [],
           eligible: true, reviewedSource: verified
         }],
         retryOf: null, exclusions: []
       }
+      const inventory = await verifyTrustedInventory(plan, 2_500, { capture: async () => ({
+        inventoryRevision: 'inventory-7', capturedMono: 2_000,
+        observations: [{
+          installId, connectionId: 'ssh-a', aliasConnectionIds: [], codeRoot: root,
+          repositoryId: REPOSITORY, headSha: reviewed, requiredScopeIds: [], source: sourceConfig
+        }]
+      }) })
+      const rowAssurance = await verifyApplicableAssurance({
+        profile: 'managed-ssh-v1', repositoryId: REPOSITORY, targetSha: reviewed,
+        sourceFingerprint: sshSource, generation: 4, now
+      }, assuranceReader(envelope(reviewed, { sourceFingerprint: sshSource })))
+      plan.rows[0].reviewedSource = { ...verified, assuranceEvidenceSha256: rowAssurance.evidenceSha256 }
+      const rowSource = await verifyReviewedGitSource(plan.rows[0].reviewedSource, expected, reader)
+      plan.rows[0].reviewedSource = rowSource
       const review = createPreflightReview({
         plan,
         resolution: {
           id: 'resolution-a', target: expected.target, fingerprint: 'a'.repeat(64),
           cachePath: path.join(root, 'cache'), createdAt: now - 1_000, expiresAt: now + 60_000
         },
-        reviewTokens: new ReviewTokenStore({ tokenFactory: () => 'review-token' }), now,
-        verifiedSources: new Map([[installId, verified]]),
-        verifiedAssurance: new Map([[installId, assurance]])
+        reviewTokens: new ReviewTokenStore({ tokenFactory: () => 'review-token' }), now, nowMono: 2_500,
+        verifiedSources: new Map([[installId, rowSource]]),
+        verifiedAssurance: new Map([[installId, rowAssurance]]), verifiedInventory: inventory
       })
       expect(review.blockers).toEqual([])
       expect(review.token).toBe('review-token')
@@ -124,9 +147,9 @@ describe('managed rollout source and assurance admission', () => {
           id: 'resolution-a', target: expected.target, fingerprint: 'a'.repeat(64),
           cachePath: path.join(root, 'cache'), createdAt: now - 1_000, expiresAt: now + 60_000
         },
-        reviewTokens: new ReviewTokenStore(), now,
-        verifiedSources: new Map([[installId, verified]]),
-        verifiedAssurance: new Map([[installId, assurance]])
+        reviewTokens: new ReviewTokenStore(), now, nowMono: 2_500,
+        verifiedSources: new Map([[installId, rowSource]]),
+        verifiedAssurance: new Map([[installId, rowAssurance]]), verifiedInventory: inventory
       }).blockers).toContain('assurance-evidence-stale-or-mismatched')
       await expect(verifyReviewedGitSource(source, { ...expected, trustedOriginUrl: 'https://github.com/other/repo.git' }, reader))
         .rejects.toThrow('reviewed-origin-mismatch')

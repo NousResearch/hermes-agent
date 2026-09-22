@@ -95,6 +95,11 @@ describe('managed rollout runtime contract', () => {
     )
   })
 
+  it('preserves a trusted inventory revision in the canonical plan', () => {
+    expect(validateRolloutPlan({ ...plan(), inventoryRevision: 'inventory-7' }).inventoryRevision).toBe('inventory-7')
+    expect(() => validateRolloutPlan({ ...plan(), inventoryRevision: '' })).toThrow()
+  })
+
   it('keeps missing scope capture distinct from a known-empty capture', () => {
     expect(validateHealthEvidence(health()).scopeCapture).toBe('complete')
     expect(validateHealthEvidence({ ...health(), scopeCapture: 'missing' as const }).scopeCapture).toBe('missing')

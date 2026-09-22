@@ -11,12 +11,13 @@ import type {
   RolloutTarget
 } from '../src/lib/managed-rollout-contract'
 import { validateRolloutPlan, validateRolloutTarget } from '../src/lib/managed-rollout-contract'
-import { canonicalRepositoryId } from './managed-rollout-identity'
+import { canonicalCodeRoot, canonicalRepositoryId } from './managed-rollout-identity'
 import {
   isVerifiedAssurance, isVerifiedGitSource,
   type VerifiedAssuranceEvidence
 } from './managed-rollout-assurance'
 import type { ReviewedSourceBinding } from '../src/lib/managed-rollout-contract'
+import { INVENTORY_FRESHNESS_MS, isVerifiedInventoryRow, type VerifiedInventoryRow } from './managed-rollout-inventory'
 
 export const PROTOCOL_RESOURCE_PATH = 'hermes_cli/update_rollout_protocol.json'
 export const SUPPORTED_PROTOCOL_VERSION = 1
@@ -867,6 +868,7 @@ export function canonicalPlanTuple(value: RolloutPlan): readonly unknown[] {
 
   return [
     1,
+    plan.inventoryRevision ?? null,
     [plan.target.repositoryId, plan.target.branch, plan.target.sha, plan.target.protocol],
     plan.waves.map(wave => wave.slice()),
     plan.concurrency,
@@ -950,8 +952,16 @@ export function diffRolloutPlans(beforeValue: RolloutPlan, afterValue: RolloutPl
     const fields: Array<[PlanChange['field'], unknown, unknown]> = [
       ['membership', membership(before, installId), membership(after, installId)],
       ['identity', identityBefore, identityAfter],
-      ['source', left ? left.reviewedSource ? [left.sourceFingerprint, left.reviewedSource] : left.sourceFingerprint : undefined,
-        right ? right.reviewedSource ? [right.sourceFingerprint, right.reviewedSource] : right.sourceFingerprint : undefined],
+      ['source', left
+        ? left.reviewedSource || before.inventoryRevision
+          ? [left.sourceFingerprint, left.reviewedSource ?? null, before.inventoryRevision ?? null]
+          : left.sourceFingerprint
+        : undefined,
+      right
+        ? right.reviewedSource || after.inventoryRevision
+          ? [right.sourceFingerprint, right.reviewedSource ?? null, after.inventoryRevision ?? null]
+          : right.sourceFingerprint
+        : undefined],
       ['head', left?.admittedHead, right?.admittedHead],
       ['scopes', left?.requiredScopeIds, right?.requiredScopeIds],
       ['eligibility', left?.eligible, right?.eligible]
@@ -1075,9 +1085,11 @@ export function createPreflightReview(input: {
   resolution: TargetResolution | null
   reviewTokens: ReviewTokenStore
   now?: number
+  nowMono?: number
   blockers?: string[]
   verifiedSources?: ReadonlyMap<string, ReviewedSourceBinding>
   verifiedAssurance?: ReadonlyMap<string, VerifiedAssuranceEvidence>
+  verifiedInventory?: ReadonlyMap<string, VerifiedInventoryRow>
 }): {
   token: string | null
   expiresAt: number | null
@@ -1092,6 +1104,7 @@ export function createPreflightReview(input: {
   let resolution: TargetResolution | null = null
 
   if (!Number.isSafeInteger(now)) blockers.push('review-clock-invalid')
+  if (!canonicalPlan.inventoryRevision || !Number.isFinite(input.nowMono)) blockers.push('inventory-revision-unverified')
 
   if (!input.resolution) blockers.push('target-resolution-unavailable')
   else {
@@ -1111,6 +1124,20 @@ export function createPreflightReview(input: {
     const source = row.reviewedSource
     const verifiedSource = input.verifiedSources?.get(row.installId)
     const assurance = input.verifiedAssurance?.get(row.installId)
+    const inventory = input.verifiedInventory?.get(row.installId)
+    if (
+      !isVerifiedInventoryRow(inventory) ||
+      inventory.inventoryRevision !== canonicalPlan.inventoryRevision ||
+      inventory.installId !== row.installId || inventory.connectionId !== row.connectionId ||
+      inventory.installationFingerprint !== row.installationFingerprint ||
+      inventory.sourceFingerprint !== row.sourceFingerprint || inventory.admittedHead !== row.admittedHead ||
+      inventory.repositoryId !== canonicalPlan.target.repositoryId ||
+      !source || canonicalCodeRoot(inventory.repositoryRoot) !== canonicalCodeRoot(source.repositoryRoot) ||
+      row.requiredScopeIds === null ||
+      JSON.stringify(inventory.requiredScopeIds) !== JSON.stringify([...row.requiredScopeIds].sort()) ||
+      !Number.isFinite(input.nowMono) || input.nowMono! < inventory.observedMono ||
+      input.nowMono! - inventory.observedMono > INVENTORY_FRESHNESS_MS
+    ) blockers.push('inventory-evidence-stale-or-mismatched')
     if (!source || !isVerifiedGitSource(verifiedSource) || JSON.stringify(source) !== JSON.stringify(verifiedSource)) {
       blockers.push('reviewed-source-unverified')
       continue

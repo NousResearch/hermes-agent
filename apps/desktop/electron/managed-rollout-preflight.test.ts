@@ -338,4 +338,18 @@ describe('managed rollout preflight', () => {
       }
     ])
   })
+
+  it('invalidates review when the trusted inventory revision changes', () => {
+    const before = { ...plan(), inventoryRevision: 'inventory-7' }
+    const after = { ...before, inventoryRevision: 'inventory-8' }
+    const store = new ReviewTokenStore({ tokenFactory: () => 'inventory-review' })
+    const issued = store.issue(before, 0)
+    const checked = store.revalidate(issued.token, after, 1)
+    expect(checked.ok).toBe(false)
+    if (!checked.ok) {
+      expect(checked.code).toBe('plan-changed')
+      expect(checked.changes).toHaveLength(before.rows.length)
+      expect(checked.changes.every(change => change.field === 'source')).toBe(true)
+    }
+  })
 })

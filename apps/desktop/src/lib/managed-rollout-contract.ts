@@ -284,6 +284,7 @@ export interface RolloutPlanRow {
 /** The main-owned canonical plan used by preflight/revalidation. */
 export interface RolloutPlan {
   target: RolloutTarget
+  inventoryRevision?: string
   waves: string[][]
   concurrency: number
   promotionPolicy: PromotionPolicy
@@ -762,7 +763,10 @@ function validatePlanRow(value: unknown, path: string): RolloutPlanRow {
 
 export function validateRolloutPlan(value: unknown): RolloutPlan {
   if (!isRecord(value)) fail('plan', 'expected object')
-  exactKeys(value, ['target', 'waves', 'concurrency', 'promotionPolicy', 'rows', 'retryOf', 'exclusions'], 'plan')
+  exactKeys(value, [
+    'target', 'waves', 'concurrency', 'promotionPolicy', 'rows', 'retryOf', 'exclusions',
+    ...(Object.prototype.hasOwnProperty.call(value, 'inventoryRevision') ? ['inventoryRevision'] : [])
+  ], 'plan')
   if (!Array.isArray(value.waves) || value.waves.length === 0) fail('plan.waves', 'expected non-empty array')
   if (!Array.isArray(value.rows)) fail('plan.rows', 'expected array')
   if (value.rows.length === 0 || value.rows.length > MAX_ROLLOUT_INSTALLATIONS) {
@@ -796,6 +800,8 @@ export function validateRolloutPlan(value: unknown): RolloutPlan {
 
   return {
     target: validateRolloutTarget(value.target),
+    ...(Object.prototype.hasOwnProperty.call(value, 'inventoryRevision')
+      ? { inventoryRevision: stringValue(value.inventoryRevision, 'plan.inventoryRevision') } : {}),
     waves,
     concurrency: (() => {
       const concurrency = integerValue(value.concurrency, 'plan.concurrency', 1)

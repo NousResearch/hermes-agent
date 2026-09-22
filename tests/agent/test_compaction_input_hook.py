@@ -2,6 +2,8 @@
 
 from unittest.mock import patch
 
+import pytest
+
 from agent.compaction_hooks import (
     COMPACTION_HOOK_PROVENANCE_KEY,
     transform_compaction_input,
@@ -38,6 +40,21 @@ def _history() -> list[dict]:
         })
     messages.append({"role": "user", "content": "CURRENT TASK: prepare the release checklist"})
     return messages
+
+
+def _summary_input(monkeypatch, *, hook_enabled: bool, invoke_hook) -> list[dict]:
+    monkeypatch.setattr("hermes_cli.lifecycle.has_hook", lambda _name: hook_enabled)
+    monkeypatch.setattr("hermes_cli.lifecycle.invoke_hook", invoke_hook)
+    compressor = _compressor()
+    captured: dict = {}
+
+    def summarize(_messages, turns, _scan, _focus, _memory, _bypass):
+        captured["turns"] = turns
+        return "## Active Task\nContinue the release work."
+
+    monkeypatch.setattr(compressor, "_summarize_window", summarize)
+    compressor.compress(_history(), current_tokens=100_000, force=True)
+    return captured["turns"]
 
 
 def test_hook_transforms_selected_blocks_and_persists_host_task_provenance(tmp_path, monkeypatch):
@@ -121,3 +138,43 @@ def test_invalid_hook_result_fails_open(monkeypatch):
 
     assert result.messages is messages
     assert result.provenance is None
+    assert result.applied is False
+
+
+@pytest.mark.parametrize("outcome", ["malformed", "raising", "timeout_skipped"])
+def test_unsuccessful_hook_outcomes_resume_baseline_pruning(monkeypatch, outcome):
+    baseline = _summary_input(
+        monkeypatch,
+        hook_enabled=False,
+        invoke_hook=lambda _name, **_payload: [],
+    )
+
+    if outcome == "malformed":
+        def invoke_hook(_name, **_payload):
+            return [{"decisions": [{"block_index": 0, "action": "shorten"}]}]
+    elif outcome == "raising":
+        def invoke_hook(_name, **_payload):
+            raise RuntimeError("plugin failed")
+    else:
+        # Bounded hook callbacks that time out are omitted from the result list.
+        def invoke_hook(_name, **_payload):
+            return []
+
+    actual = _summary_input(
+        monkeypatch,
+        hook_enabled=True,
+        invoke_hook=invoke_hook,
+    )
+
+    assert actual == baseline
+    assert "RAW_TOOL_RESULT_" not in "\n".join(str(message.get("content", "")) for message in actual)
+
+
+def test_valid_empty_decisions_intentionally_keep_original_blocks(monkeypatch):
+    turns = _summary_input(
+        monkeypatch,
+        hook_enabled=True,
+        invoke_hook=lambda _name, **_payload: [{"decisions": []}],
+    )
+
+    assert "RAW_TOOL_RESULT_" in "\n".join(str(message.get("content", "")) for message in turns)

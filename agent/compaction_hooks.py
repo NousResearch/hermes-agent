@@ -19,6 +19,7 @@ class CompactionHookResult:
 
     messages: list[dict[str, Any]]
     provenance: dict[str, Any] | None
+    applied: bool
 
 
 def compaction_input_hook_enabled() -> bool:
@@ -144,7 +145,7 @@ def _apply_decisions(
             "result_chars": result_chars,
         })
     provenance = {"task_source": task_source, "decisions": records} if records else None
-    return CompactionHookResult(transformed, provenance)
+    return CompactionHookResult(transformed, provenance, True)
 
 
 def transform_compaction_input(
@@ -161,7 +162,7 @@ def transform_compaction_input(
         from hermes_cli.lifecycle import invoke_hook
 
         if not compaction_input_hook_enabled():
-            return CompactionHookResult(messages, None)
+            return CompactionHookResult(messages, None, False)
         blocks, tool_names = _block_payloads(messages)
         task_source = (
             {"message_index": task_message_index, "content": task_text, "task_id": task_id}
@@ -178,10 +179,10 @@ def transform_compaction_input(
         )
     except Exception as exc:
         logger.debug("transform_compaction_input hook error: %s", exc)
-        return CompactionHookResult(messages, None)
+        return CompactionHookResult(messages, None, False)
 
     for value in results:
         decisions = _validated_decisions(value, len(messages))
         if decisions is not None:
             return _apply_decisions(messages, decisions, blocks=blocks, task_source=task_source)
-    return CompactionHookResult(messages, None)
+    return CompactionHookResult(messages, None, False)

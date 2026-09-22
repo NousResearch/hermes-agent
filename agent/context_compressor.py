@@ -5305,7 +5305,9 @@ Write only the summary body. Do not include any preamble or prefix."""
         # Phase 1: Prune old tool results (cheap, no LLM call). A compaction-input plugin
         # owns per-block keep/drop/shorten policy, so it must see the original selected
         # blocks rather than deterministic stubs produced before task-aware decisions.
-        if compaction_input_hook_enabled():
+        hook_enabled = compaction_input_hook_enabled()
+        unpruned_messages = messages
+        if hook_enabled:
             pruned_count = 0
         else:
             messages, pruned_count = self._prune_old_tool_results(
@@ -5348,8 +5350,43 @@ Write only the summary body. Do not include any preamble or prefix."""
             task_id=task_id,
             session_id=getattr(self, "_session_id", "") or "",
         )
-        turns_to_summarize = hook_result.messages
-        hook_provenance = hook_result.provenance
+        if hook_enabled and not hook_result.applied:
+            # A registered callback owns the original selected blocks only when it produces a
+            # structurally valid result. Failures resume the ordinary deterministic path.
+            messages, pruned_count = self._prune_old_tool_results(
+                unpruned_messages,
+                protect_tail_count=self.protect_last_n,
+                protect_tail_tokens=self.tail_token_budget,
+            )
+            if pruned_count and not self.quiet_mode:
+                logger.info("Pre-compression: pruned %d old tool result(s)", pruned_count)
+            messages = self._drop_blank_echoes(messages)
+            n_messages = len(messages)
+            compress_start, compress_end = self._compress_window(messages)
+            if compress_start >= compress_end:
+                self._record_compression_regions(
+                    head_messages=messages[:compress_start], middle_messages=[], tail_messages=messages[compress_end:],
+                )
+                self._structural_no_op_result(
+                    telemetry, "no_compressible_window",
+                    f"compress_start ({compress_start}) >= compress_end ({compress_end}) - transcript fits within tail budget",
+                )
+                return messages
+            turns_to_summarize = messages[compress_start:compress_end]
+            if getattr(self, "tail_mode", "lean") == "lean":
+                messages = self._demote_stale_tail_tools(messages, compress_end)
+            scan = self._scan_window_handoffs(messages, compress_start, compress_end, turns_to_summarize)
+            turns_to_summarize = scan.turns_to_summarize
+            if not turns_to_summarize:
+                self._structural_no_op_result(
+                    telemetry, "empty_post_handoff_window",
+                    f"window {compress_start}-{compress_end} holds only already-summarized handoffs",
+                )
+                return messages
+            hook_provenance = None
+        else:
+            turns_to_summarize = hook_result.messages
+            hook_provenance = hook_result.provenance
         self._record_compression_regions(
             head_messages=messages[:compress_start], middle_messages=turns_to_summarize, tail_messages=messages[compress_end:],
         )

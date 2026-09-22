@@ -223,7 +223,8 @@ function dedupeRepeatedRowText(parts: ChatMessagePart[]): ChatMessagePart[] {
   })
 
   const kept = parts.filter(
-    (part, index) => part.type !== 'text' || part.sourceRowId === undefined || lastByOccurrence.get(occurrence(part)) === index
+    (part, index) =>
+      part.type !== 'text' || part.sourceRowId === undefined || lastByOccurrence.get(occurrence(part)) === index
   )
 
   return kept.length === parts.length ? parts : kept

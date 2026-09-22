@@ -147,7 +147,8 @@ function isSnapshot(value: unknown): value is InFlightTurnSnapshot {
             Boolean(part) &&
             typeof part === 'object' &&
             typeof part.type === 'string' &&
-            (part.sourceRowId === undefined || (typeof part.sourceRowId === 'number' && Number.isFinite(part.sourceRowId))) &&
+            (part.sourceRowId === undefined ||
+              (typeof part.sourceRowId === 'number' && Number.isFinite(part.sourceRowId))) &&
             (part.type !== 'text' && part.type !== 'reasoning'
               ? part.type !== 'tool-call' ||
                 (typeof part.toolName === 'string' &&
@@ -721,23 +722,35 @@ function journalTailAlreadyCommitted(tailAssistants: ChatMessage[], baseMessages
   const lastTurnStart = baseMessages.findLastIndex(message => message.role === 'user')
 
   const identityCovers = (base: ChatMessage, index: number, journaled: ChatMessage) =>
-    base.id === journaled.id ||
-    (journaled.rowId === undefined ? index > lastTurnStart : base.rowId === journaled.rowId)
+    base.id === journaled.id || (journaled.rowId === undefined ? index > lastTurnStart : base.rowId === journaled.rowId)
 
-  return recoverable.every(message => baseMessages.some((base, index) =>
-    base.role === 'assistant' && !base.hidden && isCommittedRow(base) && identityCovers(base, index, message) &&
-    base.error === message.error &&
-    normalizedText(chatMessageText(base)) === normalizedText(chatMessageText(message)) &&
-    message.parts.every(part => {
-      if (part.type === 'tool-call') {
-        return base.parts.some(candidate => candidate.type === 'tool-call' && Boolean(part.toolCallId) &&
-          candidate.toolCallId === part.toolCallId)
-      }
+  return recoverable.every(message =>
+    baseMessages.some(
+      (base, index) =>
+        base.role === 'assistant' &&
+        !base.hidden &&
+        isCommittedRow(base) &&
+        identityCovers(base, index, message) &&
+        base.error === message.error &&
+        normalizedText(chatMessageText(base)) === normalizedText(chatMessageText(message)) &&
+        message.parts.every(part => {
+          if (part.type === 'tool-call') {
+            return base.parts.some(
+              candidate =>
+                candidate.type === 'tool-call' && Boolean(part.toolCallId) && candidate.toolCallId === part.toolCallId
+            )
+          }
 
-      return part.type !== 'reasoning' || base.parts.some(candidate => candidate.type === 'reasoning' &&
-        normalizedText(candidate.text) === normalizedText(part.text))
-    })
-  ))
+          return (
+            part.type !== 'reasoning' ||
+            base.parts.some(
+              candidate =>
+                candidate.type === 'reasoning' && normalizedText(candidate.text) === normalizedText(part.text)
+            )
+          )
+        })
+    )
+  )
 }
 
 export function mergeInFlightMessages(
@@ -813,9 +826,13 @@ export function mergeInFlightMessages(
   const afterUser = baseMessages.slice(matchingUserIndex + 1, end)
 
   const completedReply = afterUser.find(
-    message => assistantHasRecoverableContent(message) && isCommittedRow(message) &&
-      (message.durableComplete === true || (message.durableComplete === undefined && !message.interim &&
-        !message.parts.some(part => part.type === 'tool-call')))
+    message =>
+      assistantHasRecoverableContent(message) &&
+      isCommittedRow(message) &&
+      (message.durableComplete === true ||
+        (message.durableComplete === undefined &&
+          !message.interim &&
+          !message.parts.some(part => part.type === 'tool-call')))
   )
 
   if (completedReply) {
@@ -823,14 +840,16 @@ export function mergeInFlightMessages(
     return { ...noop, caughtUp: true }
   }
 
-  tailAssistants = withoutCoveredAssistantPrefix(
-    afterUser.filter(isCommittedRow), tailAssistants
-  )
+  tailAssistants = withoutCoveredAssistantPrefix(afterUser.filter(isCommittedRow), tailAssistants)
   lastJournalRow = tailAssistants.findLast(assistantHasRecoverableContent) ?? null
 
   const projectionIndex = baseMessages.findLastIndex(
-    (message, index) => index > matchingUserIndex && index < end && message.role === 'assistant' &&
-      !message.interim && isLiveProjectionRow(message)
+    (message, index) =>
+      index > matchingUserIndex &&
+      index < end &&
+      message.role === 'assistant' &&
+      !message.interim &&
+      isLiveProjectionRow(message)
   )
 
   if (projectionIndex < 0) {
@@ -843,7 +862,11 @@ export function mergeInFlightMessages(
     return {
       applied: true,
       caughtUp: false,
-      messages: [...baseMessages.slice(0, end), ...withoutBaseIds(tailAssistants, baseMessages), ...baseMessages.slice(end)],
+      messages: [
+        ...baseMessages.slice(0, end),
+        ...withoutBaseIds(tailAssistants, baseMessages),
+        ...baseMessages.slice(end)
+      ],
       // Only a running turn keeps a stream target; recovered metadata retains
       // the journal independently until durable completion is observed.
       streamId: options.keepPending ? streamId : null,
@@ -969,9 +992,15 @@ export function persistInFlightTurnState(state: JournalableSessionState): void {
 
   // `some(recovered)` is a cheap pre-check: this runs on every idle commit of
   // every cached session, and recovered rows are rare.
-  if (!state.busy && !state.awaitingResponse && !state.streamId &&
-      !(state.messages.some(message => message.recovered) &&
-        recoverableTail(state.messages, null).some(message => message.recovered))) {
+  if (
+    !state.busy &&
+    !state.awaitingResponse &&
+    !state.streamId &&
+    !(
+      state.messages.some(message => message.recovered) &&
+      recoverableTail(state.messages, null).some(message => message.recovered)
+    )
+  ) {
     clearInFlightTurnJournal(storedSessionId)
 
     return

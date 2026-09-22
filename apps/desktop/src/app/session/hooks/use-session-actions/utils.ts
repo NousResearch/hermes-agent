@@ -590,10 +590,7 @@ function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessag
   const lastUser = messages.findLastIndex(message => message.role === 'user' && !isGatewaySystemMarker(message))
 
   return messages.slice(lastUser + 1).some(message => {
-    if (
-      message.role !== 'assistant' ||
-      isLiveTailReplyId(message.id)
-    ) {
+    if (message.role !== 'assistant' || isLiveTailReplyId(message.id)) {
       return false
     }
 

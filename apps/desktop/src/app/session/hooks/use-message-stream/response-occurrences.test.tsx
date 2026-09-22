@@ -16,8 +16,10 @@ it.each(['interim', 'completion', 'completion without delta'])(
   async boundary => {
     const sid = 'response-occurrences'
     const stream = renderMessageStream(sid)
+
     const send = (type: GatewayEventName, payload: Record<string, unknown> = {}) =>
       act(() => stream.handleEvent({ type, payload, session_id: sid }))
+
     const history: SessionMessage[] = []
     const comments = boundary === 'interim' ? ['Checking.', 'Checking.', 'Next phase.'] : ['Checking.', 'Checking.']
 
@@ -35,8 +37,12 @@ it.each(['interim', 'completion', 'completion without delta'])(
       await send('tool.start', { name: 'read_file', tool_id: id, args: {} })
       await send('tool.complete', { name: 'read_file', tool_id: id, result: 'read' })
       history.push(
-        { id: index * 2 + 1, role: 'assistant', content: comment,
-          tool_calls: [{ id, type: 'function', function: { name: 'read_file', arguments: '{}' } }] },
+        {
+          id: index * 2 + 1,
+          role: 'assistant',
+          content: comment,
+          tool_calls: [{ id, type: 'function', function: { name: 'read_file', arguments: '{}' } }]
+        },
         { id: index * 2 + 2, role: 'tool', content: 'read', tool_call_id: id }
       )
     }
@@ -49,8 +55,12 @@ it.each(['interim', 'completion', 'completion without delta'])(
     history.push({ id: 20, role: 'assistant', content: 'Done.' })
     const durable = toChatMessages(history)
     expect(text(stream.state().messages)).toBe(text(durable))
-    const toolIds = () => stream.state().messages.flatMap(row => row.parts.flatMap(part =>
-      part.type === 'tool-call' ? [part.toolCallId] : []))
+
+    const toolIds = () =>
+      stream
+        .state()
+        .messages.flatMap(row => row.parts.flatMap(part => (part.type === 'tool-call' ? [part.toolCallId] : [])))
+
     expect(toolIds()).toEqual(comments.map((_, index) => `tool-${index}`))
 
     await send('message.complete', { text: 'Done.' })

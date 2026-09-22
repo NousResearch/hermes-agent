@@ -1525,7 +1525,8 @@ export function useSessionActions({
                   // reconcile inside the fallback would return `null` again.
                   reconciledCurrentLiveTurn = currentLiveTurn !== null
                   activatedMessages =
-                    currentLiveTurn ?? reconcileAuthoritativeChatMessages(persistedMessages, previousMessages, liveProjection)
+                    currentLiveTurn ??
+                    reconcileAuthoritativeChatMessages(persistedMessages, previousMessages, liveProjection)
                 }
               }
 

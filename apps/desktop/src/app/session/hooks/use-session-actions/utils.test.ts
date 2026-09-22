@@ -1228,7 +1228,9 @@ describe('preserveLocalPendingTurnMessages', () => {
     const next = [msg('1-user', 'user', 'inspect the fixture'), toolRound]
     const previous = [...next, msg('assistant-stream-final', 'assistant', 'The result is 71.', { pending: false })]
 
-    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain('assistant-stream-final')
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-final'
+    )
   })
 
   it('keeps an equal final answer that belongs to a later turn history has not stored', () => {
@@ -1245,7 +1247,9 @@ describe('preserveLocalPendingTurnMessages', () => {
     const next = [msg('1-user', 'user', 'first'), folded, msg('2-user', 'user', 'again')]
     const previous = [...next, msg('assistant-stream-later', 'assistant', 'The result is 71.', { pending: false })]
 
-    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain('assistant-stream-later')
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-later'
+    )
   })
 
   // The whole point of replacing rather than appending: one reply on screen,

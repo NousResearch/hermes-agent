@@ -17,7 +17,7 @@ function sameOccurrencePart(stored: ChatMessagePart, local: ChatMessagePart): bo
  * interval. Hydration can fold several live bubbles into one durable row;
  * bubble ordinals and equal text alone cannot establish that coverage. */
 export function withoutCoveredAssistantPrefix(stored: ChatMessage[], local: ChatMessage[]): ChatMessage[] {
-  const parts = stored.flatMap(message => message.role === 'assistant' ? message.parts : [])
+  const parts = stored.flatMap(message => (message.role === 'assistant' ? message.parts : []))
   let cursor = 0
   let anchored = false
   let stopped = false

@@ -7,11 +7,7 @@ export function currentResponseParts(parts: ChatMessagePart[]): ChatMessagePart[
   return parts.slice(parts.findLastIndex(part => part.type === 'tool-call') + 1)
 }
 
-export function mergeCurrentResponseText(
-  parts: ChatMessagePart[],
-  text: string,
-  timestamp: number
-): ChatMessagePart[] {
+export function mergeCurrentResponseText(parts: ChatMessagePart[], text: string, timestamp: number): ChatMessagePart[] {
   const boundary = parts.findLastIndex(part => part.type === 'tool-call') + 1
 
   return [...parts.slice(0, boundary), ...mergeFinalAssistantText(parts.slice(boundary), text, timestamp)]

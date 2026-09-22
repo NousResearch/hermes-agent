@@ -63,13 +63,19 @@ it('recovers only the uncommitted journal suffix until the complete reply become
   const stored = toChatMessages([prompt, ...round(2, 'Checking the file.')])
 
   const tail: ChatMessage = {
-    id: 'assistant-stream-runtime', role: 'assistant', pending: true,
+    id: 'assistant-stream-runtime',
+    role: 'assistant',
+    pending: true,
     parts: [{ type: 'text', text: 'The unfinished conclusion.' }]
   }
 
   const state = {
-    storedSessionId: 'occurrence-session', busy: true, awaitingResponse: false,
-    streamId: tail.id, turnStartedAt: 1000, messages: [...stored, tail]
+    storedSessionId: 'occurrence-session',
+    busy: true,
+    awaitingResponse: false,
+    streamId: tail.id,
+    turnStartedAt: 1000,
+    messages: [...stored, tail]
   }
 
   persistInFlightTurnState(state)
@@ -88,7 +94,8 @@ it('recovers only the uncommitted journal suffix until the complete reply become
   expect(readInFlightTurnJournal(state.storedSessionId)).not.toBeNull()
 
   const completed = toChatMessages([
-    prompt, ...round(2, 'Checking the file.'),
+    prompt,
+    ...round(2, 'Checking the file.'),
     { id: 4, role: 'assistant', content: 'The unfinished conclusion. Now complete.', timestamp: 4 }
   ])
 
@@ -96,47 +103,63 @@ it('recovers only the uncommitted journal suffix until the complete reply become
   expect(readInFlightTurnJournal(state.storedSessionId)).toBeNull()
 })
 
-it.each(['missing prompt', 'repeated prompt', 'no prompt'])('does not clear an unknown journal occurrence by global text: %s', shape => {
-  // The equal reply belongs to an OLDER turn; only the most recently
-  // committed turn can prove a live journal row stale.
-  const older = toChatMessages([
-    prompt,
-    { id: 2, role: 'assistant', content: 'Still working.', timestamp: 2 },
-    { id: 3, role: 'user', content: 'And then?', timestamp: 3 },
-    { id: 4, role: 'assistant', content: 'Done.', timestamp: 4 }
-  ])
+it.each(['missing prompt', 'repeated prompt', 'no prompt'])(
+  'does not clear an unknown journal occurrence by global text: %s',
+  shape => {
+    // The equal reply belongs to an OLDER turn; only the most recently
+    // committed turn can prove a live journal row stale.
+    const older = toChatMessages([
+      prompt,
+      { id: 2, role: 'assistant', content: 'Still working.', timestamp: 2 },
+      { id: 3, role: 'user', content: 'And then?', timestamp: 3 },
+      { id: 4, role: 'assistant', content: 'Done.', timestamp: 4 }
+    ])
 
-  const user: ChatMessage = {
-    id: 'new-user', rowId: 5, role: 'user',
-    parts: [{ type: 'text', text: shape === 'repeated prompt' ? 'Inspect each phase' : 'A new question' }]
+    const user: ChatMessage = {
+      id: 'new-user',
+      rowId: 5,
+      role: 'user',
+      parts: [{ type: 'text', text: shape === 'repeated prompt' ? 'Inspect each phase' : 'A new question' }]
+    }
+
+    const answer: ChatMessage = {
+      id: 'assistant-stream-new',
+      role: 'assistant',
+      pending: true,
+      parts: [{ type: 'text', text: 'Still working.' }]
+    }
+
+    persistInFlightTurnState({
+      storedSessionId: 'repeated-session',
+      messages: [...(shape === 'no prompt' ? [] : [user]), answer],
+      busy: true,
+      awaitingResponse: false,
+      streamId: answer.id,
+      turnStartedAt: 3000
+    })
+    vi.advanceTimersByTime(400)
+    const recovered = recoverInFlightTurnJournal('repeated-session', older)
+    expect(recovered.caughtUp).toBe(false)
+    expect(assistantTexts(recovered.messages)).toEqual(['Still working.', 'Done.', 'Still working.'])
+    expect(readInFlightTurnJournal('repeated-session')).not.toBeNull()
   }
-
-  const answer: ChatMessage = {
-    id: 'assistant-stream-new', role: 'assistant', pending: true,
-    parts: [{ type: 'text', text: 'Still working.' }]
-  }
-
-  persistInFlightTurnState({
-    storedSessionId: 'repeated-session', messages: [...(shape === 'no prompt' ? [] : [user]), answer],
-    busy: true, awaitingResponse: false, streamId: answer.id, turnStartedAt: 3000
-  })
-  vi.advanceTimersByTime(400)
-  const recovered = recoverInFlightTurnJournal('repeated-session', older)
-  expect(recovered.caughtUp).toBe(false)
-  expect(assistantTexts(recovered.messages)).toEqual(['Still working.', 'Done.', 'Still working.'])
-  expect(readInFlightTurnJournal('repeated-session')).not.toBeNull()
-})
+)
 
 it.each([true, false])('journal replay preserves sealed occurrences (live projection: %s)', hasLiveProjection => {
   const user = toChatMessages([prompt])[0]
 
   const sealed: ChatMessage = {
-    id: 'assistant-stream-sealed', role: 'assistant', interim: true, pending: false,
+    id: 'assistant-stream-sealed',
+    role: 'assistant',
+    interim: true,
+    pending: false,
     parts: [{ type: 'text', text: 'Checking.' }]
   }
 
   const live: ChatMessage = {
-    id: 'assistant-stream-live', role: 'assistant', pending: true,
+    id: 'assistant-stream-live',
+    role: 'assistant',
+    pending: true,
     parts: [{ type: 'text', text: 'Still working.' }]
   }
 

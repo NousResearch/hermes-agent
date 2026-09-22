@@ -288,6 +288,9 @@ class ProjectTreeNode(Result):
 class ProjectsTreeParams(ProfileParams):
     preview_limit: int | None = None
     session_limit: int | None = None
+    # The sidebar asks for archived rows too (its Arkivet section); the handler
+    # reads this and the frontend sends it — the contract must accept it.
+    include_archived: bool | None = None
 
 
 class ProjectsTreeResult(Result):

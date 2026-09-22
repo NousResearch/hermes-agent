@@ -469,8 +469,11 @@ export function toChatMessages(messages: SessionMessage[]): ChatMessage[] {
     // Gateway resume names the durable row id `row_id`; the REST transcript
     // prefetch ships the same messages.id as a numeric `id`. Either one lets
     // reactions address this exact row later.
+    // A persisted row must keep the same rendered identity across hydration
+    // windows. The page-local index changes during backfill and foreground
+    // refreshes, which otherwise lets an overlapping row be appended twice.
     result.push({
-      id: `${message.timestamp || Date.now()}-${index}-${displayRole}`,
+      id: rowId !== undefined ? `row:${rowId}` : `${message.timestamp || Date.now()}-${index}-${displayRole}`,
       role: displayRole,
       parts,
       ...(message.role === 'assistant' && durableComplete !== undefined ? { durableComplete } : {}),

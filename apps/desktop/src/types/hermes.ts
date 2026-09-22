@@ -646,10 +646,10 @@ export interface SessionMessage {
   display_metadata?: string | TimelineDisplayMetadata
   role: 'assistant' | 'system' | 'tool' | 'user'
   /**
-   * Durable `messages.id` from the backend. The renderer's own message ids are
-   * ephemeral (derived from timestamp+index, and a different shape for live vs
-   * rehydrated vs optimistic rows), so anything addressing a specific persisted
-   * message — reactions — keys off this. Absent on a backend older than this app.
+   * Durable `messages.id` from the backend. Persisted renderer messages derive
+   * their stable identity from this value; live and optimistic rows use a
+   * separate ephemeral identity. Anything addressing a specific persisted
+   * message, such as reactions, keys off this. Absent on an older backend.
    *
    * The gateway resume path names it `row_id`; the REST transcript path
    * (`SELECT *`) ships the same value as a numeric `id`. Read both.

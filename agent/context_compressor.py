@@ -3580,27 +3580,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             shown = [i for s, e in selected for i in range(s, e)]
             return text, _coverage(sum(len(display_records[i]) for i in shown), len(shown))
 
-        result = _render(selected)
-        if len(result) <= cls._SUMMARY_INPUT_MAX_CHARS:
-            return _finish(result)
-
-        # Overflow trim: protect newest slice, trim or drop preceding slices first.
-        while len(result) > cls._SUMMARY_INPUT_MAX_CHARS and selected:
-            if len(selected) > 1:
-                idx = max(range(len(selected) - 1), key=lambda i: selected[i][1] - selected[i][0])
-                s, e = selected[idx]
-                if e - s > 1:
-                    selected[idx] = (s, e - 1)
-                else:
-                    selected.pop(idx)
-            else:
-                s, e = selected[0]
-                if e - s > 1:
-                    selected[0] = (s + 1, e)
-                else:
-                    break
-            result = _render(selected)
-        return _finish(result)
+        # No overflow trim is needed: every slice holds <= `target` display chars (records are
+        # pre-bounded to `target`), there are <= n-1 markers each <= `marker_len` (widths computed
+        # at their maxima), and n*target + (n-1)*marker_len <= _SUMMARY_INPUT_MAX_CHARS by construction.
+        return _finish(_render(selected))
 
     def _fallback_to_main_for_compression(
         self, e: Exception, reason: str, failed_model: Optional[str] = None

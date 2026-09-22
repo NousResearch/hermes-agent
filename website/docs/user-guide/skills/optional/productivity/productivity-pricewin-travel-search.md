@@ -107,19 +107,18 @@ If the `pricewin` **plugin** is installed, put each recommendation on its own
 paragraph as a directive and the transcript renders it as a card:
 
 ```
-::pricewin-hotel{name="Liberty Central Riverside" price="58" stars="4"
-                 area="District 1, Ho Chi Minh City" ota="Agoda"
-                 url="https://www.agoda.com/..."}
+::pricewin-hotel{name="Liberty Central Riverside" price="58" stars="4" area="District 1, Ho Chi Minh City" ota="agoda" link="agoda.com/liberty-central/hotel/ho-chi-minh-city-vn.html?checkIn=2026-10-20&los=2&adults=2"}
 
-::pricewin-flight{route="SGN → HAN" airline="Vietnam Airlines" price="72"
-                  depart="06:15" duration="2h10m" stops="0"}
+::pricewin-flight{route="SGN → HAN" airline="Vietnam Airlines" price="72" depart="06:15" duration="2h10m" stops="0"}
 ```
 
-Rules: the directive must be the whole paragraph. `price` is a bare USD number —
-**per night** for a hotel (divide the stay total by the nights), the fare total
-for a flight. `url` is the booking link exactly as the result gave it (Agoda,
-Booking.com, Traveloka or Trip.com) — never constructed or shortened. With
-no plugin installed the line renders as ordinary text, so it is safe to emit
+Rules: the directive must be the whole paragraph, on one line. `price` is a bare
+USD number — **per night** for a hotel (divide the stay total by the nights), the
+fare total for a flight. For `ota` and `link`, copy the `card: ota=… link="…"`
+that `poll_search_results` prints after each hotel, exactly as given. Never put
+a URL with `https://` or `www.` in a directive: Desktop turns it into a hyperlink
+and the card is shown as raw text. With no link for a result, leave `link` out.
+With no plugin installed the line renders as ordinary text, so it is safe to emit
 either way — but do not emit more than the three to five options worth showing.
 
 ## Detail before booking

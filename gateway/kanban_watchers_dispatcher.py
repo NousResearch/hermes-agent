@@ -320,16 +320,25 @@ def _log_spawn_results(results: Optional[list]) -> bool:
     """Log per-board spawn summaries; returns whether any board spawned."""
     any_spawned = False
     for slug, res in (results or []):
-        if res is not None and getattr(res, "spawned", None):
+        spawned = getattr(res, "spawned", None) if res is not None else None
+        sticky_ids = sorted(getattr(res, "parent_satisfied_sticky", None) or [])
+        if spawned:
             any_spawned = True
-            # Quiet by default: an idle gateway stays silent.
+        if res is not None and (spawned or sticky_ids):
+            # Quiet by default: an idle gateway stays silent, while an explicit
+            # hold whose dependency graph is done remains operator-actionable.
+            sticky_summary = (
+                f"parents_done_sticky={len(sticky_ids)}"
+                + (f" ({', '.join(sticky_ids)})" if sticky_ids else "")
+            )
             logger.info(
                 "kanban dispatcher [%s]: spawned=%d reclaimed=%d "
-                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d",
-                slug, len(res.spawned), res.reclaimed,
+                "crashed=%d timed_out=%d promoted=%d auto_blocked=%d %s",
+                slug, len(spawned or []), res.reclaimed,
                 len(res.crashed) if hasattr(res.crashed, "__len__") else 0,
                 len(res.timed_out) if hasattr(res.timed_out, "__len__") else 0,
                 res.promoted,
                 len(res.auto_blocked) if hasattr(res.auto_blocked, "__len__") else 0,
+                sticky_summary,
             )
     return any_spawned

@@ -148,6 +148,8 @@ class DispatchResult:
     skipped_locked: bool = False
     """True when another process held the board's dispatch lock: this tick did
     no DB writes; the lock holder is making progress on the same board."""
+    parent_satisfied_sticky: list[str] = field(default_factory=list)
+    """Explicit block ids whose one-or-more parents are all done/archived."""
     memory_pressure: Optional[str] = None
     """Memory pressure that restricted this tick: ``"critical"`` (no new
     workers), ``"elevated"`` (at most one), ``None`` (no restriction).
@@ -2156,6 +2158,7 @@ def _run_reclaim_phase(
     result.rate_limited.extend(getattr(detect_crashed_workers, "_last_rate_limited", []))
     result.timed_out = enforce_max_runtime(conn)
     result.promoted = _kb.recompute_ready(conn, failure_limit=failure_limit)
+    result.parent_satisfied_sticky = _kb.find_parent_satisfied_sticky_blocks(conn)
 
 
 def _tick_spawn_budget(

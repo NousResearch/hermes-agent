@@ -232,7 +232,7 @@ _TICK_ACTIVITY_FIELDS = (
     "spawned", "reclaimed", "promoted", "reconciled_orphans", "reaped_terminal_workers", "crashed", "stale",
     "timed_out", "auto_blocked", "rate_limited", "auto_assigned_default",
     "respawn_guarded", "skipped_per_profile_capped", "skipped_unassigned",
-    "skipped_nonspawnable",
+    "skipped_nonspawnable", "parent_satisfied_sticky",
 )
 
 
@@ -1399,7 +1399,12 @@ def create_task(
                         conn,
                         task_id,
                         "blocked",
-                        {"reason": "initial_status", "status": "blocked", "actor": created_by or "user"},
+                        {
+                            "reason": "initial_status",
+                            "status": "blocked",
+                            "actor": created_by or "user",
+                            "source": "initial_status",
+                        },
                     )
                 if task_status == "todo":
                     # Parked behind an open parent: record why, exactly as
@@ -2067,24 +2072,37 @@ def _synthesize_ended_run(
 
 # --- Dependency resolution (todo -> ready) ---
 
-def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
-    """True when the newest ``blocked``/``unblocked``/``gave_up`` event says the
-    block must wait for an operator: an explicit ``kanban_block`` (#28712), or a
-    breaker trip ``_record_task_failure`` stamped ``sticky`` — the clean-exit
-    protocol-violation budget or a systemic same-error wave. Those trip on a
-    policy independent of ``consecutive_failures``, so ``recompute_ready``'s
-    counter check cannot see them — without this the trip is promoted back to
-    ``ready`` in the same tick and the card respawns forever. A plain
-    (unified-budget) ``gave_up`` carries no marker and is judged by the counter,
-    so raising ``failure_limit`` or ``assign_task`` to a fresh profile still
-    releases it; a task with no such event at all (direct DB edit) auto-recovers.
-    """
+def _active_block_source(conn: sqlite3.Connection, task_id: str) -> Optional[str]:
+    """Classify the active block event as a creation hold or explicit block."""
     row = conn.execute(
-        "SELECT kind FROM task_events "
+        "SELECT kind, payload FROM task_events "
         "WHERE task_id = ? AND kind IN ('blocked', 'unblocked') "
         "ORDER BY id DESC LIMIT 1", (task_id,),
     ).fetchone()
-    if row and row["kind"] == "blocked":
+    if not row or row["kind"] != "blocked":
+        return None
+    payload = _json_dict(row["payload"])
+    if payload.get("source") == "initial_status":
+        return "initial_status"
+    explicit_fields = {
+        "kind", "source_status", "recurrences", "classified_in_place",
+        "requested_kind", "rekind_reason",
+    }
+    if payload.get("reason") == "initial_status" and explicit_fields.isdisjoint(payload):
+        # Compatibility for genuine pre-tag creation events. ``reason`` is
+        # caller-controlled on block_task and cannot override explicit origin.
+        return "initial_status"
+    return "explicit"
+
+
+def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
+    """True when the newest block/give-up event requires operator action.
+
+    Creation-time holds are sticky while parentless, but ``recompute_ready``
+    may release them once a real dependency graph is fully terminal. Explicit
+    ``kanban_block`` calls and sticky breaker trips always require an operator.
+    """
+    if _active_block_source(conn, task_id) is not None:
         return True
     trip = conn.execute(
         "SELECT payload FROM task_events "
@@ -2093,6 +2111,22 @@ def _has_sticky_block(conn: sqlite3.Connection, task_id: str) -> bool:
         "ORDER BY id DESC LIMIT 1", (task_id, task_id),
     ).fetchone()
     return bool(trip) and bool(_json_dict(trip["payload"]).get("sticky"))
+
+
+def find_parent_satisfied_sticky_blocks(conn: sqlite3.Connection) -> list[str]:
+    """Explicitly blocked tasks with at least one fully-terminal parent graph."""
+    rows = conn.execute(
+        "SELECT t.id FROM tasks t WHERE t.status = 'blocked' "
+        "AND EXISTS (SELECT 1 FROM task_links l WHERE l.child_id = t.id) "
+        "AND NOT EXISTS ("
+        "  SELECT 1 FROM task_links l JOIN tasks p ON p.id = l.parent_id "
+        "  WHERE l.child_id = t.id AND p.status NOT IN ('done', 'archived')"
+        ") ORDER BY t.id"
+    ).fetchall()
+    return [
+        row["id"] for row in rows
+        if _active_block_source(conn, row["id"]) == "explicit"
+    ]
 
 
 def _latest_event(
@@ -2129,13 +2163,12 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
     """Promote ``todo``/``blocked`` tasks whose parents are all done/archived;
     returns the count. Opens its own IMMEDIATE txn — call OUTSIDE any write txn.
 
-    ``blocked`` is skipped when sticky (explicit ``kanban_block``) or when
+    ``blocked`` is skipped when explicitly sticky or when
     ``consecutive_failures`` reached the limit (else the breaker could never
-    trip). Limit order matches ``_record_task_failure``: ``max_retries`` >
-    ``failure_limit`` > ``DEFAULT_FAILURE_LIMIT``.
-
-    1. The most recent block event was a worker-initiated ``kanban_block`` — those stay blocked until an
-    explicit ``kanban_unblock`` (#28712).
+    trip). A creation-time hold is sticky while parentless, but releases when
+    it has at least one parent and every parent is terminal. Limit order
+    matches ``_record_task_failure``: ``max_retries`` > ``failure_limit`` >
+    ``DEFAULT_FAILURE_LIMIT``.
     """
     if failure_limit is None:
         failure_limit = DEFAULT_FAILURE_LIMIT
@@ -2148,14 +2181,16 @@ def recompute_ready(conn: sqlite3.Connection, failure_limit: int = None) -> int:
         for row in todo_rows:
             task_id = row["id"]
             cur_status = row["status"]
-            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
-                # Explicit human-intervention block; only ``unblock_task`` may exit it.
-                continue
             parents = conn.execute(
                 "SELECT t.status FROM tasks t "
                 "JOIN task_links l ON l.parent_id = t.id "
                 "WHERE l.child_id = ?", (task_id,),
             ).fetchall()
+            if cur_status == "blocked" and _has_sticky_block(conn, task_id):
+                if _active_block_source(conn, task_id) != "initial_status" or not parents:
+                    # Explicit blocks and parentless creation holds require an
+                    # operator. A graph-backed creation hold may release below.
+                    continue
             if all(p["status"] in ("done", "archived") for p in parents):
                 resume_status = _resume_status_from_events(conn, task_id)
                 if cur_status == "blocked":

@@ -12,7 +12,6 @@ module level (cycle).
 from __future__ import annotations
 
 import logging
-import os
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional
 
@@ -76,19 +75,28 @@ def _pre_verify_nudge(agent, final_response, attempt: int) -> Optional[str]:
     return None
 
 
-def _kanban_stop_nudge(agent, messages) -> Optional[str]:
+def _kanban_stop_nudge(agent, messages) -> tuple[Optional[str], str]:
     """Workers must end with a terminal board tool (kanban_complete / kanban_block /
     kanban_request_review / kanban_request_changes); a narrated stop is recorded
-    as protocol_violation, so nudge once or twice first."""
-    try:
-        from agent.kanban_stop import build_kanban_stop_nudge
+    as protocol_violation, so nudge once or twice first.
 
-        return build_kanban_stop_nudge(
-            messages=messages, attempts=getattr(agent, "_kanban_stop_nudges", 0)
+    Returns ``(nudge_text, validated_task_id)``; ``(None, "")`` when the guard is silent.
+    The id is the one ``agent.kanban_stop`` *proved* against the board, so the caller's log
+    line can never name a card that does not exist (a phantom ``HERMES_KANBAN_TASK`` used to
+    be logged verbatim while every terminal call for it was refused)."""
+    try:
+        from agent.kanban_stop import build_kanban_stop_nudge, kanban_stop_target
+
+        target = kanban_stop_target()
+        if target is None:
+            return None, ""
+        nudge = build_kanban_stop_nudge(
+            messages=messages, attempts=getattr(agent, "_kanban_stop_nudges", 0), target=target
         )
+        return (nudge, target.task_id) if nudge else (None, "")
     except Exception:
         logger.debug("kanban stop-loop check failed", exc_info=True)
-        return None
+        return None, ""
 
 
 def _append_interim_answer(agent, final_msg, messages, conversation_history, flush_fail_msg: str) -> None:
@@ -151,17 +159,19 @@ def apply_stop_gates(
         logger.debug("pre_verify nudge issued (attempt %d)", agent._pre_verify_nudges)
         return verdict
 
-    _kanban_nudge = _kanban_stop_nudge(agent, messages)
+    _kanban_nudge, _kanban_task = _kanban_stop_nudge(agent, messages)
     if _kanban_nudge:
         agent._kanban_stop_nudges = getattr(agent, "_kanban_stop_nudges", 0) + 1
         final_msg["finish_reason"] = "kanban_terminal_required"
         final_msg["_kanban_stop_synthetic"] = True
         append_message(messages, final_msg)
         verdict = _continue(_kanban_nudge, "_kanban_stop_synthetic")
+        # Name the card the probe validated, never the raw env var: env-only state
+        # (a card the board never had) is exactly what must not reach the log.
         logger.info(
             "kanban stop-loop nudge issued (attempt %d) task=%s",
             agent._kanban_stop_nudges,
-            os.environ.get("HERMES_KANBAN_TASK", ""),
+            _kanban_task,
         )
         agent._emit_diagnostic_status(
             "⚠️ Kanban worker tried to exit without a terminal board call "

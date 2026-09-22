@@ -64,6 +64,18 @@ def _head(path: Path) -> str:
     return sp.run(["git", "rev-parse", "HEAD"], cwd=path, capture_output=True, text=True).stdout.strip()
 
 
+def test_catalog_platform_mismatch_refuses_before_install(world, monkeypatch):
+    entry = pc_cat.PluginCatalogEntry(
+        name="cat-plugin", repo=world["repo"].as_uri(), sha=world["sha1"],
+        description="d", maintainer="t", platforms=["windows"],
+    )
+    monkeypatch.setattr("hermes_platform.host.facts.os_family", lambda: "darwin")
+
+    with pytest.raises(pc.PluginOperationError, match="cat-plugin.*darwin.*windows"):
+        cat.install_catalog_entry(entry, force=False)
+    assert not (world["plugins_dir"] / "cat-plugin").exists()
+
+
 def test_catalog_name_installs_pinned_sha_with_sidecar_then_update_repins(world, monkeypatch):
     entry = pc_cat.get_live_catalog_entry("cat-plugin")
     assert entry is not None

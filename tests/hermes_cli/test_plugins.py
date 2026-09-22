@@ -170,8 +170,18 @@ class TestPluginDiscovery:
         plugin = home / "plugins" / "portable"
         skill = plugin / "skills" / "summarize"
         skill.mkdir(parents=True)
+        app = tmp_path / "example-app"
+        app.write_text("", encoding="utf-8")
         (plugin / "plugin.json").write_text(
-            json.dumps({"$schema": PLUGIN_SCHEMA_V1, "name": "portable.test"})
+            json.dumps({
+                "$schema": PLUGIN_SCHEMA_V1,
+                "name": "portable.test",
+                "extensions": {"com.nousresearch.hermes": {"servers": {"worker": {
+                    "app": {"darwin": {"presence": "executable", "location": str(app)}},
+                    "requires": {"app": True},
+                    "liveness": {"kind": "static"},
+                }}}},
+            })
         )
         (skill / "SKILL.md").write_text(
             "---\nname: summarize\ndescription: Summarize reports.\n---\nBody.\n"
@@ -213,6 +223,15 @@ class TestPluginDiscovery:
         assert manager._plugins["portable.test"].enabled is True
         assert manager._plugins["native"].enabled is True
         assert manager._plugins["native"].module is not None
+        internal_name = next(iter(manager.get_portable_mcp_servers()))
+        from hermes_cli.agent_plugins import liveness_for
+        from hermes_platform import declaration
+
+        assert declaration.lookup(internal_name) is not None
+        assert liveness_for(internal_name) == {"kind": "static"}
+        manager.unload("portable.test")
+        assert declaration.lookup(internal_name) is None
+        assert liveness_for(internal_name) is None
 
     def test_disabled_portable_plugin_registers_nothing(self, tmp_path, monkeypatch):
         from hermes_cli.agent_plugins import PLUGIN_SCHEMA_V1

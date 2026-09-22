@@ -111,6 +111,22 @@ def _acquire_call_server(server_name: str, tool_timeout: float):
     server task to rebuild (probing a dead transport would re-arm the breaker forever)."""
     from tools import mcp_tool_discovery as _discovery  # lazy: discovery -> registration -> handlers cycle
     not_connected = tool_error(f"MCP server '{server_name}' is not connected")
+    from tools.mcp_liveness import unavailable_details
+    details = unavailable_details(server_name)
+    if details is not None:
+        decl, current, sentence = details
+        not_connected = tool_error(
+            sentence,
+            server=server_name,
+            state=current.state,
+            app={
+                "name": decl.name,
+                "version": current.availability.version,
+                "path": current.availability.path,
+            },
+            user_action=current.user_action,
+            retry=current.retry,
+        )
     server = _discovery._get_connected_server_for_call(server_name)
     wait = min(5.0, float(tool_timeout or 5.0))
     if server and (server.session or _loop._wait_for_server_session_ready(server, timeout=wait)):
@@ -695,11 +711,12 @@ def _make_check_fn(server_name: str):
 
 
 def _declared_app_offerable(server_name: str) -> bool:
-    """True unless a declaration registered for this server requires an application this host lacks."""
+    """True unless the registered declaration is unavailable on this host. Called only for a
+    connected server, so a reachable loopback port outranks the interactive-session rule."""
     from hermes_platform import declaration
     from hermes_platform.resolver.availability import availability
 
     decl = declaration.lookup(server_name)
-    if decl is None or not decl.requires_app:
+    if decl is None:
         return True
-    return availability(decl).offerable
+    return bool(availability(decl).offerable)

@@ -523,17 +523,41 @@ class PluginLoaderMixin:
                     ctx.register_skill(skill.name, skill.skill_md, skill.description, skill.frontmatter)
                 except Exception as exc:
                     logger.warning("Agent Plugin '%s' skill '%s' skipped: %s", lookup_key, skill.name, exc)
-            for server_name, config in package.mcp_servers.items():
-                internal_name = f"{manifest.skill_namespace}__{server_name}"
-                if internal_name in self._portable_mcp_servers:
-                    logger.warning("Agent Plugin '%s' MCP server collision: %s", lookup_key, internal_name)
-                    continue
-                self._portable_mcp_servers[internal_name] = dict(config)
-                self._portable_mcp_server_plugins[internal_name] = lookup_key
-            loaded.enabled = True
+            from hermes_cli.agent_plugins import _clear_liveness, _set_liveness
+            from hermes_platform import declaration
+            registered: list[str] = []
+            try:
+                for server_name, config in package.mcp_servers.items():
+                    internal_name = f"{manifest.skill_namespace}__{server_name}"
+                    if internal_name in self._portable_mcp_servers:
+                        logger.warning("Agent Plugin '%s' MCP server collision: %s", lookup_key, internal_name)
+                        continue
+                    self._portable_mcp_servers[internal_name] = dict(config)
+                    self._portable_mcp_server_plugins[internal_name] = lookup_key
+                    server_decl = package.server_declarations.get(server_name)
+                    if server_decl is not None:
+                        declaration.register(internal_name, server_decl.declaration)
+                        _set_liveness(internal_name, server_decl.liveness)
+                    registered.append(internal_name)
+                for internal_name in registered:
+                    def release(name: str = internal_name) -> None:
+                        self._portable_mcp_servers.pop(name, None)
+                        self._portable_mcp_server_plugins.pop(name, None)
+                        declaration.unregister(name)
+                        _clear_liveness(name)
+
+                    self._track_registration(manifest, "portable_mcp", internal_name, release)
+                loaded.enabled = True
+            except BaseException:
+                for internal_name in registered:
+                    self._portable_mcp_servers.pop(internal_name, None)
+                    self._portable_mcp_server_plugins.pop(internal_name, None)
+                    declaration.unregister(internal_name)
+                    _clear_liveness(internal_name)
+                raise
         except (Exception, SystemExit) as exc:
             loaded.error = _load_error_text(exc)
-            logger.warning("Failed to load Agent Plugin '%s': %s", lookup_key, loaded.error)
+            logger.warning("Agent Plugin '%s' disabled: %s", lookup_key, loaded.error)
         self._plugins[lookup_key] = loaded
 
     def _directory_module_name(self, manifest: PluginManifest) -> str:

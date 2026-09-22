@@ -168,6 +168,28 @@ def removed_annotation(name: str, dir_path, removed_entries: List[RemovedEntry])
 
 # ── Catalog-aware install / update ───────────────────────────────────────────
 
+_PLATFORM_ALIASES = {"windows": "win32", "macos": "darwin"}
+
+
+def normalized_platforms(platforms: List[str]) -> set[str]:
+    """Return catalog platform names in host OS-family vocabulary."""
+    return {_PLATFORM_ALIASES.get(value.lower(), value.lower()) for value in platforms}
+
+
+def _refuse_unsupported_catalog_platform(entry: PluginCatalogEntry) -> None:
+    if not entry.platforms:
+        return
+    from hermes_cli.plugins_cmd import PluginOperationError
+    from hermes_platform.host.facts import os_family
+
+    current = os_family()
+    if current not in normalized_platforms(entry.platforms):
+        raise PluginOperationError(
+            f"Plugin '{entry.name}' is unavailable on {current}; supported platforms: "
+            f"{', '.join(entry.platforms)}."
+        )
+
+
 def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Optional[str] = None,
                           allow_removed: bool = False, scan_decision_cb=None, python_deps: bool = True,
                           before_swap=None) -> tuple:
@@ -177,6 +199,7 @@ def install_catalog_entry(entry: PluginCatalogEntry, *, force: bool, ref: Option
     from hermes_cli.plugins_cmd import _install_plugin_core, pinned_revision
     if not allow_removed:
         raise_if_removed(entry.name, entry.repo)
+    _refuse_unsupported_catalog_platform(entry)
     target, manifest, installed_name = _install_plugin_core(
         entry.install_identifier, force=force, ref=ref or entry.sha, scan_decision_cb=scan_decision_cb,
         reviewed_pin=entry.sha, python_deps=python_deps, allow_removed=allow_removed, before_swap=before_swap,

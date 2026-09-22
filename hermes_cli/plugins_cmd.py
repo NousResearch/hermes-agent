@@ -698,6 +698,26 @@ def _ensure_tree_readable(root: Path, plugins_dir: Path) -> None:
             ) from exc
 
 
+def _refuse_unavailable_portable_plugin(plugin_name: str, tree: Path) -> None:
+    if not (tree / "plugin.json").is_file():
+        return
+    from hermes_cli.agent_plugins import load_agent_plugin
+    from hermes_platform.resolver.availability import availability
+
+    try:
+        package = load_agent_plugin(tree, tree.parent / ".hermes-install-data")
+    except ValueError as exc:
+        raise PluginOperationError(f"Plugin '{plugin_name}' is unavailable: {exc}.") from exc
+    for server_name, server_decl in package.server_declarations.items():
+        result = availability(server_decl.declaration)
+        if result.offerable:
+            continue
+        found = f", found version {result.version}" if result.version else ""
+        raise PluginOperationError(
+            f"Plugin '{plugin_name}' server '{server_name}' is unavailable: {result.state}{found}."
+        )
+
+
 def _swap_in_plugin(tmp_target: Path, target: Path, backup: Path, old_metadata: dict, new_metadata: dict) -> None:
     """Move the validated clone into place and persist metadata; on any failure restore the
     previous tree (if one was replaced) and the previous metadata sidecar, then re-raise."""
@@ -781,6 +801,7 @@ def _install_plugin_core(
                           reviewed_pin=at_reviewed_pin)
         if python_deps:
             _refuse_conflicting_python_deps(tmp_target, plugin_name)
+        _refuse_unavailable_portable_plugin(plugin_name, tmp_target)
         if before_swap is not None:
             before_swap(manifest, tmp_target)
 

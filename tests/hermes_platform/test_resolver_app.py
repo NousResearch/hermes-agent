@@ -12,7 +12,7 @@ from http.server import BaseHTTPRequestHandler, HTTPServer
 import pytest
 
 from hermes_platform.resolver import CheckState, Effort, Probeable, Resolver
-from hermes_platform.resolver.app import AppDef, AppResolver
+from hermes_platform.resolver.app import AppDef, AppResolver, Endpoint
 
 TOKEN = "tok-3e1f9c-unique-fixture-value"
 
@@ -162,6 +162,17 @@ def loopback_mcp():
     _Handler.seen.clear()
     yield srv.server_address[1]
     srv.shutdown()
+
+
+def test_endpoint_reads_server_json_every_call(tmp_path):
+    exe = tmp_path / "thing"
+    exe.write_text("", encoding="utf-8")
+    sj = _server_json(tmp_path, url="http://127.0.0.1:1111/ignored")
+    resolver = _resolver(tmp_path, exe, sj)
+    assert resolver.endpoint() == Endpoint("http://127.0.0.1:1111/mcp", TOKEN)
+    sj.write_text(json.dumps({"pid": os.getpid(), "http": "http://127.0.0.1:2222/ignored", "token": "next"}))
+    assert resolver.endpoint() == Endpoint("http://127.0.0.1:2222/mcp", "next")
+    assert TOKEN not in repr(resolver.endpoint())
 
 
 def test_network_probe_reads_server_json_every_call_and_answers(tmp_path, loopback_mcp):

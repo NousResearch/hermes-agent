@@ -3893,6 +3893,7 @@ export interface AgentPluginRow {
   portable: boolean
   install_dir: string
   has_desktop_half: boolean
+  servers: PluginServerRow[]
   catalog_name?: string | null
   catalog_tier?: string | null
   installed_sha?: string | null
@@ -3902,6 +3903,12 @@ export interface AgentPluginRow {
   pinned_sha?: string | null
   settings_schema?: PluginSettingField[] | null
 }
+export interface PluginServerRow {
+  name: string
+  state: PluginServerState
+  sentence: string
+}
+export type PluginServerState = 'connected' | 'app_not_running' | 'endpoint_unavailable' | 'no_interactive_session' | 'version_too_old' | 'missing_app' | 'unknown'
 /** One ``config_schema`` key of a plugin manifest, rendered by the Plugins hub (``hermes_cli.plugins_settings.plugin_settings_fields``). ``secret`` fields carry no value: ``env`` names the ``.env`` variable and ``has_value`` whether it is set. */
 export interface PluginSettingField {
   key: string

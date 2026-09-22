@@ -237,7 +237,14 @@ async def _resolve_container_fallback(
     # Bound the read INSIDE the sandbox: head -c caps at ingest-limit+1 (+1 distinguishes "at the
     # cap" from "over") so /dev/zero can't stream unbounded base64 into host memory. The input
     # redirect avoids argv (leading-dash paths); tr -d instead of GNU-only base64 -w0 (BusyBox).
-    cmd = f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+    # set -o pipefail is required here: without it, a failing `head` (e.g. missing file) is masked
+    # by `tr`'s own success, so execute() reports returncode 0 with head's stderr text sitting in
+    # "output" instead of real file bytes. That text then fails base64 decoding below and surfaces
+    # as a confusing "sandbox returned non-image data" error instead of a clear "file not found".
+    cmd = (
+        "set -o pipefail; "
+        f"head -c {_MAX_INGEST_BYTES + 1} < {shlex.quote(str(p))} | base64 | tr -d '\\n'"
+    )
     last_res: dict = {"returncode": 1, "output": ""}
     for attempt in range(2):
         last_res = await asyncio.to_thread(env.execute, cmd)

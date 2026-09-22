@@ -916,6 +916,110 @@ def test_multiplex_recovery_isolates_profile_failures(tmp_path):
     assert set(tick_homes) == {str(failing_home), str(healthy_home)}
 
 
+# ── Scheduled model-provider routing ─────────────────────────────────────────────────
+
+
+def _scheduled_route_fixture(tmp_path, monkeypatch):
+    """Installation root + credentialless profile served by the multiplex ticker."""
+    from agent.secret_scope import set_multiplex_active
+
+    root = tmp_path / ".hermes"
+    profile = root / "profiles" / "worker"
+    (profile / "cron").mkdir(parents=True)
+    (root / "config.yaml").write_text("gateway:\n  multiplex_profiles: true\n")
+    (root / ".env").write_text("NVIDIA_API_KEY=nvapi-shared-test\n")
+    monkeypatch.setenv("HERMES_HOME", str(root))
+    monkeypatch.setenv("HERMES_SHARED_AUTH_DIR", str(tmp_path / "shared-auth"))
+    monkeypatch.delenv("NVIDIA_API_KEY", raising=False)
+    set_multiplex_active(True)
+    return root, profile
+
+
+def _job_config(*, model="upstage/solar-pro4:free", fallback_providers=()):
+    from cron.scheduler import _CronJobConfig
+
+    cfg = {"fallback_providers": list(fallback_providers)}
+    return _CronJobConfig(
+        cfg=cfg,
+        model=model,
+        model_cfg={"provider": "nous"},
+        cron_default_provider="",
+    )
+
+
+def test_scheduled_primary_uses_shared_cloud_provider_credential(tmp_path, monkeypatch):
+    """A named profile's cron primary resolves from the authorized root provider store."""
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler import _resolve_job_runtime
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    try:
+        with _profile_cron_scope(profile):
+            runtime, model = _resolve_job_runtime(
+                {"id": "cloud-primary", "provider": "nim", "model": "nvidia/test-model"},
+                "cloud-primary",
+                _job_config(model="nvidia/test-model"),
+            )
+    finally:
+        set_multiplex_active(False)
+
+    assert model == "nvidia/test-model"
+    assert runtime["provider"] == "nvidia"
+    assert runtime["api_key"] == "nvapi-shared-test"
+
+
+def test_scheduled_nous_auth_failure_uses_shared_cloud_fallback(tmp_path, monkeypatch):
+    """Missing profile-local Nous OAuth routes to an authorized shared cloud key."""
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler import _resolve_job_runtime
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    fallback = {"provider": "nim", "model": "nvidia/nemotron-test"}
+    try:
+        with _profile_cron_scope(profile):
+            runtime, model = _resolve_job_runtime(
+                {"id": "auth-fallback", "provider": "nous"},
+                "auth-fallback",
+                _job_config(fallback_providers=(fallback,)),
+            )
+    finally:
+        set_multiplex_active(False)
+
+    assert model == "nvidia/nemotron-test"
+    assert runtime["provider"] == "nvidia"
+    assert runtime["api_key"] == "nvapi-shared-test"
+
+
+def test_scheduled_cloud_route_skips_local_fallback(tmp_path, monkeypatch):
+    """An unpinned/local-unspecified job never diverts orchestration onto loopback."""
+    from agent.secret_scope import set_multiplex_active
+    from cron.scheduler import _resolve_job_runtime
+    from cron.scheduler_provider import _profile_cron_scope
+
+    _root, profile = _scheduled_route_fixture(tmp_path, monkeypatch)
+    local = {
+        "provider": "llamacpp",
+        "model": "local-test-model",
+        "base_url": "http://127.0.0.1:8080/v1",
+    }
+    cloud = {"provider": "nim", "model": "nvidia/nemotron-test"}
+    try:
+        with _profile_cron_scope(profile):
+            runtime, model = _resolve_job_runtime(
+                {"id": "cloud-only", "provider": "nous"},
+                "cloud-only",
+                _job_config(fallback_providers=(local, cloud)),
+            )
+    finally:
+        set_multiplex_active(False)
+
+    assert model == "nvidia/nemotron-test"
+    assert runtime["provider"] == "nvidia"
+    assert runtime["base_url"].startswith("https://")
+
+
 def test_multiplex_ticker_reenumerates_profiles_each_cycle(tmp_path):
     """Hot-serve: with a callable ``profile_homes`` the ticker re-reads the served set every cycle,
     so a profile created after the multiplexer started gets its jobs fired without a restart."""

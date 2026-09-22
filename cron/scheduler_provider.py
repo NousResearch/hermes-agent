@@ -94,20 +94,67 @@ def _existing_profile_homes(profile_homes: list) -> list:
 
 @contextlib.contextmanager
 def _profile_cron_scope(home):
-    """Scope the calling thread to one profile's home + cron store for the block."""
+    """Scope one ticker operation to a profile's home, secrets, terminal policy, and store."""
+    from agent.secret_scope import (
+        build_profile_secret_scope, reset_secret_scope, set_secret_scope)
     from cron.jobs import use_cron_store
+    from hermes_cli.env_loader import hydrate_profile_secret_sources
     from hermes_constants import set_hermes_home_override, reset_hermes_home_override
+    from tools.terminal_scope import install_and_reset_profile_terminal_scope
 
     # Record per-profile heartbeat after each tick cycle. Distinguish a COMPLETED cycle (``_tick_error``
     # unset) — where each profile's beat reflects its own outcome, so a yielding profile does not darken
     # healthy siblings — from an aborted one (exception), where no profile completed and all beats are
     # unsuccessful (#32612).
     home_token = set_hermes_home_override(str(home))
+    secret_token = None
     try:
-        with use_cron_store(home):
-            yield
+        hydrate_profile_secret_sources(Path(home))
+        secret_token = set_secret_scope(build_profile_secret_scope(Path(home)))
+        with install_and_reset_profile_terminal_scope(Path(home)):
+            with use_cron_store(home):
+                yield
     finally:
+        if secret_token is not None:
+            reset_secret_scope(secret_token)
         reset_hermes_home_override(home_token)
+
+
+_LOCAL_SCHEDULED_MODEL_PROVIDERS = frozenset({
+    "local", "ollama", "ollama-launch", "llamacpp", "llama.cpp", "llama-cpp", "lmstudio",
+    "vllm",
+})
+
+
+def _scheduled_model_route_is_local(provider: Any, base_url: Any = None) -> bool:
+    """Whether a scheduled model route is explicitly machine/local-network bound."""
+    provider_name = str(provider or "").strip().lower()
+    if provider_name in _LOCAL_SCHEDULED_MODEL_PROVIDERS:
+        return True
+    url = str(base_url or "").strip()
+    if not url:
+        return False
+    from agent.model_metadata import is_local_endpoint
+
+    return is_local_endpoint(url)
+
+
+def scheduled_model_fallback_chain(job: dict, cfg: dict) -> list[dict]:
+    """Cloud-first fallback chain for unattended scheduled orchestration.
+
+    A per-job local provider or loopback base URL is explicit authority to use local routes.  All
+    other scheduled jobs skip local fallback entries: a cloud credential failure must not silently
+    move durable orchestration onto a workstation model that may be offline or capacity constrained.
+    """
+    from hermes_cli.fallback_config import get_fallback_chain
+
+    chain = [entry for entry in get_fallback_chain(cfg) if isinstance(entry, dict)]
+    if _scheduled_model_route_is_local(job.get("provider"), job.get("base_url")):
+        return chain
+    return [
+        entry for entry in chain
+        if not _scheduled_model_route_is_local(entry.get("provider"), entry.get("base_url"))
+    ]
 
 
 class CronScheduler(ABC):

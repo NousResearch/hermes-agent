@@ -151,6 +151,31 @@ describe('capability helpers are connection-scoped', () => {
     }
   })
 
+  it('the toolset toggle body carries the profile, not just the query scope', () => {
+    // web_routers/tools.py scopes this write by body.profile before the
+    // ?profile= query. When the Electron bridge classifies the PUT as
+    // unscopable on a multiplex host the query never lands — without the
+    // body copy the toggle silently writes the launch profile's config
+    // (#118633). Mirrors the pairing approve contract above.
+    void setToolsetEnabled('browser', false, 'research')
+
+    const stringScoped = api.mock.calls.at(-1)?.[0] as { body?: Record<string, unknown> }
+    expect(stringScoped.body).toEqual({ enabled: false, profile: 'research' })
+
+    void setToolsetEnabled('browser', true, { connectionId: 'homelab', profile: 'inbox-bot' })
+
+    const objectScoped = api.mock.calls.at(-1)?.[0] as { body?: Record<string, unknown> }
+    expect(objectScoped.body).toEqual({ enabled: true, profile: 'inbox-bot' })
+
+    // Ambient callers (no explicit scope) keep a body free of the key, same
+    // as every other ambient request.
+    setApiRequestProfile(null)
+    void setToolsetEnabled('browser', true)
+
+    const ambient = api.mock.calls.at(-1)?.[0] as { body?: Record<string, unknown> }
+    expect(ambient.body).toEqual({ enabled: true, profile: undefined })
+  })
+
   it("a 'local' pin carries an explicit connectionId even while a remote gateway is active", () => {
     setApiRequestProfile('research')
     setApiRequestConnection('gw-tailscale')

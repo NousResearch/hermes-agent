@@ -528,6 +528,18 @@ class TestMessageStorage:
         assert messages[0]["content"] == "Hello"
         assert messages[1]["role"] == "assistant"
 
+    def test_turn_id_is_stored_without_entering_model_history(self, db):
+        db.create_session(session_id="s1", source="cli")
+        db.append_message(
+            "s1",
+            role="assistant",
+            content="Done.",
+            turn_id="turn-123",
+        )
+
+        assert db.get_messages("s1")[0]["turn_id"] == "turn-123"
+        assert "turn_id" not in db.get_messages_as_conversation("s1")[0]
+
 
 
     def test_startup_heals_null_active_rows(self, tmp_path):

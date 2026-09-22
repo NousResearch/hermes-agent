@@ -43,3 +43,20 @@ def test_tool_name_persisted_to_session_db():
     tool_rows = [m for m in batch if m.get("role") == "tool"]
     assert len(tool_rows) == 1
     assert tool_rows[0]["tool_name"] == "terminal"
+
+
+def test_current_turn_id_persisted_on_each_new_message():
+    session_db = MagicMock()
+    agent = _make_agent(session_db)
+    agent._current_turn_id = "turn-123"
+
+    agent._flush_messages_to_session_db([
+        {"role": "user", "content": "make a worksheet"},
+        {"role": "assistant", "content": None, "tool_calls": []},
+        make_tool_result_message("terminal", "done", "c1"),
+        {"role": "assistant", "content": "Finished."},
+    ])
+
+    batch = session_db.append_messages_batch.call_args.kwargs["messages"]
+    assert len(batch) == 4
+    assert {message["turn_id"] for message in batch} == {"turn-123"}

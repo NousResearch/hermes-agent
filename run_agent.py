@@ -2394,6 +2394,7 @@ class AIAgent:
                         else msg.get("display_kind")
                     ),
                     "display_metadata": msg.get("display_metadata"),
+                    "turn_id": getattr(self, "_current_turn_id", None),
                 })
                 _batch_msgs.append(msg)
             # One transaction for the whole turn's new rows (typically 3-8

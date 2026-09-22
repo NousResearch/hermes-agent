@@ -326,7 +326,7 @@ def _sql_session_last_active_by_id(session_id_expr: str) -> str:
     )
 
 
-SCHEMA_VERSION = 26
+SCHEMA_VERSION = 27
 
 
 # FTS storage-layout version, tracked INDEPENDENTLY of SCHEMA_VERSION in the
@@ -451,7 +451,8 @@ CREATE TABLE IF NOT EXISTS messages (
     compacted INTEGER NOT NULL DEFAULT 0,
     api_content TEXT,
     display_kind TEXT,
-    display_metadata TEXT
+    display_metadata TEXT,
+    turn_id TEXT
 );
 
 CREATE TABLE IF NOT EXISTS session_model_usage (
@@ -561,6 +562,8 @@ CREATE INDEX IF NOT EXISTS idx_messages_session_active
     ON messages(session_id, active, timestamp);
 CREATE INDEX IF NOT EXISTS idx_messages_active_null
     ON messages(active) WHERE active IS NULL;
+CREATE INDEX IF NOT EXISTS idx_messages_session_turn
+    ON messages(session_id, turn_id, id) WHERE turn_id IS NOT NULL;
 CREATE INDEX IF NOT EXISTS idx_sessions_session_key
     ON sessions(session_key, started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_sessions_gateway_peer

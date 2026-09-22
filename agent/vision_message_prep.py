@@ -16,6 +16,7 @@ from typing import Any, List, Optional
 
 from agent.lazy_forward import forward_static as _forward_static
 from agent.tool_dispatch_helpers import _is_multimodal_tool_result, _multimodal_text_summary
+from agent.vision_preanalysis import IMAGE_PREANALYSIS_PROMPT, build_preanalysis_note
 from utils import base_url_host_matches, base_url_hostname
 
 # Same logger name as the origin module so log records / caplog filters are unchanged.
@@ -96,12 +97,6 @@ class VisionMessagePrepMixin:
             return cached
 
         role_label = {"assistant": "assistant", "tool": "tool result"}.get(role, "user")
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, UI, data, objects, people, layout, colors, "
-            "and any other notable visual information."
-        )
-
         vision_source = str(image_url or "")
         is_data_url = vision_source.startswith("data:")
         cleanup_path: Optional[Path] = None
@@ -111,7 +106,9 @@ class VisionMessagePrepMixin:
         try:
             from tools.vision_tools import vision_analyze_tool
 
-            result_json = asyncio.run(vision_analyze_tool(image_url=vision_source, user_prompt=analysis_prompt))
+            result_json = asyncio.run(vision_analyze_tool(
+                image_url=vision_source, user_prompt=IMAGE_PREANALYSIS_PROMPT,
+            ))
             result = json.loads(result_json) if isinstance(result_json, str) else {}
             description = (result.get("analysis") or "").strip()
         except Exception as e:
@@ -123,9 +120,11 @@ class VisionMessagePrepMixin:
                 except OSError:
                     pass
 
-        note = f"[The {role_label} attached an image. Here's what it contains:\n{description or 'Image analysis failed.'}]"
-        if vision_source and not is_data_url:
-            note += f"\n[If you need a closer look, use vision_analyze with image_url: {vision_source}]"
+        note = build_preanalysis_note(
+            description=description,
+            image_path=vision_source if vision_source and not is_data_url else "",
+            role_label=role_label,
+        )
 
         self._anthropic_image_fallback_cache[cache_key] = note
         return note

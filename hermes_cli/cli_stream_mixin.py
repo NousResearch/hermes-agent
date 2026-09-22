@@ -585,10 +585,7 @@ class CLIStreamMixin:
         import asyncio as _asyncio
         from gateway.warning_notifications import render_notification
         from tools.vision_tools import vision_analyze_tool
-        analysis_prompt = (
-            "Describe everything visible in this image in thorough detail. "
-            "Include any text, code, data, objects, people, layout, colors, "
-            "and any other notable visual information.")
+        from agent.vision_preanalysis import IMAGE_PREANALYSIS_PROMPT, build_preanalysis_note
         enriched_parts = []
         for img_path in images:
             if not img_path.exists():
@@ -598,14 +595,15 @@ class CLIStreamMixin:
                 _cprint(f"  {_DIM}👁️  analyzing {img_path.name} ({size_kb}KB)...{_RST}")
             try:
                 result_json = _asyncio.run(
-                    vision_analyze_tool(image_url=str(img_path), user_prompt=analysis_prompt))
+                    vision_analyze_tool(
+                        image_url=str(img_path), user_prompt=IMAGE_PREANALYSIS_PROMPT,
+                    ))
                 result = json.loads(result_json)
                 if result.get("success"):
                     description = result.get("analysis", "")
-                    enriched_parts.append(
-                        f"[The user attached an image. Here's what it contains:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {img_path}]")
+                    enriched_parts.append(build_preanalysis_note(
+                        description=description, image_path=str(img_path), role_label="user",
+                    ))
                     if announce:
                         _cprint(f"  {_DIM}✓ image analyzed{_RST}")
                 else:

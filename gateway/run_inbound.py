@@ -1954,25 +1954,19 @@ class GatewayInboundMixin:
         a tool call and can re-examine it with vision_analyze."""
         from tools.vision_tools import vision_analyze_tool
         from agent.memory_manager import sanitize_context
+        from agent.vision_preanalysis import IMAGE_PREANALYSIS_PROMPT, build_preanalysis_note
 
-        analysis_prompt = (
-            "Concisely describe this image in 2-4 sentences "
-            "(~200 Chinese characters or ~150 English words). "
-            "Cover the main subject, key visible text/data/code, and overall context. "
-            "If it is a chart, diagram, or scientific figure, include the important "
-            "labels, legend, and key values. Skip decorative details."
-        )
         enriched_parts = []
         for path in image_paths:
             try:
                 logger.debug("Auto-analyzing user image: %s", path)
-                result = json.loads(await vision_analyze_tool(image_url=path, user_prompt=analysis_prompt))
+                result = json.loads(await vision_analyze_tool(
+                    image_url=path, user_prompt=IMAGE_PREANALYSIS_PROMPT,
+                ))
                 if result.get("success"):
                     description = sanitize_context(result.get("analysis", ""))
-                    note = (
-                        f"[The user sent an image~ Here's what I can see:\n{description}]\n"
-                        f"[If you need a closer look, use vision_analyze with "
-                        f"image_url: {path} ~]"
+                    note = build_preanalysis_note(
+                        description=description, image_path=path, role_label="user",
                     )
                 else:
                     note = (

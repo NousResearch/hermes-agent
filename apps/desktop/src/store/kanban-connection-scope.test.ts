@@ -45,6 +45,7 @@ const { queryClient } = await import('@/lib/query-client')
 const { closeSecondaryGateways, configureGatewayRegistry, setPrimaryGateway } = await import('@/store/gateway')
 const { $activeGatewayProfile } = await import('@/store/profile')
 const { selectConnection, setConnectionsRegistry, _resetConnectionsForTests } = await import('@/store/connections')
+const { setConnection } = await import('@/store/session')
 
 const conn = (over: Partial<HermesConnection> = {}): HermesConnection =>
   ({
@@ -116,9 +117,8 @@ describe('connection-switch query invalidation', () => {
   })
 
   it('refetches connection-scoped queries against the NEW gateway after a switch', async () => {
-    // One active profile-scoped query, exactly like the kanban pane's boards
-    // list: the connection tag is read at queryFn time, which is what
-    // pluginRest → hermesApi does.
+    // One active profile-scoped query whose connection tag is read at queryFn
+    // time, which is what pluginRest → hermesApi does.
     observer = new QueryObserver(queryClient, {
       queryKey: ['kanban', 'boards'],
       queryFn: async () => {
@@ -161,11 +161,14 @@ describe('connection-switch query invalidation', () => {
     })
     const unsubscribe = observer.subscribe(() => undefined)
 
-    await vi.waitFor(() => expect(fetches).toBe(1))
+    // Settle, not just start: an invalidation racing an in-flight fetch is
+    // absorbed by the fetch and would hide a listener that fires too often.
+    await vi.waitFor(() => expect(observer!.getCurrentResult().status).toBe('success'))
+    expect(fetches).toBe(1)
 
-    // Re-publishing the same registry must not re-invalidate (first-fire
-    // suppression + change guard, same contract as the profile twin).
-    setConnectionsRegistry(registry)
+    // A fresh descriptor object naming the SAME connection id (a resync, not a
+    // switch) must not re-invalidate.
+    setConnection(connection => ({ ...connection! }))
 
     await new Promise(resolve => setTimeout(resolve, 200))
     expect(fetches).toBe(1)

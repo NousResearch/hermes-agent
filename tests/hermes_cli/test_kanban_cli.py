@@ -59,6 +59,19 @@ def test_kanban_list_json_includes_session_id(kanban_home):
     )
 
 
+def test_create_initially_blocked_stays_blocked_until_explicit_unblock(kanban_home):
+    created = json.loads(kc.run_slash("create 'approval gate' --initial-status blocked --json"))
+
+    with kbc.connect() as conn:
+        task_id = created["id"]
+        assert [event.kind for event in kb.list_events(conn, task_id)] == ["created", "blocked"]
+        assert kb.recompute_ready(conn) == 0
+        assert kb.get_task(conn, task_id).status == "blocked"
+
+        assert kb.unblock_task(conn, task_id) is True
+        assert kb.get_task(conn, task_id).status == "ready"
+
+
 def test_kanban_show_text_renders_graph_with_open_connection(kanban_home):
     with kbc.connect_closing() as conn:
         parent_id = kb.create_task(conn, title="parent task")

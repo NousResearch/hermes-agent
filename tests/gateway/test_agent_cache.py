@@ -13,7 +13,7 @@ import threading
 from unittest.mock import MagicMock, patch
 
 import pytest
-from hermes_cli.config import DEFAULT_CONFIG, cfg_get
+from hermes_cli.config import DEFAULT_CONFIG
 from tools import browser_tool_lifecycle as bt_lifecycle
 
 
@@ -187,28 +187,29 @@ class TestExtractCacheBustingConfig:
         assert out["compression.codex_app_server_auto"] == "hermes"
 
 
-    def test_missing_keys_yield_the_shipped_default(self):
-        """An absent key carries the value in force — DEFAULT_CONFIG's — for every documented key."""
+    def test_missing_keys_carry_the_absent_marker(self):
+        """Presence is part of the agent's identity, so an absent key is neither the default nor null."""
         from gateway.run import GatewayRunner
+        from gateway.run_agent_cache import _ABSENT
 
         out = GatewayRunner._extract_cache_busting_config({})
-        for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
-            assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
+        assert all(out[f"{section}.{key}"] is _ABSENT for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS)
 
-    def test_explicit_null_differs_from_absent_when_default_is_set(self):
-        """`threshold_tokens: null` opts out of the shipped cap; the signature must keep it distinct from
-        'absent' (= the default) so the opt-out rebuilds the cached agent instead of waiting for a restart."""
+    def test_absent_explicit_default_and_null_are_three_signatures(self):
+        """Absent `threshold_tokens` is the shipped cap that yields to user ratios; the explicit default value is
+        absolute; `null` opts out. Each must rebuild the cached agent from either of the others."""
         from gateway.run import GatewayRunner
 
         default_cap = DEFAULT_CONFIG["compression"]["threshold_tokens"]
         assert default_cap is not None  # the premise: a non-None default whose opt-out is null
         sig = lambda cfg: GatewayRunner._extract_cache_busting_config(cfg)["compression.threshold_tokens"]  # noqa: E731
-        assert sig({}) == sig({"compression": {"threshold_tokens": default_cap}}) == default_cap
-        assert sig({"compression": {"threshold_tokens": None}}) is None
+        absent, explicit, null = sig({}), sig({"compression": {"threshold_tokens": default_cap}}), sig({"compression": {"threshold_tokens": None}})
+        assert explicit == default_cap and null is None
+        assert len({repr(absent), repr(explicit), repr(null)}) == 3
 
-    def test_legacy_checkpoints_bool_carries_defaults_for_the_other_keys(self):
-        """`checkpoints: true` builds the agent with DEFAULT_CONFIG's limits (`_checkpoint_agent_kwargs`), so
-        migrating to `checkpoints: {enabled: true}` must not change the signature."""
+    def test_legacy_checkpoints_bool_matches_the_dict_form(self):
+        """`checkpoints: true` and `checkpoints: {enabled: true}` build the same agent (`_checkpoint_agent_kwargs`
+        fills the limits from DEFAULT_CONFIG either way), so migrating between them must not rebuild it."""
         from gateway.run import GatewayRunner
 
         legacy = GatewayRunner._extract_cache_busting_config({"checkpoints": True})
@@ -219,22 +220,21 @@ class TestExtractCacheBustingConfig:
 
     def test_non_dict_section_treated_as_missing(self):
         from gateway.run import GatewayRunner
+        from gateway.run_agent_cache import _ABSENT
 
-        # compression is a string — should not crash; compression.* keys fall back to the shipped defaults
+        # compression is a string — should not crash; compression.* keys count as absent
         out = GatewayRunner._extract_cache_busting_config(
             {"compression": "broken", "model": {"context_length": 100_000}}
         )
-        assert out["compression.enabled"] == DEFAULT_CONFIG["compression"]["enabled"]
-        assert out["compression.threshold"] == DEFAULT_CONFIG["compression"]["threshold"]
+        assert out["compression.enabled"] is _ABSENT
+        assert out["compression.threshold"] is _ABSENT
         assert out["model.context_length"] == 100_000
 
     def test_none_config_is_safe(self):
         from gateway.run import GatewayRunner
 
         out = GatewayRunner._extract_cache_busting_config(None)
-        for section, key in GatewayRunner._CACHE_BUSTING_CONFIG_KEYS:
-            assert out[f"{section}.{key}"] == cfg_get(DEFAULT_CONFIG, section, key)
-        assert "tools.registry_generation" in out
+        assert out == GatewayRunner._extract_cache_busting_config({})
 
     def test_extract_includes_live_tool_registry_generation(self, monkeypatch):
         from gateway.run import GatewayRunner

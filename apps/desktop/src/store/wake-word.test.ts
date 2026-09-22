@@ -1,5 +1,15 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { $gateway } from '@/store/gateway'
+
+const { startClientWakeCaptureMock } = vi.hoisted(() => ({
+  startClientWakeCaptureMock: vi.fn()
+}))
+
+vi.mock('@/lib/wake-client-capture', () => ({
+  startClientWakeCapture: startClientWakeCaptureMock
+}))
+
 import {
   $wakeWord,
   applyWakeStartResult,
@@ -18,6 +28,8 @@ const requester = (impl: (method: string, params?: Record<string, unknown>) => u
   ) as unknown as WakeRequester
 
 beforeEach(() => {
+  startClientWakeCaptureMock.mockReset()
+  $gateway.set(null)
   resetWakeWordState()
 })
 
@@ -251,6 +263,27 @@ describe('applyWakeStartResult', () => {
     applyWakeStartResult({ phrase: 'computer', provider: 'porcupine', started: true })
 
     expect($wakeWord.get()).toMatchObject({ available: true, listening: true, phrase: 'computer' })
+  })
+
+  it('releases the wake lease and surfaces a client-capture startup failure', async () => {
+    startClientWakeCaptureMock.mockRejectedValueOnce(new Error('Microphone access denied for client wake capture'))
+    const request = vi.fn(async (method: string) => {
+      if (method === 'wake.stop') {
+        return { stopped: true }
+      }
+
+      throw new Error(`unexpected ${method}`)
+    })
+    $gateway.set({ request } as never)
+
+    applyWakeStartResult({ capture: 'client', started: true })
+
+    await vi.waitFor(() => expect(request).toHaveBeenCalledWith('wake.stop', {}))
+    expect($wakeWord.get()).toMatchObject({
+      listening: false,
+      notice: 'Microphone access denied for client wake capture',
+      pending: false
+    })
   })
 })
 

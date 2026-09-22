@@ -83,6 +83,9 @@ def _fire_post_api_request_hook(
                 # First stream chunk time (epoch s); None if not streamed / no chunk.
                 # TTFB = first_chunk_at - started_at.
                 first_chunk_at=getattr(agent, "_last_api_first_chunk_at", None),
+                # Downstream that actually served the stream ("Novita"): relays re-roll it per
+                # request and report it only in the chunk body, never in a response header.
+                upstream_provider=getattr(agent, "_last_serving_provider", None),
                 finish_reason=finish_reason,
                 message_count=len(api_messages),
                 response_model=getattr(response, "model", None),

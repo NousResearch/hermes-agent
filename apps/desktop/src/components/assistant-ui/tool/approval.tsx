@@ -59,7 +59,7 @@ export const PendingApprovalStack: FC = () => {
       animate={{ paddingBlock: requests.length ? 8 : 0 }}
       aria-label={t.assistant.approval.jumpToApproval}
       className={cn(
-        'min-w-0',
+        'min-w-0 [-webkit-app-region:no-drag]',
         placement === 'floating' ? 'sticky bottom-4 z-10 mt-auto w-full max-w-xl self-center' : 'w-full max-w-xl'
       )}
       data-approval-placement={placement}

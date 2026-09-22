@@ -66,6 +66,13 @@ afterEach(() => {
 })
 
 describe('PendingApprovalStack', () => {
+  it('marks the approval action surface as a native non-drag region', () => {
+    setRequest('chmod -R 777 /tmp/x')
+    const { container } = render(<PendingApprovalStack />)
+
+    expect(container.querySelector('[data-approval-stack]')?.className).toContain('[-webkit-app-region:no-drag]')
+  })
+
   it('retains an empty host without consuming keyboard input', () => {
     const { container } = render(<PendingApprovalStack />)
 

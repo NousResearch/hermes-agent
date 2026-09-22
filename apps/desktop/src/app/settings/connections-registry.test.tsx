@@ -297,6 +297,65 @@ describe('ConnectionsRegistrySection', () => {
 
     await waitFor(() => expect(test).toHaveBeenCalled())
   })
+
+  // ForgeGuard fork: the "Allow self-signed certificate" opt-in used to exist
+  // only in the connection dialog (v1); registry gateways could never carry it.
+  it('sends the self-signed certificate opt-in for a remote gateway, and probes with it', async () => {
+    const probeConnectionConfig = vi.fn().mockResolvedValue({ authMode: 'oauth', reachable: true })
+
+    Object.defineProperty(window, 'hermesDesktop', {
+      configurable: true,
+      value: { connections: { list, remove, save, setLaunchMode, setPrimary, test }, probeConnectionConfig }
+    })
+
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    fireEvent.click(screen.getByText('Add connection'))
+    fireEvent.change(screen.getByPlaceholderText('Homelab'), { target: { value: 'Lab box' } })
+    fireEvent.change(screen.getByPlaceholderText('http://homelab.lan:9119'), {
+      target: { value: 'https://lab.example.com' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'OAuth' }))
+
+    const toggle = screen.getByRole('switch', { name: 'Allow self-signed certificate' })
+
+    expect(toggle.getAttribute('aria-checked')).toBe('false')
+    fireEvent.click(toggle)
+
+    await waitFor(() => expect(probeConnectionConfig).toHaveBeenLastCalledWith('https://lab.example.com', true))
+
+    fireEvent.click(screen.getByText('Save connection').closest('button')!)
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({
+      allowInvalidCertificate: true,
+      authMode: 'oauth',
+      kind: 'remote',
+      url: 'https://lab.example.com'
+    })
+  })
+
+  it('hydrates the self-signed certificate opt-in from a saved gateway and keeps it on save', async () => {
+    list.mockResolvedValue({
+      ...registry,
+      connections: [registry.connections[0], { ...registry.connections[1], allowInvalidCertificate: true }]
+    })
+
+    render(<ConnectionsRegistrySection />)
+
+    await waitFor(() => expect(screen.getByText('Homelab')).toBeTruthy())
+    fireEvent.click(screen.getByRole('button', { name: 'Edit' }))
+
+    expect(screen.getByRole('switch', { name: 'Allow self-signed certificate' }).getAttribute('aria-checked')).toBe(
+      'true'
+    )
+
+    fireEvent.click(screen.getByText('Save connection').closest('button')!)
+
+    await waitFor(() => expect(save).toHaveBeenCalledTimes(1))
+    expect(save.mock.calls[0][0]).toMatchObject({ allowInvalidCertificate: true, id: 'homelab' })
+  })
 })
 
 describe('dedupe helpers', () => {

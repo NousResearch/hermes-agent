@@ -923,6 +923,8 @@ export interface DesktopRegistryConnection {
   // header VALUES are secrets and never cross the IPC boundary. Optional so
   // fixtures/older payloads without the field remain valid.
   headerNames?: string[]
+  // ForgeGuard fork: the per-gateway "Allow self-signed certificate" opt-in.
+  allowInvalidCertificate?: boolean
   // Last-known stable backend identity (the /api/status `install_id`).
   // Present once a roster enumeration or connection test has seen it; two
   // connections sharing it are one physical backend registered under two
@@ -961,6 +963,8 @@ export interface DesktopRegistryConnectionInput {
   // plaintext value (encrypted at rest), or null to keep the stored secret
   // for that name. Omit the field entirely to keep the saved set unchanged.
   headers?: Record<string, null | string>
+  // ForgeGuard fork: the per-gateway "Allow self-signed certificate" opt-in.
+  allowInvalidCertificate?: boolean
   org?: string
   host?: string
   user?: string

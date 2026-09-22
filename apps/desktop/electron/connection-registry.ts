@@ -62,6 +62,11 @@ export interface RegistryConnection {
    * normalizeRemoteHeaders. Optional and additive — v2 registries written
    * before this field keep loading unchanged. */
   headers?: Record<string, unknown>
+  /** remote/cloud (ForgeGuard fork): trust a self-signed or otherwise
+   * unverifiable certificate from this gateway — the connection dialog's
+   * "Allow self-signed certificate". Stored only when true, so registries
+   * written before this field load unchanged. */
+  allowInvalidCertificate?: boolean
   /** cloud: portal org slug/id the instance was discovered under. */
   org?: string
   /** ssh fields (normalizeSshConfig shapes). */
@@ -811,6 +816,7 @@ export interface ConnectionInput {
   authMode?: string
   token?: unknown
   headers?: Record<string, unknown>
+  allowInvalidCertificate?: boolean
   org?: string
   host?: string
   user?: string
@@ -939,6 +945,11 @@ export function normalizeConnectionInput(input: ConnectionInput, registry: Conne
       }
     }
 
+    // ForgeGuard fork: the per-gateway TLS opt-in, stored only when on.
+    if (input.allowInvalidCertificate === true) {
+      entry.allowInvalidCertificate = true
+    }
+
     const org = String(input.org || '').trim()
 
     if (kind === 'cloud' && org) {
@@ -984,6 +995,9 @@ export function mergeConnectionInput(input: ConnectionInput, existing?: null | R
   // field keeps the stored set; an explicit payload (even {}) is
   // authoritative so the editor can clear them.
   inherit('headers')
+  // ForgeGuard fork: an edit that omits the TLS opt-in keeps it; the editor
+  // always sends a boolean, so an explicit false still clears it.
+  inherit('allowInvalidCertificate')
 
   // ssh user/port: the editor shows ONE composite host field (user@host:port),
   // and normalizeSshConfig gives explicit user/port fields precedence over the
@@ -1034,6 +1048,12 @@ export function connectionDialFieldsChanged(before: RegistryConnection, after: R
   // no new token inherits the stored envelope verbatim, so structural
   // equality is exact for the label-only case.
   if (JSON.stringify(before.token ?? null) !== JSON.stringify(after.token ?? null)) {
+    return true
+  }
+
+  // ForgeGuard fork: so is the TLS opt-in — sockets opened under the old
+  // certificate policy must be re-dialed under the new one.
+  if ((before.allowInvalidCertificate === true) !== (after.allowInvalidCertificate === true)) {
     return true
   }
 
@@ -1165,6 +1185,10 @@ export function normalizeRegistry(raw: unknown): ConnectionRegistry {
           clean.headers = storedHeaders
         }
 
+        if (entry.allowInvalidCertificate === true) {
+          clean.allowInvalidCertificate = true
+        }
+
         const org = String(entry.org || '').trim()
 
         if (kind === 'cloud' && org) {
@@ -1266,6 +1290,11 @@ export function migrateV1ToRegistry(v1: unknown): ConnectionRegistry {
 
     if (Object.keys(v1Headers).length > 0) {
       entry.headers = v1Headers
+    }
+
+    // ForgeGuard fork: the v1 block's TLS opt-in survives the migration.
+    if (block.allowInvalidCertificate === true) {
+      entry.allowInvalidCertificate = true
     }
 
     const org = String(block.org || '').trim()
@@ -1468,6 +1497,7 @@ export function reconcileAppliedGlobalConnection(
       authMode: block.authMode,
       token: block.token,
       headers: block.headers,
+      allowInvalidCertificate: block.allowInvalidCertificate === true,
       org: block.org
     },
     registry
@@ -1512,7 +1542,10 @@ export function reconcileRegistryDrift(
   const unchanged = { changed: false, registry }
 
   if (config.mode === 'ssh') {
-    const ssh = normalizeSshConfig({ ...(config.remote && typeof config.remote === 'object' ? config.remote : {}), mode: 'ssh' })
+    const ssh = normalizeSshConfig({
+      ...(config.remote && typeof config.remote === 'object' ? config.remote : {}),
+      mode: 'ssh'
+    })
 
     if (!ssh) {
       // A v1 SSH route without a usable host is not a route we can register.

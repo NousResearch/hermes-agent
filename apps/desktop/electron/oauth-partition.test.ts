@@ -141,4 +141,17 @@ describe('resolveOauthPartition (#92183 per-connection cookie jars)', () => {
 
     expect(got).toContain('alpha')
   })
+
+  // ForgeGuard fork: the contract oauth-partition-moves.ts depends on. The
+  // Connections editor signs in BEFORE saving, so the login window writes to
+  // whatever an unregistered URL resolves to — and saving changes the answer.
+  it('resolves an unregistered URL to the legacy jar and the same URL, once registered non-primary, to its own', () => {
+    const url = 'https://gw-a.example.com'
+
+    const unregistered = resolveOauthPartition(url, { registry: registry('local', []) })
+    const registered = resolveOauthPartition(url, { registry: registry('local', [remote('conn-a', url)]) })
+
+    expect(unregistered).toBe(LEGACY_OAUTH_PARTITION)
+    expect(registered).not.toBe(unregistered)
+  })
 })

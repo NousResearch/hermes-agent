@@ -2008,3 +2008,143 @@ test('normalizeRegistry quarantines non-object junk items that could still be us
   assert.equal((registry.quarantined || []).length, 1)
   assert.equal(registry.quarantined![0].entry, '{ mangled json fragment }')
 })
+
+// --- allowInvalidCertificate (ForgeGuard fork) ---
+//
+// The "Allow self-signed certificate" opt-in used to live only in v1
+// connection.json. Gateways saved in Settings → Connections (the v2 registry)
+// lost it on every normalization, so a registry gateway could never carry it
+// and main.ts's registry reads always saw `false`. Additive like `headers`:
+// stored only when true, so registries written before the field load
+// unchanged.
+
+test('normalizeConnectionInput stores the TLS opt-in only when it is exactly true', () => {
+  const registry = emptyRegistry()
+
+  const base = { kind: 'remote' as const, label: 'Lab box', url: 'https://lab.example.com', authMode: 'oauth' }
+
+  assert.equal(
+    normalizeConnectionInput({ ...base, allowInvalidCertificate: true }, registry).allowInvalidCertificate,
+    true
+  )
+
+  for (const value of [false, undefined, 'yes', 1]) {
+    const entry = normalizeConnectionInput({ ...base, allowInvalidCertificate: value as any }, registry)
+
+    assert.equal('allowInvalidCertificate' in entry, false, `stored for ${String(value)}`)
+  }
+
+  const cloud = normalizeConnectionInput(
+    { kind: 'cloud', label: 'Cloud', url: 'https://cloud.example.com', allowInvalidCertificate: true },
+    registry
+  )
+
+  assert.equal(cloud.allowInvalidCertificate, true)
+})
+
+test('mergeConnectionInput inherits the TLS opt-in when the payload omits it; an explicit false wins', () => {
+  const stored = {
+    id: 'lab',
+    kind: 'remote' as const,
+    label: 'Lab box',
+    url: 'https://lab.example.com',
+    authMode: 'oauth' as const,
+    allowInvalidCertificate: true
+  }
+
+  assert.equal(
+    mergeConnectionInput({ id: 'lab', kind: 'remote', label: 'Renamed' }, stored).allowInvalidCertificate,
+    true
+  )
+  assert.equal(
+    mergeConnectionInput({ id: 'lab', kind: 'remote', label: 'Lab box', allowInvalidCertificate: false }, stored)
+      .allowInvalidCertificate,
+    false
+  )
+})
+
+test('connectionDialFieldsChanged: flipping the TLS opt-in recycles live backends', () => {
+  const before = {
+    id: 'lab',
+    kind: 'remote',
+    label: 'Lab box',
+    url: 'https://lab.example.com',
+    authMode: 'oauth'
+  } as const
+
+  assert.equal(connectionDialFieldsChanged(before, { ...before, allowInvalidCertificate: true }), true)
+  assert.equal(connectionDialFieldsChanged({ ...before, allowInvalidCertificate: true }, { ...before }), true)
+  // Absent and false are the same policy.
+  assert.equal(connectionDialFieldsChanged(before, { ...before, allowInvalidCertificate: false }), false)
+})
+
+test('normalizeRegistry round-trips the TLS opt-in and loads a file written before the field', () => {
+  const registry = normalizeRegistry({
+    version: REGISTRY_VERSION,
+    primary: 'local',
+    connections: [
+      { id: 'local', kind: 'local', label: 'This device' },
+      {
+        id: 'on',
+        kind: 'remote',
+        label: 'On',
+        url: 'https://on.example.com',
+        authMode: 'oauth',
+        allowInvalidCertificate: true
+      },
+      { id: 'old', kind: 'remote', label: 'Old', url: 'https://old.example.com', authMode: 'oauth' },
+      {
+        id: 'junk',
+        kind: 'remote',
+        label: 'Junk',
+        url: 'https://junk.example.com',
+        authMode: 'oauth',
+        allowInvalidCertificate: 'true'
+      }
+    ]
+  })
+
+  const byId = Object.fromEntries(registry.connections.map(c => [c.id, c]))
+
+  assert.equal(byId.on.allowInvalidCertificate, true)
+  assert.equal('allowInvalidCertificate' in byId.old, false)
+  assert.equal('allowInvalidCertificate' in byId.junk, false)
+})
+
+test('migrateV1ToRegistry carries the TLS opt-in from the global remote and from a profile remote', () => {
+  const registry = migrateV1ToRegistry({
+    mode: 'remote',
+    remote: { url: 'https://global.example.com', authMode: 'oauth', allowInvalidCertificate: true },
+    profiles: {
+      work: { mode: 'remote', url: 'https://work.example.com', authMode: 'oauth', allowInvalidCertificate: true },
+      home: { mode: 'remote', url: 'https://home.example.com', authMode: 'oauth' }
+    }
+  })
+
+  const byUrl = Object.fromEntries(registry.connections.filter(c => c.url).map(c => [c.url, c]))
+
+  assert.equal(byUrl['https://global.example.com']?.allowInvalidCertificate, true)
+  assert.equal(byUrl['https://work.example.com']?.allowInvalidCertificate, true)
+  assert.equal('allowInvalidCertificate' in (byUrl['https://home.example.com'] || {}), false)
+})
+
+test('reconcileAppliedGlobalConnection carries the TLS opt-in from the applied block, and clears it on a later apply without it', () => {
+  const applied = reconcileAppliedGlobalConnection(emptyRegistry(), {
+    mode: 'remote',
+    remote: { url: 'https://lab.example.com', authMode: 'oauth', allowInvalidCertificate: true }
+  })
+
+  const remote = applied.connections.find(c => c.kind === 'remote')
+
+  assert.equal(remote?.allowInvalidCertificate, true)
+
+  const reapplied = reconcileAppliedGlobalConnection(applied, {
+    mode: 'remote',
+    remote: { url: 'https://lab.example.com', authMode: 'oauth' }
+  })
+
+  const again = reapplied.connections.find(c => c.kind === 'remote')
+
+  assert.equal(again?.id, remote?.id)
+  assert.equal('allowInvalidCertificate' in (again || {}), false)
+})

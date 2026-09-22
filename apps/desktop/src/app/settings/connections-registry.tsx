@@ -65,6 +65,8 @@ interface EditorState {
   // it. `stored` marks rows hydrated from headerNames so the placeholder can
   // say "saved" instead of demanding a value.
   headers: { name: string; stored: boolean; value: string }[]
+  // ForgeGuard fork: "Allow self-signed certificate" for this gateway.
+  allowInvalidCertificate: boolean
 }
 
 function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
@@ -83,7 +85,8 @@ function editorFromConnection(conn: DesktopRegistryConnection): EditorState {
     host: conn.host ? `${conn.user ? `${conn.user}@` : ''}${conn.host}${conn.port ? `:${conn.port}` : ''}` : '',
     keyPath: conn.keyPath || '',
     remoteProfile: conn.remoteProfile || '',
-    headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' }))
+    headers: (conn.headerNames || []).map(name => ({ name, stored: true, value: '' })),
+    allowInvalidCertificate: conn.allowInvalidCertificate === true
   }
 }
 
@@ -98,7 +101,8 @@ function emptyEditor(kind: DesktopConnectionKind): EditorState {
     host: '',
     keyPath: '',
     remoteProfile: '',
-    headers: []
+    headers: [],
+    allowInvalidCertificate: false
   }
 }
 
@@ -273,6 +277,7 @@ export function ConnectionsRegistrySection() {
   }, [])
 
   const editorUrl = editor?.kind === 'remote' ? coerceRemoteUrlScheme(editor.url) : ''
+  const editorAllowInvalidCert = editor?.kind === 'remote' && editor.allowInvalidCertificate
   const editorWantsOauth = editor?.kind === 'remote' && editor.authMode === 'oauth'
   const authProviderShape = deriveRemoteAuthProviderShape(authProbe?.providers, t.boot.failure.identityProvider)
 
@@ -294,7 +299,7 @@ export function ConnectionsRegistrySection() {
 
     const timer = setTimeout(() => {
       window.hermesDesktop
-        .probeConnectionConfig(editorUrl)
+        .probeConnectionConfig(editorUrl, editorAllowInvalidCert)
         .then(result => {
           if (!cancelled && seq === probeSeq.current) {
             setAuthProbe(result)
@@ -311,7 +316,7 @@ export function ConnectionsRegistrySection() {
       cancelled = true
       clearTimeout(timer)
     }
-  }, [editorUrl, editorWantsOauth])
+  }, [editorAllowInvalidCert, editorUrl, editorWantsOauth])
 
   // The session is scoped to an origin, so pointing the editor at a different
   // URL invalidates the "signed in" state this row is reporting. Flipping the
@@ -424,6 +429,7 @@ export function ConnectionsRegistrySection() {
         if (editor.kind === 'remote' || editor.kind === 'cloud') {
           payload.url = editor.url
           payload.authMode = editor.authMode
+          payload.allowInvalidCertificate = editor.allowInvalidCertificate
 
           if (editor.token.trim()) {
             payload.token = editor.token.trim()
@@ -805,6 +811,15 @@ export function ConnectionsRegistrySection() {
                 />
               }
               title={s.urlTitle}
+            />
+          )}
+
+          {editor.kind === 'remote' && (
+            <ToggleRow
+              checked={editor.allowInvalidCertificate}
+              description={t.settings.gateway.insecureCertDesc}
+              label={t.settings.gateway.insecureCertTitle}
+              onChange={enabled => setEditor({ ...editor, allowInvalidCertificate: enabled })}
             />
           )}
 

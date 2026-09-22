@@ -291,6 +291,54 @@ IS the verification hook — run it on the merged branch instead of eyeballing:
       (fork cases), `apps/desktop/electron/first-run-choice.test.ts`,
       `apps/desktop/electron/connection-config.test.ts`,
       `tests/tui_gateway/test_gateway_ping.py`.
+      **Registry threading (fork, 2026-09-22):** the TLS opt-in now also rides
+      the v2 registry — `allowInvalidCertificate` on `RegistryConnection` /
+      `ConnectionInput` in `connection-registry.ts`, set in
+      `normalizeConnectionInput`, `mergeConnectionInput` (inherit),
+      `connectionDialFieldsChanged`, `normalizeRegistry`,
+      `migrateV1ToRegistry` and `reconcileAppliedGlobalConnection` (stored only
+      when true, like `headers`); `hostAllowsInvalidCertificate` walks the
+      registry too; `installCertificateBypass`'s verify closure is the named
+      `gatewayCertificateVerifyProc`, also installed on every per-connection
+      cookie jar created in `getOauthSessionForUrl`; the `connections:test`
+      handler skips its Node WebSocket leg under the opt-in (as the v1 test
+      does); the Connections editor (`src/app/settings/connections-registry.tsx`)
+      has the toggle and sends the field; `src/global.d.ts` declares it. Before
+      this, a gateway saved in Settings → Connections could never carry the
+      opt-in: every registry normalization dropped it, and the registry dial
+      and `connections:test` read `false` through a cast. Tests: the
+      `allowInvalidCertificate (ForgeGuard fork)` block at the end of
+      `apps/desktop/electron/connection-registry.test.ts`, and the two
+      self-signed cases in `src/app/settings/connections-registry.test.tsx`.
+      Also fork-only: `electron/gateway-probe-errors.ts` (+ test) — the
+      onboarding/Settings probe explains TLS alert 112 (`unrecognized_name`,
+      a reverse proxy with no site for the hostname) instead of echoing the
+      TLS library, since it otherwise reads like a certificate problem
+      directly above the self-signed toggle that cannot fix it.
+- [ ] **Desktop per-connection cookie moves** (fork, 2026-09-22) — upstream's
+      #92183 decides a cookie-flow gateway's jar from the registry's current
+      shape (`electron/oauth-partition.ts`, untouched), so a gateway changes
+      jars when its status changes and its session stays behind: Settings →
+      Connections signs in BEFORE Save (unregistered URL → legacy jar; saved
+      non-primary entry → its own empty jar → "not signed in" on switch), and
+      a primary flip swaps two gateways' jars. Fork-only modules:
+      `electron/oauth-partition-moves.ts` (pure planner: before/after registry
+      diff, URLs still registered after the mutation only, legacy-source
+      moves first) and `electron/oauth-cookie-move.ts` (moves
+      `hermes_session*` cookies against the gateway's own origin; host-only
+      cookies re-set without a domain, which `__Host-` requires; skips a
+      destination that already holds a live session). Wiring in `main.ts`:
+      `migrateOauthCookiesForRegistryChange` + `pendingOauthPartitionMoves`
+      beside `getOauthSessionForUrl`; the await at the top of
+      `warmOauthCookieStore`'s block; calls in `saveRegistryConnection`, the
+      `connections:set-primary` handler, and inside the `apply` callback of
+      the `connection-config:apply` handler (after the writes, before the
+      re-home dials, reversed if activation throws). Proven against real
+      Chromium (Electron 40.10.6) across a relaunch, 2026-09-22. **Retire**
+      when upstream moves or re-keys the session on sign-in-before-save and
+      on primary changes. Tests: `electron/oauth-partition-moves.test.ts`,
+      `electron/oauth-cookie-move.test.ts`, and the fork contract case at the
+      end of `electron/oauth-partition.test.ts`.
 - [ ] **Compressor output reservation** (fork v0.20.3) —
       `agent/output_reservation.py` (fork-only module: the reservation the
       transport will actually send — user tier or provider-profile default),

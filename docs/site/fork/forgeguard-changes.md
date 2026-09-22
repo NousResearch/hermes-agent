@@ -93,6 +93,18 @@ certificates and remembers recent endpoints. See the upstream
 [desktop guide](https://hermes-agent.nousresearch.com/docs/user-guide/desktop)
 for the shared product behaviour.
 
+Several remote gateways can be registered side by side in **Settings →
+Connections**, and each one keeps its own sign-in. Upstream gives every
+non-primary password- or cookie-authenticated gateway its own cookie jar, but
+decides which jar from the gateway's *current* status — so a sign-in made
+before pressing Save, or a **Make primary**, left the session in a jar nothing
+read any more, and switching to that gateway reported "not signed in". The
+fork carries the session to the right jar whenever a save, a primary change or
+an apply moves it. The self-signed opt-in is also available per gateway in the
+same editor (upstream's registry dropped it), and a server that refuses the
+hostname outright (TLS "unrecognized name" — a reverse proxy with no site for
+it) is now reported as that rather than as a certificate error.
+
 Three further fork defaults, all in service of a static self-hosted client:
 
 - **No update checks.** Upstream's desktop polls its own repository (`git

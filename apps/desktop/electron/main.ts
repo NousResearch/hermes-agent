@@ -197,6 +197,7 @@ import {
   resolveGatewayFileBackend,
   writeBufferToFile
 } from './gateway-file-download'
+import { describeGatewayProbeError } from './gateway-probe-errors'
 import { probeGatewayWebSocket } from './gateway-ws-probe'
 import { registerGitIpc } from './git-ipc'
 import { clearStaleGitLocks } from './gitlock'
@@ -267,8 +268,10 @@ import {
 } from './native-oauth'
 import { runNativeLogin } from './native-oauth-login'
 import { loadNativeTokenSet, type NativeTokenStoreIo, persistNativeTokenSet } from './native-token-store'
+import { moveOauthCookies } from './oauth-cookie-move'
 import { serializeJsonBody, setJsonRequestHeaders } from './oauth-net-request'
 import { LEGACY_OAUTH_PARTITION, resolveOauthPartition } from './oauth-partition'
+import { planOauthPartitionMoves } from './oauth-partition-moves'
 import { createParentStartMarkerResolver, parentWatchdogEnv } from './parent-process-identity'
 import { registerPetOverlayIpc } from './pet-overlay-ipc'
 import {
@@ -7014,6 +7017,19 @@ function hostAllowsInvalidCertificate(hostname) {
     }
   }
 
+  // ...and every gateway saved in Settings → Connections (the v2 registry)
+  // that carries the opt-in. A registry read must never break certificate
+  // verification, so a failure here just contributes nothing.
+  try {
+    for (const entry of readDesktopConnectionsRegistry().connections || []) {
+      if ((entry.kind === 'remote' || entry.kind === 'cloud') && entry.url && entry.allowInvalidCertificate === true) {
+        urls.push(entry.url)
+      }
+    }
+  } catch {
+    // Unreadable registry: the v1 sources above still apply.
+  }
+
   for (const url of urls) {
     try {
       if (new URL(url).hostname === hostname) {
@@ -7035,11 +7051,15 @@ function hostAllowsInvalidCertificate(hostname) {
 // The verify proc trusts a cert only for a host the user opted into; every other
 // host defers to Chromium's own verification (callback(-3)), so normal TLS
 // enforcement is untouched everywhere else. Must run after `app` is ready.
+// Shared by every session that carries gateway traffic, including the
+// per-connection cookie jars created on demand in getOauthSessionForUrl.
+function gatewayCertificateVerifyProc(request, callback) {
+  // 0 = trust; -3 = fall back to Chromium's own verification result.
+  callback(hostAllowsInvalidCertificate(request.hostname) ? 0 : -3)
+}
+
 function installCertificateBypass() {
-  const verify = (request, callback) => {
-    // 0 = trust; -3 = fall back to Chromium's own verification result.
-    callback(hostAllowsInvalidCertificate(request.hostname) ? 0 : -3)
-  }
+  const verify = gatewayCertificateVerifyProc
 
   try {
     session.defaultSession.setCertificateVerifyProc(verify)
@@ -7150,9 +7170,60 @@ function getOauthSessionForUrl(url) {
   if (!sess) {
     sess = session.fromPartition(partition)
     oauthSessionsByPartition.set(partition, sess)
+
+    // ForgeGuard fork: a per-connection jar carries its gateway's login window
+    // and cookie-authenticated REST, so it needs the same opt-in certificate
+    // policy as the legacy jar (installCertificateBypass).
+    try {
+      sess.setCertificateVerifyProc(gatewayCertificateVerifyProc)
+    } catch (error) {
+      rememberLog(`[gateway] could not install certificate verifier on ${partition}: ${error?.message || error}`)
+    }
   }
 
   return sess
+}
+
+// ForgeGuard fork: a cookie-flow gateway's jar follows the registry's shape
+// (above), so a registry mutation can strand its session in a jar nothing
+// reads any more — Settings → Connections signs in BEFORE Save, and a primary
+// flip swaps two gateways' jars. Each mutation that can do that snapshots the
+// registry around itself and carries the affected sessions across
+// (oauth-partition-moves.ts plans, oauth-cookie-move.ts moves). Reads that
+// race a move wait for it in warmOauthCookieStore.
+let pendingOauthPartitionMoves = null
+
+function oauthPartitionSnapshot(registry, v1RemoteUrl = readDesktopConnectionConfig()?.remote?.url) {
+  return { registry, v1RemoteUrl }
+}
+
+async function migrateOauthCookiesForRegistryChange(before, after) {
+  const moves = planOauthPartitionMoves(before, after)
+
+  if (!moves.length || !app.isReady()) {
+    return
+  }
+
+  for (const move of moves) {
+    oauthCookieWarmups.delete(move.from)
+    oauthCookieWarmups.delete(move.to)
+  }
+
+  const run = moveOauthCookies(moves, {
+    fromPartition: partition =>
+      partition === OAUTH_SESSION_PARTITION ? getOauthSession() : session.fromPartition(partition),
+    log: rememberLog
+  })
+    .then(() => undefined)
+    .catch(error => rememberLog(`[oauth-partition] session move failed: ${error?.message || error}`))
+    .finally(() => {
+      if (pendingOauthPartitionMoves === run) {
+        pendingOauthPartitionMoves = null
+      }
+    })
+
+  pendingOauthPartitionMoves = run
+  await run
 }
 
 // Cold-start cookie-jar warm-up. A `persist:` partition materialized via
@@ -7180,6 +7251,10 @@ function warmOauthCookieStore(url?) {
   }
 
   const warmup = (async () => {
+    // A registry mutation may be carrying this gateway's session into the
+    // jar about to be read (migrateOauthCookiesForRegistryChange).
+    await pendingOauthPartitionMoves
+
     const sess = getOauthSessionForUrl(url)
 
     if (!sess) {
@@ -9590,6 +9665,14 @@ async function saveRegistryConnection(input: any = {}) {
 
   writeDesktopConnectionsRegistry(upsertConnection(registry, entry))
 
+  // ForgeGuard fork: a gateway signed in to BEFORE this save logged in on the
+  // jar an unregistered URL resolves to; carry that session to the jar the
+  // saved entry resolves to now, before any renderer redials against it.
+  await migrateOauthCookiesForRegistryChange(
+    oauthPartitionSnapshot(registry),
+    oauthPartitionSnapshot(readDesktopConnectionsRegistry())
+  )
+
   // A dial-material edit (endpoint/auth/ssh routing — NOT a label rename)
   // leaves pooled backends under `conn:<id>::*` and renderer sockets pointing
   // at the OLD target while the UI shows the new one. Recycle them: stop this
@@ -11010,7 +11093,9 @@ async function probeRemoteAuthMode(rawUrl, allowInvalidCertificate) {
       authMode: 'unknown',
       providers: [],
       version: null,
-      error: error instanceof Error ? error.message : String(error)
+      // ForgeGuard fork: a rejected hostname (TLS alert 112) reads like a
+      // certificate problem; say what it is (gateway-probe-errors.ts).
+      error: describeGatewayProbeError(error, baseUrl)
     }
   }
 
@@ -15197,8 +15282,15 @@ ipcMain.handle('hermes:connections:remove', async (_event, id) => {
 })
 ipcMain.handle('hermes:connections:set-primary', async (_event, id) => {
   assertCanMutateManagedPrimaryRouting()
-  const registry = setPrimaryConnection(readDesktopConnectionsRegistry(), String(id || ''))
+  const previousRegistry = readDesktopConnectionsRegistry()
+  const registry = setPrimaryConnection(previousRegistry, String(id || ''))
   writeDesktopConnectionsRegistry(registry)
+  // ForgeGuard fork: the promoted gateway moves onto the shared jar and the
+  // demoted one off it; carry both sessions (oauth-partition-moves.ts).
+  await migrateOauthCookiesForRegistryChange(
+    oauthPartitionSnapshot(previousRegistry),
+    oauthPartitionSnapshot(readDesktopConnectionsRegistry())
+  )
 
   return { ok: true, registry: sanitizeConnectionsRegistry(registry) }
 })
@@ -15275,13 +15367,9 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     }
   }
 
-  const status = (await fetchConnectionStatus(
-    baseUrl,
-    authMode,
-    token,
-    testHeaders,
-    (entry as { allowInvalidCertificate?: unknown }).allowInvalidCertificate === true
-  )) as any
+  const allowInvalidCertificate = entry.allowInvalidCertificate === true
+
+  const status = (await fetchConnectionStatus(baseUrl, authMode, token, testHeaders, allowInvalidCertificate)) as any
 
   // The Test button is the cheapest moment to (re)learn this backend's stable
   // identity for the same-backend roster collapse + Settings hint.
@@ -15293,7 +15381,10 @@ ipcMain.handle('hermes:connections:test', async (_event, id) => {
     mintTicket: url => mintGatewayWsTicket(url, testHeaders)
   })
 
-  if (wsUrl && typeof globalThis.WebSocket === 'function') {
+  // ForgeGuard fork: skipped under the self-signed opt-in for the reason
+  // testDesktopConnectionConfig gives — main's WebSocket is Node's, which no
+  // Electron verify proc covers; the renderer's real socket is covered.
+  if (wsUrl && typeof globalThis.WebSocket === 'function' && !allowInvalidCertificate) {
     const probe = await probeGatewayWebSocket(wsUrl, { WebSocketImpl: globalThis.WebSocket, headers: testHeaders })
 
     if (!probe.ok) {
@@ -15926,28 +16017,44 @@ ipcMain.handle('hermes:connection-config:apply', async (_event, payload) => {
     preflight: !key && modeIsRemoteLike(config.mode) ? () => testDesktopConnectionConfig(payload) : undefined,
     writeConfig: writeDesktopConnectionConfig,
     writeRegistry: writeDesktopConnectionsRegistry,
-    apply: () =>
-      applyConnectionChange({
-        cancelAndWait: value => sshBootstrapCoordinator.cancelAndWait(value),
-        isPrimary: !key || key === primaryProfileKey(),
-        rehomePrimary: () =>
-          rehomePrimaryConnection({
-            clearLocalBootstrapFailure: () => {
-              // A remote connection bypasses local runtime/bootstrap failures. Clear
-              // the local-install latch so unsupported/failure escape paths can re-home.
-              bootstrapFailure = null
-            },
-            mode: config.mode,
-            notifyConnectionApplied: sendConnectionApplied,
-            resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
-            teardownPrimaryBackend: teardownPrimaryBackendAndWait
-          }),
-        scope,
-        sendApplied: sendConnectionApplied,
-        stopPool: stopPoolBackend,
-        teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
-        teardownSsh: value => teardownSshConnection(value || null)
-      })
+    // ForgeGuard fork: applying a gateway makes it the primary and the v1
+    // remote, which moves it onto the shared cookie jar (and its predecessor
+    // off it). Carry both sessions after the writes and before the re-home
+    // dials, and carry them back if activation fails and the writes roll back.
+    apply: async () => {
+      const oauthBefore = oauthPartitionSnapshot(previousRegistry, previousConfig?.remote?.url)
+      const oauthAfter = oauthPartitionSnapshot(nextRegistry, config?.remote?.url)
+
+      await migrateOauthCookiesForRegistryChange(oauthBefore, oauthAfter)
+
+      try {
+        await applyConnectionChange({
+          cancelAndWait: value => sshBootstrapCoordinator.cancelAndWait(value),
+          isPrimary: !key || key === primaryProfileKey(),
+          rehomePrimary: () =>
+            rehomePrimaryConnection({
+              clearLocalBootstrapFailure: () => {
+                // A remote connection bypasses local runtime/bootstrap failures. Clear
+                // the local-install latch so unsupported/failure escape paths can re-home.
+                bootstrapFailure = null
+              },
+              mode: config.mode,
+              notifyConnectionApplied: sendConnectionApplied,
+              resumeFirstRunRemote: abandonFirstRunSetupChoiceForRemoteApply,
+              teardownPrimaryBackend: teardownPrimaryBackendAndWait
+            }),
+          scope,
+          sendApplied: sendConnectionApplied,
+          stopPool: stopPoolBackend,
+          teardownPrimary: () => teardownPrimaryBackendAndWait({ soft: true }),
+          teardownSsh: value => teardownSshConnection(value || null)
+        })
+      } catch (error) {
+        await migrateOauthCookiesForRegistryChange(oauthAfter, oauthBefore)
+
+        throw error
+      }
+    }
   })
 
   return sanitizeDesktopConnectionConfig(config, payload?.profile)

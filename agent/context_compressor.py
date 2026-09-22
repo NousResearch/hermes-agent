@@ -3580,9 +3580,45 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
             shown = [i for s, e in selected for i in range(s, e)]
             return text, _coverage(sum(len(display_records[i]) for i in shown), len(shown))
 
+        def _merged(slices: list[tuple[int, int]]) -> list[tuple[int, int]]:
+            out: list[tuple[int, int]] = []
+            for s, e in slices:
+                if out and s <= out[-1][1]:
+                    out[-1] = (out[-1][0], max(out[-1][1], e))
+                else:
+                    out.append((s, e))
+            return out
+
+        # Budget extension: the greedy fill leaves each slice short of `target` by up to one record
+        # (5-43% of the cap unused for 8-20K records). Spend the headroom on whole neighbouring
+        # records, newest slice first (grows backward), older slices grow forward — never past cap.
+        cap = cls._SUMMARY_INPUT_MAX_CHARS
+        rendered_len = len(_render(_merged(selected)))
+        for idx in range(len(selected) - 1, -1, -1):
+            while True:
+                s, e = selected[idx]
+                if idx == len(selected) - 1:
+                    nxt, grown = s - 1, (s - 1, e)
+                    if nxt < (selected[idx - 1][1] if idx else 0):
+                        break
+                else:
+                    nxt, grown = e, (s, e + 1)
+                    if nxt >= selected[idx + 1][0]:
+                        break
+                if rendered_len + len(separator) + len(display_records[nxt]) > cap:
+                    break
+                selected[idx] = grown
+                new_len = len(_render(_merged(selected)))
+                if new_len > cap:  # marker widths shrink as records leave a gap; recheck exactly
+                    selected[idx] = (s, e)
+                    break
+                rendered_len = new_len
+        selected = _merged(selected)
+
         # No overflow trim is needed: every slice holds <= `target` display chars (records are
         # pre-bounded to `target`), there are <= n-1 markers each <= `marker_len` (widths computed
-        # at their maxima), and n*target + (n-1)*marker_len <= _SUMMARY_INPUT_MAX_CHARS by construction.
+        # at their maxima), and n*target + (n-1)*marker_len <= _SUMMARY_INPUT_MAX_CHARS by
+        # construction; the extension pass above only adds a record when the result stays <= cap.
         return _finish(_render(selected))
 
     def _fallback_to_main_for_compression(

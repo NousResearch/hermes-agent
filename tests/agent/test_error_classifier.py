@@ -250,13 +250,32 @@ class TestClassifyApiError:
         assert result.is_auth is True
 
     def test_403_server_error_provider_alias_is_transient(self):
-        """Guards the alias map: the opencode-go profile declares ``opencode_go``, and a caller
+        """Guards the alias path: the opencode-go profile declares ``opencode_go``, and a caller
         spelling the provider that way gets the same transient verdict."""
         body = {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
                           "type": "server_error", "code": "server_error"}}
         result = classify_api_error(
             MockAPIError("Forbidden", status_code=403, body=body),
             provider="opencode_go", model="deepseek-v4.1-flash",
+        )
+        assert result.reason == FailoverReason.overloaded
+
+    def test_403_server_error_alias_is_resolved_by_the_provider_registry(self, monkeypatch):
+        """Guards the single source of aliases: the classifier asks the provider registry, so an
+        alias a profile declares resolves with no second table kept in ``error_classifier``."""
+        import providers
+
+        real = providers.get_provider_profile
+
+        def fake(name):
+            return SimpleNamespace(name="opencode-go") if name == "opencode-go-eu" else real(name)
+
+        monkeypatch.setattr(providers, "get_provider_profile", fake)
+        body = {"error": {"message": "Upstream request failed: Upstream response was not valid JSON",
+                          "type": "server_error", "code": "server_error"}}
+        result = classify_api_error(
+            MockAPIError("Forbidden", status_code=403, body=body),
+            provider="opencode-go-eu", model="deepseek-v4.1-flash",
         )
         assert result.reason == FailoverReason.overloaded
 

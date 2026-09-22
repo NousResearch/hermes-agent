@@ -4702,7 +4702,7 @@ def _cmd_install(args):
             sys.exit(1)
         _install_systemd_from_cli(args, force=force, system=system, run_as_user=run_as_user)
     elif backend == "launchd":
-        launchd_install(force)
+        launchd_install(force, start_now=getattr(args, "start_now", None) is not False)
     elif backend == "windows":
         _gw_windows().install(
             force=force,

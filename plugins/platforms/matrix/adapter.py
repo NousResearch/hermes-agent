@@ -107,7 +107,8 @@ from plugins.platforms.matrix.reaction_followups import (
 )
 from plugins.platforms.matrix.followup_mixin import MatrixFollowupMixin, _MatrixFollowupChoice
 from gateway.platforms.base_exec_approval import EA_HEADER_TEXT
-from plugins.platforms.matrix.room_inspection import change_matrix_pin, inspect_matrix_room
+from plugins.platforms.matrix.room_inspection import inspect_matrix_room
+from plugins.platforms.matrix.room_admin import administer_matrix_pin, administer_matrix_room
 from gateway.platforms.base import (
     gateway_trust_env, BasePlatformAdapter, ExecApprovalPrompt,
     SendResult, resolve_proxy_url, proxy_kwargs_for_aiohttp, _ssrf_redirect_guard,
@@ -3489,11 +3490,18 @@ class MatrixAdapter(MatrixRedactionMixin, MatrixFollowupMixin, MatrixContextMixi
     ) -> dict:
         return await inspect_matrix_room(self, kind, room_id, limit, requester=requester)
 
+    async def administer_matrix_room(
+        self, args: dict, *, interrupt_check: Callable[[], bool], before_write: Callable[[], None],
+    ) -> dict:
+        return await administer_matrix_room(
+            self, args, interrupt_check=interrupt_check, before_write=before_write,
+        )
+
     async def change_matrix_pin(
         self, action: str, room_id: str, event_id: str, *, requester: str,
         interrupt_check: Callable[[], bool], before_write: Callable[[], None],
     ) -> dict:
-        return await change_matrix_pin(
+        return await administer_matrix_pin(
             self, action, room_id, event_id, requester=requester,
             interrupt_check=interrupt_check, before_write=before_write,
         )

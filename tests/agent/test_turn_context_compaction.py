@@ -94,6 +94,7 @@ def test_idle_same_list_compaction_marks_memory_invalidated():
         last_compression_rough_tokens=0,
         awaiting_real_usage_after_compression=False,
         get_active_compression_failure_cooldown=lambda: None,
+        should_compress=lambda _tokens: False,
     )
     agent = _agent(
         compression_enabled=True,

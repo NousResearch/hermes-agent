@@ -999,15 +999,42 @@ def _off_route_host(c: _Ctx) -> str:
 # default so the configured retry budget applies and no credential is benched.
 _403_TRANSIENT_CODES = frozenset({"upstream_unavailable"})
 
+# Server-failure codes an OpenAI-compatible gateway re-stamps onto the 403 that
+# fronted a failed *upstream* call, e.g. OpenCode Go:
+#   {"error": {"type": "server_error", "code": "server_error",
+#              "message": "Upstream request failed: [server_error] Upstream response error"}}
+# The gateway is reporting on the model behind it, not on our key — the same
+# verdict the bare-code path gives an OpenAI ``server_error``
+# (``_PROVIDER_CODE_VERDICTS["openai"]``) and the same reasoning as 429's
+# ``_OVERLOADED_PATTERNS`` check in ``_status_429``. A 403 in this family must
+# reach the retry budget instead of the auth default: the flat one-hour
+# ``_exhausted_ttl(403, "auth")`` bench on the last serving account of a
+# two-account pool took a healthy key out for an hour beside a sibling already
+# benched for its weekly cap, empties the pool, and drops the home onto metered
+# inference for the duration. Genuine refusals carry their own codes
+# (``invalid_api_key``, ``authentication_error``, ``permission_denied``) and
+# still reach the auth default below.
+_403_SERVER_FAILURE_CODES = frozenset({
+    "server_error", "internal_error", "upstream_error", "upstream_service_error",
+})
+# Prose form of the same signal, for a gateway that drops the structured code. Prose is a
+# looser signal than the code, so it is matched only after the billing check.
+_UPSTREAM_FAILURE_PATTERNS = ("upstream request failed", "upstream response error")
+
 
 def _status_403(c: _Ctx) -> Verdict:
     if c.code in _403_TRANSIENT_CODES:
         return _V_OVERLOADED
+    if c.code in _403_SERVER_FAILURE_CODES:
+        return _V_SERVER_ERROR
     # OpenRouter 403 "key limit exceeded" and similar plan/credit exhaustion are billing.
     xai_spend = c.provider_slug == "xai-oauth" and c.code == _XAI_SPENDING_LIMIT_ERROR_CODE
     billing = xai_spend or any(p in c.msg for p in ("key limit exceeded", "spending limit") + _BILLING_PATTERNS)
     if billing:
         return _V_BILLING
+    # Upstream-outage prose (no structured code in the body): transient, same as above.
+    if any(p in c.msg for p in _UPSTREAM_FAILURE_PATTERNS):
+        return _V_SERVER_ERROR
     # A WAF/CDN in front of the provider answered, not the provider: the credential never
     # reached it, so key guidance and credential rotation are wrong (#53099, #70566). Gated on
     # 403 and on established block/challenge markers; any other 403 stays auth.

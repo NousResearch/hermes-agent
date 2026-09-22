@@ -251,6 +251,27 @@ class TestPasswordLoginRoute:
         assert SESSION_AT_COOKIE in set_cookie
         assert SESSION_RT_COOKIE in set_cookie
 
+    def test_prefixed_proxy_returns_prefixed_post_login_target(self, gated_app):
+        """The browser only exposes the dashboard under ``/hermes``.
+
+        The proxy strips that mount before this route sees ``next``; put it
+        back on the JSON navigation target so the login-page script does not
+        send a successful sign-in to an unproxied root URL.
+        """
+        resp = gated_app.post(
+            "/auth/password-login",
+            headers={"x-forwarded-prefix": "/hermes"},
+            json={
+                "provider": "testpw",
+                "username": "admin",
+                "password": "hunter2",
+                "next": "/sessions",
+            },
+        )
+
+        assert resp.status_code == 200
+        assert resp.json() == {"ok": True, "next": "/hermes/sessions"}
+
     def test_session_cookie_then_grants_authenticated_access(self, gated_app):
         # Log in, then hit an auth-required endpoint with the cookie jar
         # the TestClient retains — proving the minted session is accepted
@@ -358,6 +379,16 @@ class TestLoginPageRender:
         finally:
             clear_providers()
 
+    def test_password_form_uses_the_forwarded_prefix_for_navigation(self):
+        clear_providers()
+        register_provider(PasswordProvider())
+        try:
+            html = render_login_html(next_path="/sessions", base_path="/hermes")
+            assert 'fetch("/hermes/auth/password-login"' in html
+            assert '|| "/hermes/"' in html
+        finally:
+            clear_providers()
+
     def test_oauth_only_page_stays_script_free(self):
         clear_providers()
         register_provider(StubAuthProvider())
@@ -372,4 +403,3 @@ class TestLoginPageRender:
             assert "/auth/password-login" not in html
         finally:
             clear_providers()
-

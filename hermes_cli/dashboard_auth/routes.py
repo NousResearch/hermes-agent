@@ -150,7 +150,8 @@ def _complete_login(request: Request, provider: str, session: Session, *, broker
     if broker_state:
         return _finish_native_login(
             request, broker_state=broker_state, session=session, provider=provider), True
-    return _validate_post_login_target(next_raw) or "/", False
+    target = _validate_post_login_target(next_raw) or "/"
+    return f"{_prefix(request)}{target}", False
 
 
 def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkce: dict[str, str]):
@@ -177,7 +178,10 @@ def _start_upstream_login(request: Request, p, *, audit_failure: bool, extra_pkc
 async def login_page(request: Request) -> HTMLResponse:
     # ``next=`` is set by the gate's redirect but /login is reachable directly.
     next_path = _validate_post_login_target(request.query_params.get("next", ""))
-    return HTMLResponse(render_login_html(next_path=next_path), headers=_NO_STORE)
+    return HTMLResponse(
+        render_login_html(next_path=next_path, base_path=_prefix(request)),
+        headers=_NO_STORE,
+    )
 
 
 @router.get("/api/auth/providers", name="auth_providers")

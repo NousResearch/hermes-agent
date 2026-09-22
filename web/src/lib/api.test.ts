@@ -95,6 +95,27 @@ describe("fetchJSON", () => {
   });
 });
 
+describe("api.logout", () => {
+  it("posts to the injected reverse-proxy base path", async () => {
+    vi.resetModules();
+    Object.defineProperty(window, "__HERMES_BASE_PATH__", {
+      configurable: true,
+      value: "/hermes",
+      writable: true,
+    });
+    const fetchMock = vi.fn<typeof fetch>(async () => new Response(null));
+    vi.stubGlobal("fetch", fetchMock);
+    const { api: prefixedApi } = await import("./api");
+
+    await prefixedApi.logout();
+
+    expect(fetchMock).toHaveBeenCalledWith(
+      "/hermes/auth/logout",
+      expect.objectContaining({ credentials: "include", method: "POST" }),
+    );
+  });
+});
+
 describe("api.getModelOptions", () => {
   it("requests a live model refresh when asked", async () => {
     vi.stubGlobal("window", {});

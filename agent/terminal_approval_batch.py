@@ -165,8 +165,13 @@ class _TerminalBatch:
                     approval._gateway_queues.pop(session_key, None)
             self.pending_approvals = retained
             for slot in self.slots[failed_slot.index + 1:]:
-                slot.decision = None
-                slot.guard_key = None
+                # A completed denial is a safety boundary, not stale positive
+                # consent.  Keep its key too: otherwise consume_prepared_guard
+                # falls through to a fresh guard, which can auto-approve under
+                # a session/always grant or yolo policy.
+                if isinstance(slot.decision, dict) and slot.decision.get("approved"):
+                    slot.decision = None
+                    slot.guard_key = None
 
 
 def prepare_current_terminal(ref):
@@ -239,12 +244,15 @@ def register_prepared_approval(session_key, entry):
 def regate_after_terminal_failure(call_id, function_result):
     """Require fresh consent for later prepared calls after a terminal failure."""
     batch = _batch.get()
-    if batch is None or not isinstance(function_result, str):
+    if batch is None:
         return
-    try:
-        result = json.loads(function_result)
-    except (TypeError, ValueError):
-        return
+    if isinstance(function_result, str):
+        try:
+            result = json.loads(function_result)
+        except (TypeError, ValueError):
+            return
+    else:
+        result = function_result
     if not isinstance(result, dict):
         return
     if result.get("exit_code", 0) != 0 or result.get("status") in {"error", "blocked"}:

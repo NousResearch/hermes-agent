@@ -289,3 +289,61 @@ def test_failure_revokes_later_prepared_approvals_and_requires_fresh_consent(tmp
             worker.join(timeout=5)
         cleanup_vm(key)
         clear_session_vars(tokens)
+
+
+def test_failure_preserves_prepared_denial_despite_session_grant(tmp_path, monkeypatch):
+    """A failed earlier command must never turn an explicit later denial into consent."""
+    from tools.terminal_scope import reset_terminal_scope, set_terminal_scope
+    from tools.terminal_tool_lifecycle import cleanup_vm
+
+    monkeypatch.setenv("HERMES_EXEC_ASK", "1")
+    monkeypatch.setenv("TERMINAL_ENV", "local")
+    monkeypatch.setenv("TERMINAL_CWD", str(tmp_path))
+    monkeypatch.setattr("tools.approval_context._get_approval_mode", lambda: "manual")
+    monkeypatch.setattr("tools.approval._tirith_scan", lambda command: {"action": "allow"})
+    monkeypatch.setattr("agent.title_generator.maybe_auto_title", lambda *a, **kw: None)
+    key = "denied-terminal-batch"
+    agent = _agent()
+    agent._flush_messages_to_session_db = lambda *a, **kw: True
+    published, messages, errors = queue.Queue(), [], []
+    commands = ["rm -rf absent; false", "rm -rf absent; printf denied > denied.txt"]
+    calls = [_call(f"call-{index}", command) for index, command in enumerate(commands)]
+
+    def run():
+        try:
+            agent._execute_tool_calls(SimpleNamespace(tool_calls=calls), messages, key)
+        except BaseException as exc:
+            errors.append(exc)
+
+    approval.register_gateway_notify(key, published.put)
+    from tui_gateway import server
+    monkeypatch.setattr(server, "_sessions", {key: {
+        "session_key": key, "source": "desktop", "agent": agent, "cwd": str(tmp_path),
+    }})
+    tokens = server._set_session_context(key)
+    worker = None
+    try:
+        with ExitStack() as scope:
+            scope.callback(reset_terminal_scope, set_terminal_scope(
+                {"TERMINAL_ENV": "local", "TERMINAL_CWD": str(tmp_path)}))
+            worker = threading.Thread(target=propagate_context_to_thread(run), daemon=True)
+            worker.start()
+            initial = [published.get(timeout=10) for _ in calls]
+            # The grant deliberately makes a guard re-check dangerous: it would
+            # auto-approve the later command if its prepared denial were erased.
+            assert approval.resolve_gateway_approval(key, "deny", request_id=initial[1]["request_id"]) == 1
+            assert approval.resolve_gateway_approval(key, "session", request_id=initial[0]["request_id"]) == 1
+            worker.join(timeout=10)
+            assert not worker.is_alive()
+            assert errors == []
+            assert json.loads(messages[0]["content"])["exit_code"] != 0
+            assert json.loads(messages[1]["content"])["status"] == "blocked"
+            assert not (tmp_path / "denied.txt").exists()
+            assert approval.list_gateway_approvals(key) == []
+    finally:
+        agent.interrupt("test cleanup")
+        approval.unregister_gateway_notify(key)
+        if worker is not None:
+            worker.join(timeout=5)
+        cleanup_vm(key)
+        clear_session_vars(tokens)

@@ -2,18 +2,24 @@ import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { Attachment, GroupMember } from './types'
 
-const rpc = vi.hoisted(() => vi.fn())
-const retain = vi.hoisted(() => vi.fn(async () => vi.fn()))
+const calls = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  assertCurrent: vi.fn(),
+  release: vi.fn(),
+  request: vi.fn()
+}))
+
+const route = { connectionId: 'root', mode: 'remote' as const, profile: 'default', targetProfile: 'default' }
 
 vi.mock('@hermes/plugin-sdk', async () => {
   const { pluginSdkMock } = await import('./group-test-utils')
 
-  return pluginSdkMock({ retainProfile: retain })
+  return pluginSdkMock({ acquireProfileRoute: calls.acquire })
 })
 
 vi.mock('./routing', () => ({
-  botConnectionRoute: () => ({ connectionId: 'root', mode: 'remote', profile: 'default', targetProfile: 'default' }),
-  requestForBot: rpc
+  botConnectionRoute: () => route,
+  requestForBot: vi.fn()
 }))
 
 const source: GroupMember = { name: 'default' }
@@ -42,6 +48,13 @@ function retainedAttachment(): Attachment {
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  calls.acquire.mockResolvedValue({
+    assertCurrent: calls.assertCurrent,
+    generation: 1,
+    release: calls.release,
+    request: calls.request,
+    route
+  })
   const { $groupChats } = await import('./group-chat')
   $groupChats.set({
     Classic: {
@@ -56,7 +69,7 @@ beforeEach(async () => {
 
 describe('current-runtime retained classic reader', () => {
   it('resumes the original producer and sends the exact generation before accepting verified bytes', async () => {
-    rpc.mockImplementation(async (_member: GroupMember, method: string, params: Record<string, unknown>) => {
+    calls.request.mockImplementation(async (method: string, params: Record<string, unknown>) => {
       if (method === 'session.resume') {
         expect(params).toEqual({ session_id: 'original-session', profile: 'default', omit_messages: true })
 
@@ -96,22 +109,24 @@ describe('current-runtime retained classic reader', () => {
     const result = await readClassicAttachment('Classic', retainedAttachment())
 
     expect(result.data).toBe(`data:application/octet-stream;base64,${content}`)
-    expect(rpc.mock.calls.map(call => call[1])).toEqual(['session.resume', 'session.export.read'])
-    expect(retain).toHaveBeenCalledTimes(1)
+    expect(calls.request.mock.calls.map(call => call[0])).toEqual(['session.resume', 'session.export.read'])
+    expect(calls.acquire).toHaveBeenCalledExactlyOnceWith(route)
+    expect(calls.release).toHaveBeenCalledOnce()
   })
 
   it('fails closed when the original session is gone and never creates a replacement', async () => {
-    rpc.mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 4007 }))
+    calls.request.mockRejectedValueOnce(Object.assign(new Error('gone'), { code: 4007 }))
     const { readClassicAttachment } = await import('./classic-output')
 
     await expect(readClassicAttachment('Classic', retainedAttachment())).rejects.toThrow(
       'original producer session is unavailable'
     )
-    expect(rpc.mock.calls.map(call => call[1])).toEqual(['session.resume'])
+    expect(calls.request.mock.calls.map(call => call[0])).toEqual(['session.resume'])
+    expect(calls.release).toHaveBeenCalledOnce()
   })
 
   it('rejects a response from another generation before exposing bytes', async () => {
-    rpc.mockResolvedValueOnce({ session_id: 'original-runtime' }).mockResolvedValueOnce({
+    calls.request.mockResolvedValueOnce({ session_id: 'original-runtime' }).mockResolvedValueOnce({
       content_base64: content,
       export_id: `ce_${'1'.repeat(64)}`,
       generation: 8,
@@ -128,5 +143,6 @@ describe('current-runtime retained classic reader', () => {
 
     const { readClassicAttachment } = await import('./classic-output')
     await expect(readClassicAttachment('Classic', retainedAttachment())).rejects.toThrow('verification failed')
+    expect(calls.release).toHaveBeenCalledOnce()
   })
 })

@@ -4,19 +4,23 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Attachment, GroupMember } from './types'
 
 const calls = vi.hoisted(() => ({
-  request: vi.fn(),
-  retain: vi.fn(async () => vi.fn())
+  acquire: vi.fn(),
+  assertCurrent: vi.fn(),
+  release: vi.fn(),
+  request: vi.fn()
 }))
+
+const route = { connectionId: 'root', mode: 'remote' as const, profile: 'default', targetProfile: 'default' }
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
-  return { ...sdk, host: { ...sdk.host, retainProfile: calls.retain } }
+  return { ...sdk, host: { ...sdk.host, acquireProfileRoute: calls.acquire } }
 })
 
 vi.mock('./routing', () => ({
-  botConnectionRoute: () => ({ connectionId: 'root', mode: 'remote', profile: 'default', targetProfile: 'default' }),
-  requestForBot: calls.request
+  botConnectionRoute: () => route,
+  requestForBot: vi.fn()
 }))
 
 const source: GroupMember = { name: 'default' }
@@ -45,6 +49,13 @@ function retainedAttachment(): Attachment {
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  calls.acquire.mockResolvedValue({
+    assertCurrent: calls.assertCurrent,
+    generation: 1,
+    release: calls.release,
+    request: calls.request,
+    route
+  })
   const { $groupChats } = await import('./group-chat')
   $groupChats.set({
     Classic: {
@@ -99,11 +110,12 @@ describe('retained classic byte delivery', () => {
       retainedAttachment()
     )
 
-    expect(calls.request.mock.calls.map(call => call[1])).toEqual(['session.resume', 'session.export.read'])
+    expect(calls.request.mock.calls.map(call => call[0])).toEqual(['session.resume', 'session.export.read'])
     expect(createObjectURL).toHaveBeenCalledTimes(1)
     expect(saved?.size).toBe(21)
     expect(saved?.type).toBe('application/octet-stream')
     expect(click).toHaveBeenCalledTimes(1)
+    expect(calls.release).toHaveBeenCalledOnce()
     vi.advanceTimersByTime(30_000)
     expect(revokeObjectURL).toHaveBeenCalledWith('blob:classic-current-proof')
   })

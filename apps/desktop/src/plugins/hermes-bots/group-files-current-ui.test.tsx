@@ -5,23 +5,27 @@ import { afterEach, beforeAll, beforeEach, describe, expect, it, vi } from 'vite
 import type { Attachment, GroupMember } from './types'
 
 const mocks = vi.hoisted(() => ({
+  acquire: vi.fn(),
+  assertCurrent: vi.fn(),
   notify: vi.fn(),
-  request: vi.fn(),
-  retain: vi.fn(async () => vi.fn())
+  release: vi.fn(),
+  request: vi.fn()
 }))
+
+const route = { connectionId: 'root', mode: 'remote' as const, profile: 'default', targetProfile: 'default' }
 
 vi.mock('@hermes/plugin-sdk', async importOriginal => {
   const sdk = await importOriginal<typeof HermesSdk>()
 
   return {
     ...sdk,
-    host: { ...sdk.host, notify: mocks.notify, retainProfile: mocks.retain }
+    host: { ...sdk.host, acquireProfileRoute: mocks.acquire, notify: mocks.notify }
   }
 })
 
 vi.mock('./routing', () => ({
-  botConnectionRoute: () => ({ connectionId: 'root', mode: 'remote', profile: 'default', targetProfile: 'default' }),
-  requestForBot: mocks.request
+  botConnectionRoute: () => route,
+  requestForBot: vi.fn()
 }))
 
 const source: GroupMember = { name: 'default' }
@@ -56,6 +60,13 @@ beforeAll(() => {
 
 beforeEach(async () => {
   vi.clearAllMocks()
+  mocks.acquire.mockResolvedValue({
+    assertCurrent: mocks.assertCurrent,
+    generation: 1,
+    release: mocks.release,
+    request: mocks.request,
+    route
+  })
   const { $groupChats } = await import('./group-chat')
   $groupChats.set({
     Classic: {
@@ -119,10 +130,11 @@ describe('classic Files in the current Desktop composition', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Download proof.bin' }))
 
     await waitFor(() => expect(createObjectURL).toHaveBeenCalledTimes(1))
-    expect(mocks.request.mock.calls.map(call => call[1])).toEqual(['session.resume', 'session.export.read'])
-    expect(mocks.request.mock.calls[1]?.[2]).toMatchObject({ generation: 7, session_id: 'original-runtime' })
+    expect(mocks.request.mock.calls.map(call => call[0])).toEqual(['session.resume', 'session.export.read'])
+    expect(mocks.request.mock.calls[1]?.[1]).toMatchObject({ generation: 7, session_id: 'original-runtime' })
     expect(saved?.size).toBe(21)
     expect(saved?.type).toBe('application/octet-stream')
     expect(mocks.notify).not.toHaveBeenCalled()
+    expect(mocks.release).toHaveBeenCalledOnce()
   })
 })

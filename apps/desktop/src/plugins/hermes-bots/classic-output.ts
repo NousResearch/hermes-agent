@@ -25,50 +25,16 @@ export interface ClassicFileRef {
   recipients: Recipient[]
 }
 
-async function withOriginalSource<T>(
-  source: GroupMember,
-  session: string,
-  fn: (runtime: string) => Promise<T>
-): Promise<T> {
-  const route = botConnectionRoute(source)
-  const release = route && typeof host.retainProfile === 'function' ? await host.retainProfile(route) : () => undefined
-
-  try {
-    let resumed: { session_id: string }
-
-    try {
-      resumed = await requestForBot(source, 'session.resume', {
-        session_id: session,
-        profile: source.name,
-        omit_messages: true
-      })
-    } catch (error: any) {
-      if (error?.code === 4007) {
-        // The accepted reader authorizes the original producer session (or its
-        // unique compression lineage). Never mint an unrelated replacement.
-        throw new GroupFileDeliveryError('The original producer session is unavailable.')
-      }
-
-      throw error
-    }
-
-    if (!resumed || typeof resumed.session_id !== 'string' || !resumed.session_id) {
-      throw new GroupFileDeliveryError('The original producer session is unavailable.')
-    }
-
-    return await fn(resumed.session_id)
-  } finally {
-    release()
-  }
-}
+export type ClassicAttachmentHandoff = (attachment: Attachment, assertSourceCurrent: () => void) => void
 
 /** Read exactly one retained export reference through the pinned producer owner.
  * The original group, session, installation and generation are all mandatory;
  * no foreground route, temporary session or generation inference is permitted. */
-export async function readClassicAttachment(
+async function resolveClassicAttachment(
   group: string,
   attachment: Attachment,
-  recipient?: GroupMember
+  recipient?: GroupMember,
+  handoff?: ClassicAttachmentHandoff
 ): Promise<Attachment> {
   const ref = attachment.classicExport
   const room = $groupChats.get()[group]
@@ -106,52 +72,117 @@ export async function readClassicAttachment(
     }
   }
 
-  const response = (await withOriginalSource(ref.source, ref.session, runtime =>
-    requestForBot(ref.source, 'session.export.read', {
-      session_id: runtime,
+  const route = botConnectionRoute(ref.source)
+
+  if (!route) {
+    throw new GroupFileDeliveryError('The original producer source is unavailable.')
+  }
+
+  const owner = await host.acquireProfileRoute(route)
+
+  try {
+    owner.assertCurrent()
+    let resumed: { session_id: string }
+
+    try {
+      resumed = await owner.request('session.resume', {
+        session_id: ref.session,
+        profile: route.targetProfile,
+        omit_messages: true
+      })
+      owner.assertCurrent()
+    } catch (error: any) {
+      if (error?.code === 4007) {
+        // The accepted reader authorizes the original producer session (or its
+        // unique compression lineage). Never mint an unrelated replacement.
+        throw new GroupFileDeliveryError('The original producer session is unavailable.')
+      }
+
+      throw error
+    }
+
+    if (!resumed || typeof resumed.session_id !== 'string' || !resumed.session_id) {
+      throw new GroupFileDeliveryError('The original producer session is unavailable.')
+    }
+
+    const response = (await owner.request('session.export.read', {
+      session_id: resumed.session_id,
       installation: ref.installation,
       group_id: ref.group,
       export_id: ref.exportId,
       artifact_id: ref.artifactId,
       generation: ref.generation
-    })
-  )) as Record<string, any>
+    })) as Record<string, any>
 
-  const item = response.item
+    owner.assertCurrent()
 
-  if (
-    response.generation !== ref.generation ||
-    response.group_id !== ref.group ||
-    response.export_id !== ref.exportId ||
-    !item ||
-    item.artifact_id !== ref.artifactId ||
-    item.sha256 !== ref.sha256 ||
-    item.name !== attachment.name ||
-    item.kind !== attachment.kind ||
-    item.mime !== attachment.mime ||
-    item.size !== attachment.size ||
-    typeof response.content_base64 !== 'string' ||
-    response.content_base64.length > 20_000_000 ||
-    !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(response.content_base64)
-  ) {
-    throw new GroupFileDeliveryError('File verification failed.')
+    const item = response.item
+
+    if (
+      response.generation !== ref.generation ||
+      response.group_id !== ref.group ||
+      response.export_id !== ref.exportId ||
+      !item ||
+      item.artifact_id !== ref.artifactId ||
+      item.sha256 !== ref.sha256 ||
+      item.name !== attachment.name ||
+      item.kind !== attachment.kind ||
+      item.mime !== attachment.mime ||
+      item.size !== attachment.size ||
+      typeof response.content_base64 !== 'string' ||
+      response.content_base64.length > 20_000_000 ||
+      !/^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/.test(response.content_base64)
+    ) {
+      throw new GroupFileDeliveryError('File verification failed.')
+    }
+
+    const bytes = Uint8Array.from(atob(response.content_base64), char => char.charCodeAt(0))
+    const digestBytes = await crypto.subtle.digest('SHA-256', bytes)
+    owner.assertCurrent()
+    const digest = Array.from(new Uint8Array(digestBytes), byte => byte.toString(16).padStart(2, '0')).join('')
+
+    if (
+      bytes.length !== attachment.size ||
+      digest !== ref.sha256 ||
+      !current() ||
+      (recipient &&
+        !($groupChats.get()[group]?.members || []).some(
+          member => groupMemberKey(member) === groupMemberKey(recipient)
+        ))
+    ) {
+      throw new GroupFileDeliveryError('File bytes or recipient changed.')
+    }
+
+    const resolved = { ...attachment, data: `data:${attachment.mime};base64,${response.content_base64}` }
+
+    if (handoff) {
+      owner.assertCurrent()
+      handoff(resolved, owner.assertCurrent)
+    }
+
+    return resolved
+  } finally {
+    owner.release()
   }
+}
 
-  const bytes = Uint8Array.from(atob(response.content_base64), char => char.charCodeAt(0))
+/** Read verified bytes for a non-consequential caller. The source lease is
+ * released only after the returned attachment is fully validated. */
+export async function readClassicAttachment(
+  group: string,
+  attachment: Attachment,
+  recipient?: GroupMember
+): Promise<Attachment> {
+  return resolveClassicAttachment(group, attachment, recipient)
+}
 
-  const digest = Array.from(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)), byte =>
-    byte.toString(16).padStart(2, '0')
-  ).join('')
-
-  if (
-    bytes.length !== attachment.size ||
-    digest !== ref.sha256 ||
-    !current() ||
-    (recipient &&
-      !($groupChats.get()[group]?.members || []).some(member => groupMemberKey(member) === groupMemberKey(recipient)))
-  ) {
-    throw new GroupFileDeliveryError('File bytes or recipient changed.')
-  }
-
-  return { ...attachment, data: `data:${attachment.mime};base64,${response.content_base64}` }
+/** Keep the immutable source owner leased through one synchronous consumer
+ * handoff. The consumer must assert immediately before its consequential sink. */
+export async function withClassicAttachmentSource(
+  group: string,
+  attachment: Attachment,
+  handoff: ClassicAttachmentHandoff,
+  recipient?: GroupMember
+): Promise<void> {
+  await resolveClassicAttachment(group, attachment, recipient, handoff)
 }

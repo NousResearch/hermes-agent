@@ -5,12 +5,52 @@ import { useEffect, useRef, useState } from 'react'
 
 import { downloadCanonicalAttachment } from './canonical-attachment-download'
 import { useCanonicalFilesLabels } from './canonical-files-labels'
-import { readClassicAttachment } from './classic-output'
+import { withClassicAttachmentSource } from './classic-output'
 import { $groupChats } from './group-chat'
 import { GroupFileError, groupFileFailure, type GroupFileFailure, withGroupFileDeadline } from './group-file-errors'
 import { beginGroupFileDelivery, groupFileAccessCurrent, invalidateGroupFileAccess } from './group-files-access'
 import { readHostedGroupChatAttachment } from './hosted-room-runtime'
-import type { Attachment, GroupMessage } from './types'
+import type { Attachment, GroupChat, GroupMessage } from './types'
+
+function saveGroupChatAttachment(
+  group: string,
+  room: GroupChat,
+  resolved: Attachment,
+  delivery: { current: () => boolean; signal: AbortSignal },
+  assertSourceCurrent?: () => void
+) {
+  if (!delivery.current()) {
+    return
+  }
+
+  if (!resolved.data) {
+    throw new GroupFileError('gone')
+  }
+
+  const current = $groupChats.get()[group]
+
+  if (current?.roomId !== room.roomId || current?.hosted !== room.hosted || current?.hostedEpoch !== room.hostedEpoch) {
+    throw new Error('Attachment scope changed.')
+  }
+
+  const encoded =
+    /^data:([^;,]{1,127});base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/.exec(
+      resolved.data
+    )
+
+  if (!encoded || (resolved.mime && resolved.mime !== encoded[1])) {
+    throw new GroupFileError('verification')
+  }
+
+  const bytes = Uint8Array.from(atob(encoded[2]), char => char.charCodeAt(0))
+
+  if (resolved.size !== undefined && bytes.length !== resolved.size) {
+    throw new GroupFileError('verification')
+  }
+
+  assertSourceCurrent?.()
+  downloadCanonicalAttachment(bytes, resolved.name || 'attachment', resolved.mime || encoded[1], delivery.signal)
+}
 
 export async function downloadGroupChatAttachment(
   group: string,
@@ -27,46 +67,22 @@ export async function downloadGroupChatAttachment(
   const delivery = beginGroupFileDelivery(room, signal)
 
   try {
-    const resolved = attachment.classicExport
-      ? await withGroupFileDeadline(readClassicAttachment(group, attachment), delivery.signal)
-      : attachment.data
-        ? attachment
-        : await withGroupFileDeadline(readHostedGroupChatAttachment(group, message, attachment), delivery.signal)
+    if (attachment.classicExport) {
+      await withGroupFileDeadline(
+        withClassicAttachmentSource(group, attachment, (resolved, assertSourceCurrent) => {
+          saveGroupChatAttachment(group, room, resolved, delivery, assertSourceCurrent)
+        }),
+        delivery.signal
+      )
 
-    if (!delivery.current()) {
       return
     }
 
-    if (!resolved.data) {
-      throw new GroupFileError('gone')
-    }
+    const resolved = attachment.data
+      ? attachment
+      : await withGroupFileDeadline(readHostedGroupChatAttachment(group, message, attachment), delivery.signal)
 
-    const current = $groupChats.get()[group]
-
-    if (
-      current?.roomId !== room.roomId ||
-      current?.hosted !== room.hosted ||
-      current?.hostedEpoch !== room.hostedEpoch
-    ) {
-      throw new Error('Attachment scope changed.')
-    }
-
-    const encoded =
-      /^data:([^;,]{1,127});base64,((?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?)$/.exec(
-        resolved.data
-      )
-
-    if (!encoded || (resolved.mime && resolved.mime !== encoded[1])) {
-      throw new GroupFileError('verification')
-    }
-
-    const bytes = Uint8Array.from(atob(encoded[2]), char => char.charCodeAt(0))
-
-    if (resolved.size !== undefined && bytes.length !== resolved.size) {
-      throw new GroupFileError('verification')
-    }
-
-    downloadCanonicalAttachment(bytes, resolved.name || 'attachment', resolved.mime || encoded[1], delivery.signal)
+    saveGroupChatAttachment(group, room, resolved, delivery)
   } catch (error) {
     if (groupFileFailure(error) === 'access') {
       invalidateGroupFileAccess(delivery.token)

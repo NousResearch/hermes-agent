@@ -2337,6 +2337,12 @@ def _update_preflight_handled(args) -> bool:
         managed_error("update Hermes Agent")
         return True
 
+    if getattr(args, "list_autostashes", False):
+        from hermes_cli.update_cmd import _print_update_autostash_inventory
+
+        _print_update_autostash_inventory(["git"], PROJECT_ROOT)
+        return True
+
     # --plan is read-only and deployment-kind aware, so it runs BEFORE the
     # docker/nix/apt refusal gates: on an image/package-managed install the
     # plan itself reports "not updatable in place" plus the right mechanism.

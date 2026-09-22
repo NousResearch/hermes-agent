@@ -10,7 +10,7 @@ export interface ManagedRolloutTarget {
 }
 
 export function targetIdentity(target: ManagedRolloutTarget): string {
-  return `${target.machineId}:${target.installId}`
+  return JSON.stringify([target.machineId, target.installId])
 }
 
 export function TargetRow({ target, selected, onToggle }: { target: ManagedRolloutTarget; selected: boolean; onToggle: (identity: string) => void }) {

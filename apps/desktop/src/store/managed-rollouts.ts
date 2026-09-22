@@ -44,6 +44,14 @@ let pollingInterval = 5_000
 let retryDelay = 1_000
 let capabilityState: 'unknown' | 'available' | 'unsupported' = 'unknown'
 
+function canonical(value: unknown): string {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`
+  if (value && typeof value === 'object') {
+    return `{${Object.keys(value as Record<string, unknown>).sort().map(key => `${JSON.stringify(key)}:${canonical((value as Record<string, unknown>)[key])}`).join(',')}}`
+  }
+  return JSON.stringify(value)
+}
+
 function bridge(): ManagedRolloutsBridge | null {
   if (bridgeOverride) return bridgeOverride
   if (typeof window === 'undefined') return null
@@ -178,7 +186,7 @@ export async function sendManagedRolloutCommand(command: Record<string, unknown>
   if (!requestBridge?.command) throw new Error('managed-rollouts-command-unavailable')
   const requestId = typeof command.requestId === 'string' ? command.requestId : ''
   if (!requestId) throw new Error('managed-rollouts-request-id-required')
-  const key = `${requestId}:${JSON.stringify(command, Object.keys(command).sort())}`
+  const key = `${requestId}:${canonical(command)}`
   if (commandInFlight) {
     if (commandInFlight.key !== key) throw new Error('managed-rollouts-command-conflict')
     return commandInFlight.promise

@@ -7,7 +7,7 @@ const target = { installId: 'install-a', machineId: 'machine-a', label: 'Lab', s
 describe('managed rollout preparation panel', () => {
   it('requires explicit confirmation and selection before preparation', () => {
     const onPrepare = vi.fn()
-    render(<PreparationPanel onPrepare={onPrepare} targets={[target]} />)
+    render(<PreparationPanel onPrepare={onPrepare} reviewGeneration="g1" targets={[target]} />)
     const prepare = screen.getByRole('button', { name: /prepare selected/i })
     expect(prepare).toBeDisabled()
     fireEvent.click(screen.getByRole('button', { name: 'Select' }))
@@ -19,7 +19,7 @@ describe('managed rollout preparation panel', () => {
 
   it('clears confirmation when selection changes, forcing requalification', () => {
     const onPrepare = vi.fn()
-    render(<PreparationPanel onPrepare={onPrepare} targets={[target]} />)
+    render(<PreparationPanel onPrepare={onPrepare} reviewGeneration="g1" targets={[target]} />)
     fireEvent.click(screen.getByRole('button', { name: 'Select' }))
     fireEvent.click(screen.getByRole('checkbox'))
     fireEvent.click(screen.getByRole('button', { name: 'Selected' }))

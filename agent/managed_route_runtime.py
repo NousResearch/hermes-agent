@@ -23,6 +23,7 @@ from agent.model_selection_store import (
     append_outcome, find_active_revocation, get_active_policy, get_policy_revision, get_receipt, persist_receipt,
 )
 from agent.model_selection_types import RoutingBlocked
+from agent.model_selection_integrity import content_hash
 
 __all__ = ["resolve_route", "enforce_worker_route"]
 
@@ -106,6 +107,9 @@ def enforce_worker_route(
     # (e.g. the whole policy_id was never published/activated in this store) is still treated
     # as blocked -- that is not a routine edit, it means there is no admission for this policy
     # at all.
+    retained = get_policy_revision(hermes_home, decision["policy_id"], decision["policy_revision"])
+    if retained is None or content_hash(retained) != decision.get("policy_hash"):
+        raise RoutingBlocked("stale_or_revoked_decision", "receipt policy revision missing or mismatched")
     if get_active_policy(hermes_home, decision["policy_id"]) is None:
         raise RoutingBlocked(
             "stale_or_revoked_decision",

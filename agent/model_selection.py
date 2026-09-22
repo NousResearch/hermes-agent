@@ -10,6 +10,7 @@ are separate consumers; selection itself never launches work.
 """
 from __future__ import annotations
 
+from .model_selection_integrity import content_hash
 from .model_selection_types import (
     DEEP_QUALITY_TASK_CLASSES,
     REQUIRED_PROVENANCE_FIELDS,
@@ -253,8 +254,10 @@ def select(requirements: dict, policy: dict, availability: dict, now: int) -> di
     ]
 
     decision = {
+        "schema_version": 1,
         "policy_id": policy["policy_id"],
         "policy_revision": policy["revision"],
+        "policy_hash": content_hash(policy),
         "requirements": {
             "role": role,
             "execution_kind": requirements["execution_kind"],

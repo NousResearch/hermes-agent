@@ -107,3 +107,42 @@ def test_publish_rejects_malformed_policy_before_creating_store(tmp_path):
     with pytest.raises(RoutingBlocked, match="status"):
         publish_policy(home, malformed, approval_ref="operator:conv-1")
     assert not (home / "model_routing.db").exists()
+
+
+@pytest.mark.parametrize("damage", [
+    "missing_revision", "policy_content", "receipt_content", "receipt_binding",
+    "policy_schema", "receipt_schema", "duplicate_policy_key", "duplicate_receipt_key",
+])
+def test_guard_requires_intact_retained_policy_and_receipt(tmp_path, damage):
+    import sqlite3
+    from agent.model_selection import select
+    from agent.managed_route_runtime import enforce_worker_route
+    from agent.model_selection_store import publish_policy, activate_policy, persist_receipt
+
+    policy = _policy()
+    publish_policy(tmp_path, policy, approval_ref=policy["approval_ref"])
+    activate_policy(tmp_path, "p1", 1)
+    requirements = dict(schema_version=1, role="builder", execution_kind="kanban", execution_id="t_1",
+                        attempt_id="1", task_class="cross-component", required_capabilities=[],
+                        input_tokens=100, reserve_tokens=100, reasoning="high",
+                        provenance=dict(frozen_sha="", verified_by="fixture", complete=True, contributors=[]))
+    receipt = persist_receipt(tmp_path, select(requirements, policy, {}, now=1000))
+    publish_policy(tmp_path, _policy(2), approval_ref="operator:new")
+    activate_policy(tmp_path, "p1", 2)
+    actual = dict(actual_provider="openai", actual_model="a", actual_endpoint="https://api.openai.com/v1",
+                  actual_reasoning="high", record_outcome=False)
+    enforce_worker_route(tmp_path, receipt, **actual)  # newer active policy must not unpin the run
+    mutations = {
+        "missing_revision": "DELETE FROM policy_revisions WHERE revision=1",
+        "policy_content": "UPDATE policy_revisions SET content_json=json_set(content_json,'$.routes[0].model','changed') WHERE revision=1",
+        "receipt_content": "UPDATE routing_receipts SET decision_json=json_set(decision_json,'$.requirements.input_tokens',1)",
+        "receipt_binding": "UPDATE routing_receipts SET execution_id='t_other'",
+        "policy_schema": "UPDATE policy_revisions SET content_json=json_set(content_json,'$.schema_version',99) WHERE revision=1",
+        "receipt_schema": "UPDATE routing_receipts SET decision_json=json_set(decision_json,'$.schema_version',99)",
+        "duplicate_policy_key": "UPDATE policy_revisions SET content_json=replace(content_json,'\"schema_version\":1','\"schema_version\":99,\"schema_version\":1') WHERE revision=1",
+        "duplicate_receipt_key": "UPDATE routing_receipts SET decision_json=replace(decision_json,'\"schema_version\":1','\"schema_version\":99,\"schema_version\":1')",
+    }
+    with sqlite3.connect(tmp_path / "model_routing.db") as conn:
+        conn.execute(mutations[damage])
+    with pytest.raises(RoutingBlocked):
+        enforce_worker_route(tmp_path, receipt, **actual)

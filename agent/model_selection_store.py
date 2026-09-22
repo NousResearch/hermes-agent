@@ -21,6 +21,7 @@ from typing import Optional
 from hermes_cli.sqlite_util import open_db, transaction
 
 from agent.model_selection_types import RoutingBlocked
+from agent.model_selection_integrity import canonical_json, content_hash
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS policy_revisions (
@@ -67,16 +68,6 @@ CREATE TABLE IF NOT EXISTS route_revocations (
 """
 
 
-def _canonical_json(obj) -> str:
-    return json.dumps(obj, sort_keys=True, separators=(",", ":"), allow_nan=False)
-
-
-def _content_hash(obj) -> str:
-    import hashlib
-
-    return hashlib.sha256(_canonical_json(obj).encode("utf-8")).hexdigest()
-
-
 def _db_path(hermes_home) -> Path:
     return Path(hermes_home) / "model_routing.db"
 
@@ -97,7 +88,7 @@ def publish_policy(hermes_home, policy: dict, *, approval_ref: str) -> dict:
     from agent.model_selection import _validate_policy
 
     _validate_policy(content)
-    content_hash = _content_hash(content)
+    digest = content_hash(content)
     now = int(time.time())
     with transaction(_connect(hermes_home)) as conn:
         existing = conn.execute(
@@ -105,7 +96,7 @@ def publish_policy(hermes_home, policy: dict, *, approval_ref: str) -> dict:
             (policy["policy_id"], policy["revision"]),
         ).fetchone()
         if existing is not None:
-            if existing["content_hash"] != content_hash:
+            if existing["content_hash"] != digest:
                 raise RoutingBlocked(
                     "schema_invalid",
                     f"policy_id={policy['policy_id']} revision={policy['revision']} "
@@ -116,11 +107,11 @@ def publish_policy(hermes_home, policy: dict, *, approval_ref: str) -> dict:
                 "INSERT INTO policy_revisions "
                 "(policy_id, revision, approval_ref, content_json, content_hash, created_at, active) "
                 "VALUES (?, ?, ?, ?, ?, ?, 0)",
-                (policy["policy_id"], policy["revision"], approval_ref, _canonical_json(content),
-                 content_hash, now),
+                (policy["policy_id"], policy["revision"], approval_ref, canonical_json(content),
+                 digest, now),
             )
     return {"policy_id": policy["policy_id"], "revision": policy["revision"],
-            "approval_ref": approval_ref, "content_hash": content_hash}
+            "approval_ref": approval_ref, "content_hash": digest}
 
 
 def activate_policy(hermes_home, policy_id: str, revision: int) -> None:
@@ -138,22 +129,42 @@ def activate_policy(hermes_home, policy_id: str, revision: int) -> None:
         conn.execute("UPDATE policy_revisions SET active=1 WHERE id=?", (row["id"],))
 
 
+def _verified_policy(row) -> Optional[dict]:
+    if row is None:
+        return None
+    from agent.model_selection import _validate_policy
+
+    try:
+        policy = json.loads(row["content_json"])
+        _validate_policy(policy)
+        intact = (canonical_json(policy) == row["content_json"]
+                  and content_hash(policy) == row["content_hash"]
+                  and policy["policy_id"] == row["policy_id"]
+                  and policy["revision"] == row["revision"]
+                  and policy["approval_ref"] == row["approval_ref"])
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RoutingBlocked("stale_or_revoked_decision", "invalid retained policy") from exc
+    if not intact:
+        raise RoutingBlocked("stale_or_revoked_decision", "retained policy integrity mismatch")
+    return policy
+
+
 def get_active_policy(hermes_home, policy_id: str) -> Optional[dict]:
     with transaction(_connect(hermes_home)) as conn:
         row = conn.execute(
-            "SELECT content_json FROM policy_revisions WHERE policy_id=? AND active=1",
+            "SELECT * FROM policy_revisions WHERE policy_id=? AND active=1",
             (policy_id,),
         ).fetchone()
-    return json.loads(row["content_json"]) if row is not None else None
+    return _verified_policy(row)
 
 
 def get_policy_revision(hermes_home, policy_id: str, revision: int) -> Optional[dict]:
     with transaction(_connect(hermes_home)) as conn:
         row = conn.execute(
-            "SELECT content_json FROM policy_revisions WHERE policy_id=? AND revision=?",
+            "SELECT * FROM policy_revisions WHERE policy_id=? AND revision=?",
             (policy_id, revision),
         ).fetchone()
-    return json.loads(row["content_json"]) if row is not None else None
+    return _verified_policy(row)
 
 
 def list_policy_revisions(hermes_home, policy_id: str) -> list[dict]:
@@ -175,9 +186,8 @@ def persist_receipt(hermes_home, decision: dict) -> str:
     req = decision["requirements"]
     slot_id = str(req.get("slot_id", ""))
     key = (req["execution_kind"], req["execution_id"], req["attempt_id"], slot_id)
-    receipt_id = "rr_" + _content_hash({"key": key, "policy_id": decision["policy_id"],
-                                         "revision": decision["policy_revision"]})[:24]
-    decision_json = _canonical_json(decision)
+    receipt_id = "rr_" + content_hash(decision)
+    decision_json = canonical_json(decision)
     now = int(time.time())
     with transaction(_connect(hermes_home)) as conn:
         existing = conn.execute(
@@ -204,9 +214,27 @@ def persist_receipt(hermes_home, decision: dict) -> str:
 def get_receipt(hermes_home, receipt_id: str) -> Optional[dict]:
     with transaction(_connect(hermes_home)) as conn:
         row = conn.execute(
-            "SELECT decision_json FROM routing_receipts WHERE id=?", (receipt_id,),
+            "SELECT * FROM routing_receipts WHERE id=?", (receipt_id,),
         ).fetchone()
-    return json.loads(row["decision_json"]) if row is not None else None
+    if row is None:
+        return None
+    try:
+        decision = json.loads(row["decision_json"])
+        requirements = decision["requirements"]
+        intact = (
+            type(decision["schema_version"]) is int and decision["schema_version"] == 1
+            and canonical_json(decision) == row["decision_json"]
+            and receipt_id == "rr_" + content_hash(decision)
+            and all(row[field] == requirements[field] for field in
+                    ("execution_kind", "execution_id", "attempt_id", "slot_id"))
+            and row["policy_id"] == decision["policy_id"]
+            and row["policy_revision"] == decision["policy_revision"]
+        )
+    except (ValueError, TypeError, KeyError) as exc:
+        raise RoutingBlocked("stale_or_revoked_decision", "invalid routing receipt") from exc
+    if not intact:
+        raise RoutingBlocked("stale_or_revoked_decision", "routing receipt integrity mismatch")
+    return decision
 
 
 def get_receipt_created_at(hermes_home, receipt_id: str) -> Optional[int]:
@@ -362,7 +390,7 @@ def append_outcome(hermes_home, receipt_id: str, kind: str, payload: dict) -> No
         conn.execute(
             "INSERT INTO routing_outcomes (receipt_id, seq, kind, payload_json, created_at) "
             "VALUES (?, ?, ?, ?, ?)",
-            (receipt_id, seq, kind, _canonical_json(payload), now),
+            (receipt_id, seq, kind, canonical_json(payload), now),
         )
 
 

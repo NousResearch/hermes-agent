@@ -257,3 +257,28 @@ def test_decompose_returns_false_when_task_not_triage(kanban_home):
     assert "not in triage" in outcome.reason
 
 
+@pytest.mark.parametrize(
+    ("event_kind", "expected_reason"),
+    [
+        ("decomposed", "already decomposed"),
+        ("block_loop_detected", "parked by the block-loop guard"),
+    ],
+)
+def test_decompose_rejects_permanently_ineligible_triage_before_aux_call(
+    kanban_home, monkeypatch, event_kind, expected_reason,
+):
+    """A re-triaged graph root or loop-parked card must not spend an aux call."""
+    with kbc.connect() as conn:
+        tid = kb.create_task(conn, title="do not bill again", triage=True)
+        with kb.write_txn(conn):
+            kb._append_event(conn, tid, event_kind)
+
+    call_aux = MagicMock()
+    monkeypatch.setattr(decomp, "_call_aux", call_aux)
+
+    outcome = decomp.decompose_task(tid, author="me")
+
+    assert outcome.ok is False
+    assert expected_reason in outcome.reason
+    call_aux.assert_not_called()
+

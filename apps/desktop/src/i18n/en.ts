@@ -4126,6 +4126,7 @@ export const en: Translations = {
     openPreview: 'Open preview',
     openInBrowser: 'Open in browser',
     openInExternal: 'Open in external',
+    openWithSystemApp: 'Open with system app',
     popIn: 'Pop in',
     popOut: 'Pop out',
     linkHint: '⌘/Ctrl-click for preview pane',

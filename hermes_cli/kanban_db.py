@@ -4277,7 +4277,11 @@ _NEGATIVE_RETENTION_MSG = "older_than_seconds must be >= 0, got {!r}: a negative
 
 
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
-    """Prune old done/archived events, retaining decomposition identity until task deletion."""
+    """Prune old done/archived events, retaining decomposition identity until task deletion.
+
+    ``older_than_seconds=0`` means everything older than now; the CLI maps
+    ``--event-retention-days 0`` to "disabled" before calling this.
+    """
     older_than_seconds = int(older_than_seconds)
     if older_than_seconds < 0:
         raise ValueError(_NEGATIVE_RETENTION_MSG.format(older_than_seconds))
@@ -4291,7 +4295,11 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
 
 
 def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[str] = None) -> int:
-    """Delete worker log files older than the cutoff on one board; returns the count."""
+    """Delete worker log files older than the cutoff on one board; returns the count.
+
+    ``older_than_seconds=0`` means everything older than now; the CLI maps
+    ``--log-retention-days 0`` to "disabled" before calling this.
+    """
     older_than_seconds = int(older_than_seconds)
     if older_than_seconds < 0:
         raise ValueError(_NEGATIVE_RETENTION_MSG.format(older_than_seconds))

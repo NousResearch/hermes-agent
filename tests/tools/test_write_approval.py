@@ -189,6 +189,24 @@ def test_handle_approve_all(hermes_home):
     assert len(store.user_entries) == 2
 
 
+def test_handle_approve_surfaces_overwritten_entry(hermes_home):
+    """#117952: on the /memory approve surface a partial-entry replace must show the
+    approver the FULL entry it overwrote — the store's replaced_entries field used to be
+    dropped by _apply_one, so the incident path stayed silent."""
+    from hermes_cli.write_approval_commands import handle_pending_subcommand
+    from tools.memory_tool import MemoryStore
+    from tools import write_approval as wa
+    store = MemoryStore(); store.load_from_disk()
+    entry = "RULE A: gate merges. RULE B: ci per HEAD. RULE C: never squash."
+    store.add("memory", entry)
+    wa.stage_write("memory", {"action": "batch", "target": "memory", "operations": [
+        {"action": "replace", "old_text": "RULE B: ci per HEAD.", "content": "RULE B: CI is per-head."}]},
+        summary="batch", origin="background_review")
+    out = handle_pending_subcommand(wa.MEMORY, ["approve", "all"], memory_store=store)
+    assert "Approved 1" in out and entry in out
+    assert store.memory_entries == ["RULE B: CI is per-head."]
+
+
 def test_handle_approval_on(hermes_home):
     from hermes_cli.write_approval_commands import handle_pending_subcommand
     from tools import write_approval as wa

@@ -20,8 +20,9 @@ transport:
 
 auth:
   type: oauth
-  # Prompted at install (CLI, dashboard, desktop) and stored in the profile's
-  # .env — config.yaml only ever carries the ${VAR} references below.
+  # Prompted at install (CLI, dashboard, desktop). Secrets are stored in the
+  # profile's .env; non-secret values (client id below) are inlined into
+  # config.yaml — config.yaml only ever carries ${VAR} references for secrets.
   env:
     - name: ASANA_CLIENT_ID
       prompt: "Asana MCP app Client ID (developer console → your MCP app → OAuth)"
@@ -50,7 +51,8 @@ post_install: |
     - OAuth → Redirect URL: http://localhost:27890/callback (exactly).
     - Manage distribution → allow the workspace(s) you will use.
   Its Client ID / Client secret are the ASANA_CLIENT_ID / ASANA_CLIENT_SECRET
-  values prompted above (stored in the profile's .env, never in config.yaml).
+  values prompted above. The secret is stored in the profile's .env; the
+  non-secret client id is inlined into config.yaml.
 
   Then run `hermes mcp login asana` (or click Authorize in the dashboard /
   Desktop: the callback still arrives at http://localhost:27890/callback, so

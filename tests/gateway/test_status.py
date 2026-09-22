@@ -1607,12 +1607,15 @@ class TestResolveGatewayLiveness:
         assert calls == {"health": 0, "runtime_pid": 0}
 
 
-    def test_probe_exception_degrades_instead_of_raising(self):
+    def test_probe_exception_degrades_instead_of_raising(self, tmp_path, monkeypatch):
         """A raising rung must fall through, never propagate.
 
         Status endpoints poll this constantly; an exotic /proc or a
         permissions error must not turn into a 500.
         """
+        # Empty rendezvous dir: no host gateway owns the role, so the multiplexer rung stays quiet.
+        monkeypatch.setenv("HERMES_GATEWAY_LOCK_DIR", str(tmp_path))
+
         def _boom(*a, **k):
             raise RuntimeError("probe exploded")
 

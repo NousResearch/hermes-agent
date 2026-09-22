@@ -952,21 +952,46 @@ class SessionMessagesMixin:
         active_clause = self._active_clause(include_inactive, include_compacted)
         if include_compacted and not include_inactive and self._ensure_display_order(session_id):
             direction = "DESC" if latest else "ASC"
-            sql = f"""WITH page AS (
-                    SELECT display_order FROM messages
-                    WHERE session_id = ? AND (active = 1 OR compacted = 1)
-                    GROUP BY display_order ORDER BY display_order {direction}
-                    LIMIT ? OFFSET ?
-                )
-                SELECT chosen.* FROM page
-                JOIN messages AS chosen ON chosen.id = (
-                    SELECT candidate.id FROM messages AS candidate
-                    WHERE candidate.session_id = ?
-                      AND candidate.display_order IS page.display_order
-                      AND (candidate.active = 1 OR candidate.compacted = 1)
-                    ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
-                )
-                ORDER BY page.display_order ASC"""
+            has_null_order = self._read_one(
+                "SELECT 1 FROM messages WHERE session_id = ? AND (active = 1 OR compacted = 1) "
+                "AND display_order IS NULL LIMIT 1", (session_id,)) is not None
+            if has_null_order:
+                # NULL means an identity has not yet been backfilled, never that
+                # unrelated messages share an ordering group.  Group and match
+                # on the durable identity so copies still dedupe, using the row
+                # id only as the stable order fallback for that identity.
+                sql = f"""WITH page AS (
+                        SELECT display_identity, MIN(COALESCE(display_order, id)) AS display_order
+                        FROM messages
+                        WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                        GROUP BY display_identity ORDER BY display_order {direction}
+                        LIMIT ? OFFSET ?
+                    )
+                    SELECT chosen.* FROM page
+                    JOIN messages AS chosen ON chosen.id = (
+                        SELECT candidate.id FROM messages AS candidate
+                        WHERE candidate.session_id = ?
+                          AND candidate.display_identity IS page.display_identity
+                          AND (candidate.active = 1 OR candidate.compacted = 1)
+                        ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                    )
+                    ORDER BY page.display_order ASC"""
+            else:
+                sql = f"""WITH page AS (
+                        SELECT display_order FROM messages
+                        WHERE session_id = ? AND (active = 1 OR compacted = 1)
+                        GROUP BY display_order ORDER BY display_order {direction}
+                        LIMIT ? OFFSET ?
+                    )
+                    SELECT chosen.* FROM page
+                    JOIN messages AS chosen ON chosen.id = (
+                        SELECT candidate.id FROM messages AS candidate
+                        WHERE candidate.session_id = ?
+                          AND candidate.display_order IS page.display_order
+                          AND (candidate.active = 1 OR candidate.compacted = 1)
+                        ORDER BY candidate.active DESC, candidate.id DESC LIMIT 1
+                    )
+                    ORDER BY page.display_order ASC"""
             rows = self._read_all(sql, [session_id, -1 if limit is None else limit, offset, session_id])
         elif include_compacted:
             # Read-only legacy stores cannot persist display identities; keep only fixed-width

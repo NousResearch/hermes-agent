@@ -161,9 +161,9 @@ class TestDisplayDedupe:
                 f"""
                 INSERT INTO messages
                     (session_id, role, content, tool_call_id, tool_calls,
-                     tool_name, timestamp, active, compacted)
+                     tool_name, timestamp, display_identity, active, compacted)
                 SELECT session_id, role, content, tool_call_id, tool_calls,
-                       tool_name, timestamp, 0, 1
+                       tool_name, timestamp, display_identity, 0, 1
                 FROM messages
                 WHERE session_id = ? AND id IN ({placeholders})
                 """,
@@ -609,18 +609,20 @@ class TestDisplayDedupe:
         db.append_messages_batch(sid, [
             {"role": "user", "content": "q1"},
             {"role": "assistant", "content": "a1"},
+            {"role": "user", "content": "q2"},
+            {"role": "assistant", "content": "a2"},
         ])
         original_ids = _row_ids(db, sid)
         self._copy_tail_as_new_generation(db, sid, [original_ids[0]])
         db._execute_write(lambda conn: conn.execute(
-            "UPDATE messages SET display_order = NULL WHERE session_id = ? AND content = ?",
-            (sid, "q1"),
+            "UPDATE messages SET display_order = NULL WHERE session_id = ? AND content IN (?, ?)",
+            (sid, "q1", "q2"),
         ))
         monkeypatch.setattr(db, "_ensure_display_order", lambda _sid: True)
 
         assert _row_ids(db, sid, include_compacted=True) == original_ids
-        assert _row_ids(db, sid, include_compacted=True, limit=1, offset=0) == original_ids[:1]
-        assert _row_ids(db, sid, include_compacted=True, latest=True, limit=1, offset=1) == original_ids[:1]
+        assert _row_ids(db, sid, include_compacted=True, limit=2, offset=0) == original_ids[:2]
+        assert _row_ids(db, sid, include_compacted=True, latest=True, limit=2, offset=2) == original_ids[:2]
 
     def test_distinct_tool_calls_with_same_content_are_not_merged(self, db):
         """Two real tool messages that happen to share role/content/timestamp

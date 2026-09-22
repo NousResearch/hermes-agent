@@ -39,6 +39,14 @@ import pytest
 from gateway.platforms import helpers
 from gateway.platforms.helpers import ThreadParticipationTracker
 
+# One constant drives both sides of the stall check below: the barrier timeout
+# (how long a worker parked inside the rename stalls the loop under the
+# pre-fix lock shape) and the threshold the loop must beat.  Deriving the
+# threshold as ``BARRIER / 2`` keeps the red/green margin at half the stall
+# whatever the value, so a loaded runner overshooting ``sleep(0.05)`` cannot
+# flip the assertion.
+BARRIER = 1.0
+
 
 @pytest.fixture()
 def tracker(tmp_path, monkeypatch):
@@ -64,7 +72,7 @@ def test_two_concurrent_marks_do_not_lose_an_entry(tracker, monkeypatch):
     # With the io lock in place the second worker never reaches the barrier
     # (it waits on the lock), so the first one MUST time out here.  That
     # timeout is the green path's cost, so keep it small.
-    entered = threading.Barrier(2, timeout=0.5)
+    entered = threading.Barrier(2, timeout=BARRIER)
     real_write = helpers.atomic_json_write
 
     def _synchronised_write(path, payload, *a, **kw):
@@ -89,7 +97,8 @@ def test_two_concurrent_marks_do_not_lose_an_entry(tracker, monkeypatch):
         started = time.monotonic()
         await asyncio.sleep(0.05)
         assert "!a:example.org" in tracker
-        assert time.monotonic() - started < 0.2, (
+        elapsed = time.monotonic() - started
+        assert elapsed < BARRIER / 2, (
             "the loop stalled on the tracker lock while a worker held it "
             "across os.replace"
         )

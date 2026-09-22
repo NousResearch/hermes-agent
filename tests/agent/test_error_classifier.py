@@ -2160,3 +2160,61 @@ class TestAuthErrorNamesOffRouteEndpoint:
         for base_url in ("", "https://api.anthropic.com/v1"):
             result = classify_api_error(e, provider="anthropic", model="claude", base_url=base_url)
             assert result.message == "API keys are not supported by this endpoint.", base_url
+
+# ── Test: a 4xx that wraps an upstream fault ───────────────────────────
+
+class TestStatusWrappedUpstreamFault:
+    """A 4xx whose body names the *upstream* as the failure, not this request.
+
+    Captured on 2026-09-21 from the provider that aborted a live turn: HTTP 403 whose
+    body read ``Upstream request failed: [server_error] Upstream response was not valid
+    JSON``. Read by status alone that is an auth failure, so the turn aborted on attempt
+    1/3 — one attempt, on a transient upstream glitch. These pin the class: the wrapped
+    fault is retryable, and every verdict the status legitimately carries still wins.
+    """
+
+    CAPTURED = "Upstream request failed: [server_error] Upstream response was not valid JSON."
+
+    def _err(self, message: str, status: int = 403):
+        body = {"error": {"message": message}}
+        return MockAPIError(f"Error code: {status} - {body}", status_code=status, body=body)
+
+    def test_the_captured_403_is_a_retryable_upstream_fault(self):
+        result = classify_api_error(
+            self._err(self.CAPTURED), provider="opencode-go", model="deepseek-v4.1-flash")
+
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+        assert result.should_fallback is True
+        assert result.is_auth is False
+        assert result.error_context["status_wrapped_upstream_fault"] is True
+
+    def test_the_same_wrapper_on_a_400_is_retryable_too(self):
+        result = classify_api_error(self._err(self.CAPTURED, status=400), provider="opencode-go")
+
+        assert result.reason == FailoverReason.server_error
+        assert result.retryable is True
+
+    def test_a_real_403_still_aborts(self):
+        result = classify_api_error(
+            self._err("You do not have access to this model.", status=403), provider="opencode-go")
+
+        assert result.reason == FailoverReason.auth
+        assert result.retryable is False
+
+    def test_a_consumption_wall_still_aborts(self):
+        # A depleted balance is terminal however the sentence is worded: retrying a wall
+        # spends money on nothing, so the billing verdict is never re-read as upstream.
+        result = classify_api_error(
+            self._err("Upstream request failed: key limit exceeded"), provider="openrouter")
+
+        assert result.reason == FailoverReason.billing
+        assert result.retryable is False
+
+    def test_a_policy_block_still_aborts(self):
+        result = classify_api_error(
+            self._err("Upstream request failed: no endpoints available matching your data policy", status=400),
+            provider="openrouter")
+
+        assert result.reason == FailoverReason.provider_policy_blocked
+        assert result.retryable is False

@@ -934,7 +934,50 @@ def _by_status(c: _Ctx) -> Optional[Verdict]:
     if status is None:
         return None
     default = _V_FORMAT_ERROR if 400 <= status < 500 else _V_SERVER_ERROR if 500 <= status < 600 else None
-    return _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
+    verdict = _STATUS_HANDLERS[status](c) if status in _STATUS_HANDLERS else default
+    return _wrapped_upstream_fault(c, verdict)
+
+
+# A 4xx whose *body* names the upstream as the failure. Captured 2026-09-21 from a live
+# turn that aborted on attempt 1/3: HTTP 403 (auth, non-retryable by status) carrying
+# ``Upstream request failed: [server_error] Upstream response was not valid JSON`` — a
+# transient upstream glitch wearing an auth code. Verbatim markers only, each taken from
+# a body actually seen; a generic word like "upstream" would collide with provider
+# wording for their own limits.
+_UPSTREAM_FAULT_PATTERNS = (
+    "upstream request failed",
+    "upstream response was not valid json",
+    "[server_error]",
+)
+
+# The verdicts that mean "this request, credential or shape was wrong" — the readings a
+# wrapped upstream fault gets mistaken for. Deliberately excludes every verdict the
+# status legitimately carries and must keep: billing/quota consumption, content and
+# provider policy blocks, TLS, overflow, entitlement. Those stay terminal, because
+# retrying them spends money or time on nothing.
+_WRAPPED_UPSTREAM_RECLASSIFIABLE = frozenset({
+    FailoverReason.auth, FailoverReason.auth_permanent, FailoverReason.format_error,
+})
+
+
+def _wrapped_upstream_fault(c: _Ctx, verdict: Optional[Verdict]) -> Optional[Verdict]:
+    """Re-read a 4xx that is really an upstream fault as the retryable server error it is.
+
+    Only refines a verdict that already blamed this request/credential, and only on the
+    evidence of the body: retryability stays bounded by the loop's own ``max_retries``,
+    and ``should_fallback`` sends the turn to another provider on the way out — the same
+    recovery an upstream 429 already gets (``_is_openrouter_upstream_error``).
+    """
+    if verdict is None or c.status_code is None or not (400 <= c.status_code < 500):
+        return verdict
+    if verdict.get("reason") not in _WRAPPED_UPSTREAM_RECLASSIFIABLE:
+        return verdict
+    if not any(p in c.msg for p in _UPSTREAM_FAULT_PATTERNS):
+        return verdict
+    return _v(
+        _R.server_error, should_fallback=True,
+        error_context={"status_wrapped_upstream_fault": True},
+    )
 
 
 # Stage order: plugin hooks → the provider's own profile hook → provider-specific special cases →

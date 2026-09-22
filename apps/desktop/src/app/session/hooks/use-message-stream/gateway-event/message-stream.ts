@@ -82,6 +82,28 @@ export function handleMessageStreamEvent(ctx: GatewayEventContext): boolean {
     updateSessionState
   } = deps
 
+  // A reconnect may replay terminal events from turns that were already
+  // committed before this renderer attached.  Those frames have no live turn
+  // authority and must not manufacture a new tail bubble (or run completion
+  // side effects) after the durable transcript has been painted.  A resumed
+  // in-flight turn is explicitly marked live by session.activate, so preserve
+  // its replayed stream until its terminal event settles it.
+  if (
+    event.replayed &&
+    sessionId &&
+    (event.type === 'message.start' ||
+      event.type === 'message.delta' ||
+      event.type === 'message.interim' ||
+      event.type === 'message.complete')
+  ) {
+    const state = sessionStateByRuntimeIdRef.current.get(sessionId)
+    const hasLiveTurnAuthority = Boolean(state?.turnLive || state?.busy || state?.awaitingResponse || state?.streamId)
+
+    if (!hasLiveTurnAuthority) {
+      return true
+    }
+  }
+
   if (event.type === 'message.start') {
     if (!sessionId) {
       return true

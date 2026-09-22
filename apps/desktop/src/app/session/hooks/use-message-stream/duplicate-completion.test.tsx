@@ -21,6 +21,36 @@ function mount() {
 
 afterEach(cleanup)
 
+it('ignores a replayed terminal reply after the session has already settled', async () => {
+  const { stream, send } = mount()
+
+  await send('message.start')
+  await send('message.complete', { text: 'newer answer' })
+
+  await act(() =>
+    stream.handleEvent({
+      replayed: true,
+      payload: { text: 'older answer' },
+      session_id: SID,
+      type: 'message.complete'
+    })
+  )
+
+  expect(stream.state().messages.map(chatMessageText)).toEqual(['newer answer'])
+
+  await send('message.start')
+  await act(() =>
+    stream.handleEvent({
+      replayed: true,
+      payload: { text: 'recovered live answer' },
+      session_id: SID,
+      type: 'message.complete'
+    })
+  )
+
+  expect(stream.state().messages.map(chatMessageText)).toEqual(['newer answer', 'recovered live answer'])
+})
+
 it('settles identical tool-interim completion once while retaining every completed call', async () => {
   for (const reusedId of [false, true]) {
     const { stream, send, hydrate } = mount()

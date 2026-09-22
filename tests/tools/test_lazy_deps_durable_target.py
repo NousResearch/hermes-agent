@@ -179,26 +179,20 @@ class TestInstallArgConstruction:
         # ...and the spec is last.
         assert cmd[-1] == "somepkg==1.2.3"
 
-    def test_no_target_args_in_venv_scoped_mode(self, monkeypatch):
-        # Env unset → plain venv-scoped install, no --target / --constraint.
+    def test_no_target_refuses_live_venv_mutation(self, monkeypatch):
+        # Env unset must never invoke uv/pip against the interpreter currently
+        # running Hermes: replacement installs can uninstall a live package.
         monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
-        monkeypatch.setattr(ld.shutil, "which", lambda _: None)
-        captured = {}
-
-        def fake_run(cmd, *a, **k):
-            if "--version" in cmd:
-                return subprocess.CompletedProcess(cmd, 0, "pip 24.0", "")
-            captured["cmd"] = cmd
-            return subprocess.CompletedProcess(cmd, 0, "ok", "")
-
-        monkeypatch.setattr(ld.subprocess, "run", fake_run)
+        monkeypatch.setattr(
+            ld.subprocess, "run",
+            lambda *_a, **_kw: pytest.fail("live-venv guard reached the installer"),
+        )
         result = ld._venv_pip_install(("somepkg==1.2.3",))
-        assert result.success
-        assert "--target" not in captured["cmd"]
-        assert "--constraint" not in captured["cmd"]
+        assert not result.success
+        assert "running Hermes interpreter" in result.stderr
 
-    def test_uv_resolution_failure_does_not_fall_through_to_pip(self, monkeypatch):
-        monkeypatch.delenv(ld._LAZY_TARGET_ENV, raising=False)
+    def test_uv_resolution_failure_does_not_fall_through_to_pip(self, monkeypatch, tmp_path):
+        monkeypatch.setenv(ld._LAZY_TARGET_ENV, str(tmp_path / "lazy-packages"))
         monkeypatch.setattr("hermes_cli.managed_uv.resolve_uv", lambda: "uv")
         calls = []
 

@@ -62,15 +62,15 @@ def test_reason_is_classified_as_skipped_not_failed(monkeypatch):
     )
 
 
-def test_unmanaged_install_is_not_blocked_by_the_guard(monkeypatch):
-    """On a normal pip install the guard must be transparent."""
+def test_unmanaged_install_refuses_live_venv_mutation(monkeypatch):
+    """An unmanaged environment still cannot be mutated under a live process."""
     monkeypatch.setattr("hermes_cli.config.get_managed_system", lambda: None)
+    _no_installer(monkeypatch)
 
     with pytest.raises(FeatureUnavailable) as excinfo:
         lazy_deps.ensure(FEATURE, prompt=False)
 
-    # Whatever stops the install here, it must NOT be the managed guard.
-    assert "managed installs" not in excinfo.value.reason
+    assert "running Hermes interpreter" in excinfo.value.reason
 
 
 def test_durable_install_target_overrides_the_guard(monkeypatch, tmp_path):

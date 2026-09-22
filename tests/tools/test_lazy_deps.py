@@ -448,7 +448,7 @@ class TestInstallSpecs:
 
         monkeypatch.setattr(ld, "_run_installer", fake_run)
         monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
-        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: tmp_path / "lazy-packages")
         monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **kw: None)
         monkeypatch.chdir(tmp_path)
         project_root = Path(ld.__file__).resolve().parent.parent
@@ -589,10 +589,11 @@ class TestInstallWarmsBytecode:
     """The warm runs on install success, and only on success."""
 
     @staticmethod
-    def _install(monkeypatch, returncode):
+    def _install(monkeypatch, tmp_path, returncode):
         calls = []
         cmds = []
-        monkeypatch.setattr(ld, "_lazy_install_target", lambda: None)
+        target = tmp_path / "lazy-packages"
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: target)
         monkeypatch.setattr(ld.shutil, "which", lambda name: "uv" if name == "uv" else None)
         monkeypatch.setattr(
             "hermes_cli.managed_uv.resolve_uv", lambda *a, **kw: "uv", raising=False
@@ -614,22 +615,22 @@ class TestInstallWarmsBytecode:
             lambda specs, target: calls.append((specs, target)),
         )
         result = ld._venv_pip_install(("zzzfake==1.0",))
-        return result, calls, cmds
+        return result, calls, cmds, target
 
-    def test_success_warms_once_with_the_installed_specs(self, monkeypatch):
-        result, calls, _ = self._install(monkeypatch, 0)
+    def test_success_warms_once_with_the_installed_specs(self, monkeypatch, tmp_path):
+        result, calls, _, target = self._install(monkeypatch, tmp_path, 0)
         assert result.success is True
-        assert calls == [(("zzzfake==1.0",), None)]
+        assert calls == [(("zzzfake==1.0",), target)]
 
-    def test_failed_install_does_not_warm(self, monkeypatch):
-        result, calls, _ = self._install(monkeypatch, 1)
+    def test_failed_install_does_not_warm(self, monkeypatch, tmp_path):
+        result, calls, _, _ = self._install(monkeypatch, tmp_path, 1)
         assert result.success is False
         assert calls == []
 
-    def test_uv_tier_compiles_bytecode_for_the_whole_install(self, monkeypatch):
+    def test_uv_tier_compiles_bytecode_for_the_whole_install(self, monkeypatch, tmp_path):
         # uv does not write __pycache__ unless asked (pip does). The flag
         # covers transitive deps too, which the per-spec warm never sees.
-        _, _, cmds = self._install(monkeypatch, 0)
+        _, _, cmds, _ = self._install(monkeypatch, tmp_path, 0)
         uv_cmds = [c for c in cmds if c[:3] == ["uv", "pip", "install"]]
         assert len(uv_cmds) == 1
         cmd = uv_cmds[0]
@@ -665,6 +666,7 @@ class TestPipConfIndexBridge:
         monkeypatch.setattr(ld, "_run_installer", fake_run)
         monkeypatch.setattr(ld, "_uv_binary", lambda: "/fake/uv")
         monkeypatch.setattr(ld, "_after_successful_install", lambda *a, **k: None)
+        monkeypatch.setattr(ld, "_lazy_install_target", lambda: tmp_path / "lazy-packages")
         result = ld._venv_pip_install(("somepkg==1.0",))
         assert result.success
         return captured["env"]

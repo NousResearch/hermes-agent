@@ -1,11 +1,11 @@
 """Lazy dependency installer for opt-in Hermes backends.
 
-Backends call :func:`ensure(feature)` on first import; missing packages are installed into the
-active venv (or the durable target) unless ``security.allow_lazy_installs: false``, in which
-case :class:`FeatureUnavailable` carries a remediation hint. Security model: venv-scoped
-(never system Python); durable-target mode (``HERMES_LAZY_INSTALL_TARGET``, sealed images)
-APPENDS the target to ``sys.path`` so core site-packages wins every collision and a lazy
-package can only add modules, never shadow core; PyPI-by-name specs only (``_spec_is_safe``);
+Backends call :func:`ensure(feature)` on first import; missing packages install only into a
+durable target when ``security.allow_lazy_installs`` permits them. The running Hermes
+interpreter is never mutated: replacement installs can uninstall files used by live sibling
+processes. Durable-target mode (``HERMES_LAZY_INSTALL_TARGET``, sealed images) APPENDS the
+target to ``sys.path`` so core site-packages wins every collision and a lazy package can only
+add modules, never shadow core; PyPI-by-name specs only (``_spec_is_safe``);
 ``ensure`` accepts only the :data:`LAZY_DEPS` allowlist; failures surface pip's stderr, no retry.
 """
 
@@ -265,6 +265,18 @@ def _lazy_install_target() -> Optional[Path]:
     """Durable install-target dir (:data:`_LAZY_TARGET_ENV`), or None for venv-scoped mode."""
     raw = os.environ.get(_LAZY_TARGET_ENV, "").strip()
     return Path(raw) if raw else None
+
+
+def _live_venv_install_refusal() -> str:
+    """Explain why lazy installs must not mutate the interpreter running Hermes.
+
+    ``uv pip install`` removes an existing distribution before replacing it.
+    Doing that in this process's own environment can leave imported modules or
+    sibling Hermes processes executing files that have just been uninstalled.
+    Lazy installs therefore require the isolated durable target instead.
+    """
+    return ("refusing to install into the running Hermes interpreter environment; "
+            "configure a durable lazy-install target or install the dependency before starting Hermes")
 
 
 def _ensure_target_ready(target: Path) -> Optional[str]:
@@ -571,24 +583,23 @@ def _after_successful_install(specs: tuple[str, ...], target: Optional[Path], dr
 
 def _venv_pip_install(specs: tuple[str, ...], *, timeout: int = 300, constraint_lines: tuple[str, ...] = (),
                       dry_run: bool = False) -> _InstallResult:
-    """Install ``specs`` via the uv -> pip -> ensurepip ladder, venv-scoped or into the durable
-    ``--target`` (constrained to core versions) when :data:`_LAZY_TARGET_ENV` is set. Independent of
-    ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
+    """Install ``specs`` via the uv -> pip -> ensurepip ladder into the durable ``--target``.
+    Refuse to mutate the running interpreter when :data:`_LAZY_TARGET_ENV` is unset. Independent
+    of ``hermes_cli.tools_config._pip_install`` (no CLI dependency).
 
     *constraint_lines* pins the resolver (plugin installs pass Hermes' own declared ranges so a plugin
     can never move a core package out of range); *dry_run* resolves without installing."""
     if not specs:
         return _InstallResult(True, "", "")
     target = _lazy_install_target()
+    if target is None:
+        return _InstallResult(False, "", _live_venv_install_refusal())
     constraints: Optional[Path] = None
     extra_args: list[str] = ["--dry-run"] if dry_run else []
-    if target is not None:
-        if err := _ensure_target_ready(target):
-            return _InstallResult(False, "", err)
-        constraints = _core_constraints_file()
-        extra_args += ["--target", str(target)]
-    elif constraint_lines:
-        constraints = _write_constraints_file(constraint_lines)
+    if err := _ensure_target_ready(target):
+        return _InstallResult(False, "", err)
+    constraints = _core_constraints_file()
+    extra_args += ["--target", str(target)]
     if constraints is not None:
         extra_args += ["--constraint", str(constraints)]
 

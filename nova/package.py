@@ -34,7 +34,7 @@ import gzip
 import hashlib
 import io
 import tarfile
-from pathlib import Path
+from pathlib import Path, PurePosixPath
 from typing import Iterator
 
 from nova.errors import SpecError
@@ -121,17 +121,15 @@ def package(bundle_dir: Path, out: Path) -> dict[str, object]:
     }
 
 
-def unpack(archive: Path, destination: Path) -> dict[str, object]:
-    """Extract an archive written by :func:`package` into ``destination``.
+def _members_of(archive: Path) -> list[str]:
+    """Every regular-file member of ``archive``, refusing anything that could escape.
 
-    Refuses any member that would land outside ``destination``. The archive is written by
-    NOVA, but it travels through a bucket and a host, and the one place a tar extraction
-    must not trust its input is after it has been somewhere else.
+    Checked against a notional root rather than the real destination, so the refusal
+    happens before a single byte is written and cannot depend on where the caller is
+    extracting to. The archive is written by NOVA, but it travels through a bucket and a
+    host, and the one place a tar extraction must not trust its input is after it has been
+    somewhere else.
     """
-    destination = Path(destination)
-    destination.mkdir(parents=True, exist_ok=True)
-    resolved_root = destination.resolve()
-
     names: list[str] = []
     with tarfile.open(Path(archive), mode="r:gz") as handle:
         for info in handle.getmembers():
@@ -139,13 +137,120 @@ def unpack(archive: Path, destination: Path) -> dict[str, object]:
                 raise SpecError(
                     f"{archive} contains {info.name!r}, which is not a regular file"
                 )
-            target = (destination / info.name).resolve()
-            if not str(target).startswith(str(resolved_root) + "/"):
+            name = info.name
+            if name.startswith("/") or PurePosixPath(name).is_absolute():
+                raise SpecError(f"{archive} contains an absolute path {name!r}")
+            if ".." in PurePosixPath(name).parts:
                 raise SpecError(
-                    f"{archive} contains {info.name!r}, which would extract outside "
-                    f"{destination}"
+                    f"{archive} contains {name!r}, which would extract outside the "
+                    "destination"
                 )
-            names.append(info.name)
-        handle.extractall(destination)  # noqa: S202 — every member checked above
+            names.append(name)
+    return names
 
-    return {"destination": str(destination), "files": len(names), "members": sorted(names)}
+
+def _is_empty(path: Path) -> bool:
+    """True when ``path`` does not exist, or exists and holds nothing at all.
+
+    Any entry counts, including a dotfile. A destination with something in it is one
+    somebody else is using, and guessing which leftovers are harmless is how the stale
+    ``channels.yaml`` survived a bundle that had deleted it.
+    """
+    if not path.exists():
+        return True
+    return not any(path.iterdir())
+
+
+def unpack(
+    archive: Path, destination: Path, *, replace: bool = False
+) -> dict[str, object]:
+    """Extract an archive written by :func:`package` into ``destination``.
+
+    **Extraction replaces, it never merges.** A bundle is a complete statement of what a
+    tenant declares, so a file deleted from it must disappear from the deployed copy —
+    otherwise deleting a declaration locally does nothing on the host, and the bundle
+    stops being the source of truth the whole design rests on. That is not hypothetical:
+    a merging unpack left a removed ``channels.yaml`` in place on the first field
+    deployment, which kept a channel alive, kept its channel-scoped agent profile
+    materialized, and made the host's bundle digest disagree with the archive it had just
+    been given — from identical bytes.
+
+    Because replacing is destructive, it is never the default. A non-empty destination is
+    refused unless ``replace=True``, so the dangerous act is the one somebody typed.
+
+    **Ordered so a failure cannot leave a half-updated bundle.** Members are validated,
+    then extracted to a staging directory beside the destination, then the result is
+    loaded and parsed — and only once all of that has succeeded is anything in the
+    destination touched. The swap itself is two renames on one filesystem: the old tree
+    moves aside, the new one moves in. A failure before the swap leaves the destination
+    untouched; a failure between the renames restores the old tree.
+    """
+    import shutil
+    import uuid
+
+    archive = Path(archive)
+    destination = Path(destination)
+    names = _members_of(archive)
+    if not names:
+        raise SpecError(f"{archive} contains no files")
+
+    empty = _is_empty(destination)
+    if not empty and not replace:
+        existing = sorted(p.name for p in destination.iterdir())[:5]
+        raise SpecError(
+            f"{destination} is not empty (contains {', '.join(existing)}"
+            f"{', …' if len(existing) == 5 else ''}). Unpacking would merge the archive "
+            "into what is already there and leave behind any file this bundle has "
+            "deleted, so the deployed bundle would stop matching the one you packaged. "
+            "Re-run with --replace to replace the directory's contents, or unpack into "
+            "an empty directory."
+        )
+
+    parent = destination.parent
+    parent.mkdir(parents=True, exist_ok=True)
+    # Beside the destination, so the swap below is a rename within one filesystem rather
+    # than a copy that could half-finish.
+    staging = parent / f".{destination.name}.incoming-{uuid.uuid4().hex[:12]}"
+    retired = parent / f".{destination.name}.retired-{uuid.uuid4().hex[:12]}"
+
+    try:
+        staging.mkdir(parents=True)
+        with tarfile.open(archive, mode="r:gz") as handle:
+            handle.extractall(staging)  # noqa: S202 — every member checked by _members_of
+
+        # Parsed before anything is replaced: a truncated or malformed archive must not be
+        # able to destroy a working bundle on its way to failing.
+        from nova.spec import load_bundle
+
+        load_bundle(staging)
+
+        removed: list[str] = []
+        if empty:
+            if destination.exists():
+                destination.rmdir()
+            staging.rename(destination)
+        else:
+            before = {
+                str(p.relative_to(destination).as_posix())
+                for p in destination.rglob("*") if p.is_file()
+            }
+            removed = sorted(before - set(names))
+            destination.rename(retired)
+            try:
+                staging.rename(destination)
+            except BaseException:
+                # Put the old tree back rather than leaving nothing where the
+                # authoritative bundle used to be.
+                retired.rename(destination)
+                raise
+            shutil.rmtree(retired, ignore_errors=True)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+
+    return {
+        "destination": str(destination),
+        "files": len(names),
+        "members": sorted(names),
+        "replaced": not empty,
+        "removed": removed if not empty else [],
+    }

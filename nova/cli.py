@@ -77,6 +77,13 @@ def _build_parser() -> argparse.ArgumentParser:
     )
     bundle_unpack.add_argument("archive", type=Path)
     bundle_unpack.add_argument("--into", type=Path, required=True)
+    bundle_unpack.add_argument(
+        "--replace", action="store_true",
+        help=(
+            "replace the destination's contents. Required when it is not empty: without "
+            "it the archive would merge, leaving behind any file this bundle deleted"
+        ),
+    )
     bundle_unpack.add_argument("--json", action="store_true")
 
     plan = sub.add_parser("plan", help="show what applying a bundle would change")
@@ -523,11 +530,16 @@ def _bundle(args) -> int:
               "/var/lib/nova/bundle`, then `nova apply /var/lib/nova/bundle`.")
         return 0
 
-    report = _package.unpack(args.archive, args.into)
+    report = _package.unpack(args.archive, args.into, replace=args.replace)
     if args.json:
         print(_json.dumps(report, indent=2, sort_keys=True))
         return 0
-    print(f"extracted {report['files']} file(s) into {report['destination']}")
+    verb = "replaced" if report["replaced"] else "extracted"
+    print(f"{verb} {report['files']} file(s) into {report['destination']}")
+    # Named, not counted. These are declarations the tenant deleted, and an operator
+    # reading a deployment log should be able to see which ones went.
+    for name in report["removed"]:
+        print(f"  removed (not in this bundle): {name}")
     return 0
 
 

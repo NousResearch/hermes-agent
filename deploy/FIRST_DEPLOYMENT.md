@@ -465,7 +465,7 @@ aws s3 cp /tmp/bundle.tgz "s3://your-private-bucket/bundle.tgz"
 # in the SSM session
 sudo aws s3 cp s3://your-private-bucket/bundle.tgz /tmp/
 sha256sum /tmp/bundle.tgz            # must match the archive sha256 printed above
-sudo docker exec nova python -m nova bundle unpack /tmp/bundle.tgz --into /var/lib/nova/bundle
+sudo docker exec nova python -m nova bundle unpack /tmp/bundle.tgz --into /var/lib/nova/bundle --replace
 
 # and the principals file from step 11
 sudo vi /var/lib/nova/home/control-principals.yaml
@@ -484,6 +484,15 @@ sudo docker exec nova python -m nova status /var/lib/nova/bundle
 > bundle if the strip is forgotten. Nothing reads that directory, so the deployment looks
 > complete and keeps serving the configuration it already had. `nova bundle unpack`
 > refuses members that would land outside the destination and has no strip to forget.
+>
+> `--replace` is required whenever the destination already holds a bundle, and it is
+> required for a reason. Without it the archive would *merge*: a declaration this bundle
+> deleted would survive on the host, the deployed bundle would stop matching the one you
+> packaged, and the digests at step 3.5 would disagree from identical bytes. That is not
+> a hypothetical — a stale `channels.yaml` did exactly this on the first field
+> deployment, keeping a channel and its channel-scoped agent profile alive after the
+> tenant had removed them. The replacement is staged beside the destination and swapped
+> in by rename, so a malformed archive fails before the live bundle is touched.
 
 Warnings that each agent "cannot run yet" are correct, not errors. Step 25 fixes them.
 

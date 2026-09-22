@@ -231,3 +231,278 @@ def test_package_and_validate_report_the_same_digest(tmp_path):
         "the digest printed at package time is not the one the host computes after "
         "unpacking, so comparing them proves nothing"
     )
+
+
+# ---------------------------------------------------------------------------
+# Unpack replaces; it never merges
+#
+# On the first field deployment the archive bytes were byte-identical on the
+# laptop and the host, extracted 13 files on both, and produced two different
+# bundle digests. The destination already held a bundle, `unpack` merged into
+# it, and a `channels.yaml` the new bundle had DELETED survived — keeping a
+# channel alive and its channel-scoped profile materialized.
+#
+# The property at stake is the one the whole design rests on: the bundle is a
+# complete statement of what a tenant declares. A deletion that does not travel
+# means the deployed copy is not the bundle.
+# ---------------------------------------------------------------------------
+
+
+def _clean_bundle(tmp_path):
+    """The example bundle with channels.yaml removed — the shape of the live tenant."""
+    import shutil
+
+    root = tmp_path / "clean"
+    shutil.copytree(EXAMPLE_BUNDLE, root)
+    (root / "channels.yaml").unlink()
+    return root
+
+
+def test_unpack_into_an_empty_destination_still_just_works(tmp_path):
+    """Backward compatible: the common case needs no new flag."""
+    package(EXAMPLE_BUNDLE, tmp_path / "b.tgz")
+    report = unpack(tmp_path / "b.tgz", tmp_path / "dest")
+    assert report["files"] > 0
+    assert report["replaced"] is False and report["removed"] == []
+    assert load_bundle(tmp_path / "dest").digest() == load_bundle(EXAMPLE_BUNDLE).digest()
+
+
+def test_unpack_into_a_missing_destination_creates_it(tmp_path):
+    package(EXAMPLE_BUNDLE, tmp_path / "b.tgz")
+    target = tmp_path / "does" / "not" / "exist"
+    unpack(tmp_path / "b.tgz", target)
+    assert (target / "organization.yaml").is_file()
+
+
+def test_unpack_refuses_a_non_empty_destination_without_replace(tmp_path):
+    """The default must be the safe one: the destructive act is the one somebody typed."""
+    import shutil
+
+    package(EXAMPLE_BUNDLE, tmp_path / "b.tgz")
+    dest = tmp_path / "dest"
+    shutil.copytree(EXAMPLE_BUNDLE, dest)
+    before = sorted(p.name for p in dest.iterdir())
+
+    with pytest.raises(SpecError, match="not empty"):
+        unpack(tmp_path / "b.tgz", dest)
+    assert sorted(p.name for p in dest.iterdir()) == before, (
+        "a refused unpack modified the destination"
+    )
+
+
+def test_the_refusal_names_the_flag_and_says_why(tmp_path):
+    """An error an operator can act on without reading the source."""
+    import shutil
+
+    package(EXAMPLE_BUNDLE, tmp_path / "b.tgz")
+    dest = tmp_path / "dest"
+    shutil.copytree(EXAMPLE_BUNDLE, dest)
+    with pytest.raises(SpecError) as excinfo:
+        unpack(tmp_path / "b.tgz", dest)
+    message = str(excinfo.value)
+    assert "--replace" in message
+    assert "deleted" in message or "merge" in message
+
+
+def test_replace_removes_a_file_the_new_bundle_deleted(tmp_path):
+    """THE live scenario: a stale channels.yaml survived and kept a channel alive."""
+    import shutil
+
+    clean = _clean_bundle(tmp_path)
+    package(clean, tmp_path / "clean.tgz")
+    dest = tmp_path / "dest"
+    shutil.copytree(EXAMPLE_BUNDLE, dest)          # the old bundle, WITH channels.yaml
+    assert (dest / "channels.yaml").is_file()
+
+    report = unpack(tmp_path / "clean.tgz", dest, replace=True)
+
+    assert not (dest / "channels.yaml").exists(), (
+        "the deleted declaration survived the replacement, so the host still has a "
+        "channel the tenant removed"
+    )
+    assert report["replaced"] is True
+    assert "channels.yaml" in report["removed"]
+    assert load_bundle(dest).channels == ()
+
+
+def test_replace_preserves_every_file_from_the_new_bundle(tmp_path):
+    import shutil
+
+    clean = _clean_bundle(tmp_path)
+    expected = sorted(
+        str(p.relative_to(clean).as_posix()) for p in clean.rglob("*") if p.is_file()
+    )
+    package(clean, tmp_path / "clean.tgz")
+    dest = tmp_path / "dest"
+    shutil.copytree(EXAMPLE_BUNDLE, dest)
+
+    unpack(tmp_path / "clean.tgz", dest, replace=True)
+    actual = sorted(
+        str(p.relative_to(dest).as_posix()) for p in dest.rglob("*") if p.is_file()
+    )
+    assert actual == expected
+
+
+def test_the_digest_after_replacement_matches_the_archive(tmp_path):
+    """The gate the deployment actually checks at Phase 3.5, and the one that failed."""
+    import shutil
+
+    clean = _clean_bundle(tmp_path)
+    report = package(clean, tmp_path / "clean.tgz")
+    dest = tmp_path / "dest"
+    shutil.copytree(EXAMPLE_BUNDLE, dest)
+
+    unpack(tmp_path / "clean.tgz", dest, replace=True)
+    assert load_bundle(dest).digest() == report["bundle_digest"], (
+        "the host's digest still disagrees with the archive it was given"
+    )
+
+
+def test_a_merge_would_have_produced_a_different_digest(tmp_path):
+    """Pins the defect itself, so nobody 'simplifies' the replacement back into a merge.
+
+    Extracting over the old tree without removing what the bundle dropped gives a
+    different digest from the same archive — which is exactly what was observed on EC2.
+    """
+    import shutil
+    import tarfile as _tarfile
+
+    clean = _clean_bundle(tmp_path)
+    report = package(clean, tmp_path / "clean.tgz")
+    merged = tmp_path / "merged"
+    shutil.copytree(EXAMPLE_BUNDLE, merged)
+    with _tarfile.open(tmp_path / "clean.tgz") as handle:
+        handle.extractall(merged)  # noqa: S202 — deliberately the OLD, broken behaviour
+
+    assert load_bundle(merged).digest() != report["bundle_digest"]
+    assert (merged / "channels.yaml").is_file()
+
+
+def test_a_failed_extraction_leaves_the_destination_untouched(tmp_path):
+    """Requirement 4: no half-updated authoritative bundle.
+
+    The archive parses as a tarball and extracts, then fails to LOAD as a bundle — the
+    worst case, because it gets furthest before failing.
+    """
+    import gzip
+    import io
+    import tarfile as _tarfile
+
+    dest = tmp_path / "dest"
+    import shutil
+
+    shutil.copytree(EXAMPLE_BUNDLE, dest)
+    before = {
+        str(p.relative_to(dest).as_posix()): p.read_bytes()
+        for p in dest.rglob("*") if p.is_file()
+    }
+
+    payload = io.BytesIO()
+    with _tarfile.open(fileobj=payload, mode="w") as archive:
+        data = b"{{{ not yaml\n"
+        info = _tarfile.TarInfo("organization.yaml")
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    bad = tmp_path / "bad.tgz"
+    with open(bad, "wb") as handle:
+        with gzip.GzipFile(filename="", fileobj=handle, mode="wb", mtime=0) as gz:
+            gz.write(payload.getvalue())
+
+    with pytest.raises(SpecError):
+        unpack(bad, dest, replace=True)
+
+    after = {
+        str(p.relative_to(dest).as_posix()): p.read_bytes()
+        for p in dest.rglob("*") if p.is_file()
+    }
+    assert after == before, "a failed replacement damaged the existing bundle"
+
+
+def test_no_staging_directories_are_left_behind(tmp_path):
+    """Both the success and the failure path must clean up beside the destination."""
+    import shutil
+
+    clean = _clean_bundle(tmp_path)
+    package(clean, tmp_path / "clean.tgz")
+    dest = tmp_path / "work" / "dest"
+    dest.parent.mkdir(parents=True)
+    shutil.copytree(EXAMPLE_BUNDLE, dest)
+
+    unpack(tmp_path / "clean.tgz", dest, replace=True)
+    leftovers = [p.name for p in dest.parent.iterdir() if p.name != "dest"]
+    assert leftovers == [], f"staging left behind: {leftovers}"
+
+
+def test_traversal_is_still_refused_with_replace(tmp_path):
+    """The escape check must not have been weakened by the new ordering, and must fire
+    BEFORE the destination is touched."""
+    import gzip
+    import io
+    import shutil
+    import tarfile as _tarfile
+
+    dest = tmp_path / "dest"
+    shutil.copytree(EXAMPLE_BUNDLE, dest)
+    before = sorted(p.name for p in dest.iterdir())
+
+    payload = io.BytesIO()
+    with _tarfile.open(fileobj=payload, mode="w") as archive:
+        data = b"nope\n"
+        info = _tarfile.TarInfo("../escaped.yaml")
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    evil = tmp_path / "evil.tgz"
+    with open(evil, "wb") as handle:
+        with gzip.GzipFile(filename="", fileobj=handle, mode="wb", mtime=0) as gz:
+            gz.write(payload.getvalue())
+
+    with pytest.raises(SpecError, match="outside"):
+        unpack(evil, dest, replace=True)
+    assert not (tmp_path / "escaped.yaml").exists()
+    assert sorted(p.name for p in dest.iterdir()) == before
+
+
+def test_an_absolute_member_is_refused(tmp_path):
+    import gzip
+    import io
+    import tarfile as _tarfile
+
+    payload = io.BytesIO()
+    with _tarfile.open(fileobj=payload, mode="w") as archive:
+        data = b"nope\n"
+        info = _tarfile.TarInfo("/etc/nova.yaml")
+        info.size = len(data)
+        archive.addfile(info, io.BytesIO(data))
+    evil = tmp_path / "abs.tgz"
+    with open(evil, "wb") as handle:
+        with gzip.GzipFile(filename="", fileobj=handle, mode="wb", mtime=0) as gz:
+            gz.write(payload.getvalue())
+
+    with pytest.raises(SpecError, match="absolute"):
+        unpack(evil, tmp_path / "dest")
+
+
+def test_packaging_is_unchanged_by_the_unpack_fix(tmp_path):
+    """Requirement 3: deterministic packaging behaviour must be preserved."""
+    first = package(EXAMPLE_BUNDLE, tmp_path / "a.tgz")
+    second = package(EXAMPLE_BUNDLE, tmp_path / "b.tgz")
+    assert first["archive_sha256"] == second["archive_sha256"]
+    assert first["bundle_digest"] == load_bundle(EXAMPLE_BUNDLE).digest()
+    with tarfile.open(tmp_path / "a.tgz") as handle:
+        assert "organization.yaml" in handle.getnames()
+
+
+def test_the_runbook_uses_replace_for_the_authoritative_bundle():
+    """/var/lib/nova/bundle is never empty on a redeploy, so the documented command has
+    to carry the flag or it refuses every time after the first."""
+    runbook = (DEPLOY / "FIRST_DEPLOYMENT.md").read_text(encoding="utf-8")
+    transfer = runbook[runbook.index("## Steps 23–24"):]
+    transfer = transfer[: transfer.index("## Step 25")]
+    commands = "\n".join(
+        line for line in transfer.splitlines() if not line.lstrip().startswith(">")
+    )
+    assert "bundle unpack" in commands
+    assert "--replace" in commands, (
+        "the runbook's unpack would be refused on any redeploy, because the destination "
+        "already holds the previous bundle"
+    )

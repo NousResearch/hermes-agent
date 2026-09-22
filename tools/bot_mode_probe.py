@@ -370,6 +370,8 @@ def capability_fingerprint(home: str | os.PathLike | None = None) -> str:
         # ``node_modules`` … — and each skill's support dirs. A raw ``**/SKILL.md`` glob counted files
         # the model can never invoke, so archiving a skill, or the curator writing a backup, flipped the
         # epoch and forced every Bot Chat to rebuild a system prompt whose skills index had not changed.
+        # iter_skill_index_files is also org-token-gated, so the epoch moves on an org switch as well —
+        # intended: a different org sees a different skills index, so it needs a different prompt.
         from agent.skill_utils import iter_skill_index_files
 
         return sorted(str(p.parent.relative_to(skills_root))

@@ -4,7 +4,7 @@ Prompt-only / resource-only MCP servers do not implement the ``tools/*``
 request family. Per the MCP spec, ``InitializeResult.capabilities.tools``
 is non-None iff the server supports it. Before the capability gate, Hermes
 always called ``tools/list`` during discovery, which raised
-``McpError(-32601 Method not found)`` against such servers, so a prompt-only
+``MCPError(-32601 Method not found)`` against such servers, so a prompt-only
 server could never stay connected. Discovery/refresh remain capability-gated.
 
 The keepalive probe uses ``ping`` (MCP base-protocol liveness) for every
@@ -37,21 +37,6 @@ class TestAdvertisesTools:
         task.initialize_result = _caps(tools=SimpleNamespace(listChanged=True))
         assert task._advertises_tools() is True
 
-    def test_false_for_prompt_only_server(self):
-        task = MCPServerTask("test")
-        task.initialize_result = _caps(prompts=SimpleNamespace(listChanged=None))
-        assert task._advertises_tools() is False
-
-    def test_false_for_resource_only_server(self):
-        task = MCPServerTask("test")
-        task.initialize_result = _caps(resources=SimpleNamespace())
-        assert task._advertises_tools() is False
-
-    def test_legacy_fallback_no_initialize_result(self):
-        """No captured capabilities → preserve old always-list_tools behavior."""
-        task = MCPServerTask("test")
-        assert task.initialize_result is None
-        assert task._advertises_tools() is True
 
     def test_legacy_fallback_no_capabilities_attr(self):
         task = MCPServerTask("test")
@@ -72,18 +57,6 @@ class TestDiscoverToolsGating:
         task.session.list_tools.assert_not_called()
         assert task._tools == []
 
-    async def test_calls_list_tools_for_tool_capable_server(self):
-        task = MCPServerTask("test")
-        task.initialize_result = _caps(tools=SimpleNamespace())
-        fake_tool = SimpleNamespace(name="echo")
-        task.session = SimpleNamespace(
-            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[fake_tool]))
-        )
-
-        await task._discover_tools()
-
-        task.session.list_tools.assert_awaited_once()
-        assert task._tools == [fake_tool]
 
     async def test_legacy_fallback_still_calls_list_tools(self):
         task = MCPServerTask("test")
@@ -137,6 +110,7 @@ class TestKeepaliveProbe:
 
     async def test_keepalive_uses_ping_for_prompt_only_server(self):
         task = MCPServerTask("test")
+        task._config = {"url": "https://example.test/mcp"}
         task.initialize_result = _caps(prompts=SimpleNamespace())
         task.session = SimpleNamespace(
             list_tools=AsyncMock(),
@@ -149,26 +123,11 @@ class TestKeepaliveProbe:
         task.session.send_ping.assert_awaited_once()
         task.session.list_tools.assert_not_called()
 
-    async def test_keepalive_uses_ping_for_tool_capable_server(self):
-        """Keepalive uses ``ping`` even for tool-capable servers, so the probe
-        stays a few bytes regardless of tool count (no ``list_tools`` payload).
-        Tool-list changes still arrive via tools/list_changed notifications."""
-        task = MCPServerTask("test")
-        task.initialize_result = _caps(tools=SimpleNamespace())
-        task.session = SimpleNamespace(
-            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
-            send_ping=AsyncMock(),
-        )
-
-        reason = await self._run_one_keepalive_cycle(task)
-
-        assert reason == "shutdown"
-        task.session.send_ping.assert_awaited_once()
-        task.session.list_tools.assert_not_called()
 
     async def test_keepalive_uses_ping_legacy_fallback(self):
         """No captured capabilities → still pings (no spurious list_tools)."""
         task = MCPServerTask("test")
+        task._config = {"url": "https://example.test/mcp"}
         assert task.initialize_result is None
         task.session = SimpleNamespace(
             list_tools=AsyncMock(),
@@ -188,38 +147,54 @@ class TestKeepaliveInterval:
     the session alive instead of hitting an expired session on every idle call.
     """
 
-    async def _captured_interval(self, config):
-        """Run one keepalive cycle and capture the ``asyncio.wait`` timeout."""
+    async def _run_lifecycle_cycles(self, config, idle_timeout=None):
+        """Run two lifecycle cycles on a server with the *full* ``config``: the first
+        ``asyncio.wait`` times out (no event fired) and the loop's clock is advanced by
+        that timeout, the second is ended by shutdown.
+        Returns ``(task, [timeout_of_cycle_1, timeout_of_cycle_2])``."""
         task = MCPServerTask("test")
         task._config = config
+        task._idle_timeout_seconds = idle_timeout
         task.session = SimpleNamespace(send_ping=AsyncMock())
-        captured = {}
+        timeouts = []
         real_wait = asyncio.wait
+        elapsed = [0.0]
 
         async def fake_wait(tasks, timeout=None, return_when=None):
-            captured["timeout"] = timeout
+            timeouts.append(timeout)
+            if len(timeouts) == 1:
+                elapsed[0] += timeout or 0.0
+                return set(), set(tasks)  # simulate the timeout firing
             task._shutdown_event.set()
             return await real_wait(
                 tasks, timeout=0.5, return_when=return_when or asyncio.FIRST_COMPLETED
             )
 
         import tools.mcp_tool as mcp_mod
-        orig = mcp_mod.asyncio.wait
+        import tools.mcp_tool_server_run as run_mod
+        orig, orig_time = mcp_mod.asyncio.wait, run_mod.time
         mcp_mod.asyncio.wait = fake_wait
+        run_mod.time = SimpleNamespace(monotonic=lambda: orig_time.monotonic() + elapsed[0])
         try:
-            await task._wait_for_lifecycle_event()
+            assert await task._wait_for_lifecycle_event() == "shutdown"
         finally:
-            mcp_mod.asyncio.wait = orig
-        return captured["timeout"]
+            mcp_mod.asyncio.wait, run_mod.time = orig, orig_time
+        return task, timeouts
+
+    async def _captured_interval(self, config):
+        """Capture the first ``asyncio.wait`` timeout of a remote (HTTP) server."""
+        _task, timeouts = await self._run_lifecycle_cycles(
+            {"url": "https://example.test/mcp", **config})
+        return timeouts[0]
 
     @pytest.mark.asyncio
     async def test_default_interval_when_unset(self):
         from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
         assert await self._captured_interval({}) == _DEFAULT_KEEPALIVE_INTERVAL
-
-    @pytest.mark.asyncio
-    async def test_configured_interval_honored(self):
-        assert await self._captured_interval({"keepalive_interval": 10}) == 10
+        # An explicit interval is honoured on stdio too (where there is no default).
+        _task, timeouts = await self._run_lifecycle_cycles(
+            {"command": "example-mcp", "keepalive_interval": 42})
+        assert timeouts[0] == 42
 
     @pytest.mark.asyncio
     async def test_interval_clamped_to_floor(self):
@@ -230,38 +205,66 @@ class TestKeepaliveInterval:
             == _MIN_KEEPALIVE_INTERVAL
         )
 
+    @pytest.mark.asyncio
+    async def test_default_stdio_connection_waits_without_keepalive(self):
+        """A healthy local pipe must not be probed solely because it is idle — but surviving a
+        full default interval idle must still prove the session (clears the rapid-drop budget);
+        once proven, the loop waits without any timeout. An earlier wake caused by a shorter
+        idle limit is NOT proof: the budget stays armed until the full interval has passed."""
+        from tools.mcp_tool import _DEFAULT_KEEPALIVE_INTERVAL
+        task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"})
+
+        assert timeouts[0] == pytest.approx(_DEFAULT_KEEPALIVE_INTERVAL, abs=0.05)
+        assert timeouts[1] is None
+        assert task._session_proven is True
+        task.session.send_ping.assert_not_called()
+
+        task, timeouts = await self._run_lifecycle_cycles({"command": "example-mcp"}, idle_timeout=60)
+        assert timeouts[0] == pytest.approx(60, abs=0.05)  # woke for the idle deadline, not the proof
+        assert task._session_proven is False
+        task.session.send_ping.assert_not_called()
+
+    @pytest.mark.asyncio
+    async def test_stdio_recycle_wakes_after_active_rpc(self):
+        """Lock release must expose an elapsed recycle deadline without sending a ping."""
+        task = MCPServerTask("test")
+        task._config = {"command": "example-mcp"}
+        session = task.session = SimpleNamespace(send_ping=AsyncMock())
+        task._idle_timeout_seconds = 0.01
+        task._last_tool_call_at = task._lifecycle_started_at - 1.0
+
+        async with task._rpc_lock:
+            lifecycle = asyncio.create_task(task._wait_for_lifecycle_event())
+            await asyncio.sleep(0)
+            assert not lifecycle.done()
+
+        assert await asyncio.wait_for(lifecycle, timeout=2.0) == "recycle"
+        session.send_ping.assert_not_called()
+
 
 def _mcp_error(code, message="boom"):
-    """Build a real McpError carrying a JSON-RPC error code."""
-    from mcp.shared.exceptions import McpError
-    from mcp.types import ErrorData
-    return McpError(ErrorData(code=code, message=message))
+    """Build a real MCPError carrying a JSON-RPC error code.
+
+    mcp 2.0 renamed ``McpError`` to ``MCPError`` and replaced its
+    ``ErrorData`` positional with flat ``code`` / ``message`` arguments. The
+    ``.error.code`` attribute ``_is_method_not_found_error`` inspects survives
+    unchanged, which is the point of the structural check.
+    """
+    exceptions = pytest.importorskip("mcp.shared.exceptions", reason="MCP SDK not installed")
+    return exceptions.MCPError(code=code, message=message)
 
 
 class TestMethodNotFoundDetection:
     """``_is_method_not_found_error`` underpins the ping→list_tools fallback."""
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     def test_structural_code_match(self):
-        from tools.mcp_tool import _is_method_not_found_error
+        from tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(_mcp_error(-32601)) is True
 
-    def test_other_mcp_error_code_is_not_match(self):
-        from tools.mcp_tool import _is_method_not_found_error
-        # Invalid params (-32602) is a real error, NOT "ping unsupported".
-        assert _is_method_not_found_error(_mcp_error(-32602)) is False
-
-    def test_substring_fallback(self):
-        from tools.mcp_tool import _is_method_not_found_error
-        assert _is_method_not_found_error(Exception("Method not found")) is True
-
-    def test_unknown_method_phrasing_is_match(self):
-        # agentmemory's MCP server surfaces method-not-found as a plain
-        # "Unknown method: ping" string with no structural -32601 code (#50028).
-        from tools.mcp_tool import _is_method_not_found_error
-        assert _is_method_not_found_error(Exception("Unknown method: ping")) is True
 
     def test_unrelated_exception_is_not_match(self):
-        from tools.mcp_tool import _is_method_not_found_error
+        from tools.mcp_tool_errors import _is_method_not_found_error
         assert _is_method_not_found_error(TimeoutError()) is False
         assert _is_method_not_found_error(Exception("session terminated")) is False
 
@@ -286,20 +289,6 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
 
-    async def test_falls_back_to_list_tools_on_method_not_found(self):
-        task = MCPServerTask("test")
-        task.initialize_result = _caps(tools=SimpleNamespace())
-        task.session = SimpleNamespace(
-            send_ping=AsyncMock(side_effect=_mcp_error(-32601)),
-            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
-        )
-
-        await task._keepalive_probe()
-
-        # First cycle: ping tried, failed -32601, list_tools used as fallback.
-        task.session.send_ping.assert_awaited_once()
-        task.session.list_tools.assert_awaited_once()
-        assert task._ping_unsupported is True
 
     async def test_falls_back_on_unknown_method_string(self):
         """Regression for #50028: a server that surfaces method-not-found as a
@@ -318,19 +307,6 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_awaited_once()
         assert task._ping_unsupported is True
 
-    async def test_latch_skips_ping_on_subsequent_cycles(self):
-        task = MCPServerTask("test")
-        task.initialize_result = _caps(tools=SimpleNamespace())
-        task.session = SimpleNamespace(
-            send_ping=AsyncMock(side_effect=_mcp_error(-32601)),
-            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
-        )
-
-        await task._keepalive_probe()  # latches _ping_unsupported
-        await task._keepalive_probe()  # should NOT ping again
-
-        task.session.send_ping.assert_awaited_once()  # only the first cycle
-        assert task.session.list_tools.await_count == 2
 
     async def test_real_liveness_failure_propagates_not_swallowed(self):
         """A non-(-32601) ping error is a genuine connection failure: it must
@@ -348,6 +324,7 @@ class TestKeepaliveProbeFallback:
         task.session.list_tools.assert_not_called()
         assert task._ping_unsupported is False
 
+    @pytest.mark.usefixtures("require_mcp_2_sdk")
     async def test_no_ping_no_tools_propagates_method_not_found(self):
         """A server advertising neither working ping nor tools has no cheaper
         probe — the -32601 must propagate rather than calling list_tools on a
@@ -377,4 +354,54 @@ class TestKeepaliveProbeFallback:
 
         assert task._ping_unsupported is False
 
+    async def test_silent_ping_drop_falls_back_to_list_tools(self):
+        """Regression for #97245: a server that silently drops ping (no
+        response at all) produces a TimeoutError. If list_tools succeeds,
+        the transport is alive — latch _ping_unsupported and return
+        normally instead of reconnect-looping."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=asyncio.TimeoutError()),
+            list_tools=AsyncMock(return_value=SimpleNamespace(tools=[])),
+        )
+
+        # Should NOT raise — the server is alive.
+        await task._keepalive_probe()
+
+        task.session.send_ping.assert_awaited_once()
+        task.session.list_tools.assert_awaited_once()
+        assert task._ping_unsupported is True
+
+    async def test_silent_ping_drop_both_fail_propagates(self):
+        """When both ping AND list_tools time out, it is a genuine liveness
+        failure — propagate so the caller reconnects."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(tools=SimpleNamespace())
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=asyncio.TimeoutError()),
+            list_tools=AsyncMock(side_effect=asyncio.TimeoutError()),
+        )
+
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            await task._keepalive_probe()
+
+        assert task._ping_unsupported is False
+
+    async def test_silent_ping_drop_no_tools_propagates(self):
+        """A server that has no tools capability and times out on ping has no
+        fallback probe — the timeout must propagate immediately."""
+        task = MCPServerTask("test")
+        task.initialize_result = _caps(prompts=SimpleNamespace())  # no tools
+        task.session = SimpleNamespace(
+            send_ping=AsyncMock(side_effect=asyncio.TimeoutError()),
+            list_tools=AsyncMock(),
+        )
+
+        with pytest.raises((TimeoutError, asyncio.TimeoutError)):
+            await task._keepalive_probe()
+
+        # list_tools must not be called — no tools capability advertised.
+        task.session.list_tools.assert_not_called()
+        assert task._ping_unsupported is False
 

@@ -65,6 +65,18 @@ function persistBindings(bindings: KeybindBindings): void {
     }
   }
 
+  // Actions contributed after boot (plugins register late) are missing
+  // from the registry when the boot-time subscribe fires. Carry their
+  // stored overrides forward so the persist does not wipe them. Re-read
+  // storage rather than the module-init snapshot: an override written after
+  // boot (plugin registered → rebound → unloaded) is otherwise invisible here
+  // and the next persist of any other action drops it.
+  for (const [id, combos] of Object.entries(readStoredOverrides())) {
+    if (!(id in defaults)) {
+      diff[id] = combos
+    }
+  }
+
   persistString(STORAGE_KEY, JSON.stringify(diff))
 }
 
@@ -140,25 +152,4 @@ export function beginCapture(actionId: string): void {
 
 export function endCapture(): void {
   $capture.set(null)
-}
-
-// ── Panel ───────────────────────────────────────────────────────────────────
-
-export const $keybindPanelOpen = atom(false)
-
-export function openKeybindPanel(): void {
-  $keybindPanelOpen.set(true)
-}
-
-export function closeKeybindPanel(): void {
-  $keybindPanelOpen.set(false)
-  $capture.set(null)
-}
-
-export function toggleKeybindPanel(): void {
-  if ($keybindPanelOpen.get()) {
-    closeKeybindPanel()
-  } else {
-    openKeybindPanel()
-  }
 }

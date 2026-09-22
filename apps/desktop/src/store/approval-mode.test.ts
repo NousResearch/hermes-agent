@@ -1,5 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
+import { deferred } from '../test/deferred'
+
 import {
   $approvalModes,
   approvalModeForProfile,
@@ -7,18 +9,6 @@ import {
   setApprovalModeForProfile,
   syncApprovalModeForProfile
 } from './approval-mode'
-
-function deferred<T>() {
-  let resolve!: (value: T) => void
-  let reject!: (error: unknown) => void
-
-  const promise = new Promise<T>((res, rej) => {
-    resolve = res
-    reject = rej
-  })
-
-  return { promise, reject, resolve }
-}
 
 describe('profile-scoped approval mode cache', () => {
   beforeEach(() => $approvalModes.set({}))
@@ -34,8 +24,14 @@ describe('profile-scoped approval mode cache', () => {
   })
 
   it('keeps profile values isolated', async () => {
-    await syncApprovalModeForProfile(vi.fn(async () => ({ value: 'manual' })), 'work')
-    await syncApprovalModeForProfile(vi.fn(async () => ({ value: 'off' })), 'personal')
+    await syncApprovalModeForProfile(
+      vi.fn(async () => ({ value: 'manual' })),
+      'work'
+    )
+    await syncApprovalModeForProfile(
+      vi.fn(async () => ({ value: 'off' })),
+      'personal'
+    )
 
     expect(approvalModeForProfile('work')).toBe('manual')
     expect(approvalModeForProfile('personal')).toBe('off')
@@ -43,7 +39,10 @@ describe('profile-scoped approval mode cache', () => {
   })
 
   it('rolls consecutive failed writes back to the last authoritative value', async () => {
-    await syncApprovalModeForProfile(vi.fn(async () => ({ value: 'smart' })), 'default')
+    await syncApprovalModeForProfile(
+      vi.fn(async () => ({ value: 'smart' })),
+      'default'
+    )
     const first = deferred<{ value: string }>()
     const second = deferred<{ value: string }>()
 
@@ -67,7 +66,12 @@ describe('profile-scoped approval mode cache', () => {
 
   it('lets a backend event supersede an optimistic write and its later failure', async () => {
     const write = deferred<{ value: string }>()
-    const pending = setApprovalModeForProfile(vi.fn(() => write.promise), 'work', 'off')
+
+    const pending = setApprovalModeForProfile(
+      vi.fn(() => write.promise),
+      'work',
+      'off'
+    )
 
     reconcileApprovalModeForProfile('work', 'smart')
     expect(approvalModeForProfile('work')).toBe('smart')

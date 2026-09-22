@@ -4,7 +4,8 @@ import type { SessionInfo } from '@/hermes'
 
 import { sameCronSignature, sessionMessagesSignature } from './session-signatures'
 
-const session = (id: string, title: string | null): SessionInfo => ({ id, title }) as SessionInfo
+const session = (id: string, title: string | null, extra: Partial<SessionInfo> = {}): SessionInfo =>
+  ({ id, title, ...extra }) as SessionInfo
 
 describe('sameCronSignature', () => {
   it('is false when the lengths differ', () => {
@@ -28,10 +29,33 @@ describe('sameCronSignature', () => {
     const b = [session('b', 't'), session('a', 't')]
     expect(sameCronSignature(a, b)).toBe(false)
   })
+
+  // A pin-only page must reach $sessions: session-pin-sync treats the row as
+  // authoritative and releases its write guard when a page confirms the value
+  // it wrote. Gating that page out froze the row and re-pinned what the user
+  // had just unpinned (#76919).
+  it('is false when only the pinned flag changed', () => {
+    const a = [session('a', 't', { pinned: true })]
+    const b = [session('a', 't', { pinned: false })]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
+
+  it('is false when only the archived flag changed', () => {
+    const a = [session('a', 't', { archived: false })]
+    const b = [session('a', 't', { archived: true })]
+    expect(sameCronSignature(a, b)).toBe(false)
+  })
+
+  it('is true when both flags match', () => {
+    const a = [session('a', 't', { archived: false, pinned: true })]
+    const b = [session('a', 't', { archived: false, pinned: true })]
+    expect(sameCronSignature(a, b)).toBe(true)
+  })
 })
 
 describe('sessionMessagesSignature', () => {
-  const msg = (role: string, content: string) => ({ role, content }) as Parameters<typeof sessionMessagesSignature>[0][number]
+  const msg = (role: string, content: string) =>
+    ({ role, content }) as Parameters<typeof sessionMessagesSignature>[0][number]
 
   it('is stable for identical transcripts', () => {
     expect(sessionMessagesSignature([msg('user', 'hi')])).toBe(sessionMessagesSignature([msg('user', 'hi')]))

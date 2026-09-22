@@ -1,14 +1,14 @@
 ---
-title: "Domain Intel — Passive domain reconnaissance using Python stdlib"
+title: "Domain Intel — Passive recon of subdomains, SSL certs, WHOIS, and DNS"
 sidebar_label: "Domain Intel"
-description: "Passive domain reconnaissance using Python stdlib"
+description: "Passive recon of subdomains, SSL certs, WHOIS, and DNS"
 ---
 
 {/* This page is auto-generated from the skill's SKILL.md by website/scripts/generate-skill-docs.py. Edit the source SKILL.md, not this page. */}
 
 # Domain Intel
 
-Passive domain reconnaissance using Python stdlib. Subdomain discovery, SSL certificate inspection, WHOIS lookups, DNS records, domain availability checks, and bulk multi-domain analysis. No API keys required.
+Passive recon of subdomains, SSL certs, WHOIS, and DNS.
 
 ## Skill metadata
 
@@ -16,7 +16,11 @@ Passive domain reconnaissance using Python stdlib. Subdomain discovery, SSL cert
 |---|---|
 | Source | Optional — install with `hermes skills install official/research/domain-intel` |
 | Path | `optional-skills/research/domain-intel` |
+| Version | `1.0.0` |
+| Author | FurkanL0, Hermes Agent |
+| License | MIT |
 | Platforms | linux, macos, windows |
+| Tags | `Domains`, `OSINT`, `DNS`, `Research` |
 
 ## Reference: full SKILL.md
 
@@ -35,23 +39,23 @@ This skill includes `scripts/domain_intel.py` — a complete CLI tool for all do
 
 ```bash
 # Subdomain discovery via Certificate Transparency logs
-python3 SKILL_DIR/scripts/domain_intel.py subdomains example.com
+python SKILL_DIR/scripts/domain_intel.py subdomains example.com
 
 # SSL certificate inspection (expiry, cipher, SANs, issuer)
-python3 SKILL_DIR/scripts/domain_intel.py ssl example.com
+python SKILL_DIR/scripts/domain_intel.py ssl example.com
 
 # WHOIS lookup (registrar, dates, name servers — 100+ TLDs)
-python3 SKILL_DIR/scripts/domain_intel.py whois example.com
+python SKILL_DIR/scripts/domain_intel.py whois example.com
 
 # DNS records (A, AAAA, MX, NS, TXT, CNAME)
-python3 SKILL_DIR/scripts/domain_intel.py dns example.com
+python SKILL_DIR/scripts/domain_intel.py dns example.com
 
 # Domain availability check (passive: DNS + WHOIS + SSL signals)
-python3 SKILL_DIR/scripts/domain_intel.py available coolstartup.io
+python SKILL_DIR/scripts/domain_intel.py available coolstartup.io
 
 # Bulk analysis — multiple domains, multiple checks in parallel
-python3 SKILL_DIR/scripts/domain_intel.py bulk example.com github.com google.com
-python3 SKILL_DIR/scripts/domain_intel.py bulk example.com github.com --checks ssl,dns
+python SKILL_DIR/scripts/domain_intel.py bulk example.com github.com google.com
+python SKILL_DIR/scripts/domain_intel.py bulk example.com github.com --checks ssl,dns
 ```
 
 `SKILL_DIR` is the directory containing this SKILL.md file. All output is structured JSON.

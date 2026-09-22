@@ -2,9 +2,11 @@ import { useStore } from '@nanostores/react'
 import { useEffect, useRef, useState } from 'react'
 
 import { DecodeText } from '@/components/ui/decode-text'
+import { prefersReducedMotion } from '@/hooks/use-media-query'
 import { cn } from '@/lib/utils'
 import { $desktopBoot } from '@/store/boot'
 import { $gatewaySwitching } from '@/store/gateway-switch'
+import { guidedOnboardingActive } from '@/store/onboarding-gate'
 import { $gatewayState } from '@/store/session'
 
 // Decode mechanics live in the shared <DecodeText> primitive
@@ -40,6 +42,11 @@ export function GatewayConnectingOverlay() {
   const boot = useStore($desktopBoot)
   const gatewaySwitching = useStore($gatewaySwitching)
   const [previewing] = useState(forcedPreview)
+  const reduce = prefersReducedMotion()
+  // Under reduced motion, skip the multi-phase exit choreography (text-out →
+  // hold → overlay fade) and jump straight to gone so the overlay unmounts
+  // the instant the gateway opens. E2E screenshots rely on this to avoid
+  // catching the overlay mid-fade.
   const [phase, setPhase] = useState<Phase>('live')
   // Once cold boot has completed once, never resurrect the fullscreen overlay
   // — soft gateway switches keep the shell and reskeleton the sidebar instead.
@@ -57,11 +64,7 @@ export function GatewayConnectingOverlay() {
   const initialBootActive = boot.visible || boot.running || boot.progress < 100
 
   const connecting =
-    !coldBootDoneRef.current &&
-    !gatewaySwitching &&
-    gatewayState !== 'open' &&
-    !boot.error &&
-    initialBootActive
+    !coldBootDoneRef.current && !gatewaySwitching && gatewayState !== 'open' && !boot.error && initialBootActive
 
   // Latches once we've actually shown the overlay, so the brief frame where
   // gatewayState flips to "open" (connecting -> false) before the exit phase
@@ -85,9 +88,13 @@ export function GatewayConnectingOverlay() {
     }
 
     if (gatewayState === 'open' && shownRef.current) {
-      setPhase('text-out')
+      // Under reduced motion, skip the multi-phase exit choreography
+      // (text-out → hold → overlay fade) and jump straight to gone so the
+      // overlay unmounts the instant the gateway opens. E2E screenshots
+      // rely on this to avoid catching the overlay mid-fade.
+      setPhase(reduce ? 'gone' : 'text-out')
     }
-  }, [phase, previewing, gatewayState])
+  }, [phase, previewing, gatewayState, reduce])
 
   // Advance the exit choreography: text-out -> overlay-out -> gone.
   useEffect(() => {
@@ -126,15 +133,28 @@ export function GatewayConnectingOverlay() {
     return null
   }
 
+  // The guided first launch has its own opening (the film, then the typed
+  // greeting in a small window). "Connecting…" over it, then "Connected to
+  // localhost", is the app's boot narrating itself in the middle of the
+  // guide's; the guide's surface stays, this one yields. Boot progress still
+  // gates the transcript underneath — nothing paints early.
+  if (!previewing && guidedOnboardingActive()) {
+    return null
+  }
+
   const leaving = phase !== 'live'
   const overlayHidden = phase === 'overlay-out' || phase === 'gone'
 
   return (
     <div
       className={cn(
-        'fixed inset-0 z-[1200] grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
+        'fixed inset-0 z-(--z-connecting) grid place-items-center bg-(--ui-chat-surface-background) transition-opacity duration-500 ease-out',
         overlayHidden ? 'pointer-events-none opacity-0' : 'opacity-100'
       )}
+      // Masks the whole app while booting — must stay filled under window
+      // glass or the shell shows through. Contract: `[data-glass-opaque]`
+      // in styles.css.
+      data-glass-opaque=""
     >
       <DecodeText
         active={phase === 'live' && (previewing || connecting)}
@@ -143,6 +163,7 @@ export function GatewayConnectingOverlay() {
           leaving ? 'translate-y-2 opacity-0 saturate-0' : 'translate-y-0 opacity-100 saturate-100'
         )}
         cursor
+        loop
         prefix={4}
         text={TEXT}
       />

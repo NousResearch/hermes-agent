@@ -1,3 +1,4 @@
+import { JsonRpcGatewayError } from '@hermes/shared/json-rpc-channel'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createSlashHandler } from '../app/createSlashHandler.js'
@@ -6,6 +7,9 @@ import { DASHBOARD_EXIT_DISABLED_MESSAGE, DASHBOARD_UPDATE_DISABLED_MESSAGE } fr
 import { getUiState, patchUiState, resetUiState } from '../app/uiStore.js'
 import type * as EnvModule from '../config/env.js'
 import { TUI_SESSION_MODEL_FLAG } from '../domain/slash.js'
+import * as ClipboardModule from '../lib/clipboard.js'
+import * as Osc52Module from '../lib/osc52.js'
+import * as TerminalSetupModule from '../lib/terminalSetup.js'
 
 // DASHBOARD_TUI_MODE resolves once at module load from HERMES_TUI_DASHBOARD,
 // so toggling process.env in a test body can't move it. Mock just that one
@@ -24,6 +28,7 @@ vi.mock('../config/env.js', async importActual => {
 
 describe('createSlashHandler', () => {
   beforeEach(() => {
+    vi.restoreAllMocks()
     resetOverlayState()
     resetUiState()
     envState.dashboardTuiMode = false
@@ -68,6 +73,23 @@ describe('createSlashHandler', () => {
 
     expect(createSlashHandler(ctx)('/session')).toBe(true)
     expect(getOverlayState().sessions).toBe(true)
+  })
+
+  it('opens the grid-test overlay locally', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/grid-test 6x4')).toBe(true)
+    expect(getOverlayState().widget).toMatchObject({ appId: 'grid-test' })
+    expect(getOverlayState().widget?.state).toMatchObject({ cols: 6, nested: false, rows: 4, streams: false })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('opens the grid-test streams demo via /grid-test streams', () => {
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/grid-test streams')).toBe(true)
+    expect(getOverlayState().widget?.state).toMatchObject({ streamFocus: 0, streamMain: 0, streams: true })
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
   it('handles /redraw locally without slash worker fallback', () => {
@@ -226,6 +248,51 @@ describe('createSlashHandler', () => {
     })
   })
 
+  it('prefers OSC52 copy for remote sessions', async () => {
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(true)
+
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'remote answer' }])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/copy')).toBe(true)
+    await vi.waitFor(() => {
+      expect(writeOsc52Clipboard).toHaveBeenCalledWith('remote answer')
+    })
+    expect(writeClipboardText).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('sent OSC52 copy sequence (terminal support required)')
+  })
+
+  it('keeps native-first copy in local tmux sessions', async () => {
+    const tmuxBackup = process.env.TMUX
+    process.env.TMUX = '/tmp/tmux-123/default,1,0'
+
+    const writeClipboardText = vi.spyOn(ClipboardModule, 'writeClipboardText').mockResolvedValue(true)
+    const writeOsc52Clipboard = vi.spyOn(Osc52Module, 'writeOsc52Clipboard').mockReturnValue(true)
+    vi.spyOn(TerminalSetupModule, 'isRemoteShellSession').mockReturnValue(false)
+
+    const ctx = buildCtx({
+      local: {
+        ...buildLocal(),
+        getHistoryItems: vi.fn(() => [{ role: 'assistant', text: 'local answer' }])
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/copy')).toBe(true)
+    await vi.waitFor(() => {
+      expect(writeClipboardText).toHaveBeenCalledWith('local answer')
+    })
+    expect(writeOsc52Clipboard).not.toHaveBeenCalled()
+    expect(ctx.transcript.sys).toHaveBeenCalledWith('copied to clipboard')
+
+    process.env.TMUX = tmuxBackup
+  })
+
   it('applies /reasoning hide to the thinking section immediately', async () => {
     patchUiState({ sections: { thinking: 'expanded' }, showReasoning: true, sid: 'sid-abc' })
 
@@ -264,6 +331,55 @@ describe('createSlashHandler', () => {
     await vi.waitFor(() => {
       expect(getUiState().showReasoning).toBe(true)
       expect(getUiState().sections.thinking).toBe('expanded')
+    })
+  })
+
+  it('reads /reasoning status for the active session', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.get', {
+      key: 'reasoning',
+      session_id: 'sid-abc'
+    })
+  })
+
+  it.each(['low', 'max', 'ultra'])('sends plain /reasoning %s without a scope (session default)', effort => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(`/reasoning ${effort}`)).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      session_id: 'sid-abc',
+      value: effort
+    })
+  })
+
+  it('sends /reasoning <level> --global as global config.set', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning high --global')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      scope: 'global',
+      session_id: 'sid-abc',
+      value: 'high'
+    })
+  })
+
+  it('strips /reasoning session flags before config.set', () => {
+    patchUiState({ sid: 'sid-abc' })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)('/reasoning low --session')).toBe(true)
+    expect(ctx.gateway.rpc).toHaveBeenCalledWith('config.set', {
+      key: 'reasoning',
+      scope: 'session',
+      session_id: 'sid-abc',
+      value: 'low'
     })
   })
 
@@ -365,6 +481,58 @@ describe('createSlashHandler', () => {
 
     expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', 'sprint planning')
     expect(ctx.gateway.rpc).not.toHaveBeenCalled()
+  })
+
+  it.each([
+    ['/new sprint planning', 'new session started', 'sprint planning'],
+    ['/clear', undefined, undefined]
+  ])('skips the confirmation for %s when config disables it', (command, message, title) => {
+    patchUiState({ destructiveSlashConfirm: false })
+    const ctx = buildCtx()
+
+    expect(createSlashHandler(ctx)(command)).toBe(true)
+
+    expect(getOverlayState().confirm).toBeNull()
+    expect(ctx.session.newSession).toHaveBeenCalledWith(message, title)
+  })
+
+  it('routes the /reset catalog alias through the local fresh-session lifecycle', () => {
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/new': '/new',
+            '/reset': '/new'
+          }
+        }
+      }
+    })
+
+    createSlashHandler(ctx)('/reset')
+    getOverlayState().confirm?.onConfirm()
+
+    expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', undefined)
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
+  })
+
+  it('skips the confirmation for the /reset alias when config disables it', () => {
+    patchUiState({ destructiveSlashConfirm: false })
+
+    const ctx = buildCtx({
+      local: {
+        catalog: {
+          canon: {
+            '/new': '/new',
+            '/reset': '/new'
+          }
+        }
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/reset')).toBe(true)
+
+    expect(getOverlayState().confirm).toBeNull()
+    expect(ctx.session.newSession).toHaveBeenCalledWith('new session started', undefined)
   })
 
   it('keeps visible scrollback when branching a TUI session', async () => {
@@ -725,8 +893,10 @@ describe('createSlashHandler', () => {
     expect(ctx.gateway.gw.request).not.toHaveBeenCalled()
   })
 
-  it('falls through to command.dispatch for skill commands and sends the message', async () => {
-    const skillMessage = 'Use this skill to do X.\n\n## Steps\n1. First step'
+  it('falls through to command.dispatch for skill commands, sending the body but showing the invocation', async () => {
+    const skillMessage =
+      '[IMPORTANT: The user has invoked the "hermes-agent-dev" skill, indicating they want you to follow its instructions.\n' +
+      'The full skill content is loaded below.]\n\nUse this skill to do X.\n\n## Steps\n1. First step'
 
     const ctx = buildCtx({
       gateway: {
@@ -738,7 +908,12 @@ describe('createSlashHandler', () => {
             }
 
             if (method === 'command.dispatch') {
-              return Promise.resolve({ type: 'skill', message: skillMessage, name: 'hermes-agent-dev' })
+              return Promise.resolve({
+                type: 'skill',
+                message: skillMessage,
+                name: 'hermes-agent-dev',
+                display: '/hermes-agent-dev'
+              })
             }
 
             return Promise.resolve({})
@@ -751,9 +926,65 @@ describe('createSlashHandler', () => {
     const h = createSlashHandler(ctx)
     expect(h('/hermes-agent-dev')).toBe(true)
     await vi.waitFor(() => {
-      expect(ctx.transcript.sys).toHaveBeenCalledWith('⚡ loading skill: hermes-agent-dev')
+      expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage, true, '/hermes-agent-dev')
     })
-    expect(ctx.transcript.send).toHaveBeenCalledWith(skillMessage)
+
+    // The expanded skill body is model-facing: no transcript line may carry it.
+    for (const [line] of ctx.transcript.sys.mock.calls) {
+      expect(line).not.toContain('Use this skill to do X')
+    }
+  })
+
+  it('surfaces the slash worker failure itself instead of the command.dispatch refusal', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) => {
+            if (method === 'slash.exec') {
+              return Promise.reject(new JsonRpcGatewayError('slash worker timed out', { code: 5030 }))
+            }
+
+            return Promise.reject(
+              new JsonRpcGatewayError('not a quick/plugin/bundle/skill command: insights', { code: 4018 })
+            )
+          })
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    expect(createSlashHandler(ctx)('/insights')).toBe(true)
+    await vi.waitFor(() => expect(ctx.transcript.sys).toHaveBeenCalled())
+
+    expect(ctx.gateway.gw.request).not.toHaveBeenCalledWith('command.dispatch', expect.anything())
+    const line = String(ctx.transcript.sys.mock.calls.at(-1)?.[0])
+    expect(line).toContain('/insights')
+    expect(line).toMatch(/timed out/)
+    expect(line).not.toMatch(/quick\/plugin\/bundle\/skill/)
+  })
+
+  it('still falls back to command.dispatch on a 4018 "not mine" refusal', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          request: vi.fn((method: string) =>
+            method === 'slash.exec'
+              ? Promise.reject(new JsonRpcGatewayError('skill command: use command.dispatch for /x', { code: 4018 }))
+              : Promise.resolve({ type: 'alias', target: 'help' })
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    createSlashHandler(ctx)('/x')
+    await vi.waitFor(() => expect(ctx.gateway.gw.request).toHaveBeenCalledWith('command.dispatch', expect.anything()))
   })
 
   it('handles command.dispatch payloads returned directly by slash.exec', async () => {
@@ -892,6 +1123,43 @@ describe('createSlashHandler', () => {
 
     expect(rpc).not.toHaveBeenCalled()
     expect(ctx.transcript.sys).toHaveBeenCalledWith('no active session — nothing to rollback')
+  })
+
+  // A pasted PR thread / diff / log reaches a skill command as its argument.
+  // parseSlashCommand used to split the whole line on `\s+` and rejoin with a
+  // single space, so every line break was gone before the skill ran — and the
+  // fallback command.dispatch carried that flattened text.
+  it('carries a multi-line argument to the backend without flattening it', async () => {
+    patchUiState({ sid: 'sid-abc' })
+
+    const arg = 'line one\nline two\n\n  indented tail'
+
+    const ctx = buildCtx({
+      gateway: {
+        gw: {
+          getLogTail: vi.fn(() => ''),
+          kill: vi.fn(),
+          request: vi.fn((method: string) =>
+            method === 'slash.exec' ? Promise.reject(new Error('skill command')) : Promise.resolve({})
+          )
+        },
+        rpc: vi.fn(() => Promise.resolve({}))
+      }
+    })
+
+    createSlashHandler(ctx)(`/pr-triage ${arg}`)
+
+    expect(ctx.gateway.gw.request).toHaveBeenCalledWith('slash.exec', {
+      command: `pr-triage ${arg}`,
+      session_id: 'sid-abc'
+    })
+    await vi.waitFor(() => {
+      expect(ctx.gateway.gw.request).toHaveBeenCalledWith('command.dispatch', {
+        arg,
+        name: 'pr-triage',
+        session_id: 'sid-abc'
+      })
+    })
   })
 
   it('/title <name> uses session.title RPC and bypasses slash.exec', async () => {

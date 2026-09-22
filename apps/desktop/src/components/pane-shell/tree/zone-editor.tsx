@@ -25,6 +25,7 @@ import { Input } from '@/components/ui/input'
 import { registry } from '@/contrib/registry'
 import { useI18n } from '@/i18n'
 import { ESCAPE_PRIORITY, isTopEscapeLayer, pushEscapeLayer } from '@/lib/escape-layers'
+import { startPointerDrag } from '@/lib/pointer-drag'
 import { cn } from '@/lib/utils'
 
 import {
@@ -214,9 +215,7 @@ export function ZoneEditor() {
       setSelection(mergeClosureIndices(model, picked))
     }
 
-    const onUp = (ev: PointerEvent) => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
+    startPointerDrag(onMove, ev => {
       setSelectBox(null)
 
       if (!dragged) {
@@ -233,10 +232,7 @@ export function ZoneEditor() {
 
       const rect = canvasRef.current!.getBoundingClientRect()
       setMergeAt({ x: ev.clientX - rect.x, y: ev.clientY - rect.y })
-    }
-
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', onUp, true)
+    })
   }
 
   const startResizerDrag = (index: number, e: ReactPointerEvent<HTMLDivElement>) => {
@@ -267,13 +263,7 @@ export function ZoneEditor() {
       }
     }
 
-    const onUp = () => {
-      window.removeEventListener('pointermove', onMove, true)
-      window.removeEventListener('pointerup', onUp, true)
-    }
-
-    window.addEventListener('pointermove', onMove, true)
-    window.addEventListener('pointerup', onUp, true)
+    startPointerDrag(onMove)
   }
 
   const merge = () => {
@@ -317,7 +307,10 @@ export function ZoneEditor() {
   ]
 
   return (
-    <div className="absolute inset-0 z-[70] flex flex-col gap-3 p-6 [-webkit-app-region:no-drag]" style={{ background: 'color-mix(in srgb, var(--ui-bg-chrome) 88%, transparent)', backdropFilter: 'blur(6px)' }}>
+    <div
+      className="absolute inset-0 z-[70] flex flex-col gap-3 p-6 [-webkit-app-region:no-drag]"
+      style={{ background: 'color-mix(in srgb, var(--ui-bg-chrome) 88%, transparent)', backdropFilter: 'blur(6px)' }}
+    >
       {/* Toolbar — Panel-style title + hint, template chooser on the right. */}
       <div className="flex items-end justify-between gap-3">
         <div className="min-w-0">
@@ -440,7 +433,9 @@ export function ZoneEditor() {
             <div
               className={cn(
                 'absolute z-10 flex items-center justify-center',
-                horizontal ? 'h-[10px] -translate-y-1/2 cursor-row-resize' : 'w-[10px] -translate-x-1/2 cursor-col-resize'
+                horizontal
+                  ? 'h-[10px] -translate-y-1/2 cursor-row-resize'
+                  : 'w-[10px] -translate-x-1/2 cursor-col-resize'
               )}
               data-resizer={i}
               key={`r-${i}`}

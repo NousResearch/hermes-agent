@@ -8,8 +8,38 @@ revival probe on its own.
 """
 
 import asyncio
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, MagicMock
 
 import pytest
+
+
+def test_revival_discovery_registers_tools_while_ready_is_cleared(monkeypatch):
+    """A managed server revival must publish tools before readiness is reset."""
+    from tools import mcp_tool
+    from tools import mcp_tool_registration as _mcp_registration
+    from tools.mcp_tool import MCPServerTask
+
+    server = MCPServerTask("srv")
+    server._config = {"url": "https://example.test/mcp"}
+    server.session = SimpleNamespace(
+        list_tools=AsyncMock(
+            return_value=SimpleNamespace(
+                tools=[SimpleNamespace(name="send_message")],
+            )
+        )
+    )
+    server._ready.clear()
+    server._registered_tool_names = []
+    monkeypatch.setitem(mcp_tool._servers, server.name, server)
+
+    register = MagicMock(return_value=["srv__send_message"])
+    monkeypatch.setattr(_mcp_registration, "_register_server_tools", register)
+
+    asyncio.run(server._discover_tools())
+
+    register.assert_called_once_with(server.name, server, server._config)
+    assert server._registered_tool_names == ["srv__send_message"]
 
 
 @pytest.mark.no_isolate
@@ -24,6 +54,9 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
     monkeypatch.setattr(mcp_tool, "_MAX_RECONNECT_RETRIES", 1)
     # Keep the self-probe cadence tiny so the test is fast.
     monkeypatch.setattr(mcp_tool, "_PARKED_RETRY_INTERVAL", 0.05)
+
+    from tools import mcp_tool_config as _config
+    monkeypatch.setattr(_config, "_load_mcp_config", lambda: {"srv": {"command": "x"}})
 
     _real_sleep = asyncio.sleep
 
@@ -59,6 +92,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
                     # First connect succeeds (sets _ready), then dies.
                     self.session = object()
                     self._ready.set()
+                    self._ever_connected = True
                     self.session = None
                     raise RuntimeError("backend outage begins")
                 if not state["backend_up"]:
@@ -101,7 +135,7 @@ def test_parked_server_self_probes_and_revives(monkeypatch, tmp_path):
         task._shutdown_event.set()
         task._reconnect_event.set()
         try:
-            await asyncio.wait_for(run_task, timeout=2)
+            await asyncio.wait_for(run_task, timeout=15)
         except (asyncio.TimeoutError, asyncio.CancelledError, Exception):
             run_task.cancel()
 

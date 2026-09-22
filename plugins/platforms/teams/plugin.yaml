@@ -30,6 +30,10 @@ optional_env:
     description: "Webhook listen port (Bot Framework default: 3978)"
     prompt: "Webhook port"
     password: false
+  - name: TEAMS_HOST
+    description: "Webhook bind host (default: unset → dual-stack, all interfaces IPv4+IPv6)"
+    prompt: "Webhook host"
+    password: false
   - name: TEAMS_ALLOWED_USERS
     description: "Comma-separated Teams user IDs / UPNs allowed to talk to the bot"
     prompt: "Allowed users (comma-separated)"
@@ -37,6 +41,10 @@ optional_env:
   - name: TEAMS_ALLOW_ALL_USERS
     description: "Allow any Teams user to trigger the bot (dev only)"
     prompt: "Allow all users? (true/false)"
+    password: false
+  - name: TEAMS_REQUIRE_MENTION
+    description: "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)"
+    prompt: "Require @mention in channels and group chats? (true/false)"
     password: false
   - name: TEAMS_HOME_CHANNEL
     description: "Default chat/channel ID for cron / notification delivery"

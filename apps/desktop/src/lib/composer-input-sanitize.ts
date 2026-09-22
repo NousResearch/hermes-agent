@@ -5,9 +5,9 @@
  * Mirrors hermes_cli/input_sanitize.py (CLI/TUI gateway defensive path).
  */
 
-const BRACKETED_PASTE_BOUNDARY_START = /(^|[\s\n>:\]\)])\[200~/g
+const BRACKETED_PASTE_BOUNDARY_START = /(^|[\s\n>:\])])\[200~/g
 const BRACKETED_PASTE_BOUNDARY_END = /\[201~(?=$|[\s\n<[():;.,!?])/g
-const BRACKETED_PASTE_DEGRADED_START = /(^|[\s\n>:\]\)])00~/g
+const BRACKETED_PASTE_DEGRADED_START = /(^|[\s\n>:\])])00~/g
 const BRACKETED_PASTE_DEGRADED_END = /01~(?=$|[\s\n<[():;.,!?])/g
 
 const DESKTOP_PASTE_ARTIFACT = '~[[e'
@@ -19,7 +19,9 @@ export function stripLeakedBracketedPasteWrappers(text: string): string {
   }
 
   let cleaned = text
+    // eslint-disable-next-line no-control-regex -- terminal data may contain control chars
     .replace(/\x1b\[200~/g, '')
+    // eslint-disable-next-line no-control-regex -- terminal data may contain control chars
     .replace(/\x1b\[201~/g, '')
     .replace(/\^\[\[200~/g, '')
     .replace(/\^\[\[201~/g, '')
@@ -52,6 +54,7 @@ export function collapseRepeatedInputArtifacts(text: string, minRepeats = 4): st
   }
 
   let start = index
+
   if (start >= 2 && text.slice(start - 2, start) === '[e') {
     start -= 2
   } else if (start >= 1 && text[start - 1] === '[') {

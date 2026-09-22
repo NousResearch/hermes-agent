@@ -122,7 +122,7 @@ def reap_processes_rooted_in(scratch_root: Path, doomed: list[Path]) -> int:
 
 
 def _linked_worktree_repos(entry: Path) -> set[str]:
-    """Repos whose linked worktrees live inside *entry* (``.git`` FILES, ``gitdir: <repo>/.git/worktrees/<n>``)."""
+    """Common Git directories whose linked worktrees live inside *entry*."""
     repos: set[str] = set()
     stack = [(str(entry), 0)]
     while stack:
@@ -137,9 +137,12 @@ def _linked_worktree_repos(entry: Path) -> set[str]:
                             continue
                         if line.startswith("gitdir:"):
                             gitdir = Path(line[len("gitdir:"):].strip())
-                            # <repo>/.git/worktrees/<name> -> <repo>
-                            if gitdir.parent.name == "worktrees" and gitdir.parent.parent.name == ".git":
-                                repos.add(str(gitdir.parent.parent.parent))
+                            if not gitdir.is_absolute():
+                                gitdir = Path(child.path).parent / gitdir
+                            # Prune from the common Git directory: it need not be
+                            # named .git (bare repos and separate git dirs).
+                            if gitdir.parent.name == "worktrees":
+                                repos.add(os.path.abspath(gitdir.parent.parent))
                     elif child.is_dir(follow_symlinks=False) and depth < _GIT_FILE_MAX_DEPTH \
                             and child.name not in ("node_modules", ".venv", "venv"):
                         stack.append((child.path, depth + 1))

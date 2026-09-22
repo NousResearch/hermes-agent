@@ -224,7 +224,8 @@ def test_prune_reaps_process_living_in_idle_entry_and_spares_live_tree(tmp_path)
                 proc.wait(timeout=10)
 
 
-def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
+@pytest.mark.parametrize("layout", ["standard", "relative", "bare"])
+def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path, layout):
     """Deleting a scratch entry that held a linked worktree leaves the repo with no
     dangling registration (10 sat in one repo's ``git worktree list`` after cleanup)."""
     import subprocess
@@ -241,10 +242,19 @@ def test_prune_releases_git_worktree_registration_of_idle_entry(tmp_path):
     (repo / "f").write_text("x", encoding="utf-8")
     git("add", "f", cwd=repo)
     git("commit", "-q", "-m", "init", cwd=repo)
+    if layout == "bare":
+        bare = tmp_path / "repository.git"
+        git("clone", "-q", "--bare", str(repo), str(bare), cwd=tmp_path)
+        repo = bare
     scratch = get_scratch_dir(tmp_path, prune=False)
     tree = scratch / "lane" / "abwt"
     tree.parent.mkdir()
     git("worktree", "add", "-q", "--detach", str(tree), cwd=repo)
+    if layout == "relative":
+        gitfile = tree / ".git"
+        gitdir = gitfile.read_text(encoding="utf-8").removeprefix("gitdir:").strip()
+        gitfile.write_text(f"gitdir: {os.path.relpath(gitdir, tree)}\n", encoding="utf-8")
+        git("rev-parse", "--git-dir", cwd=tree)
     ancient = time.time() - 30 * 3600
     for dirpath, dirnames, filenames in os.walk(tree.parent):
         for name in dirnames + filenames:

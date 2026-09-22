@@ -90,7 +90,6 @@ test('a backend that dies after every ready is respawned at most maxRespawns tim
   assert.equal(latch.isCrashLooping(), false)
 })
 
-
 test('a claimed recovery that fails before ready can retry within the same crash-loop budget', () => {
   let clock = 1_000
   const latch = createBackendExitRecoveryLatch({ maxRespawns: 3, windowMs: 120_000, now: () => clock })

@@ -251,7 +251,7 @@ def test_auxiliary_provider_fallback_records_one_terminal_model_route(
     snapshot = store.counter_snapshot()
     assert len(snapshot) == 1
     assert snapshot[0]["metric_name"] == MODEL_ROUTE_METRIC
-    assert snapshot[0]["hermes_version"] == "test-version"
+    assert snapshot[0]["resource"]["hermes_version"] == "test-version"
     assert snapshot[0]["dimensions"] == {
         "model": "accepted/model",
         "provider": "openrouter",

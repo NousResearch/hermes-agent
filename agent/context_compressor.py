@@ -3482,10 +3482,10 @@ Summary generation was unavailable, so this is a best-effort deterministic fallb
         if limit <= marker_reserve:
             return record[:limit]
         remaining = limit - marker_reserve
-        head_len = int(remaining * 0.5)
+        head_len = remaining // 2
         tail_len = remaining - head_len
         head = record[:head_len].rstrip("\n")
-        tail = record[-tail_len:].lstrip("\n") if tail_len else ""
+        tail = record[-tail_len:].lstrip("\n")
         elided = len(record) - len(head) - len(tail)
         return head + marker_template.format(elided=elided) + tail
 

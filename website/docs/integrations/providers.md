@@ -655,7 +655,12 @@ key, the way `minimax` and `minimax-cn` work:
 | `stepfun-plan` | `https://api.stepfun.ai/step_plan/v1` | `STEPFUN_API_KEY` | `STEPFUN_STEP_PLAN_BASE_URL` |
 | `stepfun-plan-cn` | `https://api.stepfun.com/step_plan/v1` | `STEPFUN_CN_API_KEY` | `STEPFUN_CN_STEP_PLAN_BASE_URL` |
 
-Within one region the same key serves both endpoint families. Aliases: `step`, `stepfun-coding-plan`
+Within one region the same key serves both endpoint families. Note that the `-plan` ids
+(`stepfun-plan`, `stepfun-plan-cn`) call StepFun's Step Plan endpoint, which serves **generation**
+only to accounts with an active Step Plan subscription — a credit-only account gets a `400 you have
+no active step plan subscription` on the first completion. Key auth (and `GET /models`) succeeds on
+those ids regardless, so a 200 from `/models` is not proof a completion will work. Credit-only
+accounts should use `stepfun` / `stepfun-cn`. Aliases: `step`, `stepfun-coding-plan`
 and `stepfun-step-plan` resolve to `stepfun-plan`; `stepfun-ai` to `stepfun`; `stepfun-china` to
 `stepfun-cn`.
 

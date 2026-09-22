@@ -96,3 +96,46 @@ def test_unread_streaming_response_does_not_crash_and_falls_back_to_exception_me
     summary = AIAgent._summarize_api_error(err)
     assert "HTTP 429" in summary
     assert "Gemini HTTP 429: quota exceeded" in summary
+
+
+def _make_body_error(body: dict, status_code: int = 400) -> Exception:
+    """Mimic an OpenAI-SDK error whose parsed ``body`` dict carries the provider error."""
+    err = Exception("Error code: 400")
+    err.status_code = status_code
+    err.body = body
+    return err
+
+
+def test_stepfun_step_plan_400_gets_a_legible_subscription_hint():
+    """A Step Plan 400 for an unsubscribed account must read as 'wrong id / not subscribed',
+
+    not 'the model is broken'. The raw StepFun body is a 400 ``request_params_invalid`` (not a
+    401/403), so we decorate it with a hint pointing credit-only accounts at ``stepfun`` / ``stepfun-cn``.
+    """
+    err = _make_body_error(
+        {"error": {"message": "you have no active step plan subscription",
+                   "type": "request_params_invalid"}}
+    )
+    summary = AIAgent._summarize_api_error(err)
+    assert "you have no active step plan subscription" in summary  # raw text preserved
+    assert "Credit-only accounts" in summary
+    assert "`stepfun`" in summary and "`stepfun-cn`" in summary
+
+
+def test_stepfun_step_plan_hint_is_idempotent():
+    """Decorating an already-decorated message must not append the hint twice."""
+    once = AIAgent._decorate_stepfun_step_plan_error(
+        "HTTP 400: you have no active step plan subscription"
+    )
+    twice = AIAgent._decorate_stepfun_step_plan_error(once)
+    assert once == twice
+    assert once.count("Credit-only accounts") == 1
+
+
+def test_unrelated_400_is_not_decorated_with_stepfun_hint():
+    """The hint fires only on the Step Plan subscription body, not any 400."""
+    err = _make_body_error(
+        {"error": {"message": "model `foo` does not exist", "type": "invalid_request_error"}}
+    )
+    summary = AIAgent._summarize_api_error(err)
+    assert "Credit-only accounts" not in summary

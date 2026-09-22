@@ -32,6 +32,13 @@ _XAI_ENTITLEMENT_HINT = (
     "quota is exhausted. Check https://grok.com/?_s=usage to see "
     "which, or run `/model` to switch providers."
 )
+_STEPFUN_STEP_PLAN_HINT = (
+    " — the `stepfun-plan` / `stepfun-plan-cn` provider ids call StepFun's "
+    "Step Plan endpoint, which serves generation only to accounts with an "
+    "active Step Plan subscription. Key auth (and `GET /models`) succeeds on "
+    "those ids regardless, so this is not a broken model. Credit-only accounts "
+    "should use the `stepfun` or `stepfun-cn` provider id — run `/model` to switch."
+)
 _ERROR_DETAIL_KEYS = ("message", "detail", "error", "code", "type")
 
 
@@ -42,6 +49,11 @@ def _is_xai_entitlement_text(lower: str) -> bool:
         or ("out of available resources" in lower and "grok" in lower)
         or ("does not have permission" in lower and "grok" in lower)
     )
+
+
+def _is_stepfun_step_plan_text(lower: str) -> bool:
+    """StepFun's 400 body when a Step Plan model is called by an account without an active subscription."""
+    return "no active step plan subscription" in lower
 
 
 def _http_prefix(error: Exception) -> str:
@@ -100,6 +112,22 @@ class ApiErrorSummaryMixin:
         if "X Premium+ does NOT include" in detail:
             return detail
         return f"{detail}{_XAI_ENTITLEMENT_HINT}"
+
+    @staticmethod
+    def _decorate_stepfun_step_plan_error(detail: str) -> str:
+        """Append a neutral hint when StepFun's Step Plan endpoint 400s an unsubscribed account.
+
+        The `-plan` provider ids hit ``.../step_plan/v1``, which serves generation only to Step Plan
+        subscribers and rejects everyone else with a 400 ``request_params_invalid`` (NOT a 401/403), so the
+        raw text reads as "the model is broken" rather than "you're not subscribed". Point credit-only users
+        at the ``stepfun`` / ``stepfun-cn`` ids. Idempotent: a substring unique to the hint marks prior
+        decoration.
+        """
+        if not detail or not _is_stepfun_step_plan_text(detail.lower()):
+            return detail
+        if "Credit-only accounts" in detail:
+            return detail
+        return f"{detail}{_STEPFUN_STEP_PLAN_HINT}"
 
     @staticmethod
     def _coerce_api_error_detail(value: Any) -> str:
@@ -172,7 +200,9 @@ class ApiErrorSummaryMixin:
             msg = body.get("error", {}).get("message") if isinstance(body.get("error"), dict) else body.get("message")
             if msg:
                 msg = ApiErrorSummaryMixin._coerce_api_error_detail(msg)
-                return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                return ApiErrorSummaryMixin._decorate_stepfun_step_plan_error(
+                    ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{msg[:300]}")
+                )
 
         # SDK may leave body empty while httpx has the payload. Redact: the body is attacker-influenced
         # and may echo Authorization / x-api-key / request JSON.
@@ -199,7 +229,9 @@ class ApiErrorSummaryMixin:
                 return redact_sensitive_text(f"{prefix}{snippet[:300]}")
 
         # Fallback: truncate the raw string but give more room than 200 chars
-        return ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        return ApiErrorSummaryMixin._decorate_stepfun_step_plan_error(
+            ApiErrorSummaryMixin._decorate_xai_entitlement_error(f"{prefix}{raw[:500]}")
+        )
 
     def _mask_api_key_for_logs(self, key: Any) -> Optional[str]:
         # Azure Foundry Entra ID bearer providers are callables — never invoke them in log

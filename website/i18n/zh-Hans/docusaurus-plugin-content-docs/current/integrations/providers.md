@@ -501,6 +501,11 @@ key，与 `minimax` / `minimax-cn` 的做法一致：
 同一地区内，两套接口共用同一个 key。别名：`step`、`stepfun-coding-plan`、`stepfun-step-plan`
 解析为 `stepfun-plan`；`stepfun-ai` 解析为 `stepfun`；`stepfun-china` 解析为 `stepfun-cn`。
 
+注意:`-plan` id(`stepfun-plan`、`stepfun-plan-cn`)走 StepFun 的 Step Plan 接口,**生成**能力仅对已订阅
+Step Plan 的账号开放——仅充值(credit-only)的账号首次请求会返回 `400 you have no active step plan
+subscription`。这些 id 上 key 认证(以及 `GET /models`)照常成功,因此 `/models` 返回 200 并不代表能正常
+生成。仅充值账号应改用 `stepfun` / `stepfun-cn`。
+
 四个 id 的默认模型均为 `step-5-preview`——StepFun 面向编程与 Agent 任务的旗舰基模：
 1,024,000 token 上下文，支持图片与视频输入、工具调用，以及推理强度（`low`/`medium`/`high`）。
 `step-router-v1` 仅在国内接口提供。

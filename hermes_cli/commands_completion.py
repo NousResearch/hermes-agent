@@ -414,6 +414,8 @@ class SlashCommandCompleter(Completer):
 
     def _intent_completions(self, text: str):
         """Yield completions when user types natural language matching a command intent."""
+        if len(text.strip()) < 3:
+            return
         for match in match_prompt_intent(text):
             cmd_key = f"/{match.command}"
             if self._command_allowed(cmd_key):

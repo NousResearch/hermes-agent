@@ -70,6 +70,12 @@ class TestPromptIntentMatching:
             assert len(matches) >= 1, f"Expected intent match for '{p}'"
             assert matches[0].command == "usage"
 
+    def test_short_input_ignored(self):
+        """Input shorter than 3 characters must not trigger intent completions."""
+        assert match_prompt_intent("re") == []
+        assert match_prompt_intent("a") == []
+        assert match_prompt_intent("") == []
+
     def test_long_prompt_ignored(self):
         """Standard conversational prompts must not be treated as meta-commands."""
         long_text = "Please write a Python function that uses pandas to aggregate sales data by month and compute percentage growth."
@@ -97,6 +103,17 @@ class TestSlashKeywordMatching:
         cmds = [m[0] for m in matches]
         assert "new" in cmds or "clear" in cmds
 
+    def test_keyword_ranking_exact_over_prefix_and_substring(self, monkeypatch):
+        test_tags = {
+            "cmd_sub": ["something_long"],
+            "cmd_prefix": ["long_prefix"],
+            "cmd_exact": ["long"],
+        }
+        monkeypatch.setattr("hermes_cli.commands_intent.KEYWORD_TAGS", test_tags)
+        matches = match_slash_keywords("long")
+        cmds = [m[0] for m in matches]
+        assert cmds == ["cmd_exact", "cmd_prefix", "cmd_sub"]
+
 
 class TestCompleterIntegration:
     """Verify SlashCommandCompleter integrates intent and keyword suggestions."""
@@ -109,6 +126,12 @@ class TestCompleterIntegration:
         assert top.text == "/new "
         assert top.display_text == "/new"
         assert top.start_position == -len("reset chat")
+
+    def test_short_input_no_intent_completions(self):
+        completer = SlashCommandCompleter()
+        assert _completions(completer, "re") == []
+        assert _completions(completer, "a") == []
+        assert _completions(completer, "") == []
 
     def test_multilingual_hindi_intent(self):
         completer = SlashCommandCompleter()

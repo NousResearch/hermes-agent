@@ -194,7 +194,7 @@ def match_prompt_intent(text: str) -> list[IntentMatch]:
     Ignores inputs that are excessively long to avoid false positives on large prompts.
     """
     cleaned = text.strip()
-    if not cleaned or len(cleaned) > 100:
+    if not cleaned or len(cleaned) < 3 or len(cleaned) > 100:
         return []
 
     matches: list[IntentMatch] = []
@@ -212,21 +212,32 @@ def match_prompt_intent(text: str) -> list[IntentMatch]:
 def match_slash_keywords(word: str) -> list[tuple[str, str, str]]:
     """Match a typed slash word (e.g. 'token', 'pricing') against keyword tags and descriptions.
 
-    Returns list of (command_name, description, matched_keyword).
+    Returns list of (command_name, description, matched_keyword), ranked by match quality:
+    exact tag equality > prefix match > substring match.
     """
     if not word or len(word) < 2:
         return []
 
     lowered = word.lower()
-    results: list[tuple[str, str, str]] = []
+    scored_results: list[tuple[int, str, str, str]] = []
     seen: set[str] = set()
 
     for cmd, tags in KEYWORD_TAGS.items():
         for tag in tags:
-            if tag.startswith(lowered) or (len(lowered) >= 4 and lowered in tag):
+            score = 0
+            if tag == lowered:
+                score = 100
+            elif tag.startswith(lowered):
+                score = 80
+            elif len(lowered) >= 4 and lowered in tag:
+                score = 50
+
+            if score > 0:
                 if cmd not in seen:
                     seen.add(cmd)
-                    results.append((cmd, f"Matched keyword '{tag}'", tag))
+                    scored_results.append((score, cmd, f"Matched keyword '{tag}'", tag))
                 break
 
-    return results
+    # Rank highest score first, stable tie-break
+    scored_results.sort(key=lambda x: -x[0])
+    return [(cmd, desc, tag) for _, cmd, desc, tag in scored_results]

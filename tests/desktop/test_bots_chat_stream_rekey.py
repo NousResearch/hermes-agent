@@ -114,4 +114,3 @@ def test_rebind_requires_stored_session_id_lineage():
     assert 'typeof payload?.stored_session_id !== "string"' in body or (
         "typeof payload?.stored_session_id !== 'string'" in body
     ), "rebind must refuse events without a string stored_session_id"
-

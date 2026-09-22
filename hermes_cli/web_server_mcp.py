@@ -139,10 +139,9 @@ def _run_dashboard_mcp_oauth(flow, cfg: dict) -> None:
                         flow.server_name, cfg, connect_timeout=login_connect_timeout(cfg)
                     )
                     if not _oauth_tokens_present(flow.server_name):
-                        raise RuntimeError(
-                            "The server responded, but no OAuth token was obtained — "
-                            "this provider may require a manually-registered OAuth client."
-                        )
+                        from hermes_cli.mcp_config import NO_TOKEN_STORED_MESSAGE
+
+                        raise RuntimeError(NO_TOKEN_STORED_MESSAGE)
                     _save_mcp_server(flow.server_name, cfg)
                     flow.tools = [{"name": t, "description": d} for t, d in tools]
                     flow.mark_approved()

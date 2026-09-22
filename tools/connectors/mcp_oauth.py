@@ -57,9 +57,9 @@ def probe_with_rollback(
             server_name, cfg, connect_timeout=login_connect_timeout(cfg), details=details)
         if not _oauth_tokens_present(server_name):
             details["initialized"] = False
-            raise RuntimeError(
-                "The server responded, but no OAuth token was obtained — "
-                "this provider may require a manually-registered OAuth client.")
+            from hermes_cli.mcp_config import NO_TOKEN_STORED_MESSAGE
+
+            raise RuntimeError(NO_TOKEN_STORED_MESSAGE)
     except Exception as exc:
         if not details.get("initialized"):
             undo()

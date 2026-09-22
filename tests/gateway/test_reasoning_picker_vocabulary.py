@@ -86,7 +86,9 @@ async def _collect_offered_values(tmp_path, monkeypatch, config_text):
 
     captured: list = []
     runner = _make_runner(captured)
-    runner.config_path = config_path
+    # Deliberately NOT setting `runner.config_path`: the loader falls back to the active
+    # gateway home, which is what a runner without that attribute hits in production. Setting
+    # it here would hide an AttributeError that the command's fail-open swallows.
 
     assert await runner._handle_reasoning_command(_make_event()) is None
     return [choice["value"] for choice in captured]

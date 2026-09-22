@@ -281,6 +281,7 @@ import { CHROMIUM_LOG_FILENAME, enableLinuxCrashDiagnostics, linuxCrashDiagnosti
 import { notifyLauncherWindowRevealed } from './linux-launcher-ready'
 import { createLocalBackendLifecycle, waitForTeardown } from './local-backend-lifecycle'
 import { ACTIVE_LOG_POLL_MS, planLogRotation, reclaimActiveLogIfOversized } from './log-rotation'
+import { createMainProcessLagWatchdog } from './main-process-lag-watchdog'
 import { ensureMainWindow } from './main-window-lifecycle'
 import {
   assertManagedUpdatePreflightClear,
@@ -1985,6 +1986,18 @@ function rememberLog(chunk) {
 
   scheduleDesktopLogFlush()
 }
+
+// Main-process stalls leave renderer-scoped lifecycle logging unable to run.
+// When the loop resumes, retain the delayed timer's timing in desktop.log so a
+// Windows AppHang report can be correlated without changing tray semantics.
+const mainProcessLagWatchdog = createMainProcessLagWatchdog({
+  cadenceMs: 1_000,
+  thresholdMs: 2_000,
+  now: Date.now,
+  log: rememberLog,
+  setInterval,
+  clearInterval
+})
 
 installCrashForensics({ flush: flushDesktopLogBufferSync, log: rememberLog })
 
@@ -18725,6 +18738,7 @@ app.whenReady().then(() => {
   registerPowerResumeListeners()
   keepAwake.set(readPersistedKeepAwake())
   void minimizeToTray.start()
+  mainProcessLagWatchdog.start()
   f12Blocked = readPersistedDisableF12()
   // Seed this before the first window exists: a picker can open before
   // startHermes() finishes resolving the configured backend.
@@ -18877,6 +18891,7 @@ app.on('before-quit', event => {
   }
 
   minimizeToTray.beginQuit()
+  mainProcessLagWatchdog.stop()
 
   // A detached remote updater can outlive this Electron process. Do not tear
   // down its SSH observer/restore transaction at the generic SSH shutdown

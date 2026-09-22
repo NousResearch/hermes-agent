@@ -47,9 +47,14 @@ class GatewayAgentCacheMixin:
 
     @classmethod
     def _extract_cache_busting_config(cls, user_config: dict | None) -> dict:
-        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. Missing keys /
-        non-dict sections yield None (still enters the signature). Includes the live tool registry
-        generation: MCP reloads mutate the registry without touching config.yaml."""
+        """Values that must bust the cached agent, as a flat dict keyed by 'section.key'. ``user_config``
+        is the raw file (no DEFAULT_CONFIG merge), so an absent key is filled from DEFAULT_CONFIG — the
+        value the agent was actually built with. Mapping 'absent' to None made an explicit ``null``
+        (the documented opt-out of a non-None default such as ``compression.threshold_tokens``)
+        signature-identical to 'unset', so the opt-out never rebuilt a live session. Non-dict sections
+        count as absent. Includes the live tool registry generation: MCP reloads mutate the registry
+        without touching config.yaml."""
+        from hermes_cli.config import DEFAULT_CONFIG
         out: Dict[str, Any] = {}
         cfg = user_config if isinstance(user_config, dict) else {}
         for section, key in cls._CACHE_BUSTING_CONFIG_KEYS:
@@ -57,8 +62,10 @@ class GatewayAgentCacheMixin:
             if section == "checkpoints" and isinstance(section_val, bool):
                 # Legacy ``checkpoints: true``: a live toggle must still rebuild the cached agent.
                 out[f"{section}.{key}"] = section_val if key == "enabled" else None
+            elif isinstance(section_val, dict) and key in section_val:
+                out[f"{section}.{key}"] = section_val[key]
             else:
-                out[f"{section}.{key}"] = section_val.get(key) if isinstance(section_val, dict) else None
+                out[f"{section}.{key}"] = cfg_get(DEFAULT_CONFIG, section, key)
         try:
             from tools.registry import registry
             out["tools.registry_generation"] = getattr(registry, "_generation", None)

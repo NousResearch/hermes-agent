@@ -20,6 +20,26 @@ def _aux(timeout, *, reasoning_effort=True, **extra):
 
 DEFAULT_CONFIG = {
     "model": "",
+    # Explicit cross-client engineering knowledge plane. Empty paths keep it disabled;
+    # it never aliases profile-local MEMORY.md/USER.md.
+    "engineering_memory": {
+        "enabled": False,
+        "vault_path": "",
+        "index_path": "",
+        "max_record_bytes": 16384,
+        "max_results": 8,
+        "max_result_chars": 6000,
+        "laya": {
+            "enabled": False,
+            "model_repo": "convaiinnovations/laya",
+            "revision": "",
+            "local_path": "",
+            "runtime": "subprocess",
+            "device": "auto",
+            "min_confidence": 0.8,
+            "calibration_path": "",
+        },
+    },
     "providers": {},
     "fallback_providers": [],
     # min_switch_reset_seconds: opt-in (0 = off). When a rate-limited primary declares a reset
@@ -1855,6 +1875,14 @@ DEFAULT_CONFIG = {
     # promotes dependency-satisfied todos to ready, and fires `hermes -p <assignee> chat -q ...` per
     # claimable task. Run ONE dispatcher per profile; two on the same kanban.db race for claims.
     "kanban": {
+        # Cross-machine Kanban admission is deliberately opt-in. The coordinator URL is
+        # non-secret config; the bearer token remains in the profile/root .env as a secret.
+        "federated": {
+            "enabled": False,
+            "coordinator_url": "",
+            "heartbeat_ttl_seconds": 30,
+            "lease_seconds": 900,
+        },
         "worker_watchdog": {"enabled": True},
         # Auto-subscribe the originating gateway/TUI session to completion + block events when
         # kanban_create is called from a session with a persistent delivery channel. Disable for

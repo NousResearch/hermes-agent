@@ -1,15 +1,50 @@
 import fs from 'node:fs'
 import path from 'node:path'
+import { createRequire } from 'node:module'
 
 if (process.platform !== 'darwin') {
   process.exit(0)
 }
+
+const require = createRequire(import.meta.url)
 
 const desktopRoot = path.resolve(import.meta.dirname, '..')
 const repoRoot = path.resolve(desktopRoot, '..', '..')
 const electronMacPath = path.join(repoRoot, 'node_modules', 'app-builder-lib', 'out', 'electron', 'electronMac.js')
 
 const marker = 'hermes-macos-electron-binary-fallback'
+
+function patchPlistParser() {
+  let plistParserPath
+  try {
+    plistParserPath = require.resolve('plist/lib/parse.js')
+  } catch {
+    console.warn('[patch-electron-builder] plist parser not found')
+    return
+  }
+
+  const plistSource = fs.readFileSync(plistParserPath, 'utf8')
+  const plistMarker = 'hermes-plist-mime-type'
+  if (plistSource.includes(plistMarker)) {
+    console.log('[patch-electron-builder] plist MIME-type fallback already applied')
+    return
+  }
+
+  const plistNeedle = 'parseFromString(xml);'
+  if (!plistSource.includes(plistNeedle)) {
+    console.warn('[patch-electron-builder] skipped: expected plist parser shape not found')
+    return
+  }
+
+  fs.writeFileSync(
+    plistParserPath,
+    plistSource.replace(plistNeedle, `parseFromString(xml, 'text/xml'); // ${plistMarker}`)
+  )
+  console.log('[patch-electron-builder] applied plist MIME-type fallback')
+}
+
+patchPlistParser()
+
 const needle = `    await Promise.all([
         doRename(path.join(contentsPath, "MacOS"), electronBranding.productName, appPlist.CFBundleExecutable),
         (0, builder_util_1.unlinkIfExists)(path.join(appOutDir, "LICENSE")),

@@ -30,6 +30,7 @@ from hermes_cli.kanban_output import (
 from hermes_cli.kanban_boards import _dispatch_boards
 from hermes_cli.kanban_ops import (
     _cmd_daemon, _kanban_config, _cmd_dispatch, _cmd_gc, _cmd_repair, _cmd_tail, _cmd_watch,
+    federated_create_options, federated_enabled, submit_federated_task,
 )
 from hermes_cli.kanban_parser import build_parser  # noqa: F401  (re-exported: hermes_cli.main, run_slash)
 
@@ -430,6 +431,17 @@ def _cmd_assignees(args: argparse.Namespace) -> int:
 def _cmd_create(args: argparse.Namespace) -> int:
     from agent.delegation_context import is_dispatcher_owned_worker_context
 
+    federated = bool(getattr(args, "federated", False))
+    federated_config = _kanban_config() if federated else None
+    federated_options = {}
+    if federated:
+        if not federated_enabled(federated_config):
+            return _err("kanban: --federated requires kanban.federated.enabled: true", 2)
+        try:
+            federated_options = federated_create_options(args)
+        except ValueError as exc:
+            return _err(f"kanban: {exc}", 2)
+
     body = args.body
     body_file = getattr(args, "body_file", None)
     if body is not None and body_file is not None:
@@ -457,8 +469,9 @@ def _cmd_create(args: argparse.Namespace) -> int:
                     "use 1 to trip on the first failure.", 2)
     with kbc.connect_closing() as conn:
         task_id = kb.create_task(
-            conn, title=args.title, body=body, assignee=args.assignee,
-            created_by=args.created_by or _profile_author(),
+            conn, title=args.title, body=body,
+            assignee=federated_options.get("assignee", args.assignee),
+            created_by=federated_options.get("created_by", args.created_by or _profile_author()),
             workspace_kind=ws_kind, workspace_path=ws_path, branch_name=branch_name,
             project_id=getattr(args, "project", None), tenant=args.tenant, priority=args.priority,
             parents=tuple(args.parent or ()), triage=bool(getattr(args, "triage", False)),
@@ -470,11 +483,15 @@ def _cmd_create(args: argparse.Namespace) -> int:
             goal_mode=bool(getattr(args, "goal_mode", False)),
             goal_max_turns=getattr(args, "goal_max_turns", None),
             completion_contract=getattr(args, "completion_contract", None),
-            initial_status=getattr(args, "initial_status", "running"),
+            initial_status=federated_options.get(
+                "initial_status", getattr(args, "initial_status", "running")
+            ),
             creator_task_id=(os.environ.get("HERMES_KANBAN_TASK")
                              if is_dispatcher_owned_worker_context() else None),
         )
         task = kb.get_task(conn, task_id)
+    if federated:
+        submit_federated_task(task, federated_config)
     if getattr(args, "json", False):
         _print_json(_task_to_dict(task))
     else:

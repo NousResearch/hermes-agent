@@ -16,13 +16,37 @@ Need meeting summaries from Microsoft Graph events rather than normal bot conver
 
 | Context | Behavior |
 |---------|----------|
-| **Personal chat (DM)** | Bot responds to every message. No @mention needed. |
-| **Group chat** | Bot only responds when @mentioned. |
-| **Channel** | Bot only responds when @mentioned. |
+| **Personal chat (DM)** | No @mention needed. Normal Hermes user authorization applies. |
+| **Group chat** | Normal user authorization applies. With `require_mention: true`, the message must @mention the bot or reply to it. |
+| **Channel** | The channel must pass `allowed_channels` when configured. With `require_mention: true`, the message must also @mention the bot or reply to it. |
 
 Teams delivers @mentions as regular messages with `<at>BotName</at>` tags, which Hermes strips automatically before processing.
 
 Without resource-specific consent (RSC) Teams only delivers messages that @mention the bot, so no filtering is needed. Once the app manifest grants `ChannelMessage.Read.Group` or `ChatMessage.Read.Chat`, Teams delivers **every** message in the conversation — set `require_mention: true` (or `TEAMS_REQUIRE_MENTION=true`) so the bot only answers channel/group-chat messages that @mention it or reply to one of its own messages. Personal chats are never gated, and a gated message is dropped before its attachments are downloaded.
+
+### Restricting channels
+
+Set `platforms.teams.allowed_channels` in your profile's `config.yaml` to choose where the bot can answer:
+
+```yaml
+platforms:
+  teams:
+    allowed_channels:
+      - "19:abc123@thread.tacv2"
+    require_mention: true  # Optional; the default is false.
+```
+
+Entries match the conversation ID, `channelData.channel.id`, or `channelData.team.id` exactly (case-sensitive). A team ID allows all of that team's channels. Replies whose conversation ID ends in `;messageid=...` match the base channel ID. YAML lists are recommended; comma-separated strings and JSON-list strings written by `hermes config set` also work. This setting is YAML-only; it can also be placed inside `platforms.teams.extra`. An invalid list is rejected for channel traffic rather than treated as unrestricted.
+
+| `allowed_channels` | Result |
+|---|---|
+| Unset, `[]`, or an empty string | Every channel is in scope, but its sender still needs normal user authorization. |
+| Specific channel/team IDs | Senders in matching channels receive a channel authorization grant without needing an individual `TEAMS_ALLOWED_USERS` entry. All other channels are dropped. |
+| `["*"]` | Every channel receives that authorization grant. This is broader than leaving the list empty. |
+
+Channel messages outside the list are dropped before downloading attachments or reaching the gateway, even when the sender is in `TEAMS_ALLOWED_USERS` or replies to the bot. The mention gate is independent: an allowed channel still has to satisfy `require_mention` when enabled. A channel grant does not authorize DMs or group chats, and messages without a sender identity still fail the gateway's user authorization.
+
+Normal user authorization includes configured user allowlists, explicit allow-all settings, and approved pairings. Adaptive Card approval buttons remain a separate check: they require `TEAMS_ALLOWED_USERS` or `TEAMS_ALLOW_ALL_USERS`. A channel grant alone cannot approve a command.
 
 ---
 
@@ -277,13 +301,14 @@ Make sure the public HTTPS endpoint is reachable from the internet and uses a va
 ## Security
 
 :::warning
-**Always set `TEAMS_ALLOWED_USERS`** with the AAD object IDs of authorized users. Without this, anyone who can find or install your bot can interact with it.
+Use `TEAMS_ALLOWED_USERS` with authorized users' AAD object IDs to restrict individual access. A configured channel allowlist grants access to senders in those channels, so choose channels whose members should be able to use the agent; `["*"]` grants that access in every channel.
 
 Treat `TEAMS_CLIENT_SECRET` like a password — rotate it periodically via the Azure portal or Teams CLI.
 :::
 
 - Store credentials in `~/.hermes/.env` with permissions `600` (`chmod 600 ~/.hermes/.env`)
-- The bot only accepts messages from users in `TEAMS_ALLOWED_USERS`; unauthorized messages are silently dropped
+- DMs and group chats retain normal user authorization. Unauthorized DM handling follows your gateway policy; `platforms.teams.unauthorized_dm_behavior: ignore` explicitly selects silent rejection.
+- A channel outside `allowed_channels` is dropped regardless of the sender's individual authorization. See [Restricting channels](#restricting-channels) for the empty-list and wildcard distinction.
 - Your public endpoint (`/api/messages`) is authenticated by the Teams Bot Framework — requests without valid JWTs are rejected
 
 ## Related Docs

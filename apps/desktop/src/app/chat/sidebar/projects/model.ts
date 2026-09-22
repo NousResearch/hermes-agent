@@ -33,14 +33,6 @@ const projectSessions = (project: SidebarProjectTree): SessionInfo[] =>
 export const projectTreeCwd = (project: SidebarProjectTree): null | string =>
   project.path || project.repos.find(repo => repo.path)?.path || null
 
-// Overview rows carry their activity stamp from the backend (lanes are empty in
-// overview mode), falling back to loaded session times when present.
-const projectActivityTime = (project: SidebarProjectTree): number =>
-  Math.max(
-    project.lastActive ?? 0,
-    projectSessions(project).reduce((latest, s) => Math.max(latest, sessionRecency(s)), 0)
-  )
-
 // The project's most-recent sessions, for the overview preview under each row.
 export const latestProjectSessions = (project: SidebarProjectTree, limit: number): SessionInfo[] =>
   [...projectSessions(project)].sort((a, b) => sessionRecency(b) - sessionRecency(a)).slice(0, limit)
@@ -67,6 +59,8 @@ export function sortProjectsForOverview(
   activeProjectId: null | string
 ): SidebarProjectTree[] {
   const sorted = [...projects].sort((a, b) => {
+    // Projects have no separate pin bit: the durable active project is the
+    // user's pinned workspace. Keep it first while the rest stays predictable.
     const aActive = Boolean(activeProjectId && a.id === activeProjectId && !a.isAuto)
     const bActive = Boolean(activeProjectId && b.id === activeProjectId && !b.isAuto)
 
@@ -74,21 +68,7 @@ export function sortProjectsForOverview(
       return aActive ? -1 : 1
     }
 
-    if (!a.isAuto !== !b.isAuto) {
-      return a.isAuto ? 1 : -1
-    }
-
-    const aHasSessions = a.sessionCount > 0
-    const bHasSessions = b.sessionCount > 0
-
-    if (aHasSessions !== bHasSessions) {
-      return aHasSessions ? -1 : 1
-    }
-
-    return (
-      projectActivityTime(b) - projectActivityTime(a) ||
-      a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
-    )
+    return a.label.localeCompare(b.label, undefined, { sensitivity: 'base' })
   })
 
   return homeFirst(sorted)

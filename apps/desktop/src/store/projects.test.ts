@@ -490,6 +490,20 @@ describe('createProject', () => {
     expect($activeProjectId.get()).toBe('p_new')
   })
 
+  it('uses the configured default project directory for a named folder-less project', async () => {
+    const created = { folders: [], id: 'p_new', name: 'Demo', primary_path: '/configured/Demo' }
+    const request = vi.fn().mockResolvedValue({ project: created })
+    activeGateway.mockReturnValue({ connectionState: 'open', request } as never)
+    applyConfiguredDefaultProjectDir('/configured')
+
+    await expect(createProject({ folders: [], name: 'Demo' })).resolves.toEqual(created)
+
+    expect(request).toHaveBeenCalledWith(
+      'projects.create',
+      expect.objectContaining({ folders: ['/configured/Demo'], primary_path: '/configured/Demo' })
+    )
+  })
+
   it('marks the backend stale and surfaces a friendly error when projects.create is missing', async () => {
     activeGateway.mockReturnValue({
       connectionState: 'open',

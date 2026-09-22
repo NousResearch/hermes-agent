@@ -803,6 +803,16 @@ export interface CreateProjectInput {
   dropPlacement?: NewSessionPlacement
 }
 
+const projectFolderForName = (directory: string, name: string): string | undefined => {
+  const base = directory.trim().replace(/[/\\]+$/, '')
+
+  if (!base) {
+    return undefined
+  }
+
+  return `${base}${base.includes('\\') ? '\\' : '/'}${name.trim()}`
+}
+
 // Generate a project idea via the stateless llm.oneshot RPC (inherits the live
 // session's model when one exists). Returns "" on failure so the caller can just
 // leave the field untouched. The "🎲" affordance in the new-project dialog.
@@ -901,6 +911,8 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
   }
 
   let res: { project: ProjectInfo | null }
+  const defaultFolder = input.folders?.length ? undefined : projectFolderForName(workspaceCwdForNewSession(), input.name)
+  const folders = input.folders?.length ? input.folders : defaultFolder ? [defaultFolder] : []
 
   try {
     // All profiles filters the sidebar, not the owner of a new project.
@@ -913,8 +925,8 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
       projectParams(
         {
           name: input.name,
-          folders: input.folders ?? [],
-          primary_path: input.primaryPath,
+          folders,
+          primary_path: input.primaryPath ?? defaultFolder,
           slug: input.slug,
           description: input.description,
           icon: input.icon,
@@ -944,7 +956,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
 
   if (created) {
     if (input.idea) {
-      void writeProjectIdea(created.primary_path ?? created.folders?.[0]?.path ?? input.primaryPath, input.idea)
+      void writeProjectIdea(created.primary_path ?? created.folders?.[0]?.path ?? input.primaryPath ?? defaultFolder, input.idea)
     }
 
     if (!$projects.get().some(proj => proj.id === created.id)) {
@@ -963,7 +975,7 @@ export async function createProject(input: CreateProjectInput): Promise<ProjectI
     // side so the project's fresh session draft opens exactly where it was
     // dropped (tab-strip slot / pane edge / pane center). The plain click
     // path has no placement and keeps its existing behavior.
-    const rootPath = created.primary_path ?? created.folders?.[0]?.path ?? input.primaryPath
+    const rootPath = created.primary_path ?? created.folders?.[0]?.path ?? input.primaryPath ?? defaultFolder
 
     if (input.dropPlacement && rootPath) {
       $newProjectSessionRequest.set({ path: rootPath, placement: input.dropPlacement })

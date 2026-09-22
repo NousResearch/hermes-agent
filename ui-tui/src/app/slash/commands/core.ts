@@ -590,8 +590,16 @@ export const coreCommands: SlashCommand[] = [
       // Display-only: Python owns the tool_progress stash/restore so /focus off
       // returns to whatever /verbose mode the user had. Optimistically patch the
       // badge so the status bar flips on the same frame.
+      //
+      // session_id is required: the backend gates tool.start/tool.complete on the
+      // session's own `tool_progress_mode`, copied at session start. Without it
+      // `_set_focus` writes config.yaml and leaves the live session on its old
+      // mode, so the badge lights up while tool rows keep streaming until the
+      // next session. `/verbose` passes it for the same reason.
       patchUiState({ focusView: next })
-      ctx.gateway.rpc<ConfigSetResponse>('config.set', { key: 'focus', value: next ? 'on' : 'off' }).catch(() => {})
+      ctx.gateway
+        .rpc<ConfigSetResponse>('config.set', { key: 'focus', session_id: ctx.sid, value: next ? 'on' : 'off' })
+        .catch(() => {})
 
       queueMicrotask(() =>
         ctx.transcript.sys(

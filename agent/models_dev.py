@@ -147,7 +147,9 @@ def _dict_or_empty(value: Any) -> Dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _configured_catalog_provider(provider: str) -> Optional[str]:
+def _configured_catalog_provider(
+    provider: str, *, config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """``catalog_provider`` declared on a custom provider's ``providers.<name>`` row (or legacy
     ``custom_providers[]`` entry): the catalogued vendor whose models it resells. None when unset."""
     name = (provider or "").strip()
@@ -155,22 +157,37 @@ def _configured_catalog_provider(provider: str) -> Optional[str]:
         name = name[len("custom:"):]
     if not name or name in PROVIDER_TO_MODELS_DEV:
         return None
-    alias = _dict_or_empty(_cfg_get("providers", name, default=None)).get("catalog_provider")
+    provider_config = (
+        _cfg_get("providers", name, default=None, config=config)
+        if config is not None
+        else _cfg_get("providers", name, default=None)
+    )
+    alias = _dict_or_empty(provider_config).get("catalog_provider")
     if not alias:
-        legacy = _cfg_get("custom_providers", default=None)
+        legacy = (
+            _cfg_get("custom_providers", default=None, config=config)
+            if config is not None
+            else _cfg_get("custom_providers", default=None)
+        )
         alias = next((e.get("catalog_provider") for e in (legacy if isinstance(legacy, list) else [])
                       if isinstance(e, dict) and str(e.get("name") or "").strip() == name), None)
     alias = str(alias or "").strip()
     return alias or None
 
 
-def _models_dev_id(provider: str) -> Optional[str]:
+def _models_dev_id(
+    provider: str, *, config: Optional[Dict[str, Any]] = None,
+) -> Optional[str]:
     """models.dev provider id for a Hermes provider id, or None. A custom provider reaches the
     catalog only through its configured ``catalog_provider`` alias (#112649)."""
     key = (provider or "").strip()
     mdev_id = PROVIDER_TO_MODELS_DEV.get(key)
     if mdev_id is None:
-        alias = _configured_catalog_provider(key)
+        alias = (
+            _configured_catalog_provider(key, config=config)
+            if config is not None
+            else _configured_catalog_provider(key)
+        )
         mdev_id = PROVIDER_TO_MODELS_DEV.get(alias, alias) if alias else None
         if mdev_id is not None and mdev_id not in PROVIDER_TO_MODELS_DEV.values() \
                 and mdev_id not in fetch_models_dev(allow_network=False):
@@ -495,10 +512,16 @@ def _registry_models(mdev_id: str, *, allow_network: bool) -> Optional[Dict[str,
     return models if isinstance(models, dict) else None
 
 
-def _get_provider_models(provider: str, *, allow_network: bool = False) -> Optional[Dict[str, Any]]:
+def _get_provider_models(
+    provider: str, *, allow_network: bool = False, config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Resolve a Hermes provider ID to its models dict, or None if unknown.
     ``allow_network`` defaults to False — hot-path callers must never block."""
-    mdev_id = _models_dev_id(provider)
+    mdev_id = (
+        _models_dev_id(provider, config=config)
+        if config is not None
+        else _models_dev_id(provider)
+    )
     return _registry_models(mdev_id, allow_network=allow_network) if mdev_id else None
 
 
@@ -642,12 +665,21 @@ def _load_model_overrides(*, config: Optional[Dict[str, Any]] = None) -> Dict[st
     """The ``model_overrides`` config section ({} on any failure). Deliberately not memoized:
     ``load_config_readonly()`` is already (mtime, size)-cached upstream, and an ``id(cfg)``-keyed
     layer can serve stale overrides after a reload when CPython reuses the dict address."""
-    return _dict_or_empty(_cfg_get("model_overrides", default={}, config=config))
+    overrides = (
+        _cfg_get("model_overrides", default={}, config=config)
+        if config is not None
+        else _cfg_get("model_overrides", default={})
+    )
+    return _dict_or_empty(overrides)
 
 
 def _provider_override_section(provider: str, *, config: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
     """Override section for *provider* (keyed by Hermes OR models.dev id), or None."""
-    overrides = _load_model_overrides(config=config)
+    overrides = (
+        _load_model_overrides(config=config)
+        if config is not None
+        else _load_model_overrides()
+    )
     provider_key = (provider or "").strip()
     if not overrides or not provider_key:
         return None
@@ -674,7 +706,12 @@ def _default_model_override(provider: str, *, config: Optional[Dict[str, Any]] =
     section = _provider_override_section(provider, config=config)
     if section is not None and isinstance(section.get("_default"), dict):
         return section["_default"]
-    global_default = _load_model_overrides(config=config).get("_default")
+    overrides = (
+        _load_model_overrides(config=config)
+        if config is not None
+        else _load_model_overrides()
+    )
+    global_default = overrides.get("_default")
     return global_default if isinstance(global_default, dict) else None
 
 
@@ -760,9 +797,15 @@ def _merge_catalog_entry_with_override(raw: Dict[str, Any], override: Dict[str, 
     return merged
 
 
-def _builtin_model_metadata(provider: str, model: str) -> Optional[Dict[str, Any]]:
+def _builtin_model_metadata(
+    provider: str, model: str, *, config: Optional[Dict[str, Any]] = None,
+) -> Optional[Dict[str, Any]]:
     """Built-in metadata for a provider/model pair, if Hermes has a vendor-specific entry."""
-    provider_key = _models_dev_id(provider) or (provider or "").strip()
+    provider_key = (
+        _models_dev_id(provider, config=config)
+        if config is not None
+        else _models_dev_id(provider)
+    ) or (provider or "").strip()
     return _BUILTIN_MODEL_METADATA.get((provider_key, (model or "").strip().lower()))
 
 
@@ -795,7 +838,7 @@ def _apply_overrides(
     """Catalog/builtin metadata, patched by the plugin's declaration, then by the explicit user override.
     ``_UNKNOWN_MODEL_BASE`` is the base on a catalog miss; a fill-gap ``_default`` applies only when no
     source knows the model. None when nothing knows it."""
-    builtin = _builtin_model_metadata(provider, model)
+    builtin = _builtin_model_metadata(provider, model, config=config)
     base = entry if entry is not None else builtin
     declared = _provider_model_capabilities(provider, model)
     if declared:
@@ -825,9 +868,16 @@ def get_model_capabilities(
     self-unblock path for custom/local models (#8731) and for models with wrong metadata in models.dev
     (#84482).
     """
-    models = _get_provider_models(provider, allow_network=allow_network)
+    models = (
+        _get_provider_models(provider, allow_network=allow_network, config=config)
+        if config is not None
+        else _get_provider_models(provider, allow_network=allow_network)
+    )
     entry = _find_model_entry(models, model, provider) if models is not None else None
-    unknown_base = entry is None and _builtin_model_metadata(provider, model) is None
+    unknown_base = (
+        entry is None
+        and _builtin_model_metadata(provider, model, config=config) is None
+    )
     raw = _apply_overrides(provider, model, entry, config=config)
     if raw is None:
         return None
@@ -915,9 +965,15 @@ def _parse_provider_info(provider_id: str, raw: Dict[str, Any]) -> ProviderInfo:
     )
 
 
-def get_provider_info(provider_id: str, *, allow_network: bool = True) -> Optional[ProviderInfo]:
+def get_provider_info(
+    provider_id: str, *, allow_network: bool = True, config: Optional[Dict[str, Any]] = None,
+) -> Optional[ProviderInfo]:
     """Provider metadata by Hermes or models.dev ID, or None if not cataloged. ``allow_network`` defaults to True (interactive setup)."""
-    mdev_id = _models_dev_id(provider_id) or provider_id
+    mdev_id = (
+        _models_dev_id(provider_id, config=config)
+        if config is not None
+        else _models_dev_id(provider_id)
+    ) or provider_id
     raw = _registry_provider(mdev_id, allow_network)
     return _parse_provider_info(mdev_id, raw) if raw is not None else None
 
@@ -934,7 +990,11 @@ def get_model_info(
     this boundary, and sub-dicts (``limit``, ``modalities``) are merged rather than clobbered. See #84482,
     #8731.
     """
-    mdev_id = _models_dev_id(provider_id) or provider_id
+    mdev_id = (
+        _models_dev_id(provider_id, config=config)
+        if config is not None
+        else _models_dev_id(provider_id)
+    ) or provider_id
     models = _registry_models(mdev_id, allow_network=allow_network)
     mid, entry = next(_iter_model_entries(models, model_id, suffix_fallback=False, provider=provider_id), (model_id, None)) if models is not None else (model_id, None)
     # Not in catalog — an override (explicit or _default) may still provide it.

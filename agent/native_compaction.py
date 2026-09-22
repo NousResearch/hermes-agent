@@ -26,15 +26,22 @@ LOCAL_TRIGGER_SAFETY_MARGIN = 8_192
 DEFAULT_COMPACT_THRESHOLD = 200_000
 # Substring match so dated snapshots and variants (gpt-5.6-mini) stay eligible.
 _ELIGIBLE_MODEL_MARKER = "gpt-5.6"
+_ASTRA_NATIVE_COMPACTION_MODELS = frozenset({"gpt-6-astra", "gpt-6-astra-900k"})
 
 
 def is_native_compaction_model(
     model: Optional[str], *, provider: Optional[str] = None, base_url: Optional[str] = None,
 ) -> bool:
-    """Preserve gpt-5.6 eligibility; Astra additionally requires official Codex OAuth."""
-    model_name = (model or "").lower()
+    """Preserve gpt-5.6 eligibility; Astra additionally requires official Codex OAuth.
+
+    ``-900k`` is Hermes' local picker alias and is stripped before the request is
+    sent.  It must retain the same native-compaction eligibility as the bare
+    Astra wire model; otherwise enabling the feature in a 900K session is a
+    silent no-op.
+    """
+    model_name = (model or "").strip().lower().rsplit("/", 1)[-1]
     return _ELIGIBLE_MODEL_MARKER in model_name or (
-        model_name == "gpt-6-astra"
+        model_name in _ASTRA_NATIVE_COMPACTION_MODELS
         and (provider or "").strip().lower() == "openai-codex"
         and is_official_codex_base_url(base_url or "")
     )

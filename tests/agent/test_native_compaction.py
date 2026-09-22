@@ -46,6 +46,13 @@ class TestModelGate:
         assert is_native_compaction_model("gpt-5.6-mini")
         assert is_native_compaction_model("GPT-5.6-2026-07-15")
 
+    def test_astra_900k_picker_alias_is_eligible_on_official_codex_oauth(self):
+        assert is_native_compaction_model(
+            "gpt-6-astra-900k",
+            provider="openai-codex",
+            base_url="https://chatgpt.com/backend-api/codex",
+        )
+
     def test_other_models_ineligible(self):
         # gpt-5.1/5.2 fail server-side on context_management (live-verified);
         # gpt-5.3-codex works upstream but is outside the supported set.

@@ -638,6 +638,15 @@ def browser_exec(code: str, session: str = "", timeout_s: int = _DEFAULT_TIMEOUT
         return tool_error(route_err)
     bot_desktop_browser = bool(env.pop(_BOT_DESKTOP_BROWSER_SENTINEL, None))
 
+    # Claim the daemon this call is about to spawn (or reuse). The harness detaches it with
+    # start_new_session so it survives the CLI on purpose; the claim is what lets the janitor
+    # tell a live-owner daemon from one whose hermes process died. Also starts the janitor —
+    # a session-only process never touches the agent-browser lane that normally starts it.
+    from tools.browser_tool_lifecycle import _start_browser_cleanup_thread
+    from tools.browser_use_cli_reaper import claim_session
+    claim_session(env, session)
+    _start_browser_cleanup_thread()
+
     # SHARED browser (/browser connect CDP override): pin each named session to its own tab (see
     # _OWN_TAB_PREAMBLE). Private per-name browsers skip this — nothing to collide with.
     private_browser = env.pop(_PRIVATE_BROWSER_SENTINEL, None)  # always pop: never exported to the CLI

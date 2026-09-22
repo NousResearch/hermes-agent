@@ -87,7 +87,7 @@ def scan_file(path: Path) -> list[str]:
         elif _func_name(node.func) == "write_text" and isinstance(node.func, ast.Attribute):
             receiver = ast.get_source_segment(src, node.func.value) or ""
             body = ast.get_source_segment(src, node) or ""
-            if CONFIG_PATH_RE.search(receiver) and re.search(r"\bdump\(", body):
+            if CONFIG_PATH_RE.search(receiver) and "dump(" in body:
                 flag(node, f"write_text of a YAML dump onto a config path ({receiver})")
     return problems
 

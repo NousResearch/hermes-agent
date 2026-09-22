@@ -4,9 +4,10 @@ Requires aiohttp, HASS_TOKEN (Long-Lived Access Token) and HASS_URL (default htt
 """
 
 import asyncio
+import errno
 import json
 import logging
-import os
+import sys
 import time
 import uuid
 from datetime import datetime
@@ -19,10 +20,13 @@ except ImportError:
     AIOHTTP_AVAILABLE = False
     aiohttp = None  # type: ignore[assignment]
 
+from gateway.restart import is_supervised_gateway_launch
 from gateway.config import Platform, PlatformConfig
 from gateway.platforms.base import gateway_trust_env, BasePlatformAdapter, SendResult
 from gateway.platforms.event import MessageEvent, MessageType
-from gateway.platforms._shared import get_scoped_secret as _get_scoped_secret
+from gateway.platforms._shared import (
+    env_is_connected as _env_is_connected, get_scoped_secret as _get_scoped_secret, send_error
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +67,24 @@ _DEFAULT_TEMPLATE = "[Home Assistant] {name} ({entity_id}): changed from '{old}'
 _TRIGGERED = ("cleared", "triggered")  # binary_sensor wording, indexed by ``state == "on"``
 
 
+def _connect_error_detail(exc: BaseException) -> str:
+    """Annotate macOS Local Network Privacy denials so launchd HA failures are actionable (#71206).
+
+    Only a supervised (launchd) gateway on macOS can be denied this way; the same errno from a
+    Terminal-run gateway or on another OS is a genuinely unreachable host.
+    """
+    text = str(exc)
+    os_error = getattr(exc, "os_error", None) or exc.__cause__ or exc
+    if (sys.platform == "darwin" and is_supervised_gateway_launch()
+            and getattr(os_error, "errno", None) == errno.EHOSTUNREACH):
+        return (
+            f"{text} — macOS Local Network Privacy is blocking this launchd gateway from the LAN. "
+            "Run `hermes gateway install` to regenerate the launchd job, then `hermes gateway restart`. "
+            "https://github.com/NousResearch/hermes-agent/issues/71206"
+        )
+    return text
+
+
 class HomeAssistantAdapter(BasePlatformAdapter):
     """``state_changed`` -> MessageEvents with domain/entity filtering and per-entity cooldowns."""
 
@@ -77,7 +99,9 @@ class HomeAssistantAdapter(BasePlatformAdapter):
         self._listen_task: Optional[asyncio.Task] = None
         self._msg_id: int = 0
         extra = config.extra or {}
-        self._hass_url: str = (extra.get("url") or os.getenv("HASS_URL", "http://homeassistant.local:8123")).rstrip("/")
+        # URL is scoped like the token below: a secondary's HASS_TOKEN must never be posted to the
+        # DEFAULT profile's HA instance (os.environ under multiplex).
+        self._hass_url: str = (extra.get("url") or _get_scoped_secret("HASS_URL", "http://homeassistant.local:8123")).rstrip("/")
         self._hass_token: str = config.token or _get_scoped_secret("HASS_TOKEN", "")
         self._watch_domains: Set[str] = set(extra.get("watch_domains", []))
         self._watch_entities: Set[str] = set(extra.get("watch_entities", []))
@@ -120,7 +144,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             self._wire_plugin_handlers(None)
             return True
         except Exception as e:
-            logger.error("[%s] Failed to connect: %s", self.name, e)
+            logger.error("[%s] Failed to connect: %s", self.name, _connect_error_detail(e))
             return False
 
     async def _ws_connect(self) -> bool:
@@ -182,7 +206,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
             except asyncio.CancelledError:
                 return
             except Exception as e:
-                logger.warning("[%s] WebSocket error: %s", self.name, e)
+                logger.warning("[%s] WebSocket error: %s", self.name, _connect_error_detail(e))
             if not self._running:
                 return
             delay = self._BACKOFF_STEPS[min(backoff_idx, len(self._BACKOFF_STEPS) - 1)]
@@ -195,7 +219,7 @@ class HomeAssistantAdapter(BasePlatformAdapter):
                     backoff_idx = 0
                     logger.info("[%s] Reconnected", self.name)
             except Exception as e:
-                logger.warning("[%s] Reconnection failed: %s", self.name, e)
+                logger.warning("[%s] Reconnection failed: %s", self.name, _connect_error_detail(e))
 
     async def _read_events(self) -> None:
         """Read events from WebSocket until disconnected."""
@@ -315,31 +339,28 @@ async def _standalone_send(
     ``thread_id``/``media_files``/``force_document`` are signature parity only (HA has no threads/attachments).
     """
     if not AIOHTTP_AVAILABLE:
-        return {"error": "aiohttp not installed. Run: pip install aiohttp"}
+        return send_error("aiohttp not installed. Run: pip install aiohttp")
     extra = getattr(pconfig, "extra", {}) or {}
-    hass_url = (extra.get("url") or os.getenv("HASS_URL", "")).rstrip("/")
+    hass_url = (extra.get("url") or _get_scoped_secret("HASS_URL", "")).rstrip("/")
     token = (getattr(pconfig, "token", None) or _get_scoped_secret("HASS_TOKEN", "")).strip()
     if not hass_url or not token:
-        return {"error": "Home Assistant standalone send: HASS_URL and HASS_TOKEN must both be set"}
+        return send_error("Home Assistant standalone send: HASS_URL and HASS_TOKEN must both be set")
     url = f"{hass_url}/api/services/notify/notify"
     payload = {"message": message, "target": chat_id}
     try:
         async with HomeAssistantAdapter._new_session() as session:
             async with session.post(url, headers=_auth_headers(token), json=payload) as resp:
                 if resp.status not in {200, 201}:
-                    return {"error": f"Home Assistant API error ({resp.status}): {await resp.text()}"}
+                    return send_error(f"Home Assistant API error ({resp.status}): {await resp.text()}")
         return {"success": True, "platform": "homeassistant", "chat_id": chat_id}
     except asyncio.TimeoutError:
-        return {"error": "Timeout sending notification to Home Assistant"}
+        return send_error("Timeout sending notification to Home Assistant")
     except Exception as e:
-        return {"error": f"Home Assistant send failed: {e}"}
+        return send_error(f"Home Assistant send failed: {e}")
 
 
-def _is_connected(config) -> bool:
-    """Connected when ``HASS_TOKEN`` is set; read via ``hermes_cli.gateway.get_env_value`` at call
-    time so tests patching ``gateway_mod.get_env_value`` can suppress ambient env vars."""
-    import hermes_cli.gateway as gateway_mod
-    return bool((gateway_mod.get_env_value("HASS_TOKEN") or "").strip())
+_is_connected = _env_is_connected("HASS_TOKEN")
+
 
 
 def register(ctx) -> None:

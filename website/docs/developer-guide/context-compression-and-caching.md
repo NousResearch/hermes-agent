@@ -7,6 +7,35 @@ Source files: `agent/context_engine.py` (ABC), `agent/context_compressor.py` (de
 `agent/prompt_caching.py`, `gateway/run_turn.py` (session hygiene), `agent/compression_facade.py` (search for `_compress_context`)
 
 
+## Bedrock context window cache
+
+Bedrock context resolution in `agent/model_metadata.py` uses this precedence:
+
+- **Explicit overrides win.** Configured context lengths take priority over cache,
+  probes, and the static table.
+- **Provider-confirmed limits persist.** A successful probe or a limit learned
+  from a provider error remains authoritative, even below the static table.
+  The compressor uses the same value after restart.
+- **Legacy entries are revalidated.** Old scalar entries have no provenance and
+  may be either probe results or fallbacks. Their size does not establish which.
+- **Failed probes use the current table without persisting it.** Failures have a
+  five-minute in-memory cooldown scoped to Hermes home, endpoint, model, and
+  region. Expiry or explicit cache invalidation permits another attempt.
+
+The cache remains at `context_length_cache.yaml` under the active Hermes home.
+`context_lengths` retains scalar values for older readers. An additive
+`bedrock_confirmed_v1` map binds each confirmed key to its exact value in the
+same atomic write. Generic writes clear that key's provenance. Older writers
+may drop the additive map, which causes revalidation after upgrading again.
+Downgrading remains readable but restores the older runtime's resolution rules.
+
+The static fallback for `xai.grok-4.6` (including `global.` and `us.` inference
+profiles) is 500,000 tokens, per the
+[AWS model card](https://docs.aws.amazon.com/bedrock/latest/userguide/model-card-xai-grok-4-6.html).
+This is Bedrock-specific, not the direct xAI API window. Existing compression
+rules still apply: without output reservation, the small-window 75% threshold floor
+yields 375,000 at this window, which the default `threshold_tokens` cap (256,000) then lowers.
+
 ## Pluggable Context Engine
 
 Context management is built on the `ContextEngine` ABC (`agent/context_engine.py`). The built-in `ContextCompressor` is the default implementation, but plugins can replace it with alternative engines (e.g., Lossless Context Management).
@@ -32,7 +61,7 @@ Plugin engines are **never auto-activated** — the user must explicitly set `co
 
 Configure via `hermes plugins` → Provider Plugins → Context Engine, or edit `config.yaml` directly.
 
-For building a context engine plugin, see [Context Engine Plugins](/developer-guide/context-engine-plugin).
+For building a context engine plugin, see [Context Engine Plugins](./context-engine-plugin.md).
 
 ## Dual Compression System
 
@@ -143,11 +172,46 @@ default applies.
 #### Failure cooldown and provider-proven overflow
 
 A failed or stalled summary attempt arms a per-session **failure cooldown**
-(escalating 60s → 300s → 900s, persisted in `state.db`). While it is armed,
-ordinary threshold-triggered compaction is deferred so a broken summary backend
-does not re-fire every turn. Two paths run a real attempt anyway:
+(escalating 60s → 300s → 900s, never shorter than
+`compression.context_timeout_seconds`, persisted in `state.db`). While it is
+armed, ordinary threshold-triggered compaction is deferred so a broken summary
+backend does not re-fire every turn. Timeouts and stalls escalate on one
+counter; a summary that ends in `finish_reason=length` (output cap hit, the
+transcript is preserved) escalates on its own counter along the same
+60s → 300s → 900s rungs, so a later turn — such as an async delegation
+completion arriving after the cooldown lapsed — cannot re-issue the same
+capped request every 30 seconds (#69637). JSON-decode, closed-stream and
+empty-content failures stay on a flat 30 s cooldown. Three paths run a real
+attempt anyway:
 
 - Manual `/compress` (`force=True`) — clears the cooldown and retries.
+- The same-turn `fallback_chain` retry after a stalled primary route — the
+  cancelled primary's own stall cooldown must not suppress it (`bypass_cooldown`).
+  If that pinned route's summary call fails, compress() still commits its
+  deterministic fallback summary (default `abort_on_summary_failure: false`);
+  the log then says "committed a deterministic fallback summary", not
+  "recovered".
+- **Repeated stall → deterministic fallback.** A first stall keeps the
+  transcript, arms the cooldown and lets the LLM route retry after it lapses.
+  When the route stalls *again* while a stall-class failure is still on the
+  ladder (`_consecutive_timeout_failures >= 1`), the retry ladder ends with a
+  deterministic rung: the worker is re-run with the summary LLM skipped
+  (`DETERMINISTIC_SUMMARY_ROUTE` pin) and commits the static fallback summary
+  through the ordinary lease/fence/watermark pipeline — the same degrade a
+  failed summary call gets — instead of "continuing without compression" and
+  re-entering the same silent stream every turn (#112420).
+  `abort_on_summary_failure: true` still aborts (nothing dropped). A committed
+  compaction rebinds the compressor and resets the ladder count, so each
+  compaction cycle grants the LLM route one stall before escalating; the
+  persisted cooldown row still paces attempts across turns and restarts.
+- **Summary provider overloaded → abort, transcript kept.** When the summary
+  call fails with a provider-overload error (`overloaded`, `at capacity`,
+  HTTP 529) and the one-shot main-model retry also fails, compress() aborts
+  and preserves the transcript unchanged instead of committing the
+  deterministic fallback; the warning names the overload
+  (`failure_class=summary_overload_failure`) and `/compress` retries once
+  capacity recovers. Auth/quota, network and empty-content failures already
+  abort the same way.
 - **Provider-proven overflow** — when the provider itself rejects the request
   with a context-length error, the recovery pass ignores the cooldown for one
   bounded attempt (`max_compression_attempts`) without clearing it. Deferring
@@ -174,8 +238,8 @@ compression:
   codex_gpt55_autoraise: true  # gpt-5.5 on Codex OAuth: raise trigger to 85% (default: true)
   codex_gpt55_autoraise_notice: true  # Show the one-time autoraise notice (default: true)
   codex_app_server_auto: native  # native|hermes|off for Codex app-server thread compaction
-  codex_responses_native: false  # gpt-5.6 on direct OpenAI/Codex: server-side compaction (opt-in)
-  codex_responses_compact_threshold: null  # Automatic server compaction trigger
+  codex_responses_native: false  # Opt-in server compaction: gpt-5.6 on OpenAI/Codex; Astra on Codex OAuth
+  codex_responses_compact_threshold: null  # Server compaction trigger; only used when codex_responses_native: true
   in_place: true             # Compact on the same session id, no rotation (default: true)
 
 # Summarization model/provider configured under auxiliary:
@@ -190,10 +254,11 @@ auxiliary:
 
 | Parameter | Default | Range | Description |
 |-----------|---------|-------|-------------|
-| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` |
-| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins). The small-context floor still applies on top (see below) |
+| `threshold` | `0.50` | 0.0-1.0 | Compression triggers when prompt tokens ≥ `threshold × context_length` (floored at 0.75 below 512K windows) |
+| `threshold_tokens` | `256000` | int or `null` | Absolute cap on the trigger: compaction fires at the lower of the ratio trigger and this count, so a 1M window compacts at 256K instead of 500K. `null` = ratio-only |
+| `model_thresholds` | `{}` | map | Per-model overrides of `threshold`. Keys are substring-matched against the model name (longest match wins); `"<provider>:<substring>"` keys apply only on that provider. The small-context floor still applies on top (see below) |
 | `target_ratio` | `0.20` | 0.10-0.80 | Controls tail protection token budget: `threshold_tokens × target_ratio` (legacy mode only — `lean` uses its own clamp) |
-| `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
+| `tail_mode` | `lean` | `lean`, `legacy` | Tail retention policy. `legacy` keeps a `target_ratio`-sized verbatim tail (~100K+ tokens on big-window models without the `threshold_tokens` cap). `lean` keeps a clamped tail of `2.5% × context window` (10K floor, 25K cap) and instead carries continuity in the summary: a detailed identifier-preserving session log (produced by the same single summary request — lean compaction makes exactly one auxiliary LLM call per attempt), a mechanically extracted anchor index (PR numbers, SHAs, paths, error strings — regex, never paraphrased), every real user message quoted verbatim (newest-first budget), and a `session_search` recovery pointer so the agent can re-access anything summarized away. Oversized regions are evenly sampled into the summarizer input (with explicit elision markers) rather than triggering extra calls. Result on 500K-token real sessions: ~49K retained vs ~162K, with higher recall when paired with recovery (see `evals/compaction/results/`). Old tool results inside the lean tail are demoted to one-line stubs carrying a recovery pointer |
 | `protect_last_n` | `20` | ≥1 | Minimum number of recent messages always preserved |
 | `min_tail_user_messages` | `1` | ≥1 | Minimum number of REAL (actionable) user messages guaranteed to survive in the uncompressed tail. `1` = the existing single last-user anchor (behavior-preserving default). Raise to e.g. `3` to keep the last 3 real user turns verbatim even when bulky tool outputs fill the tail token budget. Blank platform echoes, compaction handoffs, and synthetic continuation rows never count toward N. The guarantee wins over the tail token budget — the tail may exceed the budget when the anchor pulls the cut back |
 | `protect_first_n` | `3` | (hardcoded) | System prompt + first exchange always preserved |
@@ -201,8 +266,8 @@ auxiliary:
 | `codex_gpt55_autoraise` | `true` | bool | Raise the trigger to 85% for gpt-5.4/5.5/5.6 and gpt-6 Astra on the ChatGPT Codex OAuth route (see below). Set `false` to keep the global `threshold` |
 | `codex_gpt55_autoraise_notice` | `true` | bool | Show the one-time Codex gpt-5.5 autoraise notice. Set `false` to keep the 85% autoraise but suppress the banner |
 | `codex_app_server_auto` | `native` | `native`, `hermes`, `off` | Thread-compaction mode for Codex app-server sessions (see below) |
-| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages only for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription (see below) |
-| `codex_responses_compact_threshold` | `null` | `null` or positive integer | `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
+| `codex_responses_native` | `false` | bool | Opt in to OpenAI's server-side compaction on the Responses API. Engages for gpt-5.6-family models on the direct OpenAI API or a ChatGPT Codex subscription, and exact `gpt-6-astra` on official Codex OAuth (see below) |
+| `codex_responses_compact_threshold` | `null` | `null` or positive integer | Server-side compaction trigger, read **only when `codex_responses_native: true`** — it never changes when local compression fires; the local trigger is `threshold` (ratio) capped by `threshold_tokens`. `null` follows the resolved local compression trigger with an 8,192 token safety margin. A positive integer remains absolute and only clamps downward when required. Invalid values use automatic behavior. Automatic mode falls back to `200000` when no usable local trigger exists |
 | `in_place` | `true` | bool | Compact on the same session id instead of rotating to a new one (see below) |
 
 ### In-place compaction (single stable session id)
@@ -220,12 +285,21 @@ Set `in_place: false` to restore the legacy rotating path, where each compaction
 
 A smaller auxiliary compression model can lower the live compression trigger without
 changing the selected tail policy. In `lean` mode the selection budget remains based
-on the **main model's context window**: 2.5%, clamped to 10K–25K tokens. For example,
-a 1M main model with a 512K auxiliary model retains a 25K selection budget even when
-feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
+on the **main model's context window**: 2.5%, clamped to 10K–25K tokens, and never more
+than 20% of that window (the 10K floor alone is 61% of a 16K local window, so without the cap a
+small model's "protected" tail was the whole request and compaction reclaimed nothing). For example,
+a 1M main model (`threshold_tokens: null`) with a 512K auxiliary model retains a 25K
+selection budget even when feasibility lowers its trigger from 850K to 512K. Explicit `legacy` mode instead
 recomputes `threshold_tokens × target_ratio` (102,400 tokens at 512K × 0.20).
 These are tail-selection budgets, not strict limits on the entire compacted context:
 protected messages, boundary alignment, summaries, and anchors can add tokens.
+
+The lowered trigger is a durable ceiling on the compressor, so window corrections for the
+same model (a provider-reported limit, a grown local window) keep it. Whenever the main
+runtime changes — `/model`, fallback activation, or the restore back to the primary — the
+auxiliary model is re-probed immediately: the trigger is clamped again before the first
+compaction on the new window, or restored to the main model's own value when the
+auxiliary model now fits.
 
 ### Per-model threshold overrides
 
@@ -241,12 +315,20 @@ compression:
     "glm-5.2": 0.40
     "glm-5.2-1M": 0.25
     "claude-sonnet": 0.35
+    "openai-codex:astra": 0.85   # only on the Codex OAuth route (272K cap)
 ```
 
 Resolution rules:
 
 - Keys are **substring-matched** against the model name; the **longest
   matching key wins** (`glm-5.2-1M` beats `glm-5.2` for model `glm-5.2-1M`).
+- Keys may be **provider-scoped** as `"<provider>:<substring>"` (e.g.
+  `"openai-codex:astra": 0.85`). A scoped key only matches when the session's
+  provider is that route, so the same slug served with a different window
+  elsewhere (OpenRouter, Nous, direct OpenAI) keeps the global `threshold`.
+  Ranking uses the model substring only, so `"astra-900k"` still beats
+  `"openai-codex:astra"` for the 900K picker; a scoped key beats a bare key
+  with the identical substring.
 - When no key matches (or the map is empty), the global `threshold` applies.
 - The override is re-resolved on every `/model` switch; switching to a model
   with no matching key falls back to the global `threshold`.
@@ -301,7 +383,10 @@ To use the large window, pick the explicit `-900k` variant in `/model` (e.g.
 `gpt-5.4-900k`). These are Hermes-side aliases: the suffix is stripped before
 the model id is sent to the backend, and pricing/usage accounting treats them
 as the base model. Slugs that genuinely enforce 272K (gpt-5.5, gpt-5.4-mini)
-have no `-900k` variant.
+have no `-900k` variant. When the authenticated Codex catalog publishes a
+`max_context_window` below 900K for the base slug (e.g. 872K), the `-900k`
+variant resolves to that live maximum instead; 900K remains the offline
+fallback and a published maximum above 900K does not raise it.
 
 Compaction thresholds follow the window: base slugs (272K) get the **85%
 autoraise** described above, while `-900k` variants keep your global
@@ -330,7 +415,7 @@ Hermes' local transcript is never rewritten on this runtime — state.db records
 the compaction boundary while the visible transcript stays intact. All other
 routes (including Codex OAuth chat sessions) keep Hermes' summary compressor.
 
-### Native Responses compaction (gpt-5.6 on direct OpenAI / Codex subscription)
+### Native Responses compaction (gpt-5.6 and Astra on supported routes)
 
 OpenAI's Responses API supports server-side compaction: when a request includes
 `context_management: [{type: "compaction", compact_threshold: N}]` and the
@@ -344,12 +429,18 @@ client-side summary pass, and ZDR-friendly (`store: false`, no
 Opt in with `compression.codex_responses_native: true`. The gate is deliberately
 narrow, re-checked on every request:
 
-- **Models:** the gpt-5.6 family only. Other models fail server-side when the
-  field is present (gpt-5.1/5.2 return HTTP 500 or stall the stream — there is
-  no structured rejection to downgrade on, verified live Aug 2026).
+- **Models:** the gpt-5.6 family, plus exact `gpt-6-astra` on official Codex
+  subscription OAuth. Astra on the direct API, Astra variants and other GPT-6
+  models are excluded. gpt-5.1/5.2 return HTTP 500 or stall the stream when the
+  field is present (no structured rejection to downgrade on, verified live Aug 2026).
 - **Routes:** `api.openai.com` (OpenAI API key) or the ChatGPT Codex backend
   (Codex subscription OAuth) only. xAI, GitHub/Copilot, OpenRouter, relays, and
   local servers never see the field.
+
+For Astra, both the resolved `openai-codex` provider and an official HTTPS
+`chatgpt.com/backend-api/codex` endpoint are required. A trusted proxy override
+does not enable Astra compaction. This uses the existing automatic
+`context_management` path and does not add `configuration_update` history.
 
 Everything else about compression is unchanged: the local compressor stays
 armed as the fallback owner (the native threshold is clamped ~8K tokens below
@@ -359,8 +450,11 @@ the request without it. Switching the session to a non-eligible model or route
 simply stops the field from being sent — captured checkpoints are dropped from
 replay by the existing cross-issuer guard when the endpoint changes.
 
-By default, `compression.codex_responses_compact_threshold: null` derives the
-native threshold from the resolved local trigger. For example, a local trigger
+`compression.codex_responses_compact_threshold` is consulted only while
+`codex_responses_native: true` is in effect; with native compaction off (the
+default) it is ignored and local compression triggers on `threshold` /
+`threshold_tokens` alone. By default, `codex_responses_compact_threshold: null`
+derives the native threshold from the resolved local trigger. For example, a local trigger
 of 765,000 selects 756,808. Set a positive integer to preserve an absolute
 threshold such as 200,000. Invalid values select automatic behavior. If no
 usable local trigger exists, automatic mode uses 200,000. The provider minimum
@@ -377,7 +471,7 @@ max_summary_tokens   = min(200,000 × 0.05, 12,000) = 10,000
 ```
 
 :::note Threshold is derived from the MAIN model's context window
-`threshold_tokens` is always `threshold × context_length`, where `context_length`
+`threshold_tokens` is `threshold × context_length` (then capped by `compression.threshold_tokens`), where `context_length`
 is the **main agent model's** context window — never the auxiliary/summary
 model's. On a 262,144-token model at the default `0.50`, the threshold is
 `262,144 × 0.50 = 131,072`. That number being close to a common "128K context"
@@ -416,8 +510,11 @@ outputs (file contents, terminal output, search results).
 ```
 
 Tail protection is **token-budget based**: walks backward from the end,
-accumulating tokens until the budget is exhausted. Falls back to the fixed
-`protect_last_n` count if the budget would protect fewer messages.
+accumulating tokens until the budget is exhausted. The budget — and the 1.5× soft
+ceiling whole rows may overrun it by — is capped at 20% of the context window on every
+model, so `protect_last_n` is a *minimum* only up to a small count floor (8 rows) and never
+forces a tail that cannot leave room to compact; only the required last-user / last-assistant
+anchors and atomic tool groups may exceed the cap.
 
 Boundaries are aligned to avoid splitting tool_call/tool_result groups.
 The `_align_boundary_backward()` method walks past consecutive tool results
@@ -618,10 +715,12 @@ Prompt caching is automatically enabled when:
 - The provider supports `cache_control` (native Anthropic API or OpenRouter)
 
 ```yaml
-# config.yaml — TTL is configurable (must be "5m" or "1h")
+# config.yaml — TTL is configurable: "5m", "1h", or "auto"
 prompt_caching:
   cache_ttl: "5m"
 ```
+
+`"auto"` resolves once per session in `agent/agent_init.py::_init_prompt_cache_config` via `agent/prompt_caching.py::auto_cache_ttl_for_source`: `1h` for human-paced sources, `5m` for `MACHINE_PACED_SOURCES` (subagent, cron, oneshot, webhook, kanban, api, tool, batch). Auxiliary/stub calls (`configured_cache_ttl()`) treat `auto` as `5m`.
 
 The CLI shows caching status at startup:
 ```

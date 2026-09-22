@@ -9,14 +9,19 @@ import sys
 from pathlib import Path, PurePath
 from typing import Any, Callable, Dict, List, Optional, Set, Tuple
 
-from hermes_constants import get_config_path, get_skills_dir, is_termux
+from hermes_constants import (
+    get_config_path,
+    get_skills_dir,
+    get_subprocess_home,
+    is_termux,
+)
 
 logger = logging.getLogger(__name__)
 
 PLATFORM_MAP = {"macos": "darwin", "linux": "linux", "windows": "win32"}
 
 EXCLUDED_SKILL_DIRS = frozenset((
-    ".git", ".github", ".hub", ".archive", ".curator_backups",
+    ".git", ".github", ".hub", ".archive", ".curator_backups", ".locks",
     ".venv", "venv", "node_modules", "site-packages", "__pycache__",
     ".tox", ".nox", ".pytest_cache", ".mypy_cache", ".ruff_cache",
 ))
@@ -202,7 +207,7 @@ def skill_matches_environment(frontmatter: Dict[str, Any]) -> bool:
     return any(_detect_environment(tag) for tag in tags if tag)
 
 
-_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int], Dict[str, Any]] = {}
+_RAW_CONFIG_CACHE: Dict[Tuple[str, int, int, int, int], Dict[str, Any]] = {}
 
 
 def _raw_config_cache_clear() -> None:
@@ -210,11 +215,11 @@ def _raw_config_cache_clear() -> None:
     _RAW_CONFIG_CACHE.clear()
 
 
-def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int]]:
-    """``(path, mtime_ns, size)`` identity of config.yaml, or None when unreadable/absent."""
+def _config_cache_key(config_path: Path) -> Optional[Tuple[str, int, int, int, int]]:
+    """``(path, *file_signature)`` identity of config.yaml, or None when unreadable/absent."""
     try:
-        stat = config_path.stat()
-        return (str(config_path), stat.st_mtime_ns, stat.st_size)
+        from utils import file_signature
+        return (str(config_path), *file_signature(config_path.stat()))
     except OSError:
         return None
 
@@ -310,7 +315,7 @@ def _normalize_string_set(values) -> Set[str]:
 
 # config identity -> resolved external dirs. Called once per skill during
 # banner / tool-registry scans; re-resolving each time dominated cold-start.
-_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int], List[Path]] = {}
+_EXTERNAL_DIRS_CACHE: Dict[Tuple[str, int, int, int, int], List[Path]] = {}
 
 
 def _external_dirs_cache_clear() -> None:
@@ -335,7 +340,7 @@ def get_external_skills_dirs() -> List[Path]:
     if not config_path.exists():
         return []
     full_key = _config_cache_key(config_path)
-    cache_key = full_key[:2] if full_key is not None else None
+    cache_key = full_key
     cached = _EXTERNAL_DIRS_CACHE.get(cache_key) if cache_key is not None else None
     if cached is not None:
         return list(cached)  # copy so callers can't mutate the cache
@@ -413,20 +418,20 @@ _PROJECT_ROOT_MAX_DEPTH = 64  # walk-up bound for pathological cwds
 
 def find_project_root(start: Optional[Path] = None) -> Optional[Path]:
     """Nearest ancestor containing ``.git`` (dir or worktree file), or None.
-    Without *start*, the surface's ``TERMINAL_CWD`` wins over process cwd so
-    cron/API surfaces inherit an interactive trust decision by project identity.
-
-    When *start* is not given, the surface's working directory wins over the process cwd: ``TERMINAL_CWD``
-    is the same per-surface workdir the terminal tool and cron jobs use (a cron job sets it from its per-job
-    ``workdir`` without chdir'ing the scheduler process). This is what lets non-interactive surfaces inherit
-    a prior interactive trust decision by project identity — and a surface with no workdir in a trusted repo
-    simply resolves no project and loads nothing (#48975).
+    Without *start*, the surface's effective working directory wins over the process cwd — the same
+    ladder every other cwd consumer reads (``resolve_agent_cwd``: session-bound cwd, then the scope's
+    ``TERMINAL_CWD``, then the process cwd). The session cwd comes first because a multi-session host
+    (TUI/desktop gateway) pins each session's workspace there while its terminal scope resolves a
+    placeholder ``terminal.cwd`` to ``$HOME``; reading only the scope made every project skill invisible
+    on those surfaces (#114359). ``TERMINAL_CWD`` is the per-surface workdir the terminal tool and cron
+    jobs use (a cron job sets it from its per-job ``workdir`` without chdir'ing the scheduler process),
+    which lets non-interactive surfaces inherit a prior interactive trust decision by project identity —
+    and a surface with no workdir in a trusted repo simply resolves no project and loads nothing (#48975).
     """
     try:
         if start is None:
-            from agent.runtime_cwd import scope_terminal_cwd
-            env_cwd = scope_terminal_cwd()
-            start = Path(env_cwd) if env_cwd else Path.cwd()
+            from agent.runtime_cwd import resolve_agent_cwd
+            start = resolve_agent_cwd()
         cur = Path(start).resolve()
     except OSError:
         return None
@@ -697,17 +702,37 @@ def _resolve_dotpath(config: Dict[str, Any], dotted_key: str):
     return current
 
 
+_HOME_VAR_RE = re.compile(r"\$(?:\{HOME\}|HOME)(?=$|[/\\])")
+
+
+def _expand_skill_config_path(value: str) -> str:
+    """Expand ``~`` / ``$HOME`` against the HOME Hermes injects into tool subprocesses.
+
+    Skill config defaults describe paths the agent hands to tools, so in a container where the
+    control process HOME (``/opt/data``) differs from the tool HOME (``{HERMES_HOME}/home``) a
+    plain ``expanduser`` pointed the prompt at a path no tool would ever read (#12260).
+    """
+    subprocess_home = get_subprocess_home()
+    if subprocess_home:
+        if value == "~" or value.startswith(("~/", "~\\")):
+            value = subprocess_home + value[1:]
+        # Callable replacement: a literal template would parse backslashes in the home path
+        # as regex escapes.
+        value = _HOME_VAR_RE.sub(lambda _m: subprocess_home, value)
+    return os.path.expanduser(os.path.expandvars(value))
+
+
 def resolve_skill_config_values(config_vars: List[Dict[str, Any]]) -> Dict[str, Any]:
     """Map logical skill config keys to current values (or declared defaults);
-    path-like string values are ``~``/``${VAR}`` expanded."""
+    path-like string values are ``~``/``$HOME``/``${VAR}`` expanded against the tool HOME."""
     config = _load_raw_config()
     resolved: Dict[str, Any] = {}
     for var in config_vars:
         value = _resolve_dotpath(config, f"{SKILL_CONFIG_PREFIX}.{var['key']}")
         if value is None or (isinstance(value, str) and not value.strip()):
             value = var.get("default", "")
-        if isinstance(value, str) and ("~" in value or "${" in value):
-            value = os.path.expanduser(os.path.expandvars(value))
+        if isinstance(value, str) and ("~" in value or "$" in value):
+            value = _expand_skill_config_path(value)
         resolved[var["key"]] = value
     return resolved
 

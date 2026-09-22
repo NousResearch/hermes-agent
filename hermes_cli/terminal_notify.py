@@ -4,9 +4,11 @@ OSC 9 (``ESC ] 9 ; <body> BEL``): Ghostty, iTerm2, Kitty and WezTerm raise an OS
 others drop it. OSC 777 (``ESC ] 777 ; notify ; warp://cli-agent ; <json> BEL``): Warp's
 structured CLI-agent protocol (tab status + notification mailbox).
 
-Sequences are written to ``/dev/tty`` because prompt_toolkit's stdout wrapper can buffer or strip
-raw escapes; when ``/dev/tty`` can't be opened (Windows, no controlling terminal) they fall back to
-``sys.stdout``. Never raises.
+Inside the running CLI, ``HermesCLI._ring_bell`` sends ``notification_sequence()`` through the
+prompt_toolkit output on the app loop (a second writer on the tty would splice into an in-flight kitty
+pet frame). ``write_tty`` is the no-app path: ``/dev/tty`` because ``patch_stdout``'s wrapper strips raw
+escapes, falling back to ``sys.stdout`` when ``/dev/tty`` can't be opened (Windows, no controlling
+terminal). Never raises.
 """
 
 from __future__ import annotations
@@ -23,7 +25,7 @@ _WARP_PROTOCOL_VERSION = 1
 _WARP_LAST_BROKEN = {"stable": "v0.2026.03.25.08.24.stable_05", "preview": "v0.2026.03.25.08.24.preview_05"}
 
 
-def _write_tty(seq: str) -> None:
+def write_tty(seq: str) -> None:
     """Write raw escapes to /dev/tty, falling back to sys.stdout. Never raises."""
     try:
         with open("/dev/tty", "w", encoding="utf-8") as tty:
@@ -65,10 +67,10 @@ def warp_osc777(event: str, detail: str, session_id: str = "") -> str:
     return f"\x1b]777;notify;warp://cli-agent;{json.dumps(payload, separators=(',', ':'))}\x07"
 
 
-def notify(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> None:
-    """Emit OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
+def notification_sequence(context: str, *, prompt: bool, session_id: str = "", detail: str = "") -> str:
+    """OSC 9 (plus Warp OSC 777 when supported) for a blocking prompt or turn end."""
     seq = osc9(f"Hermes: {context}")
     if warp_supported():
         event = "permission_request" if prompt else "stop"
         seq += warp_osc777(event, detail or context, session_id)
-    _write_tty(seq)
+    return seq

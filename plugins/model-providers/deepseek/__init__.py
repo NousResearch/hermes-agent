@@ -10,7 +10,7 @@ Retired ``deepseek-chat``/``deepseek-reasoner`` IDs are remapped in
 
 from typing import Any
 
-from agent.reasoning_effort import DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, clamp_effort
+from agent.reasoning_effort import DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, thinking_toggle_extras
 from providers import register_provider
 from providers.base import ProviderProfile
 
@@ -36,26 +36,21 @@ class DeepSeekProfile(ProviderProfile):
         versioned_v4_plus = m.startswith("deepseek-v") and not m.startswith("deepseek-v3")
         if not versioned_v4_plus and m not in _THINKING_CAPABLE_IDS:
             return {}, {}
-        rc = reasoning_config if isinstance(reasoning_config, dict) else None
         # Always set thinking explicitly (default enabled, matching the API default)
         # to avoid the reasoning_content echo trap on subsequent turns.
-        if rc is not None and rc.get("enabled") is False:
-            return {"thinking": {"type": "disabled"}}, {}
-        top_level: dict[str, Any] = {}
-        # No effort -> omit reasoning_effort so DeepSeek applies its server default.
-        effort = (rc.get("effort") or "").strip().lower() if rc is not None else ""
-        if effort and effort != "none":
-            clamped = clamp_effort(effort, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES)
-            if clamped in DEEPSEEK_V4_EFFORTS:
-                top_level["reasoning_effort"] = clamped
-        return {"thinking": {"type": "enabled"}}, top_level
+        return thinking_toggle_extras(
+            reasoning_config, DEEPSEEK_V4_EFFORTS, DEEPSEEK_V4_OVERRIDES, always_emit_toggle=True
+        )
 
 
 deepseek = DeepSeekProfile(
-    name="deepseek", aliases=("deepseek-chat",), env_vars=("DEEPSEEK_API_KEY",), display_name="DeepSeek",
+    name="deepseek", aliases=("deepseek-chat", "deep-seek"), env_vars=("DEEPSEEK_API_KEY",), display_name="DeepSeek",
     description="DeepSeek — native DeepSeek API", signup_url="https://platform.deepseek.com/",
     fallback_models=("deepseek-v4-pro", "deepseek-flash"), base_url="https://api.deepseek.com/v1",
     default_aux_model="deepseek-flash",
+    # Native API implements only ``json_object`` (https://api-docs.deepseek.com/guides/json_mode);
+    # ``json_schema`` is a guaranteed HTTP 400 "This response_format type is unavailable now".
+    unsupported_response_formats=("json_schema",),
 )
 
 register_provider(deepseek)

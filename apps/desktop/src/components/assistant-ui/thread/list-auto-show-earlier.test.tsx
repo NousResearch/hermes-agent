@@ -9,12 +9,15 @@ import { Thread } from '.'
 stubThreadEnvironment()
 stubThreadViewportSize()
 
-const SCROLL_H = 20000
 const CLIENT_H = 600
+// A prepend grows the content: the backfill anchor is consumed only by a
+// taller tree, so the fixture's scrollHeight must track what is mounted.
+const GROUP_H = 400
+const scrollHeightNow = () => CLIENT_H + document.querySelectorAll('[data-slot="aui_message-group"]').length * GROUP_H
 
 Object.defineProperty(HTMLElement.prototype, 'scrollHeight', {
   configurable: true,
-  get: () => SCROLL_H
+  get: scrollHeightNow
 })
 Object.defineProperty(HTMLElement.prototype, 'clientHeight', {
   configurable: true,
@@ -101,7 +104,7 @@ describe('top-edge auto Show earlier', () => {
     expect(windowed).toBeLessThan(turns)
 
     // Leave the bottom lock the way a reader does: a scroll-up event.
-    viewport.scrollTop = SCROLL_H - CLIENT_H
+    viewport.scrollTop = scrollHeightNow() - CLIENT_H
     act(() => viewport.dispatchEvent(new Event('scroll')))
     viewport.scrollTop = 2000
     act(() => viewport.dispatchEvent(new Event('scroll')))

@@ -152,15 +152,18 @@ def reap_orphan_containers(
         age = (now - finished_at).total_seconds()
         if age < max_age_seconds:
             continue
+        # No -f: a sibling may have restarted the container between the ps snapshot
+        # and now (FinishedAt still reports the previous exit), and the daemon refuses
+        # a plain rm on a running container, which is the atomic recheck this sweep needs.
         result = _docker_query(
-            [docker, "rm", "-f", cid], timeout=30, fail="orphan reaper docker rm %s failed: %s", fail_args=(cid[:12],))
+            [docker, "rm", cid], timeout=30, fail="orphan reaper docker rm %s failed: %s", fail_args=(cid[:12],))
         if result is None:
             continue
         if result.returncode == 0:
             removed += 1
             logger.info("Reaped orphan container %s (exited %d seconds ago)", cid[:12], int(age))
         else:
-            logger.debug("docker rm -f %s failed: %s", cid[:12], result.stderr.strip())
+            logger.debug("docker rm %s failed: %s", cid[:12], result.stderr.strip())
     return removed
 
 
@@ -228,6 +231,20 @@ def find_docker() -> Optional[str]:
     return found
 
 
+def docker_runtime_name(executable: str) -> str:
+    """User-facing runtime name (``"Podman"`` / ``"Docker"``) for the CLI at *executable*, so
+    diagnostics and pickers name the runtime actually in use."""
+    return "Podman" if "podman" in os.path.basename(executable).lower() else "Docker"
+
+
+def docker_runtime_start_hint(executable: str) -> str:
+    """How to bring the runtime at *executable* back up, for a "not reachable" message. Docker has
+    a daemon to start; Podman is daemonless (outside Linux it runs inside a VM)."""
+    if docker_runtime_name(executable) != "Podman":
+        return "start Docker and retry"
+    return "run `podman machine start` and retry"
+
+
 # Security flags applied to every container. The container is the security
 # boundary; all caps are dropped and the minimum added back:
 #   DAC_OVERRIDE  - root can write to bind-mounted dirs owned by the host user
@@ -240,7 +257,7 @@ _BASE_SECURITY_ARGS = [
     "--cap-add", "DAC_OVERRIDE",
     "--cap-add", "CHOWN",
     "--cap-add", "FOWNER",
-    "--tmpfs", "/tmp:rw,nosuid,size=512m",
+    "--tmpfs", "/tmp:rw,nosuid,size=512m",  # no-tmp: ok — container tmpfs mount spec
     "--tmpfs", "/var/tmp:rw,noexec,nosuid,size=256m"]
 
 _DEFAULT_PIDS_LIMIT = "256"  # applied only when the pids cgroup controller is available
@@ -459,11 +476,11 @@ _cgroup_limits_ok: Optional[bool] = None  # cached result across instances
 
 
 def _cgroup_limits_available(image: str, endpoint_selector=None) -> bool:
-    """Probe whether cgroup resource flags work on the selected Docker daemon.
+    """Probe cgroup resource flags on the selected Docker daemon.
 
-    The ambient/default endpoint keeps the historical process cache. A pinned
-    Kanban endpoint is probed independently so a local result can never be
-    reused for a remote daemon (or vice versa).
+    The ambient endpoint keeps the historical definitive-only process cache.
+    Pinned endpoints are probed independently so local daemon results cannot
+    leak across Docker contexts/hosts.
     """
     global _cgroup_limits_ok
     if endpoint_selector is None and _cgroup_limits_ok is not None:
@@ -471,11 +488,8 @@ def _cgroup_limits_available(image: str, endpoint_selector=None) -> bool:
 
     docker_exe = find_docker()
     if not docker_exe or not image:
-        if endpoint_selector is None:
-            _cgroup_limits_ok = False
         return False
 
-    available = False
     try:
         result = run_capture(
             [
@@ -495,21 +509,39 @@ def _cgroup_limits_available(image: str, endpoint_selector=None) -> bool:
             ],
             timeout=60,
         )
-        available = result.returncode == 0
-        if not available:
-            logger.warning(
-                "Cgroup resource limits (--cpus/--memory/--pids-limit) not "
-                "available in this environment. Containers will run without "
-                "CPU, memory or PID limits. To enable, delegate the cpu, "
-                "memory and pids cgroup controllers to this container. Probe stderr: %s",
-                (result.stderr or "").strip()[:500],
-            )
     except Exception as exc:
-        logger.warning("Cgroup limit probe failed; disabling resource limits: %s", exc)
-    if endpoint_selector is None:
-        _cgroup_limits_ok = available
-    return available
+        logger.warning(
+            "Cgroup limit probe failed; containers run without CPU/memory/PID "
+            "limits until a probe succeeds: %s",
+            exc,
+        )
+        return False
 
+    if result.returncode == 0:
+        if endpoint_selector is None:
+            _cgroup_limits_ok = True
+        return True
+
+    stderr = (result.stderr or "").strip()
+    if "cgroup" not in stderr.lower():
+        logger.warning(
+            "Cgroup limit probe could not determine support (docker exited %d: %s). "
+            "Containers run without CPU/memory/PID limits until a probe succeeds.",
+            result.returncode,
+            stderr[:500],
+        )
+        return False
+
+    if endpoint_selector is None:
+        _cgroup_limits_ok = False
+    logger.warning(
+        "Cgroup resource limits (--cpus/--memory/--pids-limit) not available "
+        "in this environment. Containers will run without CPU, memory or PID "
+        "limits. To enable, delegate the cpu, memory and pids cgroup "
+        "controllers to this container. Probe stderr: %s",
+        stderr[:500],
+    )
+    return False
 
 def _docker_unavailable(log_msg: str, *log_args, error: str, hint: str, exc_info: bool = False):
     logger.error(log_msg, *log_args, exc_info=exc_info)
@@ -525,12 +557,9 @@ def _ensure_docker_available(endpoint_selector=None) -> None:
             "or known install locations. Install Docker Desktop and ensure the CLI is available.",
             error="Docker executable not found in PATH or known install locations. "
                   "Install Docker and ensure the 'docker' command is available.",
-            hint="Install Docker (or fix PATH) and retry, or switch terminal.backend to 'local'.")
+            hint="Install Docker (or fix PATH) and retry, or run `hermes setup terminal` to switch to Local.")
     try:
-        result = run_capture(
-            [docker_exe, *_endpoint_cli_args(endpoint_selector), "version"],
-            timeout=5,
-        )
+        result = run_capture([docker_exe, *_endpoint_cli_args(endpoint_selector), "version"], timeout=5)
     except FileNotFoundError:
         raise _docker_unavailable(
             "Docker backend selected but the resolved docker executable '%s' could not be executed.",
@@ -542,8 +571,8 @@ def _ensure_docker_available(endpoint_selector=None) -> None:
             "Docker backend selected but '%s version' timed out. The Docker daemon may not be running.",
             docker_exe, exc_info=True,
             error="Docker daemon is not responding. Ensure Docker is running and try again.",
-            hint="Start the Docker daemon (e.g. `systemctl start docker` or "
-                 "launch Docker Desktop), then retry the same command.")
+            hint="Start Docker (e.g. `systemctl start docker` or launch Docker Desktop), then retry — "
+                 "or run `hermes setup terminal` to switch to Local.")
     except Exception:
         logger.error("Unexpected error while checking Docker availability.", exc_info=True)
         raise
@@ -552,8 +581,8 @@ def _ensure_docker_available(endpoint_selector=None) -> None:
             "Docker backend selected but '%s version' failed (exit code %d, stderr=%s)",
             docker_exe, result.returncode, result.stderr.strip(),
             error="Docker command is available but 'docker version' failed. Check your Docker installation.",
-            hint="The Docker daemon may be down or the current user lacks "
-                 "permission (docker group). Fix and retry.")
+            hint="Start Docker, or add your user to the docker group, then retry — "
+                 "or run `hermes setup terminal` to switch to Local.")
 
 
 def _name_only_env_args(names) -> list[str]:
@@ -615,6 +644,7 @@ class DockerEnvironment(BaseEnvironment):
     size-limited tmpfs). The container is the security boundary — its filesystem stays
     writable so agents can install packages. Persistence bind-mounts /workspace and /root."""
 
+    _sudo_nopasswd_probe_supported = True
     _profile_scoped_passthrough = True
 
     def _additional_profile_scoped_passthrough_names(self) -> tuple[str, ...]:
@@ -949,30 +979,25 @@ class DockerEnvironment(BaseEnvironment):
                 logger.warning("Docker volume '%s' missing colon, skipping", vol)
                 continue
             volume_args.extend(["-v", vol])
-        workspace_explicitly_mounted = any(
-            ":/workspace" in value for value in volume_args
-        )
+        workspace_explicitly_mounted = any(":/workspace" in v for v in volume_args)
 
-        host_cwd_abs = (
-            os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
-        )
+        host_cwd_abs = os.path.abspath(os.path.expanduser(host_cwd)) if host_cwd else ""
         bind_host_cwd = (
-            auto_mount_cwd
-            and bool(host_cwd_abs)
-            and os.path.isdir(host_cwd_abs)
-            and not workspace_explicitly_mounted
-        )
+            auto_mount_cwd and bool(host_cwd_abs) and os.path.isdir(host_cwd_abs)
+            and not workspace_explicitly_mounted)
         if auto_mount_cwd and host_cwd and not os.path.isdir(host_cwd_abs):
-            logger.debug(
-                "Skipping docker cwd mount: host_cwd is not a valid directory: %s",
-                host_cwd,
-            )
+            logger.debug("Skipping docker cwd mount: host_cwd is not a valid directory: %s", host_cwd)
+        # The host directory actually bound at /workspace, if any. Readers that
+        # only hold the env instance (cwd remapping on live envs) use it to
+        # recognize a session workspace registered as a raw host path.
+        self.host_cwd = host_cwd_abs if bind_host_cwd else None
         mount_workspace = not bind_host_cwd and not workspace_explicitly_mounted
 
         writable_args: list[str] = []
         if self._persistent:
             from tools.environments.base import get_sandbox_dir
-
+            # _sandbox_dir_name(): a raw session-key task_id carries colons,
+            # which `-v` reads as extra spec fields (exit 125).
             sandbox = get_sandbox_dir() / "docker" / _sandbox_dir_name(task_id)
             self._home_dir = str(sandbox / "home")
             os.makedirs(self._home_dir, exist_ok=True)
@@ -1213,6 +1238,7 @@ class DockerEnvironment(BaseEnvironment):
             return False
 
         logger.info("Recovery successful — new container %s", (self._container_id or "")[:12])
+        self._mark_recreated()
         return True
 
     def execute(self, command: str, cwd: str = "", **kwargs) -> dict:
@@ -1228,54 +1254,52 @@ class DockerEnvironment(BaseEnvironment):
         return result
 
     def _storage_opt_supported(self) -> bool:
-        """Whether ``--storage-opt size=`` works on the selected Docker daemon."""
+        """Whether --storage-opt size= works on the selected Docker daemon.
+
+        Only definitive ambient-endpoint answers are cached. Pinned endpoint
+        probes are isolated so one daemon's storage driver cannot authorize
+        another daemon.
+        """
         global _storage_opt_ok
         if not self._pin_args and _storage_opt_ok is not None:
             return _storage_opt_ok
-
-        supported = False
         try:
             result = run_capture(
                 [*self._docker_prefix, "info", "--format", "{{.Driver}}"],
                 timeout=10,
             )
-            if result.stdout.strip().lower() == "overlay2":
-                probe = run_capture(
-                    [
-                        *self._docker_prefix,
-                        "create",
-                        "--storage-opt",
-                        "size=1m",
-                        "hello-world",
-                    ],
-                    timeout=15,
-                )
-                supported = probe.returncode == 0
-                if supported and probe.stdout.strip():
+            if result.returncode != 0:
+                return False
+            if result.stdout.strip().lower() != "overlay2":
+                if not self._pin_args:
+                    _storage_opt_ok = False
+                return False
+            probe = run_capture(
+                [*self._docker_prefix, "create", "--storage-opt", "size=1m", "hello-world"],
+                timeout=15,
+            )
+            if probe.returncode == 0:
+                if not self._pin_args:
+                    _storage_opt_ok = True
+                if probe.stdout.strip():
                     subprocess.run(
                         [*self._docker_prefix, "rm", probe.stdout.strip()],
                         capture_output=True,
                         timeout=5,
                         stdin=subprocess.DEVNULL,
                     )
+                return True
+            if "storage" in (probe.stderr or "").lower() and not self._pin_args:
+                _storage_opt_ok = False
+            return False
         except Exception:
-            supported = False
-        if not self._pin_args:
-            _storage_opt_ok = supported
-        logger.debug("Docker --storage-opt support: %s", supported)
-        return supported
+            return False
 
     def _container_network_mode(self, container_id: str) -> Optional[str]:
         """``HostConfig.NetworkMode`` of a container, or ``None`` when inspection fails (callers
         treat ``None`` as a mismatch under lockdown, so a failed inspect fails closed)."""
         result = _docker_query(
-            [
-                *self._docker_prefix,
-                "inspect",
-                "--format",
-                "{{.HostConfig.NetworkMode}}",
-                container_id,
-            ], timeout=10,
+            [self._docker_exe, "inspect", "--format", "{{.HostConfig.NetworkMode}}", container_id], timeout=10,
             fail="docker inspect NetworkMode failed: %s", nonzero="docker inspect NetworkMode returned %d: %s")
         return (result.stdout.strip() or None) if result is not None else None
 

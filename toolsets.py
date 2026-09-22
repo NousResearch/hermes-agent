@@ -35,6 +35,8 @@ _HERMES_CORE_TOOLS = [
     "kanban_unblock",
     "kanban_attach", "kanban_attach_url", "kanban_attachments",
     "computer_use",
+    # Matrix room admin (create/leave/delete; gated on MATRIX_TOOLS_ALLOW_ROOM_CREATE via check_fn)
+    "matrix_create_room", "matrix_leave_room", "matrix_delete_room",
     # Service-gated connector account status and authorization links.
     "manage_connections",
 ]

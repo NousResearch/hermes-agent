@@ -54,6 +54,36 @@ def _model_switch_skew_guard() -> Optional[str]:
     )
 
 
+def _platform_model_allowlist(platform) -> list:
+    """The ``/model`` picker shortlist for *platform*: ``<platform>.model_allowlist``.
+
+    Per-platform on purpose: the Matrix reaction picker is capped at ten slots, so an operator
+    needs to curate *its* list without hiding models from the CLI/desktop/Telegram/Discord/Slack
+    pickers, which read the shared ``providers.<name>.models`` list (#89809). Resolved through
+    ``platform_section`` so the block is found wherever the rest of that platform's config lives
+    (``matrix:`` at the root, ``platforms.matrix``, ``gateway.platforms.matrix``) — one precedence
+    rule, owned by the config loader. Read at picker-send time, not at boot, so an edit lands on
+    the next ``/model``. An absent/blank key, or an unreadable config, means "no shortlist".
+    """
+    try:
+        from gateway.config_loader import platform_section
+        from gateway.run import _load_gateway_config, _platform_config_key
+
+        cfg = _load_gateway_config()
+        gateway_platforms = (cfg.get("gateway") or {}).get("platforms")
+        section, _toplevel = platform_section(cfg, _platform_config_key(platform), gateway_platforms)
+    except Exception:
+        return []
+    if not isinstance(section, dict):
+        return []
+    value = section.get("model_allowlist")
+    if isinstance(value, str):  # a single id is a legal spelling of the one-entry list
+        value = [value]
+    if not isinstance(value, (list, tuple)):
+        return []
+    return [str(v).strip() for v in value if str(v).strip()]
+
+
 async def _persist_model_switch_to_config(result, config_path) -> None:
     """Write-through a resolved /model switch to the profile config at ``config_path``, off the
     event loop (the route comparison can do cold-start disk I/O)."""
@@ -392,14 +422,22 @@ class GatewayModelCommandsMixin:
 
     async def _send_model_picker(self, event: MessageEvent, source, adapter, session_key: str, listing_kwargs: dict, on_model_selected) -> bool:
         """Send the interactive /model picker; False when nothing was sent (text fallback). *source*
-        is session-key-normalized so the picker's thread metadata lands where the next turn reads."""
-        from hermes_cli.model_switch_providers import list_picker_providers
+        is session-key-normalized so the picker's thread metadata lands where the next turn reads.
+
+        ``platforms.<platform>.model_allowlist`` narrows the list for this surface only (#89809):
+        the Matrix reaction picker has ten slots, and the shared ``providers.<name>.models`` list
+        would trim the CLI/desktop/other-chat-platform pickers at the same time. The filter is
+        skipped when the key is absent, so unconfigured platforms list everything as before."""
+        from hermes_cli.model_switch_providers import apply_model_allowlist, list_picker_providers
         try:  # off-loop: listing still reads config/disk cache synchronously (#41289)
             providers = await asyncio.to_thread(
                 list_picker_providers, max_models=50, include_moa=True, **listing_kwargs
             )
         except Exception:
             providers = []
+        allowlist = _platform_model_allowlist(source.platform)
+        if allowlist:
+            providers = apply_model_allowlist(providers, allowlist)
         if not providers:
             return False
         result = await adapter.send_model_picker(

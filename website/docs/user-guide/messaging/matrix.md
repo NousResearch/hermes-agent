@@ -422,6 +422,20 @@ Reaction controls use:
 
 Set `MATRIX_APPROVAL_REQUIRE_SENDER=false` if you intentionally want any authorized Matrix user in the room to operate an approval/model picker prompt. The default is requester-bound when Hermes knows who requested the action.
 
+#### Curating the `/model` picker
+
+The reaction picker has ten slots (keycap 1–9 plus 🔟), so it offers at most ten models, in provider order. To choose *which* models appear — without trimming the shared `providers.<name>.models` list, which the CLI, desktop, and other chat platforms also read — give this platform a shortlist in `config.yaml`:
+
+```yaml
+matrix:
+  model_allowlist:
+    - deepseek-v4-pro
+    - glm-5.2
+    - kimi-k3
+```
+
+Entries are model ids exactly as the picker prints them (run `/model` with no arguments to see the ids). Providers with no matching model are left out of this platform's picker. The key is read from this platform's config block (`matrix:` above, or the nested `platforms.matrix:` spelling); remove it to list everything again. Other platforms, and the CLI/desktop pickers, are unaffected.
+
 ### Media Limits
 
 Hermes uploads and downloads Matrix images, files, audio, and video through Matrix media APIs. Multiple generated images are sent as one ordered logical batch, preserving captions and thread context across the batch.

@@ -1343,3 +1343,39 @@ def list_picker_providers(
         if p.get("models") or is_custom_endpoint:
             filtered.append(p)
     return filtered
+
+
+def apply_model_allowlist(providers: List[dict], model_allowlist: Any) -> List[dict]:
+    """Narrow picker rows to an operator shortlist of model ids (per-platform ``/model`` picker).
+
+    Entries are the same model-id strings the picker renders, matched case-insensitively; rows
+    left with no allowed model are dropped. That lets a surface with a hard slot cap — the Matrix
+    reaction picker stops at ``_MATRIX_MODEL_PICKER_REACTIONS`` (ten keycap reactions) — be curated
+    per platform, without editing the shared ``providers.<name>.models`` list that every other
+    surface (CLI, desktop, Telegram/Discord/Slack) also reads (#89809).
+
+    ``total_models`` follows the filtered row so a reader that prints "N models" agrees with the
+    models actually offered. An absent, empty or all-blank allowlist is a no-op — the rows are
+    returned unchanged, so the key can be dropped without a behavior change.
+    """
+    wanted = {str(m).strip().lower() for m in (model_allowlist or []) if str(m).strip()}
+    if not wanted:
+        return providers
+    kept: List[dict] = []
+    for row in providers:
+        models = [m for m in (row.get("models") or []) if str(m).strip().lower() in wanted]
+        if not models:
+            continue
+        narrowed = dict(row)
+        narrowed["models"] = models
+        if "total_models" in row:
+            narrowed["total_models"] = len(models)
+        kept.append(narrowed)
+    if not kept:
+        # A shortlist that matches nothing is almost always a typo'd id. Say so instead of
+        # letting the picker go quiet; the caller's text fallback still lists the real models.
+        logger.warning(
+            "model_allowlist matched no models (%d entr%s) — check the ids against the provider's "
+            "model list", len(wanted), "y" if len(wanted) == 1 else "ies",
+        )
+    return kept

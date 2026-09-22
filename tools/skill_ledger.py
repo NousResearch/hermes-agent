@@ -325,6 +325,9 @@ def _read_ledger(what: str, *, quiet_missing: bool = False) -> Optional[bytes]:
         return None
 
 
+_TRIM_LOW_WATER = 0.8  # trim target as a fraction of ``skills.ledger_max_bytes``
+
+
 def _maintain_size() -> None:
     """Keep the ledger bounded: once it crosses ``skills.ledger_max_bytes`` run the
     delta-dedup rewrite, and if genuinely-divergent entries still exceed the cap,
@@ -353,8 +356,6 @@ def _maintain_size() -> None:
         )
 
 
-_TRIM_LOW_WATER = 0.8  # trim target as a fraction of ``skills.ledger_max_bytes``
-
 
 def _trim_oldest(max_bytes: int) -> int:
     """Rewrite the ledger without its oldest lines until it is at most *max_bytes*;
@@ -366,14 +367,9 @@ def _trim_oldest(max_bytes: int) -> int:
     if raw is None:
         return 0
     lines = raw.decode("utf-8").splitlines()
-    newest_json = None
-    for line in reversed(lines):
-        if line.strip():
-            newest_json = line
-            break
     kept: List[str] = []
-    size = 2  # trailing newline + rounding slack
-    for line in reversed(lines):
+    size = 0
+    for line in reversed(lines):  # the first iteration always keeps lines[-1]: the newest entry
         addition = len(line.encode("utf-8")) + 1
         if kept and size + addition > max_bytes:
             break
@@ -381,9 +377,6 @@ def _trim_oldest(max_bytes: int) -> int:
         size += addition
     kept.reverse()
     data = ("\n".join(kept) + "\n").encode("utf-8") if kept else b""
-    if newest_json is not None and newest_json not in kept:
-        kept = [newest_json]
-        data = (newest_json + "\n").encode("utf-8")
     dropped = len(lines) - len(kept)
     if dropped <= 0:
         return 0

@@ -1779,7 +1779,8 @@ def dispatch_profile_allowlist_summary() -> str:
 def _has_spawnable(conn: sqlite3.Connection, status: str) -> bool:
     rows = conn.execute(
         "SELECT DISTINCT assignee FROM tasks "
-        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL",
+        "WHERE status = ? AND assignee IS NOT NULL AND claim_lock IS NULL "
+        "AND COALESCE(created_by, '') != 'fleet'",
         (status,),
     ).fetchall()
     if not rows:
@@ -2375,6 +2376,7 @@ def _lane_rows(conn: sqlite3.Connection, status: str) -> list[sqlite3.Row]:
     return conn.execute(
         "SELECT id, assignee, created_by, provider_override, model_override FROM tasks "
         f"WHERE status = '{status}' AND claim_lock IS NULL "
+        "AND COALESCE(created_by, '') != 'fleet' "
         "ORDER BY priority DESC, created_at ASC"
     ).fetchall()
 

@@ -11,12 +11,67 @@ import os
 import sys
 import time
 from pathlib import Path
+from typing import Mapping
 
 from hermes_cli import kanban_db as kb
 from hermes_cli import kanban_db_connect as kbc
 from hermes_cli import kanban_db_dispatch as kbd
 from hermes_cli import kanban_db_workspace as kbw
 from hermes_cli.kanban_output import _err, _fmt_ts, _print_json
+
+
+def federated_enabled(config: Mapping[str, object] | None) -> bool:
+    """Return the explicit opt-in for the cross-machine Kanban lane."""
+    if not isinstance(config, Mapping):
+        return False
+    kanban = config.get("kanban")
+    federated = kanban.get("federated") if isinstance(kanban, Mapping) else None
+    return bool(isinstance(federated, Mapping) and federated.get("enabled") is True)
+
+
+def fleet_task_from_kanban(task) -> "FleetTask":
+    """Convert a local Kanban row to metadata safe to send to the coordinator."""
+    from hermes_cli.fleet_protocol import FleetTask, TaskRequirement
+
+    body = str(task.body or task.title or "").strip()
+    if not body:
+        raise ValueError("federated Kanban tasks require a title or body")
+    return FleetTask(
+        task_id=str(task.id),
+        title=str(task.title),
+        body=body,
+        requirement=TaskRequirement(
+            models=(task.model_override,) if task.model_override else (),
+            project=task.project_id or None,
+            workspace_kind=task.workspace_kind or None,
+        ),
+        idempotency_key=f"kanban:{task.id}",
+    )
+
+
+def federated_create_options(args) -> dict[str, object]:
+    """Return the local-row overrides for an unassigned federated card."""
+    if getattr(args, "assignee", None):
+        raise ValueError("federated Kanban tasks must not specify --assignee")
+    return {"assignee": None, "initial_status": "ready", "created_by": "fleet"}
+
+
+def submit_federated_task(task, config: Mapping[str, object] | None = None):
+    """Submit task metadata using the configured coordinator and secret token."""
+    from hermes_cli.fleet_client import FleetClient
+
+    config = _kanban_config() if config is None else config
+    kanban = config.get("kanban") if isinstance(config, Mapping) else None
+    federated = kanban.get("federated") if isinstance(kanban, Mapping) else None
+    if not isinstance(federated, Mapping):
+        raise RuntimeError("kanban.federated is not configured")
+    url = str(federated.get("coordinator_url") or "").strip()
+    token = os.environ.get("HERMES_FLEET_TOKEN", "").strip()
+    if not url or not token:
+        raise RuntimeError(
+            "federated Kanban requires kanban.federated.coordinator_url and HERMES_FLEET_TOKEN"
+        )
+    return FleetClient(url, token=token).submit_task(fleet_task_from_kanban(task))
 
 
 def _kanban_config() -> dict:

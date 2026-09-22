@@ -147,6 +147,8 @@ _SPECS = [
          )),
     _cmd("create", [
         _arg("title", help="Task title"),
+        _arg("--federated", action="store_true",
+             help="Submit an unassigned task to the opt-in Mac/Windows runner pool"),
         _arg("--body", help="Optional opening post"),
         _arg("--body-file", metavar="PATH",
              help="Read the opening post from a file ('-' = stdin), so bodies with embedded "

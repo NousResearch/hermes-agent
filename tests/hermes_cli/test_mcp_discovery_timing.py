@@ -231,6 +231,7 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
     cli._ensure_tirith_security = lambda: None
     cli._ensure_runtime_credentials = lambda: True
     cli._single_query_mode = True
+    cli._runtime_capabilities = {"reasoning_effort_updates": True}
 
     seen = {}
 
@@ -243,10 +244,15 @@ def test_init_agent_forwards_single_query_flag(monkeypatch):
         _fake_ensure,
     )
     import run_agent
-    monkeypatch.setattr(run_agent, "AIAgent", lambda *_a, **_k: types.SimpleNamespace())
+    def _fake_agent(*_args, **kwargs):
+        seen["agent_kwargs"] = kwargs
+        return types.SimpleNamespace()
+
+    monkeypatch.setattr(run_agent, "AIAgent", _fake_agent)
 
     assert cli._init_agent() is True
     assert seen.get("single_query") is True
+    assert seen["agent_kwargs"]["capabilities"] == {"reasoning_effort_updates": True}
 
 
 def test_init_agent_defaults_to_interactive(monkeypatch):

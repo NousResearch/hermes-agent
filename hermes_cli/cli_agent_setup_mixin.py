@@ -41,14 +41,16 @@ def _current_runtime(cli) -> dict:
         "api_mode": cli.api_mode,
         "command": cli.acp_command,
         "args": list(cli.acp_args or []),
-        "credential_pool": getattr(cli, "_credential_pool", None)}
+        "credential_pool": getattr(cli, "_credential_pool", None),
+        "capabilities": dict(getattr(cli, "_runtime_capabilities", None) or {})}
 
 
 def _route_signature(model, runtime: dict) -> tuple:
     """Hashable identity of (model, routing) used to detect when the agent must be rebuilt."""
     return (
         model, runtime.get("provider"), runtime.get("requested_provider"), runtime.get("base_url"),
-        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()))
+        runtime.get("api_mode"), runtime.get("command"), tuple(runtime.get("args") or ()),
+        tuple(sorted((runtime.get("capabilities") or {}).items())))
 
 
 def _cooldown_cause(entry) -> str:
@@ -293,8 +295,14 @@ class CLIAgentSetupMixin:
             return False
         credentials_changed = api_key != self.api_key or base_url != self.base_url
         routing_changed = resolved_routing != (self.provider, self.api_mode, self.acp_command, self.acp_args)
+        runtime_capabilities = {
+            key: value for key, value in (runtime.get("capabilities") or {}).items()
+            if isinstance(key, str) and isinstance(value, bool)
+        }
+        capabilities_changed = runtime_capabilities != getattr(self, "_runtime_capabilities", {})
         self.provider, self.api_mode, self.acp_command, self.acp_args = resolved_routing
         self._credential_pool = runtime.get("credential_pool")
+        self._runtime_capabilities = runtime_capabilities
         self._provider_source = runtime.get("source")
         self.api_key = api_key
         self.base_url = base_url
@@ -336,7 +344,7 @@ class CLIAgentSetupMixin:
             logger.info("Model moved to %s: reasoning_config resolved: %s", self.model, self.reasoning_config)
 
         # AIAgent/OpenAI client holds auth at init, so rebuild on key/routing/model change.
-        if (credentials_changed or routing_changed or model_changed) and self.agent is not None:
+        if (credentials_changed or routing_changed or capabilities_changed or model_changed) and self.agent is not None:
             _retire_agent(self)
             self._active_agent_route_signature = None
         return True
@@ -663,6 +671,7 @@ class CLIAgentSetupMixin:
                 requested_provider=runtime.get("requested_provider"),
                 api_mode=runtime.get("api_mode"), acp_command=runtime.get("command"),
                 acp_args=runtime.get("args"), credential_pool=runtime.get("credential_pool"),
+                capabilities=runtime.get("capabilities"),
                 max_iterations=self.max_turns,
                 run_budget_seconds=getattr(self, "run_budget_seconds", None),
                 enabled_toolsets=self.enabled_toolsets, disabled_toolsets=self.disabled_toolsets,

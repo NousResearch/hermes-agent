@@ -217,13 +217,18 @@ def _slack_tools_loaded() -> bool:
     except Exception:
         pass
 
-    # Profile secret scope, not bare env: under multiplex the env may hold another profile's token.
+    # Profile secret scope, not bare env: under multiplex the env may hold another
+    # profile's token. Only the unscoped default-profile path (UnscopedSecretError)
+    # reads the env; any other scoped-read failure fails closed rather than borrowing.
     try:
-        from agent.secret_scope import get_secret
+        from agent.secret_scope import UnscopedSecretError, get_secret
 
-        token = get_secret("SLACK_BOT_TOKEN") or ""
-    except Exception:  # includes UnscopedSecretError
-        token = os.environ.get("SLACK_BOT_TOKEN") or ""
+        try:
+            token = get_secret("SLACK_BOT_TOKEN") or ""
+        except UnscopedSecretError:
+            token = os.environ.get("SLACK_BOT_TOKEN") or ""
+    except Exception:
+        return False
     if not token.strip():
         return False
     try:

@@ -2737,16 +2737,14 @@ class GatewayTurnMixin:
             return self._proxy_error_result("⚠️ Proxy URL not configured (GATEWAY_PROXY_URL or gateway.proxy_url)")
 
         # The proxy key is a per-profile credential: honor the installed secret scope under multiplex.
-        # Only UnscopedSecretError / import failures fall back to the env; any other get_secret()
-        # error propagates (same as BASE) rather than silently degrading to the ambient key.
-        try:
-            from agent.secret_scope import UnscopedSecretError, get_secret
+        # Only UnscopedSecretError (the unscoped default-profile path) falls back to the env; any
+        # other get_secret() error propagates (same as BASE) rather than silently degrading to the
+        # ambient key, which may hold another profile's credential.
+        from agent.secret_scope import UnscopedSecretError, get_secret
 
-            try:
-                proxy_key = (get_secret("GATEWAY_PROXY_KEY") or "").strip()
-            except UnscopedSecretError:
-                proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
-        except Exception:
+        try:
+            proxy_key = (get_secret("GATEWAY_PROXY_KEY") or "").strip()
+        except UnscopedSecretError:
             proxy_key = os.getenv("GATEWAY_PROXY_KEY", "").strip()
 
         _run_still_current = self._run_still_current_fn(session_key, run_generation)

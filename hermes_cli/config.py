@@ -2813,17 +2813,13 @@ def reload_env() -> int:
 def _scoped_environ_get(key: str) -> Optional[str]:
     """Read ``key`` from ``os.environ`` through ``agent.secret_scope.get_secret`` so an active
     profile scope (multiplexed gateway turn) never leaks another profile's raw value. Falls back to
-    a plain environ read when the scope module is unavailable; ``UnscopedSecretError`` propagates."""
+    a plain environ read when the scope module is unavailable; ``UnscopedSecretError`` and scope
+    failures propagate -- a failed scoped read must never borrow the ambient env."""
     try:
-        from agent.secret_scope import UnscopedSecretError, get_secret as _get_secret
+        from agent.secret_scope import get_secret as _get_secret
     except Exception:
         return os.environ.get(key)
-    try:
-        return _get_secret(key)
-    except UnscopedSecretError:
-        raise
-    except Exception:
-        return os.environ.get(key)
+    return _get_secret(key)
 
 
 def get_env_value(key: str) -> Optional[str]:

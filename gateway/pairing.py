@@ -128,20 +128,18 @@ def _matching_ids(platform: str, approved: dict, user_id: str) -> list:
 def _read_allowlist_env(env_var: str) -> str:
     """Read a platform allowlist env var through the profile secret scope.
 
-    Under multiplexing the process env may hold ANOTHER profile's allowlist, so a scoped
-    miss must return empty rather than borrow it; unscoped callers keep the legacy
-    ``os.getenv`` read. Writes (``save_env_value``/``remove_env_value``) target the
-    active profile's ``.env`` / installed scope, not ``os.environ``.
+    Under multiplexing the process env may hold ANOTHER profile's allowlist, so a
+    scoped miss must return empty rather than borrow it. The shared reader owns the
+    contract: a bound-scope failure propagates (never silently borrows the env),
+    while the unscoped default-profile path keeps the legacy ``os.getenv`` read.
+    Writes (``save_env_value``/``remove_env_value``) target the active profile's
+    ``.env`` / installed scope, not ``os.environ``.
 
     See #88441.
     """
-    with contextlib.suppress(Exception):
-        from agent.secret_scope import UnscopedSecretError, get_secret
-        try:
-            return (get_secret(env_var) or "").strip()
-        except UnscopedSecretError:
-            pass
-    return (os.getenv(env_var) or "").strip()
+    from gateway.platforms._shared import get_scoped_secret
+
+    return (get_scoped_secret(env_var, "") or "").strip()
 
 
 def _configured_allowlist(platform: str):

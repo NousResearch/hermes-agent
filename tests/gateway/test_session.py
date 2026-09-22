@@ -184,6 +184,30 @@ class TestBuildSessionContextPrompt:
         assert "you can" not in prompt.lower() or "you cannot" in prompt.lower()
 
 
+    def test_slack_tools_loaded_scope_failure_fails_closed(self, monkeypatch):
+        """A bound scope whose SLACK_BOT_TOKEN read fails must fail closed --
+        never borrow the ambient env token (another profile's). Pre-fix the
+        ``except Exception -> os.environ`` tail returned True here."""
+        from unittest.mock import patch
+        from agent import secret_scope as ss
+        from gateway.session import _slack_tools_loaded
+
+        class _ExplodingScope(dict):
+            def get(self, name, default=None):
+                raise RuntimeError("resolver boom")
+
+        monkeypatch.setenv("SLACK_BOT_TOKEN", "xoxb-foreign")
+        ss.set_multiplex_active(True)
+        token = ss.set_secret_scope(_ExplodingScope())
+        try:
+            with patch("tools.mcp_tool_discovery.get_registered_mcp_server_names", return_value=[]), \
+                    patch("hermes_cli.config.load_config", return_value={}), \
+                    patch("hermes_cli.tools_config._get_platform_tools", return_value=["slack"]):
+                assert _slack_tools_loaded() is False
+        finally:
+            ss.reset_secret_scope(token)
+            ss.set_multiplex_active(False)
+
     def test_slack_tools_loaded_detects_real_mcp_registration(self):
         """Regression (review of #63234): a connected MCP server whose tools
         are ACTUALLY registered in the live registry must be detected as

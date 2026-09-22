@@ -423,7 +423,8 @@ def _prefer_in_tree_entry(tree: PluginCatalogEntry, live: PluginCatalogEntry, tr
 def load_catalog_live() -> List[PluginCatalogEntry]:
     """Entries from the live (or cached) catalog, else the in-tree catalog. When both name an entry at
     different pins the NEWER source supplies it — right after ``hermes update`` bumps an in-tree pin,
-    a cache fetched before the bump must not re-install the old one (see :func:`_prefer_in_tree_entry`)."""
+    a cache fetched before the bump must not re-install the old one or hide a newly added entry
+    (see :func:`_prefer_in_tree_entry`)."""
     data = fetch_live_catalog()
     if data is None:
         return load_catalog()
@@ -434,8 +435,12 @@ def load_catalog_live() -> List[PluginCatalogEntry]:
     in_tree = {e.name: e for e in load_catalog()}
     live_t, tree_t = _live_generated_time(data), in_tree_catalog_time()
     tree_is_newer = (tree_t > live_t) if (live_t is not None and tree_t is not None) else None
-    return [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer) else e
-            for e in entries]
+    resolved = [in_tree[e.name] if e.name in in_tree and _prefer_in_tree_entry(in_tree[e.name], e, tree_is_newer) else e
+                for e in entries]
+    if tree_is_newer:
+        live_names = {e.name for e in entries}
+        resolved.extend(e for name, e in in_tree.items() if name not in live_names)
+    return resolved
 
 
 def live_removed_list() -> List[RemovedEntry]:

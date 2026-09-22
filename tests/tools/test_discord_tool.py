@@ -149,6 +149,78 @@ class TestDiscordRequest:
         assert req.get_method() == "GET"
 
 
+class TestReactionActions:
+    @patch("tools.discord_tool.get_secret", side_effect=["profile-token", ""])
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_github_closure_uses_profile_scoped_token(self, mock_urlopen_fn, _get_secret):
+        mock_urlopen_fn.return_value = _mock_urlopen({"state": "closed"})
+        from tools.discord_tool import _github_issue_closed
+
+        assert _github_issue_closed("gabrielcerteiro/certeiroone", "457") is True
+        request = mock_urlopen_fn.call_args[0][0]
+        assert request.get_header("Authorization") == "Bearer profile-token"
+
+    @patch("tools.discord_tool._discord_request", return_value={"parent_id": "1550141272243707914"})
+    @patch("tools.discord_tool.urllib.request.urlopen", side_effect=urllib.error.HTTPError("https://api.github.com/x", 404, "not found", {}, None))
+    def test_complete_demand_404_never_mutates_reactions(self, _urlopen, discord_request, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")
+        result = json.loads(discord_core(
+            action="complete_demand", channel_id="12", message_id="34",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="457", epic_number="456"))
+
+        assert result == {"success": False, "completed": False, "reason": "issue_or_epic_open"}
+        assert [call.args[0] for call in discord_request.call_args_list] == ["GET"]
+
+    @patch(
+        "tools.discord_tool.get_secret",
+        side_effect=lambda name, default="": "token123" if name == "DISCORD_BOT_TOKEN" else "",
+    )
+    @patch("tools.discord_tool._discord_request", return_value={"parent_id": "1550141272243707914"})
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_complete_demand_without_profile_token_skips_github_and_reactions(
+        self, urlopen, discord_request, _get_secret, monkeypatch,
+    ):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")
+        urlopen.return_value = _mock_urlopen({"state": "closed"})
+
+        result = json.loads(discord_core(
+            action="complete_demand", channel_id="12", message_id="34",
+            issue_repo="gabrielcerteiro/certeiroone", issue_number="457", epic_number="456"))
+
+        assert result == {"success": False, "completed": False, "reason": "issue_or_epic_open"}
+        urlopen.assert_not_called()
+        assert [call.args[0] for call in discord_request.call_args_list] == ["GET"]
+
+    @patch("tools.discord_tool.urllib.request.urlopen")
+    def test_reaction_actions_use_the_bot_reaction_endpoint(self, mock_urlopen_fn, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")
+        mock_urlopen_fn.return_value = _mock_urlopen({})
+
+        assert json.loads(discord_core(
+            action="add_reaction", channel_id="12", message_id="34", emoji="✅"))["success"] is True
+        add_request = mock_urlopen_fn.call_args[0][0]
+        assert add_request.get_method() == "PUT"
+        assert add_request.full_url.endswith("/channels/12/messages/34/reactions/%E2%9C%85/@me")
+
+        assert json.loads(discord_core(
+            action="remove_own_reaction", channel_id="12", message_id="34", emoji="⌛"))["success"] is True
+        remove_request = mock_urlopen_fn.call_args[0][0]
+        assert remove_request.get_method() == "DELETE"
+        assert remove_request.full_url.endswith("/channels/12/messages/34/reactions/%E2%8C%9B/@me")
+
+    @patch("tools.discord_tool._github_issue_closed", side_effect=[False, True, True])
+    @patch("tools.discord_tool._discord_request", return_value={"parent_id": "1550141272243707914"})
+    def test_complete_demand_only_mutates_after_issue_and_epic_close(self, discord_request, github_closed, monkeypatch):
+        monkeypatch.setenv("DISCORD_BOT_TOKEN", "token123")
+        open_result = json.loads(discord_core(action="complete_demand", channel_id="12", message_id="34", issue_repo="gabrielcerteiro/certeiroone", issue_number="457", epic_number="456"))
+        assert open_result == {"success": False, "completed": False, "reason": "issue_or_epic_open"}
+        assert discord_request.call_count == 1
+        closed_result = json.loads(discord_core(action="complete_demand", channel_id="12", message_id="34", issue_repo="gabrielcerteiro/certeiroone", issue_number="457", epic_number="456"))
+        assert closed_result["completed"] is True
+        assert github_closed.call_count == 3
+        assert [call.args[0] for call in discord_request.call_args_list] == ["GET", "GET", "DELETE", "PUT"]
+
+
     @patch("tools.discord_tool.urllib.request.urlopen")
     def test_response_body_size_limit(self, mock_urlopen_fn, monkeypatch):
         monkeypatch.setattr("tools.discord_tool._DISCORD_RESPONSE_BODY_MAX_BYTES", 8)

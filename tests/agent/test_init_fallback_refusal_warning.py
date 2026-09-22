@@ -13,8 +13,13 @@ import pytest
 
 
 def _agent():
-    return SimpleNamespace(provider="openrouter", model="z-ai/glm-5.3-flash", base_url=None,
-                           api_key=None, _fallback_activated=False)
+    return SimpleNamespace(
+        provider="openrouter",
+        model="z-ai/glm-5.3-flash",
+        base_url=None,
+        api_key=None,
+        _fallback_activated=False,
+    )
 
 
 _LADDER = [
@@ -25,13 +30,16 @@ _LADDER = [
 
 def _refusing_router(monkeypatch):
     """Primary resolves no client; deepseek resolves none (missing key), kimi raises."""
+
     def _fake_resolve(provider, model=None, **kwargs):
         if provider == "kimi":
             raise RuntimeError("kimi auth handshake refused")
         return (None, None)
 
     monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", _fake_resolve)
-    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None)
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
+    )
 
 
 def test_fully_refusing_ladder_warns_with_each_reason(tmp_path, monkeypatch, caplog):
@@ -67,9 +75,14 @@ def test_recovered_ladder_does_not_warn(tmp_path, monkeypatch, caplog):
         return (None, None)
 
     monkeypatch.setattr("agent.auxiliary_client.resolve_provider_client", _fake_resolve)
-    monkeypatch.setattr("hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None)
-    monkeypatch.setattr(agent_init, "_client_kwargs_from_routed",
-                        lambda client, timeout: {"api_key": "k"})
+    monkeypatch.setattr(
+        "hermes_cli.fallback_config.resolve_entry_api_key", lambda entry: None
+    )
+    monkeypatch.setattr(
+        agent_init,
+        "_client_kwargs_from_routed",
+        lambda client, timeout: {"api_key": "k"},
+    )
 
     agent = _agent()
     with caplog.at_level(logging.WARNING, logger="run_agent"):

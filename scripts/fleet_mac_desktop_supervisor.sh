@@ -28,7 +28,11 @@ desktop_is_live() {
             pid = $1
             $1 = ""
             sub(/^[[:space:]]+/, "")
-            if ($0 == expected) {
+            # Keep the production path exact, while also recognizing an
+            # unpacked Hermes.app used for a local desktop build. The runner
+            # should follow the actual Desktop app instance, not a CLI or
+            # backend process started from the same source tree.
+            if ($0 == expected || $0 ~ /\/Hermes\.app\/Contents\/MacOS\/Hermes$/) {
                 print pid
                 exit
             }

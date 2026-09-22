@@ -113,12 +113,74 @@ function finiteMonotonic(value: number): boolean {
  * generation. The proof is intentionally a narrow internal predicate, not an
  * IPC authorization surface.
  */
+export interface PriorWaveOptions {
+  /** A local fence index owned by main. Fenced installations never promote. */
+  fenceIndex?: ReadonlySet<string>
+  /** Resolves the current required-scope set for an already-settled attempt. */
+  currentRequiredScopeIds?: (attempt: TargetAttempt) => readonly string[] | undefined
+  /** Compares the frozen attempt scope set with the current plan scope set. */
+  requiredScopesUnchanged?: (attempt: TargetAttempt, currentRequiredScopeIds: readonly string[]) => boolean
+}
+
+export function requiredScopesUnchanged(
+  attempt: TargetAttempt,
+  currentRequiredScopeIds: readonly string[]
+): boolean {
+  const frozen = attempt.requiredScopeIds
+  if (frozen === null || !unique(currentRequiredScopeIds)) return false
+  return frozen.length === currentRequiredScopeIds.length && frozen.every(scopeId => currentRequiredScopeIds.includes(scopeId))
+}
+
+/**
+ * Cheap local revalidation for waves settled before the one being promoted.
+ * Settlement is determined by the terminal phase, not by launchState: a
+ * successful update normally has `phase: 'updated'` and `launchState:
+ * 'observed'`. The retained observation may have an older epoch because this
+ * predicate deliberately performs no remote I/O.
+ */
+export function priorWaveStillValid(
+  attempt: TargetAttempt,
+  sha: string,
+  options: PriorWaveOptions = {}
+): boolean {
+  if (isExcluded(attempt)) return true
+  if (attempt.recoveryRequired || options.fenceIndex?.has(attempt.identity.installId)) return false
+  if (attempt.phase !== 'updated' && attempt.phase !== 'already-current') return false
+  if (attempt.phase === 'updated' && attempt.launchState !== 'observed') return false
+  if (attempt.identity.admittedSha !== sha || attempt.requiredScopeIds === null) return false
+
+  const health = attempt.health
+  if (!health || health.checkoutSha !== sha || health.installId !== attempt.identity.installId) return false
+  if (!health.installReady || !health.markerClear || !health.recoveryClear || !health.dependencyReady) return false
+  if (health.scopeCapture !== 'complete' || health.reasons.length > 0) return false
+  if (!unique(attempt.requiredScopeIds) || !unique(health.scopes.map(scope => scope.scopeId))) return false
+  if (
+    attempt.requiredScopeIds.length !== health.scopes.length ||
+    !attempt.requiredScopeIds.every(scopeId => health.scopes.some(scope => scope.scopeId === scopeId)) ||
+    !health.scopes.every(scope => scope.restored && scope.ready && scope.codeSha === sha && scope.processIdentityVerified)
+  ) return false
+
+  if (options.requiredScopesUnchanged) {
+    const current = options.currentRequiredScopeIds?.(attempt)
+    if (!current || !options.requiredScopesUnchanged(attempt, current)) return false
+  }
+
+  return true
+}
+
 export function canPromote(
   snapshot: RolloutSnapshot,
   proof: PromotionProof,
   nowMono: number,
   queueGeneration: number,
-  context?: { processGeneration: number; evidenceGeneration: number }
+  context?: {
+    processGeneration: number
+    evidenceGeneration: number
+    priorWaveOptions?: PriorWaveOptions
+    fenceIndex?: ReadonlySet<string>
+    currentRequiredScopeIds?: (attempt: TargetAttempt) => readonly string[] | undefined
+    requiredScopesUnchanged?: (attempt: TargetAttempt, currentRequiredScopeIds: readonly string[]) => boolean
+  }
 ): boolean {
   if (!context || !Number.isSafeInteger(context.processGeneration) || !Number.isSafeInteger(context.evidenceGeneration))
     return false
@@ -128,36 +190,37 @@ export function canPromote(
   if (proof.processGeneration !== context.processGeneration || proof.evidenceGeneration !== context.evidenceGeneration)
     return false
   if (proof.contextDigest !== promotionContextDigest(snapshot)) return false
-  if (snapshot.activeWave === 0 && !snapshot.canaryApproved) return false
   if (snapshot.activeWave === 0 && snapshot.promotionPolicy === 'auto-if-healthy') return false
   if (snapshot.activeWave === 0 && proof.approval !== 'manual') return false
+  if (snapshot.activeWave > 0 && !snapshot.canaryApproved) return false
   if (snapshot.activeWave > 0 && snapshot.promotionPolicy === 'manual' && proof.approval !== 'manual') return false
   if (snapshot.activeWave > 0 && snapshot.promotionPolicy === 'auto-if-healthy' && proof.approval !== 'automatic')
     return false
-  if (snapshot.activeWave > 0 && !snapshot.canaryApproved) return false
   if (![nowMono, proof.sweepStartedMono, proof.sweepFinishedMono].every(finiteMonotonic)) return false
   if (proof.sweepFinishedMono < proof.sweepStartedMono) return false
   if (proof.sweepFinishedMono - proof.sweepStartedMono > SWEEP_DEADLINE_MS) return false
   if (nowMono < proof.sweepFinishedMono || nowMono - proof.sweepFinishedMono > PROMOTION_PROOF_MAX_AGE_MS) return false
   if (!unique(proof.nextAdmissionInstallIds)) return false
 
-  const completed = snapshot.attempts.filter(attempt => attempt.wave <= snapshot.activeWave && !isExcluded(attempt))
+  const settled = snapshot.attempts.filter(attempt => attempt.wave === snapshot.activeWave && !isExcluded(attempt))
+  const prior = snapshot.attempts.filter(attempt => attempt.wave < snapshot.activeWave && !isExcluded(attempt))
   const next = snapshot.attempts.filter(attempt => attempt.wave === snapshot.activeWave + 1 && !isExcluded(attempt))
 
-  if (!completed.length || !next.length) return false
-  if (
-    !next.every(
-      attempt => attempt.phase === 'queued' && attempt.launchState === 'none' && attempt.requiredScopeIds !== null
-    )
-  )
+  if (!settled.length || !next.length) return false
+  if (!next.every(attempt => attempt.phase === 'queued' && attempt.launchState === 'none' && attempt.requiredScopeIds !== null))
     return false
 
   const admitted = new Set(proof.nextAdmissionInstallIds)
-
   if (admitted.size !== proof.nextAdmissionInstallIds.length || admitted.size !== next.length) return false
   if (!next.every(attempt => admitted.has(attempt.identity.installId))) return false
 
-  return completed.every(attempt => targetHealthy(attempt, snapshot.target.sha, proof.observationId))
+  const priorWaveOptions = context.priorWaveOptions ?? {
+    fenceIndex: context.fenceIndex,
+    currentRequiredScopeIds: context.currentRequiredScopeIds,
+    requiredScopesUnchanged: context.requiredScopesUnchanged
+  }
+  return settled.every(attempt => targetHealthy(attempt, snapshot.target.sha, proof.observationId)) &&
+    prior.every(attempt => priorWaveStillValid(attempt, snapshot.target.sha, priorWaveOptions))
 }
 
 export function needsManualPromotion(snapshot: RolloutSnapshot): boolean {

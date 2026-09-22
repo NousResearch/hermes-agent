@@ -1,6 +1,7 @@
 import { useEffect } from 'react'
 import { useStore } from '@nanostores/react'
 import { useI18n } from '@/i18n'
+import { getManagedRolloutMessages } from '@/i18n/managed-rollouts'
 import {
   $managedRollouts,
   startManagedRolloutPolling,
@@ -27,7 +28,8 @@ export function ManagedRolloutsSection({
   history?: readonly RolloutHistoryEntry[]
   onSelect?: (id: string) => void
 }) {
-  const { t } = useI18n()
+  const { t, locale } = useI18n()
+  const messages = getManagedRolloutMessages(t, locale)
   const state = useStore($managedRollouts)
   const available = bridgeAvailable()
 
@@ -39,11 +41,11 @@ export function ManagedRolloutsSection({
   if (!available) return null
 
   return (
-    <section aria-label={t.settings.managedRollouts.title} className="grid gap-3">
+    <section aria-label={messages.title} className="grid gap-3">
       <div>
-        <h2 className="text-sm font-medium">{t.settings.managedRollouts.title}</h2>
+        <h2 className="text-sm font-medium">{messages.title}</h2>
         <p className="text-xs text-(--ui-text-tertiary)">
-          {state.status === 'unsupported' ? state.error || t.settings.managedRollouts.noActive : snapshotLabel(state, t.settings.managedRollouts.noActive)}
+          {state.status === 'unsupported' ? state.error || messages.noActive : snapshotLabel(state, messages.noActive)}
         </p>
       </div>
       <RolloutHistory entries={history} onSelect={onSelect} />

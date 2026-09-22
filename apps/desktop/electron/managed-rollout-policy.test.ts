@@ -7,6 +7,7 @@ import {
   isExcluded,
   needsManualPromotion,
   promotionContextDigest,
+  priorWaveStillValid,
   targetHealthy
 } from './managed-rollout-policy'
 
@@ -24,11 +25,15 @@ function scope(scopeId: string, codeSha = SHA): ScopeEvidence {
   }
 }
 
-function health(observationId = 'epoch-1', scopes: ScopeEvidence[] = [scope('default')]): HealthEvidence {
+function health(
+  observationId = 'epoch-1',
+  scopes: ScopeEvidence[] = [scope('default')],
+  installId = INSTALL
+): HealthEvidence {
   return {
     observationId,
     observedAt: '2026-09-21T00:00:00.000Z',
-    installId: INSTALL,
+    installId,
     checkoutSha: SHA,
     installReady: true,
     markerClear: true,
@@ -208,5 +213,68 @@ describe('managed rollout policy', () => {
     expect(canContinueAfterRestart(current)).toBe(true)
     expect(canContinueAfterRestart({ ...current, continuationRequired: true })).toBe(false)
     expect(canContinueAfterRestart({ ...current, phase: 'reconciling' })).toBe(false)
+  })
+
+  it('uses retained local settlement evidence for prior waves instead of requiring a new epoch', () => {
+    const prior = attempt({ health: health('old-epoch') })
+    const settled = attempt({
+      identity: { ...attempt().identity, connectionId: 'conn-b', installId: '2'.repeat(32), label: 'B' },
+      correlationId: 'corr-b',
+      wave: 1,
+      receipt: { ...attempt().receipt!, installId: '2'.repeat(32), correlationId: 'corr-b' },
+      health: health('epoch-2', [scope('default')], '2'.repeat(32))
+    })
+    const next = attempt({
+      identity: { ...attempt().identity, connectionId: 'conn-c', installId: '3'.repeat(32), label: 'C' },
+      correlationId: 'corr-c',
+      wave: 2,
+      phase: 'queued',
+      launchState: 'none',
+      requiredScopeIds: [],
+      receipt: null,
+      health: null
+    })
+    const current = snapshot({
+      activeWave: 1,
+      attempts: [prior, settled, next]
+    })
+    const proof = {
+      observationId: 'epoch-2',
+      rolloutId: current.id,
+      revision: current.revision,
+      queueGeneration: 4,
+      processGeneration: 2,
+      evidenceGeneration: 3,
+      contextDigest: promotionContextDigest(current),
+      wave: current.activeWave,
+      sweepStartedMono: 1_000,
+      sweepFinishedMono: 2_000,
+      nextAdmissionInstallIds: ['3'.repeat(32)],
+      approval: 'manual' as const
+    }
+
+    expect(priorWaveStillValid(prior, SHA)).toBe(true)
+    expect(targetHealthy(settled, SHA, 'epoch-2')).toBe(true)
+    expect(canPromote(current, proof, 2_500, 4, { processGeneration: 2, evidenceGeneration: 3 })).toBe(true)
+  })
+
+  it('accepts the manual canary approval before canaryApproved is set', () => {
+    const current = snapshot({ canaryApproved: false })
+    const proof = {
+      observationId: 'epoch-1',
+      rolloutId: current.id,
+      revision: current.revision,
+      queueGeneration: 4,
+      processGeneration: 2,
+      evidenceGeneration: 3,
+      contextDigest: promotionContextDigest(current),
+      wave: current.activeWave,
+      sweepStartedMono: 1_000,
+      sweepFinishedMono: 2_000,
+      nextAdmissionInstallIds: ['2'.repeat(32)],
+      approval: 'manual' as const
+    }
+
+    expect(canPromote(current, proof, 2_500, 4, { processGeneration: 2, evidenceGeneration: 3 })).toBe(true)
   })
 })

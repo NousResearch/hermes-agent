@@ -43,7 +43,7 @@ optional_env:
     prompt: "Allow all users? (true/false)"
     password: false
   - name: TEAMS_REQUIRE_MENTION
-    description: "Only answer channel/group-chat messages that @mention the bot or reply to it (default false; needed once the app has RSC message-read consent)"
+    description: "Only answer channel/group-chat messages that target or @mention the bot, or reply to it (default false; needed once the app has RSC message-read consent)"
     prompt: "Require @mention in channels and group chats? (true/false)"
     password: false
   - name: TEAMS_HOME_CHANNEL

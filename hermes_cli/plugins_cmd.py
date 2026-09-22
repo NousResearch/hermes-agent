@@ -13,7 +13,7 @@ import sys
 import tempfile
 import urllib.parse
 from pathlib import Path
-from typing import Any, Optional
+from typing import Any, NoReturn, Optional
 
 from hermes_constants import get_hermes_home
 from hermes_cli._subprocess_compat import noninteractive_git_env
@@ -77,7 +77,7 @@ def _is_tty() -> bool:
     return sys.stdin.isatty() and sys.stdout.isatty()
 
 
-def _fail(console, message: str) -> None:
+def _fail(console, message: str) -> NoReturn:
     """Print *message* and exit 1."""
     console.print(message)
     sys.exit(1)
@@ -1041,12 +1041,36 @@ def cmd_remove(name: str) -> None:
     plugins_dir = _plugins_dir()
     target = _require_installed_plugin(name, plugins_dir, console)
     try:
-        _remove_plugin_core(target)
+        result = _remove_user_plugin(plugins_dir, name, target)
     except (OSError, PluginOperationError) as exc:
         _fail(console, f"[red]Error:[/red] Could not remove plugin '{name}': {exc}")
     console.print()
     console.print(f"[red]✗[/red] Plugin [bold]{name}[/bold] removed from {plugins_dir}")
+    if result.get("cleared_memory_provider"):
+        console.print("[yellow]memory.provider pointed at this plugin and was reset; "
+                      "run `hermes memory setup` to pick another.[/yellow]")
     console.print()
+
+
+def _remove_user_plugin(plugins_dir: Path, name: str, target: Path) -> dict[str, Any]:
+    """Shared ``remove`` tail for the CLI, the dashboard and the ``plugins.manage`` RPC.
+
+    *target* is the resolved directory; when ``plugins_dir/name`` itself is a symlink only the link
+    goes — the tree it points at may be another installed plugin (a dev alias to a sibling checkout),
+    and following it deleted that plugin plus its install metadata while the alias stayed dangling.
+    Config bookkeeping (aliases, toolset) is gathered before the tree disappears.
+    """
+    link = plugins_dir / name.strip("/")
+    if link.is_symlink():
+        link.unlink()
+        return {"ok": True, "name": name, **_forget_plugin_config({link.name})}
+    entry = next((e for e in _discover_all_plugins() if Path(str(e[4])) == target), None)
+    key = entry[5] if entry else target.name
+    aliases = _plugin_aliases(key) | {target.name}
+    if _read_manifest(target).get("provides_tools"):
+        _toggle_plugin_toolset(key, enable=False)
+    _remove_plugin_core(target)
+    return {"ok": True, "name": name, **_forget_plugin_config(aliases)}
 
 
 # ``plugins.disabled`` is an explicit deny-list that wins over the ``plugins.enabled`` allow-list.
@@ -1090,6 +1114,61 @@ def _discard_key_and_leaf(names: set, key: str) -> None:
     stale legacy bare-name entry can't keep vetoing the canonical key."""
     names.discard(key)
     names.discard(key.split("/")[-1])
+
+
+def _plugin_aliases(key: str) -> set:
+    """Every spelling a config list may hold for *key*: the key, its bare leaf and the manifest name.
+    The loader matches BOTH the canonical key (``web/firecrawl``) and the manifest name
+    (``web-firecrawl``), so a stale entry under any form vetoes an enable ("explicit disable wins")."""
+    names = {key, key.split("/")[-1]}
+    names.update(e[0] for e in _discover_all_plugins() if e[5] == key)
+    return names
+
+
+def _activate_key(key: str, *, enable: bool) -> bool:
+    """Persist canonical *key* as enabled/disabled, purging every alias from the opposing list.
+    False when the lists already say so (nothing written)."""
+    enabled, disabled = _get_enabled_set(), _get_disabled_set()
+    aliases = _plugin_aliases(key)
+    target, other = (enabled, disabled) if enable else (disabled, enabled)
+    if key in target and not (aliases & other):
+        return False
+    target.add(key)
+    other.difference_update(aliases)
+    _save_plugin_sets(enabled, disabled)
+    return True
+
+
+def _forget_plugin_config(aliases: set) -> dict[str, Any]:
+    """Drop every trace of a removed plugin (its :func:`_plugin_aliases`, taken BEFORE the tree went)
+    from config.yaml: allow/deny-list entries, ``plugins.entries.<id>`` grants and a ``memory.provider``
+    selection naming it. A later reinstall under the same name must start from the "Enable now?"
+    decision, not inherit a stale enable or grant (#54336); a dangling ``memory.provider`` would make
+    the next agent init re-clone the plugin from the catalog, silently undoing the uninstall.
+    Returns ``{"cleared_memory_provider": True}`` when the selection was reset."""
+    from hermes_cli.config import load_config, save_config
+    config = load_config()
+    changed = False
+    result: dict[str, Any] = {}
+    plugins_cfg = config.get("plugins")
+    if isinstance(plugins_cfg, dict):
+        for list_key in ("enabled", "disabled"):
+            names = plugins_cfg.get(list_key)
+            if isinstance(names, list) and aliases & set(names):
+                plugins_cfg[list_key] = sorted(set(names) - aliases)
+                changed = True
+        entries = plugins_cfg.get("entries")
+        if isinstance(entries, dict) and aliases & set(entries):
+            for alias in aliases & set(entries):
+                del entries[alias]
+            changed = True
+    memory_cfg = config.get("memory")
+    if isinstance(memory_cfg, dict) and str(memory_cfg.get("provider") or "").strip() in aliases:
+        memory_cfg["provider"] = ""
+        changed, result = True, {"cleared_memory_provider": True}
+    if changed:
+        save_config(config)
+    return result
 
 
 def _set_plugin_enabled(name: str, *, enable: bool) -> None:
@@ -1165,21 +1244,10 @@ def cmd_enable(name: str, allow_tool_override: Optional[bool] = None) -> None:
         except PluginOperationError as exc:
             _fail(console, f"[red]Error:[/red] {exc}")
 
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    if key in enabled and key not in disabled:
-        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
-    else:
-        enabled.add(key)
-        # The loader's disable check matches BOTH the canonical key (``web/firecrawl``) and the
-        # manifest name (``web-firecrawl``); a stale entry under either form would silently veto
-        # this enable ("explicit disable wins"), so drop the key, its bare leaf, and the name.
-        _discard_key_and_leaf(disabled, key)
-        manifest_name = next((e[0] for e in _discover_all_plugins() if e[5] == key), None)
-        if manifest_name is not None:
-            disabled.discard(manifest_name)
-        _save_plugin_sets(enabled, disabled)
+    if _activate_key(key, enable=True):
         console.print(f"[green]✓[/green] Plugin [bold]{key}[/bold] enabled. Takes effect on next session.")
+    else:
+        console.print(f"[dim]Plugin '{key}' is already enabled.[/dim]")
 
     # Built-in tool override is a privileged grant; bundled plugins are trusted.
     if source == "bundled":
@@ -1345,15 +1413,9 @@ def cmd_disable(name: str) -> None:
     key = _resolve_plugin_key(name)
     if key is None:
         _fail(console, _unknown_plugin_message(name))
-    enabled = _get_enabled_set()
-    disabled = _get_disabled_set()
-    if key not in enabled and key in disabled:
+    if not _activate_key(key, enable=False):
         console.print(f"[dim]Plugin '{key}' is already disabled.[/dim]")
         return
-    # Also drop a stale legacy bare-name entry so it can't keep a nested plugin loading.
-    _discard_key_and_leaf(enabled, key)
-    disabled.add(key)
-    _save_plugin_sets(enabled, disabled)
     console.print(
         f"[yellow]\u2298[/yellow] Plugin [bold]{key}[/bold] disabled. Takes effect on next session.")
 
@@ -1453,10 +1515,26 @@ def _discover_all_plugins() -> list:
     return list(seen.values())
 
 
-def _plugin_status(name: str, enabled: set, disabled: set, key: str = "") -> str:
-    """User-facing activation state for a plugin name or key."""
+def _category_active_names() -> set:
+    """Provider names switched on through ``<category>.provider`` config rather than
+    ``plugins.enabled`` (the live memory provider), so status never calls them "not enabled"."""
+    return {n for n in (_get_current_memory_provider(),) if n}
+
+
+def _plugin_status(name: str, enabled: set, disabled: set, key: str = "", *, source: str = "",
+                   dir_path=None, active: "frozenset | set" = frozenset()) -> str:
+    """User-facing activation state for a plugin name or key. Mirrors ``gate_manifest``: an explicit
+    disable wins, then the allow-list, then the activations that need no list entry — bundled
+    backends/platforms/model providers (*source* + *dir_path*) and category-selected providers
+    (*active*, see :func:`_category_active_names`)."""
     names = {name, key}
-    return "disabled" if names & disabled else "enabled" if names & enabled else "not enabled"
+    if names & disabled:
+        return "disabled"
+    if names & enabled or names & active:
+        return "enabled"
+    if source == "bundled" and dir_path is not None and _bundled_default_on(dir_path):
+        return "enabled"
+    return "not enabled"
 
 
 def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set) -> list:
@@ -1465,9 +1543,11 @@ def _filter_plugin_entries(entries: list, args: Any, enabled: set, disabled: set
     if getattr(args, "no_bundled", False) or getattr(args, "user", False):
         filtered = [entry for entry in filtered if entry[3] != "bundled"]
     if getattr(args, "enabled", False):
+        active = _category_active_names()
         filtered = [
             entry for entry in filtered
-            if _plugin_status(entry[0], enabled, disabled, key=entry[5]) == "enabled"
+            if _plugin_status(entry[0], enabled, disabled, key=entry[5], source=entry[3], dir_path=entry[4],
+                              active=active) == "enabled"
         ]
     return filtered
 
@@ -1494,8 +1574,10 @@ def cmd_list(args: Any | None = None) -> None:
     # One kill-list resolution for the whole listing: resolving per row costs a live-catalog
     # fetch per installed plugin when the catalog host is slow or unreachable.
     removed_entries = catalog.resolved_removed_entries()
+    active = _category_active_names()
     rows = [
-        (name, _plugin_status(name, enabled, disabled, key=key), str(version), description,
+        (name, _plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active),
+         str(version), description,
          catalog.catalog_annotation(_dir) or _pin_annotation(name, pins) or source,
          catalog.removed_annotation(name, _dir, removed_entries))
         for name, version, description, source, _dir, key in entries
@@ -1987,16 +2069,17 @@ def _toggle_plugin_toolset(name: str, *, enable: bool) -> None:
 
 
 def dashboard_set_agent_plugin_enabled(name: str, *, enabled: bool) -> dict[str, Any]:
-    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists)."""
-    if _resolve_plugin_key(name) is None:
+    """Enable or disable a plugin in ``config.yaml`` (runtime allow/deny lists). *name* may be the
+    canonical key, the manifest name or a unique bare leaf; the canonical key is what gets written
+    (the loader never matches a bare leaf, and a stale key in ``disabled`` outranks a manifest-name
+    entry in ``enabled`` — so writing the raw identifier reported success while the plugin stayed off)."""
+    key = _resolve_plugin_key(name)
+    if key is None:
         return {"ok": False, "error": f"Plugin '{name}' is not installed or bundled."}
-    en = _get_enabled_set()
-    dis = _get_disabled_set()
-    if ((name in en and name not in dis) if enabled else (name not in en and name in dis)):
-        return {"ok": True, "name": name, "unchanged": True}
-    _set_plugin_enabled(name, enable=enabled)
-    _toggle_plugin_toolset(name, enable=enabled)
-    return {"ok": True, "name": name, "unchanged": False}
+    changed = _activate_key(key, enable=enabled)
+    if changed:
+        _toggle_plugin_toolset(key, enable=enabled)
+    return {"ok": True, "name": key, "unchanged": not changed}
 
 
 def _user_installed_plugin_dir(name: str) -> Optional[Path]:
@@ -2180,10 +2263,9 @@ def dashboard_remove_user_plugin(name: str) -> dict[str, Any]:
     if target is None:
         return {"ok": False, "error": f"Plugin '{name}' was not found under {plugins_dir}."}
     try:
-        _remove_plugin_core(target)
+        return _remove_user_plugin(plugins_dir, name, target)
     except (OSError, PluginOperationError) as exc:
         return {"ok": False, "error": f"Could not remove plugin '{name}': {exc}"}
-    return {"ok": True, "name": name}
 
 
 def cmd_plugin_doctor(target: str = ".", *, ci: bool = False) -> None:

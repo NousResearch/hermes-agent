@@ -1446,12 +1446,11 @@ def _plugin_rows() -> list[dict]:
     versions = cat.catalog_versions()
     ref_pins = pc._read_install_metadata()  # ``--ref`` installs: pinned_sha so the desktop can show the pin
     out = []
+    active = pc._category_active_names()
     for name, version, desc, source, _dir, key in sorted(pc._discover_all_plugins()):
-        status = pc._plugin_status(name, enabled, disabled, key=key)
-        # Bundled backends/platforms/providers run without an explicit enable: report the
-        # truthful default instead of "not enabled" (reads as OFF).
-        if status == "not enabled" and source == "bundled" and pc._bundled_default_on(_dir):
-            status = "enabled"
+        # Bundled backends/platforms/providers and the live memory provider run without an explicit
+        # enable: _plugin_status reports the truthful default instead of "not enabled" (reads as OFF).
+        status = pc._plugin_status(name, enabled, disabled, key=key, source=source, dir_path=_dir, active=active)
         # key = canonical registry key (names collide across category dirs); portable = Agent Plugins v1.
         # ``has_desktop_half``: the package also ships a Desktop UI half (``desktop/plugin.js``). The
         # desktop app pairs its app-level copy of that half with this row so one package is ONE row.
@@ -1481,8 +1480,10 @@ def _plugins_toggle(rid, params):
     result = toggle(ident, enabled=bool(params.get("enable")))
     if not result.get("ok"):
         return _err(rid, 5026, result.get("error") or "toggle failed")
-    row = next((r for r in _plugin_rows() if ident in (r["key"], r["name"])), None)
-    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": ident, "plugin": row})
+    # The toggle resolves a bare leaf / manifest name to the canonical key it wrote; report that key.
+    key = result.get("name") or ident
+    row = next((r for r in _plugin_rows() if key in (r["key"], r["name"])), None)
+    return _ok(rid, {"ok": True, "unchanged": bool(result.get("unchanged")), "name": key, "plugin": row})
 
 
 def _plugins_install(rid, params):

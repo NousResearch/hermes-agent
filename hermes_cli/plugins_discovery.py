@@ -173,12 +173,14 @@ def collect_directory_manifests() -> List[PluginManifest]:
         logger.debug("  %s: %d manifest(s)", label, len(found))
         manifests.extend(found)
 
-    # Excluded bundled top-level categories have their own discovery; platforms scan separately.
+    # Excluded bundled top-level categories have their own discovery. ``platforms/`` is an ordinary category
+    # dir: the recursion keys its adapters ``platforms/<dir>`` like every other category (``web/firecrawl``),
+    # which is the key `hermes plugins enable/disable` and the dashboard write (#27548); the manifest name
+    # (``photon-platform``) stays an accepted alias through ``gate_manifest``.
     repo_plugins = _origin.get_bundled_plugins_dir()
     logger.debug("Scanning bundled plugins: %s", repo_plugins)
     _scan("bundled (top-level)", repo_plugins, "bundled",
-          {"memory", "context_engine", "platforms", "model-providers", "cron_providers"})
-    _scan("bundled/platforms", repo_plugins / "platforms", "bundled")
+          {"memory", "context_engine", "model-providers", "cron_providers"})
     user_dir = get_hermes_home() / "plugins"
     logger.debug("Scanning user plugins: %s", user_dir)
     _scan("user", user_dir, "user")

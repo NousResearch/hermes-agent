@@ -582,6 +582,7 @@ The webhook adapter includes multiple layers of security:
 The adapter validates incoming webhook signatures using the appropriate method for each source:
 
 - **GitHub**: `X-Hub-Signature-256` header — HMAC-SHA256 hex digest prefixed with `sha256=`
+- **Notion**: `X-Notion-Signature` header — same scheme as GitHub (`sha256=` + HMAC-SHA256 hex digest of the raw body), keyed by the verification token Notion gives you when the webhook subscription is created
 - **GitLab**: `X-Gitlab-Token` header — plain secret string match
 - **Standard Webhooks**: `webhook-id`, `webhook-timestamp`, and `webhook-signature` headers — signed content is `{id}.{timestamp}.{raw_body}` with a `v1,<base64-hmac-sha256>` signature
 - **Generic (V2, recommended)**: `X-Webhook-Signature-V2` + `X-Webhook-Timestamp` headers — HMAC-SHA256 hex digest of `<timestamp>.<body>`. The timestamp (Unix seconds) must be within ±300 seconds of the server clock, which prevents captured requests from being replayed later.
@@ -656,6 +657,7 @@ This is the same trust model that applies to everything the agent reads: web pag
 
 - Ensure the secret in your route config exactly matches the secret configured in the webhook source
 - For GitHub, the secret is HMAC-based — check `X-Hub-Signature-256`
+- For Notion, same as GitHub but check `X-Notion-Signature` — the secret is the verification token Notion showed when you created the subscription
 - For GitLab, the secret is a plain token match — check `X-Gitlab-Token`
 - Check gateway logs for `Invalid signature` warnings
 

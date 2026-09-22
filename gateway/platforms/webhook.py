@@ -1,5 +1,5 @@
 """Generic webhook platform adapter: aiohttp server that validates HMAC-signed POSTs (GitHub, GitLab,
-Svix, Linear, generic), renders payloads into agent prompts, and routes responses back (github_comment
+Svix, Linear, Notion, generic), renders payloads into agent prompts, and routes responses back (github_comment
 or any gateway platform). Routes live under platforms.webhook.extra.routes: events (header filter),
 secret (REQUIRED; "INSECURE_NO_AUTH" skips validation, loopback only), prompt template, skills,
 deliver/deliver_extra, deliver_only (rendered prompt IS the message), cron_job (fire an existing cron
@@ -698,7 +698,7 @@ class WebhookAdapter(BasePlatformAdapter):
     # --- Signature validation ---
 
     def _validate_signature(self, request: "web.Request", body: bytes, secret: str) -> bool:
-        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, generic HMAC-SHA256)."""
+        """Validate webhook signature (GitHub, GitLab, Svix, Standard Webhooks, Linear, Notion, generic HMAC-SHA256)."""
         headers = request.headers
 
         def _header(name: str) -> str:
@@ -715,9 +715,12 @@ class WebhookAdapter(BasePlatformAdapter):
         if any(svix):
             return _validate_svix_signature(body, secret, *svix)
         # Linear (any header case): hex HMAC of the body. GitHub: sha256=<hex>. GitLab: plain token.
+        # Notion: sha256=<hex> too -- same scheme as GitHub's X-Hub-Signature-256, just its own header
+        # name (confirmed against a real Notion delivery; Notion's docs don't call out the scheme name).
         for provided, expected in (
                 (_header("linear-signature"), lambda: _hex_hmac(secret, body)),
                 (headers.get("X-Hub-Signature-256", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
+                (headers.get("X-Notion-Signature", ""), lambda: "sha256=" + _hex_hmac(secret, body)),
                 (headers.get("X-Gitlab-Token", ""), lambda: secret)):
             if provided:
                 return _hmac_str_equal(provided, expected())

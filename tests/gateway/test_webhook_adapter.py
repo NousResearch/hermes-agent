@@ -147,6 +147,7 @@ class TestValidateSignature:
         hostile = "ské-not-a-valid-signature"
         for header in (
             "X-Hub-Signature-256",
+            "X-Notion-Signature",
             "X-Gitlab-Token",
             "X-Webhook-Signature",
             "linear-signature",
@@ -173,6 +174,28 @@ class TestValidateSignature:
         sig = _generic_signature(body, "attacker-controlled-key")
 
         req = _mock_request(headers={"linear-signature": sig})
+
+        assert adapter._validate_signature(req, body, "real-secret") is False
+
+    def test_notion_signature_valid_accepts(self):
+        """Notion signs sha256=<hex HMAC-SHA256 of the raw body> in X-Notion-Signature --
+        byte-identical to GitHub's X-Hub-Signature-256 scheme, just a different header name."""
+        adapter = _make_adapter()
+        body = b'{"verification_token": "abc123"}'
+        secret = "notion-verification-token"
+        sig = _github_signature(body, secret)  # same math as X-Notion-Signature
+
+        req = _mock_request(headers={"X-Notion-Signature": sig})
+
+        assert adapter._validate_signature(req, body, secret) is True
+
+    def test_notion_signature_mismatch_rejects(self):
+        """A well-formed X-Notion-Signature computed with the wrong key fails closed."""
+        adapter = _make_adapter()
+        body = b'{"type": "page.created"}'
+        sig = _github_signature(body, "attacker-controlled-key")
+
+        req = _mock_request(headers={"X-Notion-Signature": sig})
 
         assert adapter._validate_signature(req, body, "real-secret") is False
 

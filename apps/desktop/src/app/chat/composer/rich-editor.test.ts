@@ -127,6 +127,62 @@ describe('replaceBeforeCaret across split text nodes', () => {
 })
 
 describe('normalizeComposerEditorDom', () => {
+  it.each([
+    [6, 6],
+    [2, 12],
+    [12, 2]
+  ])('preserves selection %i → %i inside a native block wrapper', (anchor, focus) => {
+    const editor = document.createElement('div')
+    editor.dataset.slot = RICH_INPUT_SLOT
+    editor.contentEditable = 'true'
+    const wrapper = document.createElement('div')
+    const text = document.createTextNode('still typing here')
+    wrapper.append(text)
+    editor.append(wrapper)
+    document.body.append(editor)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(text, anchor, text, focus)
+
+    try {
+      normalizeComposerEditorDom(editor)
+
+      expect(composerPlainText(editor)).toBe('still typing here')
+      expect(selection.anchorNode).toBe(text)
+      expect(selection.anchorOffset).toBe(anchor)
+      expect(selection.focusNode).toBe(text)
+      expect(selection.focusOffset).toBe(focus)
+    } finally {
+      editor.remove()
+    }
+  })
+
+  it('leaves another editor’s selection alone when normalizing a background draft', () => {
+    const foreground = document.createElement('div')
+    const text = document.createTextNode('foreground draft')
+    foreground.append(text)
+    const background = document.createElement('div')
+    background.dataset.slot = RICH_INPUT_SLOT
+    const wrapper = document.createElement('p')
+    wrapper.textContent = 'background draft'
+    background.append(wrapper)
+    document.body.append(foreground, background)
+    const selection = window.getSelection()!
+    selection.setBaseAndExtent(text, 10, text, 3)
+
+    try {
+      normalizeComposerEditorDom(background)
+
+      expect(composerPlainText(background)).toBe('background draft')
+      expect(selection.anchorNode).toBe(text)
+      expect(selection.anchorOffset).toBe(10)
+      expect(selection.focusNode).toBe(text)
+      expect(selection.focusOffset).toBe(3)
+    } finally {
+      foreground.remove()
+      background.remove()
+    }
+  })
+
   it('unwraps a single insertHTML wrapper div so plain text stays one line', () => {
     const editor = document.createElement('div')
     editor.dataset.slot = RICH_INPUT_SLOT

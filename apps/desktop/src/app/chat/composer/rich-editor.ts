@@ -708,40 +708,18 @@ export function placeCaretAtOffset(editor: HTMLElement, offset: number) {
   placeCaretEnd(editor)
 }
 
-/** The live collapsed caret inside `editor`, or `null` when the editor does
- *  not currently hold it (no selection, multi-range, or the anchor lives in
- *  another element — a hidden keep-alive composer must not repatriate a
- *  selection the visible one owns). `node`/`offset` is the boundary itself;
- *  `textOffset` is the same position in `composerPlainText` coordinates, the
- *  units `placeCaretAtOffset` restores with. */
-interface ComposerCaretSnapshot {
-  node: Node
-  offset: number
-  textOffset: number
-}
+/** Snapshot only when cleanup actually removes the focused caret's container;
+ * cloning the draft on every input flush makes ordinary typing needlessly costly. */
+function removeComposerJunk(editor: HTMLElement, node: ChildNode) {
+  const selected = composerCollapsedSelectionContainer(editor)
+  const offset =
+    document.activeElement === editor && selected && node.contains(selected) ? caretOffsetInEditor(editor) : null
 
-function composerCaretSnapshotIfInside(editor: HTMLElement): ComposerCaretSnapshot | null {
-  const selection = window.getSelection()
+  node.remove()
 
-  if (!selection || !selection.isCollapsed || selection.rangeCount !== 1) {
-    return null
+  if (offset !== null) {
+    placeCaretAtOffset(editor, Math.min(offset, composerPlainText(editor).length))
   }
-
-  const range = selection.getRangeAt(0)
-
-  if (!editor.contains(range.startContainer) || !editor.contains(range.endContainer)) {
-    return null
-  }
-
-  const before = range.cloneRange()
-  before.selectNodeContents(editor)
-  before.setEnd(range.startContainer, range.startOffset)
-
-  const container = document.createElement('div')
-  container.dataset.slot = RICH_INPUT_SLOT
-  container.append(before.cloneContents())
-
-  return { node: range.startContainer, offset: range.startOffset, textOffset: composerPlainText(container).length }
 }
 
 /** Nothing but a break / whitespace (recursively) — i.e. no real text or chip. */
@@ -773,16 +751,6 @@ function isBlankNode(node: ChildNode | null): boolean {
  *  rendering emits (we use text nodes + <br> + chips). Real <br> line breaks
  *  (Shift+Enter, which sit after actual text) are preserved. */
 export function normalizeComposerEditorDom(editor: HTMLElement) {
-  // Selection is document-global and every path below can delete the node the
-  // caret is anchored in (the #88621 class: the editor stays `activeElement`,
-  // the range points at a detached node, and printable keys stop producing
-  // input events until a click restores the selection). Normalization is
-  // text-preserving, so the caret is snapshotted as a `composerPlainText`
-  // offset — the same coordinates the undo/redo caret save already uses — and
-  // re-established afterwards only when some path actually detached it.
-  // Skipped during IME composition: the preedit caret is Chromium's to move.
-  const caret = document.activeElement === editor ? composerCaretSnapshotIfInside(editor) : null
-
   const selectedContainer = composerCollapsedSelectionContainer(editor)
 
   // Chromium's zero-length text nodes first: every check below reads siblings,
@@ -802,7 +770,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     (tailBlock.tagName === 'DIV' || tailBlock.tagName === 'P') &&
     isBlankNode(tailBlock)
   ) {
-    editor.removeChild(tailBlock)
+    removeComposerJunk(editor, tailBlock)
   }
 
   // Unwrap a lone block wrapper back to inline content.
@@ -810,7 +778,26 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     const wrapper = editor.firstChild as HTMLElement
 
     if ((wrapper.tagName === 'DIV' || wrapper.tagName === 'P') && wrapper.dataset.slot !== RICH_INPUT_SLOT) {
+      // Moving the text nodes out resets Chromium's selection to the editor's
+      // start. Keep DOM endpoints (and direction), not serialized text offsets:
+      // chips are atomic and the wrapper's trailing newline is being removed.
+      const selection = editor.ownerDocument.getSelection()
+      const anchorNode = selection?.anchorNode
+      const focusNode = selection?.focusNode
+      const anchorOffset = selection?.anchorOffset ?? 0
+      const focusOffset = selection?.focusOffset ?? 0
+      const ownsSelection = anchorNode && focusNode && wrapper.contains(anchorNode) && wrapper.contains(focusNode)
+
       editor.replaceChildren(...Array.from(wrapper.childNodes))
+
+      if (ownsSelection && editor.isConnected) {
+        selection?.setBaseAndExtent(
+          anchorNode === wrapper ? editor : anchorNode,
+          anchorOffset,
+          focusNode === wrapper ? editor : focusNode,
+          focusOffset
+        )
+      }
     }
   }
 
@@ -825,7 +812,7 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
     }
 
     if (!prev || (prev as HTMLElement).dataset?.refText) {
-      editor.removeChild(last)
+      removeComposerJunk(editor, last)
     }
   }
 
@@ -840,30 +827,4 @@ export function normalizeComposerEditorDom(editor: HTMLElement) {
   if (editor.childNodes.length === 0) {
     editor.appendChild(document.createElement('br'))
   }
-
-  if (!caret) {
-    return
-  }
-
-  const selection = window.getSelection()
-
-  // Nothing to do while the caret still sits on its original anchor — the
-  // common case: none of the paths below touched the caret's own node.
-  // Removing that node does NOT reliably lose the caret: the DOM re-anchors
-  // the boundary in the removed node's parent, which reads as "valid" while
-  // the caret has drifted to a container-level position. The anchor node's
-  // presence is what tells the two apart — gone means restore.
-  if (
-    selection?.rangeCount === 1 &&
-    editor.contains(selection.getRangeAt(0).startContainer) &&
-    selection.getRangeAt(0).startContainer === caret.node
-  ) {
-    return
-  }
-
-  // The caret's anchor is gone — re-establish it at the equivalent plain-text
-  // position (never inside a chip: placeCaretAtOffset treats chips as atomic
-  // and stops before them, which is where a caret would sit after the next
-  // backspace anyway).
-  placeCaretAtOffset(editor, Math.min(caret.textOffset, composerPlainText(editor).length))
 }

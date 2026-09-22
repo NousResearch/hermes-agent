@@ -169,7 +169,7 @@ _TRUNCATED_SUMMARY_MARKER = "finish_reason=length"
 _SUMMARY_REFUSAL_PREFIX_RE = re.compile(
     r"^\s*(?:(?:sorry|i(?:['’]m| am)\s+sorry|i\s+apologi[sz]e|as\s+an\s+ai)"
     r"\s*[,;:]?\s*(?:but\s+)?)?(?:i|we)\s+"
-    r"(?:can(?:not|['’]t)|could\s*not|couldn['’]t|won['’]t|will\s+not|must\s+decline|"
+    r"(?:can(?:\s*not|['’]t)|could\s*not|couldn['’]t|won['’]t|will\s+not|must\s+decline|"
     r"refuse\s+to|am\s+unable\s+to|am\s+not\s+able\s+to)\b"
     r"|^\s*(?:i['’]?m|i\s+am)\s+(?:unable|not\s+able)\b",
     re.IGNORECASE,
@@ -182,8 +182,8 @@ def _is_summary_refusal(content: str) -> bool:
     if not _SUMMARY_REFUSAL_PREFIX_RE.match(normalized):
         return False
     # Limit the search to the opener so a structured checkpoint that records a
-    # historical refusal elsewhere is not rejected.
-    return any(term in normalized[:400].casefold() for term in ("summary", "summarize", "checkpoint"))
+    # historical refusal elsewhere is not rejected. Stems catch summary/summarize/summarise.
+    return any(term in normalized[:400].casefold() for term in ("summar", "checkpoint"))
 
 
 def _response_refusal_text(response: Any) -> str:

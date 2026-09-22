@@ -69,6 +69,8 @@ class TestSummaryRefusalGuard:
             "I’m sorry, but I can’t provide the requested summary.",
             "I apologize, but I cannot create a summary of this conversation.",
             "As an AI, I cannot provide the requested context checkpoint.",
+            "I can not provide a summary of this conversation.",
+            "I can't summarise this conversation for you.",
         ],
     )
     def test_rejects_refusal_body(self, content):

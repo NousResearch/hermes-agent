@@ -217,6 +217,8 @@ The CLI subcommand tree:
 ```
 hermes egress install                  # download the pinned iron-proxy binary
 hermes egress install --force          # re-download even if a managed copy exists
+                                       # (set HERMES_IRON_PROXY_VERSION=X.Y.Z to move the pin
+                                       #  for this node without a hermes release — see below)
 
 hermes egress setup                    # interactive wizard
 hermes egress setup --tunnel-port N    # override the tunnel listener port
@@ -550,6 +552,23 @@ tail -f ~/.hermes/proxy/iron-proxy.log | jq
 ```
 
 When the pinned version moves to v0.40+ (which adds `log.audit_path`), per-request records will move to `~/.hermes/proxy/audit.log` and `iron-proxy.log` will hold only daemon-level events. Until that bump, `audit.log` is an empty placeholder (pre-created at `0o600` so the future daemon inherits tight permissions) — wire your logrotate / monitoring tooling to `iron-proxy.log` today and plan to add `audit.log` after the version bump.
+
+### Moving the pinned binary version per node
+
+The binary is pinned (never auto-resolved to "latest") because the generated `proxy.yaml` targets the pinned release's config schema. Operators who need a newer proxy **today** — e.g. the v0.42.0 `aws_auth` CONNECT fix or v0.48.0 `dns.enabled: false` — can move the pin for a single node without a hermes release:
+
+```bash
+export HERMES_IRON_PROXY_VERSION=0.50.0
+hermes egress install --force
+```
+
+Rules of the override:
+
+- Strict `X.Y.Z` only; anything else (a `v` prefix, pre-release suffixes, whitespace-trimmed junk) fails loudly at resolve time — the value feeds a download URL, so it is never silently mangled.
+- SHA-256 checksum verification (and best-effort GPG, when the upstream release publishes signature assets) always follows whichever version resolves — an override never weakens verification.
+- The override only moves **the binary download**. The generated `proxy.yaml` still targets the pinned release's schema; if the overridden binary rejects a field, `hermes egress start` will fail with that upstream error — treat the override as "run a newer binary against the old config shape".
+- Note that newer upstream releases may publish `checksums.txt` without a `.asc` signature asset; in that case install proceeds with SHA-256-only verification and a warning, exactly as on the pinned release when GPG assets are missing.
+- The managed binary name is unversioned (`<hermes_home>/bin/iron-proxy`), so after changing the override you must pass `--force` — an existing managed copy is reused as-is otherwise.
 
 ## Limitations (v1)
 

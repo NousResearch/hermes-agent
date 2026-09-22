@@ -814,3 +814,85 @@ def test_bitwarden_importerror_raise_without_fallback(
         )
 
 
+# ---------------------------------------------------------------------------
+# Version pin override (HERMES_IRON_PROXY_VERSION)
+# ---------------------------------------------------------------------------
+
+
+def _pin_linux_x86_64(monkeypatch):
+    monkeypatch.setattr(ip.platform, "system", lambda: "Linux")
+    monkeypatch.setattr(ip.platform, "machine", lambda: "x86_64")
+
+
+def test_version_override_moves_release_base_and_asset_name(monkeypatch):
+    """A strict X.Y.Z override must move the download URL and the tarball
+    asset name together — the checksum entry is keyed by asset name, so a
+    version that changes one but not the other fails verification with a
+    confusing "no checksum entry" error."""
+    _pin_linux_x86_64(monkeypatch)
+    monkeypatch.setenv("HERMES_IRON_PROXY_VERSION", "0.50.0")
+    assert ip._resolve_iron_proxy_version() == "0.50.0"
+    assert ip._release_base() == (
+        "https://github.com/ironsh/iron-proxy/releases/download/v0.50.0"
+    )
+    assert ip._platform_asset_name() == "iron-proxy_0.50.0_linux_amd64.tar.gz"
+
+
+def test_version_override_strips_surrounding_whitespace(monkeypatch):
+    """Operators paste versions out of release notes; surrounding whitespace
+    must not end up inside the download URL."""
+    monkeypatch.setenv("HERMES_IRON_PROXY_VERSION", " 0.50.0\n")
+    assert ip._resolve_iron_proxy_version() == "0.50.0"
+
+
+def test_version_defaults_to_pin_when_env_unset(monkeypatch):
+    """No override → the pinned version drives URL and asset name exactly as
+    before the override existed."""
+    _pin_linux_x86_64(monkeypatch)
+    monkeypatch.delenv("HERMES_IRON_PROXY_VERSION", raising=False)
+    assert ip._resolve_iron_proxy_version() == ip._IRON_PROXY_VERSION == "0.39.0"
+    assert ip._release_base() == (
+        "https://github.com/ironsh/iron-proxy/releases/download/v" + ip._IRON_PROXY_VERSION
+    )
+    assert ip._platform_asset_name() == "iron-proxy_0.39.0_linux_amd64.tar.gz"
+
+
+def test_version_override_rejects_non_semver(monkeypatch):
+    """The override feeds a download URL and a tarball asset name, so anything
+    that is not a plain X.Y.Z must fail at resolve time, before it can be
+    embedded in a URL — including path traversal and pre-release suffixes,
+    which upstream asset names do not use."""
+    for bad in ("v0.50.0", "0.50", "latest", "../0.39.0", "0.50.0-rc.1", "0.5O.0"):
+        monkeypatch.setenv("HERMES_IRON_PROXY_VERSION", bad)
+        with pytest.raises(RuntimeError, match="HERMES_IRON_PROXY_VERSION"):
+            ip._resolve_iron_proxy_version()
+
+
+def test_install_downloads_from_overridden_release(hermes_home, monkeypatch):
+    """install_iron_proxy must actually fetch the overridden release: the
+    checksums.txt entry it parses is keyed by the overridden asset name, so a
+    pass here proves both the URL and the verification followed the override."""
+    import hashlib
+
+    _pin_linux_x86_64(monkeypatch)
+    monkeypatch.setenv("HERMES_IRON_PROXY_VERSION", "0.50.0")
+    payload = _make_fake_tar("iron-proxy", payload=b"#!/bin/sh\necho ok\n")
+    requested = []
+
+    def fake_release_asset(name, dest):
+        requested.append(name)
+        if name == "checksums.txt":
+            dest.write_text(
+                f"{hashlib.sha256(payload).hexdigest()}  iron-proxy_0.50.0_linux_amd64.tar.gz\n",
+                encoding="utf-8",
+            )
+        else:
+            dest.write_bytes(payload)
+
+    monkeypatch.setattr(ip, "_release_asset", fake_release_asset)
+    monkeypatch.setattr(ip, "_verify_checksums_signature", lambda tmp, cks: True)
+    monkeypatch.setattr(ip.shutil, "which", lambda name: None)
+
+    binary = ip.install_iron_proxy()
+    assert binary.exists() and binary.name == "iron-proxy"
+    assert requested == ["iron-proxy_0.50.0_linux_amd64.tar.gz", "checksums.txt"]

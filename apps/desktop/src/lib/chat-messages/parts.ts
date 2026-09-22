@@ -121,13 +121,40 @@ export function renderMediaTags(text: string): string {
     .replace(MEDIA_TAG_RE, (_match, value: string) => mediaLink(value))
 }
 
+const DSML_TOOL_CALLS_OPEN = '<｜DSML｜tool_calls>'
+const DSML_TOOL_CALLS_CLOSE = '</｜DSML｜tool_calls>'
+
+/**
+ * DeepSeek may emit its wire-format tool calls as assistant text. This is a
+ * display-only cleanup: native structured tool-call parts never pass through
+ * here. Suppress an unfinished block too so a split stream tag cannot flash in
+ * the transcript before its closing tag arrives.
+ */
+function sanitizeDsmlToolCalls(text: string): string {
+  let clean = text
+  let start = clean.indexOf(DSML_TOOL_CALLS_OPEN)
+
+  while (start !== -1) {
+    const end = clean.indexOf(DSML_TOOL_CALLS_CLOSE, start + DSML_TOOL_CALLS_OPEN.length)
+
+    if (end === -1) {
+      return clean.slice(0, start)
+    }
+
+    clean = `${clean.slice(0, start)}${clean.slice(end + DSML_TOOL_CALLS_CLOSE.length)}`
+    start = clean.indexOf(DSML_TOOL_CALLS_OPEN)
+  }
+
+  return clean
+}
+
 /** Raw `MEDIA:` values in `text`, quotes intact — the one parser Artifacts and chat share. */
 export function mediaTagValues(text: string): string[] {
   return [...text.matchAll(MEDIA_TAG_RE)].map(match => match[1] ?? '')
 }
 
 export function assistantTextPart(text: string, timestamp?: number): ChatMessagePart {
-  return textPart(renderMediaTags(text), timestamp)
+  return textPart(renderMediaTags(sanitizeDsmlToolCalls(text)), timestamp)
 }
 
 export function chatMessageText(message: ChatMessage): string {
@@ -404,14 +431,21 @@ export function appendAssistantTextPart(
   // otherwise settle on a card for `/tmp/AI` and keep the rest as prose (#96657).
   const previous = parts[index]
   const source = `${previous?.type === 'text' ? (previous.mediaSource ?? previous.text) : ''}${delta}`
+  const visibleSource = sanitizeDsmlToolCalls(source)
+  const retainsDsmlSource = source.includes(DSML_TOOL_CALLS_OPEN)
 
-  if (!source.includes('MEDIA:')) {
+  if (!visibleSource.includes('MEDIA:')) {
+    next[index] = retainsDsmlSource
+      ? { ...part, mediaSource: source, text: visibleSource }
+      : { ...part, text: visibleSource }
+
     return next
   }
 
-  const rendered = renderMediaTags(source)
+  const rendered = renderMediaTags(visibleSource)
 
-  next[index] = rendered === source ? { ...part, text: source } : { ...part, mediaSource: source, text: rendered }
+  next[index] =
+    rendered === visibleSource ? { ...part, text: visibleSource } : { ...part, mediaSource: source, text: rendered }
 
   return next
 }

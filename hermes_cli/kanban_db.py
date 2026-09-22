@@ -732,6 +732,9 @@ class Task:
     block_kind: Optional[str] = None
     block_recurrences: int = 0               # unblock-loop counter, see BLOCK_RECURRENCE_LIMIT
     completion_contract: Optional[str] = None
+    # Manual lane position read by ``order_by="manual"`` (see SCHEMA_SQL);
+    # 0 = never reordered, ties fall back to created_at. Display-only.
+    sort_order: int = 0
 
     @classmethod
     def from_row(cls, row: sqlite3.Row) -> "Task":
@@ -749,6 +752,7 @@ class Task:
             skills=skills_value,
             goal_mode=bool(g("goal_mode")),
             block_recurrences=int(g("block_recurrences") or 0),
+            sort_order=int(g("sort_order") or 0),
         )
 
 
@@ -966,7 +970,15 @@ CREATE TABLE IF NOT EXISTS tasks (
     -- ``blocked`` so a cron can't spin it forever. Reset to 0 only on a
     -- successful completion — NOT on unblock (resetting on unblock is exactly
     -- the amnesia that let the loop run unbounded).
-    block_recurrences    INTEGER NOT NULL DEFAULT 0
+    block_recurrences    INTEGER NOT NULL DEFAULT 0,
+    -- Manual position within the task's lane, lowest first, written by
+    -- ``reorder_task()`` (``hermes kanban reorder``) and read by
+    -- ``list_tasks(order_by="manual")``. 0 for every row that was never
+    -- reordered, so equal values fall back to ``created_at ASC, id ASC`` and
+    -- no existing ordering changes until a caller actually reorders something.
+    -- Display-only: the dispatcher still claims by ``priority DESC,
+    -- created_at ASC``.
+    sort_order           INTEGER NOT NULL DEFAULT 0
 );
 
 CREATE TABLE IF NOT EXISTS task_links (
@@ -1508,6 +1520,10 @@ VALID_SORT_ORDERS: dict[str, str] = {
     "title": "title ASC, id ASC",
     "updated": "started_at DESC NULLS LAST, created_at DESC",
     "completed-desc": "completed_at DESC NULLS LAST, id DESC",
+    # Manual order written by ``reorder_task()``; ties (every never-reordered
+    # row carries 0) keep the created_at ASC reading order. Display-only — the
+    # dispatcher's claim order is unchanged.
+    "manual": "sort_order ASC, created_at ASC, id ASC",
 }
 
 
@@ -1542,6 +1558,114 @@ def list_tasks(
         query += f" LIMIT {int(limit)}"
     rows = conn.execute(query, params).fetchall()
     return [Task.from_row(r) for r in rows]
+
+
+# Lane renumbering step for ``reorder_task`` (see its docstring): positions are
+# spaced by this much so an insert between two neighbours always keeps an
+# integer midpoint free for the next move.
+_MANUAL_ORDER_STRIDE = 2
+
+
+def reorder_task(
+    conn: sqlite3.Connection,
+    task_id: str,
+    *,
+    before_id: Optional[str] = None,
+    after_id: Optional[str] = None,
+    top: bool = False,
+    bottom: bool = False,
+) -> bool:
+    """Move ``task_id`` within its lane for ``order_by="manual"``.
+
+    Exactly one of ``before_id`` / ``after_id`` / ``top`` / ``bottom`` names the
+    target slot; a ``before_id`` / ``after_id`` reference must be in the SAME
+    status, because manual order only exists inside a lane. The moved task's
+    ``sort_order`` becomes the midpoint of its new neighbours, so a single move
+    never rewrites the lane; when the neighbours leave no integer midpoint (all
+    rows start at 0, which is also what makes the default reading order
+    ``created_at ASC``) the lane is renumbered around the new position first.
+
+    Display-only: the dispatcher still claims by ``priority DESC, created_at ASC``.
+
+    Returns False when ``task_id`` does not exist, and raises ValueError for an
+    unusable selection (none or several of the four arguments, a self-reference,
+    an unknown neighbour id, or a neighbour from another lane).
+    """
+    if (before_id is not None) + (after_id is not None) + int(bool(top)) + int(bool(bottom)) != 1:
+        raise ValueError(
+            "reorder_task needs exactly one of before_id / after_id / top / bottom"
+        )
+    row = conn.execute("SELECT status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+    if row is None:
+        return False
+    lane = row["status"]
+    anchor = before_id if before_id is not None else after_id
+    if anchor is not None:
+        if anchor == task_id:
+            raise ValueError(f"cannot reorder {task_id} relative to itself")
+        ref = conn.execute("SELECT status FROM tasks WHERE id = ?", (anchor,)).fetchone()
+        if ref is None:
+            raise ValueError(f"no such task: {anchor}")
+        if ref["status"] != lane:
+            raise ValueError(
+                f"cannot reorder across lanes: {anchor} is in {ref['status']!r}, "
+                f"{task_id} is in {lane!r}"
+            )
+
+    def _lane() -> list[tuple[str, int]]:
+        """``(id, sort_order)`` for every task in the lane, in manual order."""
+        return [
+            (r["id"], int(r["sort_order"] or 0))
+            for r in conn.execute(
+                "SELECT id, sort_order FROM tasks WHERE status = ?"
+                " ORDER BY sort_order ASC, created_at ASC, id ASC",
+                (lane,),
+            )
+        ]
+
+    def _slot(neighbours: list[tuple[str, int]]) -> Optional[int]:
+        """``sort_order`` for the moved task, or None when no integer gap is left."""
+        if not neighbours:
+            return 0
+        if top:
+            return neighbours[0][1] - 1
+        if bottom:
+            return neighbours[-1][1] + 1
+        idx = next(i for i, (tid, _) in enumerate(neighbours) if tid == anchor)
+        if before_id is not None:
+            if idx == 0:
+                return neighbours[0][1] - 1
+            left, right = neighbours[idx - 1][1], neighbours[idx][1]
+        else:
+            if idx + 1 == len(neighbours):
+                return neighbours[-1][1] + 1
+            left, right = neighbours[idx][1], neighbours[idx + 1][1]
+        return (left + right) // 2 if right - left > 1 else None
+
+    def _lane_after_move() -> list[str]:
+        """Lane ids in the order they should read once ``task_id`` has moved."""
+        order = [tid for tid, _ in _lane()]
+        order.remove(task_id)
+        if top:
+            order.insert(0, task_id)
+        elif bottom:
+            order.append(task_id)
+        else:
+            idx = order.index(anchor)
+            order.insert(idx if before_id is not None else idx + 1, task_id)
+        return order
+
+    with write_txn(conn):
+        slot = _slot([r for r in _lane() if r[0] != task_id])
+        if slot is None:
+            for position, tid in enumerate(_lane_after_move()):
+                conn.execute(
+                    "UPDATE tasks SET sort_order = ? WHERE id = ?",
+                    (position * _MANUAL_ORDER_STRIDE, tid),
+                )
+        else:
+            conn.execute("UPDATE tasks SET sort_order = ? WHERE id = ?", (slot, task_id))
+    return True
 
 
 def assign_task(conn: sqlite3.Connection, task_id: str, profile: Optional[str]) -> bool:

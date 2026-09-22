@@ -584,6 +584,19 @@ def _cmd_assign(args: argparse.Namespace) -> int:
                       f"Assigned {args.task_id} to {profile or '(unassigned)'}")
 
 
+def _cmd_reorder(args: argparse.Namespace) -> int:
+    """Manual lane position, read back with ``list --sort manual`` (display-only)."""
+    with kbc.connect_closing() as conn:
+        ok = kb.reorder_task(
+            conn, args.task_id,
+            before_id=getattr(args, "before", None), after_id=getattr(args, "after", None),
+            top=getattr(args, "top", False), bottom=getattr(args, "bottom", False),
+        )
+    return _ok_or_err(ok, f"no such task: {args.task_id}",
+                      f"Moved {args.task_id} within its lane "
+                      f"(see `hermes kanban list --sort manual`)")
+
+
 def _cmd_set_model(args: argparse.Namespace) -> int:
     model = args.model
     if model is not None and model.lower() in {"none", "-", "null", ""}:
@@ -1327,6 +1340,7 @@ _HANDLERS = {
     "init": _cmd_init, "create": _cmd_create, "swarm": _cmd_swarm,
     "list": _cmd_list, "ls": _cmd_list, "show": _cmd_show,
     "assign": _cmd_assign, "set-model": _cmd_set_model,
+    "reorder": _cmd_reorder,
     "reclaim": _cmd_reclaim, "reassign": _cmd_reassign,
     "diagnostics": _cmd_diagnostics, "diag": _cmd_diagnostics,
     "link": _cmd_link, "unlink": _cmd_unlink, "claim": _cmd_claim,

@@ -15,7 +15,9 @@ import json
 import os
 import re
 import shutil
+import sqlite3
 import tempfile
+from contextlib import closing
 from dataclasses import asdict, dataclass, field
 from datetime import datetime
 from pathlib import Path
@@ -2363,11 +2365,44 @@ class Migrator:
                     self._set_env_var(env_key, api_key, f"plugins.entries.{plugin_name}.apiKey")
 
     # ── Cron jobs ─────────────────────────────────────────────
+    def _archive_sqlite_cron_jobs(self) -> bool:
+        """Discover/export live cron rows without activating or translating jobs."""
+        source = self.source_root / "state" / "openclaw.sqlite"
+        if not source.is_file():
+            return False
+        destination = (self.archive_dir / "cron-sqlite-jobs.json"
+                       if self.archive_dir else Path("archive/cron-sqlite-jobs.json"))
+        try:
+            with closing(sqlite3.connect(source.resolve().as_uri() + "?mode=ro", uri=True)) as conn:
+                conn.row_factory = sqlite3.Row
+                if not conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='cron_jobs'"
+                ).fetchone():
+                    return False
+                jobs = [dict(row) for row in conn.execute("SELECT * FROM cron_jobs")]
+            if not jobs:
+                self.record("cron-jobs", source, None, "skipped",
+                            "SQLite cron_jobs table is empty")
+                return True
+            if self.execute and self.archive_dir:
+                self.archive_dir.mkdir(parents=True, exist_ok=True)
+                destination.write_text(json.dumps(jobs, indent=2, ensure_ascii=False) + "\n",
+                                       encoding="utf-8")
+            action = "Archived" if self.execute else "Would archive"
+            self.record("cron-jobs", source, destination, "archived",
+                        f"{action} {len(jobs)} SQLite cron jobs for manual recreation. "
+                        "Review enabled state, timezone, agent/profile, prompt and delivery; "
+                        "no jobs were activated.")
+        except (sqlite3.Error, OSError, TypeError, ValueError) as exc:
+            self.record("cron-jobs", source, None, "error",
+                        f"Could not archive SQLite cron jobs: {exc}")
+        return True
+
     def migrate_cron_jobs(self, config: Optional[Dict[str, Any]] = None) -> None:
         config = config or self.load_openclaw_config()
         cron = config.get("cron") or {}
         cron_store = self.source_root / "cron"
-        found_any = False
+        found_any = self._archive_sqlite_cron_jobs()
 
         # Archive the full cron config when present
         if cron:
@@ -3022,6 +3057,11 @@ class Migrator:
             "- Run `hermes mcp list` to verify MCP servers were imported correctly",
         ])
 
+        if any(i.kind == "cron-jobs" and i.status == "archived" and i.destination
+               and i.destination.endswith("cron-sqlite-jobs.json") for i in self.items):
+            notes.append("- Recreate SQLite-backed tasks manually with `hermes cron` "
+                         "(see archive/cron-sqlite-jobs.json). Review enabled state, timezone, "
+                         "agent/profile, prompt and delivery before activating jobs.")
         if has_cron_config_archive:
             notes.append("- Run `hermes cron` to recreate scheduled tasks (see archive/cron-config.json)")
         elif has_cron_store_archive:

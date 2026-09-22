@@ -1622,6 +1622,33 @@ class TestMultimodalToolContentUnsupported:
         assert result.reason == FailoverReason.multimodal_tool_content_unsupported
         assert result.retryable is True
 
+    def test_relayed_part_type_rejection_pattern(self):
+        """OpenAI-compatible relay passing an Anthropic-style rejection through verbatim —
+        opencode-go → glm-5.3-flash live 400 (2026-09-22): ``messages[3]: tool content:
+        part type \"image_url\" is not supported; only text is``. The relay rejects the
+        multimodal TOOL RESULT (user-message images are fine), so strip-and-retry applies."""
+        e = MockAPIError(
+            "Error code: 400 - {'error': {'param': 'messages', 'type': 'invalid_request_error', "
+            "'message': 'Upstream request failed: [invalid_request_error] messages[3]: tool content: "
+            "part type \"image_url\" is not supported; only text is'}}",
+            status_code=400,
+        )
+        result = classify_api_error(e, provider="opencode-go", model="glm-5.3-flash")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+        assert result.retryable is True
+
+    def test_relayed_part_type_rejection_pattern_on_422(self):
+        """pydantic relays report the same content shapes as 422 (#104731); the part-type
+        wording must ride the same rule table on the 422 handler too."""
+        e = MockAPIError(
+            "Error code: 422 - {'error': {'param': 'messages', 'type': 'invalid_request_error', "
+            "'message': 'Upstream request failed: [invalid_request_error] messages[6]: tool content: "
+            "part type \"image_url\" is not supported; only text is'}}",
+            status_code=422,
+        )
+        result = classify_api_error(e, provider="opencode-go", model="glm-5.3-flash")
+        assert result.reason == FailoverReason.multimodal_tool_content_unsupported
+
 
 
 

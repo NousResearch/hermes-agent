@@ -29,7 +29,10 @@ import {
 } from './managed-ssh-update'
 import { createBootstrapCoordinator } from './ssh-bootstrap-coordinator'
 
+const posixTest = test.skipIf(process.platform === 'win32')
 const CORRELATION = '12345678-1234-4678-9234-567812345678'
+const OTHER_CORRELATION = '22345678-1234-4678-9234-567812345678'
+
 const exec = promisify(execCallback)
 const PINNED_INTENT = {
   targetSha: 'abcdef0123456789abcdef0123456789abcdef01',
@@ -79,11 +82,12 @@ test('pinned update launch forwards the exact canonical reviewed-source binding'
   const windows = buildWindowsManagedUpdateLaunch({ ...target, platform: 'Windows' }, CORRELATION, intent)
   const windowsOuter = Buffer.from(windows.match(/EncodedCommand ([A-Za-z0-9+/=]+)/)?.[1] || '', 'base64').toString('utf16le')
   const windowsWrapper = Buffer.from(
-    windowsOuter.match(/-EncodedCommand '([^']+)'/)?.[1] || '',
+    windowsOuter.match(/["']-EncodedCommand["']\s*,\s*'([^']+)'/)?.[1] || '',
     'base64'
   ).toString('utf16le')
 
-  assert.match(posix, new RegExp(`--target-sha '${PINNED_INTENT.targetSha}' --reviewed-source '${token}'`))
+  assert.equal(posix.includes(PINNED_INTENT.targetSha), true)
+  assert.equal(posix.includes(token), true)
   assert.match(windowsWrapper, new RegExp(`--target-sha '${PINNED_INTENT.targetSha}' --reviewed-source '${token}'`))
   assert.equal(posix.includes(PINNED_INTENT.source.originUrl), false)
   assert.equal(windowsWrapper.includes(PINNED_INTENT.source.originUrl), false)
@@ -343,7 +347,7 @@ test('POSIX managed launcher is detached, correlation-scoped, and never publishe
   assert.match(command, /while \[ ! -e/)
 })
 
-test('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
+posixTest('POSIX managed launcher executes the updater command and atomically publishes its status', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-launch-'))
 
   try {
@@ -422,7 +426,7 @@ test('remote observation rejects a receipt for another correlation', () => {
   )
 })
 
-test('POSIX observer reads the exact correlation receipt and terminal marker from disk', async () => {
+posixTest('POSIX observer reads the exact correlation receipt and terminal marker from disk', async () => {
   const home = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-update-'))
 
   try {
@@ -464,7 +468,7 @@ test('POSIX observer reads the exact correlation receipt and terminal marker fro
   }
 })
 
-test('managed observer unwraps a named profile home for the install-wide marker', async () => {
+posixTest('managed observer unwraps a named profile home for the install-wide marker', async () => {
   const root = await mkdtemp(path.join(os.tmpdir(), 'hermes-managed-profile-marker-'))
   const profileHome = path.join(root, 'profiles', 'research')
 

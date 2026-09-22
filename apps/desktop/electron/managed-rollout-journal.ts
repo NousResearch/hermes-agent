@@ -253,7 +253,9 @@ const defaultFs: JournalFs = {
   renameSync: (from, to) => fs.renameSync(from, to),
   unlinkSync: filePath => fs.unlinkSync(filePath),
   syncFileSync: filePath => {
-    const handle = fs.openSync(filePath, 'r')
+    // Windows requires a writable handle for FlushFileBuffers/fsync. The
+    // temporary file is already private and is never exposed before rename.
+    const handle = fs.openSync(filePath, 'r+')
     try {
       fs.fsyncSync(handle)
     } finally {
@@ -261,6 +263,9 @@ const defaultFs: JournalFs = {
     }
   },
   syncDirectorySync: filePath => {
+    // Windows does not expose a flushable directory handle through Node's
+    // fsync API. File contents are flushed above; the rename remains atomic.
+    if (process.platform === 'win32') return
     const handle = fs.openSync(filePath, 'r')
     try {
       fs.fsyncSync(handle)
@@ -845,6 +850,10 @@ export class ManagedRolloutJournal {
       const record = this.records.get(summary.id)
       if (record) {
         if (record.generation !== summary.generation) {
+          // A record rename can succeed immediately before the following
+          // index rename. A lower-revision summary is therefore stale but
+          // recoverable; same-revision disagreement is actual corruption.
+          if (summary.revision < record.snapshot.revision) continue
           throw new JournalCorruptionError(`History summary ${summary.id} generation does not match its record.`)
         }
         continue
@@ -1331,15 +1340,13 @@ export class ManagedRolloutJournal {
             tombstoneAt: now
           })
         }
-        nextSummaries.set(record.id, {
-          ...prior,
-          pruned: true,
-          tombstone: true,
-          prunedAt: now
-        })
-      } else {
-        nextSummaries.delete(record.id)
       }
+      nextSummaries.set(record.id, {
+        ...prior,
+        pruned: true,
+        tombstone: true,
+        prunedAt: now
+      })
     }
 
     for (const { record } of plans) this.assertRegular(this.recordPath(record.id), `Managed rollout ${record.id}`)

@@ -65,7 +65,7 @@ function adapters(overrides: Partial<{
         }
       },
       evidence: {
-        sweep: async state => ({
+        sweep: async (state: ManagedRolloutState) => ({
           rolloutId: state.id,
           revision: state.revision,
           queueGeneration: state.queueGeneration,
@@ -100,7 +100,7 @@ test('reducer admits legal edges and refuses backward launch-state edges', () =>
 
   assert.equal(reduceManagedRollout(state, { kind: 'record-intent', installId: 'canary' }).ok, false)
   assert.equal(reduceManagedRollout(state, { kind: 'exclude', installId: 'canary' }).ok, false)
-  assert.equal(reduceManagedRollout(state, { kind: 'terminal', installId: 'canary', outcome: 'updated' }).state.phase, 'awaiting-promotion')
+  assert.equal(reduceManagedRollout(state, { kind: 'terminal', installId: 'canary', outcome: 'updated' as const }).state.phase, 'awaiting-promotion')
 })
 
 test('duplicate start returns the original admission and cannot create a second rollout', async () => {
@@ -153,7 +153,7 @@ test('restart forces explicit continuation and auto cannot bypass the canary', (
   for (const action of [
     { kind: 'record-intent' as const, installId: 'canary' },
     { kind: 'launch-authorized' as const, installId: 'canary' },
-    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' },
+    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' as const },
     { kind: 'restart' as const },
     { kind: 'reconciled' as const, phase: 'awaiting-promotion' as const }
   ]) {
@@ -161,6 +161,6 @@ test('restart forces explicit continuation and auto cannot bypass the canary', (
     assert.equal(transition.ok, true)
     state = transition.state
   }
-  assert.equal(reduceManagedRollout(state, { kind: 'promote', auto: true }).reason, 'auto-promotion-not-admissible')
+  assert.equal(reduceManagedRollout(state, { kind: 'promote', auto: true }).reason, 'canary-requires-manual-promotion')
   assert.equal(reduceManagedRollout(state, { kind: 'promote' }).ok, true)
 })

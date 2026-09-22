@@ -346,7 +346,7 @@ describe('managed rollout preflight', () => {
     const issued = store.issue(before, 0)
     const checked = store.revalidate(issued.token, after, 1)
     expect(checked.ok).toBe(false)
-    if (!checked.ok) {
+    if (checked.ok === false) {
       expect(checked.code).toBe('plan-changed')
       expect(checked.changes).toHaveLength(before.rows.length)
       expect(checked.changes.every(change => change.field === 'source')).toBe(true)

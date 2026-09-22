@@ -39,7 +39,12 @@ function authorizedState() {
 function coordinator(state = authorizedState(), calls: string[] = []) {
   return createManagedRolloutCoordinator(state, {
     journal: { persistAuthorization: async () => {} },
-    service: { issueCapability: () => ({}), launch: async () => calls.push('launch') },
+    service: {
+      issueCapability: () => ({}),
+      launch: async () => {
+        calls.push('launch')
+      }
+    },
     evidence: { sweep: async current => ({ rolloutId: current.id, revision: current.revision, queueGeneration: current.queueGeneration, processGeneration: 1, valid: false, reason: 'not-needed', admissions: [] }) },
     recovery: {
       reprobe: async authorization => ({ correlationId: authorization.correlationId, outcome: 'unverified', terminal: false }),

@@ -93,7 +93,7 @@ function snapshot(overrides: Partial<RolloutSnapshot> = {}): RolloutSnapshot {
     phase: 'awaiting-promotion',
     activeWave: 0,
     concurrency: 1,
-    promotionPolicy: 'auto-if-healthy',
+    promotionPolicy: 'manual',
     canaryApproved: true,
     continuationRequired: false,
     attempts: [

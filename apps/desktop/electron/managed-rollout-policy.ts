@@ -129,6 +129,7 @@ export function canPromote(
     return false
   if (proof.contextDigest !== promotionContextDigest(snapshot)) return false
   if (snapshot.activeWave === 0 && !snapshot.canaryApproved) return false
+  if (snapshot.activeWave === 0 && snapshot.promotionPolicy === 'auto-if-healthy') return false
   if (snapshot.activeWave === 0 && proof.approval !== 'manual') return false
   if (snapshot.activeWave > 0 && snapshot.promotionPolicy === 'manual' && proof.approval !== 'manual') return false
   if (snapshot.activeWave > 0 && snapshot.promotionPolicy === 'auto-if-healthy' && proof.approval !== 'automatic')

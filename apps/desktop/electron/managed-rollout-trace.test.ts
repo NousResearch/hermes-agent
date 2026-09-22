@@ -113,7 +113,7 @@ test('manual promotion sweeps first and pause during a sweep invalidates its pro
   for (const action of [
     { kind: 'record-intent' as const, installId: 'canary' },
     { kind: 'launch-authorized' as const, installId: 'canary' },
-    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' }
+    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' as const }
   ]) state = reduceManagedRollout(state, action).state
   const reviewed = createManagedRolloutCoordinator(state, {
     journal: { persistAuthorization: async () => {} },
@@ -132,7 +132,7 @@ test('canary cannot be auto-promoted and safe exclusion cannot reset an attempte
   for (const action of [
     { kind: 'record-intent' as const, installId: 'canary' },
     { kind: 'launch-authorized' as const, installId: 'canary' },
-    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' }
+    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' as const }
   ]) state = reduceManagedRollout(state, action).state
 
   assert.equal(reduceManagedRollout(state, { kind: 'promote', auto: true }).ok, false)
@@ -158,7 +158,7 @@ test('a stale sweep proof cannot authorize a promotion', async () => {
   for (const action of [
     { kind: 'record-intent' as const, installId: 'canary' },
     { kind: 'launch-authorized' as const, installId: 'canary' },
-    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' }
+    { kind: 'terminal' as const, installId: 'canary', outcome: 'updated' as const }
   ]) state = reduceManagedRollout(state, action).state
   const coordinator = createManagedRolloutCoordinator(state, {
     journal: { persistAuthorization: async () => {} },
@@ -185,7 +185,9 @@ test('a losing controller records no handoff after the journal rejects its autho
       },
       service: {
         issueCapability: () => Object.freeze({}),
-        launch: async () => launches.push(id)
+        launch: async () => {
+          launches.push(id)
+        }
       },
       evidence: { sweep: async state => proof(state) }
     })

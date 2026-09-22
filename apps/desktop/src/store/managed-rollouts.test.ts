@@ -88,7 +88,7 @@ describe('managed rollout renderer store', () => {
     expect(command).not.toHaveBeenCalled()
     expect($managedRollouts.get()).toMatchObject({
       status: 'unsupported',
-      error: 'managed-rollouts-read-unavailable'
+      error: 'trusted-assurance-provider-unavailable'
     })
   })
 

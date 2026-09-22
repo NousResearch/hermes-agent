@@ -251,10 +251,14 @@ test('preparation refuses a frozen target because preparation must precede targe
 test('recovery wins admission over a duplicate update and releases only its own correlation', async () => {
   let recoveryRelease!: () => void
   const recoveryPending = new Promise<void>(resolve => { recoveryRelease = resolve })
+  let recoveryRecords = [{ connectionId: 'homelab', correlationId: CORRELATION, phase: 'prepared', scopes: [], source: source() }]
   const service = createManagedSshUpdateService(
     deps({
-      readRecoveryRecords: () => [{ connectionId: 'homelab', correlationId: CORRELATION, phase: 'prepared', scopes: [], source: source() }],
-      awaitRestoreClearance: async () => { await recoveryPending }
+      readRecoveryRecords: () => recoveryRecords,
+      awaitRestoreClearance: async () => { await recoveryPending },
+      completeRecovery: async () => {
+        recoveryRecords = []
+      }
     })
   )
 

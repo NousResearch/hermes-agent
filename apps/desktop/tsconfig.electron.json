@@ -21,7 +21,8 @@
     "../shared/src/ansi.ts",
     "../shared/src/data-url-read-max.ts",
     "../shared/src/translucency.ts",
-    "src/lib/managed-rollout-contract.ts"
+    "src/lib/managed-rollout-contract.ts",
+    "src/lib/managed-rollout-waves.ts"
   ],
   "exclude": ["electron/**/*.e2e.mts"]
 }

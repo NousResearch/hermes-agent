@@ -266,7 +266,7 @@ export function createManagedSshUpdateService<
           onLaunchProved: async () => {
             launchAttempted = true
           }
-        }),
+        })
       },
       awaitRestoreClearance: async () => {
         await deps.awaitRestoreClearance(target, correlationId, { requireTerminal: launchAttempted })

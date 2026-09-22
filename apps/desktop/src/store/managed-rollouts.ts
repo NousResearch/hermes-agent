@@ -66,7 +66,8 @@ function schedulePoll(delayMs: number, generation = pollGeneration): void {
 function validResponse(value: unknown): value is RolloutResponse {
   if (!value || typeof value !== 'object') return false
   const candidate = value as Partial<RolloutResponse>
-  if (!Number.isInteger(candidate.revision) || candidate.revision < 0) return false
+  const revision = candidate.revision
+  if (typeof revision !== 'number' || !Number.isInteger(revision) || revision < 0) return false
   if (candidate.snapshot === null) return true
   const snapshot = candidate.snapshot
   return Boolean(

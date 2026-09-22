@@ -4,6 +4,7 @@ import pytest
 
 from hermes_cli import main as main_mod
 from hermes_cli import oneshot
+from hermes_cli._parser import build_top_level_parser
 
 
 def test_none_is_an_explicit_empty_toolset():
@@ -11,6 +12,12 @@ def test_none_is_an_explicit_empty_toolset():
     toolsets, error = oneshot._validate_explicit_toolsets("none,terminal")
     assert toolsets is None
     assert "cannot be combined" in error
+
+
+def test_toolsets_help_limits_none_sentinel_to_oneshot():
+    parser, _subparsers, _chat_parser = build_top_level_parser()
+    help_text = parser.format_help()
+    assert "For -z/--oneshot, use 'none' for no tools" in help_text
 
 
 def test_run_oneshot_forwards_ignore_rules_and_empty_tools(monkeypatch):

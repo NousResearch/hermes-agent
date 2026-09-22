@@ -1587,7 +1587,10 @@ class TestPartialToolCallWarning:
         import httpx
 
         agent, calls = self._zero_char_agent(mock_create, attempts_that_die=99)
-        with patch.dict("os.environ", {"HERMES_STREAM_RETRIES": "0"}), pytest.raises(httpx.RemoteProtocolError):
+        # Pin the resolved count directly — the knob since `agent.max_stream_retries` landed; the
+        # assertion describes the exhaust-and-propagate mechanism, not whatever the config defaults to.
+        agent._max_stream_retries = 0
+        with pytest.raises(httpx.RemoteProtocolError):
             agent._interruptible_streaming_api_call({})
         assert calls["n"] == 1
 

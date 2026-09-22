@@ -2928,6 +2928,7 @@ def test_run_codex_stream_prestream_retry_exhaustion_logs_telemetry(
     from openai import APIConnectionError
 
     agent = _build_agent(monkeypatch)
+    agent._max_stream_retries = 1  # pinned: the count is configurable since agent.max_stream_retries landed
     body = b'{"model":"gpt-5-codex"}'
     request = httpx.Request(
         "POST", "https://chatgpt.com/backend-api/codex/responses", content=body
@@ -2966,6 +2967,7 @@ def test_run_codex_stream_prestream_exhaustion_buffers_one_user_line_with_host_a
     from openai import APIConnectionError
 
     agent = _build_agent(monkeypatch)
+    agent._max_stream_retries = 1  # pinned: the count is configurable since agent.max_stream_retries landed
     body = b'{"model":"gpt-5-codex","input":"' + b"x" * (829 * 1024) + b'"}'
     request = httpx.Request("POST", "https://api.example.com/backend-api/codex/responses", content=body)
     agent.client = SimpleNamespace(responses=SimpleNamespace(

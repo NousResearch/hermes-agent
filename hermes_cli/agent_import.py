@@ -558,7 +558,7 @@ def import_agent_command(args) -> None:
         print()
         print_error(f"Agent directory not found: {source_dir}")
         print_info(f"Specify a custom path: hermes import-agent {agent} --source /path/to/{_AGENT_DEFAULT_DIRS[agent]}")
-        return
+        raise SystemExit(1)
     hermes_home = get_hermes_home()
     print()
     print_header("Import Settings")
@@ -571,8 +571,8 @@ def import_agent_command(args) -> None:
     if not get_config_path().exists():
         save_config(load_config())
 
-    def run_import(execute: bool, phase: str) -> Optional[Dict[str, Any]]:
-        """Run the importer; on failure print the error and return None."""
+    def run_import(execute: bool, phase: str) -> Dict[str, Any]:
+        """Run the importer; report an execution failure to shell callers."""
         try:
             return AgentImporter(agent, source_dir.resolve(), hermes_home.resolve(),
                                  execute=execute, overwrite=overwrite).run()
@@ -580,23 +580,25 @@ def import_agent_command(args) -> None:
             print()
             print_error(f"Import{phase} failed: {e}")
             logger.debug(f"import-agent{phase} error", exc_info=True)
-            return None
+            raise SystemExit(1) from e
 
     # Phase 1: preview (always)
     preview = run_import(False, " preview")
-    if preview is None:
-        return
     summary = preview.get("summary", {})
     if summary.get("imported", 0) == 0 and summary.get("conflict", 0) == 0:
         print()
         print_info(f"Nothing to import from {agent}.")
         print_import_report(preview, dry_run=True)
+        if summary.get("error"):
+            raise SystemExit(1)
         return
     print()
     print_header(f"Import Preview — {summary.get('imported', 0)} item(s) would be imported")
     print_info("No changes have been made yet. Review the list below:")
     print_import_report(preview, dry_run=True)
     if args.dry_run:
+        if summary.get("error"):
+            raise SystemExit(1)
         return
 
     # Phase 2: confirm and execute
@@ -610,17 +612,21 @@ def import_agent_command(args) -> None:
             print_info("Import cancelled.")
             return
     report = run_import(True, "")
-    if report is None:
-        return
     print_import_report(report, dry_run=False)
+    had_errors = bool(report.get("summary", {}).get("error"))
     from hermes_cli.agent_import_sync import update_sync_manifest
     try:
-        update_sync_manifest(agent, source_dir.resolve(), hermes_home.resolve(), overwrite, report)
+        update_sync_manifest(agent, source_dir.resolve(), hermes_home.resolve(), overwrite, report,
+                             refresh_digest=not had_errors)
         print_info("Source registered for sync — re-run 'hermes import-agent --sync' "
                    "any time to pull in changes.")
     except OSError as exc:
         logger.warning("Could not update import sync manifest: %s", exc)
+        had_errors = True
     print()
+    if had_errors:
+        print_error("Import completed with errors.")
+        raise SystemExit(1)
     print_success("Import complete.")
     print_info("API keys and credentials were NOT imported — run 'hermes setup' "
                "to configure providers, or add them to ~/.hermes/.env.")

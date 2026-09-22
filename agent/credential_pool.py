@@ -129,7 +129,8 @@ SUPPORTED_POOL_STRATEGIES = {
 
 # Cooldowns before retrying an exhausted credential. Transient 401s cool down
 # briefly so single-key setups recover; 429/402/other take an hour.
-# Provider-supplied reset_at timestamps override these defaults.
+# Provider-supplied reset_at timestamps override these defaults, except on a
+# lone non-billing credential — see ``_exhausted_until``.
 EXHAUSTED_TTL_401_SECONDS = 5 * 60
 EXHAUSTED_TTL_429_SECONDS = 60 * 60
 EXHAUSTED_TTL_DEFAULT_SECONDS = 60 * 60
@@ -369,6 +370,17 @@ def _is_manual_source(source: str) -> bool:
     return normalized == SOURCE_MANUAL or normalized.startswith(f"{SOURCE_MANUAL}:")
 
 
+def _is_billing_failure(error_code: Optional[int], failure_reason: Optional[str]) -> bool:
+    """Confirmed billing: a quick retry cannot help, so the full bench stands.
+
+    One home for the rule so the TTL bench and the absolute-reset clamp cannot
+    drift apart. ``billing_unverified`` is deliberately NOT billing here — the
+    same 400 also covers a content-filter rejection on a healthy credential
+    (#82154), and only a true 402 outranks the status.
+    """
+    return error_code == 402 or failure_reason == FAILURE_REASON_BILLING
+
+
 def _exhausted_ttl(
     error_code: Optional[int],
     *,
@@ -393,10 +405,20 @@ def _exhausted_ttl(
     base = EXHAUSTED_TTL_429_SECONDS if error_code == 429 else EXHAUSTED_TTL_DEFAULT_SECONDS
     if failure_reason == FAILURE_REASON_BILLING_UNVERIFIED and error_code != 402:
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
-    is_billing = error_code == 402 or failure_reason == FAILURE_REASON_BILLING
-    if sole_credential and not is_billing:
+    if sole_credential and not _is_billing_failure(error_code, failure_reason):
         return min(base, EXHAUSTED_TTL_SOLE_CREDENTIAL_SECONDS)
     return base
+
+
+def _ttl_bench_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
+    """Epoch of the TTL bench for an exhausted entry, or ``None`` without a status stamp."""
+    if not entry.last_status_at:
+        return None
+    return entry.last_status_at + _exhausted_ttl(
+        entry.last_error_code,
+        sole_credential=sole_credential,
+        failure_reason=entry.failure_reason,
+    )
 
 
 def _parse_absolute_timestamp(value: Any) -> Optional[float]:
@@ -466,18 +488,30 @@ def _normalize_error_context(error_context: Optional[Dict[str, Any]]) -> Dict[st
 
 
 def _exhausted_until(entry: PooledCredential, *, sole_credential: bool = False) -> Optional[float]:
+    """Epoch when an exhausted entry may re-enter rotation, else ``None``.
+
+    A persisted absolute ``last_error_reset_at`` is honoured while it stays
+    inside the TTL bench. On a lone credential it may not: a subscription-period
+    429 (monthly/weekly window) writes a reset days out, and with nothing to
+    rotate to the sole-credential short cooldown is the branch that must apply
+    (#119163) — one probe per bench against a single key is cheap, a whole
+    billing period of silence is not. Confirmed billing keeps the provider's
+    reset (a 60s retry on a spent account just re-fails), as does a pool with
+    siblings.
+    """
     if entry.last_status != STATUS_EXHAUSTED:
         return None
     reset_at = _parse_absolute_timestamp(entry.last_error_reset_at)
-    if reset_at is not None:
-        return reset_at
-    if entry.last_status_at:
-        return entry.last_status_at + _exhausted_ttl(
-            entry.last_error_code,
-            sole_credential=sole_credential,
-            failure_reason=entry.failure_reason,
-        )
-    return None
+    bench_until = _ttl_bench_until(entry, sole_credential=sole_credential)
+    if reset_at is None:
+        return bench_until
+    if (
+        bench_until is not None
+        and sole_credential
+        and not _is_billing_failure(entry.last_error_code, entry.failure_reason)
+    ):
+        return min(reset_at, bench_until)
+    return reset_at
 
 
 # --- Custom (OpenAI-compatible) endpoint pool keys ---

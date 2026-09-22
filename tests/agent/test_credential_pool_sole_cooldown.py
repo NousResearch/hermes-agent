@@ -26,6 +26,8 @@ def _entry(
     cred_id: str = "cred-1",
     priority: int = 0,
     failure_reason: str | None = None,
+    error_reason: str | None = None,
+    reset_at: float | None = None,
 ) -> dict:
     entry = {
         "id": cred_id,
@@ -41,6 +43,10 @@ def _entry(
     }
     if failure_reason is not None:
         entry["failure_reason"] = failure_reason
+    if error_reason is not None:
+        entry["last_error_reason"] = error_reason
+    if reset_at is not None:
+        entry["last_error_reset_at"] = reset_at
     return entry
 
 
@@ -68,6 +74,91 @@ def test_sole_credential_429_recovers_after_short_cooldown(tmp_path, monkeypatch
     assert entry is not None
     assert entry.id == "cred-1"
     assert entry.last_status == "ok"
+
+
+def test_sole_credential_subscription_429_reset_recovers_after_short_cooldown(tmp_path, monkeypatch):
+    """A subscription-period reset must not outrank the sole-credential cap.
+
+    A monthly/weekly 429 (``GoUsageLimitError``) persists an absolute
+    ``last_error_reset_at`` days out.  ``_exhausted_until`` returned it verbatim
+    before consulting ``_exhausted_ttl``, so the documented short cooldown was
+    unreachable and the profile's only key stayed benched for the whole period
+    (``failure_reason`` is ``rate_limit``, not billing, so the short cap is
+    exactly the branch that should apply).
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(
+                429,
+                age_seconds=90,
+                error_reason="GoUsageLimitError",
+                failure_reason="rate_limit",
+                reset_at=time.time() + 15 * 24 * 60 * 60,
+            )
+        ],
+    )
+    entry = pool.select()
+    assert entry is not None
+    assert entry.id == "cred-1"
+    assert entry.last_status == "ok"
+
+
+def test_sole_credential_reset_inside_the_bench_is_still_honoured(tmp_path, monkeypatch):
+    """Control: an absolute reset is honoured while it stays inside the bench.
+
+    The clamp only overrides a reset that outlives the TTL bench; a provider
+    that says it recovers in 20s still waits those 20s.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [_entry(429, age_seconds=10, reset_at=time.time() + 20)],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
+def test_sole_credential_billing_429_keeps_provider_reset(tmp_path, monkeypatch):
+    """Control: a confirmed billing limit keeps its provider reset.
+
+    Retrying a spent account every 60s just re-fails, so the clamp must not
+    apply — the same rule ``_exhausted_ttl`` already follows for the bench.
+    """
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(
+                429,
+                age_seconds=90,
+                failure_reason="billing",
+                reset_at=time.time() + 15 * 24 * 60 * 60,
+            )
+        ],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
+
+
+def test_multi_key_429_keeps_provider_reset(tmp_path, monkeypatch):
+    """Control: with something to rotate to, the provider reset still wins.
+
+    Only the lone-credential case is clamped; a multi-key pool keeps waiting
+    out the window the provider published.
+    """
+    reset_at = time.time() + 15 * 24 * 60 * 60
+    pool = _load(
+        tmp_path,
+        monkeypatch,
+        [
+            _entry(429, age_seconds=90, cred_id="cred-1", priority=0, reset_at=reset_at),
+            _entry(429, age_seconds=90, cred_id="cred-2", priority=1, reset_at=reset_at),
+        ],
+    )
+    assert pool.has_available() is False
+    assert pool.select() is None
 
 
 def test_sole_credential_403_recovers_after_short_cooldown(tmp_path, monkeypatch):

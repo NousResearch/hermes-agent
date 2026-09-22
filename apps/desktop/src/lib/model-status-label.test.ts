@@ -5,6 +5,7 @@ import {
   displayModelName,
   formatModelPillLabel,
   modelDisplayParts,
+  modelListLabeler,
   providerDisplayName
 } from './model-status-label'
 import { reasoningEffortLabel } from './reasoning-effort'
@@ -21,6 +22,55 @@ describe('model-status-label', () => {
     expect(displayModelName('deepseek/deepseek-v4-pro-thinking')).toBe('Deepseek V4 Pro')
     expect(displayModelName('deepseek/deepseek-flash')).toBe('DeepSeek V4.1 Flash')
     expect(displayModelName('openai/gpt-5.5')).toBe('GPT-5.5')
+  })
+
+  describe('modelListLabeler', () => {
+    const labelKey = ({ name, tag }: { name: string; tag: string }) => `${name}\u0000${tag}`.toLowerCase()
+
+    it('never gives two distinct ids in one list the same label (#118083)', () => {
+      // OpenCode Go lists the canonical Flash id beside its versioned id. Their
+      // labels differ only in case, and would match exactly once the vendor is
+      // spelled the same way on both.
+      const ids = ['deepseek-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'minimax-m3']
+      const labelFor = modelListLabeler(ids)
+
+      expect(new Set(ids.map(id => labelKey(labelFor(id)))).size).toBe(ids.length)
+    })
+
+    it('leaves rows that do not collide exactly as modelDisplayParts renders them', () => {
+      const ids = ['deepseek-flash', 'deepseek-v4.1-flash', 'deepseek-v4-pro', 'claude-opus-4.8-fast']
+      const labelFor = modelListLabeler(ids)
+
+      for (const id of ['deepseek-v4-pro', 'claude-opus-4.8-fast']) {
+        expect(labelFor(id)).toEqual(modelDisplayParts(id))
+      }
+    })
+
+    it('keeps the display name on a colliding row and tells it apart by its id', () => {
+      const labelFor = modelListLabeler(['deepseek-flash', 'deepseek-v4.1-flash'])
+
+      for (const id of ['deepseek-flash', 'deepseek-v4.1-flash']) {
+        expect(labelFor(id).name).toBe(displayModelName(id))
+        expect(labelFor(id).tag).toContain(id)
+      }
+    })
+
+    it('tags with the full id when colliding rows differ only in their vendor prefix', () => {
+      // Kilo Code lists the same model under two prefixes; without the prefix
+      // both tags would read `claude-opus-4.8` and the rows would still match.
+      const ids = ['anthropic/claude-opus-4.8', 'stealth/claude-opus-4.8', 'openrouter/free', 'kilo-auto/free']
+      const labelFor = modelListLabeler(ids)
+
+      expect(new Set(ids.map(id => labelKey(labelFor(id)))).size).toBe(ids.length)
+      expect(labelFor('stealth/claude-opus-4.8')).toEqual({ name: 'Opus 4.8', tag: 'stealth/claude-opus-4.8' })
+    })
+
+    it('keeps the short id as the tag when it already tells rows apart', () => {
+      const labelFor = modelListLabeler(['deepseek/deepseek-flash', 'deepseek/deepseek-v4.1-flash'])
+
+      expect(labelFor('deepseek/deepseek-flash').tag).toBe('deepseek-flash')
+      expect(labelFor('deepseek/deepseek-v4.1-flash').tag).toBe('deepseek-v4.1-flash')
+    })
   })
 
   it('strips trailing date-pin snapshots and dots hyphenated Anthropic versions', () => {

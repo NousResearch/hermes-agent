@@ -99,9 +99,15 @@ function prettifyBase(base: string): string {
   return titleCase(base.replace(/-/g, ' '))
 }
 
+/** A model's name and its optional grayed variant tag. */
+export interface ModelLabelParts {
+  name: string
+  tag: string
+}
+
 /** Split a model id into a clean display name plus an optional grayed variant
  *  tag, so distinct ids (e.g. `…-4.8` vs `…-4.8-fast`) don't collapse. */
-export function modelDisplayParts(model: string): { name: string; tag: string } {
+export function modelDisplayParts(model: string): ModelLabelParts {
   let base = modelBaseId(model)
   let tag = ''
 
@@ -147,6 +153,41 @@ export function modelDisplayParts(model: string): { name: string; tag: string } 
 /** Friendly one-line model name for menus and the status bar. */
 export function displayModelName(model: string): string {
   return modelDisplayParts(model).name
+}
+
+/** Labels for the rows of ONE model list (a provider's group in a picker). Each
+ *  id reads as `modelDisplayParts` renders it, except that two distinct ids never
+ *  share a label: a provider can list an alias beside the id it points at
+ *  (`deepseek-flash` / `deepseek-v4.1-flash`), and two identical rows read as a
+ *  duplicate. When name and tag would match (ignoring case), each colliding row
+ *  keeps its name and shows its own id as the tag: the id without its vendor
+ *  prefix, or the full id when the list has that same id under another prefix
+ *  (`anthropic/claude-opus-4.8` / `stealth/claude-opus-4.8`). Build it from the
+ *  whole group, not a search-filtered slice, so tags don't flicker while typing. */
+export function modelListLabeler(ids: readonly string[]): (id: string) => ModelLabelParts {
+  const labelKey = ({ name, tag }: ModelLabelParts) => `${name}\u0000${tag}`.toLowerCase()
+  const baseKey = (id: string) => modelBaseId(id).toLowerCase()
+  const labels = new Map(ids.map(id => [id, modelDisplayParts(id)]))
+  const uses = new Map<string, number>()
+  const baseUses = new Map<string, number>()
+
+  for (const label of labels.values()) {
+    uses.set(labelKey(label), (uses.get(labelKey(label)) ?? 0) + 1)
+  }
+
+  for (const id of labels.keys()) {
+    baseUses.set(baseKey(id), (baseUses.get(baseKey(id)) ?? 0) + 1)
+  }
+
+  return id => {
+    const label = labels.get(id) ?? modelDisplayParts(id)
+
+    if ((uses.get(labelKey(label)) ?? 0) < 2) {
+      return label
+    }
+
+    return { name: label.name, tag: (baseUses.get(baseKey(id)) ?? 0) > 1 ? id.trim() : modelBaseId(id) }
+  }
 }
 
 /** Composer model-pill label — model name plus Fast when it applies. The

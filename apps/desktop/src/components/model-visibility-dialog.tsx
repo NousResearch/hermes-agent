@@ -14,7 +14,7 @@ import type { HermesGateway } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { Search } from '@/lib/icons'
 import { modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, modelListLabeler } from '@/lib/model-status-label'
 import { foldIncludes, normalize } from '@/lib/text'
 import {
   $visibleModels,
@@ -104,13 +104,14 @@ export function ModelVisibilityDialog({
             </div>
           ) : (
             providers.map(provider => {
-              const models = collapseModelFamilies(provider.models ?? []).filter(family => matches(provider, family.id))
+              const allFamilies = collapseModelFamilies(provider.models ?? [])
+              const models = allFamilies.filter(family => matches(provider, family.id))
 
               if (models.length === 0) {
                 return null
               }
 
-              const allFamilies = collapseModelFamilies(provider.models ?? [])
+              const labelFor = modelListLabeler(allFamilies.map(family => family.id))
 
               const onCount = allFamilies.filter(family =>
                 visible.has(modelVisibilityKey(provider.slug, family.id))
@@ -144,7 +145,7 @@ export function ModelVisibilityDialog({
                   </div>
                   {!collapsed &&
                     models.map(family => {
-                      const { name, tag } = modelDisplayParts(family.id)
+                      const { name, tag } = labelFor(family.id)
                       const key = modelVisibilityKey(provider.slug, family.id)
 
                       return (

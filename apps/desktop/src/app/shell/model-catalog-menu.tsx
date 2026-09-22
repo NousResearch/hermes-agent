@@ -25,7 +25,7 @@ import { getLocalModelsStatus } from '@/hermes'
 import { useI18n } from '@/i18n'
 import { isSubmitEnter } from '@/lib/ime'
 import { catalogProviderMatches, modelOptionsQueryKey, requestModelOptions } from '@/lib/model-options'
-import { displayModelName, modelDisplayParts } from '@/lib/model-status-label'
+import { displayModelName, type ModelLabelParts, modelListLabeler } from '@/lib/model-status-label'
 import { reasoningEffortLabel } from '@/lib/reasoning-effort'
 import { foldIncludes, normalize } from '@/lib/text'
 import { useStoreSelector } from '@/lib/use-session-slice'
@@ -113,6 +113,9 @@ interface ModelCatalogMenuProps {
 
 interface ProviderGroup {
   families: ModelFamily[]
+  /** Row labels built from the provider's full list, so a search or the
+   *  visibility filter never changes how a row reads. */
+  labelFor: (id: string) => ModelLabelParts
   provider: ModelOptionProvider
 }
 
@@ -493,7 +496,7 @@ export function ModelCatalogMenu({
                         : null
 
                     const isCurrent = activeId !== null
-                    const { name, tag } = modelDisplayParts(family.id)
+                    const { name, tag } = group.labelFor(family.id)
                     const caps = group.provider.capabilities?.[family.id]
 
                     // Managed local model loading into memory right now:
@@ -756,7 +759,7 @@ function groupModels(
     const families = allFamilies.filter(family => shown.has(family.id) || family.id === activeId)
 
     if (families.length > 0) {
-      groups.push({ families, provider })
+      groups.push({ families, labelFor: modelListLabeler(allFamilies.map(family => family.id)), provider })
     }
   }
 

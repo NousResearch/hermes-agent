@@ -129,7 +129,7 @@ def _ssrf_safe_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
         return c.get(url, timeout=timeout, headers=headers)
 
 
-def _guarded_http_get(url: str, *, timeout: int = 20,
+def _guarded_http_get(url: str, *, timeout: int = _DEFAULT_HTTP_TIMEOUT,
                       headers: Optional[Dict[str, str]] = None) -> Optional[httpx.Response]:
     """Fetch a URL with SSRF and redirect-target validation (each hop re-checked).
 
@@ -176,7 +176,7 @@ def _guarded_http_stream(
     url: str,
     *,
     params: Optional[Dict[str, str]] = None,
-    timeout: int = 20,
+    timeout: int = _DEFAULT_HTTP_TIMEOUT,
 ) -> Iterator[Optional[httpx.Response]]:
     """Stream one response with bounded, policy-checked redirects."""
     from tools.url_safety import SSRFConnectionBlocked, create_ssrf_safe_client

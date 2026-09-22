@@ -2,7 +2,7 @@ name: yolo-auto
 repo: https://github.com/yolo-auto-org/hermes-provider-yolo-auto
 sha: 06593c5a346489e9adb126b032c70d805c1beaed
 subdir: yolo-auto
-description: Yolo-Auto — flat-rate OpenAI-compatible API for Qwen and Nemotron models, plan-filtered live model discovery.
+description: Yolo-Auto: flat-rate OpenAI-compatible API for Qwen and Nemotron models, plan-filtered live model discovery.
 maintainer: yolo-auto-org
 tier: community
 category: models

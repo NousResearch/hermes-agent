@@ -7,7 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 // eslint-disable-next-line no-restricted-imports
 import { registerPluginLocales } from '@/i18n/plugin-i18n'
 
-import { bindApi, taskKey } from './api'
+import { bindApi } from './api'
 import { TaskDrawer } from './drawer'
 import { en, KANBAN_LOCALES } from './i18n'
 import type { KanbanTaskDetail } from './types'
@@ -94,7 +94,7 @@ describe('task attachment compatibility', () => {
 
       // A later backend response restores the capability without remounting.
       detail = { ...legacyDetail, attachments: [] }
-      await act(() => client.invalidateQueries({ queryKey: taskKey('', legacyDetail.task.id) }))
+      await act(() => client.invalidateQueries({ queryKey: ['kanban', 'task'] }))
       expect(await screen.findByRole('button', { name: en.uploadAttachment })).toBeTruthy()
       expect(screen.getByText(en.noAttachments)).toBeTruthy()
     }

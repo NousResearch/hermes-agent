@@ -22,7 +22,8 @@ import {
   type PluginRestOptions,
   type PluginStorage,
   type PluginTranslate,
-  queryClient
+  queryClient,
+  useValue
 } from '@hermes/plugin-sdk'
 
 // Native completion notification.
@@ -68,9 +69,16 @@ const LANES_KEY = 'lanesByProfile'
 const COLLAPSED_KEY = 'collapsedLanes'
 
 /** Cache-scope id for the active connection — the segment every query key
- *  embeds. `'local'` (never '') for the local pool so the key is never empty. */
+ *  embeds. `'local'` covers the pre-descriptor null; the SDK atom already
+ *  reports 'local' for the local pool. For NON-rendering code (mutations,
+ *  socket frames); rendering components use `useKanbanScope` so the keys they
+ *  build during render recompute when the connection changes. */
 export function kanbanConnectionScope(): string {
-  return String(host.state.connectionId?.get?.() || 'local')
+  return host.state.connectionId.get() ?? 'local'
+}
+
+export function useKanbanScope(): string {
+  return useValue(host.state.connectionId) ?? 'local'
 }
 
 /** One live `task_events` frame → precise cache invalidation: the board, plus
@@ -83,12 +91,13 @@ function onEventsFrame(slug: string, data: unknown): void {
     return
   }
 
-  void queryClient.invalidateQueries({ queryKey: ['kanban', 'board'] })
+  const scope = kanbanConnectionScope()
+  void queryClient.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   // Any event can change a board's card count — keep the switcher badge honest.
-  void queryClient.invalidateQueries({ queryKey: BOARDS_KEY })
+  void queryClient.invalidateQueries({ queryKey: boardsKey(scope) })
 
   for (const taskId of new Set(events.map(event => event.task_id).filter(Boolean))) {
-    void queryClient.invalidateQueries({ queryKey: taskKey(slug, taskId!) })
+    void queryClient.invalidateQueries({ queryKey: taskKey(scope, slug, taskId!) })
   }
 
   // Completion notification (after invalidation so notify failure
@@ -200,16 +209,17 @@ function withBoard(path: string, params: Record<string, string> = {}): string {
 // cache miss — one gateway's boards/tasks must never paint under another
 // connection's route) ─────────────────────────────────────────────────────────
 
-const scopeKey = (): readonly [string] => [kanbanConnectionScope()]
-
-export const boardKey = (slug: string, archived: boolean) =>
-  ['kanban', 'board', ...scopeKey(), slug, archived] as const
-export const taskKey = (slug: string, id: string) => ['kanban', 'task', ...scopeKey(), slug, id] as const
-export const logKey = (slug: string, id: string) => ['kanban', 'log', ...scopeKey(), slug, id] as const
-export const BOARDS_KEY = ['kanban', 'boards', ...scopeKey()] as const
-export const PROFILES_KEY = ['kanban', 'profiles', ...scopeKey()] as const
-export const PROJECTS_KEY = ['kanban', 'projects', ...scopeKey()] as const
-export const ORCHESTRATION_KEY = ['kanban', 'orchestration', ...scopeKey()] as const
+/** Prefix matching every board query on one connection (all slugs, both
+ *  archived views) — the mutation-settled invalidation target. */
+export const boardKeyPrefix = (scope: string) => ['kanban', 'board', scope] as const
+export const boardKey = (scope: string, slug: string, archived: boolean) =>
+  [...boardKeyPrefix(scope), slug, archived] as const
+export const taskKey = (scope: string, slug: string, id: string) => ['kanban', 'task', scope, slug, id] as const
+export const logKey = (scope: string, slug: string, id: string) => ['kanban', 'log', scope, slug, id] as const
+export const boardsKey = (scope: string) => ['kanban', 'boards', scope] as const
+export const profilesKey = (scope: string) => ['kanban', 'profiles', scope] as const
+export const projectsKey = (scope: string) => ['kanban', 'projects', scope] as const
+export const orchestrationKey = (scope: string) => ['kanban', 'orchestration', scope] as const
 
 // ── reads ─────────────────────────────────────────────────────────────────────
 

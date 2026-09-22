@@ -33,6 +33,7 @@ import { type ReactNode, useEffect, useRef, useState } from 'react'
 import {
   $boardSlug,
   addComment,
+  boardKeyPrefix,
   deleteTask,
   estimateTask,
   fetchLog,
@@ -40,11 +41,12 @@ import {
   fetchTask,
   logKey,
   patchTask,
-  PROFILES_KEY,
+  profilesKey,
   reassignTask,
   reclaimTask,
   taskKey,
-  uploadAttachment
+  uploadAttachment,
+  useKanbanScope
 } from './api'
 import { ModelOverrideField, overridePatch } from './model-override'
 import {
@@ -242,7 +244,8 @@ function AssigneeMenu({
   onReassign: (p: string) => void
 }) {
   const k = useKanban()
-  const { data: roster } = useQuery({ queryKey: PROFILES_KEY, queryFn: fetchProfiles, staleTime: 60_000 })
+  const scope = useKanbanScope()
+  const { data: roster } = useQuery({ queryKey: profilesKey(scope), queryFn: fetchProfiles, staleTime: 60_000 })
 
   return (
     <DropdownMenu>
@@ -551,13 +554,14 @@ export function TaskDrawer({
 }) {
   const k = useKanban()
   const qc = useQueryClient()
+  const scope = useKanbanScope()
   const slug = useValue($boardSlug)
 
   // Socket-invalidated (bindApi); the interval is only the socketless heartbeat.
   const { data: detail, error } = useQuery({
     enabled: !!id,
     queryFn: () => fetchTask(id!),
-    queryKey: taskKey(slug, id ?? ''),
+    queryKey: taskKey(scope, slug, id ?? ''),
     refetchInterval: 30_000
   })
 
@@ -568,7 +572,7 @@ export function TaskDrawer({
   const { data: log } = useQuery({
     enabled: !!id,
     queryFn: () => fetchLog(id!),
-    queryKey: logKey(slug, id ?? ''),
+    queryKey: logKey(scope, slug, id ?? ''),
     refetchInterval: running ? 3_000 : 15_000
   })
 
@@ -585,8 +589,8 @@ export function TaskDrawer({
   }, [id, onClose])
 
   const invalidate = () => {
-    void qc.invalidateQueries({ queryKey: taskKey(slug, id!) })
-    void qc.invalidateQueries({ queryKey: ['kanban', 'board'] })
+    void qc.invalidateQueries({ queryKey: taskKey(scope, slug, id!) })
+    void qc.invalidateQueries({ queryKey: boardKeyPrefix(scope) })
   }
 
   // Optimistic status change against the task cache; rolls back + toasts on a
@@ -594,18 +598,18 @@ export function TaskDrawer({
   const moveMut = useMutation({
     mutationFn: (status: string) => patchTask(id!, { status }),
     onMutate: async status => {
-      await qc.cancelQueries({ queryKey: taskKey(slug, id!) })
-      const previous = qc.getQueryData<KanbanTaskDetail>(taskKey(slug, id!))
+      await qc.cancelQueries({ queryKey: taskKey(scope, slug, id!) })
+      const previous = qc.getQueryData<KanbanTaskDetail>(taskKey(scope, slug, id!))
 
       if (previous) {
-        qc.setQueryData(taskKey(slug, id!), { ...previous, task: { ...previous.task, status } })
+        qc.setQueryData(taskKey(scope, slug, id!), { ...previous, task: { ...previous.task, status } })
       }
 
       return { previous }
     },
     onError: (err, _status, context) => {
       if (context?.previous) {
-        qc.setQueryData(taskKey(slug, id!), context.previous)
+        qc.setQueryData(taskKey(scope, slug, id!), context.previous)
       }
 
       host.notify({ kind: 'error', message: errText(err) })

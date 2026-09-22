@@ -262,7 +262,11 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
-        const { render: renderSlashOutput, sessionId, storedSessionId } = resolved
+        const { render: renderSlashOutput, storedSessionId } = resolved
+        // Mutable: a stale-runtime recovery below repoints the command (and
+        // any dispatch kickoff) at the re-minted live id.
+        let sessionId = resolved.sessionId
+        const initialSessionId = resolved.sessionId
 
         if (!isDesktopSlashCommand(name)) {
           renderSlashOutput(desktopSlashUnavailableMessage(name) || `/${name} is not available in the desktop app.`)
@@ -271,6 +275,22 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
 
         let slashExecError: unknown = null
+
+        // slash.exec / command.dispatch run against the same runtime id as
+        // prompt.submit and /compress: after sleep/wake, a reconnect, or an
+        // orphan reap the gateway answers 4001 "session not found" for the id
+        // this client still holds — while plain prompts silently recovered.
+        // Resume the stored session once and retry (same resolver /stop uses).
+        const staleSessionRecovery = {
+          requestGateway,
+          onRecovered: (recoveredId: string) => {
+            if (activeSessionIdRef.current === initialSessionId) {
+              activeSessionIdRef.current = recoveredId
+              setActiveSessionId(recoveredId)
+            }
+            sessionId = recoveredId
+          }
+        }
 
         const handleDispatch = async (
           dispatch: NonNullable<ReturnType<typeof parseCommandDispatch>>
@@ -381,10 +401,16 @@ export function useSlashCommand(deps: SlashCommandDeps) {
         }
 
         try {
-          const result = await requestGateway<unknown>('slash.exec', {
-            session_id: sessionId,
-            command: command.replace(/^\/+/, '')
-          })
+          const { result } = await withSessionNotFoundResume(
+            sessionId,
+            storedSessionId,
+            liveId =>
+              requestGateway<unknown>('slash.exec', {
+                session_id: liveId,
+                command: command.replace(/^\/+/, '')
+              }),
+            staleSessionRecovery
+          )
 
           const dispatch = parseCommandDispatch(result)
 
@@ -417,7 +443,14 @@ export function useSlashCommand(deps: SlashCommandDeps) {
 
         try {
           const dispatch = parseCommandDispatch(
-            await requestGateway<unknown>('command.dispatch', { session_id: sessionId, name, arg })
+            (
+              await withSessionNotFoundResume(
+                sessionId,
+                storedSessionId,
+                liveId => requestGateway<unknown>('command.dispatch', { session_id: liveId, name, arg }),
+                staleSessionRecovery
+              )
+            ).result
           )
 
           if (!dispatch) {
@@ -460,20 +493,39 @@ export function useSlashCommand(deps: SlashCommandDeps) {
           return
         }
 
-        const { render: renderSlashOutput, sessionId } = resolved
+        const { render: renderSlashOutput, sessionId: initialSessionId, storedSessionId } = resolved
 
         try {
-          const params = surface.buildParams({
-            arg: ctx.arg,
-            command: ctx.command,
-            name: ctx.name,
-            sessionId
-          })
-
-          // Forward the surface's declared timeout when present; the default
-          // requestGateway layer keeps (30s) is too tight for RPCs that do
-          // real work.
-          const result = await requestGateway<unknown>(surface.rpc, params, surface.timeoutMs)
+          // Session-scoped RPCs share the stale-runtime fate of slash.exec /
+          // prompt.submit: resume the stored session once and retry.
+          const { result } = await withSessionNotFoundResume(
+            initialSessionId,
+            storedSessionId,
+            liveId =>
+              requestGateway<unknown>(
+                surface.rpc,
+                // Forward the surface's declared timeout when present; the
+                // default requestGateway layer keeps (30s) is too tight for
+                // RPCs that do real work. Params are rebuilt per attempt so
+                // the retry targets the recovered runtime id.
+                surface.buildParams({
+                  arg: ctx.arg,
+                  command: ctx.command,
+                  name: ctx.name,
+                  sessionId: liveId
+                }),
+                surface.timeoutMs
+              ),
+            {
+              requestGateway,
+              onRecovered: recoveredId => {
+                if (activeSessionIdRef.current === initialSessionId) {
+                  activeSessionIdRef.current = recoveredId
+                  setActiveSessionId(recoveredId)
+                }
+              }
+            }
+          )
           const body = renderRpcResult(result, ctx.name)
 
           renderSlashOutput(body || `/${ctx.name}: no output`)

@@ -469,6 +469,7 @@ describe('usePromptActions HUD surface', () => {
 describe('usePromptActions slash session targeting', () => {
   const STORED_SESSION_ID = 'stored-db-xyz789'
   const RECOVERED_SESSION_ID = 'rt-recovered-456'
+  const STALE_RUNTIME_ID = 'rt-stale-123'
 
   afterEach(() => {
     cleanup()
@@ -569,6 +570,68 @@ describe('usePromptActions slash session targeting', () => {
 
     expect(createBackendSessionForSend).not.toHaveBeenCalled()
     expect(calls).not.toContain('slash.exec')
+  })
+
+  it('retries slash.exec after the runtime id goes stale (4001 session not found)', async () => {
+    // After sleep/wake, a reconnect, or an orphan reap the gateway answers
+    // 4001 "session not found" for the runtime id the client still holds,
+    // while plain prompts silently recovered — so typed slash commands
+    // (/model, /goal, …) surfaced a raw "session not found" on healthy
+    // chats. The slash.exec path must resume the stored session once and
+    // retry (the /compress and /stop pattern).
+    const calls: { method: string; params?: Record<string, unknown> }[] = []
+    const activeSessionIdRef: MutableRefObject<string | null> = { current: STALE_RUNTIME_ID }
+    const selectedStoredSessionIdRef: MutableRefObject<string | null> = { current: STORED_SESSION_ID }
+    let boundRuntimeId: null | string = STALE_RUNTIME_ID
+    let slashExecAttempts = 0
+
+    const requestGateway = vi.fn(async (method: string, params?: Record<string, unknown>) => {
+      calls.push({ method, params })
+
+      if (method === 'slash.exec') {
+        slashExecAttempts += 1
+
+        if (slashExecAttempts === 1) {
+          throw new Error('4001 session not found')
+        }
+
+        return { output: '⊙ Goal (active, 1/20 turns): build a rocket' } as never
+      }
+
+      if (method === 'session.resume') {
+        boundRuntimeId = RECOVERED_SESSION_ID
+
+        return { session_id: RECOVERED_SESSION_ID } as never
+      }
+
+      return {} as never
+    })
+
+    let handle: HarnessHandle | null = null
+    await actRender(
+      <Harness
+        activeSessionId={STALE_RUNTIME_ID}
+        activeSessionIdRef={activeSessionIdRef}
+        createBackendSessionForSend={vi.fn(async () => 'rt-brand-new-WRONG')}
+        getRoutedStoredSessionId={() => STORED_SESSION_ID}
+        getRuntimeIdForStoredSession={() => boundRuntimeId}
+        onReady={h => (handle = h)}
+        refreshSessions={async () => undefined}
+        requestGateway={requestGateway}
+        selectedStoredSessionIdRef={selectedStoredSessionIdRef}
+        storedSessionId={STORED_SESSION_ID}
+      />
+    )
+
+    await handle!.submitText('/goal status')
+
+    expect(calls.map(c => c.method)).toEqual(['slash.exec', 'session.resume', 'slash.exec'])
+    // The command lands on the re-minted runtime, not the stale id.
+    expect(calls[0]?.params).toMatchObject({ session_id: STALE_RUNTIME_ID })
+    expect(calls[2]?.params).toMatchObject({ session_id: RECOVERED_SESSION_ID })
+    // The recovery republishes the fresh id so no surface keeps reading the
+    // dead runtime.
+    expect(activeSessionIdRef.current).toBe(RECOVERED_SESSION_ID)
   })
 })
 

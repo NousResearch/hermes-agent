@@ -850,6 +850,7 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
     # reach the chain instead of dying at init with a misleading "No LLM provider configured" error. See
     # #17929.
     _explicit = (agent.provider or "").strip().lower()
+    _refused_entries = []
     for _fb in _fallback_entries(fallback_model):
         try:
             from hermes_cli.fallback_config import resolve_entry_api_key
@@ -860,19 +861,34 @@ def _routed_client_kwargs(agent, fallback_model, _provider_timeout) -> Optional[
             )
         except Exception as _fb_exc:
             logger.debug("Init-time fallback entry %s failed: %s", _fb.get("provider"), _fb_exc)
+            _refused_entries.append((str(_fb.get("provider")), str(_fb_exc)))
             continue
-        if _fb_client is not None:
-            agent._fallback_activated = True
-            if str(_fb["provider"]).strip().lower() == "moa":
-                # The chokepoint handed back the preset's aggregator client, which only proves the
-                # preset resolves and its aggregator has credentials. A MoA entry means the preset
-                # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
-                from agent.moa_loop import bind_moa_runtime
-                bind_moa_runtime(agent, _fb["model"])
-                return None
-            agent.provider = _fb["provider"]
-            agent.model = _fb_model or _fb["model"]
-            return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+        if _fb_client is None:
+            # The router returns None when no credentials are usable for the entry — a skip
+            # that leaves no trace otherwise, hiding key-less fallback entries from the log.
+            logger.debug(
+                "Init-time fallback entry %s resolved no usable credentials",
+                _fb.get("provider"),
+            )
+            _refused_entries.append((str(_fb.get("provider")), "no usable credentials"))
+            continue
+        agent._fallback_activated = True
+        if str(_fb["provider"]).strip().lower() == "moa":
+            # The chokepoint handed back the preset's aggregator client, which only proves the
+            # preset resolves and its aggregator has credentials. A MoA entry means the preset
+            # itself (same as ``provider: moa`` in config), so bind the facade, not the aggregator.
+            from agent.moa_loop import bind_moa_runtime
+            bind_moa_runtime(agent, _fb["model"])
+            return None
+        agent.provider = _fb["provider"]
+        agent.model = _fb_model or _fb["model"]
+        return _client_kwargs_from_routed(_fb_client, _provider_timeout)
+    if _refused_entries:
+        logger.warning(
+            "No LLM provider configured: primary %r unresolvable and fallback entries refused: %s",
+            agent.provider,
+            "; ".join(f"{_p} ({_r})" for _p, _r in _refused_entries),
+        )
     if _explicit and _explicit not in {"auto", "openrouter", "custom"}:
         # Explicit non-OpenRouter provider with no creds and no usable fallback: fail fast.
         from agent.auxiliary_unavailable import missing_provider_credentials_message

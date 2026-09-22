@@ -13145,6 +13145,13 @@ function startHermes({ supervisorRecovery = false }: { supervisorRecovery?: bool
     primaryStartsInFlight -= 1
   }
 
+  // Ordering contract: this reaction is registered on the SAME promise the
+  // caller receives, before any caller `.catch`, so releaseStart has already
+  // run (primaryStartsInFlight back to 0) when runPrimaryRecoverySpawn's
+  // `.catch` evaluates primaryRecoveryState(). Returning a derived promise
+  // (start.then(...)) or wrapping `start` would invert that order: every
+  // pre-ready retry would see hasPendingStart:true, be refused, and leave the
+  // recovery claim stuck with no retry and no UI.
   void start.then(releaseStart, releaseStart)
 
   return start
@@ -13183,6 +13190,8 @@ function runPrimaryRecoverySpawn(code: number | null, signal: string | null) {
       return
     }
 
+    // releaseStart (startHermes) already ran: same-promise reaction order, so
+    // hasPendingStart is false here. See the ordering contract in startHermes.
     if (primaryExitRecovery.retryAfterFailedStart(primaryRecoveryState())) {
       rememberLog('[supervisor] backend respawn failed before ready; retrying within crash-loop budget')
       runPrimaryRecoverySpawn(code, signal)

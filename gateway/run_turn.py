@@ -635,6 +635,20 @@ class GatewayTurnMixin:
         if not isinstance(_comp_cfg, dict):
             return
         hs.compression_enabled = str(_comp_cfg.get("enabled", True)).lower() in {"true", "1", "yes"}
+        # Never fire BEFORE the agent's own compressor: the net's job is to catch a session that grew
+        # between turns, so it must sit at or above the agent's ratio. Widening compression.threshold
+        # (0.95 for a measured 1M window, say) has to widen the net with it — pinned at the 0.85
+        # default the net pre-empts the agent and silently caps the session short of the configured
+        # value, with no key that raises it. Keeping the ratios independent (#1161) only holds while
+        # the agent's ratio stays below this one. Ratios >= 1.0 are unreachable for the agent (it
+        # substitutes 0.85), so the net ignores them and keeps its default.
+        _raw_ratio = _comp_cfg.get("threshold")
+        _agent_ratio: Optional[float] = None
+        if isinstance(_raw_ratio, (int, float, str)):
+            with suppress(TypeError, ValueError):
+                _agent_ratio = float(_raw_ratio)
+        if _agent_ratio is not None and 0.0 < _agent_ratio < 1.0:
+            hs.threshold_pct = max(hs.threshold_pct, _agent_ratio)
 
         def _knob(key, current, cast, allow_zero=False):
             raw = _comp_cfg.get(key)
@@ -659,8 +673,10 @@ class GatewayTurnMixin:
     async def _hmwa_hygiene_settings(self, source, session_key):
         """Resolve model/provider/context-length + hygiene knobs (fail-soft: errors keep defaults).
 
-        The 0.85 threshold is deliberately HIGHER than the agent's compressor (0.50): a safety net
-        for sessions that grew between turns. ``max_turn_hold_seconds`` bounds the TURN wait
+        The 0.85 threshold is deliberately HIGHER than the agent's shipped compressor ratio (0.50):
+        a safety net for sessions that grew between turns. It is RAISE-ONLY against
+        ``compression.threshold`` (see ``_hmwa_hygiene_read_config``), so a widened agent threshold
+        is never pre-empted by the net. ``max_turn_hold_seconds`` bounds the TURN wait
         (compressor keeps running detached, commit fenced); kept below transport idle-timeouts."""
         from gateway.run import _load_gateway_config
         hs = self._HygieneSettings(

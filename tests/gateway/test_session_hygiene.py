@@ -85,6 +85,19 @@ class HygieneCaptureAdapter(BasePlatformAdapter):
 # Detection threshold tests (model-aware, unified with compression config)
 # ---------------------------------------------------------------------------
 
+def _resolve_hygiene_net_pct(compression_cfg):
+    """Ratio the gateway session-hygiene net will install for this ``compression:`` block."""
+    gateway_run = importlib.import_module("gateway.run")
+    hs = gateway_run.GatewayRunner._HygieneSettings(
+        model="m", threshold_pct=0.85, compression_enabled=True, hard_msg_limit=5000,
+        timeout_seconds=30.0, total_ceiling_seconds=600.0, max_turn_hold_seconds=10.0,
+        failure_cooldown_seconds=300.0, config_context_length=None, provider=None,
+        base_url=None, api_key=None, data={},
+    )
+    gateway_run.GatewayRunner._hmwa_hygiene_read_config(hs, {"compression": compression_cfg})
+    return hs.threshold_pct
+
+
 class TestSessionHygieneThresholds:
     """Test that the threshold logic correctly identifies large sessions.
 
@@ -109,6 +122,23 @@ class TestSessionHygieneThresholds:
             f"250 short messages (~{approx_tokens} tokens) should NOT trigger "
             f"compression at {compress_token_threshold} token threshold"
         )
+
+    def test_hygiene_net_never_preempts_the_agent_threshold(self):
+        """The net's ratio must never sit BELOW the agent's own compressor ratio.
+
+        The gateway net exists to fire *later* than the agent's compressor, catching a session that
+        grew between turns. Widening ``compression.threshold`` (0.95 for a measured 1M window, say)
+        must widen the net with it: pinned at 0.85 the net fires first and silently caps the session
+        100k tokens short of the configured value, with no config key that raises it.
+        """
+        for agent_ratio in (0.86, 0.95, 0.99):
+            net = _resolve_hygiene_net_pct({"enabled": True, "threshold": agent_ratio})
+            assert net >= agent_ratio, (
+                f"net {net} would fire before the agent's {agent_ratio} trigger"
+            )
+        # A ratio the agent cannot reach (>= 1.0 is substituted, not honoured) leaves the net alone.
+        assert (_resolve_hygiene_net_pct({"enabled": True, "threshold": 1.0})
+                == _resolve_hygiene_net_pct({"enabled": True}))
 
     def test_message_count_alone_does_not_trigger(self):
         """Message count alone should NOT trigger — only token count matters.

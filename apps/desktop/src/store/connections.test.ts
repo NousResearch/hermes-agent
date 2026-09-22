@@ -2,6 +2,7 @@ import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { setApiRequestConnection, setApiRequestProfile } from '@/api/client'
+import { rememberActivePane, resetRememberedActivePanes, resolveRememberedActivePane } from '@/components/pane-shell/workspace-scope'
 import type { DesktopConnectionsRegistry } from '@/global'
 
 import { deferred } from '../test/deferred'
@@ -109,6 +110,7 @@ const setLastUsed = vi.fn(async (id: string) => ({ ok: true, registry: { ...regi
 
 beforeEach(() => {
   localStorage.clear()
+  resetRememberedActivePanes()
   _resetConnectionsForTests()
   $connectionsRegistry.set(null)
   $connection.set(null)
@@ -247,6 +249,29 @@ describe('selectConnection', () => {
     expect($newChatProfile.get()).toBe('default')
     expect(refreshActiveProfile).toHaveBeenCalledTimes(1)
     expect(setLastUsed).toHaveBeenCalledWith('homelab')
+  })
+
+  it('forgets the outgoing Sessions tab when a gateway switch starts a fresh source draft', async () => {
+    setConnectionsRegistry(registry)
+    $connection.set({ connectionId: 'local', mode: 'local' })
+
+    // This is the state #119599 exposes: Sessions last focused a local-owned
+    // tile, then the user selects a remote gateway and visits Bot Mode. The
+    // center strip is hidden while Bots owns it, so the old Sessions pane
+    // remains only in window-local restore memory.
+    rememberActivePane('sessions', 'session-tile:local-chat')
+    expect(resolveRememberedActivePane('sessions', ['workspace', 'session-tile:local-chat'])).toBe(
+      'session-tile:local-chat'
+    )
+
+    await selectConnection('homelab')
+
+    // The switch already requested a fresh draft on homelab. Returning from
+    // Bots must restore that neutral workspace, not auto-focus the old local
+    // tile whose resume path would legitimately activate local again.
+    expect(resolveRememberedActivePane('sessions', ['workspace', 'session-tile:local-chat'])).toBe('workspace')
+    expect($activeConnectionId.get()).toBe('homelab')
+    expect(requestFreshSession).toHaveBeenCalledTimes(1)
   })
 
   it('does not reset or dial when the active source/profile is selected again', async () => {

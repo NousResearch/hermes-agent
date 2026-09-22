@@ -1,6 +1,7 @@
 import { atom, computed } from 'nanostores'
 
 import { getProfiles } from '@/api/profiles'
+import { rememberActivePane } from '@/components/pane-shell/workspace-scope'
 import type { DesktopConnectionsRegistry } from '@/global'
 import { invalidateProfileScopedQueries } from '@/lib/query-client'
 import { persistStringRecord, storedStringRecord } from '@/lib/storage'
@@ -514,6 +515,16 @@ export async function selectConnection(connectionId: string, options: SelectConn
 
       $newChatProfile.set(targetProfile)
       captureNewChatSource()
+
+      // A source switch deliberately starts Sessions on a fresh draft. Do not
+      // leave the window-local Sessions pane memory pointing at a tab owned by
+      // the source we just left: Bot Mode can temporarily take the center
+      // strip, and returning to Sessions would otherwise restore that stale
+      // tab. Its resume path is allowed to activate its owner connection, so a
+      // remembered local tab can undo a remote gateway selection (#119599).
+      // Pin the Sessions workspace itself as the post-switch restore target;
+      // explicit later session clicks will replace this memory normally.
+      rememberActivePane('sessions', 'workspace')
       requestFreshSession()
       await refreshActiveProfile()
     }

@@ -190,6 +190,43 @@ test.describe('New Group Chat gate — one local bot plus remote-connection bots
     sandbox?.cleanup()
   })
 
+  test('Bots round-trip preserves the selected remote gateway', async () => {
+    test.setTimeout(240_000)
+
+    // Reproduce #119599 against two real backends: select Homelab in Sessions,
+    // enter Bots, select a Homelab-owned bot, then return to Sessions.
+    const remoteGroup = page.locator(
+      `[data-slot="profile-rail-gateway"][data-connection-id="${REMOTE_ID}"]`,
+    )
+    await expect(remoteGroup).toBeVisible({ timeout: 90_000 })
+    await remoteGroup.getByRole('button', { name: `inbox · ${REMOTE_LABEL}` }).click()
+
+    const activeGateway = page.getByRole('button', { name: /^Registered gateways: / })
+    await expect(activeGateway).toHaveAttribute('aria-label', `Registered gateways: ${REMOTE_LABEL}`, {
+      timeout: 120_000,
+    })
+
+    const botsTab = page
+      .getByRole('button', { name: 'Bots', exact: true })
+      .or(page.getByRole('tab', { name: 'Bots', exact: true }))
+      .first()
+    await botsTab.click()
+    const remoteBot = roster(page).locator(`[data-roster-key="${REMOTE_ID}::inbox"]`)
+    await expect(remoteBot).toBeVisible({ timeout: 90_000 })
+    await remoteBot.click()
+
+    const sessionsTab = page
+      .getByRole('button', { name: 'Sessions', exact: true })
+      .or(page.getByRole('tab', { name: 'Sessions', exact: true }))
+      .first()
+    await sessionsTab.click()
+
+    await expect(activeGateway).toHaveAttribute('aria-label', `Registered gateways: ${REMOTE_LABEL}`, {
+      timeout: 30_000,
+    })
+    await expect(remoteGroup).toHaveAttribute('data-active', 'true')
+  })
+
   test('the menu entry enables and the dialog seats the remote bot', async () => {
     test.setTimeout(240_000)
     const tab = page.getByRole('button', { name: 'Bots', exact: true }).or(page.getByRole('tab', { name: 'Bots', exact: true })).first()

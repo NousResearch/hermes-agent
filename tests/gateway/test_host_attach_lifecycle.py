@@ -5,7 +5,7 @@ Invariants, all against a REAL live process standing in for the owner:
 * ATTACH requires a LIVE ``identify`` answer. A record on its own proves only that an owner
   exists — believing its ``profiles`` list parked a second profile's supervised unit against a
   served set that process had not committed to (and, with multiplex off, never would).
-* ``--replace`` signals the owner instead of standing down.
+* ``--replace`` signals a normal/serving owner; another profile's standalone owner starts beside it.
 * ``--force`` starts without asking the owner anything.
 * The claim-time record carries NO served set; it is filled in once the channel answers.
 

@@ -10,7 +10,8 @@ Five outcomes, in order:
 * ``ATTACH``       — a live host gateway already serves this profile. Nothing to start; exit 0.
 * ``RESCAN``→ATTACH — it does not serve it yet: ask it to reconcile ``profiles/`` now (control
   socket ``rescan-profiles``) and attach once the answer includes us.
-* ``REPLACE_HOST`` — ``--replace`` names the host process as the target, whichever home launched it.
+* ``REPLACE_HOST`` — ``--replace`` targets the live host owner unless it is positively identified
+  as another profile's standalone gateway.
 * ``REFUSE``       — a live MULTIPLEXING gateway exists and cannot be made to serve this profile.
   Never start a second one silently.
 * ``START``        — no live owner, or the owner answers ``multiplex: False``: it is another

@@ -5507,7 +5507,7 @@ async def _host_attach_or_none(replace: bool, force: bool = False) -> Optional[b
         print(decision.message)
         return False
     if decision.outcome == REPLACE_HOST and decision.owner is not None:
-        # --replace names the HOST process, whichever home launched it.
+        # --replace targets the host owner unless it is another profile's standalone gateway.
         if not await _start_gateway_replace_existing_instance(decision.owner.pid, True):
             return False
     return None

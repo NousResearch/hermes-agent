@@ -1101,6 +1101,8 @@ async def _standalone_send(pconfig, chat_id, message, *, thread_id=None, media_f
             try:
                 html = _markdown_to_html_email(message)
                 msg.attach(MIMEText(html, "html", "utf-8"))
+            except ImportError:
+                logger.debug("[Email] markdown not installed, sending plain text only")
             except Exception as e:
                 logger.warning("[Email] Standalone HTML conversion failed, sending plain only: %s", e, exc_info=True)
         else:

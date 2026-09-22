@@ -395,7 +395,8 @@ def _read_block_error(file_path: str) -> Optional[Dict[str, Any]]:
 
 
 def _transcribe_prepared_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    language: Optional[str] = None, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Transcribe a validated audio file with the configured STT provider. ``model`` overrides the
     config default; ``source`` is a caller-surface label (``"gateway"``, ``"voice_mode"``) forwarded
     to the ``pre_transcription`` hook only."""
@@ -408,6 +409,7 @@ def _transcribe_prepared_audio(
     if not is_stt_enabled(stt_config):
         return _error_result("STT is disabled in config.yaml (stt.enabled: false).")
     provider = _get_provider(stt_config)
+    caf_cleanup_dir: Optional[str] = None
     if not _is_local_stt_provider(provider, stt_config):
         error = _validate_audio_file_size(Path(file_path))
         if error:
@@ -417,6 +419,7 @@ def _transcribe_prepared_audio(
             file_path = _convert_caf_to_wav(file_path)
             if not file_path:
                 return _error_result("CAF audio could not be converted to WAV.")
+            caf_cleanup_dir = os.path.dirname(file_path)
     # Best-effort pre-upload silence trim for built-in cloud providers.
     trim_cleanup_dir: Optional[str] = None
     if provider in CLOUD_STT_PROVIDERS:
@@ -425,10 +428,13 @@ def _transcribe_prepared_audio(
             file_path = trimmed
             trim_cleanup_dir = os.path.dirname(trimmed)
     try:
-        return _dispatch_stt_provider(file_path, provider, stt_config, model, source)
+        return _dispatch_stt_provider(
+            file_path, provider, stt_config, model, source, language=language, prompt=prompt)
     finally:
         if trim_cleanup_dir:
             shutil.rmtree(trim_cleanup_dir, ignore_errors=True)
+        if caf_cleanup_dir:
+            shutil.rmtree(caf_cleanup_dir, ignore_errors=True)
 
 
 # Built-in provider -> (stt section, config key, default, treat-empty-as-missing). "local_command"
@@ -456,16 +462,19 @@ def _builtin_model_name(provider: str, stt_config: Dict[str, Any], model: Option
 
 def _dispatch_stt_provider(
     file_path: str, provider: str, stt_config: Dict[str, Any], model: Optional[str] = None,
-    source: Optional[str] = None) -> Dict[str, Any]:
+    source: Optional[str] = None, language: Optional[str] = None,
+    prompt: Optional[str] = None) -> Dict[str, Any]:
     """Route *file_path* to the handler for *provider* (built-in > command > plugin)."""
     # Static ``stt.prompt`` is the base; hook results mutate on top (last hook to set a field wins).
-    prompt = stt_config.get("prompt")
+    prompt = prompt or stt_config.get("prompt")
     prompt = prompt if isinstance(prompt, str) and prompt.strip() else None
-    # Fires after provider resolution and BEFORE any backend; ``language`` stays None unless a hook sets it.
-    model, language, prompt = _apply_pre_transcription_hook(
+    # Request hints override config; plugin hooks can override the request.
+    base_language = language or _get_stt_section(stt_config, provider).get("language")
+    model, hook_language, prompt = _apply_pre_transcription_hook(
         file_path=file_path, provider=provider, model=model,
-        language=_get_stt_section(stt_config, provider).get("language"), prompt=prompt, source=source,
+        language=base_language, prompt=prompt, source=source,
     )
+    language = hook_language or base_language
     prompt = _enforce_prompt_length_limit(prompt, provider)
     if provider in BUILTIN_STT_PROVIDERS:
         # Looked up in this module at call time so tests may patch ``_transcribe_*``.
@@ -509,9 +518,11 @@ def _no_provider_error(provider: str, stt_config: Dict[str, Any]) -> Dict[str, A
 
 
 def transcribe_audio(
-    file_path: str, model: Optional[str] = None, source: Optional[str] = None) -> Dict[str, Any]:
+    file_path: str, model: Optional[str] = None, source: Optional[str] = None,
+    language: Optional[str] = None, prompt: Optional[str] = None) -> Dict[str, Any]:
     """Validate, preprocess supported inputs, and dispatch transcription. ``source`` is a caller-surface
-    label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only."""
+    label (``"gateway"``, ``"voice_mode"``) forwarded to the ``pre_transcription`` hook only.
+    ``language`` and ``prompt`` are request-scoped overrides; existing callers use config."""
     # Secret-store refusal runs before ANY validation so the error names the real reason.
     blocked = _read_block_error(file_path)
     if blocked:
@@ -527,7 +538,8 @@ def transcribe_audio(
         return prep_error or _error_result("Audio preprocessing did not produce a file for transcription.")
     try:
         return (_validate_audio_file(prepared_path, enforce_size_limit=False)
-                or _transcribe_prepared_audio(prepared_path, model, source))
+                or _transcribe_prepared_audio(
+                    prepared_path, model, source, language=language, prompt=prompt))
     finally:
         if cleanup_dir:
             shutil.rmtree(cleanup_dir, ignore_errors=True)

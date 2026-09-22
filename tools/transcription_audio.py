@@ -164,20 +164,27 @@ def _prepare_local_audio(file_path: str, work_dir: str) -> tuple[Optional[str], 
 def _convert_caf_to_wav(file_path: str) -> Optional[str]:
     """Convert CAF to WAV using ffmpeg or afconvert (macOS)."""
     audio_path = Path(file_path)
-    wav_path = os.path.join(audio_path.parent, f"{audio_path.stem}.wav")
+    work_dir = tempfile.mkdtemp(prefix="hermes-caf-")
+    wav_path = os.path.join(work_dir, f"{audio_path.stem}.wav")
+    keep_result = False
     ffmpeg = _find_ffmpeg_binary()
     afconvert = shutil.which("afconvert")
     candidates = (
         ("ffmpeg", [ffmpeg, "-y", "-i", file_path, wav_path] if ffmpeg else None),
         ("afconvert", [afconvert, file_path, wav_path, "-d", "LEI16", "-f", "WAVE"] if afconvert else None),
     )
-    for label, command in ((label, cmd) for label, cmd in candidates if cmd):
-        try:
-            _run_quiet(command, timeout=300)
-            return wav_path
-        except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
-            logger.warning("%s CAF to WAV failed for %s: %s", label, file_path, e)
-    return None
+    try:
+        for label, command in ((label, cmd) for label, cmd in candidates if cmd):
+            try:
+                _run_quiet(command, timeout=300)
+                keep_result = True
+                return wav_path
+            except (subprocess.CalledProcessError, subprocess.TimeoutExpired) as e:
+                logger.warning("%s CAF to WAV failed for %s: %s", label, file_path, e)
+        return None
+    finally:
+        if not keep_result:
+            shutil.rmtree(work_dir, ignore_errors=True)
 
 
 # ---- Cloud pre-upload silence trim --------------------------------------

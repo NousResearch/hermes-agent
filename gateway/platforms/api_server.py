@@ -1,6 +1,6 @@
 """OpenAI-compatible API server platform adapter (aiohttp).
 
-Serves /v1/chat/completions, /v1/responses, /v1/models, /v1/capabilities, /api/sessions,
+Serves /v1/chat/completions, /v1/audio/transcriptions, /v1/responses, /v1/models, /v1/capabilities, /api/sessions,
 /v1/runs, /api/jobs and /health* (full table: ``APIServerAdapter._http_route_table``); any
 OpenAI-compatible frontend connects at http://localhost:8642/v1 with API_SERVER_KEY. Under
 ``gateway.multiplex_profiles`` secondary profiles live at ``/p/<profile>/...``.
@@ -71,7 +71,7 @@ _STATIC_FEATURE_FLAGS = {
     "session_chat_streaming": True, "session_fork": True, "session_model_lock": True,
     "reasoning_streaming": True,
     "admin_config_rw": False, "jobs_admin": False, "memory_write_api": False,
-    "skills_api": True, "audio_api": False, "realtime_voice": False,
+    "skills_api": True, "audio_api": True, "realtime_voice": False,
     "session_continuity_header": "X-Hermes-Session-Id",
     "session_key_header": "X-Hermes-Session-Key"}
 # /v1/capabilities "endpoints" table: name -> (method, path).
@@ -79,6 +79,7 @@ _CAPABILITY_ENDPOINTS = (
     ("health", ("GET", "/health")), ("health_detailed", ("GET", "/health/detailed")),
     ("models", ("GET", "/v1/models")), ("model_options", ("GET", "/api/model/options")),
     ("chat_completions", ("POST", "/v1/chat/completions")),
+    ("audio_transcriptions", ("POST", "/v1/audio/transcriptions")),
     ("responses", ("POST", "/v1/responses")), ("runs", ("POST", "/v1/runs")),
     ("run_status", ("GET", "/v1/runs/{run_id}")),
     ("run_events", ("GET", "/v1/runs/{run_id}/events")),
@@ -122,6 +123,7 @@ from gateway.platforms import api_server_room_dispatch as _room_dispatch
 from gateway.platforms import api_server_room_grants as _room_grants
 from gateway.platforms import api_server_runs as _api_runs
 from gateway.platforms.api_server_openai_routes import OpenAICompatRoutesMixin
+from gateway.platforms.api_server_audio import AudioTranscriptionsMixin
 from gateway.platforms.base import (
     MEDIA_TAG_CLEANUP_RE, BasePlatformAdapter, SendResult, _terminal_sentinel_start, is_network_accessible,
     validate_media_delivery_path)
@@ -1168,6 +1170,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
     # Admission-gated OpenAI-compatible entry points (bodies live in the mixin).
     _handle_chat_completions = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_chat_completions)
     _handle_responses = _admit_api_agent_request(OpenAICompatRoutesMixin._handle_responses)
+    _handle_audio_transcriptions = AudioTranscriptionsMixin._handle_audio_transcriptions
 
     def __init__(self, config: PlatformConfig):
         super().__init__(config, Platform.API_SERVER)
@@ -1603,6 +1606,7 @@ class APIServerAdapter(OpenAICompatRoutesMixin, BasePlatformAdapter):
             ("POST", "/api/sessions/{session_id}/chat/stream", self._handle_session_chat_stream),
             ("POST", "/api/sessions/{session_id}/model", self._handle_session_model_lock),
             ("POST", "/v1/chat/completions", self._handle_chat_completions),
+            ("POST", "/v1/audio/transcriptions", self._handle_audio_transcriptions),
             ("POST", "/v1/responses", self._handle_responses),
             ("GET", "/v1/responses/{response_id}", self._handle_get_response),
             ("DELETE", "/v1/responses/{response_id}", self._handle_delete_response),

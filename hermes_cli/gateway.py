@@ -150,6 +150,9 @@ def _get_service_pids(all_profiles: bool = False) -> set:
     the orphan reaper passes all_profiles=True for the same friendly-fire reason. The systemd branch mirrors
     this: default scope filters to the current profile's exact unit name; ``all_profiles=True`` widens to
     the ``hermes-gateway*`` fleet glob.
+
+    A wrapped job reports its launcher, not the gateway (osascript -> stderr_timestamp -> gateway since
+    #118128; ``doppler run`` under systemd, #66900), so each job's gateway descendants are included too.
     """
     pids: set = set()
 
@@ -223,7 +226,31 @@ def _get_service_pids(all_profiles: bool = False) -> set:
             except (FileNotFoundError, subprocess.TimeoutExpired):
                 pass
 
+    for job_pid in list(pids):
+        pids |= _gateway_descendants_of(job_pid)
     return pids
+
+
+def _gateway_descendants_of(pid: int, *, psutil_module=None) -> set[int]:
+    """``gateway run`` processes under a service job PID; empty on any failure.
+
+    Filtered by the canonical matcher: ``find_gateway_pids`` targets service PIDs, and the gateway's
+    own tool subprocesses must never become ``gateway stop`` targets.
+    """
+    from gateway.status import looks_like_gateway_command_line
+
+    try:
+        if psutil_module is None:
+            import psutil as psutil_module  # type: ignore[no-redef]  # noqa: PLC0415
+        children = psutil_module.Process(pid).children(recursive=True)
+    except Exception:
+        return set()
+    found: set[int] = set()
+    for child in children:
+        with contextlib.suppress(Exception):
+            if looks_like_gateway_command_line(" ".join(child.cmdline())):
+                found.add(int(child.pid))
+    return found
 
 
 def _get_parent_pid(pid: int) -> int | None:

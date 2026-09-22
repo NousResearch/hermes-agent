@@ -213,6 +213,37 @@ class TestGetServicePidsScoping:
         monkeypatch.setattr(
             gw, "_locate_launchd_gateway_service", lambda label: located[label]
         )
+        self._process_tree(monkeypatch, {})
+
+    @staticmethod
+    def _process_tree(monkeypatch, children_by_pid):
+        """Fake psutil: ``Process(pid).children(recursive=True)`` returns ``(pid, argv)`` rows."""
+        from types import SimpleNamespace
+
+        def _process(pid):
+            rows = children_by_pid.get(pid, [])
+            return SimpleNamespace(children=lambda recursive=False: [
+                SimpleNamespace(pid=cpid, cmdline=lambda argv=argv: argv) for cpid, argv in rows
+            ])
+
+        monkeypatch.setitem(sys.modules, "psutil", SimpleNamespace(Process=_process))
+
+    def test_osascript_wrapped_gateway_is_a_service_pid_not_swept(self, monkeypatch):
+        """#118128 plist: launchd's job PID is osascript; the stderr_timestamp wrapper and the gateway
+        below it must be protected from the update's manual sweep (#105938)."""
+        self._wire(monkeypatch)
+        py = "/Users/u/.hermes/hermes-agent/venv/bin/python"
+        gateway_argv = [py, "-m", "hermes_cli.main", "gateway", "run", "--external-supervisor"]
+        wrapper_argv = [py, "-m", "hermes_cli.stderr_timestamp", "--error-log", "gateway.error.log", "--", *gateway_argv]
+        self._process_tree(monkeypatch, {
+            100: [(101, wrapper_argv), (102, gateway_argv), (103, ["/bin/zsh", "-c", "ls"])],
+        })
+        monkeypatch.setattr(gw, "_scan_gateway_pids", lambda *a, **k: [101, 102])
+
+        service_pids = gw._get_service_pids(all_profiles=True)
+
+        assert service_pids == {100, 101, 102, 200}
+        assert gw.find_gateway_pids(exclude_pids=service_pids, all_profiles=True) == []
 
     def test_all_profiles_returns_every_gateway_service_pid(self, monkeypatch):
         """The update sweep's exclude-set must protect ALL freshly-restarted

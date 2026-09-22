@@ -332,3 +332,22 @@ class TestGetServicePidsAllProfiles:
             pids = gateway_mod._get_service_pids(all_profiles=True)
 
         assert pids == {123}
+
+
+def test_gateway_descendants_keep_only_gateway_processes_and_degrade_to_empty():
+    """A wrapped service job's gateway descendants are found; its other children (tool subprocesses) are
+    not, and a failed process lookup adds nothing, so callers keep just the job PID (#105938)."""
+    def _child(pid, cmd):
+        return MagicMock(pid=pid, cmdline=MagicMock(return_value=cmd.split()))
+
+    tree = MagicMock()
+    tree.Process.return_value.children.return_value = [
+        _child(11, f"python -m hermes_cli.stderr_timestamp --error-log e.log -- {_GATEWAY_CMD}"),
+        _child(12, _GATEWAY_CMD),
+        _child(13, _OTHER_CMD),
+    ]
+    broken = MagicMock()
+    broken.Process.side_effect = RuntimeError("process table unavailable")
+
+    assert gateway_mod._gateway_descendants_of(10, psutil_module=tree) == {11, 12}
+    assert gateway_mod._gateway_descendants_of(10, psutil_module=broken) == set()

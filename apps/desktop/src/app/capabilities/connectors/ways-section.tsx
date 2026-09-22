@@ -2,9 +2,9 @@ import { Button } from '@/components/ui/button'
 import { SegmentedControl } from '@/components/ui/segmented-control'
 import { useI18n } from '@/i18n'
 
-import { bothWaysOn, hostedStateWord } from './derive'
-import { type InstallField, LocalInstall, LocalServerControl } from './local-server-control'
-import type { ConnectorCardModel, ConnectorWayHosted, ConnectorWays } from './types'
+import { bothWaysOn, hostedStateWord, localWord } from './derive'
+import { type InstallField, LocalInstall } from './local-server-control'
+import type { ConnectorCardModel, ConnectorWayHosted, ConnectorWayLocal, ConnectorWays } from './types'
 
 export type WayChoice = 'hosted' | 'local'
 
@@ -86,12 +86,7 @@ export function WaysSection({ card, onChange, value, ...rest }: WaysSectionProps
           way={hosted}
         />
       ) : local.installed === true || rest.onInstall === undefined ? (
-        <LocalServerControl
-          name={card.name}
-          onAuthenticate={rest.onAuthenticate}
-          onServerToggle={rest.onServerToggle}
-          way={local}
-        />
+        <LocalWay onAuthenticate={rest.onAuthenticate} onServerToggle={rest.onServerToggle} way={local} />
       ) : (
         <LocalInstall installFields={rest.installFields} installing={rest.installing} onInstall={rest.onInstall} />
       )}
@@ -147,6 +142,41 @@ function HostedWay({
       {way.state === 'off' && way.offBy === 'me' && onToggleForMe ? (
         <Button onClick={() => onToggleForMe(true)} size="xs" variant="secondary">
           {copy.card.verb.turnBackOn}
+        </Button>
+      ) : null}
+    </div>
+  )
+}
+
+function LocalWay({
+  onAuthenticate,
+  onServerToggle,
+  way
+}: {
+  onAuthenticate?: () => void
+  onServerToggle?: (next: boolean) => void
+  way: ConnectorWayLocal
+}) {
+  const { t } = useI18n()
+  const copy = t.connectorsPage
+  const reason = way.reason?.key === 'serverError' ? copy.card.reason.serverError : undefined
+
+  const sentence =
+    way.fact?.key === 'tools'
+      ? `${copy.card.state[localWord(way)]} · ${copy.card.fact.tools(way.fact.count)}`
+      : (reason ?? copy.card.state[localWord(way)])
+
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <span className="min-w-0 flex-1 text-[0.7rem] text-(--ui-text-tertiary)">{sentence}</span>
+
+      {way.serverEnabled !== true && onServerToggle ? (
+        <Button onClick={() => onServerToggle(true)} size="xs">
+          {copy.card.verb.turnBackOn}
+        </Button>
+      ) : way.verb === 'authenticate' && onAuthenticate ? (
+        <Button onClick={onAuthenticate} size="xs">
+          {copy.card.verb.authenticate}
         </Button>
       ) : null}
     </div>

@@ -64,7 +64,7 @@ class _FakePool:
         self._raise = raise_on_next
         self.next_available_calls = 0
 
-    def next_available_at(self):
+    def next_available_at(self, **_kwargs):
         self.next_available_calls += 1
         if self._raise:
             raise RuntimeError("boom")
@@ -73,10 +73,10 @@ class _FakePool:
     def has_credentials(self):
         return True
 
-    def has_available(self):
+    def has_available(self, **_kwargs):
         return self._available
 
-    def select(self):
+    def select(self, **_kwargs):
         return None
 
 

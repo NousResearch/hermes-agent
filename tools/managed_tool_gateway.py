@@ -125,16 +125,19 @@ def read_nous_access_token() -> Optional[str]:
         from hermes_cli.anon_auth import AnonCredentialDead
 
         if isinstance(exc, AnonCredentialDead):
-            return _replace_dead_guest_token(nous_provider)
+            return _replace_dead_guest_token(nous_provider, str(exc.code or "anon_credential_dead"))
         logger.debug("Nous access token refresh failed: %s", exc)
     return cached_token
 
 
-def _replace_dead_guest_token(dead_state: dict) -> Optional[str]:
-    from hermes_cli.anon_auth import clear_dead_guest, ensure_portal_identity
+def _replace_dead_guest_token(dead_state: dict, code: str = "anon_credential_dead") -> Optional[str]:
+    from hermes_cli.anon_auth import ANON_ACCOUNT_LOCKED, clear_dead_guest, ensure_portal_identity
     from hermes_cli.auth import resolve_nous_access_token
 
-    clear_dead_guest("anon_credential_dead", dead_token=dead_state.get("anon_token"))
+    clear_dead_guest(code, dead_token=dead_state.get("anon_token"))
+    # Same rule as inference: a locked account is retired but never silently replaced.
+    if code == ANON_ACCOUNT_LOCKED:
+        return None
     try:
         if ensure_portal_identity(explicit=True) is None:
             return None

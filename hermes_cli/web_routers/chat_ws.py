@@ -18,6 +18,7 @@ from fastapi import APIRouter, FastAPI, HTTPException, WebSocket, WebSocketDisco
 from agent.interrupt_scope import InterruptScope, bind_interrupt_scope
 from hermes_cli.pty_session import RegistryFull
 from hermes_cli.web_deps import LateState, late
+from hermes_cli.web_routers.chat_ws_errors import chat_start_failure_message
 from hermes_cli.web_server_chat import (
     _build_sidecar_url, _close_stalled_pty_input, _get_console_executor, _legacy_pump, _ws_auth_ok,
     _ws_request_is_allowed,
@@ -171,8 +172,12 @@ def _execute_console_line(
 
 async def _unwind_console_worker(worker: Any, scope: InterruptScope, reason: str) -> None:
     """Stop the command's worker after cancel/timeout: asyncio can only drop the waiter, so interrupt
-    any agent the command forked (closing its provider request) and wait for the thread to exit."""
-    scope.cancel(f"Console command {reason}")
+    any agent the command forked (closing its provider request) and wait for the thread to exit.
+    A user cancel is attributed to the user; only the timeout is a host-issued stop (#112647)."""
+    if reason == "cancelled":
+        scope.cancel(f"Console command {reason}", tool_reason=None)
+    else:
+        scope.cancel(f"Console command {reason}")
     if worker.cancel():  # still queued: never ran
         return
     exited = asyncio.wrap_future(worker)
@@ -416,8 +421,11 @@ async def console_ws(ws: WebSocket) -> None:
                 pass
 
 
-async def _pty_fail(ws: WebSocket, text: str) -> None:
-    await ws.send_text(f"\r\n\x1b[31m{text}\x1b[0m\r\n")
+async def _pty_fail(ws: WebSocket, exc: BaseException) -> None:
+    """Tell the user why chat could not start, then close 1011 so the SPA renders
+    "Start new session". The raw exception goes to the server log only."""
+    _log.warning("pty start failed: %s: %s", type(exc).__name__, exc)
+    await ws.send_text(f"\r\n\x1b[31m{chat_start_failure_message(exc)}\x1b[0m\r\n")
     await ws.close(code=1011)
 
 
@@ -474,10 +482,10 @@ async def pty_ws(ws: WebSocket) -> None:
     try:
         argv, cwd, env = await _resolve_chat_argv_async(**resolve_kwargs)
     except HTTPException as exc:  # unknown/invalid profile
-        await _pty_fail(ws, f"Chat unavailable: {exc.detail}")
+        await _pty_fail(ws, exc)
         return
     except SystemExit as exc:  # _make_tui_argv sys.exit(1)s when node/npm is missing
-        await _pty_fail(ws, f"Chat unavailable: {exc}")
+        await _pty_fail(ws, exc)
         return
 
     attach_token = ws.query_params.get("attach") or None
@@ -496,10 +504,10 @@ async def pty_ws(ws: WebSocket) -> None:
         try:
             bridge = _spawn()
         except PtyUnavailableError as exc:
-            await _pty_fail(ws, f"Chat unavailable: {exc}")
+            await _pty_fail(ws, exc)
             return
         except (FileNotFoundError, OSError) as exc:
-            await _pty_fail(ws, f"Chat failed to start: {exc}")
+            await _pty_fail(ws, exc)
             return
         await _legacy_pump(ws, bridge)
         return
@@ -508,13 +516,17 @@ async def pty_ws(ws: WebSocket) -> None:
     try:
         session, _created = await PTY_REGISTRY.attach_or_spawn(attach_token, spawn=_spawn)
     except (PtyUnavailableError, FileNotFoundError, OSError, RegistryFull) as exc:
-        await _pty_fail(ws, f"Chat unavailable: {exc}")
+        await _pty_fail(ws, exc)
         return
 
     # A fresh xterm can't rebuild the TUI from an arbitrary tail of alternate-
     # screen differential output; reused PTYs emit a full frame after replay.
     if not await session.attach(ws, force_redraw=not _created):
-        await _close_stalled_pty_input(ws, path="keepalive-redraw")
+        # attach() detaches itself when the client dropped mid-replay, and a socket
+        # superseded during replay is already closed by its replacement; only a
+        # stalled redraw write leaves THIS socket attached and worth closing.
+        if session._ws is ws:
+            await _close_stalled_pty_input(ws, path="keepalive-redraw")
         PTY_REGISTRY.detach(attach_token, ws)
         return
 
@@ -562,7 +574,12 @@ async def pty_ws(ws: WebSocket) -> None:
 async def gateway_ws(ws: WebSocket) -> None:
     if not await _close_unless_sidecar_allowed(ws):
         return
+    from hermes_cli.mcp_startup import start_deferred_mcp_discovery_now
     from tui_gateway.ws import handle_ws
+
+    # First chat client of a standalone dashboard: fire the discovery armed at boot (no-op
+    # otherwise). Off-loop: the first act is a config read + the ~350 ms `mcp` SDK import.
+    await asyncio.to_thread(start_deferred_mcp_discovery_now)
 
     # The authenticated identity (ticket / internal credential) stamped by
     # _ws_auth_reason becomes the identity authority for privileged RPCs

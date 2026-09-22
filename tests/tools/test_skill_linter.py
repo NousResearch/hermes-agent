@@ -212,3 +212,16 @@ def test_references_sprawl_flagged_above_cap(tmp_path):
     assert "references-sprawl" in _rules(lint_skill(skill_dir / "SKILL.md"))
     (refs / f"note-{_MAX_REFERENCE_FILES}.md").unlink()
     assert "references-sprawl" not in _rules(lint_skill(skill_dir / "SKILL.md"))
+
+
+def test_oversized_body_flagged_above_budget_and_not_below():
+    # skill_view loads SKILL.md whole and it rides in context for the rest of the session, so the
+    # body has a soft budget. Threshold-relative on purpose: the number is a calibration, not a
+    # contract. The finding names the size so the author sees how far over they are.
+    from tools.skill_linter import _BODY_SOFT_BUDGET_CHARS
+    filler = "- Prefer the native tool; the shell path loses the structured result.\n"
+    over = CLEAN + filler * (_BODY_SOFT_BUDGET_CHARS // len(filler) + 1)
+    under = CLEAN + filler * (_BODY_SOFT_BUDGET_CHARS // len(filler) // 2)
+    found = [f for f in lint_content(over) if f.rule == "oversized-body"]
+    assert found and found[0].severity == WARNING and "references/" in found[0].message
+    assert "oversized-body" not in _rules(lint_content(under))

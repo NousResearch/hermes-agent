@@ -77,3 +77,37 @@ export const appendToolShelfMessage = (prev: readonly Msg[], msg: Msg): Msg[] =>
 
   return [...prev, msg]
 }
+
+// The controller keeps its source segments in event order. The compact view
+// deliberately coalesces completed tool shelves into the first contextual
+// reasoning block, preserving the pre-timeline layout for users who have not
+// opted into chronological thinking.
+export const compactToolTimeline = (segments: readonly Msg[]): Msg[] =>
+  segments
+    .flatMap(msg => {
+      if (
+        !(
+          msg.kind === 'trail' &&
+          msg.role === 'system' &&
+          !msg.text &&
+          msg.thinking?.trim() &&
+          msg.tools?.length
+        )
+      ) {
+        return [msg]
+      }
+
+      const { toolTokens, tools, ...thinking } = msg
+
+      return [
+        thinking,
+        {
+          kind: 'trail' as const,
+          role: 'system' as const,
+          text: '',
+          tools,
+          ...(toolTokens !== undefined && { toolTokens })
+        }
+      ]
+    })
+    .reduce<Msg[]>((timeline, msg) => appendToolShelfMessage(timeline, msg), [])

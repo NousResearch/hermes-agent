@@ -1315,6 +1315,76 @@ describe('preserveLocalPendingTurnMessages', () => {
     expect(chatMessageText(preserved[1])).toBe('面板内容完整版')
   })
 
+  // Hydration folds a tool-using turn's rows (interim commentary + tool calls +
+  // final answer) into ONE assistant row, while each `message.interim` seals
+  // the live bubble and the next content starts a NEW `assistant-stream-*`
+  // row. On the post-turn rehydrate the previous turn's settled final row has
+  // no ordinal twin (N local rows vs 1 committed) and the folded row's joined
+  // text never equals it, so it fell through to the tail — rendering the OLD
+  // reply under the NEW prompt until the session was reopened.
+  it('drops settled stream rows whose text the folded authoritative turn carries as text parts', () => {
+    const interimA = 'Reading the update log first.'
+    const interimB = 'The plist is stale; regenerating it.'
+    const finalText = 'The update succeeded — long analysis follows.'
+
+    const previous = [
+      msg('1-user', 'user', 'did the update land?'),
+      streamingMsg('assistant-stream-a', interimA, { pending: false, interim: true }),
+      streamingMsg('assistant-stream-b', interimB, { pending: false, interim: true }),
+      streamingMsg('assistant-stream-c', finalText, { pending: false, durationS: 265.8 }),
+      msg('user-optimistic', 'user', 'You can run those'),
+      streamingMsg('assistant-stream-d', 'Done.', { pending: false })
+    ]
+
+    const folded: ChatMessage = {
+      id: '2-assistant',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: interimA },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'done' },
+        { type: 'text', text: interimB },
+        { type: 'tool-call', toolCallId: 'call-2', toolName: 'terminal', result: 'done' },
+        { type: 'text', text: finalText }
+      ]
+    } as ChatMessage
+
+    const next = [
+      msg('1-user', 'user', 'did the update land?'),
+      folded,
+      msg('3-user', 'user', 'You can run those'),
+      { ...streamingMsg('4-assistant', 'Done.'), pending: false }
+    ]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toEqual([
+      '1-user',
+      '2-assistant',
+      '3-user',
+      '4-assistant'
+    ])
+  })
+
+  // The text-part match is scoped to the settled row's own user occurrence:
+  // the same short answer under a NEWER prompt is a fresh reply history has
+  // not stored yet, even when an older folded row carries that exact text.
+  it('keeps a settled stream row under a later prompt even when an older fold carries its text', () => {
+    const folded: ChatMessage = {
+      id: '2-assistant',
+      role: 'assistant',
+      parts: [
+        { type: 'text', text: 'Checking.' },
+        { type: 'tool-call', toolCallId: 'call-1', toolName: 'terminal', result: 'ok' },
+        { type: 'text', text: 'Done.' }
+      ]
+    } as ChatMessage
+
+    const next = [msg('1-user', 'user', 'first'), folded, msg('3-user', 'user', 'again')]
+    const previous = [...next, streamingMsg('assistant-stream-later', 'Done.', { pending: false })]
+
+    expect(preserveLocalPendingTurnMessages(next, previous).map(message => message.id)).toContain(
+      'assistant-stream-later'
+    )
+  })
+
   // The authoritative history genuinely does not have this reply yet — the
   // pending row is the only copy and must survive (same contract as the
   // settled-row variant above).

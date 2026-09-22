@@ -600,6 +600,69 @@ function durableFoldCoversLiveResponse(messages: ChatMessage[], live: ChatMessag
   })
 }
 
+/**
+ * Whether the committed rows of a local row's OWN user occurrence carry its
+ * text as one of their text parts. Hydration folds a whole tool-using turn
+ * (each `message.interim` commentary, its tool calls, and the final answer)
+ * into ONE assistant row, while the live stream sealed each of those as its
+ * own `assistant-stream-*` bubble — so the folded row's joined text never
+ * equals any single bubble and ordinal pairing (N live rows vs 1 committed)
+ * cannot see them either. Scoped to the occurrence because an equal answer
+ * under a LATER prompt is a new reply history has not stored yet.
+ */
+function occurrenceFoldCarriesSettledText(
+  nextMessages: ChatMessage[],
+  previousMessages: ChatMessage[],
+  local: ChatMessage,
+  latestAuthoritativeUser: ChatMessage | undefined
+): boolean {
+  const localIndex = previousMessages.indexOf(local)
+
+  const owner = previousMessages
+    .slice(0, localIndex)
+    .findLast(row => row.role === 'user' && !isGatewaySystemMarker(row))
+
+  let start = 0
+
+  if (owner) {
+    let anchor = nextMessages.findIndex(row => row.id === owner.id)
+
+    if (
+      anchor < 0 &&
+      owner.id.startsWith('user-') &&
+      latestAuthoritativeUser &&
+      textWithoutReferenceLines(chatMessageText(latestAuthoritativeUser)) ===
+        textWithoutReferenceLines(chatMessageText(owner))
+    ) {
+      anchor = nextMessages.indexOf(latestAuthoritativeUser)
+    }
+
+    if (anchor < 0) {
+      return false
+    }
+
+    start = anchor + 1
+  }
+
+  const end = nextMessages.findIndex(
+    (row, index) => index >= start && row.role === 'user' && !isGatewaySystemMarker(row)
+  )
+
+  const wanted = textWithoutReferenceLines(chatMessageText(local)).trim()
+
+  if (!wanted) {
+    return false
+  }
+
+  return nextMessages
+    .slice(start, end < 0 ? nextMessages.length : end)
+    .some(
+      row =>
+        row.role === 'assistant' &&
+        row.parts.some(part => part.type === 'text' && textWithoutReferenceLines(part.text).trim() === wanted)
+    )
+}
+
 export function preserveLocalPendingTurnMessages(
   nextMessages: ChatMessage[],
   previousMessages: ChatMessage[]
@@ -717,16 +780,21 @@ export function preserveLocalPendingTurnMessages(
     // one ordinal earlier, and re-appending it renders the same answer twice
     // (#70209). Only text-identical rows are dropped — a settled row the backend
     // has NOT committed yet is the only copy of that reply and must survive.
-    if (
-      isPendingAssistant &&
-      message.pending !== true &&
-      nextMessages.some(
-        candidate =>
-          candidate.role === 'assistant' &&
-          textWithoutReferenceLines(chatMessageText(candidate)) === textWithoutReferenceLines(chatMessageText(message))
-      )
-    ) {
-      continue
+    // Identity holds for the whole committed row OR for one text part of a
+    // committed row in the SAME user occurrence: a tool-using turn hydrates
+    // as one folded row whose parts are the individually sealed live bubbles.
+    if (isPendingAssistant && message.pending !== true) {
+      const settledText = textWithoutReferenceLines(chatMessageText(message))
+
+      if (
+        nextMessages.some(
+          candidate =>
+            candidate.role === 'assistant' && textWithoutReferenceLines(chatMessageText(candidate)) === settledText
+        ) ||
+        occurrenceFoldCarriesSettledText(nextMessages, previousMessages, message, latestAuthoritativeUser)
+      ) {
+        continue
+      }
     }
 
     if (authoritative) {

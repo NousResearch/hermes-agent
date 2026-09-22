@@ -1,5 +1,5 @@
 // @vitest-environment jsdom
-import { act, cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen } from '@testing-library/react'
 import { atom } from 'nanostores'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
@@ -148,7 +148,8 @@ describe('CustomEndpointsSettings', () => {
 
     render(<CustomEndpointsSettings />)
 
-    await waitFor(() => expect(getCustomEndpoints).toHaveBeenCalledWith('content-studio'))
+    await screen.findByText('No custom endpoints')
+    expect(getCustomEndpoints).toHaveBeenCalledWith('content-studio')
     expect(screen.getByText('Applies to')).toBeTruthy()
 
     fireEvent.change(screen.getByPlaceholderText('Axet Proxy'), { target: { value: 'Studio gateway' } })

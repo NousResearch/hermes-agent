@@ -1535,10 +1535,16 @@ class TestBuildAssistantMessage:
         agent.context_compressor.note_native_compaction_checkpoint = MagicMock()
         self._enable_native_compaction(agent)
 
+        from agent.usage_anchor import capture_usage_anchor, set_usage_anchor
+
+        history = [{"role": "user", "content": "before compaction"}]
+        set_usage_anchor(agent, capture_usage_anchor(255_000, 100, history), turn_base=True)
         result = agent._build_assistant_message(msg, "stop")
 
         assert result["codex_reasoning_items"] == [checkpoint]
         agent.context_compressor.note_native_compaction_checkpoint.assert_called_once_with()
+        assert agent._usage_anchor is None
+        assert agent._turn_base_usage_anchor is None
 
     def test_native_checkpoint_remains_compatible_with_plugin_context_engine(self, agent):
         checkpoint = {
@@ -2547,10 +2553,16 @@ class TestAgentRuntimePostHookOwnershipSync:
             "tools.read_window_tool.read_window_below_tool",
             lambda **kwargs: '{"ok":true}',
         )
-        # manage_connections / setup_mcp shim: no GUI callback on this fake agent, so the MCP
-        # leg settles `unavailable` without a card; pin the catalog so the run is hermetic.
+        # manage_connections / setup_mcp shim: no card on this fake agent, so the MCP leg runs the
+        # backend at once; pin the catalog and the backend so the run is hermetic.
         monkeypatch.setattr("tools.connectors.mcp._catalog_names", lambda: ["linear"])
         monkeypatch.setattr("tools.connectors.mcp._configured_names", lambda: [])
+
+        class _NoInstallBackend:
+            def required_env(self, name):
+                return [{"name": "LINEAR_API_KEY", "prompt": "API key", "required": True}]
+
+        monkeypatch.setattr("tools.connectors.mcp._default_backend", _NoInstallBackend)
         monkeypatch.setattr(agent, "_get_session_db_for_recall", lambda: None)
         monkeypatch.setattr(
             agent,

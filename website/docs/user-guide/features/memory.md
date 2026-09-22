@@ -110,6 +110,8 @@ memory(action="replace", target="memory",
 
 If the substring matches multiple entries, an error is returned asking for a more specific match.
 
+`replace` overwrites the **whole matched entry** with `content` — `old_text` only locates the entry, it is not cut out and replaced. The new `content` must be the complete new entry, including every part of the old one you want to keep. (A whole-entry `old_text` equal to the entry itself is matched exactly and wins over substring matches.)
+
 ## Two Targets Explained
 
 ### `memory` — Agent's Personal Notes

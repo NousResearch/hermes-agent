@@ -20,6 +20,7 @@ from hermes_cli._subprocess_compat import noninteractive_git_env
 from hermes_cli.colors import Colors, color
 from hermes_cli.config import load_config, save_config, get_env_value, save_env_value
 from hermes_cli.cli_output import prompt as _prompt_input
+from utils import rmtree_readonly
 
 _MANIFEST_VERSION = 1
 
@@ -413,7 +414,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if dest.exists():
         # Fresh checkout each install — the manifest ref is the source of truth.
         _say(f"  Removing existing install at {dest}", Colors.DIM)
-        shutil.rmtree(dest)
+        rmtree_readonly(dest)
     _say(f"  Cloning {install.url} ({install.ref}) → {dest}", Colors.CYAN)
 
     # `git clone --branch` only accepts branches/tags, NOT commit SHAs; detect SHA-shaped refs
@@ -433,7 +434,7 @@ def _do_git_install(entry: CatalogEntry) -> Path:
     if not is_sha_ref and _git("clone", "--depth", "1", "--branch", install.ref, install.url, str(dest)) != 0:
         # Branch/tag form failed (e.g. ref deleted upstream): fall through to full-clone path.
         if dest.exists():
-            shutil.rmtree(dest)
+            rmtree_readonly(dest)
         is_sha_ref = True
     if is_sha_ref:
         if _git("clone", install.url, str(dest)) != 0:
@@ -454,22 +455,50 @@ def _expand_install_dir(value: str, install_dir: Optional[Path]) -> str:
     return value.replace(_INSTALL_DIR_VAR, str(install_dir))
 
 
-def _prompt_env_vars(specs: List[EnvVarSpec]) -> Dict[str, str]:
-    """Prompt for each env spec; secrets and non-secrets alike go to ~/.hermes/.env."""
+def _prompt_env_vars(specs: List[EnvVarSpec], preloaded: Optional[Dict[str, str]] = None) -> Dict[str, str]:
+    """Prompt for each env spec.
+
+    Secrets persist to ~/.hermes/.env. Non-secrets are only collected and
+    returned — the caller inlines them into the server config (config.yaml),
+    since .env is secrets-only. Values already supplied by the caller
+    (``preloaded``, e.g. from a dashboard form) skip the prompt.
+    """
+    preloaded = preloaded or {}
     collected: Dict[str, str] = {}
     for spec in specs:
-        existing = get_env_value(spec.name)
+        pre = preloaded.get(spec.name)
+        if pre:
+            collected[spec.name] = pre
+            continue
+        existing = get_env_value(spec.name) if spec.secret else None
         if existing:
             _say(f"  ✓ {spec.name} already set in .env")
             collected[spec.name] = existing
             continue
         value = _prompt_input(spec.prompt, default=spec.default or None, password=spec.secret)
         if value:
-            save_env_value(spec.name, value)
+            if spec.secret:
+                save_env_value(spec.name, value)
             collected[spec.name] = value
         elif spec.required:
             raise CatalogError(f"{spec.name} is required but no value was provided")
     return collected
+
+
+def _inline_non_secret_value(obj: Any, name: str, value: str) -> Any:
+    """Recursively replace literal ``${name}`` refs with the collected value.
+
+    Only non-secret env vars are inlined this way: secret refs stay as
+    ``${VAR}`` so config.yaml never carries credentials (resolved from .env
+    at load time).
+    """
+    if isinstance(obj, str):
+        return obj.replace("${" + name + "}", value)
+    if isinstance(obj, dict):
+        return {k: _inline_non_secret_value(v, name, value) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_inline_non_secret_value(v, name, value) for v in obj]
+    return obj
 
 
 def _build_server_config(entry: CatalogEntry, install_dir: Optional[Path]) -> dict:
@@ -656,12 +685,39 @@ def _apply_tool_selection(
     _say(f"  ✓ {len(chosen_names)}/{len(probed)} tools enabled.")
 
 
-def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
+def card_install_config(entry: CatalogEntry) -> dict:
+    """The ``mcp_servers.<name>`` block a connection card installs, built in memory.
+
+    Same block :func:`install_entry` writes, minus everything a terminal owns: no prompts, no
+    probe, no checklist. The caller saves it only once the server accepted the connection. Tool
+    filter priority matches :func:`_apply_tool_selection`: a prior user selection survives a
+    reinstall, else the manifest's curated filter, else none.
+    """
+    install_dir = _do_git_install(entry) if entry.install is not None else None
+    cfg = _build_server_config(entry, install_dir)
+    cfg["enabled"] = True
+    prior_include = _read_prior_tool_list(entry.name, "include")
+    prior_exclude = _read_prior_tool_list(entry.name, "exclude")
+    if prior_include is not None:
+        cfg["tools"] = {"include": prior_include}
+    elif prior_exclude is not None:
+        cfg["tools"] = {"exclude": prior_exclude}
+    elif entry.tools.default_excluded:
+        cfg["tools"] = {"exclude": list(entry.tools.default_excluded)}
+    elif entry.tools.default_enabled:
+        cfg["tools"] = {"include": list(entry.tools.default_enabled)}
+    return cfg
+
+
+def install_entry(entry: CatalogEntry, *, enable: bool = True, preloaded_env: Optional[Dict[str, str]] = None) -> None:
     """Install a catalog entry end-to-end.
 
     Order: git clone + bootstrap (if any); credential prompts (``auth.env``) to .env; write
     ``mcp_servers.<name>`` (with the ``auth: oauth`` marker and any pre-registered ``oauth`` block); probe + tool checklist (falling back per
     :func:`_apply_tool_selection`); print post_install notes.
+
+    ``preloaded_env`` carries env values already supplied by the caller (e.g.
+    the dashboard form); they skip the interactive prompt.
     """
     print()
     _say(f"  Installing MCP '{entry.name}'", Colors.CYAN + Colors.BOLD)
@@ -673,10 +729,11 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
 
     install_dir = _do_git_install(entry) if entry.install is not None else None
 
+    env_values: Dict[str, str] = {}
     if entry.auth.env:
         print()
         _say("  Configure credentials:", Colors.CYAN)
-        _prompt_env_vars(entry.auth.env)
+        env_values = _prompt_env_vars(entry.auth.env, preloaded_env or {})
     if entry.auth.type == "oauth" and entry.auth.provider:
         # Provider-mediated OAuth relies on the existing `hermes auth <provider>` flow; surface
         # guidance rather than auto-running it to keep install decoupled from provider-auth lifecycle.
@@ -697,6 +754,11 @@ def install_entry(entry: CatalogEntry, *, enable: bool = True) -> None:
     prior_exclude = _read_prior_tool_list(entry.name, "exclude")
 
     server_cfg = _build_server_config(entry, install_dir)
+    # Inline non-secret env values into config.yaml; secrets keep their ${VAR}
+    # refs so the raw file never carries credentials (resolved from .env at load).
+    for spec in entry.auth.env:
+        if not spec.secret and spec.name in env_values:
+            server_cfg = _inline_non_secret_value(server_cfg, spec.name, env_values[spec.name])
     server_cfg["enabled"] = enable
 
     from hermes_cli.mcp_config import _save_mcp_server
@@ -725,6 +787,6 @@ def uninstall_entry(name: str, *, purge_install_dir: bool = True) -> bool:
     if purge_install_dir:
         clone = _install_root() / name
         if clone.exists():
-            shutil.rmtree(clone)
+            rmtree_readonly(clone)
             removed = True
     return removed

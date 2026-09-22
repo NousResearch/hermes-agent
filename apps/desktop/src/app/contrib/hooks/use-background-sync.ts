@@ -62,9 +62,9 @@ export function resolveActiveTranscriptSession(
   storedSessionId: string,
   runtimeSessionId: string
 ): ActiveTranscriptSession | undefined {
-  const verifiedOwner = $sessionTiles.get().find(
-    tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId
-  )?.ownerRoute
+  const verifiedOwner = $sessionTiles
+    .get()
+    .find(tile => tile.storedSessionId === storedSessionId && tile.runtimeId === runtimeSessionId)?.ownerRoute
 
   if (verifiedOwner) {
     return { ownerRoute: verifiedOwner, profile: verifiedOwner.profile }
@@ -221,10 +221,7 @@ export async function reconcileTileTranscripts({
           // message would have to be retyped. Same composition order as
           // reconcileAuthoritativeChatMessages (use-session-actions/index.ts).
           messages: preserveLocalAssistantErrors(
-            preserveLocalPendingTurnMessages(
-              graftRefreshedTailOntoBackfill(messages, state.messages),
-              state.messages
-            ),
+            preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
             state.messages
           )
         }),
@@ -303,10 +300,7 @@ export async function reconcileActiveTranscript({
         // older pages "Show earlier" already backfilled instead of clobbering
         // them (see transcript-backfill).
         messages: preserveLocalAssistantErrors(
-          preserveLocalPendingTurnMessages(
-            graftRefreshedTailOntoBackfill(messages, state.messages),
-            state.messages
-          ),
+          preserveLocalPendingTurnMessages(graftRefreshedTailOntoBackfill(messages, state.messages), state.messages),
           state.messages
         )
       }),

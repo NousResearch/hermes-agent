@@ -1053,13 +1053,14 @@ def _clone_all_into(source_dir: Path, profile_dir: Path, canon: str) -> None:
         (profile_dir / stale).unlink(missing_ok=True)
     # auth.json / .anthropic_oauth.json copied verbatim fork single-use OAuth grants
     # (Anthropic / Codex / xAI): one credential with two owners, and the first profile to
-    # refresh revokes the pair for every sibling. Drop the copies; the clone signs in itself.
+    # refresh revokes the pair for every sibling. Drop the copies; the clone reads the root
+    # grant through the credential-pool fallback.
     from hermes_cli.auth import strip_cloned_single_use_oauth_grants
     stripped = strip_cloned_single_use_oauth_grants(profile_dir)
     if any(stripped.values()):
         logger.info(
             "profile %s: dropped cloned single-use OAuth grants %s "
-            "(run `hermes -p %s auth add <provider>` to sign in)", canon, stripped, canon,
+            "(inherits the root grant instead)", canon, stripped,
         )
 
 
@@ -1665,7 +1666,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
     old_home = os.environ.get("HERMES_HOME")
     try:
         os.environ["HERMES_HOME"] = str(profile_dir)
-        from hermes_cli.gateway import get_service_name, get_launchd_plist_path
+        from hermes_cli.gateway import get_service_name, get_launchd_plist_path, user_systemd_unit_dir
 
         def _run(*cmd: str) -> None:
             subprocess.run(list(cmd), capture_output=True, check=False, timeout=10)
@@ -1673,7 +1674,7 @@ def _cleanup_gateway_service(name: str, profile_dir: Path) -> None:
         system = _platform.system()
         if system == "Linux":
             svc_name = get_service_name()
-            svc_file = Path.home() / ".config" / "systemd" / "user" / f"{svc_name}.service"
+            svc_file = user_systemd_unit_dir() / f"{svc_name}.service"
             if svc_file.exists():
                 _run("systemctl", "--user", "disable", svc_name)
                 _run("systemctl", "--user", "stop", svc_name)

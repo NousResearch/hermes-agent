@@ -242,9 +242,19 @@ def test_receipt_carries_immutable_intent_across_resume_and_writes_once(
     detached = update_receipt.detach_update_receipt()
     assert detached["update_intent"] == intent
 
-    handoff = update_handoff.write_handoff({"receipt": detached, "pinned_intent": intent})
+    handoff = update_handoff.write_handoff({
+        "receipt": detached,
+        "pinned_intent": intent,
+        "branch": intent["branch"],
+        "pre_pull_sha": intent["prior_sha"],
+    })
     loaded = update_handoff.read_handoff(handoff)
-    update_receipt.resume_update_receipt(loaded["receipt"])
+    update_receipt.resume_update_receipt(
+        loaded["receipt"], handoff_ack_path=loaded["_handoff_ack_path"]
+    )
+    update_receipt.record_pinned_post_swap(
+        post_sha=intent["target"], post_install_id=intent["install_id"], verified=True
+    )
     path = update_receipt.finalize_update_receipt("success")
 
     assert path is not None
@@ -254,7 +264,36 @@ def test_receipt_carries_immutable_intent_across_resume_and_writes_once(
     assert payload["requested_sha"] == intent["target"]
     assert payload["pre_sha"] == intent["prior_sha"]
     assert len(list((home / "logs" / "update_receipts").glob("update_*.json"))) == 1
+    ack = update_receipt.read_handoff_ack(
+        loaded["_handoff_ack_path"], correlation_id=intent["correlation_id"]
+    )
+    assert ack["outcome"] == "success"
     assert update_receipt.finalize_pending_update_receipt(0) is None
+
+
+@pytest.mark.parametrize("field", ["branch", "pre_pull_sha"])
+def test_pinned_handoff_binds_operational_intent(tmp_path, monkeypatch, field):
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
+    intent = {
+        "target": "a" * 40,
+        "install_id": INSTALL_ID,
+        "correlation_id": "e" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+    payload = {
+        "receipt": {"update_intent": intent},
+        "pinned_intent": intent,
+        "branch": intent["branch"],
+        "pre_pull_sha": intent["prior_sha"],
+    }
+    handoff = update_handoff.write_handoff(payload)
+    tampered = json.loads(handoff.read_text(encoding="utf-8"))
+    tampered[field] = "tampered"
+    handoff.write_text(json.dumps(tampered), encoding="utf-8")
+
+    with pytest.raises(ValueError, match="handoff operational intent mismatch"):
+        update_handoff.read_handoff(handoff)
 
 
 def test_pinned_command_carries_resulting_branch_into_handoff_without_legacy_prepare(
@@ -301,6 +340,60 @@ def test_pinned_command_carries_resulting_branch_into_handoff_without_legacy_pre
         update_receipt._current = None
 
 
+def test_pinned_dependency_warning_is_terminal(monkeypatch, capsys):
+    from hermes_cli import update_cmd
+
+    monkeypatch.setattr(
+        update_cmd,
+        "_sync_python_dependencies_after_pull",
+        lambda *args, **kwargs: print("  ⚠ Lazy refresh failed to refresh: fixture"),
+    )
+
+    with pytest.raises(RuntimeError, match="pinned dependency sync reported failure"):
+        update_cmd._run_pinned_dependency_sync(
+            ["git"], "main", "b" * 40, [], [], None
+        )
+
+    assert "Lazy refresh failed" in capsys.readouterr().out
+
+
+@pytest.mark.real_post_swap_handoff
+def test_pinned_parent_does_not_duplicate_child_final_receipt(tmp_path, monkeypatch):
+    from types import SimpleNamespace
+
+    from hermes_cli import update_cmd
+
+    home = tmp_path / "home"
+    monkeypatch.setenv("HERMES_HOME", str(home))
+    intent = {
+        "target": "a" * 40,
+        "install_id": INSTALL_ID,
+        "correlation_id": "f" * 32,
+        "prior_sha": "b" * 40,
+        "branch": "main",
+    }
+    ack = home / "logs" / "update_receipts" / "post_swap_123.ack"
+    ack.parent.mkdir(parents=True)
+    ack.write_text(json.dumps({
+        "schema": 1, "correlation_id": intent["correlation_id"],
+        "outcome": "success", "finished_at": "now", "receipt_path": "child.json",
+    }), encoding="utf-8")
+    payload = {
+        "receipt": {"update_intent": intent}, "pinned_intent": intent,
+        "target_intent": intent, "correlation_id": intent["correlation_id"],
+        "_handoff_ack_path": str(ack), "_handoff_detached": False,
+    }
+    monkeypatch.setattr(update_cmd, "_post_swap_payload", lambda **kwargs: payload)
+    monkeypatch.setattr(update_cmd._update_handoff, "continue_update_in_fresh_interpreter", lambda *a, **k: 0)
+
+    with pytest.raises(SystemExit) as exc_info:
+        update_cmd._hand_off_post_swap(SimpleNamespace(), gateway_mode=False)
+
+    assert exc_info.value.code == 0
+    assert not list((home / "logs" / "update_receipts").glob("update_*.json"))
+    assert not ack.exists()
+
+
 @pytest.mark.live_system_guard_bypass
 @pytest.mark.real_post_swap_handoff
 def test_real_subprocess_handoff_imports_target_tree_and_preserves_intent(
@@ -325,17 +418,11 @@ def test_real_subprocess_handoff_imports_target_tree_and_preserves_intent(
         encoding="utf-8",
     )
     monkeypatch.setenv("PYTHONPATH", str(target))
+    monkeypatch.setenv("HERMES_HOME", str(tmp_path / "home"))
     monkeypatch.chdir(target)
     monkeypatch.setenv("CHILD_MARKER", str(marker))
     monkeypatch.setattr(update_handoff, "_running_from_windows_shim", lambda: False)
     monkeypatch.setattr(update_handoff, "post_swap_python", lambda: Path(sys.executable))
-    monkeypatch.setattr(
-        update_handoff,
-        "post_swap_command",
-        lambda handoff_path, _argv_tail: [
-            sys.executable, str(package / "main.py"), "--post-swap", str(handoff_path)
-        ],
-    )
     intent = {
         "target": "a" * 40,
         "install_id": INSTALL_ID,
@@ -346,6 +433,8 @@ def test_real_subprocess_handoff_imports_target_tree_and_preserves_intent(
     payload = {
         "receipt": {"update_intent": intent},
         "pinned_intent": intent,
+        "branch": intent["branch"],
+        "pre_pull_sha": intent["prior_sha"],
     }
 
     assert update_handoff.continue_update_in_fresh_interpreter(payload, argv_tail=[]) == 0

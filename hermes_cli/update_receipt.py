@@ -56,6 +56,7 @@ class UpdateReceipt:
     """Collects the observable facts of one ``hermes update`` run."""
 
     def __init__(self, intent: dict[str, Any] | None = None) -> None:
+        self._handoff_ack_path: Optional[Path] = None
         self.data: dict[str, Any] = {
             "schema": 1, "started_at": _utc_now_iso(), "finished_at": None,
             "argv": list(sys.argv), "pid": os.getpid(),
@@ -118,11 +119,20 @@ class UpdateReceipt:
     def record_pinned_post_swap(
         self, *, post_sha: str, post_install_id: str, verified: bool,
     ) -> None:
+        expected_sha = self.data.get("requested_sha")
+        expected_install_id = self.data.get("install_id")
+        matches_intent = (
+            isinstance(expected_sha, str) and post_sha == expected_sha
+            and isinstance(expected_install_id, str) and post_install_id == expected_install_id
+        )
+        proof_valid = bool(verified and matches_intent)
         self.data["post_sha"] = post_sha
         self.data["post_install_id"] = post_install_id
-        self.data["pinned_post_verified"] = bool(verified)
+        self.data["pinned_post_verified"] = proof_valid
         if not verified:
             self.record_failure("post-swap-identity-unverified")
+        elif not matches_intent:
+            self.record_failure("post-swap-proof-mismatch")
 
     def gateway_restart_result(
         self, *, restarted_services: list | None = None, relaunched_profiles: list | None = None,
@@ -171,10 +181,12 @@ class UpdateReceipt:
         # into a success by supplying a stale outcome.
         if outcome == "success" and self.data.get("failure_reasons"):
             outcome = "failed"
-        elif outcome == "success" and self.data.get("pinned_post_verified") is False:
-            outcome = "failed"
         elif outcome == "success" and self.data.get("refusal_reasons"):
             outcome = "refused"
+        elif outcome in {"success", "partial"} and self.data.get("update_intent") is not None:
+            if self.data.get("pinned_post_verified") is not True:
+                self.record_failure("post-swap-proof-missing")
+                outcome = "failed"
         self.data["outcome"] = outcome
         self.data["finished_at"] = _utc_now_iso()
         self.data["post_update"] = _code_identity(refresh=True)
@@ -210,7 +222,9 @@ def detach_update_receipt() -> Optional[dict[str, Any]]:
     return None if receipt is None else deepcopy(receipt.data)
 
 
-def resume_update_receipt(data: dict[str, Any]) -> None:
+def resume_update_receipt(
+    data: dict[str, Any], *, handoff_ack_path: str | Path | None = None
+) -> None:
     """Continue a receipt detached by the pre-swap interpreter without aliasing its input."""
     global _current
     if not isinstance(data, dict):
@@ -221,6 +235,8 @@ def resume_update_receipt(data: dict[str, Any]) -> None:
     if receipt.data.get("update_intent") is not None:
         receipt.set_intent(receipt.data["update_intent"])
     receipt.data["post_swap_pid"] = os.getpid()
+    if handoff_ack_path:
+        receipt._handoff_ack_path = Path(handoff_ack_path)
     _current = receipt
 
 
@@ -295,6 +311,7 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         with suppress(OSError):  # stable pointer for the dashboard/desktop
             (directory / "latest.json").write_text(body, encoding="utf-8")
         _prune_old_receipts(directory)
+        _write_handoff_ack(receipt._handoff_ack_path, receipt.data, path)
         return path
     except Exception as exc:
         # Visible, not debug: a run that pulled code and left no receipt is exactly the run
@@ -302,6 +319,65 @@ def finalize_update_receipt(outcome: str, fleet: list | None = None, stop_reason
         logger.warning("Could not write update receipt (%s): %s", outcome, exc)
         print(f"  ⚠ Update receipt not written: {exc}")
         return None
+
+
+def _write_handoff_ack(ack_path: Path | None, receipt: dict[str, Any], receipt_path: Path) -> None:
+    """Publish child finalization after the receipt is durable, without raising."""
+    if ack_path is None:
+        return
+    try:
+        payload = {
+            "schema": 1,
+            "correlation_id": receipt.get("correlation_id"),
+            "outcome": receipt.get("outcome"),
+            "finished_at": receipt.get("finished_at"),
+            "receipt_path": str(receipt_path),
+        }
+        temporary = ack_path.with_suffix(ack_path.suffix + ".tmp")
+        ack_path.parent.mkdir(parents=True, exist_ok=True)
+        temporary.write_text(json.dumps(payload, indent=2), encoding="utf-8")
+        temporary.replace(ack_path)
+    except Exception as exc:
+        logger.warning("Could not write post-swap handoff acknowledgement: %s", exc)
+
+
+def read_handoff_ack(
+    path: str | Path | None, *, correlation_id: str | None = None
+) -> Optional[dict[str, Any]]:
+    """Read a child finalization acknowledgement only when it matches the receipt."""
+    if not path:
+        return None
+    with suppress(Exception):
+        payload = json.loads(Path(path).read_text(encoding="utf-8"))
+        if not isinstance(payload, dict):
+            return None
+        if correlation_id is not None and payload.get("correlation_id") != correlation_id:
+            return None
+        if payload.get("outcome") not in {"success", "partial", "failed", "refused"}:
+            return None
+        return payload
+    return None
+
+
+def read_finalized_receipt(correlation_id: str | None) -> Optional[dict[str, Any]]:
+    """Find a durable terminal receipt for one pinned correlation id."""
+    if not correlation_id:
+        return None
+    with suppress(Exception):
+        paths = sorted(
+            (p for p in _receipt_dir().glob("update_*.json") if p.is_file()),
+            key=lambda p: p.stat().st_mtime,
+            reverse=True,
+        )
+        for path in paths:
+            payload = json.loads(path.read_text(encoding="utf-8"))
+            if (
+                isinstance(payload, dict)
+                and payload.get("correlation_id") == correlation_id
+                and payload.get("outcome") in {"success", "partial", "failed", "refused"}
+            ):
+                return payload
+    return None
 
 
 def finalize_pending_update_receipt(exit_code: Optional[int] = None, stop_reason: str = "") -> Optional[Path]:

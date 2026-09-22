@@ -457,7 +457,7 @@ def _git_fixture(tmp_path: Path) -> dict[str, object]:
     _git(source, "remote", "add", "origin", str(bare))
     _git(source, "push", "-u", "origin", "main")
     install = tmp_path / "install"
-    _git(tmp_path, "clone", str(bare), str(install))
+    _git(tmp_path, "clone", "-b", "main", str(bare), str(install))
     _git(install, "config", "user.name", "fixture")
     _git(install, "config", "user.email", "fixture@example.test")
     return {"source": source, "bare": bare, "install": install, "a": commit_a}
@@ -513,6 +513,31 @@ def test_pinned_apply_refuses_dirty_tree_before_movement(tmp_path):
         apply_pinned_target(install, TargetRequest(commit_b, "1" * 32, str(fixture["a"])))
     assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
     assert (install / "payload.txt").read_text(encoding="utf-8") == "local edit\n"
+
+
+def test_pinned_apply_rechecks_clean_tree_after_fetch_before_movement(tmp_path, monkeypatch):
+    from hermes_cli import update_target
+    from hermes_cli.update_target import PinnedTargetRefused, apply_pinned_target
+
+    fixture = _git_fixture(tmp_path)
+    source = fixture["source"]
+    install = fixture["install"]
+    assert isinstance(source, Path) and isinstance(install, Path)
+    commit_b = _commit_source(fixture, "B\n", "B")
+    _git(source, "push", "origin", "main")
+
+    original_run_git = update_target._run_git
+
+    def inject_race(root, *args, **kwargs):
+        result = original_run_git(root, *args, **kwargs)
+        if args[:1] == ("fetch",) and result.returncode == 0:
+            (install / "race.txt").write_text("concurrent edit\n", encoding="utf-8")
+        return result
+
+    monkeypatch.setattr(update_target, "_run_git", inject_race)
+    with pytest.raises(PinnedTargetRefused, match="dirty-checkout"):
+        apply_pinned_target(install, TargetRequest(commit_b, "1" * 32, str(fixture["a"])))
+    assert _git(install, "rev-parse", "HEAD").stdout.strip() == str(fixture["a"])
 
 
 def test_pinned_apply_refuses_current_sha_identity_and_branch_admission(tmp_path):

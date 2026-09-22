@@ -70,11 +70,12 @@ def _validated_pinned_payload(payload: dict[str, Any], *, intent: dict[str, Any]
 
     frozen = validate_update_intent(candidate)
     receipt = body.get("receipt")
-    if isinstance(receipt, dict):
-        receipt_intent = receipt.get("update_intent")
-        if receipt_intent is not None and validate_update_intent(receipt_intent) != frozen:
-            raise ValueError("handoff receipt intent mismatch")
-        receipt["update_intent"] = deepcopy(frozen)
+    if not isinstance(receipt, dict):
+        raise ValueError("pinned handoff receipt is required")
+    receipt_intent = receipt.get("update_intent")
+    if validate_update_intent(receipt_intent) != frozen:
+        raise ValueError("handoff receipt intent mismatch")
+    receipt["update_intent"] = deepcopy(frozen)
     if "target_intent" in body and body["target_intent"] != frozen:
         raise ValueError("handoff target intent mismatch")
     redundant = {
@@ -86,6 +87,8 @@ def _validated_pinned_payload(payload: dict[str, Any], *, intent: dict[str, Any]
     for key, expected in redundant.items():
         if key in body and body[key] != expected:
             raise ValueError(f"handoff {key} mismatch")
+    if body.get("branch") != frozen["branch"] or body.get("pre_pull_sha") != frozen["prior_sha"]:
+        raise ValueError("handoff operational intent mismatch")
     body["target_intent"] = deepcopy(frozen)
     body["pinned_intent"] = deepcopy(frozen)
     return body
@@ -99,6 +102,8 @@ def write_handoff(payload: dict[str, Any], *, intent: dict[str, Any] | None = No
     directory = get_hermes_home() / "logs" / "update_receipts"
     directory.mkdir(parents=True, exist_ok=True)
     path = directory / f"post_swap_{os.getpid()}.json"
+    if body.get("pinned_intent") is not None:
+        body["_handoff_ack_path"] = str(path.with_suffix(".ack"))
     temporary = path.with_suffix(path.suffix + ".tmp")
     temporary.write_text(json.dumps(body, indent=2, default=_json_default), encoding="utf-8")
     temporary.replace(path)
@@ -239,6 +244,7 @@ def continue_update_in_fresh_interpreter(payload: dict[str, Any], *, argv_tail: 
     # Keep the path in the in-memory envelope so the parent can distinguish a
     # child that imported and consumed the receipt from one that never imported.
     payload["_handoff_path"] = str(handoff_path)
+    payload["_handoff_ack_path"] = str(handoff_path.with_suffix(".ack"))
     payload["_handoff_detached"] = False
     cmd = post_swap_command(handoff_path, argv_tail)
     env = post_swap_child_env()

@@ -67,6 +67,7 @@ def _make_message(document=None, caption=None, media_group_id=None, photo=None):
     # Media flags — all None except explicit payload
     msg.photo = photo
     msg.video = None
+    msg.video_note = None
     msg.audio = None
     msg.voice = None
     msg.sticker = None

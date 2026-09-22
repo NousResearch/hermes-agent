@@ -123,7 +123,7 @@ def test_a_mark_is_visible_in_memory_before_the_persist_completes(tracker, monke
     would reopen the mention-gating hole the tracker exists to close -- and
     would make membership depend on executor availability.
 
-    The oracle is a handoff that NEVER RUNS: ``asyncio.to_thread`` is replaced
+    The oracle is a handoff that NEVER RUNS: ``helpers._to_thread`` is replaced
     by a coroutine that parks forever without ever invoking the callable.  That
     is what makes this non-vacuous.  Merely waiting for the worker to reach the
     rename -- the obvious shape -- also observes a True under the deferred
@@ -136,8 +136,9 @@ def test_a_mark_is_visible_in_memory_before_the_persist_completes(tracker, monke
         handed_off.append(fn)
         await asyncio.Event().wait()  # park forever; fn is never called
 
-    # Patch through the module seam the tracker actually calls.
-    monkeypatch.setattr(helpers.asyncio, "to_thread", _never, raising=True)
+    # Patch the module seam the tracker actually calls; ``asyncio.to_thread``
+    # itself is left alone.
+    monkeypatch.setattr(helpers, "_to_thread", _never, raising=True)
 
     async def scenario():
         mark = asyncio.create_task(tracker.mark_async("!first:example.org"))

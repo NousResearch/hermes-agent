@@ -61,6 +61,12 @@ class MessageDeduplicator:
         self._seen.clear()
 
 
+# Worker-thread handoff used by the off-loop persist paths.  A module attribute
+# so tests can replace THIS seam instead of patching ``asyncio.to_thread``
+# globally.
+_to_thread = asyncio.to_thread
+
+
 async def cancel_task(task: Optional[asyncio.Task]) -> None:
     """Cancel *task* and wait for it to unwind. ``None``/finished tasks are no-ops; awaiting the
     current task would deadlock, so a self-cancel only requests cancellation. Exceptions the task
@@ -181,7 +187,7 @@ class ThreadParticipationTracker:
         long as it runs.
         """
         if self._remember(thread_id):
-            await asyncio.to_thread(self._save)
+            await _to_thread(self._save)
 
     def __contains__(self, thread_id: str) -> bool:
         with self._lock:

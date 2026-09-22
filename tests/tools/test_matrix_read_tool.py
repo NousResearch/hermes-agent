@@ -20,7 +20,7 @@ def _bind_matrix_session(adapter, **overrides):
     values = dict(platform="matrix", chat_id="!room:server", user_id="@alice:server",
                   transport_adapter=adapter, transport_loop=asyncio.get_running_loop())
     values.update(overrides)
-    return set_session_vars(**values)
+    return set_session_vars(routing_identity=None, **values)
 
 
 @pytest.mark.asyncio

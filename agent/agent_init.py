@@ -1488,6 +1488,11 @@ def _parse_compression_config(agent, _agent_cfg, _user_cfg=None) -> CompressionS
     threshold_tokens = cfg.get("threshold_tokens", cfg_get(DEFAULT_CONFIG, "compression", "threshold_tokens"))
     if threshold_tokens is not None:
         threshold_tokens = _positive_int(threshold_tokens)
+    threshold_tokens_is_default = "threshold_tokens" not in user_cfg
+    if threshold_tokens_is_default and "threshold" in user_cfg:
+        # A user-authored global ratio outranks the shipped cap outright (#117915); per-model ratios
+        # outrank it only where they match, so that check lives in the compressor.
+        threshold_tokens = None
     # Non-system head messages to protect (system prompt is always protected); 0 is a
     # legitimate "system prompt + summary + tail".
     protect_first = max(0, int(cfg.get("protect_first_n", 3)))
@@ -1528,7 +1533,7 @@ def _parse_compression_config(agent, _agent_cfg, _user_cfg=None) -> CompressionS
             if isinstance(v, (int, float)) and not isinstance(v, bool)
         },
         threshold_tokens=threshold_tokens,
-        threshold_tokens_is_default="threshold_tokens" not in user_cfg,
+        threshold_tokens_is_default=threshold_tokens_is_default,
         checkpoint_required=checkpoint_required,
         # In-place compaction: no session-id rotation. default=True MUST match DEFAULT_CONFIG
         # (a False default flipped agents into rotation mode when the key was omitted).

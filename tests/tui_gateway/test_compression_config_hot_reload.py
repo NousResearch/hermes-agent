@@ -193,6 +193,25 @@ def test_live_model_threshold_outranks_only_implicit_default_cap(monkeypatch):
 
 
 
+def test_live_global_threshold_outranks_only_implicit_default_cap(monkeypatch):
+    """A user-authored `threshold` drops the shipped cap on live sync (mirrors agent_init); an explicit
+    `threshold_tokens` alongside it is absolute again."""
+    session, compressor = _neutral_session(threshold_tokens_cap=100_000)
+    import agent.agent_init as agent_init
+
+    monkeypatch.setattr(agent_init, "config_context_length_for_runtime", lambda _agent, _cfg=None: 872_000)
+    cfg = {"model": {"context_length": 872_000}, "compression": {"threshold": 0.85}}
+
+    _sync_with_cfg(monkeypatch, session, cfg)
+    assert compressor.threshold_tokens_cap is None
+    assert compressor.threshold_tokens == int(872_000 * 0.85)
+
+    cfg["compression"]["threshold_tokens"] = 256_000
+    _sync_with_cfg(monkeypatch, session, cfg)
+    assert compressor.threshold_tokens_cap_is_default is False
+    assert compressor.threshold_tokens == 256_000
+
+
 def test_prompt_submit_calls_compression_sync_after_model_sync():
     # Read the module that actually defines the turn (it moved out of server.py).
     source = open(server._run_prompt_submit.__code__.co_filename, encoding="utf-8").read()

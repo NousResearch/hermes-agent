@@ -2,12 +2,13 @@ import { spawn, type SpawnOptions } from 'node:child_process'
 import { existsSync, statSync } from 'node:fs'
 import path from 'node:path'
 
+import { resolveVenvDir } from './venv-blocker-scan'
 import { hiddenWindowsChildOptions } from './windows-child-options'
 
 /** File prerequisites only: dependency recovery must remain reachable through update. */
 export function windowsUpdatePrerequisiteError(updateRoot: string): string | null {
   const maintainedDir = path.join(updateRoot, 'scripts', 'desktop-update')
-  const required = [path.join(updateRoot, 'venv', 'Scripts', 'python.exe')]
+  const required = [path.join(resolveVenvDir(updateRoot), 'Scripts', 'python.exe')]
 
   // Pre-reorg flat scripts remain supported; damaged modern trees do not.
   if (existsSync(maintainedDir)) {
@@ -126,24 +127,34 @@ export function resolvePosixScriptHandoff(
 }
 
 /**
- * Wrap a PowerShell hand-off invocation so it survives a detached, hidden
- * spawn from Electron.
+ * Wrap a PowerShell hand-off invocation so it survives a hidden spawn from
+ * Electron without ever showing a console window (#116161).
  *
  * Verified empirically (2026-08-09, Windows 11): `spawn('powershell', [...,
  * '-File', script], { detached: true, stdio: 'ignore', windowsHide: true })`
  * exits 0 WITHOUT executing a single line of the script. powershell.exe is a
- * console-subsystem binary; detached+windowsHide gives it no console to
- * attach to, and Windows PowerShell 5.1 dies during console init before
- * -File processing (the same class of failure as #54220's conhost work, on
- * the launch side). The same spawn with a visible console, or non-detached,
- * runs fine — so unit tests and foreground use hide the bug.
+ * console-subsystem binary; libuv maps `detached: true` to DETACHED_PROCESS,
+ * which gives the child NO console (and makes the OS ignore CREATE_NO_WINDOW),
+ * and Windows PowerShell 5.1 dies during console init before -File processing
+ * (the same class of failure as #54220's conhost work, on the launch side).
  *
- * `cmd /c start "" /min powershell ...` was the variant that survived the
- * full detached+hidden production shape in testing: `start` allocates the
- * child its own (minimized) console and fully detaches it from cmd.exe,
- * which exits immediately. The spawned pid is therefore the WRAPPER's —
- * callers must not use it as a marker owner (the script claims the marker
- * itself with its own $PID).
+ * The parent-console model that follows from that (and that every other
+ * hidden spawn in this app relies on): a console child inherits its parent's
+ * console; only a console-LESS parent forces the OS to allocate a new,
+ * visible one. So the wrapper cmd.exe is spawned NON-detached — libuv then
+ * honours `windowsHide` (CREATE_NO_WINDOW) and cmd.exe owns one hidden
+ * console — and `start "" /b powershell ...` runs the script inside that
+ * hidden console (`/min` would tell `start` to allocate a NEW console for the
+ * child, which is what flashed a minimized PowerShell window on every
+ * hand-off; `/b` shares the wrapper's). The console outlives cmd.exe for as
+ * long as powershell is attached to it.
+ *
+ * Survival past our own exit does not need `detached`: libuv's per-process
+ * job object has JOB_OBJECT_LIMIT_SILENT_BREAKAWAY_OK, so grandchildren
+ * (`start`'s powershell) are never members and Windows does not tie a
+ * process's lifetime to its parent. `start` returns immediately, so the
+ * spawned pid is the WRAPPER's — callers must not use it as a marker owner
+ * (the script claims the marker itself with its own $PID).
  */
 export function wrapHandoffForDetachedConsole(
   handoff: UpdateScriptHandoff,
@@ -151,10 +162,13 @@ export function wrapHandoffForDetachedConsole(
 ): {
   command: string
   args: string[]
+  /** Spawn NON-detached so the wrapper gets a hidden console the script inherits. */
+  detached: false
 } {
   return {
     command: 'cmd.exe',
-    args: ['/d', '/s', '/c', 'start', '', '/min', handoff.command, ...handoff.args, ...extraArgs]
+    args: ['/d', '/s', '/c', 'start', '', '/b', handoff.command, ...handoff.args, ...extraArgs],
+    detached: false
   }
 }
 

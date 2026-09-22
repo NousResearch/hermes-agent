@@ -30,9 +30,11 @@ import {
   $narrowViewport,
   $newSessionTabAction,
   $paneVisible,
+  adoptContributedPanes,
   registerPaneCloser,
   removeTreePane,
-  revealTreePane
+  revealTreePane,
+  undismissTreePanes
 } from '@/components/pane-shell/tree/store'
 import {
   $workspaceMode,
@@ -55,7 +57,8 @@ import {
   requestGatewayForProfile,
   retainGatewayForAgent,
   retainGatewayForRelay,
-  retireLocalProfileGateways
+  retireLocalProfileGateways,
+  type SpawnPriority
 } from '@/store/gateway'
 import { notify, notifyError } from '@/store/notifications'
 import {
@@ -233,18 +236,44 @@ const $busyBySession = computed($sessionStates, states => {
 
 const $viewport = atom<ViewportRect>(readViewport())
 
+/** Options a plugin may attach to one `host.requestProfile` call. */
+export interface PluginProfileRequestOptions {
+  /** Tag the dial that may cold-spawn this route's backend. Default
+   *  'background'; an explicit user action passes 'foreground' so its spawn
+   *  takes the pool's reserved interactive slot (#102281 primitive). */
+  spawnPriority?: SpawnPriority
+}
+
 async function requestPluginProfile<T>(
   route: PluginProfileRoute | string,
   method: string,
   params: Record<string, unknown>,
-  timeoutMs?: number
+  timeoutMs?: number,
+  options?: PluginProfileRequestOptions
 ): Promise<T> {
+  const spawnPriority = options?.spawnPriority
+
+  // Preserve the exact call arity the pool tests pin: pass the deadline and the
+  // dial options only when the caller set them, so a plain routed RPC keeps its
+  // four-argument shape and a timeout-only caller its five-argument shape.
+  const dialProfile = (profile: string): Promise<T> =>
+    spawnPriority
+      ? requestGatewayForProfile<T>(profile, method, params, timeoutMs, undefined, { spawnPriority })
+      : timeoutMs === undefined
+        ? requestGatewayForProfile<T>(profile, method, params)
+        : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
+
   if (typeof route !== 'string') {
     if (!route.connectionId.trim() || !route.profile.trim() || !route.targetProfile.trim()) {
       throw new Error('Profile route must include connectionId, profile, and targetProfile')
     }
 
-    // Omit the bound entirely when unset so callers stay on the pool default.
+    if (spawnPriority) {
+      return requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs, undefined, {
+        spawnPriority
+      })
+    }
+
     return timeoutMs === undefined
       ? requestGatewayForAgent<T>(route.connectionId, route.profile, method, params)
       : requestGatewayForAgent<T>(route.connectionId, route.profile, method, params, timeoutMs)
@@ -253,9 +282,7 @@ async function requestPluginProfile<T>(
   const getAgentRoster = window.hermesDesktop?.getAgentRoster
 
   if (!getAgentRoster) {
-    return timeoutMs === undefined
-      ? requestGatewayForProfile<T>(route, method, params)
-      : requestGatewayForProfile<T>(route, method, params, timeoutMs)
+    return dialProfile(route)
   }
 
   const roster = await getAgentRoster()
@@ -267,9 +294,7 @@ async function requestPluginProfile<T>(
   // its live enumeration transiently failed. Any additional source requires a
   // descriptor because an undialed/unreachable source may expose the same name.
   if (soleLocalSource) {
-    return timeoutMs === undefined
-      ? requestGatewayForProfile<T>(profile, method, params)
-      : requestGatewayForProfile<T>(profile, method, params, timeoutMs)
+    return dialProfile(profile)
   }
 
   throw new Error(
@@ -333,7 +358,18 @@ export const DEFAULT_SESSION_HYDRATION_TIMEOUT_MS = 20_000
  *  and paint durable history. Bot Mode opts into one retry, so its effective
  *  ceiling is two bounded attempts rather than an unbounded wait. */
 export const BOT_CHAT_SESSION_HYDRATION_TIMEOUT_MS = 60_000
+/** Ceiling on the paint-first "Syncing…" badge. The profile gate it waits on is
+ *  not guaranteed to ever fire (see beginHydrationBackgroundSync), so the badge
+ *  needs a bound of its own or it outlives the wake it describes. */
+export const HYDRATION_SYNC_BADGE_TIMEOUT_MS = 30_000
 let openSessionGeneration = 0
+/** Which generation's wake most recently set $gatewaySwapTarget. Clearing it
+ *  keys off this, not off `generation === openSessionGeneration`, so a
+ *  superseded wake still clears the overlay IT put up — the generation
+ *  counter has already moved on by the time its `finally` runs, and a later
+ *  wake that never sets the target (e.g. a paint-first open without
+ *  awaitHydration) would otherwise leave it stuck forever (#115844). */
+let gatewaySwapTargetOwnerGeneration: number | null = null
 
 export interface PluginOpenSessionOptions {
   awaitHydration?: boolean
@@ -372,18 +408,44 @@ export interface PluginNewChatOptions {
 // down as soon as the active-profile gate catches up. The listener clears ONLY
 // its own profile's badge: a newer wake may have replaced the badge with a
 // different profile, and the stale listener must not wipe the winner's.
+//
+// The gate is not guaranteed to fire. `.listen()` is change-only, and a wake
+// is routed here precisely because $activeGatewayProfile did not match at
+// resolve time. ensureGatewayProfile does publish the target on a
+// shared-primary connection, but when the activation did NOT land it publishes
+// the route the registry actually settled on instead — so on that path the
+// atom may never become this profile and the listener never fires. Without a
+// cap the badge would outlive the wake it describes and strand a permanent
+// "Syncing <profile>…" spinner with no user-reachable dismissal; only a full
+// app restart would clear it. Cap the wait so the badge can never outlive the
+// work.
 function beginHydrationBackgroundSync(profile: string): void {
   $hydrationSyncProfile.set(profile)
 
+  let timer: number | undefined
+
+  const clearOwnBadge = (): void => {
+    if ($hydrationSyncProfile.get() === profile) {
+      $hydrationSyncProfile.set(null)
+    }
+  }
+
   const unlisten = $activeGatewayProfile.listen(next => {
     if (normalizeProfileKey(next) === profile) {
-      if ($hydrationSyncProfile.get() === profile) {
-        $hydrationSyncProfile.set(null)
+      clearOwnBadge()
+
+      if (timer !== undefined) {
+        window.clearTimeout(timer)
       }
 
       unlisten()
     }
   })
+
+  timer = window.setTimeout(() => {
+    clearOwnBadge()
+    unlisten()
+  }, HYDRATION_SYNC_BADGE_TIMEOUT_MS)
 }
 
 function waitForFocusedSessionHydration({
@@ -994,6 +1056,7 @@ export const host = {
         // Keep the target-specific overlay visible through transcript hydration,
         // not merely through the gateway/profile activation that precedes it.
         $gatewaySwapTarget.set(targetProfile)
+        gatewaySwapTargetOwnerGeneration = generation
       }
 
       // Only the HYDRATION half retries. Activation already failed its own
@@ -1136,8 +1199,13 @@ export const host = {
 
       throw error
     } finally {
-      if (options.awaitHydration && generation === openSessionGeneration) {
+      // Clear the overlay THIS wake set, even when a later open superseded
+      // it: `generation === openSessionGeneration` is false by then, but
+      // nothing else is coming to clear it. Skip only when a newer wake has
+      // since taken ownership of the target.
+      if (gatewaySwapTargetOwnerGeneration === generation) {
         $gatewaySwapTarget.set(null)
+        gatewaySwapTargetOwnerGeneration = null
       }
     }
   },
@@ -1279,6 +1347,24 @@ export const host = {
    *  (`typeof host.paneVisibility === 'function'`). */
   paneVisibility: (paneId: string): ReadableAtom<boolean> => $paneVisible(paneId),
 
+  /** Forget a persisted Close for a contributed pane so adoption puts it back
+   *  where its dock hint says — WITHOUT fronting it or un-collapsing its zone
+   *  (that is `revealPane`, for an explicit user action). For a pane a plugin
+   *  registers conditionally (Bot Mode's Scheduled jobs pane exists only while
+   *  Bot Mode is on screen), its re-registration is the only "show" the user
+   *  ever performs, so a remembered Close would otherwise strand the pane until
+   *  a full layout reset (#102224). Feature-detect on older desktops. */
+  undismissPane: (paneId: string): void => {
+    const id = (paneId ?? '').trim()
+
+    if (!id) {
+      return
+    }
+
+    undismissTreePanes([id])
+    adoptContributedPanes()
+  },
+
   /** Reveal a contributed pane and its zone from an explicit user action. */
   revealPane: (paneId: string): void => {
     const id = (paneId ?? '').trim()
@@ -1292,7 +1378,11 @@ export const host = {
 
   /** HEAR the gateway stream (message deltas, session lifecycle, tool
    *  activity, …) by event type — `'*'` for everything. Returns a disposer.
-   *  Listeners are isolated; a throw can't affect app dispatch. */
+   *  Listeners are isolated; a throw can't affect app dispatch. A subscription
+   *  made while your plugin's `register()` runs is retired with the plugin on
+   *  unload/reload/disable; one made later (a timer, a socket callback) is
+   *  yours to wire to `ctx.onDispose` — or use `ctx.onEvent`, which is
+   *  tracked wherever it is called. */
   onEvent: onGatewayEvent,
 
   /** Restart the backend gateway (progress surfaces in the core statusbar). */
@@ -1331,13 +1421,21 @@ export const host = {
    *  `timeoutMs` opts one call out of the pool's generic deadline (#93911: a
    *  method whose backend contract is minutes long, such as `bot_relay.deliver`,
    *  otherwise dies at 30s and reports an unclassified failure). Leave it unset
-   *  to keep the default. */
+   *  to keep the default.
+   *
+   *  `options.spawnPriority: 'foreground'` marks the call as an explicit user
+   *  action (a roster click opening a Bot Chat) so the dial that may cold-spawn
+   *  the route's backend takes the pool's reserved interactive slot instead of
+   *  queuing behind background roster hydration (#105104). `timeoutMs` stays
+   *  the fourth positional argument so existing callers keep their shape; pass
+   *  `undefined` there to set options alone. Default is 'background'. */
   requestProfile: async <T>(
     route: PluginProfileRoute | string,
     method: string,
     params: Record<string, unknown> = {},
-    timeoutMs?: number
-  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs),
+    timeoutMs?: number,
+    options?: PluginProfileRequestOptions
+  ): Promise<T> => requestPluginProfile<T>(route, method, params, timeoutMs, options),
 
   /** Pin a route's pooled gateway socket open across repeated `requestProfile`
    *  calls (#93594: the bot-relay drain loop was dialing and tearing down a
@@ -1359,17 +1457,22 @@ export const host = {
    *  a non-retained secondary socket closes at refcount 0 between calls — and
    *  the gateway reaps any runtime session that socket minted, failing the
    *  next RPC with 4001. Acquire before the first session-scoped RPC, release
-   *  (idempotent) in a `finally`. Feature-detect: older hosts lack this. */
-  retainProfile: async (route: PluginProfileRoute | string): Promise<() => void> => {
+   *  (idempotent) in a `finally`. An explicit user action can mark the retain
+   *  foreground so a retired route takes the pool's reserved interactive
+   *  slot. Feature-detect: older hosts lack this. */
+  retainProfile: async (
+    route: PluginProfileRoute | string,
+    options?: PluginProfileRequestOptions
+  ): Promise<() => void> => {
     if (typeof route !== 'string') {
       if (!route.connectionId.trim() || !route.profile.trim()) {
         throw new Error('Profile route must include connectionId and profile')
       }
 
-      return retainGatewayForAgent(route.connectionId, route.profile)
+      return retainGatewayForAgent(route.connectionId, route.profile, options)
     }
 
-    return retainGatewayForAgent(null, route.trim() || 'default')
+    return retainGatewayForAgent(null, route.trim() || 'default', options)
   },
 
   /** Read persisted sessions from a profile's owning source without dialing
@@ -1432,15 +1535,17 @@ export const host = {
   },
 
   /** Gateway JSON-RPC — sessions, config, skills, cron, kanban, everything
-   *  the app itself uses. Lazy: resolves the LIVE socket per call. */
-  request: async <T>(method: string, params: Record<string, unknown> = {}): Promise<T> => {
+   *  the app itself uses. Lazy: resolves the LIVE socket per call. `timeoutMs`
+   *  overrides the socket's 30 s default for RPCs that legitimately run longer
+   *  (session.compress); unset keeps the default. */
+  request: async <T>(method: string, params: Record<string, unknown> = {}, timeoutMs?: number): Promise<T> => {
     const gateway = $gateway.get()
 
     if (!gateway) {
       throw new Error('Hermes gateway unavailable')
     }
 
-    return gateway.request<T>(method, params)
+    return timeoutMs === undefined ? gateway.request<T>(method, params) : gateway.request<T>(method, params, timeoutMs)
   },
 
   /** The LIVE gateway instance for the active profile (null before the first
@@ -1453,6 +1558,24 @@ export const host = {
 
 // -- react bridge -------------------------------------------------------------
 
+/** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
+ *  lists, full-skill detail pane, embedded hub picker with one-click
+ *  installs). For plugin dialogs pass `embedded` (tab state stays local —
+ *  never touches the page router) and `fixedProfile` to pin every tab to one
+ *  bot's backend; the internal profile selector hides itself. Add
+ *  `fixedConnection` (registry connection id) to pin a bot living on another
+ *  registered gateway — probe `CapabilitiesView.supportsFixedConnection` first;
+ *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
+ *  Advanced section is the reference consumer. */
+export { CapabilitiesView } from '@/app/capabilities'
+
+// -- ui: the design language --------------------------------------------------
+
+/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
+ *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
+ *  renders anywhere (a plugin dialog); pass a live `gateway` (see
+ *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
+export { McpTab } from '@/app/capabilities/mcp/mcp-tab'
 // Every contribution surface, plugin-reachable: register keybinds, palette
 // commands, routes, themes, panes, composer extensions, and bar items with
 // the same area ids + payload types core uses.
@@ -1463,9 +1586,6 @@ export {
   type ComposerAttachmentProvider,
   type ComposerMiddleware
 } from '@/app/chat/composer/contrib'
-
-// -- ui: the design language --------------------------------------------------
-
 /** THE session status dot — the one primitive the sidebar row, the pane tabs
  *  and the session switcher render, so a session's status can never disagree
  *  between surfaces. Pass the STORED session id and it resolves the rest
@@ -1485,6 +1605,11 @@ export { SidebarRowLead } from '@/app/chat/sidebar/chrome'
 export { ConnectionGlyph } from '@/app/chat/sidebar/connection-glyph'
 export { SIDEBAR_ROW_LEAD, SIDEBAR_TRUNCATED_LEADING } from '@/app/chat/sidebar/row-geometry'
 export { PALETTE_AREA, type PaletteContribution } from '@/app/command-palette/contrib'
+/** THE overdue test for a cron job's `next_run_at`: non-null once the stored slot
+ *  sits past the scheduler grace and the job is expected to fire. Every surface
+ *  that prints a next run switches its label on this (`t.cron.next` →
+ *  `t.cron.overdueSince`) so a dead scheduler never reads as "Next: 7 hr ago". */
+export { nextRunOverdueMs } from '@/app/cron/job-state'
 /** THE master-detail toolkit core uses for list+inspector surfaces (Scheduled
  *  jobs, Kanban, …): a dense left `PanelList` of `PanelListRow`s beside a
  *  scrolling `PanelDetail` of `PanelSectionLabel` / `PanelMeta` / `PanelBlock`.
@@ -1511,7 +1636,13 @@ export {
   PanelRowMenu,
   PanelSectionLabel
 } from '@/app/overlays/panel'
-export { type RouteContribution, ROUTES_AREA, SIDEBAR_NAV_AREA, type SidebarNavContribution } from '@/app/routes'
+export {
+  type RouteContribution,
+  ROUTES_AREA,
+  SIDEBAR_NAV_AREA,
+  type SidebarNavContribution,
+  WORKSPACE_PAGE_HEADER_AREA
+} from '@/app/routes'
 
 /** THE full per-toolset config panel core Settings renders — provider picker,
  *  env vars / API keys, model catalog picker, and post-setup runners. Route-
@@ -1532,21 +1663,10 @@ export {
 } from '@/app/shell/model-catalog-menu'
 export type { StatusbarItem } from '@/app/shell/statusbar-controls'
 export type { TitlebarTool } from '@/app/shell/titlebar-controls'
-/** THE whole Capabilities surface (Skills / Tools / MCP tabs, installed
- *  lists, full-skill detail pane, embedded hub picker with one-click
- *  installs). For plugin dialogs pass `embedded` (tab state stays local —
- *  never touches the page router) and `fixedProfile` to pin every tab to one
- *  bot's backend; the internal profile selector hides itself. Add
- *  `fixedConnection` (registry connection id) to pin a bot living on another
- *  registered gateway — probe `SkillsView.supportsFixedConnection` first;
- *  builds without it would route the pin to the ACTIVE gateway. Bot Mode's
- *  Advanced section is the reference consumer. */
-export { SkillsView } from '@/app/skills'
-/** THE full MCP tab core Settings renders — per-server enable + OAuth sign-in
- *  + API-key setup + live probes, not a checkbox list. Route-decoupled so it
- *  renders anywhere (a plugin dialog); pass a live `gateway` (see
- *  `host.getGateway()`) and an optional `profile` to scope it to one bot. */
-export { McpTab } from '@/app/skills/mcp-tab'
+/** Canonical raw message renderer: applies Desktop message transforms (including
+ * `MEDIA:` delivery directives) and the same rich Markdown/media components as
+ * core chat. Prefer this over raw Streamdown for transcript-style messages. */
+export { MessageTextContent } from '@/components/assistant-ui/markdown-text'
 /** The oversized Collapse lettering an empty chat is titled with — core writes
  *  "HERMES AGENT" with it, a `chat.empty` contribution writes its own name. */
 export { Wordmark } from '@/components/chat/wordmark'
@@ -1659,9 +1779,12 @@ export { type GrabScroll, useGrabScroll } from '@/hooks/use-grab-scroll'
  *  `translateNow` is the one-shot form for the places a hook can't reach —
  *  notably a `ctx.register` pane `title`, which is read at registration time
  *  and is why plugin pane titles otherwise strand as hardcoded English. It
- *  samples the locale at call time, so React should still use the hooks. */
+ *  samples the locale at call time, so React should still use the hooks. A
+ *  pane whose label must track the locale pairs that `title` with
+ *  `data.tabTitle: () => <LocalizedTabTitle select={t => ...} />`. */
 export {
   type Locale,
+  LocalizedTabTitle,
   type PluginI18n,
   type PluginLocaleBundles,
   type PluginMessages,
@@ -1682,8 +1805,9 @@ export { CHAT_EMPTY_AREA, type ChatEmptyContribution, type ChatEmptyProps } from
 /** THE confirm flow for guarded model switches — when a gateway model-switch
  *  RPC answers `confirm_required` (data-policy / expensive-model guard),
  *  route it through this shared applier instead of forking a per-surface
- *  dialog: it shows the warning and resends with
- *  `confirm_expensive_model: true` on Confirm (#95293). */
+ *  dialog: it asks through the app's ConfirmDialog (Switch anyway / Keep
+ *  current model) and only a confirmed answer resends with
+ *  `confirm_expensive_model: true` (#95293, #112458). */
 export {
   type GuardedModelSwitchResult,
   surfaceModelSwitchConfirm,
@@ -1720,6 +1844,10 @@ export { reasoningEffortLabel } from '@/lib/reasoning-effort'
 
 export const PANES_AREA = 'panes'
 export const STATUSBAR_AREAS = { left: 'statusBar.left', right: 'statusBar.right' } as const
+/** Titlebar slots are PERMANENT mount points: a component registered here
+ *  stays mounted across chat ↔ page navigation, so `useEffect` setup/cleanup
+ *  runs once per registration, not once per route. Page-owned controls that
+ *  should exist only while a page is up go to `WORKSPACE_PAGE_HEADER_AREA`. */
 export const TITLEBAR_AREAS = { center: 'titleBar.center', left: 'titleBar.left', right: 'titleBar.right' } as const
 
 /** The app's own gateway-readiness evaluation (setup.status +

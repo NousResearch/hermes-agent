@@ -282,6 +282,25 @@ class TestVaultSupervisorAttach:
         assert _fake_supervisor_registry == [("t-vault", "ws://127.0.0.1:47000/devtools/browser/t-vault")]
 
 
+class TestVaultEgressRedaction:
+    def test_exec_redacts_registered_vault_secret_from_stdout_and_stderr(self, tmp_path, monkeypatch):
+        """A browser_exec page read must not return a vault-filled value to model history."""
+        from agent import redact
+
+        secret = "vault-filled-password-112693"
+        cli = _fake_cli(tmp_path, f'cat > /dev/null\necho "stdout={secret}"\necho "stderr={secret}" >&2\n')
+        monkeypatch.setattr(bu_cli, "_find_cli", lambda: [cli])
+        redact.register_vault_redaction_value(secret)
+        try:
+            result = json.loads(bu_cli.browser_exec("print(1)"))
+        finally:
+            redact.clear_vault_redaction_values()
+
+        serialized = json.dumps(result, ensure_ascii=False)
+        assert secret not in serialized
+        assert serialized.count("«redacted-vault-secret»") == 2
+
+
 class TestFindCli:
     """The tests/tools conftest pins _find_cli to None (host isolation);
     exercise the real function via the preserved _find_cli_unpatched."""
@@ -793,6 +812,40 @@ class TestBrowserUseSlashCommand:
         stub, saved = self._run("/browser use whatever", {}, monkeypatch)
         assert saved == {}
         assert stub.session_resets == 0
+
+
+class TestBrowserSlashDispatch:
+    """/browser routes through the _BROWSER_SUBCOMMANDS table: the subcommand word is
+    case-insensitive, the argument keeps its case (CDP URL paths are case-sensitive),
+    and an unknown word prints the usage block without touching any handler."""
+
+    def _run(self, cmd, monkeypatch):
+        import contextlib
+        import io
+
+        import hermes_cli.cli_commands_mixin as mod
+
+        calls = []
+        monkeypatch.setattr(mod, "_browser_connect", lambda cli, url: calls.append(("connect", url)))
+        monkeypatch.setattr(mod, "_browser_disconnect", lambda cli: calls.append(("disconnect",)))
+        monkeypatch.setattr(mod, "_browser_status", lambda: calls.append(("status",)))
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            mod.CLICommandsMixin._handle_browser_command(object(), cmd)
+        return calls, buf.getvalue()
+
+    def test_connect_keeps_url_case_and_defaults_to_status(self, monkeypatch):
+        from hermes_cli.browser_connect import DEFAULT_BROWSER_CDP_URL
+
+        assert self._run("/browser CONNECT ws://127.0.0.1:9222/devtools/browser/AbC", monkeypatch)[0] == [
+            ("connect", "ws://127.0.0.1:9222/devtools/browser/AbC")]
+        assert self._run("/browser connect", monkeypatch)[0] == [("connect", DEFAULT_BROWSER_CDP_URL)]
+        assert self._run("/browser", monkeypatch)[0] == [("status",)]
+
+    def test_unknown_subcommand_prints_usage_only(self, monkeypatch):
+        calls, out = self._run("/browser frobnicate", monkeypatch)
+        assert calls == []
+        assert "Usage: /browser connect|disconnect|status|use" in out
 
 
 class TestNativeScreenshots:

@@ -4271,9 +4271,20 @@ def task_age(task: Task) -> dict:
 
 # --- Retention + garbage collection ---
 
-# Shared by both gc sweeps: a negative window puts the cutoff in the future, so
-# "older than cutoff" matches every row / file instead of none.
-_NEGATIVE_RETENTION_MSG = "older_than_seconds must be >= 0, got {!r}: a negative retention selects everything."
+def _retention_seconds(older_than_seconds: int) -> int:
+    """Normalise a gc retention window, rejecting negatives.
+
+    Shared by both gc sweeps: a negative window puts the cutoff in the future,
+    so "older than cutoff" would match every row / file instead of none —
+    refuse before any sweep runs.
+    """
+    older_than_seconds = int(older_than_seconds)
+    if older_than_seconds < 0:
+        raise ValueError(
+            f"older_than_seconds must be >= 0, got {older_than_seconds!r}: "
+            "a negative retention selects everything."
+        )
+    return older_than_seconds
 
 
 def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3600) -> int:
@@ -4282,10 +4293,7 @@ def gc_events(conn: sqlite3.Connection, *, older_than_seconds: int = 30 * 24 * 3
     ``older_than_seconds=0`` means everything older than now; the CLI maps
     ``--event-retention-days 0`` to "disabled" before calling this.
     """
-    older_than_seconds = int(older_than_seconds)
-    if older_than_seconds < 0:
-        raise ValueError(_NEGATIVE_RETENTION_MSG.format(older_than_seconds))
-    cutoff = int(time.time()) - older_than_seconds
+    cutoff = int(time.time()) - _retention_seconds(older_than_seconds)
     with write_txn(conn):
         cur = conn.execute(
             "DELETE FROM task_events WHERE created_at < ? AND kind != 'decomposed' AND task_id IN "
@@ -4300,9 +4308,7 @@ def gc_worker_logs(*, older_than_seconds: int = 30 * 24 * 3600, board: Optional[
     ``older_than_seconds=0`` means everything older than now; the CLI maps
     ``--log-retention-days 0`` to "disabled" before calling this.
     """
-    older_than_seconds = int(older_than_seconds)
-    if older_than_seconds < 0:
-        raise ValueError(_NEGATIVE_RETENTION_MSG.format(older_than_seconds))
+    older_than_seconds = _retention_seconds(older_than_seconds)
     log_dir = worker_logs_dir(board=board)
     if not log_dir.exists():
         return 0

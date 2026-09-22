@@ -493,3 +493,27 @@ class TestPg0DataDirsNeverSwept:
         assert stat_tmp.is_dir(), "pg_stat_tmp must survive the sweep"
         assert not sweepable.exists(), "unrelated empty dirs are still swept"
         assert removed > 0
+
+        # Belt-and-braces: files under .pg0 are never auto-tracked either (#113673).
+        tracked_probe = data / "tmp_probe.py"
+        tracked_probe.write_text("x")
+        assert dg.guess_category(tracked_probe) is None
+
+    def test_preserves_relocated_postgres_cluster(self, _isolate_env):
+        """pg0 supports custom data dirs, so the sweep must not rely on the ``.pg0``
+        name alone: any cluster root is found by its ``PG_VERSION`` marker."""
+        dg = _load_lib()
+        relocated = _isolate_env / "pgdata-custom"
+        (relocated / "pg_logical" / "snapshots").mkdir(parents=True)
+        (relocated / "PG_VERSION").write_text("18\n")
+        nested = _isolate_env / "srv-custom" / "pg2"
+        (nested / "pg_stat_tmp").mkdir(parents=True)
+        (nested / "PG_VERSION").write_text("18\n")
+        sweepable = _isolate_env / "scratch" / "empty"
+        sweepable.mkdir(parents=True)
+
+        dg._sweep_empty_dirs(_isolate_env)
+
+        assert (relocated / "pg_logical" / "snapshots").is_dir(), "relocated cluster must survive"
+        assert (nested / "pg_stat_tmp").is_dir(), "nested cluster root must survive"
+        assert not sweepable.exists(), "unrelated empty dirs are still swept"

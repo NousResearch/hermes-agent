@@ -196,14 +196,42 @@ def _make_consumer(adapter, chat_id, loop, streamer):
     return consumer
 
 
+def _reap_pending_consumer_tasks(loop) -> None:
+    """Fail loudly on a live consumer task, then cancel whatever is left.
+
+    A consumer whose drain task is parked in ``asyncio.to_thread`` (a blocking
+    provider ``next()``) survives ``abort()`` until the provider gives up, so a
+    test that ends without awaiting it leaves a pending ``_run()`` task on a
+    loop that is about to close — the classic "Task was destroyed but it is
+    pending!" teardown warning. Cancelling is safe: the sentinel/abort flags
+    already carry the outcome, the worker thread is abandoned exactly as the
+    gateway runtime abandons it on finalisation timeout.
+    """
+    pending = [t for t in asyncio.all_tasks(loop) if not t.done()]
+    for task in pending:
+        coro = task.get_coro()
+        if getattr(coro, "__qualname__", "") == "StreamingTTSConsumer._run":
+            consumer = coro.cr_frame.f_locals.get("self")
+            if consumer is not None and not (consumer._aborted or consumer._finished):
+                pytest.fail(
+                    "test ended with a live streaming TTS consumer: "
+                    "finish() or abort() it before returning"
+                )
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+
+
 def _run_test(coro_factory, timeout=10.0):
-    """Run an async test in a fresh event loop."""
+    """Run an async test in a fresh event loop, then reap every task it left behind."""
     loop = asyncio.new_event_loop()
     try:
         return loop.run_until_complete(
             asyncio.wait_for(coro_factory(loop), timeout=timeout)
         )
     finally:
+        _reap_pending_consumer_tasks(loop)
         loop.close()
 
 

@@ -76,7 +76,6 @@ class _Generation:
         self.identity = identity
         self.retired = False
 
-
 _lock = threading.Lock()
 # path → live generation; retired generations move to _retired (keyed by id(db)) until
 # their last holder releases.
@@ -253,13 +252,30 @@ def acquire(db_path: Optional[Path] = None) -> "SessionDB":
         with _lock:
             teardown = _tearing_down.get(path)
             if teardown is None:
-                existing = _generations.get(path)
-                if existing is not None:  # Defensive: installed by explicit registry manipulation mid-open.
+                # Complete any pending adoption from SessionDB.__init__ (which ran under
+                # lifecycle_lock and couldn't acquire _lock safely). The constructor set
+                # _pending_adoption_target when it found an existing generation; if so,
+                # the newly opened db is redundant — adopt the existing connection instead.
+                pending = getattr(db, "_pending_adoption_target", None)
+                if pending is not None:
+                    existing = pending
                     existing.refcount += 1
                     winner = existing.db
+                    # Adopt: take over the existing connection so we don't hold two writers.
+                    db._adopt_shared_handle(winner)
+                    # The adopted handle is now db (which absorbed winner's conn); update
+                    # the generation to point at db and release winner's redundant ref.
+                    existing.db = db
+                    winner._shared_registry_owned = False
+                    winner._conn = None
                 else:
-                    _generations[path] = _Generation(path, db, identity)
-                    winner = db
+                    existing = _generations.get(path)
+                    if existing is not None:  # Defensive: installed by explicit registry manipulation mid-open.
+                        existing.refcount += 1
+                        winner = existing.db
+                    else:
+                        _generations[path] = _Generation(path, db, identity)
+                        winner = db
             _finish_opening(path, opening)
         if teardown is not None:
             # A shutdown or retired-generation final release was admitted while this opener was
@@ -289,9 +305,15 @@ def release(db: "SessionDB") -> bool:
             if path is None:
                 return False
             generation = _generations.get(path)
-            if generation is None or generation.db is not db:
-                # Not shared (bare SessionDB()); the caller owns close().
+            if generation is None:
+                # Not shared (bare SessionDB() that didn't register, or already torn down).
                 return False
+            # When a handle was transferred to a different SessionDB object via
+            # _adopt_shared_handle, the generation's db points to the new object.
+            # A close() on the old object still needs to decrement — it's a released
+            # reference even though it no longer owns the connection. If generation.db
+            # IS db, this is the live handle; if it's a different object, the handle
+            # was transferred and we still release on behalf of the old object.
         generation.refcount -= 1
         needs_teardown = generation.refcount <= 0
         if needs_teardown:
@@ -398,38 +420,6 @@ def close_all_under(directory: str | Path) -> int:
     return _teardown_swept_generations(generations, teardown_barriers, active_teardowns)
 
 
-def other_generations_for_path(
-    db_path: Path, *, exclude: Optional["SessionDB"] = None
-) -> List[str]:
-    """Describe every other LIVE SessionDB generation THIS process holds for *db_path*.
-
-    The registry is path-keyed, so it can answer the in-process half of "is this store quiet?"
-    that a ``/proc`` descriptor scan structurally cannot: that scan skips our own pid, so it only
-    ever proves other PROCESSES are away.
-
-    RETIRED generations are deliberately not holders here. A generation is retired only after its
-    file was replaced, which is exactly when ``SessionDB`` fences it: every write raises
-    ``StateDbReplacedError`` and the close-time checkpoint is disabled, so it is not the live writer
-    this gate protects. It also leaves ``_retired`` only when its last holder releases, and a
-    gateway handle does not release before shutdown — counting it made ONE inode replacement
-    (recovery swap, backup restore, snapshot) skip auto-VACUUM for that path for the rest of the
-    process lifetime, turning the unbounded growth this maintenance exists to bound into a
-    permanent condition.
-    """
-    try:
-        path = Path(db_path).resolve()
-    except OSError:
-        path = Path(db_path)
-    with _lock:
-        return [
-            f"in-process live SessionDB generation (refcount {generation.refcount})"
-            for generation in _generations.values()
-            if generation.db is not exclude
-            and generation.path == path
-            and not generation.retired
-        ]
-
-
 def live_shared_session_dbs() -> List["SessionDB"]:
     """Snapshot of every live (non-retired) shared SessionDB (refcounts untouched), for
     in-process maintenance. A concurrent final release may close an instance, in which
@@ -486,8 +476,10 @@ def release_or_close(db: "SessionDB") -> None:
 def close_shared_session_dbs() -> int:
     return close_all()
 
+
 def get_shared_session_db(db_path: Optional[Path] = None) -> "SessionDB":
     return acquire(db_path)
+
 
 def release_shared_session_db(db: "SessionDB") -> bool:
     return release(db)

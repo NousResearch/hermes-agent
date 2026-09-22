@@ -27,12 +27,7 @@ from pathlib import Path
 from hermes_constants import get_hermes_home, mkdir_under_hermes_home
 from typing import Any, Callable, Dict, Iterator, List, Optional, Tuple, TypeVar, cast
 
-from hermes_state_common import (
-    TITLE_SOURCE_DERIVED as _TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM as _TITLE_SOURCE_LLM,
-    TITLE_SOURCE_USER as _TITLE_SOURCE_USER,
-    escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity,
-)
-from hermes_state_holders import read_only_db_uri
+from hermes_state_common import escape_like as _escape_like, stat_db_file_identity as _stat_db_file_identity
 from hermes_state_errors import (
     _DELETED_WAL_GENERATION_MSG, _DISK_IO_ERROR_MARKER, _STATE_DB_CORRUPT_MSG, _STATE_DB_GENERATION_KEY,
     _STATE_DB_REPLACED_MSG, DeletedWalGenerationError, SessionCompressionInProgressError, StateDbCorruptError,
@@ -41,20 +36,17 @@ from hermes_state_errors import (
 )
 from hermes_state_guard import (
     _STATE_DB_GUARD_BYPASS_ENV, _in_test_context, _is_production_state_db, _real_platform_state_root,
-    _register_test_instance, _set_last_init_error, get_last_init_error,
+    _set_last_init_error, get_last_init_error,
 )
 from hermes_state_readpool import _READ_POOL_MAX, _proc_fd_targets, _read_budget_for
 from hermes_state_sessions import SessionSessionsMixin
 from hermes_state_fts import SessionFtsSetupMixin, load_fts5_cjk_extension
 from hermes_state_portability import SessionPortabilityMixin
 from hermes_state_telegram import SessionTelegramTopicsMixin
-from hermes_state_profile_repair import SessionProfileRepairMixin
 from hermes_state_schema import SessionSchemaMixin
 import hermes_state_holders as _state_holders
-import hermes_state_lockguard as _lockguard
-from hermes_state_lockowners import log_write_lock_holders
 from hermes_state_dbfile import (
-    _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
+    _canonical_sqlite_path, _connect_tracked_db, _fd_is_truly_unlinked, _prepare_connection_retirement,
     _read_sqlite_application_id, _stat_sqlite_sidecar_identity,
     _watched_sqlite_sidecar_paths, has_invalid_sqlite_header_preopen, is_zeroed_state_db, quarantine_cross_process_lock,
     quarantine_invalid_state_db,
@@ -109,11 +101,10 @@ class SessionResumeTooLargeError(ValueError):
         self, message_count: int, limit: int = _MAX_SAFE_MESSAGES, scope: str = "across its lineage",
     ):
         self.message_count, self.limit = message_count, limit
-        self.scope = scope
         super().__init__(
-            f"This session is too long to reload safely ({message_count} messages; limit {limit}). "
-            "Start a fresh chat and use `hermes sessions export` to keep a copy, or raise the limit "
-            "with `hermes config set sessions.max_resume_messages 0`."
+            f"session has at least {message_count} active messages {scope}; "
+            f"safe resume limit is {limit}. Export the session instead, or set "
+            "sessions.max_resume_messages: 0 in config.yaml to disable the guard."
         )
 
 
@@ -304,20 +295,14 @@ def _strip_background_review_harness(messages: List[Dict[str, Any]]) -> List[Dic
         return messages
     out: List[Dict[str, Any]] = []
     skip_next_assistant = False
-    previous_was_harness = False
     for msg in messages:
         if _is_background_review_harness_message(msg):
-            # A consecutive harness prompt occupies the preceding prompt's
-            # immediate reply slot, so it must not arm another assistant skip.
-            skip_next_assistant = not previous_was_harness
-            previous_was_harness = True
+            skip_next_assistant = True
             continue
         if skip_next_assistant:
             skip_next_assistant = False
             if isinstance(msg, dict) and msg.get("role") == "assistant":
-                previous_was_harness = False
                 continue  # the curator-mode reply to the harness prompt
-        previous_was_harness = False
         out.append(msg)
     return out
 
@@ -444,16 +429,15 @@ class SessionDB(
     SessionSessionsMixin, SessionFtsSetupMixin, SessionSearchMixin, SessionSchemaMixin,
     SessionPortabilityMixin, SessionTelegramTopicsMixin, SessionCompressionMixin,
     SessionGatewayMixin, SessionMaintenanceMixin, SessionUsageMixin, SessionTitlesMixin,
-    SessionMessagesMixin, SessionRewindMixin, SessionProfileRepairMixin,
+    SessionMessagesMixin, SessionRewindMixin,
 ):
     """SQLite-backed session storage with FTS5 search; many reader threads, one writer (WAL)."""
 
     # Only these state-owned producers join automatic stale-open reconciliation; messaging/UI
     # sources have their own lifecycle owners; unknown sources fail closed.
-    # See #60609.  `recovered` = placeholders `hermes sessions recover` synthesizes for
-    # orphaned messages (no live owner, never stamped ended_at); without it they are immortal.
+    # See #60609.
     _AUTO_PRUNE_STALE_OPEN_SOURCES: Tuple[str, ...] = (
-        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool", "recovered",
+        "cli", "cron", "kanban", "acp", "api_server", "subagent", "tool",
     )
 
     # ── Write-contention tuning ──
@@ -538,18 +522,6 @@ class SessionDB(
         self.db_path = db_path or _default_db_path()
         _ensure_test_isolation(self.db_path)  # before any connection/pragma/mkdir
         self.read_only = read_only
-        # Keep only the opening call site, never a frame (which pins caller locals).
-        self._creation_site = "unknown"
-        caller = None
-        try:
-            caller = sys._getframe(1)
-            self._creation_site = (
-                f"{caller.f_globals.get('__name__', '?')}.{caller.f_code.co_name}:{caller.f_lineno}"
-            )
-        except Exception:
-            pass  # Diagnostic metadata must not prevent opening the database.
-        finally:
-            del caller
         self._lock = threading.Lock()
         # Read-path split (WAL only): reads borrow from a BOUNDED read-only pool so they
         # never queue behind writer flushes on self._lock (see _read_ctx); unbounded
@@ -564,6 +536,7 @@ class SessionDB(
         # per DATABASE PATH, not per instance: the descriptors they ration belong to the file, and one
         # process holds several SessionDB objects on the same state.db (#98573). See _PathReadBudget.
         self._read_budget = _read_budget_for(self.db_path)
+        self._read_budget.register(self)
         self._read_permits = self._read_budget.permits
         self._read_conns_lock = threading.Lock()
         # Set when close() begins; an in-flight reader then closes its own connection
@@ -584,7 +557,6 @@ class SessionDB(
         self._retired_capture_lock = threading.Lock()
         self._retire_connection: Optional[Callable[[Any], None]] = None
         self._connection_pinned = False  # one unmatched C reference taken at most once per handle
-        self._wal_lock_guard: dict = {}  # hermes_state_lockguard.hold() record, see _open_writer
         self._db_corrupt, self._db_corrupt_reason = False, ""  # sticky quarantine (StateDbCorruptError)
         self._fts_usermerge_floor_applied = False  # one-shot usermerge-floor write guard
         self._fts_enabled = self._fts_stale = self._trigram_available = False
@@ -602,6 +574,33 @@ class SessionDB(
         # Set True when this instance is opened via hermes_state_registry.acquire(). Makes close() a no-op so the
         # registry (not individual callers) controls the connection lifecycle (#90837).
         self._shared_registry_owned = False
+
+        # ── Registry handoff: bare SessionDB(db_path=path) opened when the registry
+        # already published a shared handle for the same resolved path must NOT open its
+        # own writer connection. This runs INSIDE acquire()'s lifecycle_lock window, so
+        # the lock ordering (lifecycle_lock -> _lock) must not be inverted by _adopt_shared_handle
+        # which also acquires _lock (deadlock with release()'s _lock -> lifecycle_lock path).
+        # Instead of inlining the adoption here, set a flag that acquire() checks AFTER
+        # _open_session_db returns and handles under _lock only.
+        # Read-only opens and bare SessionDB() callers that want their own connection set
+        # _hermes_bypass_registry_handoff on the class before construction (tests, one-shots).
+        self._hermes_bypass_registry_handoff = getattr(self.__class__, "_hermes_bypass_registry_handoff", False)
+        self._pending_adoption = (
+            not self._hermes_bypass_registry_handoff
+            and not read_only
+        )
+        if self._pending_adoption:
+            try:
+                from hermes_state_registry import _generations, _db_path_of
+                self._pending_adoption_path = self.db_path.resolve() if self.db_path.name != "~" else self.db_path
+                for gen in _generations.values():
+                    gen_path = _db_path_of(gen.db)
+                    if gen_path is not None and gen_path.resolve() == self._pending_adoption_path and gen.db is not self:
+                        self._pending_adoption_target = gen
+                        break
+            except Exception:
+                self._pending_adoption = False
+
         initialization_complete = False
         try:
             if read_only:
@@ -615,6 +614,22 @@ class SessionDB(
                 self._open_writer()
             self._record_db_file_identity()
             initialization_complete = True
+            # ── Register bare SessionDB() with the process-wide registry ──────────────────────
+            # Skip when: this instance adopted a shared handle (it's already in the registry
+            # under the adopted handle's identity), was opened by the registry (acquire sets
+            # _shared_registry_owned and the registry's _Generation wraps it), or is a
+            # pending adoption that hasn't been resolved yet (acquire() will handle it).
+            if (not self._shared_registry_owned
+                    and not self._hermes_bypass_registry_handoff
+                    and self._conn is not None
+                    and not getattr(self, "_pending_adoption", False)):
+                try:
+                    from hermes_state_registry import _generations, _Generation, _stat_db_file_identity as _stat_id
+                    resolved = self.db_path.resolve()
+                    if _generations.get(resolved) is None:
+                        _generations[resolved] = _Generation(resolved, self, _stat_id(resolved))
+                except Exception:
+                    pass  # don't let registry failure break the open
         except Exception as exc:
             # Surface WHY via /resume and friends; callers keep their ``_session_db = None`` path.
             _set_last_init_error(f"{type(exc).__name__}: {exc}")
@@ -623,13 +638,6 @@ class SessionDB(
             if not initialization_complete:
                 conn, self._conn = self._conn, None
                 self._close_connection_quietly(conn)
-            else:
-                # Only a successfully opened handle owns a writer connection. Failed
-                # construction must not leave a diagnostic member behind.
-                self._read_budget.register(self)
-                # Test-isolation runs only (gated inside the helper): register
-                # for the suite-level leak sweep in tests/conftest.py.
-                _register_test_instance(self)
 
     def _open_writer(self) -> None:
         """Writable open: preflight, zero-byte quarantine, connect + schema (one in-place repair of a
@@ -670,11 +678,6 @@ class SessionDB(
             self._connect_and_init_with_lock_patience()
         # FTS optimization is OPT-IN (`hermes db optimize`); no background worker races session lifecycle.
         self._ensure_db_file_generation()
-        if self._wal_active:
-            # OFD copies of the two POSIX locks that keep a sibling's close from unlinking this WAL
-            # generation: any in-process open()/close() of state.db or -shm cancels SQLite's own
-            # (howtocorrupt §2.2); these survive it. Lifted in close().
-            self._wal_lock_guard = _lockguard.hold(self.db_path)
 
     def _open_read_only(self) -> None:
         """Read-only attach for cross-profile aggregation: no schema init, NO write
@@ -712,7 +715,7 @@ class SessionDB(
         """``mode=ro`` tracked connection with Row factory. check_same_thread=False: pooled connections
         are borrowed by whichever thread reads next; exclusive ownership is enforced by pool checkout."""
         conn = _connect_tracked_db(
-            read_only_db_uri(self.db_path), tracking_path=self.db_path, uri=True,
+            f"file:{self.db_path}?mode=ro", tracking_path=self.db_path, uri=True,
             check_same_thread=False, timeout=timeout, isolation_level=None,
         )
         conn.row_factory = sqlite3.Row
@@ -728,12 +731,13 @@ class SessionDB(
         except OSError:
             zsize = -1
         qpath = quarantine_invalid_state_db(self.db_path, already_locked=already_locked)
-        where = f"moved aside to {qpath}" if qpath else "left in place (it could not be moved aside)"
         msg = (
-            f"state.db was empty or damaged ({zsize} bytes) and has been {where}; Hermes started with a "
-            "fresh, empty session database. To bring old sessions back, run "
-            f"`hermes sessions recover --source {qpath or self.db_path} --inspect-only`, or restore a "
-            "snapshot with `/snapshot list` then `/snapshot restore <id>` (terminal `hermes` chat only)."
+            f"state.db has no SQLite header ({zsize} bytes). "
+            f"Preserved at {qpath or '(quarantine failed — file left in place)'}. "
+            f"Restore from {self.db_path.parent / 'state-snapshots'} via `hermes snapshot list` / "
+            f"`hermes snapshot restore <id>` if available, or salvage the preserved bytes with "
+            f"`hermes sessions recover --source {qpath or self.db_path}`. "
+            "Opening a fresh empty database so the agent can start."
         )
         logger.error(msg)
         _set_last_init_error(msg)
@@ -799,7 +803,6 @@ class SessionDB(
                 self._close_connection_quietly(self._conn)
                 now = time.monotonic()
                 if now >= deadline:
-                    log_write_lock_holders(self.db_path, self._WRITE_PATIENCE_S)
                     raise
                 jitter = random.uniform(self._WRITE_RETRY_SLOW_MIN_S, self._WRITE_RETRY_SLOW_MAX_S)
                 time.sleep(min(jitter, max(deadline - now, 0.001)))
@@ -900,6 +903,11 @@ class SessionDB(
             return
         with self._lock:
             if self._conn is None:  # close() raced a still-unwinding reader
+                if self.read_only:
+                    raise sqlite3.ProgrammingError(
+                        f"SessionDB for {self.db_path} was opened read-only and "
+                        f"the connection was closed; cannot serve a read after close()"
+                    )
                 self._reopen_after_close_locked(context="read")
             yield cast(sqlite3.Connection, self._conn)
 
@@ -910,8 +918,8 @@ class SessionDB(
         ``self._lock``. No _init_schema: no DDL races with siblings during teardown."""
         if self.read_only:
             raise sqlite3.ProgrammingError(
-                f"SessionDB for {self.db_path} was closed (read-only handle); "
-                f"cannot serve a {context} after close()"
+                f"SessionDB for {self.db_path} was opened read-only and cannot "
+                f"serve a {context} after close()"
             )
         # A reopen resolves the PATH again: a replaced file would be written through stale WAL/shm
         # assumptions; a quarantined handle must never hand a fresh connection to a damaged file.
@@ -934,8 +942,6 @@ class SessionDB(
                 f"in flight (a session-teardown path called close() before "
                 f"this worker finished — #94736) and the automatic reopen failed: {exc}"
             ) from exc
-        if self._wal_active:  # a reopened writer is a live generation holder like the first open
-            self._wal_lock_guard = _lockguard.hold(self.db_path)
 
     def _execute_write(
         self, fn: Callable[[sqlite3.Connection], T], patience_s: Optional[float] = None,
@@ -972,7 +978,12 @@ class SessionDB(
             try:
                 with self._lock:
                     self._raise_if_db_replaced()
-                    if self._conn is None:  # close() raced this writer
+                    if self._conn is None:
+                        if self.read_only:
+                            raise sqlite3.ProgrammingError(
+                                f"SessionDB for {self.db_path} was opened read-only and "
+                                f"the connection was closed; cannot serve a write after close()"
+                            )
                         self._reopen_after_close_locked(context="write")
                     self._conn.execute("BEGIN IMMEDIATE")
                     try:
@@ -1018,10 +1029,7 @@ class SessionDB(
                     if "locked" in err_msg or "busy" in err_msg:
                         if self._sleep_before_write_retry(deadline, patience_s):
                             continue
-                        # Say what actually happened, not disk/permission damage. The holder goes to
-                        # the log, not the message: classify_persistence_error() buckets by phrase and
-                        # a holder's argv (a worktree named fix-corrupt-db) would flip the bucket.
-                        log_write_lock_holders(self.db_path, patience_s)
+                        # Say what actually happened, not disk/permission damage.
                         raise sqlite3.OperationalError(
                             f"database is locked (another Hermes process held the "
                             f"state.db write lock for over {patience_s:.0f}s — "
@@ -1045,8 +1053,7 @@ class SessionDB(
                         "not a database" in err_msg or is_malformed_db_error(exc)
                         or self._is_fts_write_corruption_error(exc)
                     ):
-                        with self._lock:
-                            self._raise_if_db_replaced()
+                        self._raise_if_db_replaced()
                     # Corrupt FTS shadow tables fail every write via the sync triggers while canonical
                     # rows are intact: detach the derived indexes atomically and retry (never rebuild here).
                     if self._enter_fts_fail_open(exc):
@@ -1187,7 +1194,7 @@ class SessionDB(
             watched = _watched_sqlite_sidecar_paths(self.db_path)
             try:
                 for target, fd_path in _proc_fd_targets(os.getpid()):
-                    canonical = _state_holders.canonical_sqlite_path(target)
+                    canonical = _canonical_sqlite_path(target)
                     if (" (deleted)" in target and canonical in watched
                             and _fd_is_truly_unlinked(fd_path, watched[canonical])):
                         return True
@@ -1407,10 +1414,6 @@ class SessionDB(
             return
         try:
             with self._lock:
-                if self._conn is None:
-                    return  # closed underneath the timer: nothing to checkpoint, nothing to re-guard
-                if self._wal_lock_guard:
-                    _lockguard.hold(self.db_path, self._wal_lock_guard)  # a -shm minted after open
                 result = self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)").fetchone()
                 if result and result[1] > 0:
                     logger.debug("WAL checkpoint: %d/%d pages checkpointed", result[2], result[1])
@@ -1487,7 +1490,6 @@ class SessionDB(
                         self._conn.execute("PRAGMA wal_checkpoint(PASSIVE)")
                     except Exception as exc:
                         logger.debug("WAL checkpoint (PASSIVE) at close failed: %s", exc)
-                _lockguard.release(self._wal_lock_guard)  # before the close: see release()
                 if retire_without_close:
                     self._pin_connection(self._conn)
                     self._conn = None
@@ -1497,7 +1499,6 @@ class SessionDB(
                     # Only a clean close ends the generation; retain the recorded
                     # identity when retiring an unsafe handle.
                     self._db_sidecar_identity = {}
-        self._read_budget.unregister(self)  # idempotent: a never-registered (failed-init) handle is a no-op
 
     def __del__(self) -> None:
         """Safety net: close() if the caller forgot. Attribute access stays
@@ -1507,6 +1508,63 @@ class SessionDB(
                 self.close()
             except Exception:
                 pass
+
+    # ── Registry handoff helper ─────────────────────────────────────────────────────────────
+    # When a bare SessionDB(db_path=...) is constructed and the registry already published a
+    # shared handle for the same resolved path, adopt that handle instead of opening a duplicate
+    # writer connection. See #98573.
+    def _adopt_shared_handle(self, shared: "SessionDB") -> None:
+        """Take over *shared*'s connection, lock, and registry-owned flag; the caller is now
+        the registry's problem to release (it borrowed via acquire() just above)."""
+        self._conn = shared._conn
+        self._lock = shared._lock
+        # Read-path state: the shared handle already registered this object in its budget
+        # (we passed self to _read_budget.register above). The shared handle's own registration
+        # was for a different object — drop it so the budget's WeakSet doesn't pin a dead wrapper.
+        # The shared handle will be released by the registry on its last holder's close(), which
+        # is exactly when this adopted connection should be torn down.
+        shared._read_budget._members.discard(shared)
+        self._read_budget.register(self)
+        self._shared_registry_owned = True
+        self._wal_active = shared._wal_active
+        self._db_sidecar_identity = dict(shared._db_sidecar_identity)
+        self._db_file_identity = shared._db_file_identity
+        self._db_file_application_id = shared._db_file_application_id
+        self._fts_enabled = shared._fts_enabled
+        self._fts_stale = shared._fts_stale
+        self._fts_cjk_loaded = shared._fts_cjk_loaded
+        self._fts_cjk_available = shared._fts_cjk_available
+        self._fts_unavailable_warned = shared._fts_unavailable_warned
+        self._fts_usermerge_floor_applied = shared._fts_usermerge_floor_applied
+        self._trigram_available = shared._trigram_available
+        self._db_corrupt = shared._db_corrupt
+        self._db_corrupt_reason = shared._db_corrupt_reason
+        self._db_replaced = shared._db_replaced
+        self._db_wal_generation_lost = shared._db_wal_generation_lost
+        self._retired_generation_capture = shared._retired_generation_capture
+        self._connection_pinned = shared._connection_pinned
+        self._retire_connection = shared._retire_connection
+        # Token writer: the shared handle may have one running; borrow it.
+        self._token_queue = shared._token_queue
+        self._token_queue_cond = shared._token_queue_cond
+        self._token_writer_thread = shared._token_writer_thread
+        self._token_writer_stop = shared._token_writer_stop
+        self._token_atexit_hook = shared._token_atexit_hook
+        # The shared handle's __dict__ is about to be released by the registry; clear its
+        # reference to the connection so its close() (if it ever runs) is a no-op.
+        shared._conn = None
+        shared._shared_registry_owned = False
+        # ── Update the registry: this new object is now the generation's live handle ──────────
+        # The registry stores _Generation(path, db, identity). When db2 adopts db1's connection,
+        # db1 still owns the registry slot. Update it so release(db2) finds the generation.
+        try:
+            from hermes_state_registry import _generations
+            for gen in _generations.values():
+                if gen.db is shared:
+                    gen.db = self
+                    break
+        except Exception:
+            pass
 
     # ── Async token accounting (SessionUsageMixin) ──
     # queue_token_counts() is a deque append; a single-writer thread applies deltas in
@@ -1519,16 +1577,14 @@ class SessionDB(
     _TOKEN_DELTA_COST_FIELDS = ("estimated_cost_usd", "actual_cost_usd")
     _TOKEN_DELTA_ROUTE_FIELDS = (
         "model", "cost_status", "cost_source", "pricing_version", "billing_provider", "billing_base_url",
-        "billing_mode", "source",
+        "billing_mode",
     )
 
     MAX_TITLE_LENGTH = 100
 
     # Title provenance, lowest to highest authority: auto-titling may only replace a
     # strictly lower-authority title (``derived`` -> ``llm`` once; never a user-typed name).
-    TITLE_SOURCE_DERIVED = _TITLE_SOURCE_DERIVED
-    TITLE_SOURCE_LLM = _TITLE_SOURCE_LLM
-    TITLE_SOURCE_USER = _TITLE_SOURCE_USER
+    TITLE_SOURCE_DERIVED, TITLE_SOURCE_LLM, TITLE_SOURCE_USER = "derived", "llm", "user"
     _TITLE_SOURCE_RANK = {TITLE_SOURCE_DERIVED: 0, TITLE_SOURCE_LLM: 1, TITLE_SOURCE_USER: 2}
 
     # Bot Mode's canonical chat is resolved by exact-title lookup: the title IS the identity,

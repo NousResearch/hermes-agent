@@ -25,6 +25,7 @@ from pathlib import Path
 from typing import Any, Callable, Dict, List, Optional, Tuple
 
 from hermes_state_holders import canonical_sqlite_path, read_only_db_uri
+_canonical_sqlite_path = canonical_sqlite_path
 from hermes_state_common import (
     FTS_REBUILD_DEFERRAL_KEY, stat_db_file_identity as _stat_db_file_identity
 )
@@ -136,24 +137,9 @@ def _stat_sqlite_sidecar_identity(db_path: Path) -> Dict[str, tuple]:
 def _watched_sqlite_sidecar_paths(db_path) -> Dict[str, str]:
     """Map each sidecar's canonical (/proc-comparable) form to its literal, still-named path,
     so a canonical match can be re-``stat``'d for identity rather than trusted as text."""
-    literal_base = os.path.abspath(os.fspath(db_path))
-    literal = (literal_base + "-wal", literal_base + "-shm")
-    watched = {canonical_sqlite_path(path): path for path in literal}
-    # /proc reports the kernel-resolved dentry, so the watched canonicals must also resolve
-    # symlinks -- with abspath alone a symlinked HERMES_HOME makes every deleted sidecar
-    # invisible to the scan. Both spellings are watched: the fully resolved path, which is
-    # where current SQLite places -wal/-shm when the database file itself is a symlink, and
-    # the realpath'd parent with the literal basename, which is where they land when SQLite
-    # names the sidecars after the path it was opened through.
-    resolved_bases = (
-        os.path.join(os.path.realpath(os.path.dirname(literal_base)),
-                     os.path.basename(literal_base)),
-        os.path.realpath(literal_base),
-    )
-    for base in resolved_bases:
-        for suffix in ("-wal", "-shm"):
-            watched.setdefault(canonical_sqlite_path(base + suffix), base + suffix)
-    return watched
+    base = os.path.abspath(os.fspath(db_path))
+    literal = (base + "-wal", base + "-shm")
+    return {canonical_sqlite_path(path): path for path in literal}
 
 
 def _identity_is_truly_unlinked(identity: "Tuple[int, int]", watched_path: str) -> bool:

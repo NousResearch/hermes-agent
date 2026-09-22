@@ -222,14 +222,19 @@ def _select_builtin_engine(provider: str) -> tuple:
         "or set up NeuTTS for local synthesis.")
 
 
-def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[str, Any], instructions: Optional[str]) -> None:
-    """Run the already-selected built-in *engine*."""
+def _synthesize_builtin(engine: str, text: str, file_str: str, tts_config: Dict[str, Any],
+                        instructions: Optional[str],
+                        request_timeout_s: Optional[float] = None) -> None:
+    """Run the already-selected built-in *engine*. ``request_timeout_s`` reaches the
+    OpenAI-compatible generators only; other backends ignore it (the caller's own total bound on
+    the awaited synthesis still applies to them)."""
     entry = _BUILTIN_DISPATCH.get(engine)
     logger.info("Generating speech with %s...", entry[1] if entry else "Edge TTS")
     if entry is None:
         _run_edge_tts(text, file_str, tts_config)
     elif engine == "openai":
-        _generate_openai_tts(text, file_str, tts_config, instructions=instructions)
+        _generate_openai_tts(text, file_str, tts_config, instructions=instructions,
+                             timeout_s=request_timeout_s)
     else:
         globals()[entry[2]](text, file_str, tts_config)
 
@@ -336,12 +341,16 @@ def _tool_failure(prefix: str, provider: str, exc: BaseException) -> str:
 def _text_to_speech_single(
     text: str, file_str: str, *, provider: str, tts_config: Dict[str, Any],
     command_provider_config: Optional[Dict[str, Any]], want_opus: bool, instructions: Optional[str],
+    request_timeout_s: Optional[float] = None,
 ) -> str:
     """Synthesize one provider-safe chunk into *file_str*; returns the result envelope.
 
     Command providers resolve BEFORE built-in dispatch, but built-in names short-circuit so
     ``tts.providers.openai.command`` can't shadow OpenAI. Plugins fire only for names that are
-    neither; a None return falls through to built-in dispatch (unknown -> Edge default)."""
+    neither; a None return falls through to built-in dispatch (unknown -> Edge default).
+
+    ``request_timeout_s`` bounds ONE provider request where the backend supports it (the
+    OpenAI-compatible path); callers that need a total bound must also wrap the whole call."""
     try:
         if command_provider_config is not None:
             logger.info("Generating speech with command TTS provider '%s'...", provider)
@@ -361,7 +370,8 @@ def _text_to_speech_single(
             provider, error = _select_builtin_engine(provider)
             if error:
                 return error
-            _synthesize_builtin(provider, text, file_str, tts_config, instructions)
+            _synthesize_builtin(provider, text, file_str, tts_config, instructions,
+                                request_timeout_s=request_timeout_s)
         if not os.path.exists(file_str) or os.path.getsize(file_str) == 0:
             return _error_json(f"TTS generation produced no output (provider: {provider})")
 
@@ -418,12 +428,18 @@ def _synthesize_chunks(chunks: List[str], base_path: Path, generated_artifacts: 
 
 def text_to_speech_tool(
     text: str, output_path: Optional[str] = None, speed: Optional[float] = None,
-    instructions: Optional[str] = None, provider: Optional[str] = None) -> str:
+    instructions: Optional[str] = None, provider: Optional[str] = None,
+    request_timeout_s: Optional[float] = None) -> str:
     """Convert text to speech with long-form chunking; returns the JSON result envelope.
 
     Text is normalized, split into provider-safe chunks (never silently truncated), synthesized
     sequentially, then packed against the platform's upload limit: a failed combine keeps the
-    separate valid files and no over-limit artifact is ever returned."""
+    separate valid files and no over-limit artifact is ever returned.
+
+    ``request_timeout_s`` (internal, not in the tool schema): per-request budget for backends that
+    support one. The GATEWAY passes it for auto-TTS so a slow/wedged backend cannot hold the turn's
+    TEXT reply behind the TTS client's 600 s x 3 retry default; model-called synthesis leaves it
+    unset. It bounds one request, not the whole call — callers needing a total bound wrap the call."""
     if not text or not text.strip():
         return tool_error("Text is required", success=False)
     try:  # shared cleaner: markdown, emoji, think blocks, verifier footer, units, newlines
@@ -454,7 +470,7 @@ def text_to_speech_tool(
         encoded_paths, chunk_results = _synthesize_chunks(
             chunks, base_path, generated_artifacts, provider=provider, tts_config=tts_config,
             command_provider_config=command_provider_config, want_opus=want_opus,
-            instructions=instructions)
+            instructions=instructions, request_timeout_s=request_timeout_s)
         voice_compatible = bool(chunk_results) and all(bool(r.get("voice_compatible")) for r in chunk_results)
         delivery_base = base_path.with_suffix(Path(encoded_paths[0]).suffix)
         final_paths, combined_chunks = _build_audio_delivery_files(

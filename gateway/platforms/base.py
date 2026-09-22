@@ -4015,22 +4015,36 @@ class BasePlatformAdapter(ABC):
     async def _synthesize_auto_tts(self, text_content: str) -> Tuple[List[str], Optional[str]]:
         """Synthesize auto-TTS audio -> ``(existing_paths, requested_path)``; empty/None on failure
         (logged, never raised). Path built platform-aware HERE: HERMES_SESSION_PLATFORM is cleared
-        post-handler."""
+        post-handler.
+
+        BOUNDED by ``voice.auto_tts_timeout_s``: this runs on the delivery path AHEAD of the final
+        text send (voice input + auto-TTS), so an unbounded synthesis against a slow or wedged
+        backend delays the answer itself — the OpenAI TTS client's 600 s x 3 retry default held the
+        text for up to 30 min on every platform. On timeout the audio is simply skipped."""
         paths: List[str] = []
         requested_path = None
         try:
             from tools.tts_tool import text_to_speech_tool, check_tts_requirements
+            from gateway.run_voice import _AUTO_TTS_TIMEOUT_GRACE_S, _auto_tts_timeout_s
             if check_tts_requirements():
                 import json as _json
                 speech_text = self.prepare_tts_text(text_content)
                 if not speech_text:
                     raise ValueError("Empty text after markdown cleanup")
                 requested_path = build_auto_tts_output_path(self.platform)
-                tts_data = _json.loads(await asyncio.to_thread(
-                    text_to_speech_tool, text=speech_text, output_path=requested_path))
+                _budget = _auto_tts_timeout_s()
+                tts_data = _json.loads(await asyncio.wait_for(
+                    asyncio.to_thread(text_to_speech_tool, text=speech_text,
+                                      output_path=requested_path, request_timeout_s=_budget),
+                    # Grace above the per-request budget so the tool's own clean failure is usual.
+                    timeout=_budget + _AUTO_TTS_TIMEOUT_GRACE_S))
                 if tts_data.get("success", True):
                     raw_tts_paths = tts_data.get("file_paths") or [tts_data.get("file_path")]
                     paths = [str(path) for path in raw_tts_paths if path and Path(path).exists()]
+        except (asyncio.TimeoutError, TimeoutError):
+            logger.warning(
+                "[%s] Auto-TTS exceeded its voice.auto_tts_timeout_s budget; delivering the reply "
+                "without audio", self.name)
         except Exception as tts_err:
             logger.warning("[%s] Auto-TTS failed: %s", self.name, tts_err)
         return paths, requested_path

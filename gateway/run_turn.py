@@ -1923,7 +1923,21 @@ class GatewayTurnMixin:
         if not _streaming_tts_done and self._should_send_voice_reply(
             event, response, agent_messages, already_sent=bool(agent_result.get("already_sent")),
         ):
-            await self._send_voice_reply(event, response)
+            # BOUNDED: the voice bubble is a delivery preference, the text reply is the answer. Left
+            # unbounded, the synthesis held the text behind the OpenAI TTS client's 600 s x 3 retry
+            # default (up to 30 min) on EVERY platform — every email answer arrived that late on
+            # 2026-09-22. On timeout the turn proceeds straight to the text send.
+            _tts_budget = self._auto_tts_budget_s()
+            try:
+                await asyncio.wait_for(
+                    self._send_voice_reply(event, response, timeout_s=_tts_budget),
+                    timeout=self._auto_tts_wait_s())
+            except (asyncio.TimeoutError, TimeoutError):
+                logger.warning(
+                    "Auto voice reply TTS exceeded its %.0fs budget; sending the text reply without "
+                    "audio (platform=%s chat=%s). Raise voice.auto_tts_timeout_s or fix the TTS "
+                    "backend if voice replies should be kept.",
+                    _tts_budget, event.source.platform.value, event.source.chat_id)
 
         # Streamed responses still need MEDIA: files delivered (chunks carry the tags verbatim). Never
         # skip when the agent failed: the error text is new content streaming didn't show.

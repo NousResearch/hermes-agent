@@ -7,6 +7,7 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import pytest
 
 from gateway.config import Platform
+from gateway.platforms.base import BasePlatformAdapter
 from gateway.platforms.event import MessageEvent, MessageType
 from gateway.run import GatewayRunner
 from gateway.session import SessionSource
@@ -34,7 +35,7 @@ class TestAutoVoiceReplyFormat:
         event = _make_event(platform)
         requested_paths = []
 
-        def fake_tts(*, text, output_path):
+        def fake_tts(*, text, output_path, request_timeout_s=None):
             requested_paths.append(output_path)
             Path(output_path).parent.mkdir(parents=True, exist_ok=True)
             Path(output_path).write_bytes(b"fake ogg opus")
@@ -92,6 +93,53 @@ class TestAutoVoiceReplyFormat:
 
         voice_event = _make_event(Platform.TELEGRAM, chat_id="123", message_type=MessageType.VOICE)
         assert runner._should_send_voice_reply(voice_event, "hello", [], already_sent=True) is True
+
+    def test_should_send_voice_reply_skips_channels_that_cannot_deliver_voice(self):
+        """A channel whose adapter cannot carry audio gets no auto-TTS at all.
+
+        Regression for the email channel: the email adapter never overrides
+        ``send_voice``, so it inherits the base adapter's warning-only fallback.
+        Auto-TTS therefore synthesized audio that ``_deliver_voice_reply`` threw
+        away — while the FINAL TEXT reply waited behind it. Against a slow TTS
+        backend that is the TTS client's whole retry budget (~30 min), which is
+        how every email answer ended up arriving half an hour late.
+        """
+        runner = _make_runner()
+        adapter = _NoVoiceAdapter.__new__(_NoVoiceAdapter)
+        adapter.platform = Platform.EMAIL
+        adapter._auto_tts_default = True
+        adapter._auto_tts_enabled_chats = set()
+        adapter._auto_tts_disabled_chats = set()
+        runner.adapters[Platform.EMAIL] = adapter
+        event = _make_event(Platform.EMAIL, chat_id="nca@fastmail.com")
+
+        assert adapter._should_auto_tts_for_chat("nca@fastmail.com") is True
+        assert runner._should_send_voice_reply(event, "hello", []) is False
+
+        # The guard is structural, not a mode: an explicit /voice all cannot re-enable it either.
+        runner._voice_mode["email:nca@fastmail.com"] = "all"
+        assert runner._should_send_voice_reply(event, "hello", []) is False
+
+
+class _NoVoiceAdapter(BasePlatformAdapter):
+    """Stands in for the email adapter: it does not override ``send_voice``.
+
+    Only the abstract methods are filled in; the instance is built with
+    ``__new__`` and the three auto-TTS attributes the guard reads.
+    """
+
+    async def connect(self):
+        return True
+
+    async def disconnect(self):
+        return None
+
+    async def get_chat_info(self, chat_id):
+        return {}
+
+    async def send(self, chat_id, content, reply_to=None, metadata=None):
+        return None
+
 
 def _make_runner() -> GatewayRunner:
     with patch("gateway.run.GatewayRunner._load_voice_modes", return_value={}):

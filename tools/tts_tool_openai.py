@@ -94,13 +94,21 @@ def _openai_extra_body(oai_config: Dict[str, Any]) -> Dict[str, Any]:
 def _generate_openai_tts(
     text: str, output_path: str, tts_config: Dict[str, Any], *, api_key: Optional[str] = None,
     base_url: Optional[str] = None, model: Optional[str] = None, voice: Optional[str] = None,
-    speed: Optional[float] = None, instructions: Optional[str] = None) -> str:
+    speed: Optional[float] = None, instructions: Optional[str] = None,
+    timeout_s: Optional[float] = None) -> str:
     """Generate audio via the OpenAI ``audio.speech.create`` SDK shape.
 
     Explicit kwargs let OpenAI-compatible backends (DeepInfra) supply credentials/model/voice
     and skip the managed-gateway resolution; otherwise the OpenAI auth chain and ``tts.openai``
     (speed falling back to ``tts.speed``) apply. ``instructions`` is forwarded only when truthy
-    so ``tts-1`` and strict OpenAI-compatible servers that reject unknown kwargs are unaffected."""
+    so ``tts-1`` and strict OpenAI-compatible servers that reject unknown kwargs are unaffected.
+
+    ``timeout_s`` is the CALLER's budget for this one request (gateway auto-TTS). When set it both
+    bounds the HTTP request and drops the SDK's implicit retries, so the request cannot outlive the
+    budget by 3x (the SDK default is ``timeout=600`` with ``max_retries=2`` = 1800 s). Left unset —
+    the agent's own ``text_to_speech`` call — the SDK defaults stand: a user-requested voice note
+    may legitimately take minutes on a slow local backend."""
+
     fallback_base: Optional[str] = None
     is_managed = False
     explicit_base_url = base_url is not None
@@ -136,7 +144,14 @@ def _generate_openai_tts(
         create_kwargs["instructions"] = instructions
     if extra_body := _openai_extra_body(oai_config):
         create_kwargs["extra_body"] = extra_body
-    client = _origin()._import_openai_client()(api_key=api_key, base_url=base_url)
+    client_kwargs: Dict[str, Any] = {"api_key": api_key, "base_url": base_url}
+    if timeout_s is not None:
+        # Caller-owned budget (gateway auto-TTS): bound the request AND drop the SDK retries, so one
+        # slow attempt fails the voice reply instead of holding the platform's TEXT reply for up to
+        # 1800 s (600 s x 3 attempts).
+        client_kwargs["timeout"] = max(1.0, float(timeout_s))
+        client_kwargs["max_retries"] = 0
+    client = _origin()._import_openai_client()(**client_kwargs)
     try:
         client.audio.speech.create(**create_kwargs).stream_to_file(output_path)
         return output_path
